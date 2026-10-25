@@ -160,6 +160,7 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
     frameId = 1,
     size = { width: 1, height: 1 },
     targetWorld = worldIdentity,
+    render?: false,
   ): void {
     receive({
       data: {
@@ -167,6 +168,7 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
         worldIdentity: targetWorld,
         frameId,
         deltaSeconds: 1 / 60,
+        ...(render === undefined ? {} : { render }),
         inputSample: {
           downKeys: new Set(),
           upKeys: new Set(),
@@ -762,6 +764,31 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
     await vi.waitFor(() => expect(observed).toHaveLength(2));
     expect(observed[1]).toEqual({ width: 1280, height: 720 });
     expect(host.drawingBufferSize()).toEqual({ width: 1280, height: 720 });
+  });
+
+  it('updates an update-only frame without a draw and settles it as simulation-complete', async () => {
+    const { World } = await import('@forgeax/engine-ecs');
+    const update = vi.spyOn(World.prototype, 'update');
+    mocks.renderer.state.mockReturnValue('alive');
+    sendFrame(200, undefined, undefined, false);
+    await vi.waitFor(() =>
+      expect(globalThis.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'simulation-complete', frameId: 200 }),
+      ),
+    );
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(mocks.renderer.draw).not.toHaveBeenCalled();
+    // The settled update-only frame is retired: a replay is stale, the next frame draws.
+    sendFrame(200);
+    sendFrame(201);
+    await vi.waitFor(() =>
+      expect(globalThis.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'frame-complete', frameId: 201 }),
+      ),
+    );
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(mocks.renderer.draw).toHaveBeenCalledTimes(1);
+    update.mockRestore();
   });
 
   it('does not execute a script if disposal happens during evaluator import', async () => {

@@ -123,4 +123,9 @@ if (rawArgs[0] === '--__forgeax-backend') {
     );
   }
   if (!result.ok) process.exitCode = result.error?.code === 'cli-parse-error' ? 2 : 1;
+  if (result.command === 'project play') {
+    // A timed-out playthrough module may still hold timers; its result is final.
+    await new Promise<void>((resolveFlush) => process.stdout.write('', () => resolveFlush()));
+    process.exit();
+  }
 }

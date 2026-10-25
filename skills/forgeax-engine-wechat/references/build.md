@@ -27,6 +27,22 @@ and `encoding: "br"`. Resource owners verify decompressed identities; WASM owner
 retain their complete initialization protocols. Main-package code must not call
 `require('./payload/game.js')` after loading: DevTools already executes that entry.
 
+WeChat uses DevKit's existing Player Asset Bundle producer before applying Brotli.
+It passes `compressEntries: false` and `compressDocuments: false` to
+`preparePlayerDist`: artifact entries retain identity encoding inside the normal
+`FXBUNDL1` container, and the native transport compresses the whole Bundle.
+Cross-entry shader text can then share Brotli's dictionary. Entry digests,
+GUIDs, byte ranges and Bundle verification retain their existing runtime owners.
+Per-entry zstd remains the default for other Player Bundle callers.
+
+Measure the final physical publication, including its manifest, and verify the
+decoded descriptors and entries against the source publication. Preserve every
+reachable material variant and scene asset. On the 2026-10-24 `game-3d` source
+candidate this route reduced total bytes from 21,707,073 to 16,959,409, retaining
+57 GUIDs, 19 Packs and 313 material program rows; 665 descriptor reads matched
+the original bytes. Official preview admitted the package. This establishes
+package admission only; phone startup and completed-frame performance are separate.
+
 The producer checks actual on-disk main and total bytes against 4 MiB / 20 MiB.
 On 2026-10-11 official `auto_preview` rejected a 22,101 KB source package with
 `source size 22101KB exceed max limit 20MB` (code 10), despite the general

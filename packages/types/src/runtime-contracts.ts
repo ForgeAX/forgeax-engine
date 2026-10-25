@@ -59,22 +59,34 @@ export interface ShaderEntryPointReads {
   readonly bindings: readonly ShaderBindingReads[];
 }
 
+const SHADER_STAGES: ReadonlySet<unknown> = new Set(['vertex', 'fragment', 'compute']);
+
+/**
+ * Deeply frozen tables that already passed. A shader manifest shares one frozen
+ * table across thousands of material variants, and every Worker that admits
+ * the manifest checks each variant; a frozen table cannot change afterwards.
+ */
+const frozenShaderEntryPointReads = new WeakSet<object>();
+
 export function isShaderEntryPointReads(value: unknown): value is readonly ShaderEntryPointReads[] {
   if (!Array.isArray(value)) return false;
+  if (frozenShaderEntryPointReads.has(value)) return true;
+  let frozen = Object.isFrozen(value);
   const identities = new Set<string>();
-  return value.every((entry: unknown) => {
+  const valid = value.every((entry: unknown) => {
     if (entry === null || typeof entry !== 'object') return false;
     const row = entry as Record<string, unknown>;
     if (
       typeof row.name !== 'string' ||
       row.name.length === 0 ||
-      !['vertex', 'fragment', 'compute'].includes(String(row.stage)) ||
+      !SHADER_STAGES.has(row.stage) ||
       !Array.isArray(row.bindings)
     )
       return false;
     const identity = `${row.stage}:${row.name}`;
     if (identities.has(identity)) return false;
     identities.add(identity);
+    frozen &&= Object.isFrozen(row) && Object.isFrozen(row.bindings);
     const coordinates = new Set<string>();
     return row.bindings.every((binding: unknown) => {
       if (binding === null || typeof binding !== 'object') return false;
@@ -93,9 +105,13 @@ export function isShaderEntryPointReads(value: unknown): value is readonly Shade
       const coordinate = `${read.group}:${read.binding}`;
       if (coordinates.has(coordinate)) return false;
       coordinates.add(coordinate);
+      frozen &&=
+        Object.isFrozen(read) && (read.fields === undefined || Object.isFrozen(read.fields));
       return true;
     });
   });
+  if (valid && frozen) frozenShaderEntryPointReads.add(value);
+  return valid;
 }
 
 export interface ManifestEntry {

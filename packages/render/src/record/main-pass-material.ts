@@ -59,6 +59,7 @@ import {
   type SkylightBindGroupResources,
   type SurfaceMediumBindGroupResources,
   skylightBindGroupResources,
+  skylightGroundLane,
   type TextureInjectionResource,
   type TransmissionBindGroupResources,
 } from '../ibl/skylight-bind-group';
@@ -2331,7 +2332,7 @@ function retainMaterialBgAssembly(
 }
 
 const ZERO_SKYLIGHT_PAYLOAD = new Float32Array([
-  0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
 ]);
 
 /** The same scene resources back material bindings in depth and color passes. */
@@ -2393,6 +2394,7 @@ export function resolveMaterialSkylight(
     const [cr, cg, cb] = skylight.color;
     const [qx, qy, qz, qw] = skylight.rotation;
     uniformPayload.set([skylight.intensity, cr, cg, cb, qx, qy, qz, qw]);
+    uniformPayload.set(skylightGroundLane(skylight, true), 20);
   }
   if (skylight?.ambientIrradiance !== undefined) uniformPayload.set(skylight.ambientIrradiance, 16);
   runtime.device.queue.writeBuffer(skylightFallback.intensityBuffer, 0, uniformPayload);

@@ -46,12 +46,11 @@
 //                                                               (instance_index);
 //                                                               see common.wgsl)
 //
-// Material bindings are derived from the built-in paramSchema. Procedural
-// geometry (M4) emits 12-floats vertex stride
-// (pos+normal+uv+tangent); BUILTIN_CUBE / TRIANGLE keep 6-floats stride and
-// route to a dedicated unlit pipeline branch wired by RenderSystem (M3 w22).
-// This shader file consumes the 12-floats path; the 6-floats path is the
-// vertex pipeline branch's responsibility.
+// Material bindings are derived from the built-in paramSchema. The vertex stage
+// reads position, normal (normal/MatCap modes) and uv (+ aliased uv1..7); it
+// declares no tangent, which unlit shading never uses. A mesh still needs the
+// normal and uv streams: MeshBuilder derives both for triangle submeshes, and
+// UV-less layouts alias uv onto bytes inside the uploaded stride.
 
 struct Material {
   baseColor : vec4<f32>,
@@ -106,7 +105,6 @@ struct VsIn {
   @location(0) pos     : vec3<f32>,
   @location(1) normal  : vec3<f32>,
   @location(2) uv      : vec2<f32>,
-  @location(3) tangent : vec4<f32>,
   @location(6) uv1 : vec2<f32>,
   @location(7) uv2 : vec2<f32>,
   @location(8) uv3 : vec2<f32>,

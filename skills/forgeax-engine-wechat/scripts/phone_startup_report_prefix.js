@@ -1,21 +1,151 @@
 /* Diagnostic clone only: observe the real Host terminal state without changing it. */
-import { persistPhoneReport, sendPhoneReport } from './phone_report_transport.js';
+import { encodePhoneReport, persistPhoneReport, sendPhoneReport } from './phone_report_transport.js';
 import { observeNativeGlErrors, redactDiagnosticText, wasmCallerLines } from './phone_native_gl_errors.js';
 import { observeNativeWasmErrors } from './phone_native_wasm_errors.js';
+import { observeNativePackageIo } from './phone_native_package_io.js';
+import { observeNativeKeyboard } from './native_keyboard_trace.js';
 import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
 
 ;(function () {
   if (typeof wx === 'undefined' || globalThis.__forgeaxPhoneStartupReport !== undefined) return;
   var options = __FORGEAX_PROBE_OPTIONS__;
-  var report = { kind: 'forgeax-phone-startup', source: options.source,
+  var report = { kind: 'forgeax-phone-startup', source: options.source, runId: options.runId,
     startedAt: Date.now(), transitions: [],
     sceneFrames: { minimum: options.minimumSceneFrames || 1, observed: 0, passed: false } };
   globalThis.__forgeaxPhoneStartupReport = report;
-  var ended = false, timer, deadline, lastState, lastPhase, lastGeneration;
+  report.runtimeFeatures = { weakRef: typeof WeakRef, finalizationRegistry: typeof FinalizationRegistry };
+  if (['entry', 'data', 'empty'].indexOf(options.packageControl) !== -1) report.packageControl = options.packageControl;
+  var ended = false, timer, deadline, checkpointTimer, lastState, lastPhase, lastGeneration;
   var inspectionOwner, sceneOwner;
   var releases = [];
   var inspectionReads = (options.inspectionReads || []).map(function (id) { return { id: id, status: 'not-started' }; });
   var captureCapability, readsStarted = false, readContext;
+  var displayStartupPhase;
+
+  installPhaseUi();
+  function installPhaseUi() {
+  if (options.showStartupProgress === true) {
+    var phaseUi = report.nativePhaseUi = { status: 'unavailable', updates: 0 };
+    if (typeof wx.showLoading === 'function' && typeof wx.hideLoading === 'function'
+        && typeof console.info === 'function') {
+      var infoDescriptor = Object.getOwnPropertyDescriptor(console, 'info');
+      var originalInfo = console.info;
+      displayStartupPhase = function (phase) {
+        if (typeof phase !== 'string' || !/^[a-z-]{1,64}$/.test(phase)) return;
+        if (phaseUi.lastPhase === phase) return;
+        phaseUi.lastPhase = phase;
+        if (phaseUi.updates >= 32) return;
+        phaseUi.updates++;
+        if (phaseUi.updates === 32) phaseUi.status = 'capped';
+        try { wx.showLoading({ title: (options.runId ? options.runId.slice(0, 6) : options.source.manifestSha256.slice(0, 4)) + ':' +
+          (phaseUi.status === 'capped' ? 'phase-cap' : phase.slice(0, 14)), mask: false }); }
+        catch (ignored) { phaseUi.status = 'native-ui-failed'; }
+      };
+      var phaseInfo = function () {
+        try {
+          if (arguments[0] === '[forgeax.wechat.startup]' && typeof arguments[1] === 'string') {
+            var value = arguments[1];
+            displayStartupPhase(value[0] === '{' ? JSON.parse(value).phase : value);
+          }
+        } catch (ignored) { /* Preserve the producer's original logging call. */ }
+        return originalInfo.apply(this, arguments);
+      };
+      try {
+        Object.defineProperty(console, 'info', { value: phaseInfo, writable: true, configurable: true });
+        releases.push(function () {
+          if (console.info === phaseInfo) {
+            if (infoDescriptor) Object.defineProperty(console, 'info', infoDescriptor);
+            else delete console.info;
+          }
+          wx.hideLoading();
+        });
+        phaseUi.status = 'installed';
+        displayStartupPhase('observer');
+      } catch (ignored) { phaseUi.status = 'hook-unavailable'; }
+    }
+  }
+
+  }
+
+  var packageIo = observeNativePackageIo(wx);
+  report.packageIo = packageIo.report;
+  releases.push(packageIo.release);
+  var assetTrace;
+  installAssetTrace();
+  function installAssetTrace() {
+  assetTrace = report.assetTrace = { status: 'unavailable', limit: 64, recent: [], dropped: 0 };
+  var previousAssetEvent;
+  var packageReadRows = new Map();
+  assetTrace.packageReads = { limit: 64, rows: [], droppedEvents: 0 };
+  try {
+    var traceDescriptor = Object.getOwnPropertyDescriptor(globalThis, '__forgeaxAssetLoadTrace');
+    if (!traceDescriptor || 'value' in traceDescriptor &&
+        (traceDescriptor.value === undefined || typeof traceDescriptor.value === 'function')) {
+      var priorTrace = traceDescriptor && traceDescriptor.value;
+      var dataField = function (value, key) {
+        var found = value && Object.getOwnPropertyDescriptor(value, key);
+        return found && 'value' in found ? found.value : undefined;
+      };
+      var traceSink = function (event) {
+        try {
+          var phase = dataField(event, 'phase');
+          if (typeof phase === 'string' && phase.length <= 128) {
+            var row = { phase: phase, at: Date.now() };
+            ['guid', 'packageUrl', 'artifactKey'].forEach(function (key) {
+              var value = dataField(event, key);
+              if (typeof value === 'string') row[key] = value.slice(0, 2048);
+            });
+            var readField = { 'package.slot.admitted': 'admitted', 'package.headers.complete': 'headers',
+              'package.body.complete': 'bodies', 'package.transfer.complete': 'completed' }[phase];
+            if (readField && row.packageUrl) {
+              var readRow = packageReadRows.get(row.packageUrl);
+              if (!readRow && packageReadRows.size < assetTrace.packageReads.limit) {
+                readRow = { packageUrl: row.packageUrl, admitted: 0, headers: 0, bodies: 0, completed: 0 };
+                packageReadRows.set(row.packageUrl, readRow); assetTrace.packageReads.rows.push(readRow);
+              }
+              if (readRow) readRow[readField]++;
+              else assetTrace.packageReads.droppedEvents++;
+            }
+            var detail = dataField(event, 'detail');
+            if (detail && typeof detail === 'object') {
+              row.detail = Object.create(null);
+              Object.getOwnPropertyNames(detail).slice(0, 32).forEach(function (key) {
+                if (key.length > 128) return;
+                var value = dataField(detail, key);
+                row.detail[key] = typeof value === 'string' ? value.slice(0, 1024)
+                  : value === null || typeof value === 'number' || typeof value === 'boolean' ? value
+                  : { unavailable: 'non-scalar-or-accessor' };
+              });
+            }
+            if (previousAssetEvent) {
+              var gap = row.at - previousAssetEvent.at;
+              if (gap < 0) assetTrace.clockRegressions = (assetTrace.clockRegressions || 0) + 1;
+              else if (!assetTrace.maximumEventGap || gap > assetTrace.maximumEventGap.elapsedMs)
+                assetTrace.maximumEventGap = { elapsedMs: gap, before: previousAssetEvent, after: row };
+            }
+            previousAssetEvent = row;
+            if (assetTrace.recent.length >= assetTrace.limit) { assetTrace.recent.shift(); assetTrace.dropped++; }
+            assetTrace.recent.push(row);
+            if (displayStartupPhase && phase.indexOf('codec.basis.') === 0) displayStartupPhase(phase.split('.').slice(-2).join('-'));
+          }
+        } catch (ignored) { assetTrace.inspectionFailed = true; }
+        if (typeof priorTrace === 'function') return priorTrace.apply(this, arguments);
+      };
+      Object.defineProperty(globalThis, '__forgeaxAssetLoadTrace', traceDescriptor
+        ? Object.assign({}, traceDescriptor, { value: traceSink })
+        : { value: traceSink, configurable: true, writable: true });
+      assetTrace.status = 'installed';
+      releases.push(function () {
+        var current = Object.getOwnPropertyDescriptor(globalThis, '__forgeaxAssetLoadTrace');
+        if (current && 'value' in current && current.value === traceSink) {
+          if (traceDescriptor) Object.defineProperty(globalThis, '__forgeaxAssetLoadTrace', traceDescriptor);
+          else delete globalThis.__forgeaxAssetLoadTrace;
+        }
+      });
+    }
+  } catch (ignored) { assetTrace.status = 'hook-unavailable'; }
+
+  }
 
   // console_error_panic_hook 0.1.7 emits one string: PanicInfo + "\n\nStack:\n\n"
   // + Error.stack. Capture it before RHI normalizes the thrown error to "unreachable".
@@ -69,8 +199,17 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
     });
   }
   widenRustPanicStack();
+  var wasmLoads = report.wasmLoads = { limit: 32, events: [], dropped: 0 };
   var nativeWasmErrors = observeNativeWasmErrors(typeof WXWebAssembly === 'undefined' ? undefined : WXWebAssembly,
-    { lifetime: options.observeWasmLifetime === true, trackSubmitDepth: options.probeFenceStatus === true });
+    { lifetime: options.observeWasmLifetime === true, trackSubmitDepth: options.probeFenceStatus === true,
+      onInstantiate: function (path, stage) {
+        if (wasmLoads.events.length < wasmLoads.limit) wasmLoads.events.push({
+          path: redactDiagnosticText(path).text.slice(0, 512), phase: stage, at: Date.now() });
+        else wasmLoads.dropped++;
+        var name = path.indexOf('basis') !== -1 ? 'basis' : path.indexOf('rapier') !== -1 ? 'physics'
+          : path.indexOf('wgpu') !== -1 ? 'wgpu' : path.indexOf('ui.wasm') !== -1 ? 'ui' : 'wasm';
+        if (displayStartupPhase) displayStartupPhase(stage + '-' + name);
+      } });
   report.nativeWasmErrors = nativeWasmErrors.report;
   releases.push(nativeWasmErrors.release);
   var nativeGlErrors = observeNativeGlErrors(wx, options.probeFenceStatus === true
@@ -251,6 +390,31 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
     inspectionOwner = inspection;
     return inspection && typeof inspection.renderer === 'function' ? inspection.renderer() : undefined;
   }
+  function plugins() {
+    try {
+      return inspectionOwner && typeof inspectionOwner.plugins === 'function'
+        ? inspectionOwner.plugins() : { unavailable: 'host-plugin-inspection' };
+    } catch (error) { return { unavailable: 'plugin-inspection-failed', error: error }; }
+  }
+  var checkpoints = report.checkpoints = { intervalMs: 5000, limit: 32, attempted: 0, transfers: [] };
+  function checkpoint() {
+    if (ended || checkpoints.attempted >= checkpoints.limit) return;
+    var sequence = ++checkpoints.attempted;
+    try {
+      var captured = snapshot({ renderer: lastState, plugins: plugins(),
+        packageIo: report.packageIo, assetTrace: report.assetTrace,
+        wasmLoads: report.wasmLoads, rustPanics: report.rustPanics, nativeWasmErrors: report.nativeWasmErrors,
+        nativeGlErrors: report.nativeGlErrors });
+      var current = { kind: 'forgeax-phone-startup-checkpoint', source: options.source,
+        runId: options.runId, startedAt: report.startedAt, at: Date.now(), sequence: sequence,
+        transitions: report.transitions.slice(), sceneFrames: Object.assign({}, report.sceneFrames, { passed: false }),
+        observation: captured.value, serialization: captured.serialization };
+      var transfer = { sequence: sequence };
+      checkpoints.transfers.push(transfer);
+      sendPhoneReport(wx, options, transfer, encodePhoneReport(current), 'startup-checkpoint');
+    } catch (ignored) { checkpoints.failed = true; }
+    if (!ended && checkpoints.attempted < checkpoints.limit) checkpointTimer = setTimeout(checkpoint, checkpoints.intervalMs);
+  }
   function startInspectionReads(owner) {
     readsStarted = true;
     if (inspectionReads.length === 0) return;
@@ -308,10 +472,11 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
     ended = true;
     clearTimeout(timer);
     clearTimeout(deadline);
+    clearTimeout(checkpointTimer);
     for (var i = releases.length - 1; i >= 0; i--) {
       try { releases[i](); } catch (ignored) { /* Only owned observation callbacks are removed. */ }
     }
-    var captured = snapshot(Object.assign({ renderer: lastState, event: event },
+    var captured = snapshot(Object.assign({ renderer: lastState, plugins: plugins(), event: event },
       inspectionReads.length ? { reads: inspectionReads, readContext: readContext, capture: captureCapability } : {}));
     report.reason = reason;
     report.finishedAt = Date.now();
@@ -325,6 +490,18 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
     try { console.info('[forgeax.phone.startup]', JSON.stringify(report)); }
     catch (ignored) { /* Native error propagation remains untouched. */ }
     sendPhoneReport(wx, options, report, persistPhoneReport(wx, report, 'startup'), 'startup');
+    if (options.showFrameResult === true && typeof wx.showModal === 'function') {
+      try {
+        var renderer = report.observation && report.observation.renderer;
+        wx.showModal({ title: 'ForgeaX startup result', showCancel: false,
+          content: JSON.stringify({ source: options.source.manifestSha256.slice(0, 12), runId: options.runId,
+            reason: reason, phase: renderer && renderer.phase,
+            startupError: renderer && renderer.startupError,
+            lastError: renderer && renderer.lastError,
+            completed: renderer && renderer.completed, presented: renderer && renderer.presented,
+            sceneFrames: report.sceneFrames }).slice(0, 3500) });
+      } catch (ignored) { /* Optional result UI must preserve the collected failure. */ }
+    }
   }
   function nativeFailure(kind, error) {
     try { lastState = read(); } catch (ignored) { /* Keep the original native error. */ }
@@ -345,6 +522,26 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
   observe('onUnhandledRejection', 'offUnhandledRejection', onRejection);
   observe('onHide', 'offHide', onHide);
   deadline = setTimeout(function () { finish(lastState === undefined ? 'inspection-unavailable' : 'deadline'); }, options.deadlineMs);
+  if (options.reportUrl !== undefined) checkpointTimer = setTimeout(checkpoint, checkpoints.intervalMs);
+  function observeSceneKeyboard() {
+            if (options.observeKeyboard === true) {
+              var keyboard = observeNativeKeyboard(wx, function () {
+                var value = sceneOwner.ui({ selector: 'input' });
+                return value.ok ? value.value.focused : null;
+              });
+              report.keyboard = keyboard.report;
+              report.keyboardWindow = { startedAt: Date.now(), durationMs: 60000 };
+              releases.push(keyboard.release);
+            }
+  }
+  function validFrameCounters(lastState, frame, receipt) {
+    return !(!Number.isSafeInteger(lastState.generation) || lastState.generation < 1 ||
+              !Number.isSafeInteger(lastState.completed) || !Number.isSafeInteger(lastState.presented) ||
+              lastState.presented < 0 || lastState.completed < lastState.presented ||
+              !frame || !Number.isSafeInteger(frame.deviceGeneration) || frame.deviceGeneration < 0 ||
+              lastState.completed > 0 && (!receipt || !Number.isSafeInteger(receipt.frameId) || receipt.frameId < 1 ||
+                receipt.deviceGeneration !== frame.deviceGeneration));
+  }
   function poll() {
     if (ended) return;
     try {
@@ -361,20 +558,14 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
           lastGeneration = lastState.generation;
         }
         if (lastState.startupError != null || lastState.lastError != null || lastState.phase === 'failed') { finish('startup-failed'); return; }
+        if (['entry', 'data', 'empty'].indexOf(options.packageControl) !== -1 && lastState.phase === 'package-entry-control') { finish('package-entry-control'); return; }
         if (['disposing', 'disposed', 'stopped'].indexOf(lastState.phase) !== -1) { finish('host-stopped'); return; }
         if (sceneOwner && (lastState.phase !== 'ready' || lastState.state !== 'alive')) {
           finish('scene-left-ready'); return;
         }
         if (lastState.phase === 'ready' && lastState.state === 'alive') {
           var frame = lastState.frame, receipt = lastState.lastCompletion, frames = report.sceneFrames;
-          if (!Number.isSafeInteger(lastState.generation) || lastState.generation < 1 ||
-              !Number.isSafeInteger(lastState.completed) || !Number.isSafeInteger(lastState.presented) ||
-              lastState.presented < 0 || lastState.completed < lastState.presented ||
-              !frame || !Number.isSafeInteger(frame.deviceGeneration) || frame.deviceGeneration < 0 ||
-              lastState.completed > 0 && (!receipt || !Number.isSafeInteger(receipt.frameId) || receipt.frameId < 1 ||
-                receipt.deviceGeneration !== frame.deviceGeneration)) {
-            finish('invalid-frame-counters'); return;
-          }
+          if (!validFrameCounters(lastState, frame, receipt)) { finish('invalid-frame-counters'); return; }
           if (!sceneOwner) {
             sceneOwner = inspectionOwner;
             frames.generation = lastState.generation;
@@ -382,6 +573,7 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
             frames.startedAt = Date.now();
             frames.completedStart = lastState.completed;
             frames.presentedStart = lastState.presented;
+            observeSceneKeyboard();
           } else if (lastState.completed < frames.completedEnd || lastState.presented < frames.presentedEnd) {
             finish('frame-counters-regressed'); return;
           }
@@ -392,7 +584,8 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
           frames.observed = frames.presentedEnd - frames.presentedStart;
           if (frames.observed >= frames.minimum && receipt && receipt.presentation === 'ready') {
             if (!readsStarted) startInspectionReads(sceneOwner);
-            if (!inspectionReads.some(function (row) { return row.status === 'pending'; })) {
+            if (!inspectionReads.some(function (row) { return row.status === 'pending'; }) &&
+                (!report.keyboardWindow || Date.now() - report.keyboardWindow.startedAt >= report.keyboardWindow.durationMs)) {
               frames.passed = true;
               finish('scene-presented'); return;
             }

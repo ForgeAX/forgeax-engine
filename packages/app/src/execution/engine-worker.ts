@@ -283,6 +283,9 @@ export async function startEngineWorker(
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
     ...forwardGpuStub(options),
     ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
+    ...(options.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
     ...(options.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: options.outputColorSpace }),

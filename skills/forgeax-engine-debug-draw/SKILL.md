@@ -28,7 +28,7 @@ Runtime users use automatic `app.debugDraw.*`; low-level RHI scripts use `create
 | `engine-debug-draw` | rhi + math + types | Wire overlay collection and GPU flush. |
 | `engine-runtime` | debug-draw (thin glue) | Attach `app.debugDraw` during createApp. |
 
-Runtime wiring lives in `packages/runtime/src/debug-draw-glue.ts`; debug-draw itself does not depend on runtime, ECS, render-graph, or shader.
+Runtime wiring lives in `packages/render/src/debug-draw-glue.ts`; debug-draw itself does not depend on runtime, ECS, render-graph, or shader.
 
 ## Integration paths
 
@@ -142,6 +142,6 @@ Handle `err.code` exhaustively without default. `packages/debug-draw/src/errors.
 - Shape signatures, depth modes, capacity behavior, and errors: `packages/debug-draw/README.md`.
 - Closed error union and discriminated details: `packages/debug-draw/src/errors.ts`.
 - `DebugDraw` class + `createDebugDraw` factory + GPU resource lifecycle: `packages/debug-draw/src/debug-draw.ts`
-- Runtime attachment and final graph pass: `packages/runtime/src/debug-draw-glue.ts`.
+- Runtime attachment and final graph pass: `packages/render/src/debug-draw-glue.ts`.
 - Hello demo (5 modes: runtime / low / depth / hdrp-tonemap / empty): `apps/hello/debug-draw/src/main.ts`
 - Comparison with rhi-debug: `packages/debug-draw/README.md`.

@@ -75,6 +75,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import {
   commandEncoderFinished,
+  createQueueCompletionHold,
   err,
   ok,
   queueSubmitFailed,
@@ -202,7 +203,6 @@ let NEXT_DEVICE_GENERATION = 1;
 const BUFFER_RAW_MAP: WeakMap<Buffer, GPUBuffer> = new WeakMap();
 const TEXTURE_VIEW_RAW_MAP: WeakMap<TextureView, GPUTextureView> = new WeakMap();
 const ENCODER_STATE: WeakMap<RhiCommandEncoder, EncoderState> = new WeakMap();
-const PASS_STATE: WeakMap<RhiRenderPassEncoder, PassState> = new WeakMap();
 const COMMAND_BUFFER_RAW_MAP: WeakMap<CommandBuffer, GPUCommandBuffer> = new WeakMap();
 
 /**
@@ -592,6 +592,17 @@ function makeRenderPassEncoder(
   encoder: RhiCommandEncoder,
   occlusionQuerySet: QuerySet | null,
 ): RhiRenderPassEncoder {
+  // The pass closures own their state directly. A module WeakMap keyed by
+  // per-frame passes left one unresolvable entry per dead pass in every
+  // MajorGC ephemeron fixpoint.
+  const state: PassState = {
+    raw: rawPass,
+    ended: false,
+    encoder,
+    occlusionQuerySet,
+    occlusionQueryActive: false,
+    occlusionQueryWritten: new Set<number>(),
+  };
   const pass: RhiRenderPassEncoder = {
     ...makeRenderCommands(rawPass, PASS_LANE),
     setViewport(
@@ -630,16 +641,6 @@ function makeRenderPassEncoder(
       }
     },
     beginOcclusionQuery(queryIndex: number): Result<void, RhiError> {
-      const state = PASS_STATE.get(pass);
-      if (state === undefined) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'render pass state must exist',
-            hint: 'beginOcclusionQuery called on an untracked render pass',
-          }),
-        );
-      }
       // Step 1 (research §2.1): [[occlusion_query_set]] != null.
       if (state.occlusionQuerySet === null) {
         return err(
@@ -705,16 +706,6 @@ function makeRenderPassEncoder(
       }
     },
     endOcclusionQuery(): Result<void, RhiError> {
-      const state = PASS_STATE.get(pass);
-      if (state === undefined) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'render pass state must exist',
-            hint: 'endOcclusionQuery called on an untracked render pass',
-          }),
-        );
-      }
       // Spec normative (research §2.1): [[occlusion_query_active]] must be true.
       // K-2: end without active begin maps to render-pass-not-ended (existing
       // 14-member union).
@@ -737,10 +728,7 @@ function makeRenderPassEncoder(
       }
     },
     end(): void {
-      const state = PASS_STATE.get(pass);
-      if (state !== undefined) {
-        state.ended = true;
-      }
+      state.ended = true;
       rawPass.end();
       // Clear active-pass tracking on the owning encoder.
       const encState = ENCODER_STATE.get(encoder);
@@ -749,14 +737,6 @@ function makeRenderPassEncoder(
       }
     },
   };
-  PASS_STATE.set(pass, {
-    raw: rawPass,
-    ended: false,
-    encoder,
-    occlusionQuerySet,
-    occlusionQueryActive: false,
-    occlusionQueryWritten: new Set<number>(),
-  });
   return pass;
 }
 
@@ -1157,11 +1137,9 @@ function makeCommandEncoder(
       if (state.finished) {
         return err(commandEncoderFinished());
       }
+      // end() clears activePass, so a remaining active pass has not ended.
       if (state.activePass !== null) {
-        const passState = PASS_STATE.get(state.activePass);
-        if (passState !== undefined && !passState.ended) {
-          return err(renderPassNotEnded());
-        }
+        return err(renderPassNotEnded());
       }
       const rawCommandBuffer = rawEncoder.finish();
       state.finished = true;
@@ -1368,6 +1346,7 @@ function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFl
  *     out-of-bounds writes return 'queue-write-buffer-out-of-bounds' (D-S3 #4).
  */
 function makeQueue(rawQueue: GPUQueue): RhiQueue {
+  const completions = createQueueCompletionHold();
   return {
     writeBuffer(
       buffer: Buffer,
@@ -1538,9 +1517,17 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
     },
     // forgeax-async-whitelist: dom-native — spec `GPUQueue.onSubmittedWorkDone()` Promise passthrough
     onSubmittedWorkDone(): Promise<undefined> {
-      // research §5.1 spec normative: no reject path. Forward the raw
-      // Promise verbatim; the forgeax Promise<undefined> matches the spec
-      // shape (no Result wrapping; device-lost flows through RhiDevice.lost).
+      // research §5.1 spec normative: no reject path; the forgeax
+      // Promise<undefined> matches the spec shape (no Result wrapping;
+      // device-lost flows through RhiDevice.lost). Delivery waits only while
+      // a holdCompletions() hold is open; FIFO order is preserved.
+      return completions.deliver(rawQueue.onSubmittedWorkDone());
+    },
+    holdCompletions(): () => void {
+      return completions.hold();
+    },
+    // forgeax-async-whitelist: dom-native — spec `GPUQueue.onSubmittedWorkDone()` Promise passthrough
+    onSubmittedWorkDoneUnheld(): Promise<undefined> {
       return rawQueue.onSubmittedWorkDone();
     },
   };

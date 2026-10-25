@@ -20,10 +20,8 @@ type RendererKind = ParticleRendererSourceV3['kind'];
 type TopologyKind = ParticleTopologyRendererSourceV3['kind'];
 type StageOutput = VfxStagePlanObservation['stageOutput'];
 
-const gpuFeatureSource = readFileSync(
-  new URL('../feature/gpu-particle-feature.ts', import.meta.url),
-  'utf8',
-);
+// The feature's inspection vocabulary lives beside it in inspect.ts.
+const gpuFeatureSource = readFileSync(new URL('../feature/inspect.ts', import.meta.url), 'utf8');
 const particleResourcesSource = readFileSync(
   new URL('../feature/particle-resources.ts', import.meta.url),
   'utf8',

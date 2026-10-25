@@ -20,7 +20,10 @@ import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/dir
 import type { GraphEnvironment } from '../environment/ibl';
 import { atmosphereTextures } from '../environment/luts';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
-import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
+import {
+  SKYLIGHT_UNIFORM_BYTES,
+  type SkylightBindGroupResources,
+} from '../ibl/skylight-bind-group';
 import { buildPerFrameBindGroups } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
@@ -355,7 +358,11 @@ export function addStandardDeferredLighting(
                     viewDimension: binding === 8 ? ('cube' as const) : ('2d' as const),
                   },
                 })),
-                { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 80 } },
+                {
+                  binding: 12,
+                  visibility: 2,
+                  buffer: { type: 'uniform', minBindingSize: SKYLIGHT_UNIFORM_BYTES },
+                },
                 { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
                 { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
                 {

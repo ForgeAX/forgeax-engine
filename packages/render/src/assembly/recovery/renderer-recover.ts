@@ -72,6 +72,8 @@ export type PreparedMaterialPipelineLayoutCacheEntry = {
 };
 export type RendererPipelineCacheState = {
   materialShaderPipelineCache: Map<string, RenderPipeline>;
+  /** Deterministic descriptor rejections (e.g. mesh layout lacks a vertex input), reported once. */
+  rejectedMaterialPipelineKeys: Set<string>;
   materialShaderVariantResolutionCache: WeakMap<object, Map<string, string | undefined>>;
   group0MaterialLayout: { materialBgl: BindGroupLayout; pipelineLayout: PipelineLayout } | null;
   viewOnlyMaterialPipelineLayout: PipelineLayout | null;
@@ -90,6 +92,7 @@ export type RendererPipelineCacheState = {
 export function createRendererPipelineCacheState(): RendererPipelineCacheState {
   return {
     materialShaderPipelineCache: new Map(),
+    rejectedMaterialPipelineKeys: new Set(),
     materialShaderVariantResolutionCache: new WeakMap(),
     group0MaterialLayout: null,
     viewOnlyMaterialPipelineLayout: null,

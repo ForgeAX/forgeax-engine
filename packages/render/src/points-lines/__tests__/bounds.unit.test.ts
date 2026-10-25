@@ -5,7 +5,8 @@ describe('Points/Lines conservative transformed culling bounds', () => {
   it('retains a physical-pixel raster margin around transformed edge geometry', () => {
     const expanded = expandPointsLinesBounds(new Float32Array([10, 20, -1, 30, 40, 1]), {
       kind: 'points',
-      sizePx: 16,
+      size: 16,
+      sizeUnits: 'pixels',
       shape: 'circle',
     });
     expect([...expanded]).toEqual([2, 12, -9, 38, 48, 9]);

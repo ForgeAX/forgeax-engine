@@ -5,9 +5,10 @@
 // renderer is involved.
 
 import type { AssetError, MeshAsset, Result } from '@forgeax/engine-types';
-import { err } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { FACTORY_FLOATS_PER_VERTEX, meshFromInterleaved } from './box';
 import { geometryError } from './contour';
+import type { ProfileSweepOptions } from './profile-sweep';
 
 export interface Vec2Point {
   readonly x: number;
@@ -44,24 +45,76 @@ function pushVertex(
   return index;
 }
 
-/** Sweep a circular profile along a 3D path. */
-export function createSweepGeometry(
-  path: readonly Vec3Point[],
-  radius: number,
-  radialSegments = 12,
-): Result<MeshAsset, AssetError> {
-  if (!Number.isFinite(radius) || radius <= 0)
-    return invalid('radius', 'must be positive and finite');
-  const segments = radialSegments | 0;
-  if (
-    path.length < 2 ||
-    path.some((point) => point.length !== 3 || point.some((value) => !Number.isFinite(value)))
-  )
-    return invalid('path', 'needs at least two finite 3D points');
-  if (segments < 3) return invalid('radialSegments', 'must be at least 3');
-  // A repeated path point makes the local tangent undefined. A repeated first
-  // and last point is the explicit closed-path form used by authored railings;
-  // retain that seam while rejecting every other repeat before mesh creation.
+/**
+ * Ring X axis for a sweep row: the previous row's axis projected onto this
+ * row's cross-section plane (discrete parallel transport), so rings never flip
+ * when the tangent crosses an independent reference-axis threshold. The first
+ * row, or a projection that collapses, derives it from a fixed world axis.
+ */
+function sweepRingNormal(t: Vec3Point, previous: Vec3Point | undefined): Vec3Point {
+  if (previous !== undefined) {
+    const d = previous[0] * t[0] + previous[1] * t[1] + previous[2] * t[2];
+    const n: Vec3Point = [previous[0] - d * t[0], previous[1] - d * t[1], previous[2] - d * t[2]];
+    const length = Math.hypot(...n);
+    if (length > 1e-6) return [n[0] / length, n[1] / length, n[2] / length];
+  }
+  const reference: Vec3Point = Math.abs(t[1]) < 0.95 ? [0, 1, 0] : [1, 0, 0];
+  const n: Vec3Point = [
+    t[1] * reference[2] - t[2] * reference[1],
+    t[2] * reference[0] - t[0] * reference[2],
+    t[0] * reference[1] - t[1] * reference[0],
+  ];
+  const length = Math.hypot(...n) || 1;
+  return [n[0] / length, n[1] / length, n[2] / length];
+}
+
+interface RingFrame {
+  readonly center: Vec3Point;
+  readonly tangent: Vec3Point;
+  readonly first: number;
+}
+
+/**
+ * Close one tube end with a fan whose normal is the outward path tangent. The
+ * ring copies the tube positions bit-for-bit so the welded solid is watertight;
+ * planar UVs map the unit disc into [0, 1]^2 for the shared tangent owner.
+ */
+function pushSweepCap(
+  vertices: number[],
+  indices: number[],
+  frame: RingFrame,
+  segments: number,
+  outward: 1 | -1,
+): void {
+  const t = frame.tangent;
+  const normal: Vec3Point = [t[0] * outward, t[1] * outward, t[2] * outward];
+  const center = pushVertex(vertices, frame.center, normal, [0.5, 0.5]);
+  for (let column = 0; column <= segments; column++) {
+    const angle = ((column % segments) / segments) * Math.PI * 2;
+    const source = (frame.first + column) * FACTORY_FLOATS_PER_VERTEX;
+    pushVertex(
+      vertices,
+      [vertices[source] as number, vertices[source + 1] as number, vertices[source + 2] as number],
+      normal,
+      [0.5 + 0.5 * Math.cos(angle), 0.5 + 0.5 * Math.sin(angle) * outward],
+    );
+  }
+  // The ring advances from the frame normal toward the binormal, a
+  // counter-clockwise turn about +tangent; the start cap reverses it.
+  for (let column = 0; column < segments; column++) {
+    const a = center + 1 + column;
+    if (outward > 0) indices.push(center, a, a + 1);
+    else indices.push(center, a + 1, a);
+  }
+}
+
+/**
+ * Whether a finite sweep path is closed. A repeated path point makes the local
+ * tangent undefined. A repeated first and last point is the explicit
+ * closed-path form used by authored railings; retain that seam while rejecting
+ * every other repeat before mesh creation.
+ */
+function sweepPathClosure(path: readonly Vec3Point[]): Result<boolean, AssetError> {
   const first = path[0] as Vec3Point;
   const last = path[path.length - 1] as Vec3Point;
   const closed =
@@ -72,11 +125,36 @@ export function createSweepGeometry(
     for (let right = left + 1; right < path.length; right++) {
       const b = path[right] as Vec3Point;
       if (closed && left === 0 && right === path.length - 1) continue;
-      if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= 1e-8) {
-        return invalid('path', 'must not contain repeated points');
-      }
+      if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= 1e-8)
+        return err(geometryError('path', 'must not contain repeated points'));
     }
   }
+  return ok(closed);
+}
+
+/**
+ * Sweep a circular profile along a 3D path. Open paths are capped by default
+ * (`capped: false` leaves open tube ends); a closed path (repeated endpoint)
+ * never receives caps.
+ */
+export function createSweepGeometry(
+  path: readonly Vec3Point[],
+  radius: number,
+  radialSegments = 12,
+  options: Pick<ProfileSweepOptions, 'capped'> = {},
+): Result<MeshAsset, AssetError> {
+  if (!Number.isFinite(radius) || radius <= 0)
+    return invalid('radius', 'must be positive and finite');
+  const segments = radialSegments | 0;
+  if (
+    path.length < 2 ||
+    path.some((point) => point.length !== 3 || point.some((value) => !Number.isFinite(value)))
+  )
+    return invalid('path', 'needs at least two finite 3D points');
+  if (segments < 3) return invalid('radialSegments', 'must be at least 3');
+  const closure = sweepPathClosure(path);
+  if (!closure.ok) return closure;
+  const closed = closure.value;
   const lengths = [0];
   for (let i = 1; i < path.length; i++) {
     const previous = path[i - 1] as Vec3Point;
@@ -90,6 +168,8 @@ export function createSweepGeometry(
   if (!(total > 0)) return invalid('path', 'must contain distinct points');
   const vertices: number[] = [];
   const indices: number[] = [];
+  const frames: RingFrame[] = [];
+  let carried: Vec3Point | undefined;
   for (let row = 0; row < path.length; row++) {
     const point = path[row] as Vec3Point;
     const previous = path[Math.max(0, row - 1)] as Vec3Point;
@@ -101,19 +181,19 @@ export function createSweepGeometry(
     tx /= tangentLength;
     ty /= tangentLength;
     tz /= tangentLength;
-    const reference: Vec3Point = Math.abs(ty) < 0.95 ? [0, 1, 0] : [1, 0, 0];
-    let nx = ty * reference[2] - tz * reference[1];
-    let ny = tz * reference[0] - tx * reference[2];
-    let nz = tx * reference[1] - ty * reference[0];
-    const nLength = Math.hypot(nx, ny, nz) || 1;
-    nx /= nLength;
-    ny /= nLength;
-    nz /= nLength;
+    const [nx, ny, nz] = sweepRingNormal([tx, ty, tz], carried);
+    carried = [nx, ny, nz];
     const bx = ty * nz - tz * ny;
     const by = tz * nx - tx * nz;
     const bz = tx * ny - ty * nx;
+    frames.push({
+      center: point,
+      tangent: [tx, ty, tz],
+      first: vertices.length / FACTORY_FLOATS_PER_VERTEX,
+    });
     for (let column = 0; column <= segments; column++) {
-      const angle = (column / segments) * Math.PI * 2;
+      // The seam column reuses angle 0 so both seam vertices share exact positions.
+      const angle = ((column % segments) / segments) * Math.PI * 2;
       const radialX = Math.cos(angle) * nx + Math.sin(angle) * bx;
       const radialY = Math.cos(angle) * ny + Math.sin(angle) * by;
       const radialZ = Math.cos(angle) * nz + Math.sin(angle) * bz;
@@ -153,6 +233,10 @@ export function createSweepGeometry(
       if (dot > 0) indices.push(a, b, c, a, c, d);
       else indices.push(a, c, b, a, d, c);
     }
+  }
+  if (!closed && (options.capped ?? true)) {
+    pushSweepCap(vertices, indices, frames[0] as RingFrame, segments, -1);
+    pushSweepCap(vertices, indices, frames[frames.length - 1] as RingFrame, segments, 1);
   }
   return meshFromInterleaved(new Float32Array(vertices), new Uint32Array(indices));
 }

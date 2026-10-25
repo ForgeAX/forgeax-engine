@@ -293,11 +293,15 @@ artifact. The application only performs the catalog load and readiness check.
 For first-class point or line authoring, route the request through the existing
 asset and material owners:
 
-1. Confirm the `MeshAsset` has `point-list` or paired `line-list` topology.
+1. Confirm the `MeshAsset` has `point-list`, `line-list` or `line-strip` topology.
 2. Admit exactly one `Points` or `Lines` component with finite positive
-   `sizePx` or `width`. `Lines.widthUnits` selects `pixels` (default) or
-   `world`; `Lines.cap` selects `butt` (default) or `round` ends and joins.
-3. Select `Materials.unlit`; do not author a replacement shader or mesh.
+   `size` or `width`. `Points.sizeUnits` / `Lines.widthUnits` select `pixels`
+   (default) or `world`; `Points.shape` is `square`, `circle` or `soft`;
+   `Lines.cap` selects `butt` (default) or `round` ends and joins. Points read
+   the mesh `color` stream as a per-point tint and `uv1.x` as a size scale.
+3. Select `Materials.unlit`; its render state supplies blending and depth
+   writes and its base-colour texture maps across each point sprite. Do not
+   author a replacement shader or mesh.
 4. Let Standard extract, prepare, and record the retained expansion.
 5. Use `renderer.inspect` and the RHI debug capture when source, derived,
    binding, or draw evidence is needed.
@@ -353,7 +357,7 @@ Quick start: author `Visibility` through ECS, inspect its effective state from
 the render package, and leave `MaterialAsset` unchanged:
 
 ```ts
-import { Visibility, VisibilityStateValue, resolveVisibility } from '@forgeax/engine-scene';
+import { Visibility, VisibilityStateValue, resolveVisibility } from '@forgeax/engine/render';
 
 world.spawn({ component: Visibility, data: { state: VisibilityStateValue.hidden } }).unwrap();
 const snapshot = resolveVisibility(world);
@@ -397,11 +401,15 @@ state and live/fresh-replay pixels, including the zero-bias and write-off contro
 Standard `roughness`, `emissiveIntensity`, and `sheenRoughness` default to 1.
 Black emissive/sheen colors still disable their contribution; physical sheen
 still needs its static switch. Explicit zero intensity remains zero.
+Emissive is scene-linear and passes through exposure and the tone curve: under
+ACES, large emissive surfaces above about 1.5 clip toward white and lose hue;
+use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources
+([SDK cookbook 4](../forgeax-engine-sdk/references/gameplay-cookbook.md#4-point-light-and-emissive-at-runtime)).
 
 Point and spot lights default to no distance cutoff. Use an explicit finite
 `range` to bound cluster membership and shading cost in many-light scenes.
 A no-cutoff light reaches all camera clusters, including when its source is
-outside the frustum. The default spot has equal 60-degree inner and outer
-half-angles (hard cone); author both angles for a narrower or soft cone.
-Equal angles are valid with shadows on or off and use a defined hard step in
+outside the frustum. The default spot has a 60-degree outer and 0-degree inner
+half-angle (falloff across the whole cone); `outerConeDeg` alone narrows it.
+Equal angles give a hard cone; they are valid with shadows on or off and use a defined hard step in
 surface and volume shaders. Spot shadow farPlane remains its own range.

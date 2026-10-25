@@ -604,6 +604,8 @@ interface ShadowBundleViewKey {
   readonly pipelineState: object;
   readonly fallback: unknown;
   readonly materialBuffer: unknown;
+  /** Scene-material table bound by the opaque singleton; GPU Scene growth replaces it. */
+  readonly sceneMaterialBuffer: unknown;
   readonly factory: unknown;
   readonly point: boolean;
 }
@@ -615,6 +617,7 @@ function sameShadowBundleView(a: ShadowBundleViewKey, b: ShadowBundleViewKey): b
     a.pipelineState === b.pipelineState &&
     a.fallback === b.fallback &&
     a.materialBuffer === b.materialBuffer &&
+    a.sceneMaterialBuffer === b.sceneMaterialBuffer &&
     a.factory === b.factory &&
     a.point === b.point
   );
@@ -758,6 +761,7 @@ function retainedShadowBundleView(
     pipelineState: c.pipelineState,
     fallback: c.pipelineState.skylightFallback,
     materialBuffer: c.pipelineState.materialUniformBuffer.buffer,
+    sceneMaterialBuffer: shadowSingletonSceneMaterialBuffer(c),
     factory: c.runtime.getMaterialShaderPipeline,
     point: identity.kind === 'point',
   };
@@ -2351,9 +2355,7 @@ export function recordShadowCasterDraws(
 function ensureSpotShadowMaterialBg(c: _InternalRenderPipelineContext): BindGroup | null {
   const { runtime, frameState, pipelineState } = c;
   const fb = pipelineState.skylightFallback;
-  const sceneMaterialBuffer =
-    c.gpuDrivenStandardPbrFrameResources?.sceneMaterialBuffer ??
-    meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer;
+  const sceneMaterialBuffer = shadowSingletonSceneMaterialBuffer(c);
   const handles = [
     pipelineState.materialBindGroupLayout,
     meshSsboBufferBinding(pipelineState.materialUniformBuffer, 0).buffer,
@@ -2459,6 +2461,18 @@ function ensureSpotShadowMaterialBg(c: _InternalRenderPipelineContext): BindGrou
     return null;
   }
   return r.value;
+}
+
+/**
+ * The scene-material table the shadow singleton binds at binding(46). GPU
+ * Scene growth replaces it, so retained opaque rows key on the same buffer.
+ */
+function shadowSingletonSceneMaterialBuffer(c: _InternalRenderPipelineContext): Buffer {
+  const { pipelineState } = c;
+  return (
+    c.gpuDrivenStandardPbrFrameResources?.sceneMaterialBuffer ??
+    meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer
+  );
 }
 
 /**

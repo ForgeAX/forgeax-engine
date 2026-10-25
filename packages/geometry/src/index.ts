@@ -96,6 +96,13 @@ export {
 } from './mesh-material-slots';
 export { createPlaneGeometry } from './plane';
 export {
+  createDodecahedronGeometry,
+  createIcosahedronGeometry,
+  createOctahedronGeometry,
+  createTetrahedronGeometry,
+  type PolyhedronOptions,
+} from './polyhedron';
+export {
   createRevolutionGeometry,
   createSweepGeometry,
   type Vec2Point,

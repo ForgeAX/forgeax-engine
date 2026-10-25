@@ -119,6 +119,8 @@ export async function verifyChannelShadows(
         data: {
           direction: [-2, 0, -3],
           intensity: strengths.spot,
+          // Pixel evidence was recorded with the former hard 60-degree cone.
+          innerConeDeg: 60,
           range: 10,
           lightingChannels: 0,
           castShadow: false,

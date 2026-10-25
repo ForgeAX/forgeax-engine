@@ -16,8 +16,9 @@ import {
 } from '../components/directional-shadow-filter';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { LineCapValue, LineWidthUnitsValue } from '../components/lines';
+import { PointShapeValue } from '../components/points';
 import { writeAtmosphereUniform } from '../environment/uniform';
-import type { AtmosphereParameters, FogFrame } from '../extract/environment';
+import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import type {
@@ -139,18 +140,17 @@ export function writePointsLinesViewUbo(
   }
   payload[32] = width;
   payload[33] = height;
+  // World sizes and widths scale by the projection's vertical focal factor;
+  // the shader divides by each vertex's clip w (1 for orthographic cameras).
+  const worldScale = Math.abs(projection[5] ?? 0) * height * 0.5;
   if (style?.kind === 'points') {
-    payload[36] = style.sizePx;
-    payload[38] = style.shape === 'circle' ? 1 : 0;
+    payload[36] = style.size;
+    payload[38] = PointShapeValue[style.shape];
+    payload[39] = style.sizeUnits === 'world' ? worldScale : 0;
   } else if (style?.kind === 'lines') {
     payload[36] = style.width;
     payload[37] = 1;
-    // World widths scale by the projection's vertical focal factor; the shader
-    // divides by each endpoint's clip w (1 for orthographic cameras).
-    payload[39] =
-      style.widthUnits === LineWidthUnitsValue.world
-        ? Math.abs(projection[5] ?? 0) * height * 0.5
-        : 0;
+    payload[39] = style.widthUnits === LineWidthUnitsValue.world ? worldScale : 0;
     payload[40] = style.dashSize ?? 1;
     payload[41] = style.gapSize ?? 0;
     payload[42] = style.dashOffset ?? 0;
@@ -218,7 +218,7 @@ export function writeViewUbo(
   temporalOrOffset?: TemporalView | LegacyTemporalView | number,
   projectorSpotIndex?: number,
   cloudShadowProjection?: ViewCloudShadowProjection,
-  fog?: Pick<FogFrame, 'color' | 'density' | 'heightFalloff' | 'maxOpacity'>,
+  fog?: ViewFog,
   atmosphere?: AtmosphereParameters,
   sceneCapture = false,
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
@@ -289,17 +289,34 @@ function writeClippingLanes(
   );
 }
 
-/** fogColorDensity at [284..287], fogHeightOpacity at [288..290], frame time at [291]. */
+/** Fog facts the View lanes carry. */
+type ViewFog = Pick<
+  FogFrame,
+  'color' | 'density' | 'heightFalloff' | 'maxOpacity' | 'mode' | 'near' | 'far'
+>;
+
+/**
+ * fogColorDensity at [284..287], fogHeightOpacity at [288..290], frame time at [291].
+ * The law is signed into the existing lanes (fog.wgsl decodes it):
+ *   exp:    (rgb, density),  (heightFalloff, maxOpacity)
+ *   exp2:   (rgb, -density), (0, maxOpacity)
+ *   linear: (rgb, far),      (near, -maxOpacity)
+ */
 function writeFogAndClockLanes(
   viewPayload: Float32Array,
-  fog: Pick<FogFrame, 'color' | 'density' | 'heightFalloff' | 'maxOpacity'> | undefined,
+  fog: ViewFog | undefined,
   frameTimeSeconds: number | undefined,
 ): void {
   // Analytic fog is one per-view fact: the opaque fog pass and every
   // translucent writer evaluate the same lanes at their own depth.
-  if (fog !== undefined && fog.density > 0 && fog.maxOpacity > 0) {
-    viewPayload.set([fog.color[0], fog.color[1], fog.color[2], fog.density], 284);
-    viewPayload.set([fog.heightFalloff, fog.maxOpacity, 0, 0], 288);
+  if (fog !== undefined && fogIsActive(fog)) {
+    const linear = fog.mode === 'linear';
+    const law = linear ? fog.far : fog.mode === 'exp2' ? -fog.density : fog.density;
+    viewPayload.set([fog.color[0], fog.color[1], fog.color[2], law], 284);
+    viewPayload.set(
+      [linear ? fog.near : fog.heightFalloff, linear ? -fog.maxOpacity : fog.maxOpacity, 0, 0],
+      288,
+    );
   }
   // The clock is available even when fog is disabled; no per-material publication.
   const frameTime = Math.fround(frameTimeSeconds ?? 0);

@@ -8,6 +8,7 @@ import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, mipDimension, ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { addTypedDebugOverlayPass } from '../debug-draw-glue';
+import { addGradientSkyDisplayPass } from '../environment/gradient-sky';
 import type { GraphAtmosphere } from '../environment/luts';
 import { RenderFeatureCapabilityMissingError, SceneDataUnavailableError } from '../errors/render';
 import {
@@ -1383,5 +1384,7 @@ export function addStandardPost(
     finalPresent,
   );
   if (!effects.ok) return effects;
+  const sky = addGradientSkyDisplayPass(context.graph, finalPresent);
+  if (!sky.ok) return sky;
   return addStandardPresentStages(context, route, surface, finalPresent, observedOutput.value);
 }

@@ -128,6 +128,7 @@ try {
                 direction: [0, below ? 1 : -1, 0],
                 intensity: 20,
                 range: 40,
+                innerConeDeg: 60,
                 outerConeDeg: 60,
                 mapSize: 256,
                 farPlane: 40,

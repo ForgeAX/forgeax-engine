@@ -10,6 +10,7 @@ import { type ExtractedCloudLayer, extractCloudLayer } from '../cloud/extract';
 import {
   Atmosphere,
   DirectionalLight,
+  GradientSky,
   LightProbe,
   PointLight,
   PointLightShadow,
@@ -32,7 +33,11 @@ import { validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import { selectEnvironment } from '../environment/frame';
 import { createLightResourceUnavailable } from '../errors/render';
-import type { EnvironmentCandidate, EnvironmentFrame } from '../extract/environment';
+import type {
+  EnvironmentCandidate,
+  EnvironmentFrame,
+  GradientSkyFrame,
+} from '../extract/environment';
 import {
   COOKIE_SLICE_CAPACITY,
   IES_SLICE_HEIGHT,
@@ -1132,6 +1137,7 @@ function skylightSnapshotOf(
         }),
     equirectHandle: s.equirect !== undefined ? Math.round(s.equirect) : 0,
     color: [s.color[0] ?? 1.0, s.color[1] ?? 1.0, s.color[2] ?? 1.0],
+    groundColor: [s.groundColor[0] ?? 0, s.groundColor[1] ?? 0, s.groundColor[2] ?? 0],
     ambientIrradiance: [
       s.ambientIrradiance[0] ?? 0,
       s.ambientIrradiance[1] ?? 0,
@@ -1214,6 +1220,26 @@ function extractSkybox(world: World) {
     }
   }
   return { skybox, skyboxCount };
+}
+
+/** Every GradientSky owner; selection admits exactly one. */
+function extractGradientSkies(world: World): GradientSkyFrame[] {
+  const skies: GradientSkyFrame[] = [];
+  for (const row of world.query({ read: [GradientSky] }).unwrap()) {
+    const sky = row.get(GradientSky);
+    skies.push({
+      entityKey: row.entity,
+      zenith: rgbTuple(sky.zenith),
+      horizon: rgbTuple(sky.horizon),
+      ground: rgbTuple(sky.ground),
+      exponent: sky.exponent,
+      sunSize: sky.sunSize,
+      sunGlow: sky.sunGlow,
+      fogBlend: sky.fogBlend,
+      toneMapped: sky.toneMapped,
+    });
+  }
+  return skies;
 }
 
 function atmosphereParametersOf(
@@ -1324,6 +1350,8 @@ function selectWorldEnvironment(
     environments: environmentCandidatesOf(world, skylight, skybox),
     fogs: fog === undefined ? [] : [fog],
     suns: sunCandidatesOf(directional),
+    skies: extractGradientSkies(world),
+    skyboxBackground: skybox !== undefined,
   });
   if (!environmentSelection.ok) {
     routeWorldError(world, environmentSelection.error, {

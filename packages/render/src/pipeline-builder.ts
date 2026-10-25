@@ -57,6 +57,7 @@ import type { MaterialShaderEntry } from '@forgeax/engine-shader';
 import type { MaterialRenderState, PassKind, PrimitiveTopology } from '@forgeax/engine-types';
 import { materialColorTarget, materialDepthStencil } from './material-render-state';
 import { colorFormatsForPassKind, type PipelineSpec } from './pipeline-spec';
+import { validateVertexInputLayout } from './vertex-input-guard';
 
 /**
  * feat-20260604-mesh-topology-debug-draw M3 / w8: per-mesh geometry facts that
@@ -242,6 +243,21 @@ export function validateTemporalPipelineContract(
   return ok(undefined);
 }
 
+/** Reject a mesh layout that lacks a vertex input before compiling or creating anything. */
+function createVertexCompatibleModule(
+  id: string,
+  source: string,
+  vertexEntry: string,
+  ctx: PipelineBuilderContext,
+): Result<ShaderModule, RhiError> {
+  const vertexLayout = validateVertexInputLayout(id, source, vertexEntry, ctx.vertexBuffers);
+  if (!vertexLayout.ok) return vertexLayout;
+  return ctx.shaderModuleFactory.createShaderModule({
+    code: source,
+    label: ctx.moduleLabel ?? `shader-${id}`,
+  });
+}
+
 function pipelineCreationHint(error: RhiError): string {
   return `inspect compiler messages on the shader module; verify pipeline layout matches shader bindings (cause: ${error.code}; underlying hint: ${error.hint}; raw: ${error.message})`;
 }
@@ -320,10 +336,7 @@ export function buildPipelineForMaterialShader(
     source = prefix + source;
   }
 
-  const moduleResult = ctx.shaderModuleFactory.createShaderModule({
-    code: source,
-    label: ctx.moduleLabel ?? `shader-${id}`,
-  });
+  const moduleResult = createVertexCompatibleModule(id, source, vsEntry, ctx);
   if (!moduleResult.ok) {
     return moduleResult;
   }

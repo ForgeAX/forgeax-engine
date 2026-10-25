@@ -13,6 +13,7 @@ const browserMocks = vi.hoisted(() => {
   let canvasRendered = true;
   let adapterDevice = 'SwiftShader Device (LLVM)';
   let adapterAvailable = true;
+  let rendererError: unknown = null;
   const canvasScreenshot = vi.fn(async (options?: { readonly style?: string }) => {
     const overlayHidden = options?.style?.includes('visibility: hidden') === true;
     return Buffer.from(canvasRendered || !overlayHidden ? 'canvas-rendered' : 'canvas-black');
@@ -42,6 +43,7 @@ const browserMocks = vi.hoisted(() => {
             engineFrameId,
             captureReady,
             fatalError: null,
+            rendererError,
             userAgent: 'Chrome Beta fixture',
           }
         : String(callback).includes('innerWidth')
@@ -74,6 +76,7 @@ const browserMocks = vi.hoisted(() => {
       canvasRendered = true;
       adapterDevice = 'SwiftShader Device (LLVM)';
       adapterAvailable = true;
+      rendererError = null;
       for (const mock of [
         page.on,
         page.off,
@@ -108,6 +111,9 @@ const browserMocks = vi.hoisted(() => {
     setAdapterAvailable(value: boolean) {
       adapterAvailable = value;
     },
+    setRendererError(value: unknown) {
+      rendererError = value;
+    },
   };
 });
 
@@ -127,6 +133,7 @@ vi.mock('@forgeax/engine-image/parse-image', () => ({
 }));
 
 import { createBrowserCapture } from '../browser-capture.js';
+import { captureRenderFailure } from '../capture-render-failure.js';
 import { createViteConfig } from '../host.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
@@ -383,6 +390,66 @@ describe('software browser session', () => {
     expect(report.requests.entries).toHaveLength(3);
   });
 
+  it('reports a renderer error and a canvas that went flat after its witness as not rendered', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    vi.stubEnv('DISPLAY', ':fixture');
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-renderer-error-'));
+    const executable = resolve(root, 'chrome-beta');
+    await Promise.all([
+      writeFile(executable, ''),
+      writeFile(
+        resolve(root, 'forge.json'),
+        `${JSON.stringify({ id: 'renderer-error', name: 'Renderer Error', schemaVersion: '3.0.0', roots: {} })}\n`,
+      ),
+      writeFile(resolve(root, 'package.json'), `${JSON.stringify({ name: 'renderer-error' })}\n`),
+      writeFile(resolve(root, 'main.ts'), 'export default {};\n'),
+    ]);
+    const session = await createBrowserCapture(root).open({
+      backend: 'software',
+      browser: executable,
+      headless: false,
+      deterministic: true,
+      runId: 'renderer-error',
+    });
+    try {
+      // The canvas witness is rendered; by the compositor image it is flat.
+      browserMocks.canvasScreenshot
+        .mockResolvedValueOnce(Buffer.from('canvas-rendered'))
+        .mockResolvedValueOnce(Buffer.from('canvas-black'));
+      const flat = await session.capture('flat', { purpose: 'observe' });
+      expect(flat.pixels.rendered).toBe(false);
+      expect(captureRenderFailure(flat)?.reason).toBe('flat-canvas');
+
+      const submitFailed = {
+        code: 'queue-submit-failed',
+        message:
+          'GPU validation: [Buffer "gpu-scene-material-table"] used in submit while destroyed',
+        frame: 40,
+        framesAgo: 1,
+        count: 39,
+      };
+      browserMocks.setRendererError(submitFailed);
+      const observed = await session.capture('observed', { purpose: 'observe' });
+      expect(observed.pixels.rendered).toBe(true);
+      expect(observed.runtime.rendererError).toEqual(submitFailed);
+      expect(captureRenderFailure(observed)?.reason).toBe('renderer-error');
+      const rejected = await session.capture('validated').then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(rejected).toMatchObject({
+        code: 'browser-capture-runtime-failed',
+        hint: expect.stringContaining(
+          'GPU submit failed; the canvas is not presented (queue-submit-failed',
+        ),
+        detail: { reason: 'renderer-error', rendererError: submitFailed },
+      });
+    } finally {
+      await session.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps one page alive across ordered named checkpoint captures', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
@@ -427,8 +494,9 @@ describe('software browser session', () => {
     expect(browserMocks.browser.close).not.toHaveBeenCalled();
     const second = await session.capture('boss-hit');
     expect(browserMocks.browser.newPage).toHaveBeenCalledTimes(1);
-    expect(browserMocks.page.screenshot).toHaveBeenCalledTimes(4);
-    expect(browserMocks.canvasScreenshot).toHaveBeenCalledTimes(2);
+    // Per capture: canvas witness, compositor image, canvas witness after it.
+    expect(browserMocks.page.screenshot).toHaveBeenCalledTimes(6);
+    expect(browserMocks.canvasScreenshot).toHaveBeenCalledTimes(4);
     expect(first.output).toMatch(/001-spawn\.png$/);
     expect(second.output).toMatch(/002-boss-hit\.png$/);
     expect(session.report().captures.map((capture) => capture.checkpoint)).toEqual([
@@ -824,27 +892,31 @@ describe('software browser session', () => {
       deterministic: true,
       width: target.width,
       height: target.height,
-      serverUrl: 'http://127.0.0.1:43123/',
+      serverUrl: 'http://127.0.0.1:43123/?forgeaxBridge=owner-token',
       carrier,
       carrierRun: target.run,
       carrierGeneration: target.generation,
     });
     try {
       expect(session.page).toBe(browserMocks.page);
+      // The live owner token reaches the carrier frame but no report or public URL.
       expect(frame.goto).toHaveBeenCalledWith(
-        'http://127.0.0.1:43123/?forgeaxCapture=1',
+        'http://127.0.0.1:43123/?forgeaxBridge=owner-token&forgeaxCapture=1',
         expect.objectContaining({ waitUntil: 'domcontentloaded' }),
       );
+      expect(session.url).toBe('http://127.0.0.1:43123/?forgeaxCapture=1');
+      expect(session.report().url).toBe('http://127.0.0.1:43123/?forgeaxCapture=1');
       expect(browserMocks.page.goto).not.toHaveBeenCalled();
       const capture = await session.capture('true');
       expect(capture.ok).toBe(true);
       expect(frameSurfaceScreenshot).toHaveBeenCalled();
-      expect(browserMocks.page.screenshot).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
+      // The canvas witness before and after the compositor image.
+      expect(browserMocks.page.screenshot).toHaveBeenCalledTimes(2);
+      for (const call of browserMocks.page.screenshot.mock.calls)
+        expect(call[0]).toMatchObject({
           clip: { x: 120, y: 80, width: 320, height: 240 },
           style: expect.stringContaining('visibility: hidden'),
-        }),
-      );
+        });
     } finally {
       await session.close();
       expect(close).toHaveBeenCalledTimes(1);

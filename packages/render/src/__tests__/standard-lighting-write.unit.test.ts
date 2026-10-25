@@ -449,8 +449,7 @@ describe('Standard Cluster upload ownership', () => {
     const ledger = first.value as unknown as {
       readonly bookkeeper: { isDestroyed(handle: unknown): boolean };
     };
-    await Promise.resolve();
-    expect(ledger.bookkeeper.isDestroyed(old.lightDataBuffer)).toBe(true);
+    await vi.waitFor(() => expect(ledger.bookkeeper.isDestroyed(old.lightDataBuffer)).toBe(true));
     expect(errors).toEqual([]);
   });
 

@@ -13,9 +13,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const API_INDEX_PATH = 'skills/forgeax-engine-sdk/references/api-index.md';
-// 14 KiB: the rendering entries (spot aim, additive blend, shadow opt-out, custom
-// surface + per-frame uniform) replaced about six `.d.ts` lookups per lit scene.
-export const API_INDEX_MAX_BYTES = 14 * 1024;
+// 17 KiB: rendering entries (spot aim, additive blend, shadow opt-out, custom surface +
+// per-frame uniform), procedural geometry factories and the runtime mesh write API.
+export const API_INDEX_MAX_BYTES = 17 * 1024;
 
 const SECTIONS = [
   [
@@ -49,9 +49,10 @@ const SECTIONS = [
   [
     'math',
     [
-      'vec3: create add sub scale normalize length distance lerp',
+      'vec3: create add sub scale normalize distance lerp',
       'quat: create fromEuler fromAxisAngle fromLookAt multiply slerp',
       'ray: getOrigin getDirection',
+      'rng: create',
       'EulerOrder',
       '+vec2 vec4 mat3 mat4 euler color box3 easing noise',
     ],
@@ -67,22 +68,36 @@ const SECTIONS = [
       'DirectionalLight: direction color intensity castShadow',
       'PointLight: color intensity range',
       'SpotLight: direction color intensity range innerConeDeg outerConeDeg castShadow',
-      'Skylight: color intensity',
-      'Fog: color density heightFalloff',
-      'VolumetricFog: light spotLight density boundsMin boundsMax',
+      'Skylight: color groundColor intensity',
+      'Fog: color mode near far',
       'ShadowParticipation: cast receive',
       'MeshFilter',
       'MeshRenderer: materials',
       'Materials.standard(options): baseColor metallic roughness emissive emissiveIntensity baseColorTexture alphaCutoff renderState queue surfaceModule parameters values',
       'Materials: unlit',
-      '+setActiveCamera SkyboxBackground Atmosphere TONEMAP_ACES_FILMIC ANTIALIAS_FXAA BLOOM_ENABLED',
+      '+setActiveCamera GradientSky SkyboxBackground Atmosphere TONEMAP_ACES_FILMIC ANTIALIAS_FXAA BLOOM_ENABLED FogModeValue VolumetricFog Lines Points Instances CanvasTexture PlanarReflection',
     ],
   ],
   [
     'geometry',
     [
       'createBoxGeometry',
-      '+createSphereGeometry createPlaneGeometry createCylinderGeometry createCapsuleGeometry createConeGeometry createTorusGeometry createMeshBuilder',
+      '+createSphereGeometry createPlaneGeometry createCylinderGeometry createCapsuleGeometry createConeGeometry createTorusGeometry createIcosahedronGeometry createDodecahedronGeometry createOctahedronGeometry createTetrahedronGeometry',
+      '+create2dGeometry create2dRingGeometry createEdgesGeometry',
+      'createRevolutionGeometry',
+      'createExtrusionGeometry',
+      'ExtrusionOptions: *',
+      'createProfileSweepGeometry',
+      'ProfileSweepOptions: *',
+      'createSweepGeometry',
+      'PolygonShape: *',
+      'Vec2Point: *',
+      'Vec3Point',
+      'createMeshBuilder',
+      'MeshBuilderOptions: *',
+      'MeshBuilder: *',
+      'meshFromInterleaved',
+      'PROCEDURAL_FLOATS_PER_VERTEX',
     ],
   ],
   [
@@ -98,7 +113,13 @@ const SECTIONS = [
     ],
   ],
   ['pack/source', ['definePack', 'definePackageId']],
-  ['assets-runtime', ['AssetRegistry: load create update release instantiate parseGuid']],
+  [
+    'assets-runtime',
+    [
+      'AssetRegistry: load create release instantiate read update replace writeRange copy',
+      'MeshRange',
+    ],
+  ],
   [
     'animation',
     [
@@ -130,15 +151,18 @@ const GOTCHAS = [
   'Import from `@forgeax/engine/<facade>` only, never physical `@forgeax/engine-*` packages.',
   'Expected failures return `Result` (`r.ok ? r.value : r.error`, `.unwrap()` throws): World methods, asset loads, geometry, pack builds.',
   'Math values are branded `Float32Array`s from `vec3.create(x, y, z)` / `quat.create()`; functions write into `out` and return it. Component data takes plain arrays (`{ pos: [0, 1, 0] }`).',
-  'Euler order is a required argument: {{math quat.fromEuler}}.',
   'Pack output keys (sourceKeys) must match {{pack/guid PACK_SOURCE_KEY_RE}} (lower case).',
-  'Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for a ground plane. `pick` returns the nearest entity AABB hit.',
+  'Pack or runtime: build-time content (meshes, materials) is a `.pack.ts` output: `parameters` for variants, GUID `AssetGuid.derive(packageId, sourceKey)` from `@forgeax/engine/pack/guid`, `assets.load(guid, kind)`. Play-time content is `assets.create(mesh)`: bind the handle, then `release` it (the binding holds a reference). Change vertices with `writeRange` (same vertex count, per frame) or `replace` (new topology); material `values` never move vertices.',
+  'Standard materials read normal, uv and a vec4 `tangent`. Geometry factories, `meshFromInterleaved` and `createMeshBuilder` (triangle lists) derive omitted ones; other topologies author them.',
+  'Procedural variation is a pure function of a seed: a Pack `seed` parameter or math `rng.create(seed)`. Never `Math.random()` or `Date.now()` in a Pack `build`: its output is cached.',
+  'Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for the ground. `pick` returns the nearest entity AABB hit.',
   'Input: in a system read `world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.',
   "Declare every service a plugin reads in `inject` (`inject: ['world', 'assets', 'gameHost']`); add systems inside `ctx.effect` and `yield` their removal.",
-  'Camera: `{ component: Camera, data: { ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), clearColor: [0, 0, 0, 1] } }`; `fov` is radians. `DirectionalLight.direction` points from the light toward the scene (opposite of Three.js).',
-  "Material transparency has no `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`. Additive glow: `blend: { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } }`.",
-  '`SpotLight` takes its position from `Transform` but aims by its world `direction` field (not the Transform rotation); cone angles are half-angles in degrees. Give a light-volume mesh `ShadowParticipation { cast: false, receive: false }` so it never shadows its own light.',
-  'Custom lit shader: `Materials.standard({ surfaceModule, parameters, values })` names a `.wgsl` module under `assets/` (`#define_import_path`) that exports `evaluate_surface(input: SurfaceInput) -> SurfaceData` from `forgeax_material::surface_v1`; read parameters as `material.<name>` and seconds as `input.frameTime`. Feed a uniform per frame with `assets.update(handle, { values: { name } })`.',
+  'Camera data: `{ ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), tonemap: TONEMAP_ACES_FILMIC }`; `fov` is radians. Sky: `GradientSky { zenith, horizon, ground }` shows as set (cookbook 0); an opaque `clearColor` is tone-mapped. `DirectionalLight.direction` points from the light toward the scene (opposite of Three.js).',
+  "No `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`; per entity: bind an `assets.copy`, `assets.update` its `baseColor`. Additive: `color: { srcFactor: 'src-alpha', dstFactor: 'one' }`.",
+  '`SpotLight` takes its position from `Transform` but aims by its world `direction` field (not Transform rotation); cone angles are half-angles in degrees. Beam: `createConeGeometry(r, h, 48, 1, true)` (open-ended). Blended-only meshes cast no shadow unless `ShadowParticipation { cast: true }`.',
+  'Particles (rain, snow, sparks, fire, dust): `point-list` mesh + `color`/`uv1` streams + `Points { size, sizeUnits: world, shape: soft }` + blended unlit material; `writeRange` per frame (cookbook 12). 10k+: VFX (cookbook 5).',
+  'Custom lit shader: `Materials.standard({ surfaceModule, parameters, values })` names an `assets/` `.wgsl` module (`#define_import_path`) exporting `evaluate_surface(input: SurfaceInput) -> SurfaceData` from `forgeax_material::surface_v1`; read parameters as `material.<name>` and seconds as `input.frameTime`. Feed a uniform per frame with `assets.update(handle, { values: { name } })`.',
 ];
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -479,6 +503,7 @@ export function renderApiIndex({ sections = SECTIONS, gotchas: notes = GOTCHAS }
     '',
     '> Generated from Engine sources by `node scripts/forgeax/sdk-api-index.mjs`; do not edit.',
     '> Look signatures up here before searching `node_modules`; `...` marks an abridged member list.',
+    '> Three.js names map to these APIs in [three-equivalents.md](three-equivalents.md).',
     '',
     '## Gotchas',
     '',

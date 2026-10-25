@@ -1,7 +1,7 @@
 // @forgeax/engine-runtime - Procedural Cone geometry (M3 / w8).
 //
 // Mirrors Three.js r184 ConeGeometry: createConeGeometry(radius, height,
-// radialSegments?, heightSegments?) -> Result<MeshAsset, AssetError>.
+// radialSegments?, heightSegments?, openEnded?) -> Result<MeshAsset, AssetError>.
 // Cone is the cylinder-with-top-radius=0 degenerate, delegated directly.
 // Byte-identical output to createCylinderGeometry(0, radius, height, ...)
 // by contract (test in geometry.test.ts enforces the equivalence).
@@ -19,8 +19,9 @@ export function createConeGeometry(
   height: number,
   radialSegments: number = 16,
   heightSegments: number = 1,
+  openEnded: boolean = false,
 ): Result<MeshAsset, AssetError> {
   if (radius <= 0) return err(degenerate(`radius=${radius}`));
   if (height <= 0) return err(degenerate(`height=${height}`));
-  return createCylinderGeometry(0, radius, height, radialSegments, heightSegments);
+  return createCylinderGeometry(0, radius, height, radialSegments, heightSegments, openEnded);
 }

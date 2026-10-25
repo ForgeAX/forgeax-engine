@@ -9,6 +9,11 @@ export function observeNativeWasmErrors(owner, options) {
     laterThrows: 0, skippedInstances: 0 };
   var releases = [], ended = false, stackGetter, activeSubmitDepth = 0;
   var lifetime = options && options.lifetime === true;
+  var onInstantiate = options && options.onInstantiate;
+  function notify(path, stage) {
+    if (ended || typeof onInstantiate !== 'function' || typeof path !== 'string') return;
+    try { onInstantiate(path, stage); } catch (ignored) { /* Observation preserves native outcomes. */ }
+  }
   var trackSubmitDepth = lifetime || options && options.trackSubmitDepth === true;
   if (lifetime) {
     report.lifetime = { qualification: 'diagnostic-only',
@@ -228,18 +233,31 @@ export function observeNativeWasmErrors(owner, options) {
     } else {
       var original = Object.getOwnPropertyDescriptor(owner, 'instantiate'), call = method.value;
       var wrapper = function () {
+        if (ended) return call.apply(this, arguments);
+        var path = arguments[0];
         var matches = false;
         try {
           var imports = arguments[1], namespace = imports && Object.getOwnPropertyDescriptor(imports, './wgpu_wasm_bg.js');
           matches = !!(namespace && 'value' in namespace && namespace.value && typeof namespace.value === 'object');
         } catch (ignored) {}
-        if (!matches || ended) return call.apply(this, arguments);
+        notify(path, 'load');
         var result;
         try { result = call.apply(this, arguments); }
-        catch (error) { try { retain(error, 'instantiate', 0); } catch (ignored) {} throw error; }
+        catch (error) {
+          notify(path, 'failed');
+          if (matches) { try { retain(error, 'instantiate', 0); } catch (ignored) {} }
+          throw error;
+        }
+        if (!matches) {
+          if (typeof onInstantiate === 'function') {
+            Promise.resolve(result).then(function () { notify(path, 'done'); }, function () { notify(path, 'failed'); });
+          }
+          return result;
+        }
         // WXWebAssembly.instantiate is an asynchronous host contract. Leave its
         // rejection and native thrown values authoritative.
-        return result.then(project, function (error) {
+        return result.then(function (value) { notify(path, 'done'); return project(value); }, function (error) {
+          notify(path, 'failed');
           try { retain(error, 'instantiate', 0); } catch (ignored) {} throw error;
         });
       };

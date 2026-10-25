@@ -281,7 +281,11 @@ import { derivedPhysicsFrameError, dynamicGeometryFrameError } from './webgpu-re
 export type { RecoveryFailureLocation } from './recovery/failure-location';
 
 import { ADMIT_EVERY_VARIANT } from './shader-prewarm-policy';
-import { buildReadyWebGPU, prepareDevicePipelineLibrary } from './webgpu-ready';
+import {
+  buildReadyWebGPU,
+  prepareBackgroundPipelineLibrary,
+  prepareDevicePipelineLibrary,
+} from './webgpu-ready';
 import { DEPTH_TEXTURE_FORMAT, HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
 import {
   tryCreateWebGPURenderer as tryCreateWebGPURendererBootstrap,
@@ -346,6 +350,16 @@ export {
 } from './shader-prewarm-policy';
 export type { WebGPUOutcome, WebGPURendererInternals } from './webgpu-renderer-contract';
 export { disposeObservationCaptureSet } from './webgpu-renderer-observation';
+
+function projectRendererInspectionState(
+  disposed: boolean,
+  deviceLost: boolean,
+  faulted: boolean,
+): RenderInspection['state'] {
+  if (disposed) return 'disposed';
+  if (deviceLost) return 'device-lost';
+  return faulted ? 'faulted' : 'alive';
+}
 
 /** Bundler injection and the WebGPU renderer construction entry points. */
 export async function tryCreateWebGPURenderer(
@@ -1049,6 +1063,32 @@ async function makeWebGPURenderer(
       return state;
     });
   };
+  let backgroundPipelineLibraryState: RenderInspection['backgroundPipelineLibraryState'];
+  // Started once after first readiness and never awaited. Device recovery does
+  // not replay it: the recovered device compiles those pipelines on first use.
+  const startBackgroundPipelineLibrary = (): void => {
+    const manifest = internals.options?.backgroundPipelineLibrary;
+    if (manifest === undefined || internals.device.pipelineLibrary === undefined) return;
+    const device = internals.device;
+    backgroundPipelineLibraryState = 'running';
+    void prepareBackgroundPipelineLibrary(
+      device,
+      manifest,
+      getShader,
+      () => !disposed && internals.device === device,
+      (cause) => {
+        backgroundPipelineLibraryState = 'failed';
+        console.warn(
+          '[forgeax/render] background pipeline library preparation failed; affected pipelines compile on first use',
+          cause,
+        );
+      },
+    ).then(() => {
+      if (backgroundPipelineLibraryState === 'running')
+        backgroundPipelineLibraryState =
+          !disposed && internals.device === device ? 'done' : 'failed';
+    });
+  };
   const ready: Promise<Result<void, RhiError>> = Promise.resolve()
     .then(async () => {
       await prepareMaterialShaders(internals.device, getShader, materialShaderUvSetCounts);
@@ -1066,6 +1106,7 @@ async function makeWebGPURenderer(
         pipelineState = state;
         promotePipelineExtendedLighting(state, activeDeviceScope);
         readySettled = true;
+        startBackgroundPipelineLibrary();
         return ok(undefined);
       },
       (e: unknown): Result<void, RhiError> => {
@@ -1358,15 +1399,24 @@ async function makeWebGPURenderer(
       );
     if (!built.ok) {
       if (candidatePipelineErrorScope && prepared?.isPending(built) !== true) throw built.error;
-      if (built.error.code !== 'rhi-not-available') {
-        internals.errorRegistry.fire(built.error);
-      }
+      reportMaterialPipelineFailure(cacheKey, built.error);
       return null;
     }
     currentPipelineCacheState().materialShaderPipelineCache.set(cacheKey, built.value);
     materialShaderPipelineGroup2Contracts.set(built.value as object, group2Contract);
     return built.value;
   };
+  // A descriptor rejection (e.g. the mesh layout lacks a vertex input the
+  // material reads) is a fact of this (material, mesh layout) key: report it
+  // once and skip its draws without rebuilding every frame.
+  const reportMaterialPipelineFailure = (cacheKey: string, error: RhiError): void => {
+    if (error.code === 'rhi-descriptor-invalid')
+      currentPipelineCacheState().rejectedMaterialPipelineKeys.add(cacheKey);
+    if (error.code !== 'rhi-not-available') internals.errorRegistry.fire(error);
+  };
+  const materialPipelineBuildable = (cacheKey: string): boolean =>
+    pipelineState !== null &&
+    !currentPipelineCacheState().rejectedMaterialPipelineKeys.has(cacheKey);
   let candidatePipelineErrorScope = false;
   const withPipelinePreparationErrors = (action: () => void): void => {
     const previous = candidatePipelineErrorScope;
@@ -1500,7 +1550,7 @@ async function makeWebGPURenderer(
       (pipelinePreparation ||
         preparedPipelineOwners.get(currentPipelineCacheState())?.has(cacheKey) === true);
     if (cached !== undefined && !prepare) return cached;
-    if (pipelineState === null) return null;
+    if (!materialPipelineBuildable(cacheKey)) return null;
     const source = selectMaterialPipelineSource(
       pipelineShaderId,
       effectiveVariantSet,
@@ -2567,6 +2617,7 @@ async function makeWebGPURenderer(
     const receiptFrameId = isFrameRequest ? ++frameId : undefined;
     const receiptGeneration = activeDeviceScope.generation;
     const queueCompletion = timingCompletion ?? internals.device.queue.onSubmittedWorkDone();
+    const unheldQueueCompletion = internals.device.queue.onSubmittedWorkDoneUnheld?.();
     watchQueueCompletion(queueCompletion, receiptFrameId, receiptGeneration);
     ui?.submitted(queueCompletion);
     gpuStore.trackMeshSubmission(queueCompletion);
@@ -2584,6 +2635,7 @@ async function makeWebGPURenderer(
       receiptGeneration,
       queueCompletion,
       reflectionFallbackCompletion,
+      unheldQueueCompletion,
     );
     if (timingRequested && gpuPassTimingOptions === undefined) {
       receiptTimings.set(
@@ -2701,6 +2753,7 @@ async function makeWebGPURenderer(
     receiptGeneration: number,
     queueCompletion: Promise<unknown>,
     reflectionFallbackCompletion: Promise<unknown> | undefined,
+    unheldQueueCompletion?: Promise<unknown>,
   ): FrameReceipt => {
     const completion = settleFrameCompletion(
       receiptFrameId,
@@ -2725,6 +2778,20 @@ async function makeWebGPURenderer(
     ).finally(() => {
       frameContinuations.delete(continuation);
     });
+    const creditCompleted: FrameReceipt['creditCompleted'] =
+      unheldQueueCompletion === undefined
+        ? undefined
+        : raceFrameContinuation(
+            settleFrameCompletion(
+              receiptFrameId,
+              receiptGeneration,
+              unheldQueueCompletion,
+              reflectionFallbackCompletion,
+            ),
+            continuation,
+            receiptFrameId,
+            receiptGeneration,
+          );
     const captures = observationCaptureOwner.consume(receiptFrameId);
     const observationDomains =
       pendingObservationDomains === undefined
@@ -2748,6 +2815,7 @@ async function makeWebGPURenderer(
         ? {}
         : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
       completed,
+      ...(creditCompleted === undefined ? {} : { creditCompleted }),
       ...(internals.options?.shadowWorkload !== true
         ? {}
         : {
@@ -2982,13 +3050,11 @@ async function makeWebGPURenderer(
       const inspectedSystem = cameraViews.currentSystem;
       const health = internals.healthRegistry.getLastSnapshot();
       const deviceLost = health.reason === 'device-lost';
-      const state = disposed
-        ? 'disposed'
-        : deviceLost
-          ? 'device-lost'
-          : health.reason === 'internal-fault' || (!readySettled && ui === undefined)
-            ? 'faulted'
-            : 'alive';
+      const state = projectRendererInspectionState(
+        disposed,
+        deviceLost,
+        health.reason === 'internal-fault' || (!readySettled && ui === undefined),
+      );
       const graph = deviceLost ? undefined : inspectedSystem.perFrameGraphInfo;
       const graphResourceAllocation = graph?.resourceAllocation;
       const graphGenerationAllocation = deviceLost
@@ -3025,6 +3091,7 @@ async function makeWebGPURenderer(
       );
       return Object.freeze({
         ...(library === undefined ? {} : { pipelineLibrary: library.inspect() }),
+        ...(backgroundPipelineLibraryState === undefined ? {} : { backgroundPipelineLibraryState }),
         ...(exported?.ok === true ? { pipelineLibraryManifest: exported.value } : {}),
         state,
         views: cameraViews.inspect(),

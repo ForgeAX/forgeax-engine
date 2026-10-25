@@ -286,7 +286,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     'missing-uv',
     'missing-normal',
     'wrong-uv-format',
-  ] as const)('admits only resident geometry UV aliases: %s', (scenario) => {
+  ] as const)('admits only geometry UV aliases inside the uploaded stride: %s', (scenario) => {
     const mesh = createBoxGeometry(1, 1, 1).unwrap();
     const attributes = { ...mesh.attributes };
     if (scenario === 'missing-uv') delete attributes.uv;
@@ -318,10 +318,10 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       getMaterialShaderArtifact: () => source,
     });
     expect(draws).toHaveLength(1);
-    expect(draws[0]?.preparationError?.code).toBe(
-      scenario === 'resident-uv' ? undefined : 'vertex-input-mismatch',
-    );
-    expect(draws[0]?.prepared !== undefined).toBe(scenario === 'resident-uv');
+    // A UV-less mesh aliases its UV sets onto position bytes within its stride.
+    const admitted = scenario === 'resident-uv' || scenario === 'missing-uv';
+    expect(draws[0]?.preparationError?.code).toBe(admitted ? undefined : 'vertex-input-mismatch');
+    expect(draws[0]?.prepared !== undefined).toBe(admitted);
   });
 
   it('prepares colored geometry with an exact published program that does not consume COLOR_0', () => {

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -36,23 +37,36 @@ def validate_report(body, expected_hash, source, kind='forgeax-phone-gl-link'):
     if not hmac.compare_digest(sha256(body), expected_hash):
         raise ValueError('report SHA-256 mismatch')
     report = json.loads(body.decode('utf-8'))
-    if kind not in REPORT_KINDS or not isinstance(report, dict) or report.get('kind') != kind:
+    checkpoint = (kind == 'forgeax-phone-startup' and isinstance(report, dict)
+                  and report.get('kind') == 'forgeax-phone-startup-checkpoint')
+    if kind not in REPORT_KINDS or not isinstance(report, dict) or (not checkpoint and report.get('kind') != kind):
         raise ValueError('unexpected report kind')
     if report.get('source') != source:
         raise ValueError('report publication identity mismatch')
-    if not isinstance(report.get('reason'), str) or not isinstance(report.get('finishedAt'), (int, float)):
+    if not checkpoint and (not isinstance(report.get('reason'), str) or not isinstance(report.get('finishedAt'), (int, float))):
         raise ValueError('report has not terminated')
     if kind == 'forgeax-phone-startup':
+        if not isinstance(report.get('runId'), str) or re.fullmatch('[a-f0-9]{32}', report['runId']) is None:
+            raise ValueError('invalid startup run identity')
         if len(body) > STARTUP_MAX_BYTES:
             raise ValueError('startup report size limit exceeded')
-        if report['reason'] not in ('startup-failed', 'scene-presented', 'host-stopped', 'host-hidden',
+        if checkpoint:
+            if (type(report.get('sequence')) is not int or not 1 <= report['sequence'] <= 32
+                    or type(report.get('at')) not in (int, float) or not math.isfinite(report['at'])
+                    or 'finishedAt' in report or 'reason' in report):
+                raise ValueError('invalid nonterminal checkpoint')
+        elif report['reason'] not in ('startup-failed', 'scene-presented', 'host-stopped', 'host-hidden',
                                     'inspection-unavailable', 'inspection-failed', 'deadline',
                                     'generation-changed', 'scene-left-ready',
                                     'invalid-frame-counters', 'frame-counters-regressed',
-                                    'wx.onError', 'wx.onUnhandledRejection'):
+                                    'wx.onError', 'wx.onUnhandledRejection', 'package-entry-control'):
             raise ValueError('unexpected startup terminal reason')
         if not isinstance(report.get('observation'), dict) or 'renderer' not in report['observation']:
             raise ValueError('missing startup observation')
+        if report.get('reason') == 'package-entry-control' and (
+                report.get('packageControl') not in ('entry', 'data', 'empty')
+                or report['observation']['renderer'].get('phase') != 'package-entry-control'):
+            raise ValueError('missing explicit package control evidence')
         if not isinstance(report.get('transitions'), list) or len(report['transitions']) > 64:
             raise ValueError('invalid startup transitions')
         serialization = report.get('serialization')
@@ -63,7 +77,7 @@ def validate_report(body, expected_hash, source, kind='forgeax-phone-gl-link'):
             if (not isinstance(frames, dict) or type(frames.get('minimum')) is not int
                     or not 1 <= frames['minimum'] <= 36000 or type(frames.get('observed')) is not int
                     or frames['observed'] < 0 or type(frames.get('passed')) is not bool
-                    or frames['passed'] != (report['reason'] == 'scene-presented')):
+                    or frames['passed'] != (not checkpoint and report['reason'] == 'scene-presented')):
                 raise ValueError('invalid scene-frame acceptance')
             if frames['passed']:
                 renderer = report['observation']['renderer']
@@ -134,6 +148,10 @@ def receive_report(port, path, out, source, deadline=180, ready=None, kind='forg
     stop_at = time.monotonic() + deadline
     result = None
     active_connection = None
+    run_id = None
+    checkpoints = 0
+    last_sequence = 0
+    checkpoint_digests = {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -161,7 +179,7 @@ def receive_report(port, path, out, source, deadline=180, ready=None, kind='forg
             self.wfile.write(body)
 
         def do_POST(self):
-            nonlocal result
+            nonlocal result, run_id, checkpoints, last_sequence
             if self.path != path:
                 self.reply(404, {'status': 'rejected', 'reason': 'unexpected-path'})
                 return
@@ -184,11 +202,31 @@ def receive_report(port, path, out, source, deadline=180, ready=None, kind='forg
                 if len(body) != length or time.monotonic() >= stop_at:
                     raise ValueError('incomplete body or expired deadline')
                 report = validate_report(body, headers['X-Forgeax-Report-Sha256'], source, kind)
+                if kind == 'forgeax-phone-startup':
+                    if run_id is not None and report['runId'] != run_id:
+                        raise ValueError('startup run identity changed')
+                    run_id = report['runId']
+                if report['kind'] == 'forgeax-phone-startup-checkpoint':
+                    sequence = report['sequence']
+                    actual_digest = sha256(body)
+                    if sequence in checkpoint_digests and checkpoint_digests[sequence] != actual_digest:
+                        raise ValueError('checkpoint sequence changed bytes')
+                    if sequence not in checkpoint_digests:
+                        private_write(out / f'checkpoint-{sequence:02d}.json', body)
+                        checkpoint_digests[sequence] = actual_digest
+                        last_sequence = max(last_sequence, sequence)
+                        checkpoints += 1
+                    self.reply(200, {'status': 'saved', 'bytes': len(body), 'sha256': sha256(body),
+                                     'source': source, 'kind': report['kind'], 'runId': run_id,
+                                     'sequence': sequence})
+                    return
                 private_write(out / 'report.json', body)
                 result = {'status': 'saved', 'bytes': len(body), 'sha256': sha256(body),
                           'source': source, 'kind': kind}
                 if kind == 'forgeax-phone-gl-link':
                     result['sources'] = len(report['sources'])
+                else:
+                    result.update(runId=run_id, checkpoints=checkpoints)
                 self.reply(200, result)
             except (ValueError, KeyError, TypeError, AttributeError, OSError) as error:
                 if result is None:
@@ -217,7 +255,9 @@ def receive_report(port, path, out, source, deadline=180, ready=None, kind='forg
             while result is None and time.monotonic() < stop_at:
                 server.timeout = min(1, max(0.01, stop_at - time.monotonic()))
                 server.handle_request()
-        result = result or {'status': 'timeout', 'reason': 'deadline'}
+        result = result or ({'status': 'incomplete', 'reason': 'no-terminal-report',
+                             'checkpoints': checkpoints, 'lastSequence': last_sequence, 'runId': run_id}
+                            if checkpoints else {'status': 'timeout', 'reason': 'deadline'})
     except OSError as error:
         result = {'status': 'failed', 'reason': str(error)}
     finally:

@@ -44,8 +44,11 @@ export interface FrameLoopHandle {
   drainFrameReceipts(): Promise<void>;
   pause(): Result<void, AppError>;
   resume(): Result<void, AppError>;
-  /** Run one complete update/draw frame through this loop while paused. */
-  stepFrame(deltaSeconds: number): Result<void, AppError | RenderError>;
+  /**
+   * Run one complete update/draw frame through this loop while paused;
+   * `render: false` runs the update only (no draw, no receipt credit).
+   */
+  stepFrame(deltaSeconds: number, render?: boolean): Result<void, AppError | RenderError>;
   /** Replace the per-frame world routing pull without replacing the loop. */
   setDrawSource(drawSource: FrameLoopOptions['drawSource']): void;
   getState(): FrameState;
@@ -462,7 +465,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     }
   }
 
-  function runFrame(deltaSeconds?: number): Result<void, AppError | RenderError> {
+  function runFrame(deltaSeconds?: number, render = true): Result<void, AppError | RenderError> {
     waitingForCredit = false;
     const manualStep = deltaSeconds !== undefined;
     let timestamp: number;
@@ -488,7 +491,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       lastTimestamp = timestamp;
       return ok(undefined);
     }
-    if (pendingReceipts >= maxFramesInFlight) {
+    if (render && pendingReceipts >= maxFramesInFlight) {
       throttledTicks += 1;
       waitingForCredit = !manualStep && state === 'running';
       return ok(undefined);
@@ -563,6 +566,10 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         }
       });
 
+      if (!render) {
+        skipDraw(sampleTimeSeconds, reportError);
+        return;
+      }
       runProfiledPhase(session, 'renderer-draw', () => {
         try {
           opts.beforeDraw?.();
@@ -645,12 +652,30 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     });
     endFrame(session);
     try {
-      opts.debugRhi?.onFrameEnd();
+      if (render) opts.debugRhi?.onFrameEnd();
     } catch {
       // Debug capture is an observational bridge. A recorder failure must not
       // change the App frame result or make the host loop stop.
     }
     return frameError === undefined ? ok(undefined) : err(frameError);
+  }
+
+  /**
+   * An update-only step submits nothing: it still reconciles the host camera,
+   * advances the manual sample clock by its delta and makes the next drawn
+   * frame a temporal reset, since that picture follows a skipped interval.
+   */
+  function skipDraw(
+    sampleTimeSeconds: number,
+    reportError: (error: AppError | RenderError) => void,
+  ): void {
+    try {
+      opts.beforeDraw?.();
+    } catch (cause: unknown) {
+      reportError(makeWorldUpdateError(cause));
+    }
+    lastSampleTimeSeconds = sampleTimeSeconds;
+    temporalResetPending = true;
   }
 
   function tick(): void {
@@ -688,13 +713,13 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       drawSource = nextDrawSource;
     },
     drainFrameReceipts,
-    stepFrame(deltaSeconds): Result<void, AppError | RenderError> {
+    stepFrame(deltaSeconds, render = true): Result<void, AppError | RenderError> {
       const reason =
         state !== 'paused'
           ? 'state'
           : !Number.isFinite(deltaSeconds) || deltaSeconds < 0
             ? 'delta'
-            : pendingReceipts >= maxFramesInFlight
+            : render && pendingReceipts >= maxFramesInFlight
               ? 'credit'
               : undefined;
       if (reason !== undefined) {
@@ -707,7 +732,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           ),
         );
       }
-      return runFrame(deltaSeconds);
+      return runFrame(deltaSeconds, render);
     },
     start(): Result<void, AppError> {
       if (state === 'running') {

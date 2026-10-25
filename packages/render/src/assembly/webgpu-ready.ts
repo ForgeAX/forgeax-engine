@@ -140,6 +140,59 @@ export async function prepareDevicePipelineLibrary(
     shader.materialProgram((manifest.shaders[module] as GPUShaderModuleDescriptor).code);
 }
 
+/** CPU analysis slice of the background lane; menu frames keep their task turns. */
+const BACKGROUND_ANALYSIS_SLICE_MS = 4;
+
+/**
+ * Non-blocking pipeline library lane started after renderer readiness. The
+ * backend bounds shader validation and compilation, publishing each completed program as a
+ * library hit. CPU source analysis only memoizes the first-use material
+ * program analysis, so it runs in time-sliced tasks beside native work; a
+ * skipped module is analyzed on first use exactly as without the library.
+ * Never rejects: the first failure is reported once and the affected
+ * pipelines compile on first use.
+ */
+export async function prepareBackgroundPipelineLibrary(
+  device: RhiDevice,
+  manifest: PipelineLibraryManifest,
+  shader: () => Pick<ShaderCatalog, 'materialProgram'>,
+  active: () => boolean,
+  report: (cause: unknown) => void,
+): Promise<void> {
+  const library = device.pipelineLibrary;
+  if (library === undefined) return;
+  let reported = false;
+  const fail = (cause: unknown) => {
+    if (reported || !active()) return;
+    reported = true;
+    report(cause);
+  };
+  const analyze = async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const modules = new Set<number>();
+    for (const pipeline of manifest.renderPipelines) {
+      modules.add(pipeline.vertex.module);
+      if (pipeline.fragment !== undefined) modules.add(pipeline.fragment.module);
+    }
+    let slice = performance.now();
+    for (const module of modules) {
+      if (performance.now() - slice >= BACKGROUND_ANALYSIS_SLICE_MS) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        slice = performance.now();
+      }
+      if (!active()) return;
+      const code = manifest.shaders[module]?.code;
+      if (typeof code === 'string') shader().materialProgram(code);
+    }
+  };
+  await Promise.all([
+    library.prepare(manifest, { background: true }).then((prepared) => {
+      if (!prepared.ok) fail(prepared.error);
+    }, fail),
+    analyze().catch(fail),
+  ]);
+}
+
 /**
  * The 'null' (headless RhiNull) backend has no preferred canvas format by
  * design; its rgba8unorm fallback is the intended steady state. Real backends

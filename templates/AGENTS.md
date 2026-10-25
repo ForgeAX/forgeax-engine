@@ -2,7 +2,7 @@
 
 AI-first TypeScript game on `@forgeax/engine`. This file holds hard rules and routing;
 open a reference only when its task applies. Never read whole large `SKILL.md` files up
-front: each opens with a short start section; stop there unless the task needs more.
+front; stop after their short start section unless the task needs more.
 
 ## Start here
 
@@ -12,6 +12,8 @@ front: each opens with a short start section; stop there unless the task needs m
 3. Commands: the Quick contract atop [`forgeax-engine-cli`](skills/forgeax-engine-cli/SKILL.md);
    exact inputs come from `pnpm exec forgeax help <path> --json`, never guesses.
 4. Pick the route in [Run, test, build, and release](#run-test-build-and-release), then edit.
+5. Rendering has native equivalents for most Three.js core features: look an effect up in
+   `skills/forgeax-engine-sdk/references/three-equivalents.md` (with gaps) before simplifying it.
 
 ## Hard rules
 
@@ -21,26 +23,33 @@ front: each opens with a short start section; stop there unless the task needs m
 - Assets: author source → importer/cooker → DDC → catalog → `assets.load(guid, kind)`.
   Author in `assets/` (`*.pack.ts`, `*.pack.json`, `<file>.meta.json`); never edit `dist/`,
   `pack-index.json`, DDC or `.forgeax/`, or fetch assets manually.
+- Content made during play skips Packs: bind `ctx.assets.create(...)` output, release it
+  from the effect ([`forgeax-engine-assets`](skills/forgeax-engine-assets/SKILL.md#runtime-identity-and-content)).
 - Each Pack `build()` key is a `sourceKey`: lowercase segments matching
   `^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$` (`mesh/crate`). GUID =
   `UUIDv5(packageId, sourceKey)`. ScriptablePack files end in `.pack.ts`.
-- Import only `@forgeax/engine` or `@forgeax/engine/<package-directory>` (for example
-  `@forgeax/engine/render`), never `@forgeax/engine-*`.
+- Import only `@forgeax/engine` or `@forgeax/engine/<package-directory>`, never
+  `@forgeax/engine-*`.
 - Add dependencies with `pnpm add <name>`, not by editing `package.json`. If a frozen
   lockfile rejects an edit or `packageManager` change, run `pnpm install --no-frozen-lockfile`.
 - Game logic is a native Cordis `Plugin`; cleanup belongs to `ctx.effect()`. DOM, Web
   Audio and browser SDKs belong to the frontend root, never Engine Workers.
 - Expected failures return `Result`: branch on `.code`, keep `.expected`/`.hint`/`.detail`.
-- Run `pnpm exec forgeax <path> --json`. If a result lists `omitted.fields`, add
-  `--detail` only when you need them.
+- Run `pnpm exec forgeax <path> --json`; add `--detail` only for `omitted.fields` you need.
 - `game-3d` content is a reference, not the game: record its
   [Template Disposition](skills/forgeax-engine-sdk/references/game-project-guide.md#game-3d-template-disposition) first.
-- Append confirmed Engine/SDK/build/asset/browser issues to `docs/feedback.md` at once
-  (no secrets); `project package` ships it with `README.md`.
+- Before delivery, list each requested requirement; the playthrough asserts each through
+  the read projection and saves one named screenshot per requirement (every ending, each
+  object type, multi-enemy states, the core input's visible effect; failure and debug
+  frames belong in `.forgeax/diag/`, not `artifacts/`). Never bend game code
+  for the test (enemies spawned ahead, exposed aim targets). See
+  [Requirement coverage](skills/forgeax-engine-sdk/references/game-delivery.md#requirement-coverage).
+- Append confirmed Engine/SDK issues to `docs/feedback.md` at once (no secrets);
+  `project package` ships it.
 - Edit this project directly. A ForgeaX closed loop needs explicit user agreement.
-- RHI capture is for difficult rendering failures, never a delivery step: only when a
-  screenshot shows unexplained black frames, missing objects, wrong lighting or flicker, use
-  [`forgeax-engine-rhi-debug`](skills/forgeax-engine-rhi-debug/SKILL.md) before editing shaders.
+- Capture with [`forgeax-engine-rhi-debug`](skills/forgeax-engine-rhi-debug/SKILL.md) only for
+  unexplained black frames, missing objects, wrong lighting or flicker, before editing
+  shaders; never to deliver.
 
 ## Run, test, build, and release
 
@@ -53,21 +62,28 @@ front: each opens with a short start section; stop there unless the task needs m
 ```bash
 pnpm exec forgeax project check --json
 pnpm test && pnpm typecheck
-pnpm exec forgeax dev start --json
-pnpm exec forgeax dev verify --revision <revision from dev status> --json
-pnpm exec forgeax dev capture --json
+pnpm exec forgeax project play scripts/playthrough.mjs --json
 ```
 
-Accept local delivery only on the final code: `dev verify` passes for the current
-revision (or `project play <script>` where available); you opened the PNG and see the
-requested scene/UI; you drove the core input and saw its result; both survive a reload.
-A build, URL, HTTP 200 or unit test alone accepts nothing. A blocked check stays
-unverified: report it, never call it a pass.
+Accept local delivery only on the final code: `project play` (or `dev verify` for the
+current revision) passes; you opened the PNG, see the requested scene/UI and passed the
+[visual self-review](skills/forgeax-engine-sdk/SKILL.md#visual-self-review); you drove
+the core input and saw its result; both survive a reload. A build, URL, HTTP 200 or unit
+test alone accepts nothing. A blocked check stays unverified: report it, never a pass.
 
-Evidence comes only from these commands' owner browser. Hand over the `dev start`/`dev status` URL;
-never open or drive another tab for acceptance (it may be backgrounded, and its
-`live-bridge-not-owner` warning is expected). Run long commands in the foreground and
-wait; if the harness backgrounds them, poll at most every 30 s.
+Evidence comes only from these commands' owner browser. Hand over the `dev status` URL;
+never open or drive another tab for acceptance (it may be backgrounded; its
+`live-bridge-not-owner` warning is expected). Run long commands in the foreground and wait:
+`project play` prints one JSON result (1-3 min; wait in one call) and at most one stderr progress line per
+30 s. Allow a harness timeout of 21+ min at default budgets (~14 per play, +7 when queued
+behind another play of this project), or lower `--timeout-ms`. For timers, day/night
+cycles or long waits, call `play.advance(seconds)` instead of `play.wait`/long `waitFor`
+timeouts; never poll a running play from the shell — run `project play` in the
+foreground with a timeout longer than the script. Fix its `layout` warnings (HUD text overlapping
+or clipped at 1280x720/1280x600) before committing.
+
+On an unchanged `empty` template, `play-runtime-failed` with reason `flat-canvas` is the
+expected start, not an environment failure.
 
 ## Task routing
 
@@ -82,3 +98,4 @@ wait; if the harness backgrounds them, poll at most every 30 s.
 | Input, frame loop, HUD, pointer lock | `forgeax-engine-app`; cursor games call `gameHost.setPointerLockAllowed(false)` once |
 | Physics, character motion | `forgeax-engine-physics` |
 | Blocked checks, Linux headless, release | [delivery guide](skills/forgeax-engine-sdk/references/game-delivery.md) |
+| Scripted playthrough and acceptance | `forgeax project play` in the CLI skill quick contract; edit `scripts/playthrough.mjs` |

@@ -82,9 +82,15 @@ import { CompositionSkinAdoption } from './composition-skin';
 import { projectDrawDispatch } from './draw-dispatch';
 import { type FrameList, FrameProjection, RetainedFrameProjection } from './frame-list';
 import { FrameSet } from './frame-set';
+import {
+  GenerationalWeakMap,
+  identityOrdinal,
+  versionedGet,
+  versionedSet,
+} from './generational-weak-map';
 import { MaterialDispatch, type MaterialFrame } from './material-dispatch';
 import { meshDrawMaterials, meshDrawSnapshot } from './mesh-draw';
-import { MeshFrame, type MeshGeometry } from './mesh-frame';
+import { MeshFrame } from './mesh-frame';
 import type { MeshMaterialGeometry } from './mesh-materials';
 import { cullPersistentFrame, type PersistentCullMemo } from './persistent-cull';
 import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
@@ -372,13 +378,14 @@ export class RenderScene {
   private temporalTracking = false;
   private lastSubmittedVisible: ReadonlyMap<number, number> = new Map();
   private submittedEpoch = 0;
-  // Neither a live record nor a cold cache retains an obsolete Mesh version.
-  private readonly meshWorldBounds = new WeakMap<
-    MeshGeometry,
-    WeakMap<RenderSceneSlot, CachedWorldBounds>
+  // Slots are replaced continuously; one generational table keeps dead slots out
+  // of the MajorGC ephemeron work, and names the Mesh version by ordinal so a
+  // cold entry never retains an obsolete Mesh version.
+  private readonly worldBoundsCache = new GenerationalWeakMap<
+    RenderSceneSlot,
+    readonly CachedWorldBounds[]
   >();
-  private readonly sourceWorldBounds = new WeakMap<RenderSceneSlot, CachedWorldBounds>();
-  private readonly slotBySnapshot = new WeakMap<RenderableSnapshot, RenderSceneSlot>();
+  private readonly slotBySnapshot = new GenerationalWeakMap<RenderableSnapshot, RenderSceneSlot>();
   private readonly instanceBoundsCache = new InstanceBoundsCache();
   private materialized:
     | {
@@ -397,7 +404,7 @@ export class RenderScene {
         readonly value: FrameList<RenderableSnapshot>;
       }
     | undefined;
-  private temporalBySlot: TemporalCache = new WeakMap();
+  private temporalBySlot: TemporalCache = new GenerationalWeakMap();
   private revision = 0;
   private noChangeFrames = 0;
   private deltaFrames = 0;
@@ -639,7 +646,7 @@ export class RenderScene {
   reset(snapshots: FrameList<RenderableSnapshot>, countAsRebuild = true): void {
     // A full reconciliation is a temporal cut.  Survivors may keep their
     // stable slot, but no prior slot is valid until this frame submits.
-    this.temporalBySlot = new WeakMap();
+    this.temporalBySlot = new GenerationalWeakMap();
     this.lastSubmittedFrame = EMPTY_SLOT_FRAME;
     this.lastSubmittedVisible = new Map();
     this.dirtySinceSubmitted.clear();
@@ -706,7 +713,7 @@ export class RenderScene {
     }
     if (dirty.size !== before.length) throw new Error('Recovery must contain every Scene slot');
     next.capture();
-    const temporal: TemporalCache = new WeakMap(),
+    const temporal: TemporalCache = new GenerationalWeakMap(),
       visible = new Map<number, number>();
     return {
       validate: () => {
@@ -737,7 +744,7 @@ export class RenderScene {
     if (enabled === this.temporalTracking) return;
     this.temporalTracking = enabled;
     if (!enabled) {
-      this.temporalBySlot = new WeakMap();
+      this.temporalBySlot = new GenerationalWeakMap();
       this.temporalMaterialized = undefined;
       this.lastSubmittedFrame = EMPTY_SLOT_FRAME;
       this.lastSubmittedVisible = new Map();
@@ -1104,14 +1111,9 @@ export class RenderScene {
     // A static Skin Binding never grants permission to use bind-pose bounds.
     // Its caller must provide the fixed recording root to the numeric writer.
     if (snapshot.skinBinding !== undefined) return undefined;
-    let bounds =
-      geometry === undefined ? this.sourceWorldBounds : this.meshWorldBounds.get(geometry);
-    if (bounds === undefined) {
-      bounds = new WeakMap();
-      // Only the geometry-present branch can be missing its cache.
-      if (geometry !== undefined) this.meshWorldBounds.set(geometry, bounds);
-    }
-    const cached = bounds.get(slot);
+    const bounds = this.worldBoundsCache;
+    const geometryOrdinal = geometry === undefined ? 0 : identityOrdinal(geometry);
+    const cached = versionedGet(bounds, slot, geometryOrdinal);
     // The slot, geometry and fixed material frame all match, so the material
     // radius is the one already proven; mutable material roots re-derive it.
     if (cached !== undefined && materials !== undefined && cached.materials === materials)
@@ -1131,13 +1133,13 @@ export class RenderScene {
     if (local !== undefined && geometry !== undefined && snapshot.pointsLines !== undefined)
       local = expandPointsLinesBounds(local, snapshot.pointsLines.style);
     if (local === undefined) {
-      bounds.set(slot, { radius, bounds: null });
+      versionedSet(bounds, slot, { version: geometryOrdinal, radius, bounds: null });
       return undefined;
     }
     if (snapshot.instances !== undefined) {
       const instanceCount = snapshot.instances.instanceCount;
       if (instanceCount === 0 || local === undefined) {
-        bounds.set(slot, { radius, bounds: null });
+        versionedSet(bounds, slot, { version: geometryOrdinal, radius, bounds: null });
         return undefined;
       }
       const derived = this.instanceBoundsCache.get({
@@ -1163,7 +1165,12 @@ export class RenderScene {
     } else {
       candidate = worldBounds(snapshot, undefined, local);
     }
-    bounds.set(slot, { radius, bounds: candidate ?? null, materials });
+    versionedSet(bounds, slot, {
+      version: geometryOrdinal,
+      radius,
+      bounds: candidate ?? null,
+      materials,
+    });
     return candidate;
   }
 

@@ -12,6 +12,7 @@ import {
   type Submesh,
   type VertexAttributeMap,
 } from '@forgeax/engine-types';
+import { computeTangentVec4, writeNormalPlaneTangent } from './tangent';
 import {
   CANONICAL_KEYS,
   deriveVertexLayoutProjection,
@@ -264,6 +265,199 @@ function completedSubmeshes(
   return ok(Object.freeze(output));
 }
 
+type CornerOf = (position: number) => number;
+
+/** The whole index buffer when one triangle-list range covers it exactly. */
+function wholeTriangleList(
+  submeshes: readonly Submesh[],
+  indices: Uint16Array | Uint32Array | undefined,
+): Uint16Array | Uint32Array | undefined {
+  const only = submeshes.length === 1 ? submeshes[0] : undefined;
+  if (
+    indices !== undefined &&
+    only?.topology === 'triangle-list' &&
+    only.indexOffset === 0 &&
+    only.indexCount === indices.length &&
+    indices.length % 3 === 0
+  )
+    return indices;
+  return undefined;
+}
+
+function pushTriangleList(corners: number[], corner: CornerOf, first: number, count: number): void {
+  for (let k = 0; k + 2 < count; k += 3)
+    corners.push(corner(first + k), corner(first + k + 1), corner(first + k + 2));
+}
+
+/**
+ * Odd strip triangles swap their first two corners to keep one winding;
+ * out-of-range values are primitive-restart markers that end a strip.
+ */
+function pushTriangleStrip(
+  corners: number[],
+  corner: CornerOf,
+  first: number,
+  count: number,
+  vertexCount: number,
+): void {
+  let start = 0;
+  for (let k = 0; k + 2 < count; k += 1) {
+    const a = corner(first + k);
+    const b = corner(first + k + 1);
+    const c = corner(first + k + 2);
+    if (a >= vertexCount || b >= vertexCount || c >= vertexCount) {
+      start = k + 1;
+      continue;
+    }
+    if (a === b || b === c || a === c) continue;
+    if ((k - start) % 2 === 0) corners.push(a, b, c);
+    else corners.push(b, a, c);
+  }
+}
+
+/**
+ * Triangle corners of every triangle-list and triangle-strip submesh. Line and
+ * point submeshes contribute nothing but share the derived stream. The whole
+ * index buffer is reused when one triangle-list range covers it.
+ */
+function surfaceTriangles(
+  submeshes: readonly Submesh[],
+  indices: Uint16Array | Uint32Array | undefined,
+  vertexCount: number,
+): Uint16Array | Uint32Array | undefined {
+  const whole = wholeTriangleList(submeshes, indices);
+  if (whole !== undefined) return whole.length === 0 ? undefined : whole;
+  const corners: number[] = [];
+  const corner: CornerOf = (position) =>
+    indices === undefined ? position : (indices[position] ?? 0);
+  for (const submesh of submeshes) {
+    const first = indices === undefined ? 0 : submesh.indexOffset;
+    const count = indices === undefined ? submesh.vertexCount : submesh.indexCount;
+    if (submesh.topology === 'triangle-list') pushTriangleList(corners, corner, first, count);
+    else if (submesh.topology === 'triangle-strip')
+      pushTriangleStrip(corners, corner, first, count, vertexCount);
+  }
+  return corners.length === 0 ? undefined : Uint32Array.from(corners);
+}
+
+/** Area-weighted (smooth across shared indices) unit normals; [0, 0, 1] where none exists. */
+function areaWeightedNormals(
+  positions: Float32Array,
+  triangles: Uint16Array | Uint32Array,
+): Float32Array {
+  const normals = new Float32Array(positions.length);
+  for (let k = 0; k + 2 < triangles.length; k += 3) {
+    const a = (triangles[k] ?? 0) * 3;
+    const b = (triangles[k + 1] ?? 0) * 3;
+    const c = (triangles[k + 2] ?? 0) * 3;
+    const ax = positions[a] ?? 0;
+    const ay = positions[a + 1] ?? 0;
+    const az = positions[a + 2] ?? 0;
+    const e1x = (positions[b] ?? 0) - ax;
+    const e1y = (positions[b + 1] ?? 0) - ay;
+    const e1z = (positions[b + 2] ?? 0) - az;
+    const e2x = (positions[c] ?? 0) - ax;
+    const e2y = (positions[c + 1] ?? 0) - ay;
+    const e2z = (positions[c + 2] ?? 0) - az;
+    // The unnormalized cross product weights each face by twice its area.
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    addVec3(normals, a, nx, ny, nz);
+    addVec3(normals, b, nx, ny, nz);
+    addVec3(normals, c, nx, ny, nz);
+  }
+  for (let offset = 0; offset < normals.length; offset += 3) {
+    if (!normalizeInPlace(normals, offset)) normals.set(Z_AXIS, offset);
+  }
+  return normals;
+}
+
+const Z_AXIS = [0, 0, 1] as const;
+
+function addVec3(values: Float32Array, offset: number, x: number, y: number, z: number): void {
+  values[offset] = (values[offset] ?? 0) + x;
+  values[offset + 1] = (values[offset + 1] ?? 0) + y;
+  values[offset + 2] = (values[offset + 2] ?? 0) + z;
+}
+
+function normalizeInPlace(values: Float32Array, offset: number): boolean {
+  const x = values[offset] ?? 0;
+  const y = values[offset + 1] ?? 0;
+  const z = values[offset + 2] ?? 0;
+  const length = Math.hypot(x, y, z);
+  if (!(length > 1e-12) || !Number.isFinite(length)) return false;
+  values[offset] = x / length;
+  values[offset + 1] = y / length;
+  values[offset + 2] = z / length;
+  return true;
+}
+
+/**
+ * Unit per-vertex frame normals for tangent derivation. Authored normals are
+ * normalized; a zero or non-finite one (unused vertex, degenerate triangle)
+ * takes the derived face normal, so one vertex never voids the mesh's frame.
+ */
+function frameNormals(
+  authored: Float32Array | undefined,
+  positions: Float32Array,
+  triangles: Uint16Array | Uint32Array,
+): Float32Array {
+  if (authored === undefined) return areaWeightedNormals(positions, triangles);
+  const normals = authored.slice();
+  let derived: Float32Array | undefined;
+  for (let offset = 0; offset < normals.length; offset += 3) {
+    if (normalizeInPlace(normals, offset)) continue;
+    derived ??= areaWeightedNormals(positions, triangles);
+    normals.set(derived.subarray(offset, offset + 3), offset);
+  }
+  return normals;
+}
+
+/**
+ * Stock surface programs read normal, uv and tangent at fixed locations, so an
+ * omitted member would leave their vertex state invalid at draw time. Meshes
+ * with triangle submeshes derive the missing members once here: smooth
+ * area-weighted normals, zero UVs, then UV tangents with a per-vertex
+ * normal-plane frame wherever the UVs define none. Authored values are kept
+ * verbatim, and every input yields a unit tangent, so completion never fails.
+ */
+function completeSurfaceStream(
+  source: VertexAttributeMap,
+  positions: Float32Array,
+  submeshes: readonly Submesh[],
+  indices: Uint16Array | Uint32Array | undefined,
+): VertexAttributeMap {
+  if (source.normal !== undefined && source.uv !== undefined && source.tangent !== undefined)
+    return source;
+  const vertexCount = positions.length / 3;
+  const triangles = surfaceTriangles(submeshes, indices, vertexCount);
+  if (triangles === undefined) return source;
+  const authoredNormal = source.normal instanceof Float32Array ? source.normal : undefined;
+  const unitNormals = frameNormals(authoredNormal, positions, triangles);
+  const normal = authoredNormal ?? unitNormals;
+  const uv = source.uv instanceof Float32Array ? source.uv : new Float32Array(vertexCount * 2);
+  if (source.tangent !== undefined) return { ...source, normal, uv };
+  // Unit normals and validated triangles leave only "no UV basis anywhere" as a
+  // kernel failure; that case takes the per-vertex normal-plane frame below.
+  const uvTangents = computeTangentVec4(positions, unitNormals, uv, triangles);
+  if (uvTangents.ok) return { ...source, normal, uv, tangent: uvTangents.value };
+  const tangent = new Float32Array(vertexCount * 4);
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const n = vertex * 3;
+    // Unit normals always admit a normal-plane frame.
+    writeNormalPlaneTangent(
+      tangent,
+      vertex * 4,
+      unitNormals[n] ?? 0,
+      unitNormals[n + 1] ?? 0,
+      unitNormals[n + 2] ?? 1,
+    );
+    tangent[vertex * 4 + 3] = 1;
+  }
+  return { ...source, normal, uv, tangent };
+}
+
 /**
  * Create a geometry-owned builder. All derived facts are computed once in
  * `build()` from the accumulated canonical attribute source.
@@ -317,7 +511,6 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
   };
 
   const build = (): Result<MeshAsset, AssetError> => {
-    const source = attributes as VertexAttributeMap;
     // appendVertices admits and copies every channel; only private owned arrays remain here.
     const positionView = attributes.position;
     if (positionView === undefined)
@@ -349,8 +542,6 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
       }
     }
 
-    const packed = packInterleavedVertexAttributes(source, vertexCount);
-    if (!packed.ok) return packed;
     const ranges = completedSubmeshes(
       submeshes,
       vertexCount,
@@ -358,10 +549,18 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
       materialSlots.length,
     );
     if (!ranges.ok) return ranges;
+    const source = completeSurfaceStream(
+      attributes as VertexAttributeMap,
+      positionView,
+      ranges.value,
+      indexArray,
+    );
+    const packed = packInterleavedVertexAttributes(source, vertexCount);
+    if (!packed.ok) return packed;
     const aabb = box3.fromPositions(box3.create(), positionView);
     const copiedAttributes: VertexAttributeMap = {};
     for (const key of attributeKeys(source)) {
-      const value = attributes[key];
+      const value = source[key] as AttributeView | undefined;
       if (value === undefined) continue;
       const cloned = value.slice();
       if (key === 'skinIndex') {

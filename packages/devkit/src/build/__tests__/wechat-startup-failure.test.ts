@@ -4,6 +4,7 @@ import { canvasAspectPlugin } from '@forgeax/engine-app';
 import { AssetRegistry, assetsPlugin } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { Context, Plugin } from '@forgeax/engine-plugin';
+import { inspectPluginFiber } from '@forgeax/engine-plugin';
 import { Camera, orthographic, perspective, type RendererOptions } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
@@ -106,6 +107,7 @@ async function host(
     `${source}\n({ start, stop: () => dispose?.(), inspect: () => globalThis.__forgeaxGameInspection.renderer(), inspection: () => globalThis.__forgeaxGameInspection })`,
     {
       canvasAspectPlugin,
+      inspectPluginFiber,
       createGameVfx,
       AbortController,
       console: { info: vi.fn(), error: vi.fn() },
@@ -218,6 +220,7 @@ async function host(
           assetsPlugin(args.assets),
           ...args.plugins,
         ]);
+        app.pluginContext = pluginContext;
         app.world = world;
         drawSource = args.drawSource;
         app.rhiCapture = args.rhiCapture;
@@ -240,8 +243,13 @@ async function host(
   ) as {
     start(): Promise<void>;
     stop(): Promise<void>;
-    inspect(): { phase: string; startupError?: unknown };
-    inspection(): { rhiCapture?: { captureFrame(): Promise<unknown> } } | undefined;
+    inspect(): { phase: string; execution?: unknown; startupError?: unknown };
+    inspection():
+      | {
+          plugins(): { fibers: ReturnType<typeof inspectPluginFiber>[]; truncated: boolean };
+          rhiCapture?: { captureFrame(): Promise<unknown> };
+        }
+      | undefined;
   };
   await running.start();
   return {
@@ -260,6 +268,7 @@ async function host(
     captureLifecycle,
     graphicsOptions,
     createGameVfx,
+    context: () => pluginContext,
     world: () => {
       if (world === undefined) throw new Error('Host World is missing');
       return world;
@@ -272,6 +281,28 @@ async function host(
 }
 
 describe('native Host startup failure ownership', () => {
+  it('projects actual native Fiber states and missing services through the existing inspection owner', async () => {
+    const running = await host(async () => ({ dispose: async () => {} }));
+    try {
+      await vi.waitFor(() => expect(running.inspect().phase).toBe('ready'));
+      running.context()?.plugin({ name: 'await-native-service', inject: ['absent'], apply() {} });
+      const plugins = running.inspection()?.plugins();
+      expect(plugins?.truncated).toBe(false);
+      expect(plugins?.fibers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'await-native-service',
+            state: 'pending',
+            missingServices: ['absent'],
+          }),
+          expect.objectContaining({ name: 'test-input', state: 'active', missingServices: [] }),
+        ]),
+      );
+    } finally {
+      await running.stop();
+    }
+  });
+
   it('attaches the same native VFX owner before game activation and replaces it after Host retirement', async () => {
     const running = await host(async () => ({ dispose: async () => {} }));
     const firstWorld = running.world();

@@ -4,6 +4,7 @@ import { constants, setPriority } from 'node:os';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
+import { type MeshAsset, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import {
   ParticleEffectPlayer,
@@ -26,6 +27,26 @@ import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 const enabled = process.env.VFX_PLAN_BENCH === '1';
 const players = Number(process.env.VFX_PLAN_BENCH_PLAYERS ?? 50);
 const frames = Number(process.env.VFX_PLAN_BENCH_FRAMES ?? 300);
+// VFX_PLAN_BENCH_SHAPE=collapse mirrors a game debris effect: three local-space
+// burst emitters (two sorted alpha billboards and one mesh renderer).
+const shape = process.env.VFX_PLAN_BENCH_SHAPE ?? 'mixed';
+// VFX_PLAN_BENCH_LIFE=<fixed ticks> retires and respawns each player on a
+// staggered cycle (remove, then add the component one tick later).
+const life = Number(process.env.VFX_PLAN_BENCH_LIFE ?? 0);
+const geometry: MeshAsset = Object.freeze({
+  kind: 'mesh',
+  vertices: new Float32Array(48),
+  attributes: {
+    position: new Float32Array(18),
+    normal: new Float32Array(18),
+    uv: new Float32Array(12),
+  },
+  indices: new Uint16Array([0, 1, 2, 3, 4, 5]),
+  submeshes: [
+    { indexOffset: 0, indexCount: 6, vertexCount: 6, topology: 'triangle-list', materialSlot: 0 },
+  ],
+  materialSlots: [{ slotName: 'Default' }],
+});
 
 const camera = {
   position: new Float32Array(3),
@@ -45,12 +66,19 @@ it.skipIf(!enabled)(
     // Two effects: custom per-particle state admits the batched job-table
     // program; the other keeps the ordinary per-tick compute chain.
     const prepare = async (guid: string, custom: boolean) => {
-      const emitter = (id: string, capacity: number, blend?: 'additive') => ({
+      const collapse = shape === 'collapse';
+      const emitter = (
+        id: string,
+        capacity: number,
+        blend?: 'additive',
+        renderer?: Record<string, unknown>,
+      ) => ({
         id,
         capacity,
         backend: { required: 'gpu' as const },
-        space: 'world' as const,
-        schedule: { rate: 60 },
+        space: collapse ? ('local' as const) : ('world' as const),
+        ...(collapse ? { simulationWhenCulled: 'continue' as const } : {}),
+        schedule: collapse ? { rate: 0, bursts: [{ time: 0, count: capacity }] } : { rate: 60 },
         bounds: {
           kind: 'sphere' as const,
           center: [0, 0, 0] as [number, number, number],
@@ -58,16 +86,30 @@ it.skipIf(!enabled)(
         },
         program: { module: 'body' },
         renderers: [
-          {
+          renderer ?? {
             kind: 'billboard' as const,
             material: 'material',
             ...(blend === undefined ? {} : { blend }),
+            ...(collapse ? { blend: 'alpha' as const, sorting: 'view-depth' as const } : {}),
           },
         ],
       });
+      const emitters = collapse
+        ? [
+            emitter('dust', 24),
+            emitter('chips', 8, undefined, {
+              kind: 'mesh',
+              mesh: 'mesh',
+              material: 'material',
+              lighting: 'standard',
+              castShadows: false,
+            }),
+            emitter('settle', 12),
+          ]
+        : [emitter('spark', 64), emitter('glow', 32, 'additive')];
       const cooked = (
         await cookParticleCodeEffect(
-          { schemaVersion: 3, emitters: [emitter('spark', 64), emitter('glow', 32, 'additive')] },
+          { schemaVersion: 3, emitters: emitters as never },
           {
             body: {
               entry: custom
@@ -101,7 +143,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     };
     const effects = [
       await prepare('019e2cc6-0c86-79da-aa76-b0984c86d45d', true),
-      await prepare('019e2cc6-0c86-79da-aa76-b0984c86d45e', false),
+      // Game collapse programs all carry custom per-particle state.
+      await prepare('019e2cc6-0c86-79da-aa76-b0984c86d45e', shape === 'collapse'),
     ];
     const assets = new AssetRegistry();
     assets.installDecoder(particleEffectContribution.kind, particleEffectContribution.decoder);
@@ -112,6 +155,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
         values: { baseColor: [1, 1, 1, 1] },
       })
       .unwrap();
+    const meshHandle = assets.create(geometry).unwrap();
     const world = new World({ assets });
     const handles = effects.map((effect) =>
       assets
@@ -121,19 +165,52 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
             ...effect.program,
             emitters: effect.program.emitters.map((emitter) => ({
               ...emitter,
-              renderers: emitter.renderers.map((renderer) => ({ ...renderer, material })),
+              renderers: emitter.renderers.map((renderer) => ({
+                ...renderer,
+                material,
+                ...(renderer.kind === 'mesh' ? { mesh: meshHandle } : {}),
+              })),
             })),
           },
         })
         .unwrap(),
     );
-    for (let seed = 0; seed < players; seed++)
-      world
-        .spawn({
-          component: ParticleEffectPlayer,
-          data: { effect: handles[seed % handles.length] as (typeof handles)[number], seed },
-        })
-        .unwrap();
+    const playerData = (seed: number) => ({
+      effect: handles[seed % handles.length] as (typeof handles)[number],
+      seed,
+    });
+    const entities = Array.from({ length: players }, (_, seed) =>
+      shape === 'collapse'
+        ? // Local-space game players carry a Scene transform.
+          world
+            .spawn(
+              { component: Transform, data: {} },
+              { component: ParticleEffectPlayer, data: playerData(seed) },
+            )
+            .unwrap()
+        : world.spawn({ component: ParticleEffectPlayer, data: playerData(seed) }).unwrap(),
+    );
+    let nextSeed = players;
+    const live = entities.map(() => true);
+    const churn = (frameNumber: number) => {
+      if (life <= 0) return;
+      for (let index = 0; index < entities.length; index++) {
+        const phase = (frameNumber + Math.floor((index * life) / entities.length)) % life;
+        const entity = entities[index] as (typeof entities)[number];
+        if (phase === 0 && live[index]) {
+          world.removeComponent(entity, ParticleEffectPlayer).unwrap();
+          live[index] = false;
+        } else if (phase === 1 && !live[index]) {
+          live[index] = true;
+          world
+            .addComponent(entity, {
+              component: ParticleEffectPlayer,
+              data: playerData(nextSeed++),
+            })
+            .unwrap();
+        }
+      }
+    };
     const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const shader = (await rhi.createShaderModule(device, { code: 'structural' })).unwrap();
@@ -143,6 +220,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     });
     const raw = gpuParticleRenderFeature({
       camera: { read: () => camera },
+      // Runtime asset publications are frozen snapshots.
+      ...(shape === 'collapse' ? { mesh: { read: () => geometry } } : {}),
       instanceArenas: true,
       nativePlanning: true,
       retainedResources: true,
@@ -189,6 +268,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
           }
         }
         if (session !== undefined && frameNumber >= Math.floor(frames / 3)) heapFrames += 2;
+        churn(frameNumber);
         world.update(1 / 60).unwrap();
         // Render cadence above the fixed tick keeps a mix of queued and retained frames.
         for (const _repeat of [0, 1]) {
@@ -257,7 +337,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
         `[vfx-plan-bench] frame mean=${frameMean.toFixed(3)}ms p50=${frameMeasured[Math.floor(frameMeasured.length / 2)]?.toFixed(3)}ms\n`,
       );
       process.stdout.write(
-        `[vfx-plan-bench] players=${players} plans=${measured.length} mean=${mean.toFixed(3)}ms p50=${at(0.5)?.toFixed(3)}ms p95=${at(0.95)?.toFixed(3)}ms
+        `[vfx-plan-bench] shape=${shape} life=${life} players=${players} plans=${measured.length} mean=${mean.toFixed(3)}ms p50=${at(0.5)?.toFixed(3)}ms p95=${at(0.95)?.toFixed(3)}ms
 `,
       );
     } finally {

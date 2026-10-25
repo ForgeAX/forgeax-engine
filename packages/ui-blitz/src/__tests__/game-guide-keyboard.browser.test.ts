@@ -547,6 +547,9 @@ it('uses the ordinary game guide keyboard form through scrolling, busy recovery 
   expect(required(instances[0]).generated).toEqual(required(instances[1]).generated);
   await state(true);
   expect(instances.map(({ radius }) => radius.disabled)).toEqual([true, true]);
+  expect(active()[1]).toBeUndefined();
+  // Chromium retires native focus at a rendering boundary; Blitz must retire it synchronously.
+  await expect.poll(() => active()[0]).toBeUndefined();
   for (const { radius } of instances) radius.focus();
   expect(active()).toEqual([undefined, undefined]);
   await capture('03-landscape-busy');

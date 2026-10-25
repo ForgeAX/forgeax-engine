@@ -18,6 +18,8 @@ def headroom():
         return {'exitCode': 0, 'stdout': stdout}
     return {
         'endedAtUtc': at,
+        'consoleBefore': {'exitCode': 0, 'consoleLocked': False, 'screenLocked': False},
+        'consoleAfter': {'exitCode': 0, 'consoleLocked': False, 'screenLocked': False},
         'intervalCpu': success('CPU usage: 20% idle\nCPU usage: 80% idle\nCPU usage: 85% idle'),
         'gpu': {'exitCode': 0, 'samples': [{'atUtc': at, 'endedAtUtc': at, 'status': 'available',
             'statistics': [{'Device Utilization %': 10}]}]},
@@ -43,6 +45,23 @@ def snapshot(clock=10000, completed=100):
 
 
 class HeadroomTests(unittest.TestCase):
+    def test_console_lock_is_retained_without_substituting_for_actual_frame_progress(self):
+        for observation in ('consoleBefore', 'consoleAfter'):
+            for flag in ('consoleLocked', 'screenLocked'):
+                source = headroom()
+                source[observation][flag] = True
+                with self.subTest(observation=observation, flag=flag):
+                    result = measurement.qualify_headroom(source)
+                    self.assertTrue(result['qualified'])
+                    stage = 'before' if observation == 'consoleBefore' else 'after'
+                    self.assertTrue(result['facts']['console'][stage][flag])
+
+    def test_missing_console_observation_is_unavailable(self):
+        source = headroom()
+        del source['consoleBefore']
+        with self.assertRaisesRegex(measurement.ToolFailure, 'headroom-observation-unavailable'):
+            measurement.qualify_headroom(source)
+
     def test_excludes_first_cpu_sample_and_uses_paging_deltas(self):
         qualified = measurement.qualify_headroom(headroom())
         self.assertTrue(qualified['qualified'])

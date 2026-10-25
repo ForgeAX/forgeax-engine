@@ -65,9 +65,20 @@ export interface FeatureFrameRequest {
   };
   readonly accept: (result: RenderFeatureFrameResult) => void;
 }
+/**
+ * A view may pause once its CPU preparation is done and before it acquires the
+ * swap-chain texture. A cooperative driver yields the Worker task there, so an
+ * older frame's queue completion can return its publication credit while this
+ * frame records. Synchronous drains resume immediately.
+ */
+export type FrameRecordingCheckpoint = { readonly kind: 'checkpoint' };
+export const FRAME_RECORDING_CHECKPOINT: FrameRecordingCheckpoint = Object.freeze({
+  kind: 'checkpoint',
+});
 export type FrameRecording<T = boolean> = Generator<
   | RecordedView
   | FeatureFrameRequest
+  | FrameRecordingCheckpoint
   | { readonly kind: 'scene-inputs'; readonly encoder: RhiCommandEncoder },
   T,
   RendererFrameStageResult<void>
@@ -139,7 +150,13 @@ export function* recordFrameTransaction<T>(
   return { ok: true, value: built.value };
 }
 
-export type FramePreparationCheckpoint = { readonly kind: 'features-prepared' };
+export type FramePreparationCheckpoint = {
+  readonly kind: 'features-prepared' | 'recording-checkpoint';
+};
+const RECORDING_CHECKPOINT: FramePreparationCheckpoint = Object.freeze({
+  kind: 'recording-checkpoint',
+});
+const RESUMED: RendererFrameStageResult<void> = Object.freeze({ ok: true, value: undefined });
 export type FramePreparation<T = boolean> = Generator<FramePreparationCheckpoint, T, void>;
 
 export function drainFramePreparation<T>(operation: FramePreparation<T>): T {
@@ -151,6 +168,7 @@ export function drainFramePreparation<T>(operation: FramePreparation<T>): T {
 type FrameRecordingStep = IteratorResult<
   | RecordedView
   | FeatureFrameRequest
+  | FrameRecordingCheckpoint
   | { readonly kind: 'scene-inputs'; readonly encoder: RhiCommandEncoder },
   boolean
 >;
@@ -168,6 +186,8 @@ export function* prepareFrameSubmission(
 /** One frame's shared encoder: admits every view, prepares Features once, submits once. */
 class FrameSubmission {
   private readonly pending: FrameRecording[] = [];
+  /** Views paused at their recording checkpoint; finalization closes them. */
+  private readonly suspended = new Set<FrameRecording>();
   private readonly featureRequests: { recording: FrameRecording; request: FeatureFrameRequest }[] =
     [];
   private batch: RenderFeatureFrameBatch | undefined;
@@ -199,10 +219,14 @@ class FrameSubmission {
   *run(): FramePreparation {
     const uniforms = new MaterialUniformRecording();
     const operation = this.encodeAndSubmit();
+    let releaseHold: (() => void) | undefined;
     try {
       try {
         let next = uniforms.run(() => operation.next());
         while (!next.done) {
+          // A paused frame has captured live resources; completion-driven
+          // releases wait until this frame submitted or was abandoned.
+          releaseHold ??= this.holdCompletions();
           yield next.value;
           next = uniforms.run(() => operation.next());
         }
@@ -210,15 +234,26 @@ class FrameSubmission {
         this.failures.push(cause);
       }
     } finally {
-      this.capture(() => uniforms.run(() => operation.return(false)));
-      this.capture(() => uniforms.complete());
-      this.finalizeMips();
-      this.finalizeRecordings();
-      this.finalizeFeatureBatch();
-      this.retireSharedGraph();
+      try {
+        this.capture(() => uniforms.run(() => operation.return(false)));
+        this.capture(() => uniforms.complete());
+        this.finalizeMips();
+        this.finalizeRecordings();
+        this.finalizeFeatureBatch();
+        this.retireSharedGraph();
+      } finally {
+        // Held completions settle after every owner of this frame has settled.
+        releaseHold?.();
+      }
       this.throwFinalizationFailure();
     }
     return this.result.ok;
+  }
+
+  private holdCompletions(): () => void {
+    const device =
+      this.rendererInternals?.device ?? this.featureRequests[0]?.request.internals.device;
+    return device?.queue.holdCompletions?.() ?? (() => {});
   }
 
   /** Run one finalizer, collecting its failure so siblings still run. */
@@ -250,7 +285,7 @@ class FrameSubmission {
 
   private *encodeAndSubmit(): FramePreparation {
     if (this.isCurrent?.() === false) return false;
-    if (!this.startRecordings()) return false;
+    if (!(yield* this.startRecordings())) return false;
     const first = this.featureRequests[0]?.request;
     if (first !== undefined) {
       const batch = this.prepareFeatures(first);
@@ -258,7 +293,7 @@ class FrameSubmission {
       // coordinator. No capture or shared/view graph is resumed before the fence.
       yield { kind: 'features-prepared' };
       if (this.isCurrent?.() === false) return false;
-      if (!this.resumeFeatureViews(first, batch)) return false;
+      if (!(yield* this.resumeFeatureViews(first, batch))) return false;
     }
     const work = this.work;
     if (work === undefined || this.afterEncode?.(work.encoder) === false) return false;
@@ -266,9 +301,9 @@ class FrameSubmission {
   }
 
   /** Advance each view to its first barrier, separating Feature requests from encoded work. */
-  private startRecordings(): boolean {
+  private *startRecordings(): FramePreparation {
     for (const recording of this.recordings) {
-      const next = recording.next();
+      const next = yield* this.advance(recording, undefined);
       if (!next.done && 'kind' in next.value) {
         if (next.value.kind !== 'features')
           throw new Error('Scene inputs must follow Feature preparation');
@@ -306,7 +341,10 @@ class FrameSubmission {
   }
 
   /** Route captures and scene inputs to one recorder, record shared work, then resume views. */
-  private resumeFeatureViews(first: FeatureFrameRequest, batch: RenderFeatureFrameBatch): boolean {
+  private *resumeFeatureViews(
+    first: FeatureFrameRequest,
+    batch: RenderFeatureFrameBatch,
+  ): FramePreparation {
     const featureRequests = this.featureRequests;
     const captures = featureRequests.find(({ request }) => request.captures !== undefined)?.request
       .captures;
@@ -329,19 +367,34 @@ class FrameSubmission {
       );
     if (sceneInputs.length > 0) {
       if (captureView === undefined) throw new Error('Scene inputs require one scene recorder');
-      if (!this.resumeSceneInputRecorder(captureView.recording)) return false;
+      if (!(yield* this.resumeSceneInputRecorder(captureView.recording))) return false;
     }
     if (this.sceneInputsReady)
       this.sharedGraph = recordSharedFeatureGraph(first.internals, first.encoder, batch.frame);
     for (const { recording } of featureRequests) {
       if (this.pending.includes(recording)) continue;
-      if (!this.admitWork(recording, recording.next({ ok: true, value: undefined }))) return false;
+      if (!this.admitWork(recording, yield* this.advance(recording, RESUMED))) return false;
     }
     return true;
   }
 
-  private resumeSceneInputRecorder(recording: FrameRecording): boolean {
-    const ready = recording.next({ ok: true, value: undefined });
+  /** Resume one view, forwarding each of its recording checkpoints to the driver. */
+  private *advance(
+    recording: FrameRecording,
+    input: RendererFrameStageResult<void> | undefined,
+  ): Generator<FramePreparationCheckpoint, FrameRecordingStep, void> {
+    let next = input === undefined ? recording.next() : recording.next(input);
+    while (!next.done && 'kind' in next.value && next.value.kind === 'checkpoint') {
+      this.suspended.add(recording);
+      yield RECORDING_CHECKPOINT;
+      this.suspended.delete(recording);
+      next = recording.next(RESUMED);
+    }
+    return next;
+  }
+
+  private *resumeSceneInputRecorder(recording: FrameRecording): FramePreparation {
+    const ready = yield* this.advance(recording, RESUMED);
     if (!ready.done && !('kind' in ready.value) && ready.value.presentation === 'pending') {
       // Native scene/shadow PSOs can still be preparing. This view already
       // reached its completion barrier, so submit that work and abort the
@@ -483,6 +536,11 @@ class FrameSubmission {
 
   private finalizeRecordings(): void {
     for (const recording of this.pending) this.capture(() => recording.next(this.result));
+    for (const recording of this.suspended) {
+      if (this.pending.includes(recording)) continue;
+      this.capture(() => recording.return(false));
+    }
+    this.suspended.clear();
     for (const { recording } of this.featureRequests) {
       if (this.pending.includes(recording)) continue;
       this.capture(() => recording.return(false));

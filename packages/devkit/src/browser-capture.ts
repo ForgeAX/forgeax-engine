@@ -1,24 +1,28 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserFrameProgress } from '@forgeax/engine-app';
 import { parseImage } from '@forgeax/engine-image/parse-image';
 import {
   type Browser,
+  type BrowserContextOptions,
   type ConsoleMessage,
   chromium,
   type Frame,
+  type LaunchOptions,
   type Page,
   type Request,
   type Response,
 } from 'playwright';
 import type { ViteDevServer } from 'vite';
+import { type CaptureRendererError, captureRenderFailure } from './capture-render-failure.js';
 import { createViteConfig } from './host.js';
 import { type DevKitHostBinding, hostBindingError } from './host-binding.js';
+import { publicPageUrl } from './live-bridge-url.js';
 import { commandError, readProjectFacts } from './project.js';
 import type { BrowserCarrierTarget, BrowserExecutionTarget } from './tools/display-carrier.js';
 import { acquireBrowserCarrierPage } from './tools/display-carrier.js';
@@ -60,6 +64,8 @@ export interface BrowserCaptureRuntimeWitness {
   readonly engineFrameId: number | null;
   readonly captureReady: string | null;
   readonly fatalError: string | null;
+  /** `null` without a renderer error or outside a development host. */
+  readonly rendererError: CaptureRendererError | null;
   readonly singleHtml: {
     readonly ready: boolean;
     readonly resourceHits: number;
@@ -177,6 +183,16 @@ export interface BrowserCaptureOpenOptions
   readonly host?: DevKitHostBinding;
   /** Release omits unsafe WebGPU/file-access flags; development preserves the legacy lane. */
   readonly launchProfile?: BrowserLaunchProfile;
+  /** Budget for catalog publication, navigation and first-frame readiness. Default 120000. */
+  readonly startupTimeoutMs?: number;
+  /** Vite dependency cache for the private project server; default is Vite's own. */
+  readonly viteCacheDir?: string;
+  /**
+   * Stable generated root for the private project server, owned by one session at
+   * a time; it keeps the `viteCacheDir` dependency hash valid between sessions.
+   * Default: a fresh `.forgeax/generated/serve-*` root.
+   */
+  readonly generatedRoot?: string;
 }
 
 export interface BrowserCaptureCheckpointOptions {
@@ -360,6 +376,42 @@ function isRecoverablePointerLockDiagnostic(message: string): boolean {
     message.includes('path: w3c') &&
     /(WrongDocumentError|SecurityError|not allowed|not valid for pointer lock)/i.test(message)
   );
+}
+
+/**
+ * Where a diagnostic image belongs: `.forgeax/diag/` under the project, keyed
+ * by the path it would otherwise have taken (its basename when outside the
+ * project). Failure pages, loading frames and provisional witnesses are
+ * development diagnostics, not deliverables in `artifacts/`.
+ */
+export function diagnosticCapturePath(projectRoot: string, path: string): string {
+  const diagnostics = resolve(projectRoot, '.forgeax', 'diag');
+  if (!relative(diagnostics, path).startsWith('..')) return path;
+  const relativePath = relative(projectRoot, path);
+  const key =
+    relativePath === '' || relativePath.startsWith('..') || isAbsolute(relativePath)
+      ? basename(path)
+      : relativePath;
+  return resolve(diagnostics, key);
+}
+
+function failureCaptureOutput(projectRoot: string, output: string): string {
+  const diagnostic = diagnosticCapturePath(projectRoot, output);
+  return diagnostic === output ? output : diagnostic.replace(/(?:\.png)?$/iu, '.failure.png');
+}
+
+/** Write an accepted image to its requested output; a rejected one only to diagnostics. */
+async function publishCaptureImage(
+  output: string,
+  diagnosticOutput: string,
+  png: Uint8Array,
+  ok: boolean,
+): Promise<string> {
+  const target = ok ? output : diagnosticOutput;
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, png);
+  if (ok && diagnosticOutput !== output) await rm(diagnosticOutput, { force: true });
+  return target;
 }
 
 function checkpointSlug(checkpoint: string | undefined): string {
@@ -650,7 +702,51 @@ async function screenshotCanvasWitness(
   return { png: canvasPng, pixels: inspectCapturePng(canvasPng) };
 }
 
-async function runtimeWitness(
+/** A recent renderer error is terminal like a fatal: waiting cannot present the canvas. */
+function captureTerminal(
+  pixels: CapturePixelWitness,
+  runtime: BrowserCaptureRuntimeWitness,
+): boolean {
+  return (
+    runtime.fatalError !== null ||
+    captureRenderFailure({ pixels, runtime })?.reason === 'renderer-error'
+  );
+}
+
+/**
+ * The composed image is a later frame than the canvas witness. Witness the
+ * canvas again so a canvas that went flat in between (HUD over a blank
+ * canvas) is not reported as rendered.
+ */
+async function composedCanvasPixels(
+  pixels: CapturePixelWitness,
+  witness: () => Promise<{ readonly pixels: CapturePixelWitness }>,
+): Promise<CapturePixelWitness> {
+  if (!pixels.rendered) return pixels;
+  const after = await witness();
+  return after.pixels.rendered ? pixels : after.pixels;
+}
+
+function rejectCapture(record: BrowserCaptureRecord, reportPath: string): never {
+  const renderFailure = captureRenderFailure(record);
+  const rendererError = record.runtime.rendererError;
+  fail(
+    'browser-capture-runtime-failed',
+    'non-flat canvas pixels, the requested browser backend/checkpoint, and no Engine or browser errors',
+    renderFailure?.reason === 'renderer-error'
+      ? renderFailure.hint
+      : 'Inspect the run report and repair the first browser runtime failure.',
+    {
+      checkpoint: record.checkpoint,
+      output: record.output,
+      report: reportPath,
+      ...(renderFailure === undefined ? {} : { reason: renderFailure.reason }),
+      ...(rendererError == null ? {} : { rendererError }),
+    },
+  );
+}
+
+export async function runtimeWitness(
   realm: Page | Frame,
   probeAdapter = true,
 ): Promise<BrowserCaptureRuntimeWitness> {
@@ -691,6 +787,15 @@ async function runtimeWitness(
             'Engine execution failed'
           ).slice(0, 16_384)
         : null;
+      let rendererError: unknown = null;
+      try {
+        const inspection = Reflect.get(globalThis, '__forgeaxGameInspection') as
+          | { renderer?(): { rendererError?: unknown } }
+          | undefined;
+        rendererError = inspection?.renderer?.().rendererError ?? null;
+      } catch {
+        // A failing inspection is not a renderer error; fatal UI reports Engine faults.
+      }
       const singleHtmlState = (
         globalThis as typeof globalThis & {
           __forgeaxSingleHtml?: {
@@ -733,6 +838,7 @@ async function runtimeWitness(
           Number.isSafeInteger(frameId) && frameId !== undefined && frameId > 0 ? frameId : null,
         captureReady: document.documentElement.dataset.forgeaxCaptureReady ?? null,
         fatalError,
+        rendererError: rendererError as BrowserCaptureRuntimeWitness['rendererError'],
         singleHtml: singleHtmlState?.witness?.() ?? null,
         userAgent: navigator.userAgent,
       };
@@ -941,11 +1047,12 @@ async function waitForCaptureCatalog(
   server: ViteDevServer,
   port: number,
   projectId: string,
+  timeoutMs: number,
 ): Promise<void> {
   if (server.httpServer === undefined) return;
   const serverUrl = server.resolvedUrls?.local?.[0] ?? `http://127.0.0.1:${port}/`;
   try {
-    await waitForRuntimeCatalog(serverUrl, projectId, 120_000);
+    await waitForRuntimeCatalog(serverUrl, projectId, timeoutMs);
   } catch (cause) {
     if (cause instanceof Error && cause.name === 'DevKitWorkspaceError') {
       const detail =
@@ -1101,6 +1208,13 @@ function browserReport(
   };
 }
 
+/** Budget for catalog publication, navigation and first-frame readiness. */
+function captureStartupTimeoutMs(
+  options: Pick<BrowserCaptureOpenOptions, 'startupTimeoutMs'>,
+): number {
+  return options.startupTimeoutMs ?? 120_000;
+}
+
 /** Run identity and artifact locations, resolved against the project root. */
 function captureRunLayout(
   projectRoot: string,
@@ -1135,9 +1249,159 @@ function assertCaptureSessionOpened(
   }
 }
 
+/** A capture-owned browser and its one page. */
+interface CaptureLaunch {
+  readonly browser: Browser;
+  readonly page: Page;
+  /** Closes the browser, or only this page's context when the browser is retained. */
+  release(): Promise<void>;
+}
+
+/** Browsers an owner keeps between its sessions, keyed by launch configuration. */
+type RetainedBrowsers = Map<string, Promise<Browser>>;
+
+function captureContextOptions(
+  nativeWindow: boolean,
+  width: number,
+  height: number,
+): BrowserContextOptions {
+  return {
+    ...(nativeWindow
+      ? { viewport: null }
+      : { viewport: { width, height }, screen: { width, height }, deviceScaleFactor: 1 }),
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezoneId: 'UTC',
+  };
+}
+
+/**
+ * A retained browser keeps its process and GPU process (with its compiled
+ * pipelines) warm across sessions; a disconnected one is replaced. Each session
+ * still gets a fresh context: development modules are bound to their program
+ * session, so an HTTP cache shared across sessions would serve retired bytes.
+ */
+async function retainedBrowser(
+  launch: LaunchOptions,
+  retained: RetainedBrowsers,
+): Promise<Browser> {
+  const key = JSON.stringify([
+    launch.headless,
+    launch.args,
+    launch.executablePath,
+    launch.env?.LIBGL_ALWAYS_SOFTWARE,
+    launch.env?.DISPLAY,
+  ]);
+  const existing = await retained.get(key)?.catch(() => undefined);
+  if (existing?.isConnected()) return existing;
+  const launching = chromium.launch({ ...launch, chromiumSandbox: true });
+  retained.set(key, launching);
+  launching.catch(() => {
+    if (retained.get(key) === launching) retained.delete(key);
+  });
+  return launching;
+}
+
+function captureBrowserEnvironment(
+  launchBackend: CaptureBackend,
+  display: VirtualDisplay,
+): Record<string, string> {
+  return {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
+    ...(launchBackend === 'software' ? { LIBGL_ALWAYS_SOFTWARE: '1' } : {}),
+    ...(display.value === undefined ? {} : { DISPLAY: display.value }),
+  };
+}
+
+async function launchCapturePage(
+  launch: LaunchOptions,
+  nativeWindow: boolean,
+  width: number,
+  height: number,
+  retained?: RetainedBrowsers,
+): Promise<CaptureLaunch> {
+  const contextOptions = captureContextOptions(nativeWindow, width, height);
+  if (retained !== undefined) {
+    const browser = await retainedBrowser(launch, retained);
+    const context = await browser.newContext(contextOptions);
+    const page = await context.newPage().catch(async (cause: unknown) => {
+      await context.close().catch(() => undefined);
+      throw cause;
+    });
+    return { browser, page, release: () => context.close() };
+  }
+  const browser = await chromium.launch({ ...launch, chromiumSandbox: true });
+  try {
+    const page = await browser.newPage(contextOptions);
+    return { browser, page, release: () => browser.close() };
+  } catch (cause) {
+    await browser.close().catch(() => undefined);
+    throw cause;
+  }
+}
+
+/** How this session launches its browser, and whether the page keeps its native window. */
+function captureBrowserLauncher(
+  options: BrowserCaptureOpenOptions,
+  display: VirtualDisplay,
+  launchProfile: BrowserLaunchProfile,
+  browserPath: string | undefined,
+  size: { readonly width: number; readonly height: number },
+  retained: RetainedBrowsers | undefined,
+): {
+  readonly nativeWindow: boolean;
+  readonly launch: (launchBackend: CaptureBackend) => Promise<CaptureLaunch>;
+} {
+  const headless = options.headless ?? defaultHeadless(display);
+  const nativeWindow = usesNativeWindow(headless, launchProfile, options);
+  return {
+    nativeWindow,
+    launch: (launchBackend) =>
+      launchCapturePage(
+        {
+          headless,
+          env: captureBrowserEnvironment(launchBackend, display),
+          args: browserLaunchArgs(launchBackend, launchProfile, nativeWindow),
+          ...(browserPath === undefined ? {} : { executablePath: browserPath }),
+        },
+        nativeWindow,
+        size.width,
+        size.height,
+        retained,
+      ),
+  };
+}
+
+/** A borrowed headed carrier supplies the page; the capture launches no browser for it. */
+function borrowsCarrierPage(
+  options: BrowserCaptureOpenOptions,
+): options is BrowserCaptureOpenOptions & {
+  readonly carrier: NonNullable<BrowserCaptureOpenOptions['carrier']>;
+} {
+  return options.carrier !== undefined && options.headless === false;
+}
+
+/** The initial browser, launched at once unless a borrowed carrier supplies the page. */
+function startEarlyLaunch(
+  options: BrowserCaptureOpenOptions,
+  launch: (launchBackend: CaptureBackend) => Promise<CaptureLaunch>,
+  launchBackend: CaptureBackend,
+): Promise<CaptureLaunch> | undefined {
+  if (borrowsCarrierPage(options)) return undefined;
+  const launching = launch(launchBackend);
+  // A failure is reported where the page opens, never as an unhandled rejection.
+  launching.catch(() => undefined);
+  return launching;
+}
+
 async function openBrowserCaptureSession(
   root: string,
   options: BrowserCaptureOpenOptions,
+  retained?: RetainedBrowsers,
 ): Promise<BrowserCaptureSession> {
   const backend: CaptureBackend = options.backend ?? 'auto';
   const launchProfile = options.launchProfile ?? 'development';
@@ -1145,12 +1409,14 @@ async function openBrowserCaptureSession(
   const facts = await readCaptureProjectFacts(root);
   const width = options.width ?? 1280;
   const height = options.height ?? 720;
+  const startupTimeoutMs = captureStartupTimeoutMs(options);
   const browserPath = await resolveRequestedBrowser(options.browser);
 
   const { id, outputDirectory, reportPath } = captureRunLayout(facts.value.root, options);
   const port = target.kind === 'project' ? await captureProjectPort(options.port) : undefined;
   let server: ViteDevServer | undefined;
   let browser: Browser | undefined;
+  let releaseBrowser: (() => Promise<void>) | undefined;
   let page: Page | undefined;
   let carrierAttachment:
     | {
@@ -1164,21 +1430,37 @@ async function openBrowserCaptureSession(
   let carrierFallbackReason: string | undefined;
   let display: VirtualDisplay | undefined;
   let removePageListeners = (): void => {};
+  // Started before the project server so Chromium's launch overlaps Vite's startup.
+  let earlyLaunch: Promise<CaptureLaunch> | undefined;
   try {
+    display = await openCaptureDisplay(options.headless, width, height);
+    const { nativeWindow, launch } = captureBrowserLauncher(
+      options,
+      display,
+      launchProfile,
+      browserPath,
+      { width, height },
+      retained,
+    );
+    // Auto first preserves a physical adapter. If only software (or no adapter)
+    // is available, use the same configured software lane as an explicit request. This
+    // keeps the public capture contract portable without masking a flat frame.
+    const initialLaunchBackend: CaptureBackend = backend === 'software' ? 'software' : 'hardware';
+    earlyLaunch = startEarlyLaunch(options, launch, initialLaunchBackend);
     if (target.kind === 'project' && options.serverUrl === undefined) {
       const { createServer } = await import('vite');
       if (port === undefined) throw new Error('project capture did not reserve a port');
+      const config = await createViteConfig(facts.value, 'serve', '/', {
+        server: { port, strictPort: true },
+        ...(options.host === undefined ? {} : { host: options.host }),
+        ...(options.generatedRoot === undefined ? {} : { generatedRoot: options.generatedRoot }),
+      });
       server = await createServer(
-        await createViteConfig(facts.value, 'serve', '/', {
-          server: { port, strictPort: true },
-          ...(options.host === undefined ? {} : { host: options.host }),
-        }),
+        options.viteCacheDir === undefined ? config : { ...config, cacheDir: options.viteCacheDir },
       );
       await server.listen(port);
-      await waitForCaptureCatalog(server, port, facts.value.id);
+      await waitForCaptureCatalog(server, port, facts.value.id, startupTimeoutMs);
     }
-    display = await openCaptureDisplay(options.headless, width, height);
-    const captureDisplay = display;
     const icd = await lavapipeIcd();
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
@@ -1189,15 +1471,12 @@ async function openBrowserCaptureSession(
     removePageListeners = (): void => {
       for (const cleanup of pageListenerCleanups.splice(0)) cleanup();
     };
-    const headless = options.headless ?? defaultHeadless(display);
-    const nativeWindow = usesNativeWindow(headless, launchProfile, options);
     const baseUrl =
       target.kind === 'project' ? projectBaseUrl(options.serverUrl, server, port) : undefined;
     const openPage = async (
       launchBackend: CaptureBackend,
     ): Promise<BrowserCaptureRuntimeWitness> => {
-      const useBorrowedCarrier = options.carrier !== undefined && options.headless === false;
-      if (useBorrowedCarrier && carrierAttachment === undefined) {
+      if (borrowsCarrierPage(options) && carrierAttachment === undefined) {
         if (options.carrierRun === undefined || options.carrierGeneration === undefined) {
           fail(
             'browser-capture-carrier-input-invalid',
@@ -1232,31 +1511,11 @@ async function openBrowserCaptureSession(
           execution = carrierAttachment.execution;
         }
       }
-      const browserEnvironment: Record<string, string> = {
-        ...Object.fromEntries(
-          Object.entries(process.env).filter(
-            (entry): entry is [string, string] => entry[1] !== undefined,
-          ),
-        ),
-        ...(launchBackend === 'software' ? { LIBGL_ALWAYS_SOFTWARE: '1' } : {}),
-        ...(captureDisplay.value === undefined ? {} : { DISPLAY: captureDisplay.value }),
-      };
-      const launchOptions = {
-        headless,
-        env: browserEnvironment,
-        args: browserLaunchArgs(launchBackend, launchProfile, nativeWindow),
-        ...(browserPath === undefined ? {} : { executablePath: browserPath }),
-      };
       if (page === undefined) {
-        browser = await chromium.launch({ ...launchOptions, chromiumSandbox: true });
-        page = await browser.newPage({
-          ...(nativeWindow
-            ? { viewport: null }
-            : { viewport: { width, height }, screen: { width, height }, deviceScaleFactor: 1 }),
-          colorScheme: 'light',
-          locale: 'en-US',
-          timezoneId: 'UTC',
-        });
+        // The early launch is the initial backend's; a software relaunch starts its own.
+        const launching = earlyLaunch ?? launch(launchBackend);
+        earlyLaunch = undefined;
+        ({ browser, page, release: releaseBrowser } = await launching);
       }
       const activePage = page;
       if (activePage === undefined) throw new Error('browser carrier did not provide a page');
@@ -1316,8 +1575,11 @@ async function openBrowserCaptureSession(
         () => activePage.off?.('response', onResponse),
         () => activePage.off?.('requestfailed', onRequestFailed),
       );
-      await activeRealm.goto(captureUrl.href, { waitUntil: 'domcontentloaded', timeout: 120_000 });
-      const readinessDeadline = Date.now() + 120_000;
+      await activeRealm.goto(captureUrl.href, {
+        waitUntil: 'domcontentloaded',
+        timeout: startupTimeoutMs,
+      });
+      const readinessDeadline = Date.now() + startupTimeoutMs;
       while (true) {
         await activeRealm.waitForFunction(
           (requireUi) => {
@@ -1349,17 +1611,14 @@ async function openBrowserCaptureSession(
       }
     };
 
-    // Auto first preserves a physical adapter. If only software (or no adapter)
-    // is available, use the same configured software lane as an explicit request. This
-    // keeps the public capture contract portable without masking a flat frame.
-    const initialLaunchBackend: CaptureBackend = backend === 'software' ? 'software' : 'hardware';
     let runtime = await openPage(initialLaunchBackend);
     let observed = classifyCaptureAdapter(runtime.adapter);
     const initialAdapterError = runtime.adapterError;
     if (fallsBackToSoftware(backend, observed, carrierAttachment !== undefined)) {
       removePageListeners();
-      await browser?.close();
+      await releaseBrowser?.();
       browser = undefined;
+      releaseBrowser = undefined;
       page = undefined;
       consoleErrors.length = 0;
       pageErrors.length = 0;
@@ -1371,6 +1630,7 @@ async function openBrowserCaptureSession(
     }
     assertObservedBackend(backend, observed, runtime, launchProfile, initialAdapterError);
     const captureUrl = captureEntryUrl(target, baseUrl, options.deterministic === true);
+    const publicUrl = publicPageUrl(captureUrl.href);
     assertCaptureSessionOpened(page, browser, carrierAttachment);
     const nativeViewport = nativeWindow
       ? await page.evaluate(() => ({
@@ -1389,7 +1649,7 @@ async function openBrowserCaptureSession(
       ok: false,
       mode: 'browser-compositor',
       root: facts.value.root,
-      url: captureUrl.href,
+      url: publicUrl,
       target,
       ...carrierReportFields(carrierAttachment, carrierFallbackReason),
       launchProfile,
@@ -1432,7 +1692,7 @@ async function openBrowserCaptureSession(
       closed = true;
       removePageListeners();
       await Promise.allSettled([
-        browser?.close(),
+        releaseBrowser?.(),
         carrierAttachment?.close('engine-capture-close'),
         display?.close(),
         server?.close(),
@@ -1444,7 +1704,7 @@ async function openBrowserCaptureSession(
     return {
       page,
       ...(execution === undefined ? {} : { execution }),
-      url: captureUrl.href,
+      url: publicUrl,
       reportPath,
       async capture(checkpoint, captureOptions = {}) {
         if (closed) {
@@ -1473,6 +1733,7 @@ async function openBrowserCaptureSession(
               `${String(index).padStart(3, '0')}-${checkpointSlug(checkpoint)}.png`,
             ),
         );
+        const diagnosticOutput = failureCaptureOutput(facts.value.root, output);
         let imageSaved = false;
         const expectedReady = checkpoint ?? (options.deterministic === true ? 'true' : undefined);
         const observe = captureOptions.purpose === 'observe';
@@ -1500,7 +1761,7 @@ async function openBrowserCaptureSession(
                 checkpoint: expectedReady ?? null,
                 timeoutMs,
                 report: reportPath,
-                ...(imageSaved ? { output } : {}),
+                ...(imageSaved ? { output: diagnosticOutput } : {}),
               },
             );
           if (remaining <= 0) throw timeout();
@@ -1563,16 +1824,19 @@ async function openBrowserCaptureSession(
           return { ...image, runtime };
         };
         let captured = await readFrame();
-        // Preserve the Canvas witness if readiness or a later settling delay fails.
-        await mkdir(dirname(output), { recursive: true });
-        await writeFile(output, captured.png);
+        // Preserve the Canvas witness as a diagnostic if readiness or a later
+        // settling delay fails; only an accepted image reaches `output`.
+        await mkdir(dirname(diagnosticOutput), { recursive: true });
+        await writeFile(diagnosticOutput, captured.png);
         imageSaved = true;
         await updateReport();
+        const terminal = (runtime: BrowserCaptureRuntimeWitness) =>
+          captureTerminal(captured.pixels, runtime);
         const waitForRendered = async () => {
           while (
             !observe &&
             !captured.pixels.rendered &&
-            captured.runtime.fatalError === null &&
+            !terminal(captured.runtime) &&
             Date.now() < deadline
           ) {
             try {
@@ -1589,21 +1853,24 @@ async function openBrowserCaptureSession(
         };
         await waitForRendered();
         const waitMs = captureOptions.waitMs ?? 0;
-        if (waitMs > 0 && captured.runtime.fatalError === null) {
+        if (waitMs > 0 && !terminal(captured.runtime)) {
           await withinBudget('the requested delay', () => activeRealm.waitForTimeout(waitMs));
           captured = await readFrame();
           await waitForRendered();
         }
         let png = captured.png;
         let runtime = captured.runtime;
-        if (observe || captured.pixels.rendered || runtime.fatalError !== null) {
+        let pixels = captured.pixels;
+        if (observe || pixels.rendered || terminal(runtime)) {
           // Readiness polling must not repeatedly compose the complete page.
           // Successful/observed captures and fatal diagnostics still retain its UI.
+          const surface = execution ?? { kind: 'page', ownerPage: activePage, realm: activePage };
           png = await withinBudget('a compositor screenshot', () =>
-            captureBrowserExecutionSurface(
-              execution ?? { kind: 'page', ownerPage: activePage, realm: activePage },
-              deadline,
-              { width, height },
+            captureBrowserExecutionSurface(surface, deadline, { width, height }),
+          );
+          pixels = await composedCanvasPixels(pixels, () =>
+            withinBudget('a canvas witness', () =>
+              screenshotCanvasWitness(surface, deadline, { width, height }),
             ),
           );
           runtime = await withinBudget('runtime diagnostics', () => runtimeWitness(activeRealm));
@@ -1615,9 +1882,10 @@ async function openBrowserCaptureSession(
         const captureBackend = classifyCaptureAdapter(runtime.adapter);
         if (captureBackend !== 'unknown') Object.assign(report, { backend: captureBackend });
         const backendMatches = backend === 'auto' || captureBackend === backend;
+        const renderFailure = captureRenderFailure({ pixels, runtime });
         const ok =
           runtime.canvas !== null &&
-          (observe || captured.pixels.rendered) &&
+          (observe || renderFailure === undefined) &&
           backendMatches &&
           runtime.engineFrameId !== null &&
           runtime.fatalError === null &&
@@ -1625,27 +1893,19 @@ async function openBrowserCaptureSession(
           singleHtmlRuntimeClean(target, runtime, requestSummary) &&
           (expectedReady === undefined || runtime.captureReady === expectedReady) &&
           (!requireUi || uiPresent);
-        await mkdir(dirname(output), { recursive: true });
-        await writeFile(output, png);
+        const written = await publishCaptureImage(output, diagnosticOutput, png, ok);
         const record: BrowserCaptureRecord = {
           index,
           checkpoint: checkpoint ?? null,
           ok,
-          output,
+          output: written,
           digest: captureDigest(png),
-          pixels: captured.pixels,
+          pixels,
           runtime,
         };
         captures.push(record);
         await updateReport();
-        if (!ok) {
-          fail(
-            'browser-capture-runtime-failed',
-            'non-flat canvas pixels, the requested browser backend/checkpoint, and no Engine or browser errors',
-            'Inspect the run report and repair the first browser runtime failure.',
-            { checkpoint: checkpoint ?? null, output, report: reportPath },
-          );
-        }
+        if (!ok) rejectCapture(record, reportPath);
         return record;
       },
       report: () => report,
@@ -1654,7 +1914,8 @@ async function openBrowserCaptureSession(
   } catch (cause) {
     removePageListeners();
     await Promise.allSettled([
-      browser?.close(),
+      earlyLaunch?.then((launched) => launched.release()),
+      releaseBrowser?.(),
       carrierAttachment?.close('engine-capture-failed'),
       display?.close(),
       server?.close(),
@@ -1663,17 +1924,28 @@ async function openBrowserCaptureSession(
   }
 }
 
-export function createBrowserCapture(root: string): BrowserCapture {
+/**
+ * `retainBrowser` keeps each launched browser for the owner's next session (a
+ * live reload opens a fresh page in the warm browser); `close` releases it.
+ */
+export function createBrowserCapture(
+  root: string,
+  options: { readonly retainBrowser?: boolean } = {},
+): BrowserCapture {
   const sessions = new Set<BrowserCaptureSession>();
+  const retained: RetainedBrowsers | undefined = options.retainBrowser ? new Map() : undefined;
   return {
-    async open(options) {
-      const session = await openBrowserCaptureSession(root, options);
+    async open(openOptions) {
+      const session = await openBrowserCaptureSession(root, openOptions, retained);
       sessions.add(session);
       return session;
     },
     async close() {
       await Promise.allSettled([...sessions].map((session) => session.close()));
       sessions.clear();
+      const browsers = [...(retained?.values() ?? [])];
+      retained?.clear();
+      await Promise.allSettled(browsers.map((launching) => launching.then((b) => b.close())));
     },
   };
 }

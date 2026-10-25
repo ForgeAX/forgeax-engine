@@ -281,6 +281,13 @@ describe('factory contract', () => {
       overflow: 0,
       sourceBytes: 0,
       warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+      backgroundWarmup: {
+        requested: 0,
+        completed: 0,
+        failed: 0,
+        elapsedMs: 0,
+        state: 'idle' as const,
+      },
     };
     const pipelineLibrary: PipelineLibraryManifest = {
       version: 1,
@@ -361,6 +368,99 @@ describe('factory contract', () => {
     } finally {
       libraryFence.resolve();
       await renderer.dispose();
+    }
+  });
+
+  it('starts the background library after readiness without awaiting or failing on it', async () => {
+    const inspection: PipelineLibraryInspection = {
+      state: 'active',
+      shaders: 0,
+      renderPipelines: 0,
+      computePipelines: 0,
+      shaderHits: 0,
+      pipelineHits: 0,
+      synchronousCreations: 0,
+      asynchronousCreations: 0,
+      compilationCompleted: 0,
+      compilationPending: 0,
+      failures: 0,
+      unrecordable: 0,
+      overflow: 0,
+      sourceBytes: 0,
+      warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+      backgroundWarmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0, state: 'idle' },
+    };
+    const empty: PipelineLibraryManifest = {
+      version: 1,
+      backend: 'webgpu',
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const background: PipelineLibraryManifest = {
+      ...empty,
+      shaders: [{ code: '// background' }],
+    };
+    for (const outcome of ['pending', 'failed', 'done'] as const) {
+      const fence = deferred<void>();
+      const prepare = vi.fn(async (manifest: PipelineLibraryManifest) => {
+        if (manifest !== background) return ok(inspection);
+        await fence.promise;
+        if (outcome === 'done') return ok(inspection);
+        return err(
+          new RhiError({ code: 'rhi-descriptor-invalid', expected: 'background', hint: 'test' }),
+        );
+      });
+      const library = {
+        prepare,
+        inspect: () => inspection,
+        export: () => ok(empty),
+      } satisfies PipelineLibrary;
+      const adapter = new RhiNullAdapter();
+      const device = Object.assign((await adapter.requestDevice()).unwrap(), {
+        pipelineLibrary: library,
+      });
+      const backend = {
+        ...rhi,
+        requestAdapter: async () =>
+          ok({
+            features: adapter.features,
+            limits: adapter.limits,
+            requestDevice: async () => ok(device),
+          }),
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const renderer = await constructRenderer(
+        { width: 64, height: 64, getContext: () => null },
+        { rhi: backend, pipelineLibrary: empty, backgroundPipelineLibrary: background },
+        { shaderManifestUrl: renderLifecycleManifestUrl() },
+      );
+      try {
+        // Readiness never waits for the still-pending background lane.
+        expect((await renderer.initialization).ok).toBe(true);
+        expect(prepare).toHaveBeenCalledTimes(2);
+        expect(prepare.mock.calls[0]?.[0]).toBe(empty);
+        expect(prepare).toHaveBeenLastCalledWith(background, { background: true });
+        expect(renderer.inspect().backgroundPipelineLibraryState).toBe('running');
+        if (outcome === 'failed') {
+          fence.resolve();
+          await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+          expect(renderer.inspect().state).toBe('alive');
+          expect(renderer.inspect().backgroundPipelineLibraryState).toBe('failed');
+        } else if (outcome === 'done') {
+          fence.resolve();
+          await vi.waitFor(() =>
+            expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
+          );
+          expect(warn).not.toHaveBeenCalled();
+        }
+      } finally {
+        fence.resolve();
+        await renderer.dispose();
+        warn.mockRestore();
+      }
     }
   });
 

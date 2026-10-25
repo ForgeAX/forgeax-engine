@@ -42,18 +42,28 @@ function entryKey(entries: readonly string[]): string {
   }
   return key;
 }
+/**
+ * Buckets in first-append order, indexed by program, range key and entry key.
+ * Nested lookups reuse the interned key strings instead of hashing a newly
+ * concatenated key for every job of every frame.
+ */
+interface Buckets {
+  readonly list: Bucket[];
+  readonly index: Map<string, Map<string, Map<string, Bucket>>>;
+}
+const createBuckets = (): Buckets => ({ list: [], index: new Map() });
 interface Wave {
   readonly resets: Copy[];
-  readonly buckets: Map<string, Bucket>;
+  readonly buckets: Buckets;
 }
 /** Each frame transfers current runtime bytes into independent jobs. Arena
  * buffers remain owned by their emitter; only command packets are combined. */
 export function createVfxDirectComputeFrame() {
   const waves = new Map<number, Wave>();
-  const views = new Map<string, Map<string, Bucket>>();
+  const views = new Map<string, Buckets>();
   let nextPacket = 0;
   const append = (
-    buckets: Map<string, Bucket>,
+    buckets: Buckets,
     input: {
       program: string;
       ranges: readonly VfxArenaRange[];
@@ -63,8 +73,19 @@ export function createVfxDirectComputeFrame() {
     },
   ) => {
     if (input.entries.length === 0) return;
-    const key = `${input.program}|${rangeKey(input.ranges)}|${entryKey(input.entries)}`;
-    let bucket = buckets.get(key);
+    let byRanges = buckets.index.get(input.program);
+    if (byRanges === undefined) {
+      byRanges = new Map();
+      buckets.index.set(input.program, byRanges);
+    }
+    const ranges = rangeKey(input.ranges);
+    let byEntries = byRanges.get(ranges);
+    if (byEntries === undefined) {
+      byEntries = new Map();
+      byRanges.set(ranges, byEntries);
+    }
+    const entries = entryKey(input.entries);
+    let bucket = byEntries.get(entries);
     if (bucket === undefined) {
       bucket = {
         program: input.program,
@@ -75,7 +96,8 @@ export function createVfxDirectComputeFrame() {
         count: 0,
       };
       bucket.words = new Uint32Array(bucket.bytes.buffer);
-      buckets.set(key, bucket);
+      byEntries.set(entries, bucket);
+      buckets.list.push(bucket);
     }
     if (bucket.count >= 16) throw new RangeError('Direct VFX packet exceeds its arena slab');
     const at = bucket.count++ * JOB_BYTES;
@@ -112,12 +134,8 @@ export function createVfxDirectComputeFrame() {
     words[offsets + 7] = 1;
   };
   const control = 'vfx.batch-job-control';
-  const emit = (
-    buckets: Map<string, Bucket>,
-    resources: Resource[],
-    pending: Map<string, Dispatch[]>,
-  ) => {
-    for (const bucket of buckets.values()) {
+  const emit = (buckets: Buckets, resources: Resource[], pending: Map<string, Dispatch[]>) => {
+    for (const bucket of buckets.list) {
       const name = `vfx.batch-job-${nextPacket++}`,
         table = `${name}.table`,
         bindings = `${name}.bindings`;
@@ -179,7 +197,7 @@ export function createVfxDirectComputeFrame() {
     }) {
       let wave = waves.get(input.tick);
       if (wave === undefined) {
-        wave = { resets: [], buckets: new Map() };
+        wave = { resets: [], buckets: createBuckets() };
         waves.set(input.tick, wave);
       }
       wave.resets.push(...input.reset);
@@ -197,7 +215,7 @@ export function createVfxDirectComputeFrame() {
     ) {
       let buckets = views.get(view);
       if (buckets === undefined) {
-        buckets = new Map();
+        buckets = createBuckets();
         views.set(view, buckets);
       }
       append(buckets, input);

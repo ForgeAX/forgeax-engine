@@ -52,7 +52,7 @@ describe('Fog frame owner integration', () => {
 
     world
       .set(entity, Fog, {
-        color: [1.2, 0.3, 0.4],
+        color: [-0.2, 0.3, 0.4],
         density: 0.03,
         heightFalloff: 0,
         maxOpacity: 0.8,

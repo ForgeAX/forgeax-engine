@@ -10,6 +10,7 @@ export * from './depth-of-field';
 export * from './directional-light';
 export * from './dynamic-resolution';
 export * from './fog';
+export * from './gradient-sky';
 export { Instances, type InstancesData } from './instances';
 export { Layer } from './layer';
 export * from './lens-effects';
@@ -37,8 +38,11 @@ export { PointLightShadow } from './point-light-shadow';
 export {
   type PointShape,
   PointShapeValue,
+  type PointSizeUnits,
+  PointSizeUnitsValue,
   Points,
   pointShapeFromU32,
+  pointSizeUnitsFromU32,
 } from './points';
 export { PostProcessParams } from './post-process-params';
 export { RectAreaLight } from './rect-area-light';

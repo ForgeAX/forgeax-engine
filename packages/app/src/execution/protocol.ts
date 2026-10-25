@@ -25,6 +25,11 @@ export interface ExecutionFrameMessage {
   readonly sampleTimeSeconds?: number;
   /** Explicit pause/resume or replay lifecycle boundary for temporal owners. */
   readonly temporalReset?: boolean;
+  /**
+   * `false`: a paused update-only step. The Engine updates the World, publishes
+   * and draws nothing, and settles credit with `simulation-complete`.
+   */
+  readonly render?: false;
   readonly inputSample: InputBackendSample;
   readonly canvasWidth: number;
   readonly canvasHeight: number;
@@ -90,6 +95,7 @@ export class FrameCreditLedger {
     canvasSize: CanvasDrawingBufferSize = { width: 0, height: 0 },
     sampleTimeSeconds?: number,
     temporalReset = false,
+    render = true,
   ): ExecutionFrameMessage | undefined {
     if (this.inFlight !== null) {
       this.throttledTicks += 1;
@@ -107,6 +113,7 @@ export class FrameCreditLedger {
       deltaSeconds,
       ...(sampleTimeSeconds === undefined ? {} : { sampleTimeSeconds }),
       ...(temporalReset ? { temporalReset: true } : {}),
+      ...(render ? {} : { render: false as const }),
       inputSample: sampleInput(),
       canvasWidth: canvasSize.width,
       canvasHeight: canvasSize.height,
@@ -167,6 +174,8 @@ export interface ExecutionInitMessage {
    * to the active Renderer owner.
    */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /** Captured recipes compiled after renderer readiness without blocking it. */
+  readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly dynamicGeometryMeshBudgetBytes?: number;
   readonly assetBudgetBytes?: number;
   /** Page load progress scope; Worker realms report load work to it. */

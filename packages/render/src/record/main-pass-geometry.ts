@@ -6,6 +6,7 @@ import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-bl
 import { meshSsboBufferBinding, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { markPipelinePreparationPending } from '../render-system-presentation';
+import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import { FirstEntryMap } from './first-entry-map';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
 import type { ValidatedRenderable } from './frame-snapshot';
@@ -1971,7 +1972,7 @@ export function recordGeometryDraws(
 type MaterialPasses = Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>;
 const EMPTY_MATERIAL_PASSES: MaterialPasses = new Map();
 /** A fixed dispatch list selects fixed passes; graph nodes re-read it every frame. */
-const materialPassesByDispatch = new WeakMap<
+const materialPassesByDispatch = new GenerationalWeakMap<
   object,
   { readonly length: number; readonly passes: [MaterialPasses?, MaterialPasses?] }
 >();

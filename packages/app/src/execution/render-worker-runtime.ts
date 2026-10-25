@@ -264,7 +264,9 @@ function inspectRendererDiagnostics():
   }
 }
 
-function fail(message: RenderWorkerInput, cause: unknown): void {
+type FailureMessage = RenderWorkerInput | InitFailureContext;
+
+function fail(message: FailureMessage, cause: unknown): void {
   if (failed) return;
   failed = true;
   activePreparationAbort?.abort();
@@ -331,12 +333,15 @@ async function completeFrame(
   captureDraw?: CaptureDrawTransaction,
 ): Promise<void> {
   const submittedAt = performance.now();
+  let creditReturned = false;
   try {
     // Observe this receipt immediately, before the next draw changes frame state.
     const observedTiming = gpuPassTimingEnabled
       ? frameRenderer.observe(receipt, { include: ['timings'] })
       : undefined;
-    const completion = receipt.completed.then((result) => {
+    // Credit feedback follows GPU completion even while a cooperative draw
+    // holds completion-driven releases; teardown below still awaits completed.
+    const completion = (receipt.creditCompleted ?? receipt.completed).then((result) => {
       if (!result.ok) {
         // Preserve the target receipt failure before worker teardown invalidates
         // any other capture requests.
@@ -388,6 +393,10 @@ async function completeFrame(
         : buffers,
     );
     hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
+    // The Host may admit the next frame now; its draw can arrive during a
+    // checkpoint of the current draw, before this receipt is fully retired.
+    creditReturned = true;
+    framesInFlight--;
   } catch (cause) {
     // A failed successor must stop admission even while an older receipt waits.
     fail(message, cause);
@@ -396,14 +405,22 @@ async function completeFrame(
     await Promise.allSettled([previous, receipt.completed]);
     closeVideoFrames(message);
     unretiredReceipts--;
-    framesInFlight--;
+    if (!creditReturned) framesInFlight--;
   }
 }
 
 type InitMessage = Extract<RenderWorkerInput, { kind: 'init' }>;
+interface InitFailureContext {
+  readonly kind: 'init';
+  readonly identity: InitMessage['identity'];
+}
 type InspectMessage = Extract<RenderWorkerInput, { kind: 'inspect' }>;
 type CaptureMessage = Extract<RenderWorkerInput, { kind: 'capture' }>;
 type GeometryRequest = NonNullable<typeof geometryRequest>;
+
+function createInitFailureContext(message: InitMessage): InitFailureContext {
+  return { kind: 'init', identity: { ...message.identity } };
+}
 
 function receiveGeometryObserveCancel(requestId: number): void {
   if (geometryRequest?.requestId === requestId) {
@@ -720,6 +737,9 @@ function initRendererOptions(
     ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
     ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
     ...(message.pipelineLibrary === undefined ? {} : { pipelineLibrary: message.pipelineLibrary }),
+    ...(message.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: message.backgroundPipelineLibrary }),
     ...(message.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: message.outputColorSpace }),
@@ -762,7 +782,7 @@ function isDeviceLostLifecycle(error: SerializedRenderError): boolean {
 }
 
 function forwardRendererError(
-  message: InitMessage,
+  message: InitFailureContext,
   rendererError: Extract<
     Parameters<Parameters<Renderer['subscribe']>[0]>[0],
     { kind: 'error' }
@@ -813,6 +833,16 @@ function forwardRendererError(
       recoverable: false,
     });
   }
+}
+
+function createRendererErrorListener(
+  failureContext: InitFailureContext,
+): Parameters<Renderer['subscribe']>[0] {
+  const listener: Parameters<Renderer['subscribe']>[0] = (event) => {
+    if (event.kind !== 'error' || shuttingDown || failed) return;
+    forwardRendererError(failureContext, event.error);
+  };
+  return listener;
 }
 
 type RenderFeatureHost = RendererHostAssembly['featureHost'];
@@ -896,10 +926,9 @@ async function receiveInit(message: InitMessage): Promise<void> {
     scope.postMessage(message),
   );
   inspectionWorldIdentity = message.worldIdentity;
-  unsubscribeRenderer = activeRenderer.subscribe((event) => {
-    if (event.kind !== 'error' || shuttingDown || failed) return;
-    forwardRendererError(message, event.error);
-  });
+  unsubscribeRenderer = activeRenderer.subscribe(
+    createRendererErrorListener(createInitFailureContext(message)),
+  );
   await prepared.value.configureRenderer?.(activeRenderer);
   applyRendererOrderDiagnostic(
     activeRenderer,

@@ -4,7 +4,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 const digestPattern = /^[a-f0-9]{64}$/;
 export const SHADER_MANIFEST_PUBLICATION_VERSION = '5.0.0' as const;
 
-const sourceDomain = new TextEncoder().encode('forgeax.shader.source.v4\0');
+const sourceDomain = Uint8Array.from('forgeax.shader.source.v4\0', (char) => char.charCodeAt(0));
 
 /** A source identity commits to ordered, individually verified UTF-8 fragments. */
 export function shaderSourceDigestInput(

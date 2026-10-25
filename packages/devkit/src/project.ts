@@ -52,6 +52,32 @@ function timeoutFromPackage(
   };
 }
 
+/**
+ * `package.json#forgeax.pointShadows: true` compiles the Standard shaders with
+ * the point-shadow cube-array lane, so `PointLightShadow` casters render in
+ * DevKit dev and production builds. Omitted or false keeps the smaller default
+ * shader build.
+ */
+function pointShadowsFromPackage(
+  root: string,
+  packageJson: Record<string, unknown>,
+): CommandResult<{ readonly pointShadows?: true }> {
+  const forgeax = packageJson.forgeax;
+  const value =
+    forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
+      ? (forgeax as Record<string, unknown>).pointShadows
+      : undefined;
+  if (value !== undefined && typeof value !== 'boolean') {
+    return projectError(
+      'package-manifest-invalid',
+      'package.json#forgeax.pointShadows to be a boolean',
+      'Set true to build point-light shadow shaders, or remove the field.',
+      { root, pointShadows: value },
+    );
+  }
+  return { ok: true, value: value === true ? { pointShadows: true } : {} };
+}
+
 /** Read the shared project startup policy without requiring a forge.json project. */
 export async function readProjectStartupTimeoutMs(
   rootInput = process.cwd(),
@@ -149,6 +175,8 @@ export async function readProjectFacts(
   if (!startup.ok) return startup;
   const frame = timeoutFromPackage(root, packageJson, 'frameTimeoutMs');
   if (!frame.ok) return frame;
+  const shaders = pointShadowsFromPackage(root, packageJson);
+  if (!shaders.ok) return shaders;
   const assetLibraries = await resolveAssetLibraries(root, forge.assetLibraries);
   if (!assetLibraries.ok) return assetLibraries;
   return {
@@ -160,6 +188,7 @@ export async function readProjectFacts(
       roots: forge.roots,
       ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
       ...(frame.value === undefined ? {} : { frameTimeoutMs: frame.value }),
+      ...shaders.value,
       assetRoots: forge.assetRoots,
       assetLibraries: assetLibraries.value,
       packageJson,

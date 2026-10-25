@@ -174,7 +174,9 @@ export function exportObject(
       return formatFailure('matrix', 'world matrix requires sixteen finite values');
     const matrix = item.matrix === undefined ? new Matrix4() : new Matrix4().fromArray(item.matrix);
     const geometry = new BufferGeometry();
-    for (const { key, byteLength } of deriveVertexLayoutProjection(canonical.attributes)
+    // Export what the source authored: MeshBuilder's surface completion is a
+    // render contract, not data the exported file should gain.
+    for (const { key, byteLength } of deriveVertexLayoutProjection(item.mesh.attributes)
       .attributes) {
       const semantic = STATIC_ATTRIBUTE_NAMES[key];
       if (semantic === undefined)

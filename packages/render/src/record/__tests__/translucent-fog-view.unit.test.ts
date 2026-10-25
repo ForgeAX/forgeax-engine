@@ -149,6 +149,9 @@ describe('translucent fog composition', () => {
       density: 0.2,
       heightFalloff: 0.1,
       maxOpacity: 0.9,
+      mode: 'exp' as const,
+      near: 0,
+      far: 100,
     };
     writeViewUbo(
       queue,
@@ -190,5 +193,43 @@ describe('translucent fog composition', () => {
     );
     // Auxiliary captures keep their own unfogged slot and never rewrite the display copies.
     expect(writes.map((write) => write.offset)).toEqual([VIEW_UNIFORM_SLOT_STRIDE * 25]);
+  });
+
+  it('signs the Three.js fog laws into the existing fog lanes', () => {
+    const lanes = (fog: Parameters<typeof writeViewUbo>[9]): number[] => {
+      const writes: Float32Array[] = [];
+      const queue = {
+        writeBuffer: (_buffer: Buffer, _offset: number, data: Float32Array) => {
+          writes.push(data.slice());
+          return { ok: true, value: undefined } as const;
+        },
+      } as unknown as RhiQueue;
+      const light = {
+        kind: 'directional' as const,
+        direction: vec3.create(0, -1, 0),
+        color: vec3.create(1, 1, 1),
+        intensity: 1,
+        contactShadowLength: 0,
+      } as never;
+      const empty = { point: [], spot: [] } as never;
+      writeViewUbo(queue, {} as Buffer, camera(), light, empty, [], 0, undefined, undefined, fog);
+      return Array.from(writes[0]?.slice(284, 291) ?? []);
+    };
+    const base = {
+      color: [0.25, 0.5, 0.75] as const,
+      density: 0.5,
+      heightFalloff: 0,
+      maxOpacity: 0.75,
+      near: 2,
+      far: 8,
+    };
+    expect(lanes({ ...base, mode: 'exp' })).toEqual([0.25, 0.5, 0.75, 0.5, 0, 0.75, 0]);
+    expect(lanes({ ...base, mode: 'exp2' })).toEqual([0.25, 0.5, 0.75, -0.5, 0, 0.75, 0]);
+    expect(lanes({ ...base, mode: 'linear' })).toEqual([0.25, 0.5, 0.75, 8, 2, -0.75, 0]);
+    // Linear fog needs no density; an empty range or zero opacity stays unfogged.
+    expect(lanes({ ...base, mode: 'linear', density: 0 })).toEqual([
+      0.25, 0.5, 0.75, 8, 2, -0.75, 0,
+    ]);
+    expect(lanes({ ...base, mode: 'linear', maxOpacity: 0 })).toEqual([0, 0, 0, 0, 0, 0, 0]);
   });
 });

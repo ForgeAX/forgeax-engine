@@ -841,10 +841,23 @@ in-flight fence.
 
 `renderComponentsPlugin()` registers `Fog` for scene instantiation.
 
-`Fog` provides distance fog with exponential height density. `density`,
-`heightFalloff`, linear `color` and `maxOpacity` are selected from the frame's
-resource owner. Disabled or zero-density fog records no fog pass; there is no
-3D texture, froxel grid or temporal history. The authored sky remains unchanged.
+`Fog` provides distance fog. `mode` picks the law (`FogModeValue`):
+
+| `mode` | Opacity | Three.js equivalent |
+|:--|:--|:--|
+| `exp` (default) | `maxOpacity * (1 - exp(-opticalDepth))` along the camera ray, with `heightFalloff` density | none |
+| `exp2` | `maxOpacity * (1 - exp(-(density * depth)^2))` | `FogExp2(color, density)` |
+| `linear` | `maxOpacity * smoothstep(near, far, depth)` | `Fog(color, near, far)` |
+
+`exp2` and `linear` use camera view depth like Three.js, so the same numbers
+transfer; `linear` leaves everything nearer than `near` unfogged, which keeps
+an orthographic diorama board clear. `heightFalloff` applies to `exp` only and
+must be 0 for the other modes; `linear` needs `0 <= near < far` and ignores
+`density`. `color` is scene-linear and may exceed 1 (HDR), like a Three.js
+`Color`. `color`, `maxOpacity` and the law fields are selected from the
+frame's resource owner. Disabled fog (zero opacity, zero exponential density or
+an empty linear range) records no fog pass; there is no 3D texture, froxel grid
+or temporal history. The authored sky remains unchanged.
 SMAA, FXAA, TAA and no-AA use single-sample depth; MSAA is rejected until a
 matching depth resolve is available. Use `VolumetricFog` for spatial density and
 lighting/scattering effects; the meadow-style distance haze needs only `Fog`.
@@ -1032,6 +1045,13 @@ an immutable `FramePlan`, records one frame, and returns a `FrameReceipt`.
 `FrameReceipt` is the only successful synchronous proof that the host submit
 reached the queue. Use `Renderer.inspect()` for detached lifecycle and
 capability facts, then `observe(receipt, request)` for receipt-bound evidence.
+
+When optional `backgroundPipelineLibrary` preparation starts,
+`inspect().backgroundPipelineLibraryState` remains `running` until both native
+preparation and CPU material analysis settle. It reports `done` only for the
+current device and `failed` on preparation failure or retirement. The nested
+`pipelineLibrary.backgroundWarmup` counters describe the native RHI lane only;
+its completion alone does not establish whole-Renderer preparation completion.
 
 Request per-view GPU LOD facts explicitly with
 `observe(receipt, { include: ['lod-occlusion'] })`. The returned
@@ -3262,7 +3282,8 @@ along its light-facing normal by that many texels at its own distance. The
 default `pcfKernelSize: 3` uses five rotated Vogel hardware comparison samples,
 matching Three r184 radius 1. Width 5 uses radius 2; width 1 uses one hardware
 2x2 comparison. Point and Spot share this filter policy. Standard point-shadow sampling is compiled only when the app enables
-`forgeaxShader({ engineEntries: { pointShadows: true } })`; the renderer also
+`forgeaxShader({ engineEntries: { pointShadows: true } })` (DevKit game projects:
+`package.json#forgeax.pointShadows: true`); the renderer also
 needs `propagateTransforms` to publish the light position.
 
 Camera-culled scene meshes remain shadow candidates when their bounds intersect
@@ -4485,11 +4506,12 @@ and source-level falsifier paths.
 Bloom is a Camera-owned Standard post feature. `bloom` selects the enabled
 path, while `bloomIntensity` is bounded to `[0, 8]`, `bloomThreshold` to
 `[0, 65504]`, `bloomSmoothWidth` to `[0, 1]`, and `bloomRadius` to `[0, 1]`.
-The defaults follow Three r184 WebGPU BloomNode: intensity `1`, threshold `0`,
-smooth width `0.01`, and radius `0`. Bloom is off by default; the disabled value
-and intensity `0` are exact zero-work cases. Enabling Bloom creates the HDR
-chain even with `TONEMAP_NONE`. Three's WebGL UnrealBloomPass has a different
-threshold default (`1`); do not mix the two reference APIs.
+The defaults bloom only highlights: threshold `1` (above-white scene-linear
+luminance), intensity `0.5`, smooth width `0.01`, and radius `0`. Three r184
+WebGPU BloomNode instead defaults to threshold `0` and intensity `1`, which
+blooms the whole frame; pass those values explicitly to reproduce it. Bloom is
+off by default; the disabled value and intensity `0` are exact zero-work cases.
+Enabling Bloom creates the HDR chain even with `TONEMAP_NONE`.
 
 Migration: `bloomSoftKnee` becomes the absolute `bloomSmoothWidth`, and
 `bloomScatter` becomes `bloomRadius`. Their meanings changed with the filter;
@@ -4986,11 +5008,11 @@ const material = Materials.unlit([1, 0.5, 0.25, 1]);
 const world = new World();
 const entity = world.spawn({
   component: Points,
-  data: { sizePx: 4, shape: PointShapeValue.circle },
+  data: { size: 4, shape: PointShapeValue.circle },
 }).unwrap();
 const admitted = admitPointsLines({
   entity,
-  points: { sizePx: 4, shape: PointShapeValue.circle },
+  points: { size: 4, shape: PointShapeValue.circle },
   mesh: pointMesh,
   material,
 });
@@ -4999,7 +5021,21 @@ if (!admitted.ok) throw new Error(admitted.error.hint);
 world.spawn({ component: Lines, data: { width: 2 } }).unwrap();
 ```
 
-`width` is measured in physical pixels by default. With
+`Points.size` and `Lines.width` are measured in physical pixels by default. With
+`sizeUnits: PointSizeUnitsValue.world` a point's size is its world-space diameter
+(Three.js `PointsMaterial.sizeAttenuation`). Point sprites also take per-point data from
+the mesh: the optional `color` stream (linear RGBA) multiplies the material colour, so
+its alpha fades a point; the optional `uv1` stream's `u` scales the point's size; the
+material's base-colour texture maps across each sprite (Three.js `PointsMaterial.map`).
+Shape `soft` is a round sprite whose alpha falls to zero at the rim. The material's
+render state supplies blending and depth writes, so an additive, non-depth-writing
+unlit material gives Three.js `AdditiveBlending, depthWrite: false` points. Writing the
+position/colour/`uv1` streams with `AssetRegistry.writeRange` moves points every frame:
+a same-sized generation rewrites the expanded buffers in place and supersedes the old
+expansion instead of allocating a new pair. Expansion runs on the CPU, so a few thousand
+points per entity is the intended scale; GPU particle systems belong to VFX.
+
+For Lines, with
 `widthUnits: LineWidthUnitsValue.world` it is a world-space distance: each
 endpoint's pixel radius derives from the camera projection and that endpoint's
 depth, so perspective lines taper with distance and orthographic lines keep a
@@ -5008,8 +5044,9 @@ offset use mesh-local units, so object scaling scales the pattern:
 
 | Component | Field | Default | Accepted values |
 |:--|:--|--:|:--|
-| `Points` | `sizePx` | `4` | finite number greater than `0` |
-| `Points` | `shape` | `square` | `square` or `circle` |
+| `Points` | `size` | `4` | finite number greater than `0` |
+| `Points` | `sizeUnits` | `pixels` | `pixels` or `world` (diameter, attenuates with depth) |
+| `Points` | `shape` | `square` | `square`, `circle` or `soft` (alpha fades to the rim) |
 | `Lines` | `width` | `1` | finite number greater than `0` |
 | `Lines` | `widthUnits` | `pixels` | `pixels` or `world` |
 | `Lines` | `cap` | `butt` | `butt` or `round` |
@@ -5077,7 +5114,7 @@ distance through preparation, draw, capture and replay.
 
 | Candidate | Result | Reason |
 |:--|:--:|:--|
-| `Points` + `point-list` + finite positive `sizePx` + unlit forward material | supported | `square` and `circle` are the only point shapes |
+| `Points` + `point-list` + finite positive `size` + unlit forward material | supported | `square`, `circle` and `soft` shapes; optional `color` and `uv1` streams |
 | `Lines` + paired `line-list` + finite positive `width` + unlit forward material | supported | each pair is one line segment |
 | `Lines` with `widthUnits` `world` and/or `cap` `round` | supported | same expanded mesh; `round` selects the `fs_round` fragment entry, so butt draws never run the end test |
 | `Lines` with an unknown `widthUnits` or `cap` label | refused | `points-lines-invalid-style` names the field |
@@ -5230,7 +5267,7 @@ backend branch.
 | Surface | Supported contract | Refused or not claimed |
 |:--|:--|:--|
 | topology | indexed or non-indexed `point-list` and paired `line-list` | strips, triangles, mixed topology, and odd line tails |
-| style | finite positive `Points.sizePx` and `Lines.width`; circle or square points; known `Lines.widthUnits`/`cap` labels | negative, non-finite, or lane-conflicting values |
+| style | finite positive `Points.size` and `Lines.width`; square, circle or soft points; known `sizeUnits`/`widthUnits`/`cap` labels | negative, non-finite, or lane-conflicting values |
 | material | engine-owned `Materials.unlit` forward material | standard/PBR, deferred, shadow-only, or custom runtime shader |
 | capability lane | direct WebGPU runtime; clustered unlit preserves the same authoring contract | CPU and WebGL2 require their declared capability route; no pixel result is inferred from RhiNull |
 | structural lane | RhiNull records retained projection, preparation, bindings, and draw shape | RhiNull is never hardware or pixel evidence |
@@ -5761,7 +5798,7 @@ world.spawn(
 |:--|:--|
 | `direction` / `Transform` | Outgoing direction plus the light position; both are required for a useful view |
 | `range` | World units; default `Infinity` (no distance cutoff). Finite ranges bound cluster membership. |
-| `innerConeDeg` / `outerConeDeg` | Degrees; `0 ≤ inner ≤ outer ≤ 90`, outer > 0, defaults `60` / `60` (hard cone). Set both angles for a narrower cone or penumbra. |
+| `innerConeDeg` / `outerConeDeg` | Degrees; `0 ≤ inner ≤ outer ≤ 90`, outer > 0, defaults `0` / `60` (KHR inner default: falloff spans the cone, so setting only `outerConeDeg` is always valid). Equal angles give Three's penumbra-0 hard cone. |
 | `castShadow` | Defaults `false`; set `true` to request shadow maps |
 | `nearPlane`, `farPlane` | Shadow projection defaults `0.5` / `500` for PointLightShadow and SpotLight. Positive finite light range replaces far; unlimited range uses far. Effective far must exceed near. |
 | `mapSize`, `pcfKernelSize` | Shadow map resolution and odd PCF width; defaults `1024` / `3` |
@@ -5839,10 +5876,13 @@ ray reference must use all-match surface lighting.
 
 #### Per-entity shadow participation
 
-`ShadowParticipation { cast, receive }` is the single per-entity switch,
-independent of materials: `Materials.standard` / `Materials.unlit` always emit a
-ShadowCaster pass and have no casting option. It maps to Bevy `NotShadowCaster` / `NotShadowReceiver`, and an
-entity without it both casts and receives. `cast: false` removes the entity
+`ShadowParticipation { cast, receive }` is the single per-entity switch:
+`Materials.standard` / `Materials.unlit` always emit a ShadowCaster pass and have
+no casting option. It maps to Bevy `NotShadowCaster` / `NotShadowReceiver`. An
+entity without it receives, and casts unless every material on it blends
+(transparent or additive `renderState.blend`): blended-only meshes such as light
+beams, glows and glass cast nothing by default, as with Three.js
+`castShadow = false`; author `ShadowParticipation { cast: true }` to make one cast. `cast: false` removes the entity
 from every directional, spot and point shadow map while it stays visible.
 `receive: false` stops its own surface from sampling directional, contact,
 capsule, spot and point shadows, and it keeps casting. Deferred carries the
@@ -6107,6 +6147,52 @@ The built-in Output Transform samples the linear scene target and writes the
 display-encoded result before FXAA, post effects, and present. Shader source authority is
 [`packages/shader/src/tonemap.wgsl`](../shader/src/tonemap.wgsl); the render
 package does not duplicate those formulas.
+
+`Camera.clearColor` is written into the linear scene target, so an opaque clear
+goes through exposure and the tone curve like any surface. This differs from
+Three.js, whose `scene.background` colour is display-referred. The default
+`[0, 0, 0, 0]` is transparent: on a premultiplied surface (the WebGPU canvas)
+the page behind the canvas shows through tone mapping, FXAA, TAA and bloom. A
+[`GradientSky`](#gradient-sky-background) is the in-engine display-referred background
+(the same composite, without page CSS). Analytic fog skips background pixels and tints
+geometry only, except a GradientSky horizon. A surface without premultiplied alpha
+presents opaque, where a transparent clear shows black.
+
+### Gradient sky background
+
+`GradientSky { zenith, horizon, ground, exponent, sunSize, sunGlow, fogBlend, toneMapped }`
+is a procedural background with no geometry to build. Above the horizon the colour is
+`mix(horizon, zenith, pow(h, exponent))` for the view ray's elevation sine `h`; below it,
+`mix(horizon, ground, pow(-h, exponent))`. The selected `DirectionalLight` places a disc
+of angular radius `sunSize` toward `-direction` with an exponential `sunGlow` halo in the
+light's hue; `sunSize: 0` or no light draws no disc. With an active `Fog`, the sky and
+glow blend to the Fog colour at the Fog's `maxOpacity` at and below the horizon, fading
+out by elevation sine `fogBlend` (0 never fogs the sky), so distant fogged geometry meets
+the sky without a seam. The disc is drawn over the haze and hidden below the horizon.
+
+A GradientSky replaces `Camera.clearColor`: the scene target clears transparent.
+
+- `toneMapped: false` (default) is display-referred, like Three.js `scene.background`.
+  The `gradient-sky-display` pass runs after every output stage (tone mapping, LUT,
+  FXAA, encoded post effects) and fills the remaining transparent coverage of the
+  encoded surface (`blend: one-minus-dst-alpha, one`), exactly as a CSS page colour shows
+  behind the canvas. Linear colours are shown as set (clamped to [0, 1]); the disc is the
+  light hue mixed half-way to white. The fogged horizon uses the Fog colour mapped
+  through the camera's exposure and tone curve, which is how fogged geometry shows. The
+  sky is outside the HDR scene, so bloom, SSR, planar reflection and transmission do not
+  see it.
+- `toneMapped: true` is scene-referred radiance drawn by the `skybox` pass into the HDR
+  scene before geometry, so exposure, the tone curve and bloom apply and screen-space
+  consumers see it. The disc radiance is the light hue times `intensity * 4`, so a 3 lux
+  sun reaches bloom thresholds.
+
+At most one GradientSky contributes. A second one, one beside `Atmosphere` or a
+`SkyboxBackground` (each draws the background), or an out-of-range field rejects the
+frame selection with `environment-selection-invalid` naming the field
+(`GradientSky.exponent` in [0.001, 64], `sunSize` in [0, 0.5] radians, `sunGlow` in
+[0, 16], `fogBlend` in [0, 1], colour channels finite and >= 0). The sky does not light
+the scene; match `Skylight.color` / `groundColor` to it. Reflection probes and cube
+captures do not render it.
 
 ### Material output and Forward graph composition
 
@@ -7818,6 +7904,10 @@ independent preview renderers must return native Buffer/Texture ownership counts
 to baseline after close. Failed initialization also disposes its partial renderer.
 
 ### Canvas textures
+
+Render target, external texture and canvas source owners use UUIDv7 identities.
+Their copyable string tokens retain producer isolation in native realms without
+Web Crypto; native resource lifetime stays with the original producer.
 
 Interactive example: [Canvas in the world](../../apps/showcase/canvas-texture/README.md)
 compares an editable 2D canvas with a real model, including live signs and telemetry.
@@ -9778,11 +9868,25 @@ conversion to the surface's diffuse response before material/screen occlusion;
 it supplies no specular environment. Physical layers retain their ordinary
 composition after that response. Unlit/data materials do not consume it.
 
-The native environment snapshot and 80-byte environment uniform carry this
+The native environment snapshot and 96-byte environment uniform carry this
 value through retained frames and probe selection. Removing a Skylight clears
 all uniform lanes. Pending image preparation cannot suppress this independent
 irradiance. The Three adapter sums camera-visible AmbientLight author values
 into this existing environment owner; it does not synthesize image assets.
+
+## Hemisphere ambient
+
+`Skylight.groundColor` makes the diffuse environment a hemisphere, like Three.js
+`HemisphereLight`: the diffuse scale is `mix(groundColor, color, n.y * 0.5 + 0.5) *
+intensity` for the world-space normal `n`, multiplied by the image or Atmosphere
+irradiance when one is bound. Diffuse transmission samples the opposite
+hemisphere with `-n`. The all-zero default writes a disabled lane, so shading is
+exactly the uniform `color` path. The uniform's last lane carries
+`groundColor * intensity` and an enable flag for the material, Deferred and local
+reflection-probe environments; an unavailable diffuse source zeroes it with the
+sky term. Specular environment and `ambientIrradiance` are unchanged. A Three
+hemisphere of intensity `I` maps to `intensity = I / pi` (solid-colour Skylight
+has no Lambert `1 / pi`).
 
 ### Affine model winding
 

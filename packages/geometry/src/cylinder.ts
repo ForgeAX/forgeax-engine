@@ -1,8 +1,9 @@
 // @forgeax/engine-runtime - Procedural Cylinder geometry (M3 / w8).
 //
 // Mirrors Three.js r184 CylinderGeometry: createCylinderGeometry(radiusTop,
-// radiusBottom, height, radialSegments?, heightSegments?) ->
-// Result<MeshAsset, AssetError>.
+// radiusBottom, height, radialSegments?, heightSegments?, openEnded?) ->
+// Result<MeshAsset, AssetError>. `openEnded` omits both caps (a tube or an
+// open cone, e.g. a light beam whose far end must not show a hard disc).
 // Degenerate parameters (both radii <= 0, height <= 0, radialSegments < 3,
 // heightSegments < 1) fail-fast with AssetError('asset-parse-failed').
 // Note: one radius may be zero (degenerate end collapses to a cone tip),
@@ -14,7 +15,62 @@
 import type { AssetError, MeshAsset } from '@forgeax/engine-types';
 import { err, type Result } from '@forgeax/engine-types';
 import { degenerate } from './box';
-import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
+import {
+  createPrimitiveAttributes,
+  finishPrimitiveMesh,
+  type PrimitiveAttributes,
+} from './primitive-attributes';
+
+type Cap = readonly [radius: number, direction: 1 | -1];
+
+/** Closed ends with a positive radius; an open-ended surface has none. */
+function cylinderCaps(radiusTop: number, radiusBottom: number, openEnded: boolean): Cap[] {
+  if (openEnded) return [];
+  const caps: Cap[] = [
+    [radiusTop, 1],
+    [radiusBottom, -1],
+  ];
+  return caps.filter(([radius]) => radius > 0);
+}
+
+/** Write one cap fan (centre + ring) at `vIdx`/`iIdx`; returns the next cursors. */
+function writeCap(
+  attributes: PrimitiveAttributes,
+  indices: Uint32Array,
+  [radius, direction]: Cap,
+  halfHeight: number,
+  rs: number,
+  cursor: { vIdx: number; iIdx: number },
+): void {
+  let { vIdx, iIdx } = cursor;
+  const centerIdx = vIdx;
+  attributes.position[vIdx * 3 + 1] = direction * halfHeight;
+  attributes.normal[vIdx * 3 + 1] = direction;
+  attributes.uv[vIdx * 2 + 0] = 0.5;
+  attributes.uv[vIdx * 2 + 1] = 0.5;
+  vIdx++;
+  const ringStart = vIdx;
+  for (let ix = 0; ix <= rs; ix++) {
+    const theta = (ix / rs) * Math.PI * 2;
+    const sinT = Math.sin(theta);
+    const cosT = Math.cos(theta);
+    attributes.position[vIdx * 3 + 0] = radius * sinT;
+    attributes.position[vIdx * 3 + 1] = direction * halfHeight;
+    attributes.position[vIdx * 3 + 2] = radius * cosT;
+    attributes.normal[vIdx * 3 + 1] = direction;
+    attributes.uv[vIdx * 2 + 0] = sinT * 0.5 + 0.5;
+    attributes.uv[vIdx * 2 + 1] = cosT * 0.5 + 0.5;
+    vIdx++;
+  }
+  const flip = direction < 0 ? 1 : 0;
+  for (let ix = 0; ix < rs; ix++) {
+    indices[iIdx++] = centerIdx;
+    indices[iIdx++] = ringStart + ix + flip;
+    indices[iIdx++] = ringStart + ix + 1 - flip;
+  }
+  cursor.vIdx = vIdx;
+  cursor.iIdx = iIdx;
+}
 
 export function createCylinderGeometry(
   radiusTop: number,
@@ -22,6 +78,7 @@ export function createCylinderGeometry(
   height: number,
   radialSegments: number = 16,
   heightSegments: number = 1,
+  openEnded: boolean = false,
 ): Result<MeshAsset, AssetError> {
   if (radiusTop < 0 || radiusBottom < 0 || height <= 0) {
     return err(
@@ -39,17 +96,10 @@ export function createCylinderGeometry(
   const halfHeight = height / 2;
   // Side: (rs + 1) * (hs + 1) vertices
   const sideVertexCount = (rs + 1) * (hs + 1);
-  // Caps: each cap has 1 center + (rs + 1) ring vertices if the radius is > 0
-  const topCap = radiusTop > 0;
-  const bottomCap = radiusBottom > 0;
-  const topCount = topCap ? rs + 2 : 0;
-  const bottomCount = bottomCap ? rs + 2 : 0;
-  const vertexCount = sideVertexCount + topCount + bottomCount;
-
-  const sideIndexCount = rs * hs * 6;
-  const topIdxCount = topCap ? rs * 3 : 0;
-  const bottomIdxCount = bottomCap ? rs * 3 : 0;
-  const indexCount = sideIndexCount + topIdxCount + bottomIdxCount;
+  // Caps: each cap has 1 center + (rs + 1) ring vertices and rs triangles.
+  const caps = cylinderCaps(radiusTop, radiusBottom, openEnded);
+  const vertexCount = sideVertexCount + caps.length * (rs + 2);
+  const indexCount = rs * hs * 6 + caps.length * rs * 3;
 
   const attributes = createPrimitiveAttributes(vertexCount);
   const indices = new Uint32Array(indexCount);
@@ -103,36 +153,8 @@ export function createCylinderGeometry(
   }
 
   // Caps share their geometry; their orientation supplies the normal and winding.
-  for (const [radius, direction] of [
-    [radiusTop, 1],
-    [radiusBottom, -1],
-  ] as const) {
-    if (!(radius > 0)) continue;
-    const centerIdx = vIdx;
-    attributes.position[vIdx * 3 + 1] = direction * halfHeight;
-    attributes.normal[vIdx * 3 + 1] = direction;
-    attributes.uv[vIdx * 2 + 0] = 0.5;
-    attributes.uv[vIdx * 2 + 1] = 0.5;
-    vIdx++;
-    const ringStart = vIdx;
-    for (let ix = 0; ix <= rs; ix++) {
-      const theta = (ix / rs) * Math.PI * 2;
-      const sinT = Math.sin(theta);
-      const cosT = Math.cos(theta);
-      attributes.position[vIdx * 3 + 0] = radius * sinT;
-      attributes.position[vIdx * 3 + 1] = direction * halfHeight;
-      attributes.position[vIdx * 3 + 2] = radius * cosT;
-      attributes.normal[vIdx * 3 + 1] = direction;
-      attributes.uv[vIdx * 2 + 0] = sinT * 0.5 + 0.5;
-      attributes.uv[vIdx * 2 + 1] = cosT * 0.5 + 0.5;
-      vIdx++;
-    }
-    for (let ix = 0; ix < rs; ix++) {
-      indices[iIdx++] = centerIdx;
-      indices[iIdx++] = ringStart + ix + (direction < 0 ? 1 : 0);
-      indices[iIdx++] = ringStart + ix + (direction > 0 ? 1 : 0);
-    }
-  }
+  const cursor = { vIdx, iIdx };
+  for (const cap of caps) writeCap(attributes, indices, cap, halfHeight, rs, cursor);
 
   return finishPrimitiveMesh(attributes, indices);
 }

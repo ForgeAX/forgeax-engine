@@ -365,6 +365,71 @@ describe('M3 / m3-t3 — frame-loop wraps the single World into [world] with own
     expect(loop.stop().ok).toBe(true);
   });
 
+  it('steps update-only frames without drawing or receipt credit, then resets the next picture', () => {
+    const world = new World();
+    const update = vi.spyOn(world, 'update');
+    const beforeDraw = vi.fn();
+    const calls: DrawCall[] = [];
+    // Receipts never complete: once the in-flight credit is spent, only update-only steps run.
+    const renderer = {
+      ...makeSpyRenderer().renderer,
+      draw(request: unknown) {
+        calls.push({ request });
+        return {
+          ok: true,
+          value: { ...completeReceipt(calls.length), completed: new Promise(() => {}) },
+        };
+      },
+    } as unknown as Renderer;
+    const { raf, caf, now } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+      beforeDraw,
+    });
+    loop.start().unwrap();
+    loop.pause().unwrap();
+    while (loop.stepFrame(0.05).ok);
+    const drawn = calls.length;
+    const updated = update.mock.calls.length;
+    expect(loop.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    for (let step = 0; step < 3; step++) loop.stepFrame(0.05, false).unwrap();
+    expect(calls).toHaveLength(drawn);
+    expect(update.mock.calls.slice(updated)).toEqual([[0.05], [0.05], [0.05]]);
+    expect(beforeDraw).toHaveBeenCalledTimes(drawn + 3);
+    expect(loop.stepFrame(-1, false)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'delta' } },
+    });
+    loop.stop().unwrap();
+
+    // With credit available, the first drawn picture after skipped steps resets
+    // temporal history at the sample time those steps advanced.
+    const synced = makeSpyRenderer();
+    const next = createFrameLoop({
+      world: new World(),
+      renderer: synced.renderer,
+      platform: testPlatform(makeSyncScheduler()),
+    });
+    next.start().unwrap();
+    next.pause().unwrap();
+    next.stepFrame(0.05).unwrap();
+    next.stepFrame(0.05, false).unwrap();
+    next.stepFrame(0.05, false).unwrap();
+    next.stepFrame(0.05).unwrap();
+    expect(synced.calls).toHaveLength(2);
+    const [a, b] = synced.calls.map(
+      ({ request }) => request as { sampleTimeSeconds: number; temporalReset?: boolean },
+    );
+    expect(b?.temporalReset).toBe(true);
+    expect((b?.sampleTimeSeconds ?? 0) - (a?.sampleTimeSeconds ?? 0)).toBeCloseTo(0.15, 9);
+    next.stop().unwrap();
+  });
+
   it('rejects deterministic stepping outside paused state and with an invalid delta', () => {
     const world = new World();
     const { renderer } = makeSpyRenderer();

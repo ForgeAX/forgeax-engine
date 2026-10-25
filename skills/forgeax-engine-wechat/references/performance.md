@@ -73,6 +73,110 @@ and drain receipts; the existing
 [receipt analyzer](../scripts/analyze_frame_receipts.mjs) owns those checks.
 App completion is CPU-observed completion, not display scanout or GPU duration.
 
+## Attribute CPU cost in the official WeChat simulator
+
+Build an opt-in native diagnostic with
+`FORGEAX_WECHAT_CPU_PROFILE=1 forgeax project build --target wechat --appid <appid>`.
+On the ready simulator project, start its bounded 180-frame capture through the
+official CLI:
+
+```sh
+wechatide -c Codex automation_evaluate --project /absolute/game \
+  --fn-source 'function () { return GameGlobal.__gameContextWindow.__forgeaxGameInspection.profileStart(); }'
+```
+
+After the capture finishes, read `profileState().latest` through the same
+`automation_evaluate` entry point. The capture shares the Engine Profiler across
+App and Render, so its phase timings can distinguish host/update preparation from
+render recording. Keep the profile as attribution evidence only: profiling adds
+work to the measured process. Reload the ordinary build and use a separate
+lightweight completed-frame window for any FPS comparison.
+
+## Capture completed-frame intervals in the official simulator
+
+Build a bounded receipt diagnostic without the CPU profiler:
+
+```sh
+FORGEAX_WECHAT_FRAME_TRACE=1 forgeax project build --target wechat --appid <appid>
+```
+
+On the ready simulator project, start its 600-frame capture and read the summary:
+
+```sh
+wechatide -c Codex automation_evaluate --project /absolute/game \
+  --fn-source 'function () { return GameGlobal.__gameContextWindow.__forgeaxGameInspection.frameReceiptTraceStart(); }'
+
+wechatide -c Codex automation_evaluate --project /absolute/game \
+  --fn-source 'function () { return GameGlobal.__gameContextWindow.__forgeaxGameInspection.frameReceiptTraceState(); }'
+
+# Only for an interrupted or stalled capture; retains its partial summary.
+wechatide -c Codex automation_evaluate --project /absolute/game \
+  --fn-source 'function () { return GameGlobal.__gameContextWindow.__forgeaxGameInspection.frameReceiptTraceStop(); }'
+```
+
+Poll until `status` is `complete`. If it becomes `stalled`, inspect the Renderer state,
+stop the partial capture, restore foreground frame delivery, and start a fresh sample.
+Accept a steady-60 result only when `readyFps` reaches 60, the interval tail stays
+within the 16.67 ms budget, and `worldIdentities` plus `deviceGenerations` each
+contain one value.
+
+| Receipt summary | Meaning |
+|---|---|
+| `status`, `completionSilenceMs`, `stopReason` | `stalled` means no receipt completion for more than 1 second; call `frameReceiptTraceStop()` to end it and retain the partial sample. |
+| `readyFps` | Successful ready-presentation completions divided by first-to-last completion time. It is `null` if the sample contains pending presentation. |
+| `frameIntervalMs` | Completion callback interval distribution: count, mean, p50, p95, p99 and max. |
+| `submitToCompletionMs` | Time from the matching `onFrameSubmitted` callback to successful receipt completion; it is not a GPU timer. |
+| `sampleCount`, `droppedCount`, `worldIdentities`, `deviceGenerations` | Bounded-sample completeness and identity checks. |
+
+Keep the same Mini Game window in the foreground for warmup and the complete
+capture. A simulator screenshot can return the last rendered image while the game
+callbacks are stalled. A trace reports `stalled` when no completion arrives for
+1 second; read `renderer().frame`, `renderer().execution.engine.health` and the
+trace interval distribution before restarting it. `frameReceiptTraceStop()` ends a
+stalled sample as `incomplete` and preserves its partial summary. In a locked Mac
+console session with WeChat DevTools 2.02.2608070, the renderer still reported
+`alive`/`running` while completed-frame callbacks arrived about once per minute.
+`IOConsoleLocked` and `CGSSessionScreenIsLocked` were both true, and native UI
+control returned `cgWindowNotFound`. The screenshot retained its old FPS overlay.
+Reopening that exact project restored continuous frame delivery for more than
+6 minutes while both lock flags remained true. Lock state alone therefore does
+not establish a stopped game or explain its owner. Record the flags, inspect real
+frame progression, and use a fresh trace after recovery. Native desktop focus
+control may remain unavailable until normal system unlock.
+
+In simulator 2.02.2608070, `wx.setPreferredFramesPerSecond(60)` was available and returned without error, but a 180-callback `requestAnimationFrame` sample still averaged 18.16 ms with a 22 ms p95. That request is not frame-rate evidence. The same `wgpu-webgl2` renderer reported `timestampQuery: false`, so receipt latency cannot be labeled GPU time.
+
+The FPS calculation is $$(N_{ready}-1)\times1000/(t_{last}-t_{first})$$ with times in milliseconds. The trace stores at most 600 completions and adds clock reads only in this diagnostic build.
+
+### Isolate native callback pacing
+
+[native_scheduler_fixture.js](../scripts/native_scheduler_fixture.js) is a small
+Mini Game diagnostic bootstrap: one Canvas, one initial 2D label and a continuous
+native rAF loop. It runs no Engine frames and performs no per-frame canvas draw.
+Use an owned project with the same AppID and display configuration. Close its
+exact window before swapping bootstrap bytes, retain the original bootstrap and
+hash, then reopen one window. Restore and hash-check the original before reopening
+the game. The temporary bootstrap is diagnostic output, not an ordinary publication.
+
+The game realm exposes `__forgeaxNativeScheduler.start()` for 600 timestamps,
+`start({ preferredFramesPerSecond: 60 })` for an explicit native request,
+`state()` for interval distributions, `samples()` for raw timestamps and `stop()`
+for an incomplete sample. These are native callback rates, not completed Renderer
+frames. Keep screenshots outside capture and collect simultaneous host capacity.
+
+On 2026-10-25, Mac DevTools 2.02.2608070 in a locked console, 844x390 logical /
+1688x780 drawing dimensions, completed the following diagnostic captures:
+
+| Window/request | Callback rate | Interval p95 | Host observation |
+|---|---:|---:|---|
+| Lite/default | 54.61/s | 19.2 ms | Post-first CPU idle 48.2–62.2%; GPU 12–14% |
+| Lite/explicit 60 | 54.54/s | 19.2 ms | Post-first CPU idle 57.9–63.4%; GPU 12–14% |
+| Full/explicit 60 | 55.14/s | 19.2 ms | CPU collector failed; retain as incomplete host context |
+
+This isolates a below-60 native cadence in that environment; it does not establish
+a general simulator limit. Compare a recovered/unlocked session or a newer official
+DevTools build before attributing the remaining cadence gap to Engine rendering.
+
 Keep final sampling lightweight. Capture/replay, GL wrappers, WASM-memory hooks,
 CPU profiling, GPU queries and synchronous readback belong to separate diagnostic
 runs. A long-run capacity plateau or a presentation-count total does not establish
@@ -110,7 +214,7 @@ Run these read-only observations on the DevTools machine, not on the SSH client:
 ```sh
 sysctl hw.logicalcpu hw.physicalcpu hw.memsize
 vm_stat
-top -l 4 -s 5 -n 0
+top -l 4 -s 5 -n 25 -o cpu
 memory_pressure -Q
 sysctl kern.memorystatus_vm_pressure_level vm.swapusage
 pmset -g therm
@@ -134,7 +238,20 @@ Use `--duration 45` (5–300 seconds, rounded up to five-second CPU intervals) w
 the experiment exceeds the default 15-second window. Start it asynchronously
 before the operation and inspect the actual start/end timestamps afterward.
 
-The helper also samples IORegistry GPU utilization alongside the CPU interval,
+The collector writes its report even if one command times out and exits 1 with
+that observation listed in `failedObservations`. Inspect each observation's
+`exitCode` and `timedOut` field; retained GPU or memory data does not make a failed
+CPU interval valid headroom evidence.
+
+`consoleBefore` and `consoleAfter` retain only system/active-session lock flags.
+Unavailable flags remain an observation failure; true flags remain context in
+the throughput facts. A locked console can still run a reopened simulator, so
+frame progression and completed-frame timing establish execution independently.
+`failedObservations=[]` confirms successful reads, not an FPS result.
+
+`top` displays only the 25 highest CPU processes per sample; the final `ps`
+snapshot still retains all process identities and counters. The helper also
+samples IORegistry GPU utilization alongside the CPU interval,
 using `AGXAccelerator` with an `IOAccelerator` fallback. It retains only the
 Device/Renderer/Tiler utilization counters, timestamps and structured unavailable
 results; it needs no administrator permission. Record background GPU utilization

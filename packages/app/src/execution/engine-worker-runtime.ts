@@ -601,6 +601,7 @@ function realmRendererOptions(
   candidate: WorkerRealm,
   prepared: PreparedExecutionBootstrap,
   pipelineLibrary: ExecutionInitMessage['pipelineLibrary'],
+  backgroundPipelineLibrary: ExecutionInitMessage['backgroundPipelineLibrary'],
 ): RendererOptions {
   const { init, profiler } = candidate;
   return {
@@ -617,6 +618,7 @@ function realmRendererOptions(
       ? {}
       : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
     ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
+    ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
     ...(init.outputColorSpace === undefined ? {} : { outputColorSpace: init.outputColorSpace }),
     ...(init.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
@@ -861,14 +863,15 @@ async function startAdoptedRenderWorker(
   candidate: WorkerRealm,
   renderWorker: SourceRenderWorker,
   pipelineLibrary: ExecutionInitMessage['pipelineLibrary'],
+  backgroundPipelineLibrary: ExecutionInitMessage['backgroundPipelineLibrary'],
 ): Promise<void> {
-  await renderWorker.start(candidate.init.canvas, pipelineLibrary);
+  await renderWorker.start(candidate.init.canvas, pipelineLibrary, backgroundPipelineLibrary);
   if (candidate.init.diagnostics?.rhiCapture === true) candidate.rhiCapture = renderWorker;
 }
 
 async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
   // Realm-owned facts exclude the library forwarded to the renderer for this start.
-  const { pipelineLibrary, ...init } = startup;
+  const { pipelineLibrary, backgroundPipelineLibrary, ...init } = startup;
   const endImport = beginLoadTimeline('boot', 'bootstrap-import');
   const preparedResult = await prepareBootstrapEntry(init.bootstrapUrl, init.bootstrapData);
   endImport();
@@ -896,7 +899,12 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
   try {
     previousSurfaceReleased = releasePreviousSurface(previousRenderer);
     const bundler = realmBundlerOptions(init);
-    const rendererOptions = realmRendererOptions(candidate, prepared, pipelineLibrary);
+    const rendererOptions = realmRendererOptions(
+      candidate,
+      prepared,
+      pipelineLibrary,
+      backgroundPipelineLibrary,
+    );
     await attachRealmRhiRecorder(candidate, rendererOptions);
     const split = init.workers.render.enabled;
     if (split) prepareSplitSource(candidate, prepared);
@@ -972,7 +980,12 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
       const adopted = adoptStagedRenderWorker(candidate, stagedRenderWorker, stagedRenderFailure);
       stagedRenderWorker = undefined;
       const renderWorkerWork = beginLoadWork('workers');
-      await startAdoptedRenderWorker(candidate, adopted, pipelineLibrary);
+      await startAdoptedRenderWorker(
+        candidate,
+        adopted,
+        pipelineLibrary,
+        backgroundPipelineLibrary,
+      );
       renderWorkerWork();
     }
     sceneWork?.();
@@ -1349,9 +1362,12 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
   // queued here. Recheck current readiness and capacity together after every await:
   // loss can release an old queue while its replacement is not ready yet.
   // The time spent here is this frame's publication-credit wait (engineCreditWaitMs).
+  // An update-only step (render: false) publishes nothing to the Render Worker, so it
+  // needs neither a publication slot nor admission and never reaches frame-submitted
+  // stall/counter accounting.
   let creditWaitMs = 0;
   const renderWorker = activeRealm.renderWorker;
-  if (renderWorker !== undefined) {
+  if (message.render !== false && renderWorker !== undefined) {
     const waitStarted = performance.now();
     do {
       if (!(await renderWorker.waitForPublicationCapacity())) return;
@@ -1360,7 +1376,7 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
     creditWaitMs = performance.now() - waitStarted;
   }
   if (realm !== activeRealm) return;
-  if (!admitSourcePublication(activeRealm, message)) return;
+  if (message.render !== false && !admitSourcePublication(activeRealm, message)) return;
   // Advance synchronously from admission: no tick may separate the stale-frame check above
   // from the World update that claims this frame.
   await advanceFrame(activeRealm, activeRenderer, message, creditWaitMs);
@@ -1393,6 +1409,13 @@ async function advanceFrame(
       activeRealm.kernelPool?.takeLastDispatch() ?? null,
     );
     activeRealm.observation?.prepareFrame();
+    if (message.render === false) {
+      // The skipped picture still advances the implicit render-sample clock.
+      renderSampleTimeSeconds = sampleTimeSeconds;
+      lastFrameId = message.frameId;
+      postSimulationComplete(activeRealm, message.frameId, simulation);
+      return;
+    }
     if (activeRealm.renderWorker !== undefined) {
       publishSourceFrame(
         activeRealm,

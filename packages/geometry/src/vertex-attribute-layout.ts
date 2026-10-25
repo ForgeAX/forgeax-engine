@@ -106,9 +106,15 @@ type Entry = {
   readonly format: string;
 };
 
-function emitAliasEntries(entries: Entry[], toIndex: number, currentStride: number): number {
-  const lastUv = entries.filter((entry) => UV_KEYS.includes(entry.key)).at(-1);
-  const aliasOffset = lastUv?.offset ?? currentStride;
+/**
+ * Add shader UV sets the mesh lacks as aliases of bytes already inside its
+ * uploaded vertex: the last present UV set, or position.xy for a UV-less mesh.
+ * The stride never grows; a trailing invented region would make every later
+ * vertex read the wrong bytes.
+ */
+function emitAliasEntries(entries: Entry[], toIndex: number): void {
+  const source = entries.filter((entry) => UV_KEYS.includes(entry.key)).at(-1) ?? entries[0];
+  if (source === undefined) return;
   for (let k = 0; k < toIndex && k < UV_KEYS.length; k++) {
     // biome-ignore lint/style/noNonNullAssertion: bounded index on const array
     const uvKey = UV_KEYS[k]!;
@@ -116,15 +122,10 @@ function emitAliasEntries(entries: Entry[], toIndex: number, currentStride: numb
     entries.push({
       key: uvKey,
       shaderLocation: CANONICAL_KEYS.indexOf(uvKey),
-      offset: aliasOffset,
+      offset: source.offset,
       format: ATTRIBUTE_FORMAT_MAP[uvKey],
     });
   }
-  // When meshUvSetCount===0, allocate 8 bytes for the zero UV area.
-  // Otherwise no stride increase (aliased to existing offset).
-  return lastUv === undefined
-    ? currentStride + bytesForFormat(ATTRIBUTE_FORMAT_MAP.uv)
-    : currentStride;
 }
 
 /**
@@ -170,14 +171,10 @@ export function deriveVertexBufferLayout(
     offset += bytesForFormat(ATTRIBUTE_FORMAT_MAP[key]);
   }
 
-  const present = entries.length;
+  if (entries.length === 0) return [];
 
   // ── clamp-to-last alias (plan-strategy D-1) ──
-  if (shaderUvSetCount > 0) {
-    offset = emitAliasEntries(entries, shaderUvSetCount, offset);
-  }
-
-  if (present === 0 && shaderUvSetCount === 0) return [];
+  if (shaderUvSetCount > 0) emitAliasEntries(entries, shaderUvSetCount);
 
   // Sort by shaderLocation for deterministic vertex buffer descriptor
   entries.sort((a, b) => a.shaderLocation - b.shaderLocation);
@@ -205,11 +202,9 @@ export function deriveVertexBufferLayoutFromProjection(
     offset,
     format,
   }));
-  let arrayStride = projection.arrayStride;
+  const arrayStride = projection.arrayStride;
   const shaderUvSetCount = opts?.shaderUvSetCount ?? 0;
-  if (shaderUvSetCount > 0) {
-    arrayStride = emitAliasEntries(entries, shaderUvSetCount, arrayStride);
-  }
+  if (shaderUvSetCount > 0) emitAliasEntries(entries, shaderUvSetCount);
   entries.sort((a, b) => a.shaderLocation - b.shaderLocation);
   return projection.attributes.length === 0
     ? []

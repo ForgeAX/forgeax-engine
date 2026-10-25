@@ -48,6 +48,7 @@ import {
   Points,
   PostProcessParams,
   pointShapeFromU32,
+  pointSizeUnitsFromU32,
   ShadowParticipation,
   SortKey,
   SpriteInstances,
@@ -949,6 +950,21 @@ function readShadowParticipation(world: World, entity: EntityHandle) {
   return participation.ok ? participation.value : undefined;
 }
 
+/**
+ * Blended surfaces (light beams, glows, glass, additive VFX) do not occlude
+ * light by default: an entity whose every material blends drops its
+ * ShadowCaster work unless ShadowParticipation is authored on it, which
+ * remains the explicit opt-in (`cast: true`) or opt-out.
+ */
+function withBlendedShadowDefault(
+  read: MeshRendererRowRead,
+  materials: readonly MaterialSnapshot[],
+): MeshRendererRowRead {
+  if (read.shadowParticipationAuthored || read.shadowCastDisabled) return read;
+  if (!materials.every((material) => material.transparent === true)) return read;
+  return { ...read, shadowCastDisabled: true };
+}
+
 function readMobilityStatic(world: World, entity: EntityHandle): boolean {
   if (!world.hasComponent(entity, Mobility)) return false;
   const mobility = world.get(entity, Mobility);
@@ -1000,6 +1016,7 @@ function readMeshRendererRow(
         ? undefined
         : participation.channels,
     shadowCastDisabled: participation?.cast === false,
+    shadowParticipationAuthored: participation !== undefined,
     shadowReceiveDisabled: participation?.receive === false,
     mobilityStatic: readMobilityStatic(scope.world, entity),
     // SpriteInstances validation fires structured EcsErrors at extraction
@@ -1498,12 +1515,15 @@ function publishRenderable(
   if (worldView === undefined) return;
   const transform: TransformSnapshot = { world: new Float32Array(worldView) };
   const submeshMaterials = resolveSubmeshMaterials(scope, materials);
-  stageSubmeshDispatch(scope, read, materials, submeshMaterials, pending);
-  const geometry = resolveRenderableGeometry(scope, read, materials, submeshMaterials);
+  // Without authored ShadowParticipation, a mesh whose every material blends
+  // (transparent, additive) casts no shadow, like Three.js castShadow=false.
+  const castRead = withBlendedShadowDefault(read, submeshMaterials);
+  stageSubmeshDispatch(scope, castRead, materials, submeshMaterials, pending);
+  const geometry = resolveRenderableGeometry(scope, castRead, materials, submeshMaterials);
   if (geometry === undefined) return;
   const renderable = composeRenderable(
     scope,
-    read,
+    castRead,
     materials,
     submeshMaterials,
     geometry,
@@ -1513,9 +1533,9 @@ function publishRenderable(
   // Material passes stay shared; participation only filters this entity's
   // ShadowCaster work, so every shadow map and cull test sees it absent.
   // Screen-space points and lines have no world-space footprint to cast.
-  if (read.shadowCastDisabled || read.pointsLinesComponent !== undefined)
+  if (castRead.shadowCastDisabled || castRead.pointsLinesComponent !== undefined)
     removeShadowCasterDispatch(pending);
-  const pipelinePreparation = read.preparePipelines
+  const pipelinePreparation = castRead.preparePipelines
     ? pending.map(
         ({ entityIndex: _entityIndex, renderableIndex: _renderableIndex, ...pass }) => pass,
       )
@@ -1523,7 +1543,7 @@ function publishRenderable(
   if (
     !admitFrustumVisibility(
       scope,
-      read,
+      castRead,
       geometry,
       transform.world,
       pending,
@@ -1533,9 +1553,9 @@ function publishRenderable(
     return;
   // Retain hidden snapshots for incremental composition, but never publish
   // their display or ShadowCaster passes to either record lane.
-  if (!read.authorVisible) pending.length = 0;
+  if (!castRead.authorVisible) pending.length = 0;
   for (const entry of pending) scope.dispatch.push(entry);
-  scope.renderables.push(withMobilityAndPreparation(renderable, read, pipelinePreparation));
+  scope.renderables.push(withMobilityAndPreparation(renderable, castRead, pipelinePreparation));
 }
 
 /**
@@ -1760,7 +1780,10 @@ function pointsLinesStyleOf(read: MeshRendererRowRead): PointsLinesStyle | undef
   const { points, lines } = read;
   if (points !== undefined) {
     const shape = pointShapeFromU32(points.shape);
-    return shape === undefined ? undefined : { kind: 'points', sizePx: points.sizePx, shape };
+    const sizeUnits = pointSizeUnitsFromU32(points.sizeUnits);
+    return shape === undefined || sizeUnits === undefined
+      ? undefined
+      : { kind: 'points', size: points.size, sizeUnits, shape };
   }
   if (lines === undefined) return undefined;
   return {

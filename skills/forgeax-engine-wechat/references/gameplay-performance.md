@@ -32,7 +32,10 @@ node skills/forgeax-engine-wechat/scripts/build_gameplay_benchmark.mjs \
 ```
 
 The native preparation retains the full ordinary publication and composes its
-existing App submitted/completed callbacks. It preserves the native Platform,
+existing App submitted/completed callbacks. The preparation locates the App
+options and awaited Result unwrap through their AST, then binds the resolved App;
+binding the creation Promise fails before startup. Reject an unknown assembly
+shape rather than guessing minified variable names. It preserves the native Platform,
 Host execution strategy and matched WASM/glue; it does not create a replacement
 simulation loop. `assembly-differences.json`, `ordinary-forgeax-dist.json` and
 `benchmark-manifest.json` record the exact adaptation and source. The original

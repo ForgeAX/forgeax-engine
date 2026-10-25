@@ -194,5 +194,14 @@ export function createQueueProxy(s: RecorderInternal, realQueue: RhiQueue): RhiQ
     onSubmittedWorkDone() {
       return realQueue.onSubmittedWorkDone();
     },
+    ...(realQueue.holdCompletions === undefined
+      ? {}
+      : { holdCompletions: () => realQueue.holdCompletions?.() ?? (() => {}) }),
+    ...(realQueue.onSubmittedWorkDoneUnheld === undefined
+      ? {}
+      : {
+          onSubmittedWorkDoneUnheld: () =>
+            realQueue.onSubmittedWorkDoneUnheld?.() ?? realQueue.onSubmittedWorkDone(),
+        }),
   };
 }

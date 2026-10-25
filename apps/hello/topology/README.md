@@ -40,7 +40,7 @@ const material = Materials.unlit([0.1, 0.9, 1, 1]);
 world.spawn(
   { component: MeshFilter, data: { assetHandle: pointMeshHandle } },
   { component: MeshRenderer, data: { materials: [materialHandle] } },
-  { component: Points, data: { sizePx: 16, shape: 'circle' } },
+  { component: Points, data: { size: 16, shape: 'circle' } },
 );
 world.spawn(
   { component: MeshFilter, data: { assetHandle: lineMeshHandle } },

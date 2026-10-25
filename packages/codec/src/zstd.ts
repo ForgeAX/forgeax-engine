@@ -70,7 +70,8 @@ export async function decompressZstd(bytes: Uint8Array): Promise<CodecResult<Uin
   }
 }
 
-const utf8 = new TextDecoder('utf-8', { fatal: true });
+// Native hosts may install text encoders after loading shared module chunks.
+let utf8: TextDecoder | undefined;
 
 /**
  * Text of a delivered document stored as UTF-8 or as one zstd frame.
@@ -86,6 +87,7 @@ export async function decodeDocumentText(bytes: Uint8Array): Promise<CodecResult
     text = decoded.value;
   }
   try {
+    utf8 ??= new TextDecoder('utf-8', { fatal: true });
     return { ok: true, value: utf8.decode(text) };
   } catch {
     return codecError('decompression-failed', { reason: 'document is not UTF-8 text' });

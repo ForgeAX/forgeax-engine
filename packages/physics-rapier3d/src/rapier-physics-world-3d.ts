@@ -13,7 +13,7 @@ import {
   type DerivedAdmissionUndo,
   derivedBodyStateRestored,
 } from './derived-admission-undo.js';
-import { derivedShapeHandles } from './derived-candidate-records.js';
+import { derivedRosterRefusal, derivedShapeHandles } from './derived-candidate-records.js';
 import { restoreDerivedDensities } from './derived-density.js';
 import { GroupedContactEvents } from './grouped-contact-events.js';
 import { primeGroupedContacts } from './prime-grouped-contacts.js';
@@ -1343,11 +1343,44 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     return admitted;
   }
 
+  /**
+   * Queue the union of complete declared preparation groups as one bounded
+   * replacement. Each group is exactly the roster of one
+   * prepareDerivedShapeCandidates call, so a caller can spread native shape
+   * preparation over several ticks and still admit, commit and roll back the
+   * whole replacement atomically.
+   */
+  admitDerivedShapeCandidateGroups(
+    groups: readonly (readonly DerivedPhysicsCandidate[])[],
+    commitGeometry?: () => Result<void, Error>,
+  ): ReturnType<NonNullable<PhysicsWorld['admitDerivedShapeCandidateGroups']>> {
+    this.assertActive('admitDerivedShapeCandidateGroups');
+    const candidates: DerivedPhysicsCandidate[] = [];
+    for (const group of Array.isArray(groups) ? groups : []) {
+      if (!Array.isArray(group) || group.length === 0)
+        return err(
+          new DerivedPhysicsError(
+            'derived-candidate-invalid',
+            'every admitted preparation group is one nonempty returned roster',
+            'pass each prepareDerivedShapeCandidates result as one group',
+          ),
+        );
+      candidates.push(...group);
+    }
+    return this.admitDerivedShapeCandidates(candidates, commitGeometry, true);
+  }
+
+  /**
+   * Queue one complete declared preparation group (or up to maxCandidates
+   * individually prepared candidates). `unionOfGroups` is the internal mode
+   * of admitDerivedShapeCandidateGroups.
+   */
   admitDerivedShapeCandidates(
     candidates: readonly DerivedPhysicsCandidate[],
     commitGeometry?: () => Result<void, Error>,
+    unionOfGroups = false,
   ): ReturnType<NonNullable<PhysicsWorld['admitDerivedShapeCandidates']>> {
-    this.assertActive('admitDerivedShapeCandidates');
+    if (!unionOfGroups) this.assertActive('admitDerivedShapeCandidates');
     const records: DerivedCandidateRecord[] = [];
     const sources = new Map<number, DerivedBodySource>();
     const constraints = new Set<string>();
@@ -1384,18 +1417,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     }
     const first = records[0];
     if (first === undefined) return err(invalid('empty preparation group'));
-    const preparedBatch = first.batch;
-    const admittedRecords = new Set(records);
-    if (
-      records.some((record) => record.batch !== preparedBatch) ||
-      (preparedBatch === undefined
-        ? records.length > DERIVED_PHYSICS_LIMITS.maxCandidates
-        : preparedBatch.records.length !== records.length ||
-          preparedBatch.records.some((record) => !admittedRecords.has(record)))
-    )
-      return err(
-        invalid('submit exactly one complete preparation group without subsets or mixed members'),
-      );
+    const refusal = derivedRosterRefusal(records, unionOfGroups);
+    if (refusal !== undefined) return err(invalid(refusal));
     // All caller credentials have been resolved. Frozen owned tokens keep
     // the following synchronous validation and enqueue free of caller getters.
     const queuedSources = this.pendingDerivedSources();

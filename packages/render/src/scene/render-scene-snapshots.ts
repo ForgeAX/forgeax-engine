@@ -11,6 +11,7 @@ import type {
   RenderableTemporalSnapshot,
 } from '../render-system-extract';
 import { materialDisplacementRadius } from '../standard-displacement-bounds';
+import type { GenerationalWeakMap } from './generational-weak-map';
 import type { MaterialFrame } from './material-dispatch';
 import type { MeshGeometry } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
@@ -135,6 +136,8 @@ export function hasDisplacementSource(
 }
 
 export interface CachedWorldBounds {
+  /** Ordinal of the Mesh version that proved the bounds; 0 without geometry. */
+  readonly version: number;
   readonly radius: number;
   readonly bounds: RenderSceneBounds | null;
   /** Fixed material frame that proved `radius`; the same frame proves it again. */
@@ -150,7 +153,8 @@ interface TemporalMemo {
   readonly displacementSource: boolean;
   readonly value: RenderableSnapshot;
 }
-export type TemporalCache = WeakMap<RenderSceneSlot, TemporalMemo>;
+// Slots and their snapshots are replaced every frame; see GenerationalWeakMap.
+export type TemporalCache = GenerationalWeakMap<RenderSceneSlot, TemporalMemo>;
 
 export function temporalDrawSnapshot(
   snapshot: RenderableSnapshot,

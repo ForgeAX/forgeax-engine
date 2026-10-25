@@ -17,6 +17,7 @@ export type DevKitAppOptions = Pick<
   | 'assetBudgetBytes'
   | 'standardProfile'
   | 'pipelineLibrary'
+  | 'backgroundPipelineLibrary'
   | 'time'
 > & {
   /**
@@ -25,6 +26,15 @@ export type DevKitAppOptions = Pick<
    * The `forgeax-render-pipeline-capacity` query still overrides it.
    */
   readonly renderPipelineCapacity?: 2 | 3 | 4;
+  /**
+   * Default Render Worker draw scheduling. `'features'` prepares each draw
+   * cooperatively: while an older frame is unretired, the Worker yields one
+   * task turn after Feature preparation and again before swap-chain
+   * acquisition, so that frame's queue completion (delivered only between
+   * tasks) returns its credit while this frame records. `'none'` draws in one
+   * synchronous task. The `forgeax-render-task-yield` query still overrides it.
+   */
+  readonly renderTaskYield?: 'none' | 'features';
   /**
    * Startup cover text over the English defaults, including App phase names
    * and `lang`; apps reuse the same labels with `describeLoadProgress`.

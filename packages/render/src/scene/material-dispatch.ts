@@ -10,6 +10,7 @@ import {
 } from '../render-system-extract';
 import { type FrameList, FrameListBase } from './frame-list';
 import { at, changes, type Node, nodes, put, range, remove } from './frame-tree';
+import { GenerationalWeakMap } from './generational-weak-map';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import {
   captureMaterialOverrides,
@@ -305,7 +306,8 @@ export class MaterialFrame {
 
 // Only a completed real traversal can populate this cache. Fixed Work is
 // retained across parameter adoption, so later draws and slices reuse its order.
-const consumedBindings = new WeakMap<Work, readonly Binding[]>();
+// Work nodes are rebuilt with their dispatch; see GenerationalWeakMap.
+const consumedBindings = new GenerationalWeakMap<Work, readonly Binding[]>();
 
 function* workBindings(work: Work, start = 0, end = Infinity): Generator<Binding> {
   const cached = consumedBindings.get(work);

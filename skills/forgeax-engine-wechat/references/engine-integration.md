@@ -200,10 +200,13 @@ is not recovery.
 |:--|:--|
 | AJV `makeValidate is not a function` | Pack/Profiler generate standalone validators during build; runtime never compiles schemas |
 | Importing codec requires an unavailable module URL | Basis glue/WASM URL resolution belongs inside the requested transcoder initializer |
+| `TextDecoder is not defined` before `standards-installation` | Inspect the emitted shared CJS chunk: importing standards can evaluate Codec through shared dependencies. Codec document/KTX2 readers initialize cached decoders on first decode, after the platform installs standards; module imports must not construct native globals. Reproduce with the ordinary published chunk graph and missing native encoders. |
+| Shared Engine code runs before standards can install | The platform's `/standards` publication bundles its complete portable closure. Its standalone regression executes the built entry without external imports or native encoders; the normal platform entry retains package dependencies. A dynamic import alone does not isolate shared chunks. |
 | `structuredClone` absent | Install the fixed standard bootstrap before the game module; preserve typed-buffer identities and cycles |
 | RuntimePack generation fails with `URL is not defined` | The realm bootstrap installs missing WHATWG `URL`/`URLSearchParams` from the same pinned `core-js-pure` used by native transport; preserve native constructors and keep ordinary producer/Catalog URL resolution unchanged |
 | Shader manifest needs browser fetch or Web Crypto | Supply the ShaderRegistry text reader; the shader owner verifies the same SHA-256 through its portable implementation |
 | Registry assembly eagerly binds missing fetch | Construct the assembly without reading transport; package-bound readers remain the resource authority |
+| Renderer initialization fails with `crypto is not defined` | Reproduce texture-owner construction without Web Crypto. Render target, external texture and CanvasTexture source owners use the existing UUIDv7 generator, preserving their copyable string identities without requiring `crypto.randomUUID`. Keep actual cryptographic digest/random requirements with their owners. |
 
 A 60-frame startup pass does not prove that optional runtime-generated objects
 exist. Inspect their existing game read projection and correlate the returned

@@ -994,7 +994,14 @@ replacement frame. `resume()` resets the host timestamp before the next frame,
 so the paused wall-clock interval is not added to `Time.elapsed`. A paused
 `stepFrame(deltaSeconds)` deliberately runs the complete World update and draw
 sequence with that delta; use it for deterministic tools and expiry journeys,
-not as proof that ordinary pause keeps time frozen.
+not as proof that ordinary pause keeps time frozen. `stepFrame(deltaSeconds, {
+render: false })` runs the same World update (input, `Time`, `Update`,
+`FixedUpdate`, host camera reconciliation) but submits no picture and needs no
+receipt credit, on the local loop and in the Worker composition (the Engine
+Worker settles it with `simulation-complete` and publishes nothing to the Render
+Worker). The next drawn frame carries the advanced sample time and a temporal
+reset. Picture-derived answers (GPU picking, submitted terrain height) stay at
+the last drawn frame until then, so fast-forward tools render the final frame.
 
 Frame pacing is part of that same authority: the loop checks receipt credit
 before the sequence above, and only a successful renderer submission consumes a
@@ -1208,7 +1215,7 @@ the realm-neutral assembly with an explicit platform lease.
 | `App.stop()` / `pause()` / `resume()` | `Result<void, AppError>` | Controls the rAF lifecycle. |
 | `App.dispose()` | `Promise<Result<void, AppError>>` | Drains the Cordis realm, Host resources, and renderer ownership. |
 | `App.pluginContext` | `Context` | Native Cordis realm for runtime and asset-resident game plugins. |
-| `App.stepFrame(deltaSeconds)` | `Result<void, AppDispatchError>` | While paused, advances one deterministic update/draw frame through the same App frame authority used by rAF. |
+| `App.stepFrame(deltaSeconds, { render? })` | `Result<void, AppDispatchError>` | While paused, advances one deterministic update/draw frame through the same App frame authority used by rAF; `render: false` runs the update only. |
 | `App.releaseSurfacePreserveWorld()` / `restoreSurface()` | `Promise<Result<void, RhiError>>` | Temporarily pauses presentation and relinquishes the canvas surface while preserving the same World, Renderer, registry, and execution authority; restore resumes only a loop that was running before release. |
 | `App.onError(callback)` | `() => void` | Subscribes to structured World and renderer failures. |
 | `App.setDrawSource(drawSource)` | `void` | Replaces per-frame multi-world routing; `undefined` restores the single-world path. |

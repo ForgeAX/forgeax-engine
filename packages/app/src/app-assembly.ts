@@ -606,8 +606,8 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     resume(): Result<void, AppError> {
       return resumeWhenAvailable();
     },
-    stepFrame(deltaSeconds): Result<void, AppDispatchError> {
-      return loop.stepFrame(deltaSeconds);
+    stepFrame(deltaSeconds, options): Result<void, AppDispatchError> {
+      return loop.stepFrame(deltaSeconds, options?.render ?? true);
     },
     onError(cb: (e: AppDispatchError) => void): () => void {
       return fanout.add(cb);

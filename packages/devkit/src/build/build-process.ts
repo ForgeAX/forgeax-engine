@@ -123,12 +123,19 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'assetBudgetBytes',
   'standardProfile',
   'pipelineLibrary',
+  'backgroundPipelineLibrary',
   'time',
   'renderPipelineCapacity',
+  'renderTaskYield',
   'loadingLabels',
 ]);
 
 const LOADING_LABEL_KEYS = new Set(['lang', 'loading', 'elapsed', 'slow', 'reload']);
+
+function validateRenderTaskYield(value: unknown): void {
+  if (value !== undefined && value !== 'none' && value !== 'features')
+    throw new TypeError("devkitAppOptions.renderTaskYield must be 'none' or 'features'");
+}
 
 /** Optional loading labels are strings, plus a `phases` map of phase id to string. */
 function validateLoadingLabels(value: unknown): void {
@@ -162,6 +169,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   const capacity = options.renderPipelineCapacity;
   if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
     throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
+  validateRenderTaskYield(options.renderTaskYield);
   if (options.time !== undefined) {
     const time = options.time;
     if (

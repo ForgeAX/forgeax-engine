@@ -198,8 +198,7 @@ describe('target retirement error boundaries', () => {
     f.host.beginFrame();
     const textures = vi.spyOn(f.device, 'destroyTexture').mockReturnValueOnce(err(failure()));
     expect(f.host.resizeRenderTarget(target, { ...descriptor, width: 16 }).ok).toBe(true);
-    await Promise.resolve();
-    expect(textures).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(textures).toHaveBeenCalledTimes(2));
     expect(f.onError).toHaveBeenCalledTimes(1);
     f.host.dispose();
   });
@@ -220,8 +219,7 @@ describe('target retirement error boundaries', () => {
         throw failure();
       });
     expect(() => retireRenderTargetPhysical(source.value, f.onError)).not.toThrow();
-    await Promise.resolve();
-    expect(textures).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(textures).toHaveBeenCalledTimes(2));
     expect(f.onError).toHaveBeenCalled();
     f.host.dispose();
   });

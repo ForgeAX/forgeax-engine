@@ -5,15 +5,24 @@ import { type PointsLinesGpuResourceAdapter, PointsLinesPreparation } from '../p
 import { createPointsLinesLaneContract, createPointsLinesRecordPlan } from '../record';
 import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 
-function mesh(generation = 1): MeshAsset {
+function mesh(generation = 1, segments = 2): MeshAsset {
+  const positions = new Float32Array(
+    Array.from({ length: segments * 2 }, (_, i) => [i % 2, Math.floor(i / 2), 0]).flat(),
+  );
   return {
     kind: 'mesh',
-    vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
-    indices: new Uint16Array([0, 1, 2, 3]),
-    attributes: { position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]) },
-    aabb: new Float32Array([0, 0, 0, 1, 1, 0]),
+    vertices: positions,
+    indices: new Uint16Array(Array.from({ length: segments * 2 }, (_, i) => i)),
+    attributes: { position: positions },
+    aabb: new Float32Array([0, 0, 0, 1, segments - 1, 0]),
     submeshes: [
-      { indexOffset: 0, indexCount: 4, vertexCount: 4, topology: 'line-list', materialSlot: 0 },
+      {
+        indexOffset: 0,
+        indexCount: segments * 2,
+        vertexCount: segments * 2,
+        topology: 'line-list',
+        materialSlot: 0,
+      },
     ],
     materialSlots: [{ slotName: `lines-${generation}` }],
   };
@@ -87,8 +96,12 @@ describe('Points/Lines expansion cache and LKG recovery', () => {
 
     const first = preparation.prepare(snapshot(), mesh());
     expect(first.ok).toBe(true);
+    // A same-sized generation rewrites the resident pair in place.
+    expect(preparation.prepare(snapshot(2), mesh(2)).ok).toBe(true);
+    expect(calls.filter((call) => call === 'create')).toHaveLength(1);
+    expect(calls.at(-1)).toBe('upload:resource-1');
     failValidation = true;
-    const failed = preparation.prepare(snapshot(2), mesh(2));
+    const failed = preparation.prepare(snapshot(3), mesh(3, 3));
 
     expect(failed.ok).toBe(false);
     expect(calls).toContain('destroy:resource-2');

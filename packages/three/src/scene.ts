@@ -717,7 +717,7 @@ export class SceneProjection {
     if (object instanceof Line)
       this.world.addComponent(entity, { component: NativeLines, data: { width: 1 } }).unwrap();
     if (object instanceof Points)
-      this.world.addComponent(entity, { component: NativePoints, data: { sizePx: 1 } }).unwrap();
+      this.world.addComponent(entity, { component: NativePoints, data: { size: 1 } }).unwrap();
     this.world.addComponent(entity, { component: MeshRenderer, data: {} }).unwrap();
     this.world
       .addComponent(entity, {

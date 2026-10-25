@@ -387,6 +387,9 @@ async function publishWithExecutors(
         ...(context.opts.ddc?.buildCacheRoot === undefined
           ? {}
           : { buildCacheRoot: context.opts.ddc.buildCacheRoot }),
+        ...(context.opts.ddc?.identityRoot === undefined
+          ? {}
+          : { cacheIdentityRoot: context.opts.ddc.identityRoot }),
         ...(cookers === undefined ? {} : { cookers }),
         assetSource,
         availableGuids,

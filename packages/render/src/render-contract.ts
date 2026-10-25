@@ -780,6 +780,14 @@ export interface FrameReceipt {
    */
   readonly barrelDistortion?: import('./barrel-distortion.js').BarrelDistortionMapping;
   readonly completed: Promise<RenderResult<void, RenderError>>;
+  /**
+   * The same completion for frame-credit feedback only. It settles when the
+   * GPU work is done even while a cooperative frame holds completion-driven
+   * releases (`RhiQueue.holdCompletions`); `completed` settles after that
+   * hold. Absent when the backend has no hold, where both are identical.
+   * Never use it to release or reuse resources.
+   */
+  readonly creditCompleted?: Promise<RenderResult<void, RenderError>>;
 }
 
 /** Producer-derived presentation readiness for one submitted frame. */
@@ -1045,6 +1053,8 @@ export interface RenderObservationInspection {
  */
 export interface RenderInspection {
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryInspection;
+  /** Complete optional Renderer preparation, including native work and CPU source analysis. */
+  readonly backgroundPipelineLibraryState?: 'running' | 'done' | 'failed';
   /** Included only by an explicit inspect({pipelineLibrary:true}) export request. */
   readonly pipelineLibraryManifest?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly views?: readonly import('./inspection-types').CameraViewInspection[];
@@ -1446,6 +1456,12 @@ export interface RendererOptions {
 
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /**
+   * Captured recipes prepared after first readiness without blocking it, with a
+   * bounded compilation window. Observe progress through
+   * `inspect().pipelineLibrary.backgroundWarmup`; failures never fail the renderer.
+   */
+  readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /** Renderer AssetRegistry content bytes: positive safe integer; default 4 GiB. */

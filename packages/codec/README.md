@@ -12,6 +12,10 @@ texture block math belongs to the `@forgeax/engine-types` texture layout contrac
 The `/encode` subpath (`@forgeax/engine-codec/encode`) exports build-time encode (zstd + Basis). Runtime code must never import from `/encode` --
 this is enforced by `check-image-pipeline-isolation.mjs` path d (AC-09).
 
+Runtime imports do not construct text decoders. Native hosts may load shared
+chunks before installing their standard interfaces; document and KTX2 readers
+create their cached decoders on first use, after host initialization.
+
 ## WASM provisioning
 
 > [!IMPORTANT]

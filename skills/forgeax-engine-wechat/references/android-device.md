@@ -222,6 +222,37 @@ non-enumerable `Error.message`, `stack`, `cause` and structured `detail.appError
 For example, `plugin-startup-failed` after `scene` is an activation-owner failure;
 do not infer a shader or GPU failure from the black canvas.
 
+Use this existing startup mode first for new startup investigations. It now
+collects package I/O, native plugin waits and asset traces automatically; avoid
+editing generated chunks or adding private globals to recover those facts.
+
+| Evidence | Existing owner and interpretation |
+| --- | --- |
+| `startup-diagnostic.json.moduleClosure` | AST checks local literal module references before cloning; missing eager modules reject the clone. Deferred imports and computed requests remain explicit unqualified entries. File presence does not prove native admission. |
+| `observation.plugins` | Native Host `plugins()` reads actual Cordis Fibers, bounded to 128; loading with no missing services still requires the pending operation's evidence. Older Hosts report this capability unavailable. |
+| `packageIo` | Original `wx.loadSubpackage` and `payload/` file reads, pending IDs, time, completion bytes and bounded native fail fields. No file contents or user-directory reads are collected. |
+| `observation.renderer.packageLoad` | New generated roots expose the existing native task's progress event count/time and downloaded/expected bytes, with explicit API availability and invalid fields; this is not a second downloader. |
+| `wasmLoads` | Up to 32 original native instantiate load/done/failed events with path/time and a dropped count; collected without progress UI and without changing unrelated native Promises. Same-path concurrent events require their own pairing evidence. |
+| `assetTrace` | Composes the existing Codec trace, retains at most 64 scalar event records and a dropped count; it never creates asset work. |
+| `checkpoint-NN.json` | A source/run-bound snapshot every five seconds when `--report-url` is configured, at most 32. It remains nonterminal and cannot pass scene acceptance. |
+
+Native I/O hooks preserve the original receiver, arguments, return and callback
+errors. Unsupported option accessors/inherited callbacks are skipped explicitly;
+cleanup restores only still-owned methods. Only the SDK's native fail callback
+payload permits bounded accessor reads (depth 3, 32 fields, 16384 characters).
+This keeps `errMsg` and `loadInfo` visible without enabling arbitrary application
+getters in the generic error serializer.
+`assetTrace.maximumEventGap` retains the two surrounding events and largest
+elapsed gap even after the recent ring rolls over. It locates an observation gap;
+it does not prove that one function spent that time on the CPU.
+`assetTrace.packageReads` counts admitted transfers, completed headers, consumed
+bodies and released transfers for at most 64 package URLs; overflow remains in
+`droppedEvents`. These are package-reader observations, not native filesystem call
+counts. Use them to distinguish repeated Bundle reads from many logical artifacts
+before changing cache or scheduling policy. Native queue-completion failures also
+retain `polls`, `firstPollDelayMs`, `maximumPollGapMs` and `elapsedMs`: a large
+gap between polls cannot establish continuous GPU execution.
+
 ```bash
 python3 skills/forgeax-engine-wechat/scripts/diagnose_phone_startup.py \
   --source /private/verified-wechat-publication \
@@ -254,6 +285,16 @@ WASM or ordinary publication rebuild is needed for this diagnostic.
 The receiver validates the explicitly selected kind, source identity, exact UTF-8
 bytes/hash and bounded terminal shape. It rejects startup reports over 2 MiB,
 and cannot accept a GL report as startup evidence or infer the mode from a body.
+It saves early checkpoints without closing the receiver, pins the first run ID,
+and accepts identical retries or out-of-order sequences without overwriting
+evidence. Changed bytes for a retained sequence or another run ID are rejected.
+Checkpoint-only expiry returns `incomplete / no-terminal-report`; inspect those
+files for pending work, but retain the missing terminal evidence. The native
+collector does not create a new file for each checkpoint and stops its checkpoint
+timer before sending the terminal report.
+The terminal report's `checkpoints.transfers` retains each attempted checkpoint's
+bounded native request status/error or timeout, so an empty receiver can be
+distinguished from a failed export when terminal recovery is available.
 Read `observation.renderer.startupError` and `lastError`, then their
 `cause`/`detail`; a World update failure can be observed before the outer plugin
 activation promise assigns `startupError`. Native error events are retained under
@@ -284,15 +325,60 @@ with the same report's Renderer geometry and material observations. The report
 also records whether that owner exposes `rhiCapture`; `recorder-not-enabled`
 means a debug candidate is needed before a real frame capture can be obtained.
 
-This mode registers only removable native callbacks, adds no facts/error modal,
-and changes no game state, native result, shader, retry or error handler. It
+This mode registers removable observers and changes no game state, native result,
+shader, retry or error handler. It
 records at most 64 observed phase/generation transitions and stops timers and
 owned callbacks at its first terminal. It cannot combine with the frame/GL
 observation modes. Without `--report-url`, it retains
 `globalThis.__forgeaxPhoneStartupReport` and attempts a private native file only.
-The shared transport sends that same serialized snapshot once after cleanup;
+The shared transport sends that same terminal serialized snapshot once after cleanup;
 artifact/transfer status appears under `[forgeax.phone.startup.artifact]` and
 `[forgeax.phone.startup.transfer]`. Transfer failure never changes the game result.
+
+When the game cannot finish or transfer its report, add `--show-startup-progress`
+to show a bounded native loading caption with the diagnostic run ID prefix and latest
+observed startup, Basis or native WASM phase. This opt-in UI composes the existing
+asset trace sink and restores owned hooks on cleanup. An instantiate-complete
+caption proves native module instantiation, not completion of its glue, plugin
+activation or Renderer frames. Add `--show-frame-result` for a native terminal
+summary when the observer can finish. These UI interventions are diagnostic only;
+a caption or modal never qualifies an FPS sample.
+Repeated identical phases are coalesced. At the display limit the caption becomes
+`phase-cap`; `nativePhaseUi.lastPhase` continues retaining the latest observed phase
+in the report. An old caption without this limit marker must not select a failure
+owner: inspect the lifecycle state and actual pending work.
+Each clone records a fresh `runId` in its metadata and startup report. Match that
+ID as well as the original publication identity when repeatedly previewing one
+source build; the original manifest prefix alone cannot distinguish those runs.
+
+Native package failures can expose `errMsg` through an SDK accessor. The generated
+root reads that known native field once for both its modal and a data-only
+`lastError.message`, preserving the native object as `cause`. Generic report
+serialization continues marking unapproved getters as unavailable. If the report
+predates this normalization, inspect the original `Unable to load` modal after
+dismissing owned diagnostic dialogs; retain the actual module error text.
+
+For a repeatable native subpackage-entry control, add `--package-control entry`
+to `--observe-startup` on a new clone. This explicit intervention replaces only
+`payload/game.js` with a dependency-free execution marker, in addition to the
+usual root observer; all other payload files stay byte-identical. Metadata records
+both changed entry hashes. Do not hand-edit generated chunks for this control.
+Use `--package-control empty` for a tiny native subpackage instead: it removes
+all other `payload/` files from the new clone and records every removed path.
+Neither mode changes the original publication.
+`--package-control data` retains non-JavaScript resources while removing other
+JS/MJS/CJS files. Add repeated `--package-retain payload/EXACT_FILE` arguments
+to keep only a declared subset of those resources; each must be an existing,
+unique non-JS payload path. The metadata records selected and removed paths,
+and retained bytes remain unchanged. This provides a repeatable file/size
+isolation path without a new private probe for each suspected resource.
+It admits no `--inspection-read` and cannot provide scene or FPS evidence.
+If the marker executes, the report terminates as `package-entry-control` with
+`sceneFrames.passed:false`. An ordinary observer cannot infer control mode from a
+phase. A failure before the marker still needs native package/compilation evidence:
+retained JavaScript files may be compiled by the native loader, so this control
+alone does not prove a network cause. Compare it with the explicit empty control
+before assigning the failure to native admission or the game dependency graph.
 
 The serializer reads data descriptors without invoking application getters or
 `toJSON`. It retains complete ordinary nested errors within explicit bounds:
@@ -744,6 +830,24 @@ port, and install only the owned mapping:
 ```bash
 adb -s SERIAL reverse --no-rebind tcp:19143 tcp:19143
 ```
+
+During a preview on 2026-10-24, the user accidentally disconnected and reconnected
+USB. A new ADB transport identity appeared and the reverse mapping disappeared. Check
+the mapping after preview as well as before it. For that bounded launch window,
+start [android_reverse.py](../scripts/android_reverse.py) alongside the receiver:
+
+```bash
+python3 skills/forgeax-engine-wechat/scripts/android_reverse.py \
+  --adb /absolute/adb --serial SERIAL --port 19143 --duration 60 \
+  --out /private/new-reverse-evidence
+```
+
+It waits for the selected transport to return, restores only the requested
+mapping with `--no-rebind`, verifies it, and rejects a conflicting mapping. It
+does not reconnect the device or open a game. Its finite maintenance window
+belongs to launch preparation; finish it before a timed FPS sample. The caller
+removes only the owned port after collection. A receiver timeout with no body
+does not establish a game startup timeout when its transport was lost.
 
 Prepare the diagnostic clone with the existing build helper, adding
 `--observe-gl-link --report-url http://127.0.0.1:19143/forgeax-gl-link-UNIQUE_RUN`.

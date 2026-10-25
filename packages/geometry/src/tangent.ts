@@ -168,6 +168,21 @@ function preflightTangentInput(
   return ok(vertexCount);
 }
 
+function accumulateCorner(
+  accumT: Float32Array,
+  accumSign: Float32Array,
+  vertex: number,
+  tx: number,
+  ty: number,
+  tz: number,
+  signedWeight: number,
+): void {
+  accumT[vertex * 3] = (accumT[vertex * 3] ?? 0) + tx;
+  accumT[vertex * 3 + 1] = (accumT[vertex * 3 + 1] ?? 0) + ty;
+  accumT[vertex * 3 + 2] = (accumT[vertex * 3 + 2] ?? 0) + tz;
+  accumSign[vertex] = (accumSign[vertex] ?? 0) + signedWeight;
+}
+
 /**
  * Compute per-vertex tangent (vec4) for a procedural mesh using path A
  * (UV-derivative + face-area-weighted average + Gram-Schmidt + handedness).
@@ -273,12 +288,33 @@ export function computeTangentVec4(
     const signDet = det >= 0 ? 1 : -1;
     const signedWeight = faceArea * signDet;
 
-    for (const vi of [i0, i1, i2]) {
-      accumT[vi * 3] = (accumT[vi * 3] ?? 0) + tx * faceArea;
-      accumT[vi * 3 + 1] = (accumT[vi * 3 + 1] ?? 0) + ty * faceArea;
-      accumT[vi * 3 + 2] = (accumT[vi * 3 + 2] ?? 0) + tz * faceArea;
-      accumSign[vi] = (accumSign[vi] ?? 0) + signedWeight;
-    }
+    accumulateCorner(
+      accumT,
+      accumSign,
+      i0,
+      tx * faceArea,
+      ty * faceArea,
+      tz * faceArea,
+      signedWeight,
+    );
+    accumulateCorner(
+      accumT,
+      accumSign,
+      i1,
+      tx * faceArea,
+      ty * faceArea,
+      tz * faceArea,
+      signedWeight,
+    );
+    accumulateCorner(
+      accumT,
+      accumSign,
+      i2,
+      tx * faceArea,
+      ty * faceArea,
+      tz * faceArea,
+      signedWeight,
+    );
   }
 
   if (validTriangleCount === 0) {

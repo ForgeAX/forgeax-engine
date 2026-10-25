@@ -221,7 +221,9 @@ export interface StandardProfile {
 export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   featureReadOnlyDepthBatching: true,
   pipelineId: STANDARD_PIPELINE_ID,
-  lightCount: 32,
+  // Cluster light data, bounds and index buffers are sized for MAX_LIGHTS
+  // whatever this budget is, so admitting all 256 slots costs no memory.
+  lightCount: 256,
   renderPath: 'forward',
   pbr: true,
   ibl: true,

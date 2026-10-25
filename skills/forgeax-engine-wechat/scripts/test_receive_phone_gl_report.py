@@ -15,6 +15,15 @@ from receive_phone_gl_report import MAX_BYTES, receive_report
 SOURCE = {'manifestSha256': 'a' * 64, 'entrySha256': 'b' * 64}
 
 
+def checkpoint(sequence=1):
+    return {'kind': 'forgeax-phone-startup-checkpoint', 'source': SOURCE,
+            'runId': 'c' * 32, 'sequence': sequence, 'at': 123456,
+            'transitions': [{'phase': 'scene'}],
+            'observation': {'renderer': {'phase': 'scene'}, 'packageIo': {'pending': {'1': 'pack'}}},
+            'sceneFrames': {'minimum': 60, 'observed': 0, 'passed': False},
+            'serialization': {'issues': []}}
+
+
 def digest(body):
     return hashlib.sha256(body).hexdigest()
 
@@ -128,7 +137,7 @@ class PhoneGlReceiverTests(unittest.TestCase):
             self.assertEqual(marker.read_bytes(), b'prior evidence')
 
     def test_startup_receiver_verifies_selected_kind_source_hash_and_terminal_structure(self):
-        value = {'kind': 'forgeax-phone-startup', 'source': SOURCE, 'reason': 'startup-failed',
+        value = {'kind': 'forgeax-phone-startup', 'source': SOURCE, 'runId': 'c' * 32, 'reason': 'startup-failed',
                  'finishedAt': 123456, 'transitions': [{'phase': 'scene'}],
                  'observation': {'renderer': {'phase': 'failed', 'startupError': {
                      'message': 'original error', 'cause': {'code': 'plugin-startup-failed',
@@ -152,6 +161,64 @@ class PhoneGlReceiverTests(unittest.TestCase):
                 self.assertFalse((out / 'report.json').exists())
         with self.server() as (port, out, _):
             self.assertEqual(self.post(port, value)[0], 400, 'GL receiver cannot infer startup mode')
+
+    def test_checkpoints_keep_receiver_open_accept_out_of_order_duplicates_and_preserve_exact_bytes(self):
+        with self.server(kind='forgeax-phone-startup') as (port, out, final):
+            for sequence in [2, 1, 2]:
+                status, receipt, body = self.post(port, checkpoint(sequence))
+                self.assertEqual(status, 200)
+                self.assertEqual(receipt['sequence'], sequence)
+                self.assertEqual((out / f'checkpoint-{sequence:02d}.json').read_bytes(), body)
+                self.assertEqual(stat.S_IMODE((out / f'checkpoint-{sequence:02d}.json').stat().st_mode), 0o600)
+                self.assertFalse((out / 'report.json').exists())
+                self.assertEqual(final, [])
+            terminal = checkpoint()
+            terminal.update(kind='forgeax-phone-startup', reason='deadline', finishedAt=123500)
+            del terminal['sequence']
+            self.assertEqual(self.post(port, terminal)[0], 200)
+        self.assertEqual(final[0]['checkpoints'], 2)
+        self.assertEqual(final[0]['runId'], 'c' * 32)
+
+    def test_checkpoint_only_deadline_is_incomplete_and_cannot_pass(self):
+        with self.server(deadline=1, kind='forgeax-phone-startup') as (port, out, final):
+            self.assertEqual(self.post(port, checkpoint())[0], 200)
+        self.assertEqual(final[0]['status'], 'incomplete')
+        self.assertEqual(final[0]['reason'], 'no-terminal-report')
+        self.assertFalse((out / 'report.json').exists())
+
+    def test_package_control_requires_explicit_mode_and_remains_non_scene_evidence(self):
+        for explicit in [False, True]:
+            value = checkpoint()
+            value.update(kind='forgeax-phone-startup', reason='package-entry-control', finishedAt=123500)
+            value['observation']['renderer']['phase'] = 'package-entry-control'
+            if explicit: value['packageControl'] = 'entry'
+            with self.subTest(explicit=explicit), self.server(kind='forgeax-phone-startup') as (port, out, _):
+                self.assertEqual(self.post(port, value)[0], 200 if explicit else 400)
+                self.assertEqual((out / 'report.json').exists(), explicit)
+
+    def test_checkpoint_rejects_changed_bytes_or_another_run_without_overwriting_evidence(self):
+        for mode in ['bytes', 'run']:
+            with self.subTest(mode=mode), self.server(kind='forgeax-phone-startup') as (port, out, final):
+                _, _, original = self.post(port, checkpoint())
+                changed = checkpoint()
+                if mode == 'bytes': changed['at'] += 1
+                if mode == 'run': changed['runId'] = 'd' * 32
+                self.assertEqual(self.post(port, changed)[0], 400)
+                self.assertEqual((out / 'checkpoint-01.json').read_bytes(), original)
+            self.assertEqual(final[0]['status'], 'rejected')
+
+    def test_checkpoint_cannot_claim_terminal_success_or_unbounded_sequence(self):
+        for mode in ['passed', 'terminal', 'sequence', 'bool-sequence', 'nan', 'runId']:
+            with self.subTest(mode=mode), self.server(kind='forgeax-phone-startup') as (port, out, _):
+                value = checkpoint()
+                if mode == 'passed': value['sceneFrames']['passed'] = True
+                if mode == 'terminal': value.update(reason='scene-presented', finishedAt=123456)
+                if mode == 'sequence': value['sequence'] = 33
+                if mode == 'bool-sequence': value['sequence'] = True
+                if mode == 'nan': value['at'] = float('nan')
+                if mode == 'runId': del value['runId']
+                self.assertEqual(self.post(port, value)[0], 400)
+                self.assertEqual(list(out.glob('checkpoint-*.json')), [])
 
 
 if __name__ == '__main__':

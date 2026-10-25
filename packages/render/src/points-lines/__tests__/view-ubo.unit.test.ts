@@ -51,7 +51,7 @@ describe('Points/Lines per-draw view slots', () => {
       640,
       360,
       firstModel,
-      { kind: 'points', sizePx: 16, shape: 'circle' },
+      { kind: 'points', size: 16, sizeUnits: 'pixels', shape: 'circle' },
       0,
     );
     writePointsLinesViewUbo(

@@ -102,6 +102,8 @@ active/hover state and the focused editor. Reentrant cancellation cannot notify
 the same contact twice; an error reporter failure does not skip the remaining
 contacts or editor release. Startup gameplay gating is separate from UI
 acquisition, so fatal/Reload controls stay usable.
+For a display-only change, `cancel({ preserveFocus: true })` revokes contacts and
+active/hover state while retaining the focused editor and its native edit lease.
 
 A string-only native keyboard opens on `subscribeTextEdit`, reads `focusedText`,
 and closes its lease on `subscribeFocus`. Programmatic focus and validation focus

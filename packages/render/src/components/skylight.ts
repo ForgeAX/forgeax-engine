@@ -67,7 +67,17 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *
  * `color` is the linear-space ambient tint (default white [1, 1, 1]).
  * `intensity` is a linear multiplier (default 1.0; 0 disables image/solid-color lighting). Both
- * are read every frame, so they are live dynamic dials.
+ * are read every frame, so they are live dynamic dials. Solid-color diffuse is
+ * `color * intensity * albedo` with no 1/pi (punctual and directional lights divide by pi), so
+ * Three.js `HemisphereLight` / `AmbientLight` intensity I maps to `intensity` I / pi:
+ * daylight fill is 0.6-0.9, a lamp-lit night 0.1-0.2.
+ *
+ * `groundColor` turns the diffuse term into a hemisphere ambient like Three.js
+ * `HemisphereLight`: the tint is `mix(groundColor, color, normal.y * 0.5 + 0.5)`
+ * in world space, still scaled by `intensity` (and by image irradiance when
+ * an equirect or Atmosphere supplies one). The default all-zero `groundColor`
+ * disables it, so the ambient is uniform `color`; use a small non-zero value
+ * for a near-black ground. Specular environment keeps `color`.
  *
  * `rotation` is an environment-space quaternion in `[x, y, z, w]` order.
  * The default identity quaternion leaves the source orientation unchanged;
@@ -78,6 +88,9 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *
  * @example Dim warm ambient:
  *   world.spawn({ component: Skylight, data: { color: [1, 0.9, 0.8], intensity: 0.3 } }); // color is [r, g, b]
+ *
+ * @example Daylight hemisphere fill (Three HemisphereLight(sky, ground, 2.2) / pi):
+ *   world.spawn({ component: Skylight, data: { color: [0.85, 0.92, 1], groundColor: [0.55, 0.5, 0.4], intensity: 0.7 } });
  *
  * @example Full IBL from an HDR equirect (declarative -- no upload call):
  *   // 1. resolve GUID from vite pack-index (see forgeax-engine-vite-plugin-pack)
@@ -102,6 +115,8 @@ export const Skylight = defineComponent('Skylight', {
   // color carries an explicit layer-2 default [1,1,1] (white); the array
   // layer-3 fallback is all-zero, so the default MUST be explicit (D-5).
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
+  // Downward-facing diffuse tint; all-zero (the default) keeps uniform `color`.
+  groundColor: { type: 'array<f32, 3>' },
   intensity: { type: 'f32', default: 1.0 },
   rotation: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 0, 1]) },
 });

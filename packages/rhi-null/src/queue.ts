@@ -16,13 +16,14 @@ import type {
   RhiQueue,
   TexelCopyTextureInfo,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
+import { createQueueCompletionHold, RhiError } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import type { Bookkeeper } from './bookkeeping';
 
 /** Headless no-op queue. */
 export class RhiNullQueue implements RhiQueue {
   private bookkeeper: Bookkeeper | undefined;
+  private readonly completions = createQueueCompletionHold();
 
   /** Device construction binds this queue once to its actual ledger. */
   bind(bookkeeper: Bookkeeper): void {
@@ -96,6 +97,15 @@ export class RhiNullQueue implements RhiQueue {
   // forgeax-async-whitelist: dom-native — spec `GPUQueue.onSubmittedWorkDone`
   // has no hardware work in this backend, so it resolves immediately.
   onSubmittedWorkDone(): Promise<undefined> {
+    return this.completions.deliver(Promise.resolve(undefined));
+  }
+
+  holdCompletions(): () => void {
+    return this.completions.hold();
+  }
+
+  // forgeax-async-whitelist: dom-native — immediate completion that ignores holds.
+  onSubmittedWorkDoneUnheld(): Promise<undefined> {
     return Promise.resolve(undefined);
   }
 }

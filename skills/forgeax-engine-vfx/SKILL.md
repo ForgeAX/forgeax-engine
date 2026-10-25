@@ -5,6 +5,20 @@ description: ForgeaX code-first GPU VFX authoring, cooking, playback, and render
 
 # ForgeaX VFX
 
+## Choose the path first
+
+| Effect | Path |
+|:--|:--|
+| Rain, snow, sparks, bubbles, dust or sandstorm, fire, smoke, magic motes; up to a few thousand particles per field; behaviour written in game TypeScript | `Points` sprites on a `point-list` mesh, moved with `writeRange` each frame ([cookbook 12](../forgeax-engine-sdk/references/gameplay-cookbook.md#12-particles-rain-snow-sparks-bubbles-dust-fire-smoke-magic)). No shader, no cook. |
+| Tens of thousands of particles, GPU scene collision, force fields, ribbons, trails, beams, mesh particles, event sub-emitters | Cooked GPU VFX below. |
+
+`Points` take a world (`sizeUnits: world`) or pixel size, square, circle or `soft`
+(radial glow) sprites, per-point `color` (alpha fades) and `uv1.x` size streams, the
+material texture across each sprite and the material's blend and depth-write state.
+That covers Three.js `Points`/`PointsMaterial` effects; do not fake particles with pools
+of small meshes. Switch to the GPU path when the CPU loop or its per-frame upload shows
+up in a profile, or when the behaviour needs GPU-side data.
+
 ## Render happy path
 
 VFX is a producer of a closed `RenderFeaturePlan` in the single
@@ -22,6 +36,14 @@ Use one path:
 5. Load by GUID with `loadVfxGpuEffect`, allocate a shared `ParticleEffectAsset` ref, and spawn `ParticleEffectPlayer`.
 
 Read [`packages/vfx/README.md`](../../packages/vfx/README.md) for the author ABI and lifecycle, [`packages/vfx-compiler/README.md`](../../packages/vfx-compiler/README.md) for reflection and cook errors, and [`packages/vfx-render/README.md`](../../packages/vfx-render/README.md) for GPU/render ownership.
+
+One-shot bursts (sparks, hit flashes, an enemy dissipating; Three.js additive
+`Points`/`Sprite`, Godot `GPUParticles3D.one_shot`) need no extra API: give the
+emitter `schedule: { rate: 0, bursts: [{ time: 0, count }] }` and a billboard
+renderer with `blend: 'additive'`, then spawn one `ParticleEffectPlayer` per burst
+(a distinct `seed` varies it) and despawn it after the longest particle lifetime.
+The complete files are recipe 5 of the
+[gameplay cookbook](../forgeax-engine-sdk/references/gameplay-cookbook.md#5-one-shot-vfx-burst).
 
 Every particle topology fogs at its own depth through the shared
 `translucent_fog`; alpha blending adds in-scattering and additive blending only

@@ -296,6 +296,7 @@ test('actual SDK builder rejects dirty source and identifies the changed paths b
     'sdk-lib.mjs',
     'sdk-source.mjs',
     'sdk-stage.mjs',
+    'sdk-template-cache.mjs',
     'sdk-view.mjs',
   ]) {
     await cp(resolve('scripts/forgeax', file), resolve(root, 'scripts/forgeax', file));

@@ -18,6 +18,21 @@ fn fogOpticalDepth(params: FogViewParams, ray: FogRay) -> f32 {
   return clamp(rho * ray.distance * integral, 0.0, 80.0);
 }
 
+// Three.js laws use camera view depth (Three's vFogDepth): clip w under a
+// perspective projection, the camera-plane ray length under orthographic.
+// The host signs the law into the existing lanes (view-ubo.ts):
+//   linear: fogHeightOpacity.y = -maxOpacity, near = .x, far = fogColorDensity.w
+//   exp2:   fogColorDensity.w = -density
+fn three_fog_opacity(v: View, worldPos: vec3<f32>, rayLength: f32) -> f32 {
+  var depth = rayLength;
+  if v.temporalProjection.z < 0.5 { depth = (v.worldViewProj * vec4<f32>(worldPos, 1.0)).w; }
+  if v.fogHeightOpacity.y < 0.0 {
+    return -v.fogHeightOpacity.y * smoothstep(v.fogHeightOpacity.x, v.fogColorDensity.w, depth);
+  }
+  let scaled = v.fogColorDensity.w * depth;
+  return v.fogHeightOpacity.y * (1.0 - exp(-scaled * scaled));
+}
+
 // Every fog consumer (the opaque fog pass and each translucent writer) samples
 // the View fog lanes at its own world position, so a translucent surface is
 // fogged at its depth rather than inheriting the surface behind it.
@@ -33,6 +48,10 @@ fn height_fog_with_source(v: View, worldPos: vec3<f32>, source:vec3<f32>) -> Fog
   let delta = worldPos - origin;
   let distance = length(delta);
   if distance < 0.00001 { return FogSample(vec3<f32>(0.0), 1.0); }
+  if v.fogHeightOpacity.y < 0.0 || v.fogColorDensity.w < 0.0 {
+    let opacity = three_fog_opacity(v, worldPos, distance);
+    return FogSample(source * opacity, 1.0 - opacity);
+  }
   let params = FogViewParams(v.fogColorDensity.xyz, v.fogColorDensity.w,
     v.fogHeightOpacity.x, v.fogHeightOpacity.y);
   let opacity = params.maxOpacity * (1.0 - exp(-fogOpticalDepth(params, FogRay(origin, delta / distance, distance))));

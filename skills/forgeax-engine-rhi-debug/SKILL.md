@@ -21,6 +21,10 @@ description: >-
 > with live evidence (`dev capture` screenshots, `dev eval` state, debug draw) on the
 > real backend. Do not retry replay or block delivery on it.
 
+| Symptom | First check |
+|:--|:--|
+| White/transparent canvas, HUD fine | `rendererError` in `dev capture --json` or the `project play` report (also `__forgeaxGameInspection.renderer().rendererError`): a GPU validation/submit error rejects every frame's submit, so capture the frame and inspect the resource the message names. |
+
 The package contract is [`packages/rhi-debug/README.md`](../../packages/rhi-debug/README.md).
 In an installed game, read `node_modules/@forgeax/engine-rhi-debug/README.md`
 or the SDK's `source/engine/packages/rhi-debug/README.md`.

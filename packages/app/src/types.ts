@@ -233,6 +233,12 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly outputColorSpace?: OutputColorSpace;
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /**
+   * Captured recipes compiled after first renderer readiness without blocking it, in a
+   * bounded window. Observe `renderer.inspect().pipelineLibrary.backgroundWarmup`;
+   * a failure never fails the App and affected pipelines compile on first use.
+   */
+  readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /**
@@ -385,8 +391,9 @@ export interface App {
   /**
    * Advance one complete update/draw frame through the App-owned frame authority.
    * The App must be paused; deterministic tools supply the explicit delta.
+   * `{ render: false }` runs only the World update (see {@link AppStepFrameOptions}).
    */
-  stepFrame(deltaSeconds: number): Result<void, AppDispatchError>;
+  stepFrame(deltaSeconds: number, options?: AppStepFrameOptions): Result<void, AppDispatchError>;
   /**
    * Subscribe to structured errors fan-out from the rAF loop. Returns an
    * unsubscribe handle. The callback signature deliberately excludes raw
@@ -424,6 +431,18 @@ export interface App {
   readonly remote?: import('@forgeax/engine-types').RemoteHandle | undefined;
 }
 
+/** Options for a paused {@link App.stepFrame}. */
+export interface AppStepFrameOptions {
+  /**
+   * Default true. False runs the same World update (input, Time, Update and
+   * FixedUpdate) but submits no picture and needs no frame receipt credit; the
+   * next rendered frame draws the advanced World with a temporal reset. Queries
+   * of the submitted picture (GPU picking, submitted terrain height) keep
+   * answering for the last rendered frame until then.
+   */
+  readonly render?: boolean;
+}
+
 /** Host control returned by the unified execution path. Engine-owned objects remain realm-local. */
 export type ExecutionApp = Pick<
   App,
@@ -434,6 +453,7 @@ export type ExecutionApp = Pick<
   | 'stop'
   | 'pause'
   | 'resume'
+  | 'stepFrame'
   | 'onError'
   | 'lastError'
   | 'dispose'

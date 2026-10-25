@@ -5,7 +5,12 @@
 
 Online users can install the publishable SDK carrier through npm without private GitHub Release access:
 
+The registry transport uses npm 11.17.0 in the verified toolchain. Update npm
+before installing if Node 22 supplied npm 10; its Arborist peer resolver can
+crash while resolving the Engine tool dependencies:
+
 ```bash
+npm install --global npm@11.17.0
 pnpm dlx @forgeax/engine sdk install ~/ForgeaX/1.2.3
 ```
 

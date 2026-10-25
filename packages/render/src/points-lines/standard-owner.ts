@@ -4,6 +4,7 @@ import {
 } from '@forgeax/engine-geometry';
 import { err, ok } from '@forgeax/engine-rhi';
 import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import { PointShapeValue, PointSizeUnitsValue } from '../components/points';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import { PointsLinesMaterialUnsupportedError } from '../errors/render';
 import {
@@ -20,7 +21,7 @@ import type {
 } from '../record/render-context';
 import type { RecoveryPointsLinesCandidate } from '../recovery/types';
 import { admitPointsLines } from './admission';
-import { PointsLinesExpansionCache } from './expansion-cache';
+import { PointsLinesExpansionCache, pointsLinesSourceSlot } from './expansion-cache';
 import type { PointsLinesInspection, PointsLinesSourceError } from './inspection';
 import { inspectPointsLines } from './inspection';
 import {
@@ -181,8 +182,9 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
       ...(snapshot.style?.kind === 'points'
         ? {
             points: {
-              sizePx: snapshot.style.sizePx,
-              shape: snapshot.style.shape === 'circle' ? 1 : 0,
+              size: snapshot.style.size,
+              sizeUnits: PointSizeUnitsValue[snapshot.style.sizeUnits],
+              shape: PointShapeValue[snapshot.style.shape],
             },
           }
         : { lines: snapshot.style ?? {} }),
@@ -198,7 +200,8 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
           ? 'point-list'
           : 'line-list';
     const geometryKey = this.cache.getOrCreate(snapshot, meshResult.value).key;
-    const prepKey = `${geometryKey}:${lane}:${backend}`;
+    // One preparation per source slot: a newer generation rewrites its buffers.
+    const prepKey = `${pointsLinesSourceSlot(snapshot)}:${lane}:${backend}`;
     let preparation = preparations.get(prepKey);
     if (preparation === undefined) {
       preparation = this.createPreparation(runtime, geometryKey, lane, backend);

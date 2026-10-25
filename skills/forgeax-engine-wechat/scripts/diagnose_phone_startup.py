@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import uuid
 
 
 def digest(body):
@@ -23,12 +24,23 @@ def validate_report_url(value):
 def clone_diagnostic(source, out, observe_frames=False, show_frame_result=False, frame_timeout=150,
                      observe_gl_link=False, engine_root=None, report_url=None, observe_startup=False,
                      minimum_scene_frames=1, inspection_reads=(), probe_fence_status=False,
-                     observe_wasm_lifetime=False, fence_probe_delay_ms=None, fence_probe_interval_ms=None):
+                     observe_wasm_lifetime=False, fence_probe_delay_ms=None, fence_probe_interval_ms=None,
+                     show_startup_progress=False, package_control=None, package_retain=(), observe_keyboard=False):
     source, out = source.resolve(), out.resolve()
     if out == source or source in out.parents or out.exists():
         raise ValueError('--out must be new and outside --source')
-    if show_frame_result and not observe_frames:
-        raise ValueError('--show-frame-result requires --observe-frames')
+    if show_frame_result and not (observe_frames or observe_startup):
+        raise ValueError('--show-frame-result requires --observe-frames or --observe-startup')
+    if show_startup_progress and not observe_startup:
+        raise ValueError('--show-startup-progress requires --observe-startup')
+    if observe_keyboard and (not observe_startup or package_control):
+        raise ValueError('--observe-keyboard requires --observe-startup without --package-control')
+    if package_control not in (None, 'entry', 'data', 'empty'):
+        raise ValueError('--package-control must be entry, data or empty')
+    if package_control and (not observe_startup or inspection_reads):
+        raise ValueError('--package-control requires --observe-startup without --inspection-read')
+    if package_retain and package_control != 'data':
+        raise ValueError('--package-retain requires --package-control data')
     if not 20 <= frame_timeout <= 600:
         raise ValueError('--frame-timeout must be between 20 and 600 seconds')
     if observe_startup and (observe_gl_link or observe_frames):
@@ -74,15 +86,32 @@ def clone_diagnostic(source, out, observe_frames=False, show_frame_result=False,
             raise ValueError(f'published artifact does not match its manifest: {path}')
         if (source / path).stat().st_size != row['bytes']:
             raise ValueError(f'published artifact size does not match: {path}')
+    if (len(package_retain) > 256 or len(set(package_retain)) != len(package_retain)
+            or any(not isinstance(path, str) or path not in before or not path.startswith('payload/')
+                   or Path(path).suffix in ('.js', '.mjs', '.cjs') for path in package_retain)):
+        raise ValueError('--package-retain requires at most 256 unique existing non-JS payload file paths')
     original = (source / 'game.js').read_bytes()
+    if package_control and not (source / 'payload/game.js').is_file():
+        raise ValueError('--package-control requires the published payload/game.js')
+    engine_root = Path(engine_root) if engine_root else Path(__file__).resolve().parents[3]
+    closure = json.loads(subprocess.run(
+        ['node', str(Path(__file__).with_name('bundle_phone_gl_link.mjs')),
+         '--source', str(source), '--engine-root', str(engine_root)],
+        check=True, stdout=subprocess.PIPE).stdout)
+    if closure['unresolved']:
+        raise ValueError('publication has unresolved static modules: ' + json.dumps(closure['unresolved']))
     prefix = Path(__file__).with_name('phone_startup_prefix.js').read_bytes()
     prefix = prefix.replace(b'__FORGEAX_PROBE_MANIFEST__', digest(manifest_bytes)[:12].encode())
-    options = {'observeFrames': observe_frames, 'showFrameResult': show_frame_result,
+    run_id = uuid.uuid4().hex
+    options = {'runId': run_id, 'observeFrames': observe_frames, 'showFrameResult': show_frame_result,
                'observeGlLink': observe_gl_link, 'observeStartup': observe_startup,
+               'showStartupProgress': show_startup_progress,
+               'packageControl': package_control,
                'minimumSceneFrames': minimum_scene_frames,
                'inspectionReads': list(inspection_reads),
                'probeFenceStatus': probe_fence_status,
                'observeWasmLifetime': observe_wasm_lifetime,
+               'observeKeyboard': observe_keyboard,
                'fenceProbeDelayMs': 0 if fence_probe_delay_ms is None else fence_probe_delay_ms,
                'fenceProbeIntervalMs': 100 if fence_probe_interval_ms is None else fence_probe_interval_ms,
                'deadlineMs': int(frame_timeout * 1000), 'windowMs': 10000, 'pollMs': 250,
@@ -91,7 +120,6 @@ def clone_diagnostic(source, out, observe_frames=False, show_frame_result=False,
         options['reportUrl'] = report_url
     prefix = prefix.replace(b'__FORGEAX_PROBE_OPTIONS__', json.dumps(options).encode())
     if observe_gl_link or observe_startup:
-        engine_root = Path(engine_root) if engine_root else Path(__file__).resolve().parents[3]
         bundled = subprocess.run(['node', str(Path(__file__).with_name('bundle_phone_gl_link.mjs')),
                                   '--probe', 'startup' if observe_startup else 'gl-link',
                                   '--engine-root', str(engine_root)], check=True, stdout=subprocess.PIPE).stdout
@@ -100,16 +128,36 @@ def clone_diagnostic(source, out, observe_frames=False, show_frame_result=False,
     shutil.copytree(source, out)
     out.chmod(0o700)
     (out / 'game.js').write_bytes(prefix + b'\n' + original)
+    if package_control:
+        if package_control == 'data':
+            for file in (out / 'payload').rglob('*'):
+                if file.is_file() and (file.suffix in ('.js', '.mjs', '.cjs') or
+                        package_retain and file.relative_to(out).as_posix() not in package_retain):
+                    file.unlink()
+        if package_control == 'empty':
+            shutil.rmtree(out / 'payload')
+            (out / 'payload').mkdir()
+        (out / 'payload/game.js').write_text(
+            "globalThis.__forgeaxGameInspection.phase = 'package-entry-control';\n"
+            "console.info('[forgeax.wechat.startup]', 'package-entry-control');\n")
     changed = [path for path, expected in before.items()
-               if digest((out / path).read_bytes()) != expected]
-    if changed != ['game.js']:
-        raise RuntimeError(f'Diagnostic must change only game.js: {changed}')
+               if not (out / path).is_file() or digest((out / path).read_bytes()) != expected]
+    expected_changes = (sorted(path for path in before if path == 'game.js' or
+                        path.startswith('payload/') and (package_control == 'empty' or
+                        Path(path).suffix in ('.js', '.mjs', '.cjs') or
+                        package_retain and path not in package_retain))
+                        if package_control in ('data', 'empty') else ['game.js', 'payload/game.js']
+                        if package_control == 'entry' else ['game.js'])
+    if sorted(changed) != expected_changes:
+        raise RuntimeError(f'Diagnostic changed files outside its selected mode: {changed}')
     report = {
         'kind': 'startup-diagnostic-only',
+        'runId': run_id,
+        'moduleClosure': closure,
         'originalManifestSha256': digest(manifest_bytes),
         'originalEntrySha256': digest(original),
         'diagnosticEntrySha256': digest((out / 'game.js').read_bytes()),
-        'unchangedFiles': len(before) - 1,
+        'unchangedFiles': len(before) - len(changed),
         'changedFiles': changed,
         'manifestPolicy': 'Original retained; this diagnostic is not a qualified distribution.',
     }
@@ -119,6 +167,14 @@ def clone_diagnostic(source, out, observe_frames=False, show_frame_result=False,
         report['glLinkObservation'] = options
     if observe_startup:
         report['startupObservation'] = options
+    if package_control:
+        report['packageControl'] = {
+            'mode': package_control,
+            'selectedFiles': list(package_retain),
+            'removedFiles': [path for path in changed if not (out / path).is_file()],
+            'path': 'payload/game.js', 'originalSha256': before['payload/game.js'],
+            'diagnosticSha256': digest((out / 'payload/game.js').read_bytes()),
+            'qualification': 'native-entry-control-only; no Engine activation or scene acceptance'}
     (out / 'startup-diagnostic.json').write_text(json.dumps(report, indent=2) + '\n')
     return report | {'directory': str(out)}
 
@@ -128,16 +184,20 @@ def main():
     parser.add_argument('--source', required=True, type=Path, help='Original published WeChat directory')
     parser.add_argument('--out', required=True, type=Path, help='New private diagnostic directory')
     parser.add_argument('--observe-frames', action='store_true', help='observe scene-ready completion receipts for an independent 10-second window')
-    parser.add_argument('--show-frame-result', action='store_true', help='show the final frame result only after observation terminates')
+    parser.add_argument('--show-frame-result', action='store_true', help='show the final frame or startup result only after observation terminates')
+    parser.add_argument('--show-startup-progress', action='store_true', help='diagnostic native loading overlay from existing startup console markers; requires --observe-startup')
+    parser.add_argument('--package-control', choices=['entry', 'data', 'empty'], help='native diagnostic control: entry retains payload; data removes other JS; empty keeps only the marker. Neither activates Engine or qualifies scene/FPS')
+    parser.add_argument('--package-retain', action='append', default=[], help='with data control, retain only this exact non-JS payload file; repeat for an explicit source-bound subset')
     parser.add_argument('--observe-gl-link', action='store_true', help='log raw native link/compile status types on the original canvas without changing their results')
     parser.add_argument('--observe-startup', action='store_true', help='retain the actual startup terminal with bounded complete nested error cause/detail, without displaying diagnostic modals')
     parser.add_argument('--probe-fence-status', action='store_true', help='diagnostic intervention: pair native query/clientWaitSync(0,0)/query on at most 8 same-sync observations after scene readiness; requires --observe-startup')
     parser.add_argument('--fence-probe-delay-ms', type=int, help='minimum time after the first verified scene-ready baseline before probing, 0..300000 ms (default: 0); requires --probe-fence-status')
     parser.add_argument('--fence-probe-interval-ms', type=int, help='minimum time between probe pairs, 100..60000 ms (default: 100); requires --probe-fence-status')
     parser.add_argument('--observe-wasm-lifetime', action='store_true', help='diagnostic-only bounded 1-second WASM memory/native call and passive GL fence counts inside/outside synchronous submit, not FPS/performance qualification; requires --observe-startup')
+    parser.add_argument('--observe-keyboard', action='store_true', help='retain native keyboard/focus/window events for 60 seconds after scene readiness; requires --observe-startup, never supplies FPS evidence')
     parser.add_argument('--minimum-scene-frames', type=int, default=1, help='new completed scene presentations required after the first ready snapshot, in one Host/device generation; requires --observe-startup (default: 1)')
     parser.add_argument('--inspection-read', action='append', default=[], help='read this existing game projection once after the required scene frames, bounded to 5 seconds; repeat for at most 8 IDs; requires --observe-startup')
-    parser.add_argument('--report-url', help='opt-in one report POST to http://127.0.0.1:<port>/<path> over an explicitly prepared ADB reverse; requires --observe-gl-link or --observe-startup')
+    parser.add_argument('--report-url', help='opt-in terminal report and bounded startup checkpoints to http://127.0.0.1:<port>/<path> over an explicitly prepared ADB reverse; requires --observe-gl-link or --observe-startup')
     parser.add_argument('--engine-root', type=Path, help='Engine source checkout with installed dependencies, used to bundle diagnostic hash and UTF-8 owners')
     parser.add_argument('--frame-timeout', type=float, default=150, help='total startup and frame observation deadline, seconds')
     args = parser.parse_args()
@@ -145,7 +205,8 @@ def main():
         report = clone_diagnostic(args.source, args.out, args.observe_frames, args.show_frame_result,
                                   args.frame_timeout, args.observe_gl_link, args.engine_root, args.report_url,
                                   args.observe_startup, args.minimum_scene_frames, args.inspection_read, args.probe_fence_status,
-                                  args.observe_wasm_lifetime, args.fence_probe_delay_ms, args.fence_probe_interval_ms)
+                                  args.observe_wasm_lifetime, args.fence_probe_delay_ms, args.fence_probe_interval_ms,
+                                  args.show_startup_progress, args.package_control, args.package_retain, args.observe_keyboard)
     except ValueError as error:
         parser.error(str(error))
     print(json.dumps(report, indent=2))

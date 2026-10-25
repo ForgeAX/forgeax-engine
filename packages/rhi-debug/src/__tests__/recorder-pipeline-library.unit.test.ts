@@ -37,6 +37,13 @@ function library(): PipelineLibrary {
     overflow: 0,
     sourceBytes: 0,
     warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+    backgroundWarmup: {
+      requested: 0,
+      completed: 0,
+      failed: 0,
+      elapsedMs: 0,
+      state: 'idle' as const,
+    },
   };
   return {
     inspect: () => inspection,

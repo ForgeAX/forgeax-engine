@@ -3,7 +3,7 @@ import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 
-function fixture(native = true) {
+function fixture(native = true, search = '?fps=1') {
   document.open();
   document.write(hostStartupDocument('FPS game'));
   document.close();
@@ -23,6 +23,8 @@ function fixture(native = true) {
     window,
     HTMLElement,
     Node,
+    location: { search },
+    URLSearchParams,
     performance,
     setTimeout,
     clearTimeout,
@@ -78,6 +80,22 @@ describe('ordinary game FPS HUD', () => {
       expect(page.hud()?.style.display).toBe('block');
       await vi.advanceTimersByTimeAsync(1000);
       expect(page.hud()?.textContent).toBe('FPS 0.0');
+    } finally {
+      page.startup.destroy();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps browser pages without ?fps=1 free of the badge', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const page = fixture(false, '');
+    try {
+      page.receive(1);
+      await vi.advanceTimersByTimeAsync(150);
+      for (let i = 2; i <= 31; i++) page.receive(i);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(page.hud()?.style.display).not.toBe('block');
+      expect(page.hud()?.textContent).toBe('FPS --');
     } finally {
       page.startup.destroy();
     }

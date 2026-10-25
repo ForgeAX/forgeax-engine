@@ -21,6 +21,8 @@ export interface PlayerBundleInput {
   readonly packIndexPath: string;
   readonly delivery: DevKitDeliveryOptions;
   readonly targetBytes?: number;
+  /** Native transports can compress the complete Bundle once instead. */
+  readonly compressEntries?: boolean;
 }
 
 export interface PlayerBundleResult {
@@ -113,6 +115,11 @@ export function catalogRows(catalog: unknown): readonly Record<string, unknown>[
 }
 
 const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+async function compressBundleEntry(bytes: Uint8Array, enabled: boolean) {
+  if (!enabled || bytes.byteLength < 256) return undefined;
+  return compressZstd(bytes);
+}
 
 /** Group each Pack's non-stream artifacts into Bundles; shared bytes are stored once. */
 export async function planPlayerBundles(input: PlayerBundleInput): Promise<PlayerBundleResult> {
@@ -213,8 +220,9 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
       const bytes = new Uint8Array(await readFile(resolve(input.sourceRoot, entry.path)));
       sourceBytes += bytes.byteLength;
       const identity = entry.identity.endsWith(':identity');
-      const compressed =
-        identity && bytes.byteLength >= 256 ? await compressZstd(bytes) : undefined;
+      const compressed = identity
+        ? await compressBundleEntry(bytes, input.compressEntries !== false)
+        : undefined;
       if (compressed?.ok === true && compressed.value.byteLength < bytes.byteLength * 0.9) {
         stored.push(compressed.value);
         encodings.push('zstd');

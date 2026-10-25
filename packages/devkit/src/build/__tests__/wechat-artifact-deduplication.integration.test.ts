@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { meshAssetContribution } from '@forgeax/engine-geometry';
@@ -103,6 +104,45 @@ export default {
       { target: 'wechat' },
       out,
     );
+    let messageReads = 0;
+    const nativeFailure = Object.defineProperty({}, 'errMsg', {
+      get() {
+        messageReads++;
+        return 'loadSubpackage:fail module not found (no errMsg)';
+      },
+    });
+    const modalContents: string[] = [];
+    const inspection = runInNewContext(
+      `${await readFile(join(out, 'game.js'), 'utf8')}; globalThis.__forgeaxGameInspection.renderer()`,
+      {
+        wx: {
+          loadSubpackage: ({ fail }: { fail(error: unknown): void }) => fail(nativeFailure),
+          showModal: ({ content }: { content: string }) => modalContents.push(content),
+        },
+        console: { info() {}, error() {} },
+      },
+    );
+    expect(inspection.phase).toBe('failed');
+    expect(inspection.lastError.message).toBe(modalContents[0]);
+    expect(inspection.lastError.cause).toBe(nativeFailure);
+    expect(messageReads).toBe(1);
+    const publishedDescriptorFor = async (key: string) => {
+      const entry = entryFor(key);
+      const packPath = String(entry.packageUrl).replace(/^\//, '');
+      const pack = JSON.parse(
+        brotliDecompressSync(await readFile(join(out, 'payload', `${packPath}.br`))).toString(),
+      ) as PackV2;
+      const descriptor = pack.assets.find((asset) => asset.guid === entry.guid)?.artifacts?.body;
+      if (descriptor === undefined) throw new Error(`missing delivered body: ${key}`);
+      return {
+        descriptor,
+        path: join('payload', dirname(packPath), `${descriptor.path}.br`),
+      };
+    };
+    const delivered = await publishedDescriptorFor('first');
+    expect(delivered.descriptor.byteRange).toBeDefined();
+    expect(delivered.descriptor.contentEncoding).toBe('identity');
+    expect((await publishedDescriptorFor('another')).descriptor).toEqual(delivered.descriptor);
     const reads: string[] = [];
     const fetcher = createWechatPackageFetcher(
       {
@@ -137,12 +177,12 @@ export default {
         expect(a.attributes.position).toEqual((await load(key)).attributes.position);
       }
       expect(a.attributes.position).not.toEqual((await load('different')).attributes.position);
-      expect(reads).toContain(`payload/assets/${first.path}.br`);
-      expect(reads).toContain(`payload/assets/${different.path}.br`);
+      expect(reads).toContain(delivered.path);
+      expect(reads).toContain((await publishedDescriptorFor('different')).path);
     } finally {
       registry.dispose();
     }
-    const stored = join(out, `payload/assets/${first.path}.br`);
+    const stored = join(out, delivered.path);
     const corrupt = brotliDecompressSync(await readFile(stored));
     corrupt[corrupt.length - 1] = (corrupt[corrupt.length - 1] ?? 0) ^ 1;
     await writeFile(stored, brotliCompressSync(corrupt));

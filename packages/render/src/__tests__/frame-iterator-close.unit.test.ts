@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { TreeFrame } from '../scene/frame-tree-list';
 import { SceneSlots } from '../scene/scene-slots';
 
@@ -14,7 +15,7 @@ it('keeps entries permanently finished after an explicit return', () => {
 it('closes a slot traversal on break while keeping independent walks', () => {
   const slots = new SceneSlots();
   for (let slot = 0; slot < 2; slot++)
-    slots.set(slot, {
+    setSceneRow(slots, slot, {
       slot,
       worldId: 0,
       entityKey: slot,

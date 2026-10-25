@@ -1,5 +1,5 @@
 import type { Component, ComponentSchema, FieldReflection } from '../component';
-import { componentDeclaresField, componentDefinition } from '../component-schema';
+import { componentDefinition } from '../component-schema';
 
 export class TimeDeltaInvalidError extends Error {
   override readonly name = 'TimeDeltaInvalidError';
@@ -142,30 +142,28 @@ export class ComponentNumericValueInvalidError extends Error {
   }
 }
 
-const NUMERIC_FIELD_TYPES = new Set(['f32', 'f64', 'i32', 'u32', 'i16', 'u16', 'i8', 'u8', 'enum']);
-
 export function validateNumericFieldValues<S extends ComponentSchema>(
   component: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
   entity?: number,
 ): ComponentNumericValueInvalidError | null {
   if (raw === undefined) return null;
-  const fields = componentDefinition(component).fields as Readonly<Record<string, FieldReflection>>;
+  const plans = componentDefinition(component).plan.fields;
   const rawValues = raw as Record<string, unknown>;
-  for (const fieldName of Object.keys(rawValues)) {
-    const reflection = fields[fieldName];
-    if (reflection === undefined) continue;
+  // for-in over the caller's plain payload: no key array per write.
+  for (const fieldName in rawValues) {
+    const plan = plans[fieldName];
+    if (plan === undefined || !plan.numeric) continue;
     const value = rawValues[fieldName];
-    if (NUMERIC_FIELD_TYPES.has(reflection.type)) {
-      if (typeof value === 'number' && Number.isNaN(value)) {
-        return new ComponentNumericValueInvalidError(entity, component.name, fieldName, value);
+    if (plan.kind === 'number') {
+      if (Number.isNaN(value)) {
+        return new ComponentNumericValueInvalidError(
+          entity,
+          component.name,
+          fieldName,
+          value as number,
+        );
       }
-      continue;
-    }
-    if (
-      reflection.arrayMeta === undefined ||
-      !NUMERIC_FIELD_TYPES.has(reflection.arrayMeta.elementType)
-    ) {
       continue;
     }
     const length =
@@ -176,12 +174,12 @@ export function validateNumericFieldValues<S extends ComponentSchema>(
     const values = value as ArrayLike<unknown>;
     for (let index = 0; index < length; index++) {
       const received = values[index];
-      if (typeof received === 'number' && Number.isNaN(received)) {
+      if (Number.isNaN(received)) {
         return new ComponentNumericValueInvalidError(
           entity,
           component.name,
           fieldName,
-          received,
+          received as number,
           index,
         );
       }
@@ -267,9 +265,6 @@ export class ArrayRangeOutOfBoundsError extends RangeError {
   }
 }
 
-const isLabeledEnumField = (field: FieldReflection): boolean =>
-  field.type === 'enum' && field.labels !== undefined;
-
 /**
  * Validate the closed enum fields present in a write payload. Enums without
  * labels remain open numeric fields for compatibility with existing schemas.
@@ -279,8 +274,10 @@ export function validateEnumFieldValues<S extends ComponentSchema>(
   raw: Partial<Record<string, unknown>> | undefined,
   entity?: number,
 ): ComponentFieldInvalidValueError | null {
-  if (raw === undefined || !componentDeclaresField(component, isLabeledEnumField)) return null;
-  const fields = componentDefinition(component).fields as Readonly<Record<string, FieldReflection>>;
+  if (raw === undefined) return null;
+  const definition = componentDefinition(component);
+  if (!definition.plan.hasLabeledEnum) return null;
+  const fields = definition.fields as Readonly<Record<string, FieldReflection>>;
   const rawValues = raw as Record<string, unknown>;
   for (const fieldName of Object.keys(rawValues)) {
     const reflection = fields[fieldName];

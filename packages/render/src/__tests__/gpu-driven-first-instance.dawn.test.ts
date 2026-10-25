@@ -20,6 +20,7 @@ import {
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_STORAGE,
 } from '../gpu-usage';
+import { buildBindGroupLayoutDescriptor } from '../pbr-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { snapshot, standardPbrInputs, updateSnapshot } from './gpu-driven-production-fixture';
@@ -193,13 +194,15 @@ describe('GPU-driven native first-instance addressing', () => {
         entries: [{ binding: 0, visibility: 0x1, buffer: { type: 'read-only-storage' } }],
       })
       .unwrap();
+    // The adapter binds the production slot-3 shape; this probe also reads
+    // the fragment-only ProbeBlend slot (binding 1) from its vertex stage.
     const instancesLayout = device
       .createBindGroupLayout({
-        entries: Array.from({ length: 8 }, (_, binding) => ({
-          binding,
-          visibility: 0x1,
-          buffer: { type: binding === 5 ? ('uniform' as const) : ('read-only-storage' as const) },
-        })),
+        entries: buildBindGroupLayoutDescriptor({} as never, {
+          kind: 'pbr-gpu-driven-instances',
+        }).entries.map((entry) =>
+          entry.binding === 1 ? { ...entry, visibility: entry.visibility | 0x1 } : entry,
+        ),
       })
       .unwrap();
     const layout = device

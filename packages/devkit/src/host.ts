@@ -71,7 +71,7 @@ import {
   owningAssetLibrary,
 } from './asset-libraries.js';
 import { loadProjectCookers } from './build/cookers.js';
-import { executionWorkerEntries } from './build/execution-workers.js';
+import { executionWorkerEntries, runtimeDependencyEntries } from './build/execution-workers.js';
 import { materialBuildCapabilityGuard } from './build/material-profile.js';
 import {
   assertPluginSourceInputs,
@@ -419,6 +419,35 @@ async function createEngineWorkspaceResolver(projectRoot: string): Promise<Plugi
   return {
     name: 'forgeax:devkit-engine-workspace-resolver',
     enforce: 'pre',
+    async config(_config, environment) {
+      if (environment.command !== 'serve') return;
+      if (localRoot === undefined) {
+        try {
+          createRequire(resolve(projectRoot, 'package.json')).resolve(
+            '@forgeax/engine/package.json',
+          );
+          return;
+        } catch (cause) {
+          const code = (cause as NodeJS.ErrnoException).code;
+          // Hidden metadata still proves a project-owned package is installed.
+          if (code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') return;
+          if (code !== 'MODULE_NOT_FOUND') throw cause;
+        }
+      }
+      const app = packages.get('@forgeax/engine-app');
+      if (app === undefined) return;
+      // The workspace resolver supplies Engine to projects without an install.
+      // Its same App closure must seed dependency discovery before the first page.
+      return {
+        optimizeDeps: {
+          entries: [
+            '**/*.html',
+            'execution-bootstrap.ts',
+            ...(await runtimeDependencyEntries(resolve(app.root, 'package.json'))),
+          ],
+        },
+      };
+    },
     configResolved(config) {
       conditions = [...config.resolve.conditions, 'import', 'default'];
     },

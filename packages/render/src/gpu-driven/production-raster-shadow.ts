@@ -3,12 +3,15 @@ import { ok } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
+import type { GpuScene } from '../gpu-scene';
 import { reflectedRenderState } from '../material-render-state';
 import type { RecordProfileRunner } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import type { MaterialSnapshot } from '../render-system-extract';
+import { FrameSet } from '../scene/frame-set';
 import { type ShadowMaterialContent, sameShadowMaterial } from '../scene/material-shadow-content';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { BatchPass } from './batch-execution';
 import { batchLevelStride, batchLodLevelCount } from './batch-layout';
 import type { GpuDrivenBatch, GpuDrivenBatchBinding, SubmissionPlan } from './batch-topology';
@@ -24,6 +27,7 @@ import {
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import { type FilteredProductionPlan, sameMaterialArtifact } from './production-raster-prepare';
 import { type ShadowArtifactObservations, shadowMaterialKey } from './production-raster-support';
+import { ShadowSlotSelection } from './shadow-caster-classes';
 import { filteredRows, type ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap } from './shadow-projection-publication';
 import type { ShadowViewStatePool, ShadowViewUpdateInput } from './shadow-views';
@@ -101,34 +105,78 @@ export interface ShadowBatchFacts {
   readonly worldId: number;
 }
 
+type ChannelScene = Pick<GpuScene, 'contentRevision' | 'changedSlotsSince'>;
+type ChannelSource = Pick<PersistentGpuDrivenState, 'slots' | 'slotAt'>;
+
+interface ChannelSlots {
+  readonly scene: ChannelScene;
+  readonly revision: number;
+  readonly slots: FrameSet;
+}
+
+function admitsChannels(row: RenderSceneSlot | undefined, mask: number): boolean {
+  return row !== undefined && ((row.snapshot.shadowChannels ?? 0xffffffff) & mask) !== 0;
+}
+
+/**
+ * Per-mask caster channel membership. Scene journal changes patch each
+ * retained set; only the first request of a mask or lost history enumerates.
+ */
+export class ShadowChannelSlots {
+  #masks = new Map<number, ChannelSlots>();
+  #requested = new Set<number>();
+
+  select(mask: number, source: ChannelSource, scene: ChannelScene): FrameSet {
+    this.#requested.add(mask);
+    const retained = this.#masks.get(mask);
+    const revision = scene.contentRevision;
+    if (retained?.scene === scene && retained.revision === revision) return retained.slots;
+    const changed =
+      retained?.scene === scene ? scene.changedSlotsSince(retained.revision) : undefined;
+    let slots = retained?.slots ?? new FrameSet();
+    if (changed === undefined) {
+      slots = FrameSet.from(
+        (function* () {
+          for (const row of source.slots) if (admitsChannels(row, mask)) yield row.slot;
+        })(),
+      );
+    } else {
+      for (const slot of changed)
+        slots = admitsChannels(source.slotAt(slot), mask) ? slots.with(slot) : slots.without(slot);
+    }
+    this.#masks.set(mask, { scene, revision, slots });
+    return slots;
+  }
+
+  /** Forget masks no view requested since the last call. */
+  retainRequested(): void {
+    for (const mask of this.#masks.keys()) if (!this.#requested.has(mask)) this.#masks.delete(mask);
+    this.#requested.clear();
+  }
+}
+
 /** Caster channels narrow the view's candidates to the slots sharing a channel bit. */
 export function restrictShadowCasterChannels(
   requested: ShadowViewRequest,
-  plan: SubmissionPlan,
-  scene: PersistentGpuDrivenState,
+  channels: ShadowChannelSlots,
+  pass: Pick<ShadowProjectionPass, 'scene' | 'shadowScene'>,
 ): ShadowViewRequest {
-  const channels = requested.casterChannels ?? 0xffffffff;
-  if (channels === 0xffffffff) return requested;
+  const mask = requested.casterChannels ?? 0xffffffff;
+  if (mask === 0xffffffff) return requested;
+  const slots = channels.select(mask, pass.scene, pass.shadowScene);
   const restriction = requested.candidatePrimitiveIndices;
-  const requestedCandidates =
-    restriction === undefined
-      ? undefined
-      : 'has' in restriction
-        ? restriction
-        : new Set(restriction);
-  const candidatePrimitiveIndices = new Set<number>();
-  for (const batch of plan.batches) {
-    for (const candidate of batch.candidates) {
-      if (
-        (requestedCandidates === undefined || requestedCandidates.has(candidate.primitiveIndex)) &&
-        ((scene.slotAt(candidate.primitiveIndex)?.snapshot.shadowChannels ?? 0xffffffff) &
-          channels) !==
-          0
-      )
-        candidatePrimitiveIndices.add(candidate.primitiveIndex);
-    }
+  if (restriction === undefined) return { ...requested, candidatePrimitiveIndices: slots };
+  let allowed: FrameSet | ShadowSlotSelection;
+  if (FrameSet.isFixed(restriction) || ShadowSlotSelection.isFixed(restriction))
+    allowed = restriction;
+  else {
+    allowed = FrameSet.from(
+      (function* () {
+        for (const slot of restriction) if (Number.isSafeInteger(slot) && slot >= 0) yield slot;
+      })(),
+    );
   }
-  return { ...requested, candidatePrimitiveIndices };
+  return { ...requested, candidatePrimitiveIndices: new ShadowSlotSelection(slots, allowed) };
 }
 
 /** A view without a matrix follows the main camera's LOD projection. */

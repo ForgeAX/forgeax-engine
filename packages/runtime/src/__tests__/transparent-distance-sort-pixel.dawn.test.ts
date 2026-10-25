@@ -21,6 +21,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { drawReady } from './draw-published';
 
 const WIDTH = 64;
 const HEIGHT = 64;
@@ -200,7 +201,7 @@ describe('transparent distance sort (dawn)', () => {
 
     const frame = async () => {
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
+      const drawn = await drawReady(renderer, {
         leases: [attachment.value],
         camera: { lease: attachment.value },
         environment: { lease: attachment.value },

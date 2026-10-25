@@ -534,7 +534,7 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(f.pool.invalidationReason(f.identity)).toBe('source-changed');
       expect(next.plan).not.toBe(first.plan);
       expect(Reflect.get(next.view, 'bindGroup')).toBeDefined();
-      expect(next.view.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
+      expect(next.view.inspect().batchUploadBytes).toBeGreaterThan(0);
     } finally {
       f.dispose();
     }
@@ -804,10 +804,10 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(retry.plan.batches).toEqual(first.plan.batches);
       expect(retry.view.visibleBuffer).toBe(second.view.visibleBuffer);
       // The aborted view needs a fresh plan and redraw, while the accepted
-      // task bytes remain identical. This low-level subset is a raw array:
-      // its actual read produces one fresh eight-word member node.
-      expect(retry.view.inspect().sharedInputUploadBytes).toBe(8 * 4);
-      expect(retry.view.inspect().batchUploadBytes).toBe(4); // Only the raw member-root word.
+      // task bytes remain identical. Its member subset stays encoded while
+      // the view holds it, so neither member nodes nor task words re-upload.
+      expect(retry.view.inspect().sharedInputUploadBytes).toBe(0);
+      expect(retry.view.inspect().batchUploadBytes).toBe(0);
       expect(retry.view.inspect().viewConstantsUploadBytes).toBeGreaterThan(0);
       expect(f.pool.invalidationReason(other.identity)).toBe('submit-aborted');
       f.pool._commitResourceReplacement();
@@ -825,7 +825,10 @@ describe('GPU-driven shadow view owner contract', () => {
       ).unwrap();
       expect(recovered.view.visibleBuffer).not.toBe(visible);
       expect(recovered.plan).not.toBe(retry.plan);
-      expect(recovered.view.inspect().sharedInputUploadBytes).toBe(8 * 4);
+      // Replacement storage re-uploads the view's task words; its held member
+      // encoding in the shared scene input stays valid.
+      expect(recovered.view.inspect().sharedInputUploadBytes).toBe(0);
+      expect(recovered.view.inspect().batchUploadBytes).toBeGreaterThan(0);
     } finally {
       f.dispose();
     }
@@ -866,7 +869,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
     const projection = new RenderScene();
     const delta = projection.apply([updateSnapshot(snapshot(1))]);
-    const sceneAvailability = GpuScene.create(device, 1).unwrap();
+    const sceneAvailability = GpuScene.create(device, 8).unwrap();
     expect(sceneAvailability.status).toBe('available');
     if (sceneAvailability.status !== 'available') return;
     sceneAvailability.scene.sync(delta).unwrap();
@@ -959,9 +962,9 @@ describe('GPU-driven shadow view owner contract', () => {
         cacheRebuildReasons: { 'first-publication': 1, 'view-changed': 1 },
       });
       expect(acceptedCounters?.cacheRebuilds).toBe(1);
-      // This raw subset captures a fresh member node and its root word.
+      // This raw subset captures a fresh member node, its one record and its root word.
       expect(payloadOnly.view.inspect()).toMatchObject({
-        sharedInputUploadBytes: 32,
+        sharedInputUploadBytes: 52,
         batchUploadBytes: 4,
       });
       pool._commitResourceReplacement();
@@ -1046,7 +1049,7 @@ describe('GPU-driven shadow view owner contract', () => {
         )
         .unwrap();
     };
-    const sceneAvailability = GpuScene.create(device, 1).unwrap();
+    const sceneAvailability = GpuScene.create(device, 8).unwrap();
     if (sceneAvailability.status !== 'available') throw new Error('scene unavailable');
     const scene = sceneAvailability.scene;
     moveCaster(0);
@@ -1117,7 +1120,7 @@ describe('GPU-driven shadow view owner contract', () => {
       return { ...value, transform: { world } };
     };
     const delta = projection.apply([updateSnapshot(at(1, 0)), updateSnapshot(at(2, 50))]);
-    const sceneAvailability = GpuScene.create(device, 2).unwrap();
+    const sceneAvailability = GpuScene.create(device, 8).unwrap();
     if (sceneAvailability.status !== 'available') throw new Error('scene unavailable');
     const scene = sceneAvailability.scene;
     scene.sync(delta, undefined, boundsOf).unwrap();
@@ -1331,7 +1334,7 @@ describe('GPU-driven shadow view owner contract', () => {
       world[12] = x;
       return { ...snapshot(entityKey), transform: { world } };
     };
-    const scene = GpuScene.create(device, 2).unwrap();
+    const scene = GpuScene.create(device, 8).unwrap();
     if (scene.status !== 'available') throw new Error('scene unavailable');
     scene.scene
       .sync(

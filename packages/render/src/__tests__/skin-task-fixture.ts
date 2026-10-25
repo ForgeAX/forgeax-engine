@@ -29,9 +29,7 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
     materialBindingSources: ['engine-default'],
     skinBinding: { skeleton: 7, joints },
   });
-  const before = scene.slotsSnapshot();
   skin.apply(
-    before,
     scene.apply(
       [17, 23].map((entityKey) => ({
         kind: 'update',

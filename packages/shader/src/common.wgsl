@@ -197,10 +197,12 @@ struct GpuSceneInstance {
 
 struct GpuSceneTransform {
   currentWorld: mat4x4<f32>,
-  previousWorld: mat4x4<f32>,
+  previousIndex: u32,
+  stamp: u32,
 };
 
-// One-submit temporal pulses written by the GPU Scene owner.
+// One-submit temporal pulses written by the GPU Scene owner; they hold only
+// while the primitive's root transform row carries the current frame stamp.
 const GPU_SCENE_PRIMITIVE_REACTIVE : u32 = 8u;
 const GPU_SCENE_PRIMITIVE_MOTION_INVALID : u32 = 16u;
 // Persistent ShadowParticipation.receive opt-out.
@@ -491,6 +493,27 @@ struct InstanceData {
 // Vertex-only: the fragment stage already spends the full storage-buffer
 // budget.
 @group(3) @binding(6) var<storage, read> scenePrimitives : array<GpuScenePrimitive>;
+// Shared GPU Scene inputs. A morphed instance row names its descriptor here:
+// (vertexCount, targetCount, deltas address, weights...); zero is no morph.
+@group(3) @binding(8) var<storage, read> sceneMorphInputs : array<u32>;
+
+// position + sum_t weight[t] * delta[t][vertex], the morph producer's arithmetic.
+fn sceneIndexMorphPosition(instanceRow : u32, vertex : u32, position : vec3<f32>) -> vec3<f32> {
+  let row = sceneInstances[instanceRow].customDataStart;
+  if (row == 0u) { return position; }
+  let vertexCount = sceneMorphInputs[row];
+  if (vertex >= vertexCount) { return position; }
+  let targetCount = sceneMorphInputs[row + 1u];
+  let deltas = sceneMorphInputs[row + 2u];
+  var morphed = position;
+  for (var t = 0u; t < targetCount; t += 1u) {
+    let weight = bitcast<f32>(sceneMorphInputs[row + 3u + t]);
+    let at = deltas + (t * vertexCount + vertex) * 3u;
+    morphed += weight * bitcast<vec3<f32>>(vec3<u32>(
+      sceneMorphInputs[at], sceneMorphInputs[at + 1u], sceneMorphInputs[at + 2u]));
+  }
+  return morphed;
+}
 
 // Scene-index draws carry the composed world, so their instance-local factor
 // is this identity; keeping the factor preserves the per-draw arithmetic.
@@ -515,21 +538,33 @@ struct SceneIndexDraw {
 // Explicit Instances rows compose the primitive root with their local
 // transform. Other rows name the reserved identity row 0 and use the root
 // directly, avoiding a local-row load and matrix product for every vertex.
+// Write-time previous pose: a row stamped with the frame being drawn names the
+// row holding its pose at the last submitted frame; any other row has not
+// moved since. Row 0 carries the frame stamp.
+fn sceneTransformPrevious(row : GpuSceneTransform, frame : u32) -> mat4x4<f32> {
+  if (row.stamp == frame) {
+    return sceneTransforms[row.previousIndex].currentWorld;
+  }
+  return row.currentWorld;
+}
+
 fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
   let instance = sceneInstances[instanceRow];
   let primitive = scenePrimitives[instance.primitiveIndex];
   let root = sceneTransforms[primitive.transformIndex];
+  let frame = sceneTransforms[0].stamp;
   var draw : SceneIndexDraw;
   draw.world = root.currentWorld;
-  draw.previousWorld = root.previousWorld;
+  draw.previousWorld = sceneTransformPrevious(root, frame);
   if (instance.transformIndex != 0u) {
     let local = sceneTransforms[instance.transformIndex];
     draw.world = root.currentWorld * local.currentWorld;
-    draw.previousWorld = root.previousWorld * local.previousWorld;
+    draw.previousWorld = draw.previousWorld * sceneTransformPrevious(local, frame);
   }
+  let pulses = select(0u, primitive.flags, root.stamp == frame);
   draw.temporal = vec2<f32>(
-    select(0.0, 1.0, (primitive.flags & GPU_SCENE_PRIMITIVE_REACTIVE) != 0u),
-    select(1.0, 0.0, (primitive.flags & GPU_SCENE_PRIMITIVE_MOTION_INVALID) != 0u),
+    select(0.0, 1.0, (pulses & GPU_SCENE_PRIMITIVE_REACTIVE) != 0u),
+    select(1.0, 0.0, (pulses & GPU_SCENE_PRIMITIVE_MOTION_INVALID) != 0u),
   );
   draw.probe = vec2<u32>(primitive.sourceIndex + 1u, primitive.generation);
   draw.lightingChannels = primitive.lightingChannels;

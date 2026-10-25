@@ -10,13 +10,13 @@ import type { MeshFrame } from '../scene/mesh-frame';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { buildRaySurfaceScene, type RaySurfaceInstance } from './attributes';
 import { rayReferenceFailure } from './scene';
-import { projectVisibleSurfaces } from './visible-surface';
+import type { VisibleSurfaceProjection } from './visible-surface';
 
 /** One frozen query projection of the complete retained scene, including offscreen sources. */
 export function projectRayScene(
   slots: FrameList<RenderSceneSlot>,
   worlds: readonly RenderResourceScope[],
-  maxSurfaceRecords: number,
+  visibleSurface: VisibleSurfaceProjection,
   frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ) {
   const sources =
@@ -29,7 +29,12 @@ export function projectRayScene(
         'transport contributor has no admitted geometry; missing representation is not a ray miss',
       ).unwrap();
   }
-  const surfaces = projectVisibleSurfaces(sources, maxSurfaceRecords).unwrap();
+  const surfaces = {
+    records: visibleSurface.records.slice(),
+    slotBases: new Map(visibleSurface.slotBases),
+    entityBases: new Map(visibleSurface.entityBases),
+    layout: visibleSurface.layout,
+  };
   const instances: RaySurfaceInstance[] = [];
   // These dense material addresses belong only to this snapshot. World handles
   // and retained surface rows remain the source identity; no identity allocator.

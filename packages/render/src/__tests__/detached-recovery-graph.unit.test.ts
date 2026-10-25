@@ -13,14 +13,12 @@ import {
   getRenderFeatureGraphInspection,
   inspectRenderGraphGenerationAllocation,
   type RenderFeatureGraphCandidate,
-  retire as retireCompiledGraph,
   settleCompiledFrameGraphCandidate,
-  shareRenderGraphGenerationAllocationOwner,
 } from '../record/typed-frame-graph';
 import type { RenderPipeline } from '../render-pipeline';
-import type { ExtractedLights } from '../render-system-extract';
 import { createTemporalFrameTransaction } from '../temporal/frame';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
+import type { DirectionalCascades, ViewLights } from '../world/render-lights';
 
 function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSystemInternals) {
   let failBuild = false;
@@ -92,10 +90,11 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
     colorAttachmentFormat: 'rgba8unorm',
   } as unknown as PipelineState;
   let lights = {
-    cascadeCount: undefined,
+    cascades: undefined,
     pointShadow: [],
     spot: [],
-  } as unknown as ExtractedLights;
+    shadowViews: [],
+  } as unknown as ViewLights;
   return {
     activePipeline,
     frameState,
@@ -105,14 +104,14 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
       return lights;
     },
     setCascadeCount(cascadeCount: 1 | 2 | 3 | 4) {
-      lights = { ...lights, cascadeCount };
+      lights = { ...lights, cascades: { cascadeCount } as DirectionalCascades };
     },
     setStaticShadowCache(enabled: boolean) {
       lights = {
         ...lights,
         directionalCsmConfig: enabled
           ? undefined
-          : ({ staticShadowCache: false } as ExtractedLights['directionalCsmConfig']),
+          : ({ staticShadowCache: false } as ViewLights['directionalCsmConfig']),
       };
     },
     setDevice(nextDevice: RhiDevice) {
@@ -137,7 +136,7 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
         lights,
         width,
         1,
-        lights.cascadeCount === undefined ? undefined : shadowMapSize,
+        lights.cascades === undefined ? undefined : shadowMapSize,
       ];
       args[23] = terrainReceivers;
       args[9] = featureCandidate;
@@ -568,49 +567,6 @@ describe('detached recovery graph execution boundary', () => {
     );
     expect(failed?.retirement).toBe('failed');
     expect(failed?.allocation.pendingRetirementBytes).toBe(16);
-    expect(allocation.failedRetirementCount).toBe(1);
-    expect(allocation.failedRetirementBytes).toBe(16);
-  });
-
-  it('keeps a detached recovery candidate failure in the shared owner', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const harness = createRecoveryGraphHarness();
-    harness.setDevice(device);
-    const active = harness.compile();
-    expect(active).not.toBeNull();
-    if (active === null) return;
-    harness.accept();
-
-    const candidateFrameState = {
-      ...harness.frameState,
-      compiledFrameGraph: null,
-      retiredCompiledFrameGraphs: new Set(),
-    } as unknown as RenderFrameState;
-    shareRenderGraphGenerationAllocationOwner(harness.frameState, candidateFrameState);
-    const candidate = ensureCompiledFrameGraph(
-      harness.internals,
-      candidateFrameState,
-      harness.pipelineState,
-      makeZeroCameraFallbackSnapshot(),
-      harness.lights,
-      1,
-      1,
-      undefined,
-    );
-    expect(candidate).not.toBeNull();
-    if (candidate === null) return;
-
-    (device as unknown as { destroyBuffer: RhiDevice['destroyBuffer'] }).destroyBuffer = () =>
-      ({ ok: false, error: { code: 'webgpu-runtime-error' } }) as never;
-    retireCompiledGraph(candidateFrameState, candidate);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    const allocation = inspectRenderGraphGenerationAllocation(harness.frameState);
-    const failed = allocation.entries.find(
-      (entry) => entry.generation === candidate.inspect().generation,
-    );
-    expect(failed?.retirement).toBe('failed');
-    expect(failed?.roles).toEqual(expect.arrayContaining(['retiring']));
     expect(allocation.failedRetirementCount).toBe(1);
     expect(allocation.failedRetirementBytes).toBe(16);
   });

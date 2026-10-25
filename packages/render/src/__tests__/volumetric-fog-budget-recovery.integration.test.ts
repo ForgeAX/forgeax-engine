@@ -443,7 +443,8 @@ describe('volumetric fog budget and recovery contract', () => {
     const recoveredDensityTextures = device.textureDescriptors.filter(
       (descriptor) => descriptor.dimension === '3d' && descriptor.format === 'r8unorm',
     ).length;
-    expect(recoveredDensityTextures).toBe(1);
+    // Recovery restores no frame state; density residency rebuilds on first visible use.
+    expect(recoveredDensityTextures).toBe(0);
     created = vi.spyOn(device, 'createTexture');
     writes = vi.spyOn(device.queue, 'writeTexture');
     const beforeRecoveredViewPasses = volumePassCount();
@@ -460,9 +461,8 @@ describe('volumetric fog budget and recovery contract', () => {
     });
     world.set(firstFog, VolumetricFog, { boundsMin: [-1, -1, -1], boundsMax: [1, 1, 1] }).unwrap();
     expect((await draw()).volumetricFog).toMatchObject({ status: 'available', passCount: 4 });
-    // Recovery restored the primary accepted density; the first visible view
-    // restores its two additional owners through the ordinary residency path.
-    expect(densityCreations()).toBe(2);
+    // The first visible view restores every density owner through the ordinary residency path.
+    expect(densityCreations()).toBe(3);
     expect(
       device.textureDescriptors.filter(
         (descriptor) => descriptor.dimension === '3d' && descriptor.format === 'r8unorm',

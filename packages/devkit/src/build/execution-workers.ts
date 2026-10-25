@@ -1,8 +1,9 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, posix, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PACK_PROGRAM_WORKER_SOURCE } from '@forgeax/engine-pack/runtime-browser';
+import { moduleResolve } from 'import-meta-resolve';
 import MagicString from 'magic-string';
 import ts from 'typescript';
 import { normalizePath, type Plugin, type Rollup, searchForWorkspaceRoot } from 'vite';
@@ -20,24 +21,35 @@ export interface EngineCapabilityMeta {
   readonly reference?: string;
 }
 
-async function runtimeDependencyEntries(
+/** Browser entrypoints of the Engine closure; Node-only exports never enter Vite's scan. */
+export async function runtimeDependencyEntries(
   manifest: string,
-  entries = new Set<string>(),
+  entries = new Map<string, string | undefined>(),
 ): Promise<string[]> {
-  const entry = normalizePath(require.resolve(dirname(manifest)));
-  if (entries.has(entry)) return [...entries];
-  entries.add(entry);
-  const { dependencies = {} } = JSON.parse(await readFile(manifest, 'utf8')) as {
+  if (entries.has(manifest)) return [...entries.values()].filter((entry) => entry !== undefined);
+  entries.set(manifest, undefined);
+  const { name, dependencies = {} } = JSON.parse(await readFile(manifest, 'utf8')) as {
+    readonly name: string;
     readonly dependencies?: Readonly<Record<string, string>>;
   };
-  for (const name of Object.keys(dependencies)) {
-    if (!name.startsWith('@forgeax/engine-')) continue;
+  try {
+    const entry = moduleResolve(
+      name,
+      pathToFileURL(manifest),
+      new Set(['browser', 'import', 'default']),
+    );
+    entries.set(manifest, normalizePath(fileURLToPath(entry)));
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause;
+  }
+  for (const dependency of Object.keys(dependencies)) {
+    if (!dependency.startsWith('@forgeax/engine-')) continue;
     await runtimeDependencyEntries(
-      require.resolve(`${name}/package.json`, { paths: [dirname(manifest)] }),
+      require.resolve(`${dependency}/package.json`, { paths: [dirname(manifest)] }),
       entries,
     );
   }
-  return [...entries];
+  return [...entries.values()].filter((entry) => entry !== undefined);
 }
 
 /** Keep runtime entries and URL-loaded project plugins in one module graph. */
@@ -251,11 +263,31 @@ export function loadImport(specifier) {
     async configureServer(server) {
       if (runtimeImports.length > 0) {
         try {
+          const environment = server.environments.client;
+          if (!environment)
+            throw new TypeError('Runtime program imports require a client environment');
           await prepareIdentity(
-            (await server.environments.client?.pluginContainer.resolveId(
-              '@forgeax/engine/package.json',
-            )) ?? null,
+            (await environment.pluginContainer.resolveId('@forgeax/engine/package.json')) ?? null,
           );
+          if (environment.depsOptimizer) {
+            // Runtime capabilities can expose subpaths absent from App's main
+            // entry graph. Discover their dependencies before freezing programs.
+            const runtimeEntries: string[] = [];
+            for (const specifier of runtimeImports) {
+              const resolved = await environment.pluginContainer.resolveId(specifier);
+              if (!resolved || resolved.external)
+                throw new TypeError(`Runtime program import unavailable: ${specifier}`);
+              const file = resolved.id.split('?')[0];
+              if (file && isAbsolute(file)) runtimeEntries.push(normalizePath(file));
+            }
+            const entries = environment.config.optimizeDeps.entries;
+            environment.config.optimizeDeps.entries = [
+              ...new Set([
+                ...(typeof entries === 'string' ? [entries] : (entries ?? ['**/*.html'])),
+                ...runtimeEntries,
+              ]),
+            ];
+          }
         } catch (cause) {
           await server.close();
           throw cause;

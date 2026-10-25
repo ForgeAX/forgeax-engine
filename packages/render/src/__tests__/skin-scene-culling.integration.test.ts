@@ -71,11 +71,7 @@ function fixture() {
     jointCount: 1,
     inverseBindMatrices: matrix(),
   }));
-  const before = scene.slotsSnapshot();
-  skin.apply(
-    before,
-    scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: source }]),
-  );
+  skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: source }]));
   skin.joint(0, 19, matrix());
   return { arena, scene, skin, source, mesh };
 }
@@ -132,9 +128,7 @@ it('never substitutes bind pose for missing current input, a foreign Scene slot,
     out.fill(123);
     expect(scene.writeCullingWorldBoundsAt(slot, out)).toBe(false);
     expect(Array.from(out)).toEqual([123, 123, 123, 123, 123, 123]);
-    const before = scene.slotsSnapshot();
     skin.apply(
-      before,
       scene.apply([
         { kind: 'remove', worldId: 0, entityKey: 17 },
         { kind: 'update', worldId: 0, entityKey: 17, snapshot: source },
@@ -170,9 +164,7 @@ it('never grants a custom vertex program the stock Skin position enclosure from 
     positionBounds: undefined,
     materialShaderId: 'game::arbitrary-vertex',
   });
-  const before = scene.slotsSnapshot();
   skin.apply(
-    before,
     scene.apply([
       {
         kind: 'update',

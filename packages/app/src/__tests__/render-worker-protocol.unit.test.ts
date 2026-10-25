@@ -141,6 +141,13 @@ async function start(
   return { post, receive, initMessage };
 }
 
+/** A hand-built empty protocol record; the Renderer is mocked, so no column is decoded. */
+function publicationMessage(revision: number, side?: Record<string, unknown>) {
+  const record = new ArrayBuffer(128);
+  new Float64Array(record)[0] = 4;
+  return { source: 'test', epoch: 1, revision, record, ...(side === undefined ? {} : { side }) };
+}
+
 function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canvas' = 'video') {
   return {
     kind: 'draw',
@@ -151,29 +158,17 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
     worldIdentity: 'test-world',
     width: 32,
     height: 32,
-    publication: {
-      source: 'test',
-      epoch: 1,
-      revision,
-      features: [],
-      templates: [],
-      materials: [],
-      videoFrames: source === 'video' ? [{ frame: { close } }] : [],
-      canvasFrames:
-        source === 'canvas'
-          ? [
+    publication: publicationMessage(revision, {
+      ...(source === 'video' ? { videoFrames: [{ frame: { close } }] } : {}),
+      ...(source === 'canvas'
+        ? {
+            canvasFrames: [
               { id: 1, version: revision, disposed: false, frame: { close } },
               { id: 2, version: revision, disposed: true },
-            ]
-          : [],
-      upserts: new Float32Array(0),
-      removed: new Uint32Array(0),
-      transformEntities: new Uint32Array(0),
-      transforms: new Float32Array(0),
-      retiredJoints: new Uint32Array(0),
-      assets: [],
-      assetPatches: [],
-    },
+            ],
+          }
+        : {}),
+    }),
   };
 }
 
@@ -759,7 +754,7 @@ it('forwards the pending cause captured on the completed receipt, without inspec
     expect(submitted[0]?.[0].frame).not.toHaveProperty('rhiCommands');
     expect(submitted[1]?.[0].frame.rhiCommands).toMatchObject({ submits: 0, draws: 0 });
     for (const [message] of submitted)
-      expect(message.frame.publicationBytes).toEqual({ columns: 0, assets: 0 });
+      expect(message.frame.publicationBytes).toEqual({ columns: 128, assets: 0 });
     for (const [message] of completed)
       expect(message.frame.renderSubmitToCompleteMs).toBeGreaterThanOrEqual(0);
   } finally {
@@ -1328,22 +1323,7 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
       worldIdentity: 'test-world',
       width: 32,
       height: 32,
-      publication: {
-        source: 'test',
-        epoch: 1,
-        revision: 1,
-        features: [],
-        templates: [],
-        materials: [],
-        videoFrames: [],
-        upserts: new Float32Array(0),
-        removed: new Uint32Array(0),
-        transformEntities: new Uint32Array(0),
-        transforms: new Float32Array(0),
-        retiredJoints: new Uint32Array(0),
-        assets: [],
-        assetPatches: [],
-      },
+      publication: publicationMessage(1),
     },
   });
   await vi.waitFor(() =>
@@ -1373,22 +1353,9 @@ it('reports publication overflow as deterministic protocol failure and drains ow
     worldIdentity: 'test-world',
     width: 32,
     height: 32,
-    publication: {
-      source: 'test',
-      epoch: 1,
-      revision,
-      features: [],
-      templates: [],
-      materials: [],
+    publication: publicationMessage(revision, {
       videoFrames: [{ frame: { close: closeFrames[revision - 1] } }],
-      upserts: new Float32Array(0),
-      removed: new Uint32Array(0),
-      transformEntities: new Uint32Array(0),
-      transforms: new Float32Array(0),
-      retiredJoints: new Uint32Array(0),
-      assets: [],
-      assetPatches: [],
-    },
+    }),
   });
   try {
     receive({ data: draw(1) });
@@ -1464,22 +1431,7 @@ it.each([
       frameId: 1,
       width: 32,
       height: 32,
-      publication: {
-        source: 'test',
-        epoch: 1,
-        revision: 1,
-        features: [],
-        templates: [],
-        materials: [],
-        videoFrames: [],
-        upserts: new Uint32Array(0),
-        removed: new Uint32Array(0),
-        transformEntities: new Uint32Array(0),
-        transforms: new Float32Array(0),
-        retiredJoints: new Uint32Array(0),
-        assets: [],
-        assetPatches: [],
-      },
+      publication: publicationMessage(1),
     },
   });
   try {
@@ -2041,7 +1993,9 @@ it('installs game-owned fullscreen declarations before drawing and retires their
         data: enabled,
         ...(revision === 1 ? { fullscreen: structuredClone(descriptor) } : {}),
       };
-      receive({ data: { ...message, publication: { ...message.publication, features: [row] } } });
+      receive({
+        data: { ...message, publication: { ...message.publication, side: { features: [row] } } },
+      });
       await vi.waitFor(() =>
         expect(post).toHaveBeenCalledWith(
           expect.objectContaining({ kind: 'completed', revision }),
@@ -2061,7 +2015,7 @@ it('installs game-owned fullscreen declarations before drawing and retires their
         ...message,
         publication: {
           ...message.publication,
-          features: [{ identity: descriptor.identity, data: true }],
+          side: { features: [{ identity: descriptor.identity, data: true }] },
         },
       },
     });

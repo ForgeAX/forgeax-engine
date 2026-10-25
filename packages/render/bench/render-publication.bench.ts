@@ -7,7 +7,7 @@ import { afterAll, bench } from 'vitest';
 import { Camera, Instances, MeshFilter, MeshRenderer } from '../src/components';
 import { Materials } from '../src/materials';
 import { PersistentRenderScene } from '../src/scene/render-scene';
-import { renderPublicationTransfers } from '../src/publication/contract';
+import { renderPublicationTransfers } from '../src/publication/record';
 import { createRenderPublisher } from '../src/publication/publisher';
 import { RenderPublicationReceiver } from '../src/publication/receiver';
 
@@ -60,8 +60,8 @@ for (const { name, instances, unique } of [
     iteration++;
     world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+    const packet = structuredClone(candidate.message, {
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     scene.consumePublication(receiver.accept(packet).unwrap());

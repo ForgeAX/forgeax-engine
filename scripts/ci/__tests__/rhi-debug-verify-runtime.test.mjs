@@ -5,9 +5,9 @@ import {
   evaluatePixelVerdict,
   requestReplayDeviceForTape,
   runCaptureLiveUploadTransaction,
-  selectCaptureWorkIndex,
   VerifyFailure,
 } from '../../../apps/shared/scripts/rhi-debug-verify.mjs';
+import { selectCaptureWorkIndex } from '../../../apps/shared/src/capture-work-selection.mjs';
 
 test('pixel capture selects the swapchain writer even when probe work follows it', () => {
   const model = {
@@ -290,6 +290,7 @@ test('rhi-debug optional browser replay uses the retained captured bytes', async
     {
       mode: 'pixel',
       browserReplayHook: '__replay',
+      workIndex: 4,
       rawTapeRoute: '/tape',
       tapeMime: 'application/x-test-tape',
     },
@@ -303,7 +304,8 @@ test('rhi-debug optional browser replay uses the retained captured bytes', async
         events.push('live');
         return { live: 'AQI=', dims: { width: 2, height: 1 } };
       },
-      replay: async (bytes) => {
+      replay: async (bytes, workIndex) => {
+        assert.equal(workIndex, 4);
         events.push(`browser-replay:${Array.from(bytes).join(',')}`);
         return { pixels: new Uint8Array([9, 8, 7, 6]), width: 2, height: 1, workIndex: 4 };
       },

@@ -16,7 +16,7 @@
 #import forgeax_view::fog::{translucent_fog}
 #endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, sceneInstances}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneInstances}
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
@@ -558,12 +558,15 @@ fn standardViewZ(in : VsOut) -> f32 {
 }
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-fn sceneIndexVertex(in : VsIn, idx : u32) -> VsOut {
+fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
   // visible = (scene instance row, material row, candidate row, LOD fade).
   // The palette already carries world space; the scene rows only name the
   // probe identity and keep the shared scene bindings referenced.
   let visible = visibleItems[idx];
   let draw = sceneIndexDraw(visible.x);
+  // Morph precedes skinning, as in the per-entity morphed stream.
+  var in = source;
+  in.pos = sceneIndexMorphPosition(visible.x, vertex, in.pos);
   _ = draw.world;
   // Scene material rows never reach bit 31; it carries the receive opt-out.
   var out = vs_main_impl(
@@ -592,11 +595,11 @@ fn standardReceivesShadows(in : VsOut) -> bool {
 }
 
 @vertex
-fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
+fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   // This variant binds only the GPU Scene tables; every entry reads the
   // visible stream.
-  return sceneIndexVertex(in, idx);
+  return sceneIndexVertex(in, idx, vertex);
 #else
   // Keep meshes[0] and instances bindings referenced so naga_oil does not
   // dead-code-eliminate the @group(2)@binding(0) and @group(3)@binding(0)
@@ -619,8 +622,8 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 @vertex
-fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  return sceneIndexVertex(in, idx);
+fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return sceneIndexVertex(in, idx, vertex);
 }
 #endif
 

@@ -31,9 +31,13 @@ function sameGeometry(
     accepted.draw.count === geometry.draw.count &&
     accepted.draw.baseVertex === geometry.draw.baseVertex &&
     accepted.draw.topology === geometry.draw.topology &&
-    (binding.lods?.length ?? 0) === (source.lods?.length ?? 0) &&
-    (binding.lods === undefined ||
-      binding.lods.every((asset, index) => asset === source.lods?.[index]?.mesh))
+    // Morphed members draw LOD0 only.
+    (source.morph === undefined
+      ? binding.morph === undefined &&
+        (binding.lods?.length ?? 0) === (source.lods?.length ?? 0) &&
+        (binding.lods === undefined ||
+          binding.lods.every((asset, index) => asset === source.lods?.[index]?.mesh))
+      : binding.morph === true)
   );
 }
 
@@ -116,6 +120,17 @@ export class GpuDrawSelection {
     return materials;
   }
 
+  /** No binding executes: every source draw stays CPU-recorded. */
+  get empty(): boolean {
+    return this.#byBinding.size === 0;
+  }
+
+  /** Materials of executed bindings by World; their readiness covers every owned draw. */
+  *coveredMaterials(): Generator<readonly [worldId: number, material: MaterialResource]> {
+    for (const [material, worlds] of this.materials)
+      for (const worldId of worlds.keys()) yield [worldId, material];
+  }
+
   private batches(source: RenderableSnapshot, draw: GpuDrivenDrawSnapshot, compactIndex: number) {
     if (source.assetHandle === undefined) return undefined;
     return this.materials
@@ -123,6 +138,29 @@ export class GpuDrawSelection {
       ?.get(source.worldId)
       ?.get(source.assetHandle)
       ?.get(gpuDrivenSourceDrawItemIndex(draw, compactIndex));
+  }
+
+  /**
+   * Does this selection execute a source batch's binding? Every member of an
+   * uncovered binding keeps a CPU-recorded residual draw.
+   */
+  coversBinding(binding: GpuDrivenBatchBinding): boolean {
+    const owned = this.materials
+      .get(binding.material)
+      ?.get(binding.worldId)
+      ?.get(binding.assetHandle)
+      ?.get(binding.drawItemIndex);
+    return (
+      owned?.some(
+        (batch) =>
+          batch.binding === binding ||
+          (batch.binding !== undefined &&
+            batch.binding.morph === binding.morph &&
+            batch.binding.geometry.deformation === binding.geometry.deformation &&
+            batch.binding.geometry.draw.first === binding.geometry.draw.first &&
+            batch.binding.geometry.draw.count === binding.geometry.draw.count),
+      ) === true
+    );
   }
 
   /** Select accepted shared execution before reading a batch's source members. */

@@ -13,6 +13,7 @@ import type { RenderFeature } from '../../features/types';
 import { materialProgramSelectionsForMaterial } from '../../render-system-extract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication } from '../record';
 
 async function fixture(includePlain: boolean) {
   const assets = new AssetRegistry({
@@ -120,7 +121,7 @@ it.each([
     const packet = structuredClone(candidate.packet);
     const keys = f.programs.map((program) => program.specializationKey).sort();
     expect(packet.programs.map((program) => program.key).sort()).toEqual(keys);
-    expect(receiver.accept(packet, receiving).ok).toBe(true);
+    expect(receiver.accept(encodeRenderPublication(packet), receiving).ok).toBe(true);
     for (const key of keys)
       expect(receiving.shaderRegistry.findMaterialArtifact(key).ok).toBe(true);
     candidate.accept();

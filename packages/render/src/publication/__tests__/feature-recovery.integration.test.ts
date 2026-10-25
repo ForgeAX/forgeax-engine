@@ -16,8 +16,8 @@ import { standardPbrManifestRow } from '../../__tests__/shader-manifest-fixture'
 import { Camera, perspective } from '../../components/camera';
 import { constructRendererHost } from '../../construct-renderer';
 import type { RenderFeature } from '../../features/types';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 type LostInfo = { readonly reason: 'unknown'; readonly message: string };
 class RecoverableDevice extends RhiNullDevice {
@@ -41,7 +41,7 @@ class RecoverableDevice extends RhiNullDevice {
   }
 }
 
-it('rehydrates submitted published feature data through the real Renderer recovery owner', async () => {
+it('recovers without replaying submitted feature data and plans the next publication cold', async () => {
   const devices: RecoverableDevice[] = [];
   const backend = {
     ...nullRhi,
@@ -69,6 +69,7 @@ it('rehydrates submitted published feature data through the real Renderer recove
   const handle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const asset = runtimeAssets(assets).resolveAsset<MeshAsset>(handle).unwrap();
   const seen: unknown[] = [];
+  const plannedGenerations: number[] = [];
   let receiverExtracts = 0;
   let submitted = 0;
   let marker = 1;
@@ -89,6 +90,7 @@ it('rehydrates submitted published feature data through the real Renderer recove
       return ok({ handle, marker });
     },
     plan: (data, context) => {
+      plannedGenerations.push(context.generation);
       const resolved = context.resolveAsset?.(0, data.handle);
       if (resolved === undefined || !resolved.ok) throw new Error('Missing exact published asset');
       expect(resolved.value).toEqual(asset);
@@ -152,10 +154,10 @@ it('rehydrates submitted published feature data through the real Renderer recove
     world.update(1 / 60).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    const drawn = renderer.draw({ publication: packet });
+    const drawn = renderer.draw({ publication: encodeRenderPublication(packet) });
     if (!drawn.ok) throw drawn.error;
     const frame = drawn.value;
     expect((await frame.completed).ok).toBe(true);
@@ -166,7 +168,7 @@ it('rehydrates submitted published feature data through the real Renderer recove
     marker = 2;
     const successor = publisher.prepare(0).unwrap();
     const unsubmitted = structuredClone(successor.packet, {
-      transfer: renderPublicationTransfers(successor.packet),
+      transfer: renderPublicationTransfers(successor.message),
     });
     successor.accept();
     expect(unsubmitted.features[0]?.data).toMatchObject({ marker: 2 });
@@ -178,10 +180,17 @@ it('rehydrates submitted published feature data through the real Renderer recove
     const recovered = await renderer.recover();
     expect(receiverExtracts).toBe(0);
     expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true });
-    expect(seen).toHaveLength(2);
-    expect(seen[1]).toEqual(packet.features[0]?.data);
+    expect(seen).toHaveLength(1);
     expect(devices).toHaveLength(2);
     expect(submitted).toBe(1);
+    const next = renderer.draw({ publication: encodeRenderPublication(unsubmitted) });
+    if (!next.ok) throw next.error;
+    expect((await next.value.completed).ok).toBe(true);
+    expect(receiverExtracts).toBe(0);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual(unsubmitted.features[0]?.data);
+    expect(plannedGenerations).toEqual([0, 1]);
+    expect(submitted).toBe(2);
     expect(
       devices[1]?.bookkeeper.allRecords().some((record) => record.kind === 'ComputePipeline'),
     ).toBe(true);

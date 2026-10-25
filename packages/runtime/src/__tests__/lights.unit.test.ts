@@ -45,6 +45,8 @@ import type {
 } from '../../../render/src/render-system-extract';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
+import { renderLightsOf } from '../../../render/src/world/render-lights';
+import { createRenderWorld } from '../../../render/src/world/render-world';
 
 type LightSpawnResult = ReturnType<World['spawn']>;
 
@@ -877,7 +879,12 @@ function spawnValidatedLight(
           .unwrap();
 
         propagateTransforms(world);
-        const frame = extractFrame(world, prepareExtractContext(world));
+        // The Render World assigns each casting spot a stable tile.
+        const frame = {
+          lights: renderLightsOf(createRenderWorld()).sync(
+            extractFrame(world, prepareExtractContext(world)).lights,
+          ),
+        };
 
         expect(frame.lights.spot).toHaveLength(1);
         const s = frame.lights.spot[0];
@@ -950,7 +957,12 @@ function spawnValidatedLight(
         for (let i = 0; i < 5; i++) spawnSpot(world, i, true);
 
         propagateTransforms(world);
-        const frame = extractFrame(world, prepareExtractContext(world));
+        // The Render World assigns each casting spot a stable tile.
+        const frame = {
+          lights: renderLightsOf(createRenderWorld()).sync(
+            extractFrame(world, prepareExtractContext(world)).lights,
+          ),
+        };
 
         expect(frame.lights.spot).toHaveLength(5);
         const tiles = frame.lights.spot.map((s) => s.shadowAtlasTile);
@@ -983,7 +995,12 @@ function spawnValidatedLight(
         spawnSpot(world, 1, true);
 
         propagateTransforms(world);
-        const frame = extractFrame(world, prepareExtractContext(world));
+        // The Render World assigns each casting spot a stable tile.
+        const frame = {
+          lights: renderLightsOf(createRenderWorld()).sync(
+            extractFrame(world, prepareExtractContext(world)).lights,
+          ),
+        };
 
         expect(frame.lights.spot).toHaveLength(2);
         const shadowless = frame.lights.spot.find((s) => s.castShadow === false);

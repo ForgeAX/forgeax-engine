@@ -14,8 +14,12 @@ import { Camera, CapsuleShadow, MeshFilter, MeshRenderer } from '../components';
 import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import type { RenderFeature } from '../features/types';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import {
+  decodeRenderPublication,
+  encodeRenderPublication,
+  renderPublicationTransfers,
+} from '../publication/record';
 import { SkinTasks } from '../record/skin-tasks';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { SkinSceneInputs } from '../scene/skin-scene-inputs';
@@ -112,11 +116,11 @@ async function fixture(view = false, skin = false) {
   const nextRequest = () => {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     return {
-      publication: packet,
+      publication: encodeRenderPublication(packet),
       onFeatureSourceSubmitted: (identity: string, feedback: unknown) => {
         publisher.acknowledgeFeatures(packet.revision, [{ identity, feedback }]).unwrap();
       },
@@ -168,8 +172,9 @@ it.each([
     scenes.clear();
     consume.mockClear();
     const delta = f.nextRequest();
-    expect(delta.publication.baseline).toBe(false);
-    expect(delta.publication.upserts.length).toBe(0);
+    const decoded = decodeRenderPublication(delta.publication, undefined).unwrap();
+    expect(decoded.baseline).toBe(false);
+    expect(decoded.upserts.length).toBe(0);
     const nextResult = f.renderer.draw(delta);
     if (!nextResult.ok) throw nextResult.error;
     const next = nextResult.value;

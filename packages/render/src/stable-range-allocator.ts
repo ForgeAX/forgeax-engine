@@ -200,6 +200,13 @@ export class StableRangeAllocator {
   requiredCapacity(): number {
     return this.next;
   }
+  /** End of the last live range; released tail capacity remains available for reuse. */
+  allocatedEnd(): number {
+    this.flushSpare();
+    let tail = this.free;
+    while (tail?.right !== undefined) tail = tail.right;
+    return tail !== undefined && tail.start + tail.count === this.next ? tail.start : this.next;
+  }
   reset(start = 0): void {
     this.next = start;
     this.free = undefined;

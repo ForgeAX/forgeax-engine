@@ -111,7 +111,7 @@ test('the packed tool loads the real cold-import dependency outside its source c
       ['pack', '--ignore-scripts', '--json', '--pack-destination', f.directory],
       { cwd: f.output },
     );
-    const [{ filename }] = JSON.parse(stdout);
+    const { filename } = JSON.parse(stdout)['@forgeax/view'];
     const installed = resolve(f.directory, 'installed');
     await mkdir(installed);
     await execute('tar', ['-xzf', resolve(f.directory, filename), '-C', installed]);

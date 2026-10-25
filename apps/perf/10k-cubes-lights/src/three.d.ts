@@ -21,7 +21,9 @@ declare module 'three' {
   export class PerspectiveCamera {
     position: { set(x: number, y: number, z: number): void };
     quaternion: { set(x: number, y: number, z: number, w: number): void };
+    aspect: number;
     constructor(fov: number, aspect: number, near: number, far: number);
+    updateProjectionMatrix(): void;
   }
   export class PointLight {
     position: { set(x: number, y: number, z: number): void };

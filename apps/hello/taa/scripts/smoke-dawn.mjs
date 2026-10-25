@@ -998,7 +998,13 @@ const drawFrame = () => {
   const frameEvents = resourceEvents.slice(-resourceEvents.length);
   const newEvents = frameEvents.slice(drawFrame.lastEventCount ?? 0);
   drawFrame.lastEventCount = frameEvents.length;
-  (frame === 1 ? firstFrameResourceEvents : stableFrameResourceEvents).push(...newEvents);
+  // Startup creation lasts through the first ready picture; a pending
+  // pipeline-preparation frame is not yet the steady state.
+  (frame === 1 || !drawFrame.readyObserved
+    ? firstFrameResourceEvents
+    : stableFrameResourceEvents
+  ).push(...newEvents);
+  if (drawn.ok && drawn.value.presentation === 'ready') drawFrame.readyObserved = true;
   if (!drawn.ok) drawErrors.push(drawn.error.code);
   return drawn;
 };

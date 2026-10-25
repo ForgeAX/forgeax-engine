@@ -1,6 +1,7 @@
 import { type Buffer, err, type RhiDevice, type RhiError } from '@forgeax/engine-rhi';
 import { vi } from 'vitest';
 import { GPU_DRIVEN_BATCH_STRIDE } from '../../gpu-driven/view-gpu';
+import { GPU_MEMBER_RECORD_WORDS } from '../../gpu-scene-inputs';
 
 /** Observe actual Null queue bytes and actual selector bindings; never synthesize a plan. */
 export function observeGpuInputBytes(device: RhiDevice) {
@@ -32,8 +33,10 @@ export function observeGpuInputBytes(device: RhiDevice) {
   const bindings = vi.spyOn(device, 'createBindGroup');
   const buffers = () => {
     for (let index = bindings.mock.calls.length - 1; index >= 0; index--) {
-      const entries = [...(bindings.mock.calls[index]?.[0].entries ?? [])];
-      if (entries.length !== 9) continue;
+      const descriptor = bindings.mock.calls[index]?.[0];
+      const entries = [...(descriptor?.entries ?? [])];
+      // The material instance group also has nine entries; only the cull selector is wanted.
+      if (entries.length !== 9 || descriptor?.label?.startsWith('standard-pbr-') === true) continue;
       const arena = entries.find((entry) => entry.binding === 3)?.resource;
       const tasks = entries.find((entry) => entry.binding === 4)?.resource;
       if (arena?.kind === 'buffer' && tasks?.kind === 'buffer')
@@ -68,13 +71,24 @@ export function observeGpuInputBytes(device: RhiDevice) {
       walk(words[address] as number);
       const own = words[address + 3] as number;
       if (values.length + own > count) throw new Error('Member weight exceeds task extent');
-      for (let ordinal = 0; ordinal < own; ordinal++)
-        values.push({
-          primitiveIndex: words[address + 4] as number,
-          generation: words[address + 5] as number,
-          instanceOrdinal: (words[address + 7] as number) + ordinal,
-          sourceSlot: words[address + 6] as number,
-        });
+      // Page records: [laneStart, physical, generation, sourceSlot, ordinalBase].
+      const records = words[address + 4] as number;
+      const recordCount = words[address + 5] as number;
+      if (records + recordCount * GPU_MEMBER_RECORD_WORDS > words.length)
+        throw new Error('Malformed member page extent');
+      for (let record = 0; record < recordCount; record++) {
+        const base = records + record * GPU_MEMBER_RECORD_WORDS;
+        const start = words[base] as number;
+        const end =
+          record + 1 < recordCount ? (words[base + GPU_MEMBER_RECORD_WORDS] as number) : own;
+        for (let lane = start; lane < end; lane++)
+          values.push({
+            primitiveIndex: words[base + 1] as number,
+            generation: words[base + 2] as number,
+            instanceOrdinal: (words[base + 4] as number) + lane - start,
+            sourceSlot: words[base + 3] as number,
+          });
+      }
       walk(words[address + 1] as number);
     };
     walk(root);

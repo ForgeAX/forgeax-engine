@@ -191,7 +191,7 @@ it.each([
         world.update(1 / 60).unwrap();
         await completeReadyFrame(async () => {
           const candidate = publisher?.prepare(frames / 60).unwrap();
-          const packet = candidate === undefined ? undefined : structuredClone(candidate.packet);
+          const packet = candidate === undefined ? undefined : structuredClone(candidate.message);
           candidate?.accept();
           const input =
             packet !== undefined

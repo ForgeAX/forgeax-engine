@@ -316,8 +316,10 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         return false;
       }
       try {
-        const inspected = renderer.inspect?.();
-        const generation = inspected?.frame?.deviceGeneration;
+        // currentDeviceGeneration avoids materializing a per-entity
+        // diagnostic snapshot on every completed frame.
+        const generation =
+          renderer.currentDeviceGeneration?.() ?? renderer.inspect?.()?.frame?.deviceGeneration;
         if (Number.isSafeInteger(generation) && generation !== receipt.deviceGeneration)
           return false;
       } catch {

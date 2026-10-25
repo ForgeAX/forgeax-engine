@@ -5,6 +5,7 @@ import { ShaderError } from '@forgeax/engine-shader';
 import { resolveDepthOfFieldFrameParams } from './features/depth-of-field/depth-of-field-params';
 import type { RenderFeatureFrameResult } from './features/host';
 import { resolveStandardRenderFeatureTargets } from './features/targets';
+import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import { PipelineSpecError } from './pipeline-spec';
 import { RenderPublicationError } from './publication/contract';
 import type { PreparedRenderPublication } from './publication/receiver';
@@ -20,13 +21,10 @@ import type {
   FramePresentationPendingReason,
   RenderRecordPhase,
 } from './render-contract';
-import {
-  computeDirectionalCsm,
-  type ExtractedFrame,
-  type ExtractedLights,
-} from './render-system-extract';
+import type { ExtractedFrame } from './render-system-extract';
 import type { createPresentationDraws } from './render-system-presentation';
 import type { canonicalizeWorldComposition } from './render-system-projections';
+import type { ViewLights } from './world/render-lights';
 
 /** One `record` call: its canonical inputs and the submission outcome it reports. */
 export interface RecordAttempt {
@@ -58,6 +56,8 @@ export interface RecordFeatures {
 export interface RecordDraws {
   readonly presentedDraws: ReturnType<typeof createPresentationDraws>;
   readonly drawObservation: ReturnType<typeof createDrawObservation>;
+  /** The selection that drew a GPU-owned frame's non-residual rows. */
+  readonly gpuSelection: GpuDrawSelection;
   readonly bloomAdmitted: boolean;
 }
 
@@ -134,29 +134,6 @@ function recordFailureDetail(cause: unknown) {
     message: String(cause),
     name: (cause as Error)?.name,
   };
-}
-
-/**
- * Fit directional CSM against the selected view camera. Capture-only views
- * keep the extracted cascades.
- */
-export function fitDirectionalCsm(
-  extractedLights: ExtractedLights,
-  camera: CameraSnapshot | undefined,
-  captureOnly: boolean,
-  projection: RenderFrameState['directionalShadowProjection'],
-): ExtractedLights {
-  const config = extractedLights.directionalCsmConfig;
-  const direction = extractedLights.directionalCsmDirection;
-  if (captureOnly || config === undefined || direction === undefined) return extractedLights;
-  const csm = computeDirectionalCsm(
-    direction,
-    config,
-    camera,
-    projection,
-    extractedLights.normalBias ?? 0.05,
-  );
-  return csm === null ? extractedLights : { ...extractedLights, ...csm };
 }
 
 export function resolveFeatureTargets(
@@ -282,12 +259,12 @@ export function assertPublishedFeaturesImplemented(
 export function directionalShadowSubmitted(
   frameState: RenderFrameState,
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
 ): boolean {
   return (
-    lights.directionalShadowQuality === undefined ||
+    lights.cascades?.directionalShadowQuality === undefined ||
     (frameState.frameOutputs.directionalShadowView !== null &&
-      (lights.lightViewProj?.length ?? 0) > 0 &&
+      (lights.cascades?.lightViewProj?.length ?? 0) > 0 &&
       (internals.getPipelineState()?.perPassResources.shadowMapSize ?? 0) > 0)
   );
 }
@@ -295,7 +272,7 @@ export function directionalShadowSubmitted(
 export function directionalShadowCandidateError(
   frameState: RenderFrameState,
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
   submitted: boolean,
 ) {
   return {
@@ -306,7 +283,7 @@ export function directionalShadowCandidateError(
     detail: {
       submitted,
       hasShadowView: frameState.frameOutputs.directionalShadowView !== null,
-      matrixCount: lights.lightViewProj?.length ?? 0,
+      matrixCount: lights.cascades?.lightViewProj?.length ?? 0,
       shadowMapSize: internals.getPipelineState()?.perPassResources.shadowMapSize ?? 0,
     },
   };

@@ -7,8 +7,8 @@ import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 function fixture() {
   const assets = new AssetRegistry({
@@ -63,11 +63,13 @@ function fixture() {
   const publish = () => {
     const candidate = prepare();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     const saved = structuredClone(packet);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return saved;
   };
   return {
@@ -172,7 +174,7 @@ it('keeps accepted reference ownership private from later packet metadata replac
     };
     Object.assign(template, { snapshot: replacement });
     f.publisher
-      .recycle(baseline.packet.revision, renderPublicationTransfers(baseline.packet))
+      .recycle(baseline.packet.revision, renderPublicationTransfers(baseline.message))
       .unwrap();
     f.world.set(f.first, Skin, { joints: [f.secondJoint] }).unwrap();
     f.publish();

@@ -629,9 +629,9 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       if (!staleLateObservation.ok)
         expect(staleLateObservation.error.code).toBe('frame-receipt-stale');
 
-      // Recovery readiness must already own fresh output resources. A later
-      // draw rebuilding them cannot validate a graph published with stale handles.
-      expect(hostLoss.signals[cycle]?.outputAllocations.buffers).toBe(4);
+      // Recovery validates the device; the first completed frame reconstructs
+      // derived output and scene resources from the current World.
+      expect(hostLoss.signals[cycle]?.outputAllocations.buffers).toBe(0);
       expect(hostLoss.signals[cycle]?.outputAllocations.lutViews).toBeGreaterThan(0);
       expect(world.identity).toBe(worldIdentity);
       expect(lease).toBe(initialLease);
@@ -640,7 +640,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       const recoveredSignal = hostLoss.signals[cycle];
       if (recoveredSignal === undefined) throw new Error(`missing recovered device ${cycle}`);
       const recoveryReadyMeshIndexBuffers = recoveredSignal.meshIndexBuffers.size;
-      expect(recoveryReadyMeshIndexBuffers).toBeGreaterThan(0);
+      expect(recoveryReadyMeshIndexBuffers).toBe(0);
       world.update(1 / 60).unwrap();
       const firstRecovered = await submitFrame(
         world,
@@ -649,6 +649,10 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
         canvas,
         `cycle-${cycle}-recovered-first`,
       );
+      expect(hostLoss.signals[cycle]?.outputAllocations.buffers).toBe(4);
+      expect(hostLoss.signals[cycle]?.outputAllocations.lutViews).toBeGreaterThan(0);
+      const firstRecoveredMeshIndexBuffers = recoveredSignal.meshIndexBuffers.size;
+      expect(firstRecoveredMeshIndexBuffers).toBeGreaterThan(0);
       world.update(1 / 60).unwrap();
       const recoveredFrame = await submitFrame(
         world,
@@ -703,7 +707,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       // The World-only successor has distinct indices from the recovery seed.
       // It must allocate on the replacement device, never reuse an old handle.
       const recoveredMeshIndexBuffers = recoveredSignal.meshIndexBuffers.size;
-      expect(recoveredMeshIndexBuffers).toBe(recoveryReadyMeshIndexBuffers + 1);
+      expect(recoveredMeshIndexBuffers).toBe(firstRecoveredMeshIndexBuffers);
       for (const buffer of recoveredSignal.meshIndexBuffers)
         expect(signal.meshIndexBuffers.has(buffer)).toBe(false);
       const recoveredResources = resourceSample(recoveredFrame.inspection);
@@ -795,9 +799,8 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
           (afterUnload.dynamicGeometry?.accepted ?? 0) +
           (afterUnload.dynamicGeometry?.published ?? 0),
       ).toBe(0);
-      // Make the ECS MeshFilter edit part of the LKG before the next host loss.
-      // Recovery rehydrates the last submitted visible workset; an undrawn
-      // binding change is deliberately not promoted into that seed.
+      // Publish the current ECS binding before the next host loss. The next
+      // replacement device reconstructs its first frame from that current World.
       const afterUnloadFrame = await submitFrame(
         world,
         renderer,
@@ -815,7 +818,9 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       const apertureAfterUnload = resourceSample(afterUnloadFrame.inspection);
       boundIndexBuffer(hostLoss.signals[cycle], recipe.assets.wallAperture);
       expect(apertureAfterUnload.graphResources).toBe(apertureResources.graphResources);
-      expect(recoveredSignal.meshIndexBuffers.size).toBe(recoveredMeshIndexBuffers);
+      // The aperture was absent from the first recovered World. Its first
+      // ordinary binding now creates exactly one replacement-device IBO.
+      expect(recoveredSignal.meshIndexBuffers.size).toBe(recoveredMeshIndexBuffers + 1);
       recoveryResources.push(recoveredResources, apertureAfterUnload);
     }
 

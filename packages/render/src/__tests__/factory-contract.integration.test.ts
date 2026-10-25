@@ -2896,7 +2896,6 @@ describe('factory contract', () => {
       // Publication retires the graph bound to the previous canvas context;
       // the first recovered draw acquires the replacement presentation target.
       expect(renderer.inspect().perFramePassNames).toHaveLength(0);
-      expect(renderer.inspect().standardLighting).toBeDefined();
       expect(world.update().ok).toBe(true);
       expect(renderer.draw(input()).ok).toBe(true);
       expect(renderer.inspect().perFramePassNames.length).toBeGreaterThan(0);

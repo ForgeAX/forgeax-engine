@@ -7,8 +7,9 @@ import {
 } from '../environment/storage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { resetHdrpBuffers } from '../hdrp-buffers';
-import { computeDirectionalCsm, type ExtractedLights } from '../render-system-extract';
+import type { LightRoster } from '../render-system-extract';
 import { resetSsaoResources } from '../ssao-buffers';
+import { renderLightsFor, type ViewLights } from '../world/render-lights';
 import { prepareFrameLighting, writeHdrpClusterAndSsaoBuffers } from './frame-lighting';
 import type { RenderFrameState } from './frame-snapshot';
 import { computeViewMatrix } from './helpers';
@@ -22,7 +23,8 @@ interface CaptureLightingView {
   state: RenderFrameState;
   generation?: number;
   atmosphere?: AtmosphereLease;
-  frozenLights?: ExtractedLights;
+  /** The roster with its directional pinned to the retained atmosphere Sun. */
+  frozenLights?: LightRoster;
   readonly viewBuffer: import('@forgeax/engine-rhi').Buffer;
   readonly pointsLinesView: ReturnType<typeof createPointsLinesViewBuffer>;
 }
@@ -32,6 +34,7 @@ interface CaptureLightingView {
 const views = new WeakMap<CubeCaptureGraphState, Map<object, Map<number, CaptureLightingView>>>();
 
 function retireView(view: CaptureLightingView): void {
+  renderLightsFor(view.runtime).releaseView(view);
   view.atmosphere?.release();
   resetHdrpBuffers(view.runtime);
   resetSsaoResources(view.runtime);
@@ -71,7 +74,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
   runtime: RenderSystemInternals,
   frameState: RenderFrameState,
   pipeline: PipelineState,
-  lights: ExtractedLights,
+  lights: ViewLights,
 ) {
   let retained = views.get(owner);
   if (retained === undefined) {
@@ -158,7 +161,6 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
             };
     } else delete view.frozenLights;
   }
-  lights = view.frozenLights ?? lights;
   view.state = { ...frameState, hdrpClusterMembership: view.state.hdrpClusterMembership };
   settleAtmospherePublish(view.state, false);
   if (view.atmosphere !== undefined) {
@@ -171,32 +173,28 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       fogs: current.fog === undefined ? [] : [current.fog],
     }).unwrap();
   }
-  const csm =
-    lights.directionalCsmConfig === undefined || lights.directionalCsmDirection === undefined
-      ? null
-      : computeDirectionalCsm(
-          lights.directionalCsmDirection,
-          lights.directionalCsmConfig,
-          work.faceCamera,
-        );
-  const captureLights = csm === null ? lights : { ...lights, ...csm };
+  // Each capture writer fits its own cascades against its face camera.
+  const captureLights = renderLightsFor(runtime).viewLights(view, view.frozenLights ?? lights, {
+    camera: work.faceCamera,
+  });
+  const cascades = captureLights.cascades;
   const matrices = new Float32Array(64);
   for (let i = 0; i < 4; i++) {
-    const matrix = captureLights.lightViewProj?.[i];
+    const matrix = cascades?.lightViewProj?.[i];
     if (matrix !== undefined) matrices.set(matrix, i * 16);
   }
   const capturePipeline = {
     ...pipeline,
     perPassResources: {
       ...pipeline.perPassResources,
-      shadowCascadeCount: captureLights.cascadeCount ?? 0,
-      shadowCsmLightViewProj: captureLights.lightViewProj === undefined ? null : matrices,
+      shadowCascadeCount: cascades?.cascadeCount ?? 0,
+      shadowCsmLightViewProj: cascades?.lightViewProj === undefined ? null : matrices,
       shadowCsmSelection:
-        captureLights.splitPlanes === undefined
+        cascades === undefined
           ? null
           : {
               viewMatrix: new Float32Array(computeViewMatrix(work.faceCamera)),
-              splitPlanes: new Float32Array(captureLights.splitPlanes),
+              splitPlanes: new Float32Array(cascades.splitPlanes),
             },
     },
     viewUniformBuffer: view.viewBuffer,

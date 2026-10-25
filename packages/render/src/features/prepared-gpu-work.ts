@@ -20,9 +20,9 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
+import { sameValue } from '../same-value';
 import type { SceneDataTarget } from '../temporal/scene-data';
 import type {
   RenderFeaturePassDeclaration,
@@ -457,61 +457,6 @@ function stable(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
-}
-
-/**
- * Compare prepared-program declarations without reserializing the WGSL and
- * bind-group layout on every warm frame.  This is intentionally a structural
- * comparison: callers may reuse and mutate their declaration objects, so an
- * object-identity fast path would make a stale pipeline appear valid.
- * @internal Publication admission uses it to prove a received copy equals owned content.
- */
-export function equalDescriptorValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (typeof left !== typeof right || left === null || right === null) return false;
-  if (ArrayBuffer.isView(left) || ArrayBuffer.isView(right)) {
-    if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right)) return false;
-    if (left.byteLength !== right.byteLength) return false;
-    const leftBytes = new Uint8Array(left.buffer, left.byteOffset, left.byteLength);
-    const rightBytes = new Uint8Array(right.buffer, right.byteOffset, right.byteLength);
-    for (let index = 0; index < leftBytes.length; index += 1) {
-      if (leftBytes[index] !== rightBytes[index]) return false;
-    }
-    return true;
-  }
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    for (let index = 0; index < left.length; index += 1) {
-      if (!equalDescriptorValue(left[index], right[index])) return false;
-    }
-    return true;
-  }
-  if (typeof left === 'object' && typeof right === 'object')
-    return equalDescriptorRecords(
-      left as Record<string, unknown>,
-      right as Record<string, unknown>,
-    );
-  return false;
-}
-
-/**
- * Own-key walks instead of Object.keys arrays: publication admission compares
- * every received projection this way, and each nested record would otherwise
- * allocate two key arrays per frame.
- */
-function equalDescriptorRecords(
-  left: Record<string, unknown>,
-  right: Record<string, unknown>,
-): boolean {
-  let leftCount = 0;
-  for (const key in left) {
-    if (!Object.hasOwn(left, key)) continue;
-    leftCount++;
-    if (!Object.hasOwn(right, key) || !equalDescriptorValue(left[key], right[key])) return false;
-  }
-  let rightCount = 0;
-  for (const key in right) if (Object.hasOwn(right, key)) rightCount++;
-  return leftCount === rightCount;
 }
 
 type ComputeAccessSummary = Omit<RenderFeatureResolvedGpuComputePass, 'dispatches'>;
@@ -1024,8 +969,9 @@ function createRenderFeatureGpuWorkSession(input: {
   const changedResourceNames = new Set<string>();
   const destroyedBuffers = new WeakSet<Buffer>();
   // Resource refs are freshly allocated opaque objects. Rollback needs only
-  // this frame's additions; accepted index keys never need copying.
-  const snapshotIndexes = () => ({
+  // this frame's additions; accepted index keys never need copying. One
+  // rollback record is retained and reset per frame instead of reallocated.
+  const candidateState = {
     // Candidate preparation only inserts or overwrites active names. Keep
     // each name's first old value; accepted keys never move before commit.
     programs: new Map<string, ProgramItem | undefined>(),
@@ -1033,15 +979,40 @@ function createRenderFeatureGpuWorkSession(input: {
     bindings: new Map<string, BindingsItem | undefined>(),
     textureViews: new Map<string, TextureViewItem | undefined>(),
     samplers: new Map<string, SamplerItem | undefined>(),
-    parkedPrograms: new Map(parkedPrograms),
-    parkedBuffers: new Map(parkedBuffers),
-    parkedBindings: new Map(parkedBindings),
+    parkedPrograms: new Map<string, { readonly item: ProgramItem; readonly frame: number }>(),
+    parkedBuffers: new Map<string, { readonly item: BufferItem; readonly frame: number }>(),
+    parkedBindings: new Map<string, { readonly item: BindingsItem; readonly frame: number }>(),
     addedProgramRefs: [] as object[],
     addedBufferRefs: [] as object[],
     addedBindingRefs: [] as object[],
     addedTextureViewRefs: [] as object[],
     addedSamplerRefs: [] as object[],
-  });
+  };
+  // Clearing an empty collection still reallocates its table; skip it.
+  const clearCollection = (collection: { readonly size: number; clear(): void }): void => {
+    if (collection.size > 0) collection.clear();
+  };
+  const copyInto = <K, V>(target: Map<K, V>, source: ReadonlyMap<K, V>): void => {
+    clearCollection(target);
+    for (const [key, value] of source) target.set(key, value);
+  };
+  const snapshotIndexes = (): typeof candidateState => {
+    const state = candidateState;
+    clearCollection(state.programs);
+    clearCollection(state.buffers);
+    clearCollection(state.bindings);
+    clearCollection(state.textureViews);
+    clearCollection(state.samplers);
+    copyInto(state.parkedPrograms, parkedPrograms);
+    copyInto(state.parkedBuffers, parkedBuffers);
+    copyInto(state.parkedBindings, parkedBindings);
+    state.addedProgramRefs.length = 0;
+    state.addedBufferRefs.length = 0;
+    state.addedBindingRefs.length = 0;
+    state.addedTextureViewRefs.length = 0;
+    state.addedSamplerRefs.length = 0;
+    return state;
+  };
   let candidate: ReturnType<typeof snapshotIndexes> | undefined;
   const restore = <K, V>(target: Map<K, V>, saved: ReadonlyMap<K, V>): void => {
     target.clear();
@@ -1205,11 +1176,7 @@ function createRenderFeatureGpuWorkSession(input: {
     const createAsync = waitForCompletion ? input.device.createComputePipelineAsync : undefined;
     const complete = (item: ProgramItem) => createAsync === undefined || item.completionQualified;
     const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
-    if (
-      prior !== undefined &&
-      complete(prior) &&
-      equalDescriptorValue(prior.descriptor, descriptor)
-    ) {
+    if (prior !== undefined && complete(prior) && sameValue(prior.descriptor, descriptor)) {
       activateProgram(prior);
       touchProgram(prior);
       return ok(prior.reference);
@@ -2140,12 +2107,12 @@ function createRenderFeatureGpuWorkSession(input: {
       if (candidate !== undefined)
         throw new Error('Feature GPU frame must commit or abort before beginning another frame');
       candidate = snapshotIndexes();
-      changedResourceNames.clear();
-      touchedPrograms.clear();
-      touchedBuffers.clear();
-      touchedTextureViews.clear();
-      touchedSamplers.clear();
-      touchedBindings.clear();
+      clearCollection(changedResourceNames);
+      clearCollection(touchedPrograms);
+      clearCollection(touchedBuffers);
+      clearCollection(touchedTextureViews);
+      clearCollection(touchedSamplers);
+      clearCollection(touchedBindings);
     },
     retainResources: (matches) => {
       for (const item of programs.values()) if (matches(item.name)) touchProgram(item);
@@ -2492,8 +2459,6 @@ function createRenderFeatureGpuWorkSession(input: {
  * retains the per-feature prepared GPU state and recreates it after recovery.
  */
 export interface RenderFeatureGpuWorkOwner {
-  /** Candidate root carries this detached GPU-work owner itself. */
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown>;
   beginFeature(
     featureIdentity: string,
     generation: number,
@@ -2522,14 +2487,6 @@ export function createRenderFeatureGpuWorkOwner(input: {
   let disposed = false;
 
   const owner: RenderFeatureGpuWorkOwner = {
-    createRecoveryRoot: (scope) => ({
-      kind: 'feature',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('Feature GPU candidate scope is not active.');
-        return owner;
-      },
-      cleanup: () => undefined,
-    }),
     beginFeature: (featureIdentity, generation, requestedShaderModuleMode = 'validated') => {
       if (disposed) {
         throw new Error('Render feature GPU work owner is disposed.');

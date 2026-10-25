@@ -39,9 +39,8 @@ function fixture() {
   }));
   const skin = new SkinSceneInputs(arena, resolve);
   const apply = (operations: readonly RenderSceneOperation[]) => {
-    const before = scene.slotsSnapshot();
     const delta = scene.apply(operations);
-    skin.apply(before, delta);
+    skin.apply(delta);
     return delta;
   };
   const update = (row: RenderableSnapshot): RenderSceneOperation => ({
@@ -206,16 +205,17 @@ it('keeps source namespaces independent and retires exact removed membership', (
   }
 });
 
-it('poisons the Scene Skin owner on a stale before root without invalidating held input', () => {
+it('poisons the Scene Skin owner on a replayed delta without invalidating held input', () => {
   const { arena, scene, skin, apply, update } = fixture();
-  const empty = scene.slotsSnapshot();
   try {
     apply([update(snapshot(1, binding))]);
     skin.joint(0, 19, matrix(3));
     const held = skin.capture();
     try {
       const delta = scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
-      expect(() => skin.apply(empty, delta)).toThrow();
+      skin.apply(delta);
+      // The carried prior record was already released; a replay is unbalanced.
+      expect(() => skin.apply(delta)).toThrow();
       expect(() => skin.capture()).toThrow();
       expect(held.matrix(delta.removedSlots[0]?.slot ?? 999, 0, mat4.create(), mat4.create())).toBe(
         true,
@@ -276,6 +276,37 @@ it('captures one Skin Binding object and known fields without mixing getter resu
     } finally {
       frame.release();
     }
+  } finally {
+    skin.dispose();
+    arena.dispose();
+  }
+});
+
+it('carries every prior record in the delta, so adoption needs no captured frame', () => {
+  const { arena, scene, skin, apply, update } = fixture();
+  try {
+    apply([update(snapshot(1, binding)), update(snapshot(2)), update(snapshot(3, binding))]);
+    const before = scene.slotsSnapshot();
+    const moved = { ...snapshot(2), transform: { world: matrix(5) } };
+    const delta = apply([
+      update(moved),
+      { kind: 'remove', worldId: 0, entityKey: 3 },
+      update(snapshot(3)),
+      { kind: 'remove', worldId: 0, entityKey: 1 },
+    ]);
+    expect(delta.updated).toBe(1);
+    expect(delta.recreated).toBe(1);
+    const updated = delta.updatedSlots[0];
+    const recreated = delta.recreatedSlots[0];
+    if (updated === undefined || recreated === undefined) throw new Error('missing delta rows');
+    expect(delta.previous.get(updated)).toBe(before.lookup(0, 2));
+    expect(delta.previous.get(updated)?.snapshot.transform.world[12]).toBe(99);
+    expect(delta.previous.get(recreated)).toBe(before.lookup(0, 3));
+    expect(delta.previous.get(recreated)?.snapshot.skinBinding).toEqual(binding);
+    expect(delta.removedSlots[0]).toBe(before.lookup(0, 1));
+    expect(delta.previous.size).toBe(2);
+    // Both bindings were released from the carried records alone.
+    expect(skin.hasJoint(0, 19)).toBe(false);
   } finally {
     skin.dispose();
     arena.dispose();

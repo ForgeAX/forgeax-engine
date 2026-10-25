@@ -11,10 +11,11 @@ import {
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { withClipping } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
-import { projectCollisionScene } from '../assembly/scene-sdf-projection';
+import { CollisionSceneRows, projectCollisionScene } from '../assembly/scene-sdf-projection';
 import { MeshFilter, MeshRenderer } from '../components';
 import { Materials } from '../materials';
 import { projectRayScene } from '../raytracing/scene-projection';
+import { projectVisibleSurfaces } from '../raytracing/visible-surface';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
@@ -109,7 +110,13 @@ it('projects current Mesh defaults and fixed material values without replacing r
   const f = await fixture();
   try {
     const before = f.draw();
-    const project = (frame: typeof before) => projectRayScene(frame.slots, frame.worlds, 16, frame);
+    const project = (frame: typeof before) =>
+      projectRayScene(
+        frame.slots,
+        frame.worlds,
+        projectVisibleSurfaces(frame.slots, 16).unwrap(),
+        frame,
+      );
     expect(project(before).materials[0]?.handle).toBe(f.red);
     f.assets
       .update(f.mesh, { materialSlots: [{ slotName: 'surface', defaultMaterial: f.green }] })
@@ -179,6 +186,65 @@ it.each([
       .unwrap();
     expect(f.collision(f.draw()).instances).toHaveLength(1);
     expect(() => f.collision(rebound)).toThrow(unsupported);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('keeps incremental collision rows equal to a cold projection through Mesh default rebinding', async () => {
+  const f = await fixture();
+  try {
+    const descriptor = {
+      origin: [-2, -2, -2] as const,
+      dimensions: [5, 5, 5] as const,
+      spacing: 1,
+      maxDistance: 2,
+      maxInstances: 16,
+      maxFieldBytes: 1024 * 1024,
+    };
+    const first = f.draw();
+    const scope = first.worlds[0];
+    assert(scope);
+    const rows = new CollisionSceneRows(scope, 0);
+    const revision = rows.sync(first);
+    expect(rows.project(descriptor).instances).toHaveLength(1);
+    // An unchanged composition revision reads no row.
+    expect(rows.sync(f.draw())).toBe(revision);
+    const visits = rows.visits;
+    const texture = f.assets
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array(4).fill(255),
+      })
+      .unwrap();
+    const displaced = f.assets
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          displacementTexture: texture,
+          displacementScale: 1,
+        }),
+      )
+      .unwrap();
+    f.assets
+      .update(f.mesh, { materialSlots: [{ slotName: 'surface', defaultMaterial: displaced }] })
+      .unwrap();
+    const rebound = f.draw();
+    expect(rows.sync(rebound)).not.toBe(revision);
+    expect(rows.visits - visits).toBe(1);
+    expect(() => rows.project(descriptor)).toThrow(
+      expect.objectContaining({
+        detail: expect.objectContaining({ reason: 'unsupported-geometry' }),
+      }),
+    );
+    f.assets.update(displaced, { values: { displacementScale: 0 } }).unwrap();
+    const repaired = f.draw();
+    rows.sync(repaired);
+    expect(rows.project(descriptor)).toEqual(f.collision(repaired));
   } finally {
     f.dispose();
   }

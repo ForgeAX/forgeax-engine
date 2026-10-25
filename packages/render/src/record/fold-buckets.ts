@@ -1,11 +1,8 @@
-import { deriveVertexCount } from '@forgeax/engine-geometry';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import type { MeshSsboCapacity } from '../assembly/mesh-ssbo-grow';
-import type { MeshGpuHandles } from '../device/gpu-residency';
+import { directMorphGeometry } from '../device/morph-geometry';
 import type { GpuDrivenMaterialBinding } from '../gpu-driven/production-raster';
-import { GpuBuffer } from '../gpu-resource';
-import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
 import { disposeTransientInstanceBuffers } from '../instance-buffer-cache';
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -162,7 +159,7 @@ export function validateRenderables(
   // is out of range (defensive; extractFrames always stamps a valid index).
   worlds: readonly RenderResourceScope[],
   _pipelineState: PipelineState,
-  frameState: RenderFrameState,
+  _frameState: RenderFrameState,
   renderables: FrameList<RenderableSnapshot>,
   transparentDispatch: DispatchList,
   excludedEntityKeys: ReadonlySet<number> = new Set<number>(),
@@ -247,17 +244,8 @@ export function validateRenderables(
     let effectiveMeshHandles = materialGeometry(meshHandles, material, () =>
       internals.gpuStore.ensureNineSliceGeometry().unwrap(),
     );
-    if (r.morph !== undefined) {
-      const morphed = prepareMorphMesh(
-        internals,
-        frameState,
-        worldEntityKey(r.worldId, r.entityKey),
-        effectiveMeshHandles,
-        assetRes.value,
-        r.morph,
-      );
-      if (morphed !== undefined) effectiveMeshHandles = morphed;
-    }
+    if (r.morph !== undefined)
+      effectiveMeshHandles = directMorphGeometry(internals, worlds, r, effectiveMeshHandles);
     const overlay = overlays.get(rIdx);
     validated.push({
       meshSlot: rIdx,
@@ -275,99 +263,6 @@ export function validateRenderables(
 
 // Keep the primary record-stage name explicit at its call site while sharing
 // the same owner implementation for the complete retained ShadowCaster view.
-
-function prepareMorphMesh(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  cacheKey: number,
-  base: MeshGpuHandles,
-  mesh: MeshAsset,
-  morph: RenderableSnapshot['morph'],
-): MeshGpuHandles | undefined {
-  if (morph === undefined || frameState.morphBuffers === undefined) return undefined;
-  const targets = mesh.morphTargets;
-  if (targets === undefined || targets.length !== morph.targetCount) return undefined;
-  const position = base.layoutProjection.attributes.find(
-    (attribute) => attribute.key === 'position',
-  );
-  if (
-    position === undefined ||
-    position.offset !== 0 ||
-    position.shaderLocation !== 0 ||
-    position.format !== 'float32x3' ||
-    position.byteLength !== 12
-  ) {
-    return undefined;
-  }
-  const vertexCount = deriveVertexCount(mesh.vertices, base.layoutProjection);
-  if (vertexCount === undefined || vertexCount !== base.vertexCount || vertexCount <= 0) {
-    return undefined;
-  }
-  const stride = base.layoutProjection.arrayStride / Float32Array.BYTES_PER_ELEMENT;
-
-  let active = false;
-  for (const weight of morph.weights) {
-    if (weight !== 0) {
-      active = true;
-      break;
-    }
-  }
-  if (!active) {
-    frameState.morphBuffers.get(cacheKey)?.buffer.destroy();
-    frameState.morphBuffers.delete(cacheKey);
-    return undefined;
-  }
-
-  const vertices = new Float32Array(mesh.vertices);
-  for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
-    const weight = morph.weights[targetIndex] ?? 0;
-    const positions = targets[targetIndex]?.position;
-    if (positions === undefined || positions.length !== base.vertexCount * 3) return undefined;
-    for (let vertex = 0; vertex < base.vertexCount; vertex += 1) {
-      const vertexBase = vertex * stride;
-      const positionBase = vertex * 3;
-      vertices[vertexBase] = (vertices[vertexBase] ?? 0) + (positions[positionBase] ?? 0) * weight;
-      vertices[vertexBase + 1] =
-        (vertices[vertexBase + 1] ?? 0) + (positions[positionBase + 1] ?? 0) * weight;
-      vertices[vertexBase + 2] =
-        (vertices[vertexBase + 2] ?? 0) + (positions[positionBase + 2] ?? 0) * weight;
-    }
-  }
-
-  let cached = frameState.morphBuffers.get(cacheKey);
-  if (cached === undefined || cached.byteLength !== vertices.byteLength) {
-    if (cached !== undefined && !cached.buffer.isDestroyed) {
-      const destroyed = cached.buffer.destroy();
-      if (!destroyed.ok) internals.errorRegistry.fire(destroyed.error);
-    }
-    const created = internals.device.createBuffer({
-      label: `morph-${cacheKey}-vbo`,
-      size: vertices.byteLength,
-      usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    });
-    if (!created.ok) {
-      internals.errorRegistry.fire(created.error);
-      frameState.morphBuffers.delete(cacheKey);
-      return undefined;
-    }
-    const buffer = new GpuBuffer(internals.device, created.value);
-    internals.deviceScope._adopt('buffer', buffer, (owned) => {
-      if (!owned.isDestroyed) owned.destroy();
-    });
-    cached = {
-      buffer,
-      byteLength: vertices.byteLength,
-    };
-    frameState.morphBuffers.set(cacheKey, cached);
-  }
-  const written = internals.device.queue.writeBuffer(cached.buffer.handle, 0, vertices);
-  if (!written.ok) {
-    internals.errorRegistry.fire(written.error);
-    return undefined;
-  }
-  return { ...base, vertexBuffer: cached.buffer };
-}
 
 /**
  * feat-20260704 M3/w18: build the dispatch-ordered render plan, extracted
@@ -437,7 +332,11 @@ export function buildDispatchPlan(
   // interned table. Neither demand is a capacity estimate for the other stream.
   const shadowMeshRows = shadowGeometryGpuOwned ? [] : shadowValidated;
   let shadowValidatedOrdered = shadowMeshRows;
-  const meshRowDemand = meshRowDemandOf(validatedOrdered, shadowMeshRows, meshDraws);
+  // A native roster's addresses are allocated once, by addressPhysicalRows
+  // below; its physical demand is checked there. Only a compact roster's row
+  // count can degrade here.
+  const meshRowDemand =
+    meshDraws === undefined ? validatedOrdered.length + shadowMeshRows.length : 0;
   const uniformSlotCount = sharedUniformSlots ?? materials.slotCount;
   const capacity = ensureMeshSsboCapacity(internals, meshRowDemand, uniformSlotCount);
   if (!capacity.ok) {
@@ -483,6 +382,8 @@ export function buildDispatchPlan(
       addressed.sourceCapacity > physicalCapacity.degradedTo.meshSlotCount ||
       physicalUniformSlots > physicalCapacity.degradedTo.materialSlotCount
     )
+      throw physicalDrawCapacityError();
+    if (!ensureMeshSsboCapacity(internals, addressed.sourceCapacity, physicalUniformSlots).ok)
       throw physicalDrawCapacityError();
     foldDispatchPlan = null;
     validatedOrdered = addressed.ordinaryOrdered;
@@ -690,23 +591,6 @@ function appendSharedMaterialBindings(
   table.slotCount = table.slots.length;
 }
 
-/** Mesh-row demand: row count for a compact roster, highest native address otherwise. */
-function meshRowDemandOf(
-  validatedOrdered: readonly ValidatedRenderable[],
-  shadowMeshRows: readonly ValidatedRenderable[],
-  meshDraws: MeshDrawRoster | undefined,
-): number {
-  if (meshDraws === undefined) return validatedOrdered.length + shadowMeshRows.length;
-  for (const entry of validatedOrdered) meshDraws.meshDrawSlot(entry.source);
-  for (const entry of shadowMeshRows) meshDraws.meshDrawSlot(entry.source);
-  let meshRowDemand = 0;
-  for (const entry of validatedOrdered)
-    meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
-  for (const entry of shadowMeshRows)
-    meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
-  return meshRowDemand;
-}
-
 /** Native addresses and complete GPU material tables cannot be truncated. */
 function assertCapacityDegradable(
   degradedTo: Readonly<MeshSsboCapacity>,
@@ -866,7 +750,8 @@ function addressPhysicalRows(
   let transientSlot = 0;
   let sourceCapacity = 0;
   const sourceAddress = (entry: ValidatedRenderable): ValidatedRenderable => {
-    const meshSlot = meshDraws?.meshDrawSlot(entry.source) ?? transientSlot++;
+    const meshSlot =
+      meshDraws?.meshDrawSlot(entry.source, false, entry.sceneSlot) ?? transientSlot++;
     sourceCapacity = Math.max(sourceCapacity, meshSlot + 1);
     if (entry.meshSlot === meshSlot && entry.foldedMeshSlot === undefined) return entry;
     const { foldedMeshSlot: _previousFold, ...source } = entry;
@@ -874,7 +759,8 @@ function addressPhysicalRows(
   };
   const ownedAddress = (entry: ValidatedRenderable): ValidatedRenderable => {
     if (entry.foldedMeshSlot !== undefined) return sourceAddress(entry);
-    const meshSlot = meshDraws?.meshDrawSlot(entry.source) ?? transientSlot++;
+    const meshSlot =
+      meshDraws?.meshDrawSlot(entry.source, false, entry.sceneSlot) ?? transientSlot++;
     sourceCapacity = Math.max(sourceCapacity, meshSlot + 1);
     (entry as { meshSlot: number }).meshSlot = meshSlot;
     return entry;
@@ -886,7 +772,8 @@ function addressPhysicalRows(
   if ((foldDispatchPlan?.headBuckets.size ?? 0) > 0) {
     foldedOrdered = ordinaryOrdered.map((entry, index) => {
       if (!foldDispatchPlan?.headBuckets.has(index)) return entry;
-      const foldedMeshSlot = meshDraws?.meshDrawSlot(entry.source, true) ?? transientSlot++;
+      const foldedMeshSlot =
+        meshDraws?.meshDrawSlot(entry.source, true, entry.sceneSlot) ?? transientSlot++;
       physicalDemand = Math.max(physicalDemand, foldedMeshSlot + 1);
       return { ...entry, foldedMeshSlot };
     });
@@ -988,17 +875,6 @@ export function cleanPerFrameCaches(
         chunks.delete(start);
       }
       frameState.instanceBufferChunks.delete(ownerKey);
-    }
-  }
-
-  if (frameState.morphBuffers !== undefined) {
-    for (const [key, entry] of frameState.morphBuffers.entries()) {
-      if (validatedEntityKeys.has(key)) continue;
-      if (!entry.buffer.isDestroyed) {
-        const result = entry.buffer.destroy();
-        if (!result.ok) internals.errorRegistry.fire(result.error);
-      }
-      frameState.morphBuffers.delete(key);
     }
   }
 }

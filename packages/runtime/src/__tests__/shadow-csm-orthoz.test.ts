@@ -26,8 +26,18 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import { Camera, DirectionalLight } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import type { CsmCameraData, LightRoster } from '../../../render/src/render-system-extract';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
+import { fitDirectionalCascades } from '../../../render/src/world/render-lights';
+
+/** The cascades a display view of `frame` fits (the renderer fits per view). */
+function cascadesOf(frame: {
+  readonly lights: LightRoster;
+  readonly cameras: readonly CsmCameraData[];
+}) {
+  return fitDirectionalCascades(frame.lights, { camera: frame.cameras[0] });
+}
 
 // Light travelling down and toward +x/+z, so the source is up and toward -x/-z.
 const LIGHT_DIR: readonly [number, number, number] = [0.3, -1, 0.3];
@@ -86,10 +96,10 @@ describe('CSM ortho-Z reaches toward the light (real extract fit, AC-05)', () =>
   it('N=4: the cascade covering the ground also captures a toward-light caster (z in [0,1])', () => {
     const world = setupWorld(4);
     const frame = extractFrame(world, prepareExtractContext(world));
-    const lvp = frame.lights.lightViewProj;
+    const lvp = cascadesOf(frame)?.lightViewProj;
     expect(lvp).toBeDefined();
     if (lvp === undefined) return;
-    const count = frame.lights.cascadeCount ?? 0;
+    const count = cascadesOf(frame)?.cascadeCount ?? 0;
     expect(count).toBe(4);
 
     const caster = towardLightCaster(6);
@@ -119,7 +129,7 @@ describe('CSM ortho-Z reaches toward the light (real extract fit, AC-05)', () =>
   it('N=4: near cascade (0) covers the ground and must admit the toward-light caster', () => {
     const world = setupWorld(4);
     const frame = extractFrame(world, prepareExtractContext(world));
-    const lvp = frame.lights.lightViewProj;
+    const lvp = cascadesOf(frame)?.lightViewProj;
     expect(lvp).toBeDefined();
     if (lvp === undefined) return;
 

@@ -202,6 +202,7 @@ class FrameSubmission {
   private textureMips:
     | ReturnType<RenderSystemInternals['gpuStore']['prepareTextureMips']>
     | undefined;
+  private morphGeometry: import('../device/morph-geometry').MorphGeometryWork | undefined;
   private canvasMips:
     | ReturnType<NonNullable<RenderSystemInternals['dynamicTextureStore']>['prepareMipmaps']>
     | undefined;
@@ -460,6 +461,10 @@ class FrameSubmission {
       this.result = { ok: false, stage: 'finish' };
       return undefined;
     }
+    this.morphGeometry = timingOwner?.gpuStore?.morphGeometry.prepare(
+      work.device,
+      work.reportError,
+    );
     const canvasMips = timingOwner?.dynamicTextureStore?.prepareMipmaps(work.device);
     this.canvasMips = canvasMips;
     if (canvasMips !== undefined && !canvasMips.ok) {
@@ -494,6 +499,8 @@ class FrameSubmission {
     const mipBuffer = textureMips?.ok ? textureMips.value?.buffer : undefined;
     const buffers = mipBuffer === undefined ? [] : [mipBuffer];
     if (this.canvasMips?.ok) buffers.push(this.canvasMips.value.buffer);
+    // Morphed vertex streams precede every draw that binds them.
+    if (this.morphGeometry !== undefined) buffers.push(this.morphGeometry.buffer);
     buffers.push(commands);
     const submitted = work.device.queue.submit(buffers);
     if (!submitted.ok) {
@@ -532,6 +539,7 @@ class FrameSubmission {
     this.capture(() => {
       if (this.canvasMips?.ok) this.canvasMips.value.complete(ok);
     });
+    this.capture(() => this.morphGeometry?.complete(ok));
   }
 
   private finalizeRecordings(): void {

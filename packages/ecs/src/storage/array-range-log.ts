@@ -3,8 +3,8 @@
  * writes. `World.setArrayRange` appends one entry per successful write;
  * projection consumers ask which element ranges changed after an epoch.
  *
- * The log is only authoritative while its newest entry is the field's current
- * changed epoch: any other write (`set`, spans, add/replace) publishes a newer
+ * A whole-field write keeps no entry. The log is only authoritative while its
+ * newest entry is the field's current changed epoch: any other write (`set`, spans, add/replace) publishes a newer
  * epoch and every query then answers `'whole'` until the next range write
  * restarts the log.
  */
@@ -91,6 +91,17 @@ export class ArrayRangeLog {
       ranges.push({ start: log.starts[index] ?? 0, end: log.ends[index] ?? 0 });
     }
     return mergeArrayRanges(ranges);
+  }
+
+  /**
+   * A write covering the whole field: `'whole'` is then the exact answer, so
+   * the field retains no history (pose-like arrays rewritten every frame).
+   */
+  forgetField(entity: number, componentId: number, field: string): void {
+    const fields = this.byEntity.get(entity);
+    if (fields === undefined) return;
+    fields.delete(`${componentId}:${field}`);
+    if (fields.size === 0) this.byEntity.delete(entity);
   }
 
   /** Forget every log of an entity leaving the World. */

@@ -26,6 +26,56 @@ export interface RenderSourceEntity {
 
 const EMPTY_SOURCE_ROWS: readonly (RenderSourceEntity | undefined)[] = Object.freeze([]);
 
+/**
+ * Accepted source rows keyed by entity slot, stored as typed columns: a
+ * million sources cost two typed cells each instead of one object each.
+ * `get` and `values` materialize transient rows.
+ */
+export class RenderSourceEntities {
+  private entities = new Uint32Array(64);
+  /** Hierarchy presence bits, or -1 for an absent slot. */
+  private presence = new Int8Array(64).fill(-1);
+  size = 0;
+
+  get(index: number): RenderSourceEntity | undefined {
+    const presence = this.presence[index];
+    return presence === undefined || presence < 0
+      ? undefined
+      : { entity: this.entities[index] as EntityHandle, hierarchyPresence: presence };
+  }
+
+  set(index: number, row: RenderSourceEntity): void {
+    if (index >= this.presence.length) this.grow(index);
+    if ((this.presence[index] as number) < 0) this.size++;
+    this.entities[index] = row.entity as number;
+    this.presence[index] = row.hierarchyPresence;
+  }
+
+  delete(index: number): void {
+    if ((this.presence[index] ?? -1) < 0) return;
+    this.presence[index] = -1;
+    this.size--;
+  }
+
+  *values(): IterableIterator<RenderSourceEntity> {
+    for (let index = 0; index < this.presence.length; index++) {
+      const row = this.get(index);
+      if (row !== undefined) yield row;
+    }
+  }
+
+  private grow(index: number): void {
+    let capacity = this.presence.length;
+    while (capacity <= index) capacity *= 2;
+    const entities = new Uint32Array(capacity);
+    entities.set(this.entities);
+    const presence = new Int8Array(capacity).fill(-1);
+    presence.set(this.presence);
+    this.entities = entities;
+    this.presence = presence;
+  }
+}
+
 function sourceEntity(
   world: World,
   entity: EntityHandle,
@@ -91,7 +141,7 @@ export function createRenderSourceState(world: World, additional: readonly Compo
     Transform,
     GlobalTransform,
   ]);
-  const entities = new Map<number, RenderSourceEntity>();
+  const entities = new RenderSourceEntities();
   const batch = projection.read();
   for (const index of batch.indices) {
     const entity = projection.entity(index);
@@ -164,6 +214,6 @@ export function acceptRenderSourceEntities(
   for (const index of indices) {
     const row = rows[cursor++];
     if (row === undefined) source.entities.delete(index);
-    else if (source.entities.get(index) !== row) source.entities.set(index, row);
+    else source.entities.set(index, row);
   }
 }

@@ -8,9 +8,9 @@ import { assert, expect, it } from 'vitest';
 import { samplerContribution } from '../assets/asset-decoders';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { GlyphText } from '../components/glyph-text';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
@@ -92,8 +92,12 @@ it.each([
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       upserts += packet.upserts.length;
-      const result = scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const result = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return result;
     }
     return scene.extractComposition(

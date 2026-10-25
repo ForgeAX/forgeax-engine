@@ -145,7 +145,7 @@ async function nativeFixture(
       counterBase = 8;
     const arena = make(4 * 1024 * 1024, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
     const candidates = make(
-      layout.rosterCapacity * 4,
+      layout.candidateCapacity * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     );
     const counters = make(

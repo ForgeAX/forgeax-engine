@@ -13,6 +13,7 @@ import {
 import { prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
 import { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { MaterialDispatch, MaterialFrame } from '../scene/material-dispatch';
 import { SceneSlots } from '../scene/scene-slots';
 
@@ -112,9 +113,10 @@ function fixture(count = 1) {
   });
   const slotOwner = new SceneSlots();
   rows.forEach((row, index) => {
-    slotOwner.set(index, {
+    setSceneRow(slotOwner, index, {
       slot: index,
       generation: 1,
+      version: 0,
       worldId: 0,
       entityKey: index,
       snapshot: row.source,
@@ -135,6 +137,7 @@ function fixture(count = 1) {
     rows.map((row, index) => ({
       slot: index,
       generation: 1,
+      version: 0,
       worldId: 0,
       entityKey: index,
       snapshot: row.source,
@@ -484,6 +487,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
     f.rows.map((row, index) => ({
       slot: index,
       generation: 1,
+      version: 0,
       worldId: 0,
       entityKey: index,
       snapshot: row.source,

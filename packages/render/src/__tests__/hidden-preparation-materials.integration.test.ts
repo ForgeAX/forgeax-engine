@@ -6,9 +6,9 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../components';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { validateRenderables } from '../record/fold-buckets';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -65,8 +65,10 @@ it.each([
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet);
       candidate.accept();
-      scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      scene.consumePublication(receiver.accept(encodeRenderPublication(packet)).unwrap());
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return;
     }
     scene.extractComposition(

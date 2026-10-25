@@ -49,17 +49,24 @@ describe('frame projections', () => {
     expect(seen).toEqual(['v1@0', 'v2@1']);
   });
 
-  it('retains each projected row across walks', () => {
+  it('leaves row identity to the projector memo instead of copying rows by index', () => {
+    const memo = new Map<unknown, { value: unknown }>();
     let calls = 0;
     const retained = new RetainedFrameProjection(new TreeFrame(tree([1, 2])), (value) => {
       calls += 1;
-      return { value };
+      let row = memo.get(value);
+      if (row === undefined) {
+        row = { value };
+        memo.set(value, row);
+      }
+      return row;
     });
     const first = [...retained];
     const second = [...retained];
     expect(second[0]).toBe(first[0]);
     expect(second[1]).toBe(first[1]);
-    expect(calls).toBe(2);
+    expect(retained.at(1)).toBe(first[1]);
+    expect(calls).toBe(5);
   });
 });
 

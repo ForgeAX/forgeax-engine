@@ -10,9 +10,9 @@ import { describe, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
@@ -311,9 +311,11 @@ it('publishes every material program context across native cloning without entit
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
     const frame = scene.consumePublication(accepted);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, frame, accepted };
   };
   try {
@@ -336,7 +338,7 @@ it('publishes every material program context across native cloning without entit
     const invalidMaterial = values[0];
     if (invalidMaterial === undefined) throw new Error('missing published material');
     invalidMaterial.value.roughness = Number.NaN;
-    expect(receiver.accept(invalid).ok).toBe(false);
+    expect(receiver.accept(encodeRenderPublication(invalid)).ok).toBe(false);
     expect(resource.snapshot).toBe(prior);
     retry.discard();
     const next = publish();

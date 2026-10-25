@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { shadowCameraCullDilation } from '../gpu-driven/shadow-views';
 import {
   runGpuDrivenInactiveBatchEvidence,
+  runGpuDrivenLodReadbackGenerationEvidence,
   runGpuDrivenShadowCameraCullEvidence,
   runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
@@ -28,6 +29,17 @@ describe('GPU-driven View Dawn', () => {
       [1, 1],
     ]);
     expect(frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([0, 0]);
+  });
+  it('decodes LOD readback members by their encoded (slot, generation), not the current allocation', async () => {
+    const result = await runGpuDrivenLodReadbackGenerationEvidence();
+    expect(result.removedSlotAllocated).toBe(false);
+    const other = result.removedSlot === 0 ? 1 : 0;
+    expect(result.members).toEqual(
+      [
+        { slot: result.removedSlot, encodedGeneration: true, current: false },
+        { slot: other, encodedGeneration: true, current: true },
+      ].sort((left, right) => left.slot - right.slot),
+    );
   });
   it('produces compact visible IDs and portable indirect args on the real GPU API', async () => {
     await expect(runGpuDrivenViewGpuEvidence()).resolves.toEqual({

@@ -17,7 +17,7 @@ import {
 } from '../raytracing/global-sdf';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
-import { projectCollisionScene } from './scene-sdf-projection';
+import { CollisionSceneRows } from './scene-sdf-projection';
 
 type Request = Extract<RenderFeatureSceneResource, { kind: 'scene-sdf' }>;
 type SourceKey = readonly [identity: object, revision: number, scope: RenderResourceScope];
@@ -50,6 +50,16 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
   const candidates = new Map<string, Region>();
   const failed = new Set<string>();
   const release = (region: Region) => region.lifetime.retire();
+  /** Per-World collision rows; a recovered Renderer creates a new feature and starts cold. */
+  const collisions = new Map<number, CollisionSceneRows>();
+  const collisionRows = (world: number, scope: RenderResourceScope) => {
+    let rows = collisions.get(world);
+    if (rows?.scope !== scope) {
+      rows = new CollisionSceneRows(scope, world);
+      collisions.set(world, rows);
+    }
+    return rows;
+  };
   const sourceKey = (request: Request, current: FeatureSceneSdfSource): SourceKey => {
     const retained = current.retained;
     if (retained === undefined || !retained.isCurrent() || !retained.isSourceCurrent())
@@ -57,9 +67,9 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
     const scope = current.scopes[request.world];
     if (scope === undefined)
       throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
-    // The retained scene revision includes adopted asset publications. Its
-    // currentness fence rejects pending edits; checking holders adds no evidence.
-    return [retained.identity, retained.revision, scope];
+    // Mesh and Material frames carry adopted asset publications; the collision
+    // roster revision moves only when one of this World's contributions changed.
+    return [retained.identity, collisionRows(request.world, scope).sync(retained), scope];
   };
   return {
     begin() {
@@ -119,16 +129,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
           256 % device.limits.minStorageBufferOffsetAlignment !== 0
         )
           throw new SceneSdfUnavailableError({ reason: 'capability', world: request.world });
-        const retained = current.retained;
-        if (retained === undefined)
-          throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
-        const projection = projectCollisionScene(
-          retained.slots,
-          current.scopes,
-          request.world,
-          request.descriptor,
-          retained,
-        );
+        const projection = collisionRows(request.world, refs[2]).project(request.descriptor);
         const packed = packGlobalSdfComposition(projection.instances, {
           ...request.descriptor,
           coverageDistance: request.descriptor.maxDistance,
@@ -292,6 +293,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
       failed.clear();
     },
     dispose() {
+      collisions.clear();
       for (const region of new Set([...candidates.values(), ...regions.values()])) release(region);
       candidates.clear();
       requested.clear();
@@ -299,6 +301,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
       failed.clear();
     },
     detach(scope: RenderResourceScope) {
+      for (const [world, rows] of collisions) if (rows.scope === scope) collisions.delete(world);
       for (const map of [regions, candidates, requested])
         for (const [key, region] of map) {
           if (region.sourceKey[2] !== scope) continue;

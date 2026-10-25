@@ -18,6 +18,7 @@
   "*.toml",
   "bun.lock",
   ".pnpm-version",
+  ".npm-version",
   ".bun-version",
   ".nvmrc",
   "!.forgeax-harness/docs/**",

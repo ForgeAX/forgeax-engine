@@ -1,11 +1,77 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createServer, type ViteDevServer } from 'vite';
+import { createServer, normalizePath, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
-import { executionWorkerEntries } from '../execution-workers.js';
+import { executionWorkerEntries, runtimeDependencyEntries } from '../execution-workers.js';
 import { runtimeProgramIdentity } from '../pack-program-imports.js';
+
+it('discovers dependencies from declared runtime subpaths before any page request', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'runtime subpath discovery-')));
+  const engine = join(root, 'node_modules/@forgeax/engine');
+  const app = join(root, 'node_modules/@forgeax/engine-app');
+  const dependency = join(engine, 'node_modules/late-dependency');
+  let server: ViteDevServer | undefined;
+  try {
+    await mkdir(join(engine, 'dist'), { recursive: true });
+    await mkdir(join(app, 'dist'), { recursive: true });
+    await mkdir(dependency, { recursive: true });
+    await writeFile(join(root, 'package.json'), '{"type":"module"}');
+    await writeFile(join(root, 'index.html'), '<html></html>');
+    await writeFile(
+      join(engine, 'package.json'),
+      JSON.stringify({
+        name: '@forgeax/engine',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          './package.json': './package.json',
+          './feature': { import: './dist/feature.mjs' },
+        },
+        dependencies: { '@forgeax/engine-app': '1.0.0', 'late-dependency': '1.0.0' },
+      }),
+    );
+    await writeFile(
+      join(engine, 'dist/feature.mjs'),
+      "import value from 'late-dependency'; export default value;",
+    );
+    await writeFile(
+      join(app, 'package.json'),
+      '{"name":"@forgeax/engine-app","main":"dist/index.mjs"}',
+    );
+    await writeFile(join(app, 'dist/index.mjs'), 'export default {};');
+    await writeFile(
+      join(dependency, 'package.json'),
+      '{"name":"late-dependency","main":"index.js"}',
+    );
+    await writeFile(join(dependency, 'index.js'), 'module.exports = 42;');
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      server: { host: '127.0.0.1', port: 0, hmr: false, ws: false, watch: null },
+      build: { outDir: join(root, 'dist') },
+      plugins: [executionWorkerEntries(['@forgeax/engine/feature'])],
+    });
+    await server.listen();
+    const optimizer = server.environments.client?.depsOptimizer;
+    expect(optimizer).toBeDefined();
+    await optimizer?.scanProcessing;
+    const metadata = optimizer?.metadata;
+    const discovered = [
+      ...Object.values(metadata?.discovered ?? {}),
+      ...Object.values(metadata?.optimized ?? {}),
+    ];
+    expect(discovered.some(({ src }) => src === normalizePath(join(dependency, 'index.js')))).toBe(
+      true,
+    );
+  } finally {
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 it('rejects an incomplete delivered Engine before accepting page requests', async () => {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), 'runtime import admission-')));
@@ -124,4 +190,15 @@ it.each([
     await server?.close();
     await rm(temporary, { recursive: true, force: true });
   }
+});
+
+it('scans browser runtime exports without admitting Node-only dependency entries', async () => {
+  const require = createRequire(import.meta.url);
+  const appManifest = require.resolve('@forgeax/engine-app/package.json');
+  const entries = await runtimeDependencyEntries(appManifest);
+  const importRoot = dirname(require.resolve('@forgeax/engine-import/package.json'));
+  const ddcRoot = dirname(require.resolve('@forgeax/engine-ddc/package.json'));
+  expect(entries).toContain(normalizePath(join(importRoot, 'dist/browser.mjs')));
+  expect(entries).not.toContain(normalizePath(join(importRoot, 'dist/index.mjs')));
+  expect(entries).not.toContain(normalizePath(join(ddcRoot, 'dist/index.mjs')));
 });

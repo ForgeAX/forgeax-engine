@@ -126,10 +126,10 @@ it('never shares physical member memoization across device incarnations', async 
     const rowA = frameA.members(batch.candidates),
       rowB = frameB.members(batch.candidates);
     expect(rowA).not.toBe(rowB);
-    expect(arena.readWord(rowA + 4)).toBe(10);
-    expect(arena.readWord(rowB + 4)).toBe(1000);
+    expect(arena.readWord(arena.readWord(rowA + 4) + 1)).toBe(10);
+    expect(arena.readWord(arena.readWord(rowB + 4) + 1)).toBe(1000);
     inputsB.dispose();
-    expect(arena.readWord(rowA + 4)).toBe(10);
+    expect(arena.readWord(arena.readWord(rowA + 4) + 1)).toBe(10);
   } finally {
     frameA.release();
     frameB.release();
@@ -342,50 +342,6 @@ it('retires all independent Scene owners exactly once after one Version release 
     scene.dispose();
     arena.dispose();
   }
-});
-
-it('prepares recovery slot bytes before publication and rejects drift without changing the accepted root', () => {
-  const projection = new RenderScene(),
-    source = receiptRow().source;
-  projection.reset([source, { ...source, entityKey: source.entityKey + 1 }]);
-  const before = projection.slotsSnapshot();
-  const slots = before.map((slot) => ({
-    ...slot,
-    snapshot: { ...slot.snapshot, transform: { world: mat4.identity(mat4.create()) } },
-  }));
-  const actual = Object.getOwnPropertyDescriptor(slots[1]?.snapshot.transform ?? {}, 'world');
-  const failed = slots[1];
-  if (failed === undefined) throw new Error('Missing second fixture slot');
-  Object.defineProperty(failed.snapshot.transform, 'world', {
-    get: () => {
-      throw new Error('injected snapshot capture failure');
-    },
-    configurable: true,
-  });
-  expect(() => projection.prepareRecoverySlots(slots)).toThrow('injected snapshot capture failure');
-  expect(projection.slotsSnapshot()).toBe(before);
-  if (actual) Object.defineProperty(failed.snapshot.transform, 'world', actual);
-  const prepared = projection.prepareRecoverySlots(slots);
-  expect(projection.slotsSnapshot()).toBe(before);
-  const changedWorld = mat4.identity(mat4.create());
-  changedWorld[12] = 5;
-  projection.apply([
-    {
-      kind: 'update',
-      worldId: 0,
-      entityKey: source.entityKey,
-      world: changedWorld,
-    },
-  ]);
-  const current = projection.slotsSnapshot();
-  expect(() => prepared.validate()).toThrow('Recovery Scene source changed');
-  expect(projection.slotsSnapshot()).toBe(current);
-  const valid = projection.prepareRecoverySlots(current);
-  valid.validate();
-  valid.publish();
-  expect(
-    Array.from(projection.slotsSnapshot(), (slot) => [slot.slot, slot.generation, slot.entityKey]),
-  ).toEqual(Array.from(current, (slot) => [slot.slot, slot.generation, slot.entityKey]));
 });
 
 it('rejects a smaller device upload without invalidating shared CPU pose facts or the active incarnation', async () => {

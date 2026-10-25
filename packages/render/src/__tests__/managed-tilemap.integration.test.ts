@@ -7,9 +7,9 @@ import { DEFAULT_UNLIT_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { assert, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { Tilemap, TilemapSort } from '../components/tilemap';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { tilemapGeometry } from '../tilemap-geometry';
@@ -72,8 +72,12 @@ it.each([
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       upserts += packet.upserts.length;
-      const result = scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const result = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return result;
     }
     return scene.extractComposition(

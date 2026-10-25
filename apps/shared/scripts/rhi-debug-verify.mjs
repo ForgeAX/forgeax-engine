@@ -1,5 +1,6 @@
 import { encodePng } from '@forgeax/engine-image/png';
 import { teardownDawnInstance } from '../../../scripts/lib/dawn-teardown.mjs';
+import { selectCaptureWorkIndex } from '../src/capture-work-selection.mjs';
 // @forgeax/apps-shared/scripts/rhi-debug-verify -- reusable RHI-debug capture
 // verification harness for learn-render / hello-* demos.
 //
@@ -37,6 +38,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { buildFrameModel, decodeTape, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
+
 
 import { createOwnedProcessGroupStopper } from './rhi-debug-process.mjs';
 import { pnpmCommand } from '../../../scripts/lib/pnpm-command.mjs';
@@ -244,6 +246,7 @@ export async function closeBrowserBounded(browser, timeoutMs = 30_000) {
  *   mode: 'pixel'|'structural',
  *   liveHook?: string,
  *   browserReplayHook?: string,
+ *   workIndex?: number,
  *   capturePrepareHook?: string,
  *   reportHook?: string,
  *   rawTapeRoute: string,
@@ -253,7 +256,7 @@ export async function closeBrowserBounded(browser, timeoutMs = 30_000) {
  *   prepare?: () => Promise<{preparationMs?: number, completedFrames?: number}>,
  *   capture?: (onSubmitted?: () => void) => Promise<{bytes: Uint8Array}>,
  *   readLive?: () => Promise<{live: string, dims: {width: number, height: number}}>,
- *   replay?: (bytes: Uint8Array) => Promise<{
+ *   replay?: (bytes: Uint8Array, workIndex?: number) => Promise<{
  *     pixels: Uint8Array,
  *     width: number,
  *     height: number,
@@ -268,6 +271,7 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
     mode,
     liveHook,
     browserReplayHook,
+    workIndex,
     capturePrepareHook,
     reportHook,
     rawTapeRoute,
@@ -364,14 +368,14 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
   // Persist the canonical bytes before fresh-backend replay can fail.
   if (mode === 'pixel') {
     if (browserReplayHook !== undefined || injected?.replay !== undefined) {
-      const replay = injected?.replay ?? (async (bytes) => {
+      const replay = injected?.replay ?? (async (bytes, selectedWorkIndex) => {
         const fn = globalThis[browserReplayHook];
         if (typeof fn !== 'function') {
           throw new Error(`browser replay hook window.${browserReplayHook} is not a function`);
         }
-        return fn(bytes);
+        return fn(bytes, selectedWorkIndex);
       });
-      const replayed = await replay(captured.bytes);
+      const replayed = await replay(captured.bytes, workIndex);
       const replayPixels = replayed.pixels instanceof Uint8Array
         ? replayed.pixels
         : new Uint8Array(replayed.pixels);
@@ -412,7 +416,7 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
  *                                  RGBA Uint8Array (pixel mode only); it must
  *                                  not update, draw, or wait for another rAF.
  *                                  e.g. '__captureColors'.
- * @property {string} [browserReplayHook] window fn accepting the captured tape
+ * @property {string} [browserReplayHook] window fn accepting the captured tape and optional workIndex
  *                                  bytes and returning fresh browser replay
  *                                  RGBA pixels plus dimensions/workIndex.
  * @property {'node-dawn'|'browser-fresh'} [pixelVerdictOwner] owner of the
@@ -445,21 +449,7 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
  * @property {string} [urlSuffix]   query/hash suffix appended to the dev URL
  */
 
-/** Select the displayed attachment from recorded resource provenance, not pass order. */
-export function selectCaptureWorkIndex(model, mode, workIndex) {
-  if (typeof workIndex === 'number') return workIndex;
-  if (mode === 'structural') {
-    return model.works.find((work) => (work.attachments?.colorViewHandleIds.length ?? 0) > 0)?.workIndex;
-  }
-  const swapchainTextures = new Set(model.resources
-    .filter((resource) => resource.descriptor?.kind === 'createTexture' && resource.descriptor.origin === 'swapchain')
-    .map((resource) => resource.resourceId));
-  const swapchainViews = new Set(model.resources
-    .filter((resource) => resource.descriptor?.kind === 'createTextureView' && swapchainTextures.has(resource.descriptor.sourceHandleId))
-    .map((resource) => resource.resourceId));
-  return model.works.findLast((work) => work.attachments?.colorViewHandleIds.some((id) => swapchainViews.has(id)))?.workIndex
-    ?? model.works.at(-1)?.workIndex;
-}
+export { selectCaptureWorkIndex };
 
 /**
  * Vite can publish its Local URL before the Pack watcher has accepted its first
@@ -1030,6 +1020,7 @@ async function captureLiveFrame(page, options, collectDiagnostics) {
       mode: options.mode,
       liveHook: options.liveHook,
       browserReplayHook: options.browserReplayHook,
+      workIndex: options.workIndex,
       capturePrepareHook: options.capturePrepareHook,
       reportHook: options.reportHook,
       rawTapeRoute: RAW_TAPE_ROUTE,

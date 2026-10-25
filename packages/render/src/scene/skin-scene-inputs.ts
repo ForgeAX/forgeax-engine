@@ -2,7 +2,7 @@ import type { Mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { SkeletonAsset } from '@forgeax/engine-types';
 import type { GpuInputArena } from '../gpu-input-arena';
-import type { RenderSceneApplyResult, RenderSceneRecord } from './render-scene-types';
+import type { RenderSceneApplyResult, RenderSceneSlot } from './render-scene-types';
 import type { SceneSlotFrame } from './scene-slots';
 import {
   type SkinInputFrame,
@@ -216,26 +216,24 @@ export class SkinSceneInputs {
     }
   }
 
-  /** Adopt one accepted Scene delta exactly once, from its fixed before root.
+  /** Adopt one accepted Scene delta exactly once, from its carried prior records.
    * Retire old Binding identities first, acquire every new reference, then
    * release all old references. Joint/source/Skeleton facts therefore survive
    * same-packet handoff and swaps when publication sends no unchanged matrices.
    * Only known static edits are visited; transform-only updates do no work.
    */
-  apply(before: SceneSlotFrame, delta: RenderSceneApplyResult): void {
+  apply(delta: RenderSceneApplyResult): void {
     this.healthy();
     try {
       for (const removed of delta.removedSlots)
-        if (this.beforeBinding(before, removed) !== undefined) this.inputs.unbind(removed.slot);
+        if (removed.snapshot.skinBinding !== undefined) this.inputs.unbind(removed.slot);
       for (const recreated of delta.recreatedSlots) {
-        const previous = before.lookup(recreated.worldId, recreated.entityKey);
-        if (previous === undefined)
-          throw invalid('the fixed before identity of this accepted Skin recreation');
+        const previous = this.previousRecord(delta, recreated);
         if (previous.snapshot.skinBinding !== undefined) this.inputs.unbind(previous.slot);
       }
       for (const updated of delta.contentUpdatedSlots)
         if (
-          this.beforeBinding(before, updated) !== undefined &&
+          this.previousRecord(delta, updated).snapshot.skinBinding !== undefined &&
           updated.snapshot.skinBinding === undefined
         )
           this.inputs.unbind(updated.slot);
@@ -248,21 +246,23 @@ export class SkinSceneInputs {
           this.acquireBinding(recreated.slot, recreated.worldId, recreated.snapshot.skinBinding);
       for (const updated of delta.contentUpdatedSlots) {
         const after = updated.snapshot.skinBinding;
-        if (after !== undefined && this.beforeBinding(before, updated) !== after)
+        if (
+          after !== undefined &&
+          this.previousRecord(delta, updated).snapshot.skinBinding !== after
+        )
           this.acquireBinding(updated.slot, updated.worldId, after);
       }
 
       for (const removed of delta.removedSlots) {
-        const previous = this.beforeBinding(before, removed);
+        const previous = removed.snapshot.skinBinding;
         if (previous !== undefined) this.releaseBinding(removed.worldId, previous);
       }
       for (const recreated of delta.recreatedSlots) {
-        const previous = before.lookup(recreated.worldId, recreated.entityKey)?.snapshot
-          .skinBinding;
+        const previous = this.previousRecord(delta, recreated).snapshot.skinBinding;
         if (previous !== undefined) this.releaseBinding(recreated.worldId, previous);
       }
       for (const updated of delta.contentUpdatedSlots) {
-        const previous = this.beforeBinding(before, updated);
+        const previous = this.previousRecord(delta, updated).snapshot.skinBinding;
         if (previous !== undefined && previous !== updated.snapshot.skinBinding)
           this.releaseBinding(updated.worldId, previous);
       }
@@ -271,19 +271,15 @@ export class SkinSceneInputs {
       throw cause;
     }
   }
-  private beforeBinding(
-    before: SceneSlotFrame,
-    record: RenderSceneRecord,
-  ): SkinBindingInput | undefined {
-    const previous = before.slotAt(record.slot);
+  private previousRecord(delta: RenderSceneApplyResult, record: RenderSceneSlot): RenderSceneSlot {
+    const previous = delta.previous.get(record);
     if (
       previous === undefined ||
-      previous.generation !== record.generation ||
       previous.worldId !== record.worldId ||
       previous.entityKey !== record.entityKey
     )
-      throw invalid('the fixed before slot of this accepted Skin edit');
-    return previous.snapshot.skinBinding;
+      throw invalid('the carried prior record of this accepted Skin edit');
+    return previous;
   }
 
   /** Asset change evidence updates one shared definition, including removal. */

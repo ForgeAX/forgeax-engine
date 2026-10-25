@@ -54,7 +54,7 @@ it('keeps removed hierarchy presence at the accepted boundary until a successful
   f.world.removeComponent(f.entity, Visibility).unwrap();
   const discarded = f.read();
   expect(discarded.changed()).toBe(true);
-  expect(f.source.entities.get(f.index)).toBe(original);
+  expect(f.source.entities.get(f.index)).toEqual(original);
   const retry = f.read();
   expect(retry.changed()).toBe(true);
   retry.accept();
@@ -104,5 +104,5 @@ it('captures exact generation identity and never samples a later World during ac
   } finally {
     f.world.hasComponent = has;
   }
-  expect(f.source.entities.get(index)).toBe(row);
+  expect(f.source.entities.get(index)).toEqual(row);
 });

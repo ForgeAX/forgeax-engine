@@ -1,6 +1,6 @@
 import type { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { MaterialFrame } from '../scene/material-dispatch';
 
 export type SubsurfaceDemand = number | 'invalid-values' | 'invalid-surface' | 'missing-material';
 
@@ -30,6 +30,8 @@ function profile(material: MaterialSnapshot | undefined): SubsurfaceDemand {
     return 'invalid-surface';
   return key;
 }
+
+const EMPTY_MATERIALS = new MaterialFrame(undefined);
 
 /** Membership comes from actual culling; later adoption visits changed shared assets only. */
 export class SubsurfaceSelection {
@@ -67,6 +69,28 @@ export class SubsurfaceSelection {
         this.adjust(value, 1);
         this.members.set(resource, value);
       });
+    this.frame = materials;
+  }
+
+  /**
+   * Membership of every accepted material, maintained from frame changes. The
+   * GPU lane admits all owned rows, so its demand is material-wide.
+   */
+  trackAll(materials: MaterialFrame): void {
+    if (this.frame === materials) return;
+    materials.changesSince(this.frame ?? EMPTY_MATERIALS, (before, after) => {
+      const resource = (after ?? before)?.resource;
+      if (resource === undefined) return;
+      const old = this.members.get(resource);
+      if (old !== undefined) {
+        this.adjust(old, -1);
+        this.members.delete(resource);
+      }
+      if (after === undefined) return;
+      const value = profile(after.snapshot);
+      this.members.set(resource, value);
+      this.adjust(value, 1);
+    });
     this.frame = materials;
   }
 

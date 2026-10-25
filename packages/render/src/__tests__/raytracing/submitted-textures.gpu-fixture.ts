@@ -14,10 +14,10 @@ import { samplerContribution } from '../../assets/asset-decoders';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { renderMaterialContext } from '../../extract/material-context';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { installPublicationPrograms } from '../../publication/programs';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import { prepareSurfaceMaterialTextures } from '../../raytracing/material-residency';
 import { createSubmittedRayPathTracer } from '../../raytracing/path-tracer';
@@ -123,11 +123,11 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
       assets.update(handle, { values: { alphaCutoff: cutoff } }).unwrap();
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       installPublicationPrograms(received, packet.programs);
-      const accepted = receiver.accept(packet, received).unwrap();
+      const accepted = receiver.accept(encodeRenderPublication(packet), received).unwrap();
       const frame = scene.consumePublication(accepted);
       const resource = frame.renderables.at(0)?.material;
       const snapshot =
@@ -272,7 +272,7 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
         tracer.dispose();
         await prepared.release();
       }
-      const transfers = renderPublicationTransfers(packet);
+      const transfers = renderPublicationTransfers(encodeRenderPublication(packet));
       publisher
         .recycle(packet.revision, structuredClone(transfers, { transfer: transfers }))
         .unwrap();

@@ -61,6 +61,8 @@ export function sceneRenderBundleCache(
 interface Segment {
   readonly commands: Command[];
   readonly preludeLength: number;
+  /** Pipeline of the run this segment belongs to, and its ordinal within that run. */
+  readonly run: { readonly pipeline: unknown; readonly ordinal: number } | undefined;
   bundle: RenderBundle | undefined;
 }
 
@@ -149,7 +151,10 @@ function recordBundle(segment: Segment, target: RhiRenderCommands): void {
  * One view-owned scene pass cache holds ordered command segments. A segment
  * starts at each `setPipeline` after a draw, after 128 draws, at a retained
  * full-sized physical indirect boundary after a mismatch, or after a command a
- * bundle cannot hold. It is prefixed with the pipeline, bind group and
+ * bundle cannot hold. A mismatched segment recovers its retained bundle by
+ * its indirect anchor or, for direct draws, by its (pipeline run, ordinal):
+ * a pipeline run is one binned-phase bin, so an earlier bin that gains or
+ * loses segments leaves later bins on the replay path. It is prefixed with the pipeline, bind group and
  * vertex/index state it inherits, so it is self-contained under WebGPU's
  * state reset after `executeBundles`. No asset or World revisions: physical
  * handles and draw arguments are the command authority.
@@ -233,10 +238,35 @@ export class RenderBundleCache {
       }
       return byIndirect.get(buffer)?.get(offset);
     };
+    // A pipeline run is a binned phase's bin: an earlier run that gains or
+    // loses segments moves every later ordinal, but not a run's own ordinals.
+    let byRun: Map<unknown, Map<number, number | undefined>> | undefined;
+    const runSegmentIndex = (pipeline: unknown, ordinal: number): number | undefined => {
+      if (byRun === undefined) {
+        byRun = new Map();
+        let nextIndex = 0;
+        for (const segment of retainedSegments) {
+          const index = nextIndex++;
+          if (segment.run === undefined) continue;
+          let ordinals = byRun.get(segment.run.pipeline);
+          if (ordinals === undefined) {
+            ordinals = new Map();
+            byRun.set(segment.run.pipeline, ordinals);
+          }
+          // A pipeline drawn in several runs cannot identify one retained segment.
+          ordinals.set(segment.run.ordinal, ordinals.has(segment.run.ordinal) ? undefined : index);
+        }
+      }
+      return byRun.get(pipeline)?.get(ordinal);
+    };
     const physicalSegment = (segment: Segment): Segment | undefined => {
       const anchor = indirectAnchor(segment.commands);
-      if (anchor === undefined) return undefined;
-      const index = indirectSegmentIndex(anchor.args[0], anchor.args[1] as number);
+      const index =
+        anchor !== undefined
+          ? indirectSegmentIndex(anchor.args[0], anchor.args[1] as number)
+          : segment.run === undefined
+            ? undefined
+            : runSegmentIndex(segment.run.pipeline, segment.run.ordinal);
       const candidate = index === undefined ? undefined : retainedSegments[index];
       return candidate !== undefined && equalCommands(candidate, segment) ? candidate : undefined;
     };
@@ -257,6 +287,10 @@ export class RenderBundleCache {
     let inOcclusion = false;
 
     let open = false;
+    // The current pipeline run: its pipeline handle and next segment ordinal.
+    let runPipeline: unknown;
+    let runOrdinal = 0;
+    let segmentRun: Segment['run'];
     let retained: Segment | undefined;
     let fresh: Command[] | undefined;
     let cursor = 0;
@@ -281,8 +315,14 @@ export class RenderBundleCache {
     const pushTracked = (command: Command | undefined) => {
       if (command !== undefined) push(command.method, command.args);
     };
-    const openSegment = (withPipeline: boolean) => {
+    const openSegment = (withPipeline: boolean, startsRun: unknown) => {
       open = true;
+      if (!withPipeline) {
+        runPipeline = startsRun;
+        runOrdinal = 0;
+      }
+      segmentRun =
+        runPipeline === undefined ? undefined : { pipeline: runPipeline, ordinal: runOrdinal++ };
       retained = retainedSegments[nextSegments.length];
       fresh = undefined;
       cursor = 0;
@@ -311,13 +351,16 @@ export class RenderBundleCache {
         fresh === undefined &&
         retained !== undefined &&
         cursor === retained.commands.length &&
-        preludeLength === retained.preludeLength;
+        preludeLength === retained.preludeLength &&
+        retained.run?.pipeline === segmentRun?.pipeline &&
+        retained.run?.ordinal === segmentRun?.ordinal;
       const segment: Segment =
         matched && retained !== undefined
           ? retained
           : {
               commands: fresh ?? retained?.commands.slice(0, cursor) ?? [],
               preludeLength,
+              run: segmentRun,
               bundle: undefined,
             };
       if (!matched && drawCount > 0 && !inOcclusion) {
@@ -386,7 +429,8 @@ export class RenderBundleCache {
         }
       }
       if (method === 'setPipeline' && open && drawCount > 0) closeSegment();
-      if (!open) openSegment(method !== 'setPipeline');
+      if (!open)
+        openSegment(method !== 'setPipeline', method === 'setPipeline' ? args[0] : undefined);
       const command = push(method, args);
       switch (method) {
         case 'setPipeline':
@@ -505,6 +549,7 @@ export class RenderBundleCache {
         barrier();
         // WebGPU clears pipeline, bind group and vertex/index state here.
         pipeline = undefined;
+        runPipeline = undefined;
         groups.length = 0;
         vertexBuffers.length = 0;
         indexBuffer = undefined;

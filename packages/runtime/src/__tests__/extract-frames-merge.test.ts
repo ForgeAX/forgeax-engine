@@ -29,10 +29,11 @@ import {
 } from '../../../render/src/components';
 import type { CameraSnapshot } from '../../../render/src/render-contract';
 import type {
+  CsmCameraData,
   DirectionalLightSnapshot,
   DispatchEntry,
   ExtractedFrame,
-  ExtractedLights,
+  LightRoster,
   PointLightSnapshot,
   RenderableSnapshot,
   SkyboxSnapshot,
@@ -41,6 +42,15 @@ import type {
 } from '../../../render/src/render-system-extract';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame, extractFrames } from '../../../render/src/render-system-extract-tail';
+import { fitDirectionalCascades } from '../../../render/src/world/render-lights';
+
+/** The cascades a display view of `frame` fits (the renderer fits per view). */
+function cascadesOf(frame: {
+  readonly lights: LightRoster;
+  readonly cameras: readonly CsmCameraData[];
+}) {
+  return fitDirectionalCascades(frame.lights, { camera: frame.cameras[0] });
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +139,7 @@ function simulateMerge(
   ownerIndex: number,
 ): {
   cameras: CameraSnapshot[];
-  lights: ExtractedLights;
+  lights: LightRoster;
   renderables: RenderableSnapshot[];
   dispatch: DispatchEntry[];
   skylight: SkylightSnapshot | undefined;
@@ -154,7 +164,7 @@ function simulateMerge(
   // AC-04: lights — point[]/spot[] concat; directional first-hit in worlds[] order; directionalCount sum
   const point: PointLightSnapshot[] = [];
   const spot: SpotLightSnapshot[] = [];
-  const rect: ExtractedLights['rect'][number][] = [];
+  const rect: LightRoster['rect'][number][] = [];
   let directional: DirectionalLightSnapshot | undefined;
   let directionalCount = 0;
   for (const f of frames) {
@@ -169,20 +179,14 @@ function simulateMerge(
   const firstDirectionalLights = frames.find(
     (frame) => frame.lights.directional !== undefined,
   )?.lights;
-  const lights: ExtractedLights = {
+  const lights: LightRoster = {
     directional,
     directionalCount,
     point,
     spot,
     rect,
-    lightViewProj: firstDirectionalLights?.lightViewProj,
-    splitPlanes: firstDirectionalLights?.splitPlanes,
-    cascadeCount: firstDirectionalLights?.cascadeCount,
-    cascadeBlend: firstDirectionalLights?.cascadeBlend,
-    shadowMapSize: firstDirectionalLights?.shadowMapSize,
     depthBias: firstDirectionalLights?.depthBias,
     normalBias: firstDirectionalLights?.normalBias,
-    directionalShadowQuality: firstDirectionalLights?.directionalShadowQuality,
     directionalShadowError: firstDirectionalLights?.directionalShadowError,
     pointShadow: frames.flatMap((f) => f.lights.pointShadow),
     directionalCsmConfig: firstDirectionalLights?.directionalCsmConfig,
@@ -601,19 +605,19 @@ describe('extractFrames cross-world directional CSM (bug-20260710)', () => {
     });
 
     expect(frame.lights.directional).toBeDefined();
-    const lvp = frame.lights.lightViewProj;
+    const lvp = cascadesOf(frame)?.lightViewProj;
     expect(lvp).toBeDefined();
     expect(lvp?.length).toBe(4);
     // The effective cascades (default cascadeCount=4) must all be non-zero —
     // this is the exact assertion that failed before the merge-layer recompute.
-    for (let i = 0; i < (frame.lights.cascadeCount ?? 0); i++) {
+    for (let i = 0; i < (cascadesOf(frame)?.cascadeCount ?? 0); i++) {
       expect(isNonZeroMat(lvp?.[i])).toBe(true);
     }
     // splitPlanes reach the component shadowDistance on the last cascade.
-    expect(frame.lights.splitPlanes).toBeDefined();
-    expect(frame.lights.splitPlanes).toHaveLength(16);
-    expect(frame.lights.splitPlanes?.[1]).toBeGreaterThan(0);
-    expect(frame.lights.splitPlanes?.[2]).toBeGreaterThan(0);
+    expect(cascadesOf(frame)?.splitPlanes).toBeDefined();
+    expect(cascadesOf(frame)?.splitPlanes).toHaveLength(16);
+    expect(cascadesOf(frame)?.splitPlanes?.[1]).toBeGreaterThan(0);
+    expect(cascadesOf(frame)?.splitPlanes?.[2]).toBeGreaterThan(0);
   });
 
   it('single world (camera + light together) still yields non-zero lightViewProj', () => {
@@ -637,11 +641,11 @@ describe('extractFrames cross-world directional CSM (bug-20260710)', () => {
       .unwrap();
 
     const frame = extractFrames([world as World], 0);
-    const lvp = frame.lights.lightViewProj;
+    const lvp = cascadesOf(frame)?.lightViewProj;
     expect(lvp?.length).toBe(4);
-    for (let i = 0; i < (frame.lights.cascadeCount ?? 0); i++) {
+    for (let i = 0; i < (cascadesOf(frame)?.cascadeCount ?? 0); i++) {
       expect(isNonZeroMat(lvp?.[i])).toBe(true);
     }
-    expect(frame.lights.splitPlanes).toHaveLength(16);
+    expect(cascadesOf(frame)?.splitPlanes).toHaveLength(16);
   });
 });

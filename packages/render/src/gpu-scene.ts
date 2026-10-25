@@ -10,6 +10,10 @@ import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
 import { GpuDirtyRanges } from './gpu-dirty-ranges';
 import type { GpuInputArena } from './gpu-input-arena';
 import {
+  PrimitiveAllocations,
+  type PrimitiveAllocation as SlotAllocation,
+} from './gpu-scene-allocations';
+import {
   type GpuSceneChangedBounds,
   GpuSceneChangeLog,
   type GpuSceneSlotBounds,
@@ -36,9 +40,10 @@ import { uniqueInstanceIdentities } from './instances';
 import type { MaterialResource } from './material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from './material-row';
 import { isCanonicalStandardPbrMaterialShader } from './pbr-pipeline';
+import { getOpaqueResourceIdentity } from './record/frame-snapshot';
 import type { MaterialSnapshot } from './render-system-extract';
 import { type AcceptedMaterial, MaterialFrame } from './scene/material-dispatch';
-import { MeshFrame, type MeshGeometry } from './scene/mesh-frame';
+import { MeshFrame, type MeshGeometry, type MeshMorphDeltas } from './scene/mesh-frame';
 import type { RenderSceneApplyResult, RenderSceneSlot } from './scene/render-scene-types';
 import { StableRangeAllocator } from './stable-range-allocator';
 import { materialDisplacementRadius } from './standard-displacement-bounds';
@@ -134,6 +139,23 @@ function meshInputWords(geometry: MeshGeometry): number {
   return GPU_MESH_DESCRIPTOR.words + (geometry.skinEnvelopes?.length ?? 0);
 }
 
+/** One Mesh version's target deltas in the shared input arena, held by its morphed rows. */
+interface MorphDeltaAllocation {
+  readonly descriptor: number;
+  holders: number;
+}
+
+/** A morphed row: (vertexCount, targetCount, deltas address, weights...). */
+interface MorphRowAllocation {
+  readonly descriptor: number;
+  readonly words: number;
+  readonly worldId: number;
+  readonly handle: number;
+  deltas: MeshMorphDeltas;
+}
+
+const MORPH_ROW_HEADER_WORDS = 3;
+
 interface MeshAllocation {
   readonly logicalSlot: number;
   readonly key: string;
@@ -141,16 +163,7 @@ interface MeshAllocation {
   holders: number;
 }
 
-interface PrimitiveAllocation {
-  readonly mesh: MeshAllocation | undefined;
-  readonly recordIndex: number;
-  readonly instanceStart: number;
-  readonly instanceCount: number;
-  readonly transformStart: number;
-  readonly instanceTransformStart: number;
-  readonly instanceTransformCount: number;
-  readonly materialRanges: readonly MaterialAllocation[];
-}
+type PrimitiveAllocation = SlotAllocation<MeshAllocation, readonly MaterialAllocation[]>;
 
 type GpuSceneTableName = keyof GpuSceneBuffers;
 
@@ -162,6 +175,47 @@ const TABLE_LAYOUTS = {
 } as const satisfies Readonly<Record<GpuSceneTableName, GpuSceneTableLayout>>;
 
 const TABLE_NAMES = Object.keys(TABLE_LAYOUTS) as readonly GpuSceneTableName[];
+/** Primitive and instance tables share one row capacity; transform rows also hold previous poses. */
+const GPU_SCENE_ROW_TABLE_STRIDE = Math.max(PRIMITIVE.stride, INSTANCE.stride);
+const TRANSFORM_CURRENT = gpuSceneFieldOffset(TRANSFORM, 'currentWorld');
+const TRANSFORM_PREVIOUS = gpuSceneFieldOffset(TRANSFORM, 'previousIndex');
+const TRANSFORM_STAMP = gpuSceneFieldOffset(TRANSFORM, 'stamp');
+
+/** Every table is bound whole as one storage binding. */
+function gpuSceneTableByteLimit(device: RhiDevice): number {
+  const storage = Number(device.limits.maxStorageBufferBindingSize);
+  const buffer = Number(device.limits.maxBufferSize);
+  return Math.min(
+    Number.isFinite(storage) && storage > 0 ? storage : Number.MAX_SAFE_INTEGER,
+    Number.isFinite(buffer) && buffer > 0 ? buffer : Number.MAX_SAFE_INTEGER,
+  );
+}
+
+/**
+ * Doubling growth keeps reallocation amortized O(1) per row; slack is clamped
+ * to the rows the device can bind, and only a requirement beyond that fails.
+ */
+export function growGpuSceneTableCapacity(
+  current: number,
+  required: number,
+  stride: number,
+  limitBytes: number,
+): Result<number, RhiError> {
+  if (required <= current) return ok(current);
+  const maxRows = Math.floor(limitBytes / stride);
+  if (required > maxRows)
+    return err(
+      new RhiError({
+        code: 'limit-exceeded',
+        expected: `GPU Scene table (${required} rows x ${stride} B) fits device.limits.maxStorageBufferBindingSize/maxBufferSize (${limitBytes} B)`,
+        hint: 'reduce resident GPU-driven rows or request a device with larger storage binding limits',
+        detail: { maxStorageBufferBindingSize: limitBytes, requestedBytes: required * stride },
+      }),
+    );
+  let next = Math.max(1, current);
+  while (next < required) next *= 2;
+  return ok(Math.min(next, maxRows));
+}
 // Material storage grows from distinct accepted ABIs, independently of entity reservations.
 const INITIAL_MATERIAL_CAPACITY = 1;
 
@@ -214,9 +268,14 @@ function createBuffers(
   return ok({ primitive, instance, transform, material });
 }
 
-function writeMat4(view: DataView, byteOffset: number, value: Float32Array): void {
+function writeMat4(
+  view: DataView,
+  byteOffset: number,
+  value: Float32Array,
+  sourceOffset = 0,
+): void {
   for (let lane = 0; lane < 16; lane += 1) {
-    view.setFloat32(byteOffset + lane * 4, value[lane] ?? 0, true);
+    view.setFloat32(byteOffset + lane * 4, value[sourceOffset + lane] ?? 0, true);
   }
 }
 
@@ -338,6 +397,9 @@ export class GpuScene {
   private meshes = new MeshFrame();
   private materialFrame: MaterialFrame | undefined;
   private readonly sharedMeshes = new Map<string, MeshAllocation>();
+  private readonly morphDeltas = new Map<MeshMorphDeltas, MorphDeltaAllocation>();
+  private readonly morphRows = new Map<number, MorphRowAllocation>();
+  private morphScratch = new DataView(new ArrayBuffer(64));
   private readonly pendingMeshes = new Set<MeshVersion>();
 
   private readonly dirtyRanges = new GpuDirtyRanges();
@@ -365,7 +427,15 @@ export class GpuScene {
   private sceneContentRevision = 0;
   private readonly changeLog = new GpuSceneChangeLog();
   private identityUploaded = false;
-  private readonly allocations = new Map<number, PrimitiveAllocation>();
+  private readonly allocations = new PrimitiveAllocations<
+    MeshAllocation,
+    readonly MaterialAllocation[]
+  >();
+  /** Equal material range lists are one shared interned array across rows. */
+  private readonly rangeLists = new Map<
+    string,
+    { readonly ranges: readonly MaterialAllocation[]; holders: number }
+  >();
   /** Advances whenever any slot's row allocation (instance start/count) changes. */
   private allocationRevisionValue = 0;
   /** Current stable instance identities retained beside compact GPU rows. */
@@ -384,15 +454,15 @@ export class GpuScene {
     transform: [],
     material: [],
   };
-  /** Transform rows whose previous value advances only after submit. */
-  private readonly pendingTemporalTransforms = new Set<number>();
-  /** Previous rows whose post-submit upload must be retried before the next draw. */
-  private readonly pendingTemporalUploads = new Set<number>();
   /**
-   * Primitive rows carrying temporal flags. Flags are one-submit pulses: the
-   * next committed temporal frame advances previous = current, so they clear.
+   * Stamp of the frame being prepared; row 0 carries it to the GPU. It
+   * advances only when a frame is submitted, so writes of skipped or failed
+   * frames fold into the next attempt of the same frame.
    */
-  private readonly temporalFlagSlots = new Set<number>();
+  private frameStamp = 1;
+  /** Transform rows holding previous poses for rows stamped with `frameStamp`. */
+  private readonly previousRows: number[] = [];
+  private transformCapacity: number;
 
   private constructor(
     private readonly device: RhiDevice,
@@ -404,6 +474,7 @@ export class GpuScene {
     this.inputs = new GpuSceneInputs(device, (slot) => this.primitiveIndexForSlot(slot), arena);
     this.buffers = buffers;
     this.materialCapacity = INITIAL_MATERIAL_CAPACITY;
+    this.transformCapacity = capacity;
     this.tableBytes = this.allocateCpuTables(capacity, this.materialCapacity);
     this.transformBytes = new Uint8Array(this.tableBytes.transform);
     this.transformView = new DataView(this.tableBytes.transform);
@@ -456,7 +527,7 @@ export class GpuScene {
   changedBoundsSince(
     revision: number,
     ignoredSlots?: ReadonlySet<number>,
-    observedSlots?: ReadonlyMap<number, unknown>,
+    observedSlots?: { has(slot: number): boolean },
   ): GpuSceneChangedBounds {
     return this.changeLog.changedSince(
       revision,
@@ -482,16 +553,16 @@ export class GpuScene {
    * reconstructing material identity from a batch position.
    */
   materialIndexForSlot(slot: number, materialSlot: number): number | undefined {
-    const allocation = this.allocations.get(slot);
+    const ranges = this.allocations.materialRanges(slot);
     if (
-      allocation === undefined ||
+      ranges === undefined ||
       !Number.isInteger(materialSlot) ||
       materialSlot < 0 ||
-      materialSlot >= allocation.materialRanges.length
+      materialSlot >= ranges.length
     ) {
       return undefined;
     }
-    const version = allocation.materialRanges[materialSlot]?.version;
+    const version = ranges[materialSlot]?.version;
     return version?.initialized === true ? version.descriptor : undefined;
   }
 
@@ -694,21 +765,21 @@ export class GpuScene {
 
   /** Scene slots and metadata rows have independent lifetime and allocation. */
   primitiveIndexForSlot(slot: number): number | undefined {
-    return this.allocations.get(slot)?.recordIndex;
+    return this.allocations.recordIndex(slot);
   }
 
   /** Resolve the scene instance row that GPU-driven visible items carry in `x`. */
   instanceIndexForSlot(slot: number, instanceOrdinal: number): number | undefined {
-    const allocation = this.allocations.get(slot);
+    const start = this.allocations.instanceStart(slot);
     if (
-      allocation === undefined ||
+      start === undefined ||
       !Number.isInteger(instanceOrdinal) ||
       instanceOrdinal < 0 ||
-      instanceOrdinal >= allocation.instanceCount
+      instanceOrdinal >= this.allocations.instanceCount(slot)
     ) {
       return undefined;
     }
-    return allocation.instanceStart + instanceOrdinal;
+    return start + instanceOrdinal;
   }
 
   /** Identity of the slot -> row allocation map; row-keyed caches compare it. */
@@ -717,12 +788,21 @@ export class GpuScene {
   }
 
   /** Row capacity of the instance, transform and draw tables. */
+  /** Whether any row reads morph inputs from the shared scene input arena. */
+  get hasMorphRows(): boolean {
+    return this.morphRows.size > 0;
+  }
+
   get rowCapacity(): number {
     return this.capacity;
   }
 
   get materialByteLength(): number {
     return this.tableBytes.material.byteLength;
+  }
+
+  get transformByteLength(): number {
+    return this.tableBytes.transform.byteLength;
   }
 
   sync(
@@ -735,14 +815,6 @@ export class GpuScene {
     try {
       this.adoptMaterialFrame(delta);
       this.adoptMeshFrame(delta);
-      if (delta.resynced > 0) {
-        this.pendingTemporalTransforms.clear();
-        this.pendingTemporalUploads.clear();
-        this.temporalFlagSlots.clear();
-      }
-      for (const transformIndex of this.pendingTemporalUploads) {
-        this.writesByTable.transform.push(transformIndex);
-      }
       if (this.isUnchangedDelta(delta)) {
         this.noChangeFrames += 1;
         return ok({ ranges: 0, bytes: 0, grew: false, cleared: 0 });
@@ -755,13 +827,19 @@ export class GpuScene {
       const requiredCapacity = Math.max(
         this.records.requiredCapacity(),
         this.instances.requiredCapacity(),
-        this.transforms.requiredCapacity(),
       );
+      const requiredTransformCapacity = this.transforms.requiredCapacity();
       const requiredMaterialCapacity = this.materials.requiredCapacity();
       const grew =
-        requiredCapacity > this.capacity || requiredMaterialCapacity > this.materialCapacity;
+        requiredCapacity > this.capacity ||
+        requiredTransformCapacity > this.transformCapacity ||
+        requiredMaterialCapacity > this.materialCapacity;
       if (grew) {
-        const grown = this.grow(requiredCapacity, requiredMaterialCapacity);
+        const grown = this.grow(
+          requiredCapacity,
+          requiredTransformCapacity,
+          requiredMaterialCapacity,
+        );
         if (!grown.ok) return grown;
       }
       for (const range of this.pendingMeshes) this.writeMeshDescriptor(range);
@@ -841,7 +919,9 @@ export class GpuScene {
   private adoptMeshFrame(delta: RenderSceneApplyResult): void {
     if (delta.meshes === undefined || delta.meshes === this.meshes) return;
     delta.meshes.changesSince(this.meshes, (_before, geometry) => {
-      if (geometry !== undefined) this.adoptMeshGeometry(geometry);
+      if (geometry === undefined) return;
+      this.adoptMeshGeometry(geometry);
+      if (this.morphRows.size > 0) this.adoptMorphDeltas(geometry);
     });
     this.meshes = delta.meshes;
   }
@@ -906,9 +986,9 @@ export class GpuScene {
       delta.recreatedSlots,
     ]) {
       for (const record of records) {
-        const previous = this.allocations.get(record.slot);
+        const previous = this.allocations.stamp(record.slot);
         this.ensureAllocation(record, writesByTable);
-        if (previous !== this.allocations.get(record.slot)) allocationResets.add(record.slot);
+        if (previous !== this.allocations.stamp(record.slot)) allocationResets.add(record.slot);
       }
     }
     for (const resource of delta.materialUpdates ?? []) {
@@ -1018,7 +1098,6 @@ export class GpuScene {
     boundsOf: GpuSceneSlotBounds | undefined,
     rowBoxesOf: GpuSceneSlotRowBoxes | undefined,
   ): void {
-    this.pendingTemporalUploads.clear();
     for (const version of this.pendingMaterials) version.initialized = true;
     this.pendingMaterials.clear();
     this.pendingMaterialRoots.clear();
@@ -1031,48 +1110,115 @@ export class GpuScene {
     this.changeLog.record(this.sceneContentRevision, delta, boundsOf, rowBoxesOf);
   }
 
-  /** Publish current transforms as previous only after a successful submit. */
-  commitTemporalFrame(enabled = true): Result<void, RhiError> {
+  /**
+   * Receipt of a submitted frame: the next frame gets a fresh stamp, so every
+   * row stamped by this one reads previous = current again without a write,
+   * and its previous-pose rows return to the allocator. Queue order keeps the
+   * stamp write behind the submitted work that still reads them.
+   */
+  commitFrame(): Result<void, RhiError> {
     if (this.failure !== undefined) return err(this.failure);
-    this.clearTemporalFlags();
-    if (!enabled) {
-      this.pendingTemporalTransforms.clear();
-      this.pendingTemporalUploads.clear();
-      return ok(undefined);
-    }
-    if (this.pendingTemporalTransforms.size === 0) return ok(undefined);
-    const currentOffset = offset(TRANSFORM, 'currentWorld');
-    const previousOffset = offset(TRANSFORM, 'previousWorld');
-    const ranges = this.dirtyRanges.coalesce([...this.pendingTemporalTransforms]);
-    for (const range of ranges) {
-      for (let index = range.start; index < range.end; index += 1) {
-        this.pendingTemporalUploads.add(index);
-        this.transformBytes.copyWithin(
-          index * TRANSFORM.stride + previousOffset,
-          index * TRANSFORM.stride + currentOffset,
-          index * TRANSFORM.stride + currentOffset + 64,
-        );
-      }
-    }
-    for (const range of ranges) {
-      const firstOffset = range.start * TRANSFORM.stride;
-      const lastOffset = range.end * TRANSFORM.stride;
-      const uploaded = this.device.queue.writeBuffer(
-        this.buffers.transform,
-        firstOffset,
-        this.transformBytes.subarray(firstOffset, lastOffset),
-      );
-      if (!uploaded.ok) return uploaded;
-    }
-    this.pendingTemporalTransforms.clear();
-    this.pendingTemporalUploads.clear();
-    const bytes = ranges.reduce(
-      (total, range) => total + (range.end - range.start) * TRANSFORM.stride,
-      0,
+    this.frameStamp = this.frameStamp === 0xffffffff ? 1 : this.frameStamp + 1;
+    for (const row of this.previousRows) this.transforms.release(row, 1);
+    this.previousRows.length = 0;
+    this.transformView.setUint32(TRANSFORM_STAMP, this.frameStamp, true);
+    const written = this.device.queue.writeBuffer(
+      this.buffers.transform,
+      TRANSFORM_STAMP,
+      this.transformBytes.subarray(TRANSFORM_STAMP, TRANSFORM_STAMP + 4),
     );
-    this.uploadRanges += ranges.length;
-    this.uploadBytes += bytes;
+    if (!written.ok) {
+      this.writesByTable.transform.push(0);
+      return written;
+    }
+    this.uploadRanges += 1;
+    this.uploadBytes += 4;
     return ok(undefined);
+  }
+
+  /** Previous pose = current pose for the frame being prepared. */
+  private seedPrevious(index: number, writes: Record<GpuSceneTableName, number[]>): void {
+    const at = index * TRANSFORM.stride;
+    this.transformView.setUint32(at + TRANSFORM_PREVIOUS, index, true);
+    this.transformView.setUint32(at + TRANSFORM_STAMP, this.frameStamp, true);
+    writes.transform.push(index);
+  }
+
+  /** Stamp a row for this frame without moving it; an earlier change this frame stays. */
+  private stampTransform(index: number, writes: Record<GpuSceneTableName, number[]>): void {
+    const at = index * TRANSFORM.stride;
+    if (this.transformView.getUint32(at + TRANSFORM_STAMP, true) !== this.frameStamp)
+      this.seedPrevious(index, writes);
+  }
+
+  /** Whether `index` already names a previous-pose row in the frame being prepared. */
+  private hasPreviousRow(index: number): boolean {
+    const at = index * TRANSFORM.stride;
+    return (
+      this.transformView.getUint32(at + TRANSFORM_STAMP, true) === this.frameStamp &&
+      this.transformView.getUint32(at + TRANSFORM_PREVIOUS, true) !== index
+    );
+  }
+
+  /** The row holding `index`'s previous pose this frame, allocated on its first change. */
+  private previousRow(index: number, writes: Record<GpuSceneTableName, number[]>): number {
+    const at = index * TRANSFORM.stride;
+    if (this.hasPreviousRow(index))
+      return this.transformView.getUint32(at + TRANSFORM_PREVIOUS, true);
+    const row = this.transforms.allocate(1);
+    this.previousRows.push(row);
+    if (row >= this.transformCapacity) {
+      const grown = this.grow(this.capacity, row + 1, this.materialCapacity);
+      if (!grown.ok) throw grown.error;
+    }
+    this.transformView.setUint32(at + TRANSFORM_PREVIOUS, row, true);
+    this.transformView.setUint32(at + TRANSFORM_STAMP, this.frameStamp, true);
+    writes.transform.push(index, row);
+    return row;
+  }
+
+  /**
+   * Write a current pose. Its first change in the frame being prepared copies
+   * the old pose, which is the pose of the last submitted frame, into a
+   * previous-pose row: previous poses cost O(changed rows), never a column.
+   */
+  private writeTransform(
+    index: number,
+    matrix: Float32Array,
+    sourceOffset: number,
+    writes: Record<GpuSceneTableName, number[]>,
+  ): void {
+    const at = index * TRANSFORM.stride + TRANSFORM_CURRENT;
+    let differs = false;
+    for (let lane = 0; lane < 16 && !differs; lane += 1)
+      differs = !Object.is(
+        this.transformView.getFloat32(at + lane * 4, true),
+        matrix[sourceOffset + lane] ?? 0,
+      );
+    if (!differs) return;
+    if (!this.hasPreviousRow(index)) {
+      const row = this.previousRow(index, writes);
+      this.transformBytes.copyWithin(row * TRANSFORM.stride + TRANSFORM_CURRENT, at, at + 64);
+    }
+    writeMat4(this.transformView, at, matrix, sourceOffset);
+    writes.transform.push(index);
+  }
+
+  /** Write a known previous pose (a mapped submitted instance row) for `index`. */
+  private writePrevious(
+    index: number,
+    previous: Float32Array,
+    previousOffset: number,
+    writes: Record<GpuSceneTableName, number[]>,
+  ): void {
+    const row = this.previousRow(index, writes);
+    writeMat4(
+      this.transformView,
+      row * TRANSFORM.stride + TRANSFORM_CURRENT,
+      previous,
+      previousOffset,
+    );
+    writes.transform.push(index, row);
   }
 
   private writeTemporalFlags(
@@ -1081,35 +1227,21 @@ export class GpuScene {
     writes: Record<GpuSceneTableName, number[]>,
   ): void {
     const primitive = new DataView(this.tableBytes.primitive);
-    const recordIndex = this.allocations.get(slot)?.recordIndex;
+    const recordIndex = this.allocations.recordIndex(slot);
     if (recordIndex === undefined) return;
     const at = recordIndex * PRIMITIVE.stride + offset(PRIMITIVE, 'flags');
     const current = primitive.getUint32(at, true);
     const next =
       (current & ~(GPU_SCENE_PRIMITIVE_REACTIVE | GPU_SCENE_PRIMITIVE_MOTION_INVALID)) |
       temporalFlags;
-    if (temporalFlags !== 0) this.temporalFlagSlots.add(slot);
+    // Pulses hold only while the root row carries this frame's stamp.
+    if (temporalFlags !== 0) {
+      const transformStart = this.allocations.get(slot)?.transformStart;
+      if (transformStart !== undefined) this.stampTransform(transformStart, writes);
+    }
     if (next === current) return;
     primitive.setUint32(at, next, true);
     writes.primitive.push(recordIndex);
-  }
-
-  /** CPU bytes change now; the upload rides the next `sync`. */
-  private clearTemporalFlags(): void {
-    if (this.temporalFlagSlots.size === 0) return;
-    const primitive = new DataView(this.tableBytes.primitive);
-    const flagsOffset = offset(PRIMITIVE, 'flags');
-    const temporalFlags = GPU_SCENE_PRIMITIVE_REACTIVE | GPU_SCENE_PRIMITIVE_MOTION_INVALID;
-    for (const slot of this.temporalFlagSlots) {
-      const recordIndex = this.allocations.get(slot)?.recordIndex;
-      if (recordIndex === undefined) continue;
-      const at = recordIndex * PRIMITIVE.stride + flagsOffset;
-      const current = primitive.getUint32(at, true);
-      if ((current & temporalFlags) === 0) continue;
-      primitive.setUint32(at, current & ~temporalFlags, true);
-      this.writesByTable.primitive.push(recordIndex);
-    }
-    this.temporalFlagSlots.clear();
   }
 
   inspect(): GpuSceneInspection {
@@ -1125,7 +1257,7 @@ export class GpuScene {
           bytes: this.tableBytes.instance.byteLength,
         },
         transform: {
-          capacity: this.capacity,
+          capacity: this.transformCapacity,
           bytes: this.tableBytes.transform.byteLength,
         },
         material: {
@@ -1160,9 +1292,11 @@ export class GpuScene {
     // read frames keep their Version/range and buffers through final retirement.
     for (const range of this.sharedMeshes.values())
       attempt(() => this.releaseMeshVersion(range.version));
+    for (const [slot, row] of [...this.morphRows]) attempt(() => this.releaseMorphRow(slot, row));
     for (const range of this.sharedMaterials.values())
       attempt(() => this.releaseMaterialVersion(range.version, this.writesByTable));
     this.allocations.clear();
+    this.rangeLists.clear();
     this.sharedMeshes.clear();
     this.sharedMaterials.clear();
     this.pendingMeshes.clear();
@@ -1190,7 +1324,6 @@ export class GpuScene {
     const bounds = record.snapshot.localAabb;
     primitive.setUint32(offset(PRIMITIVE, 'generation'), record.generation, true);
     const temporalFlags = primitiveTemporalFlags(resetPrevious, temporal);
-    if (temporalFlags !== 0) this.temporalFlagSlots.add(record.slot);
     primitive.setUint32(
       offset(PRIMITIVE, 'flags'),
       PRIMITIVE_ACTIVE |
@@ -1233,12 +1366,12 @@ export class GpuScene {
       writes.primitive.push(allocation.recordIndex);
 
     const instance = new DataView(this.tableBytes.instance);
-    const transform = this.transformView;
     const instances = record.snapshot.instances;
     const previousInstances = temporal?.previousInstances;
     const previousOrdinals = previousInstanceOrdinals(instances, temporal);
     const currentGenerations = instances?.generations;
     const residentGenerations = this.instanceGenerations.get(record.slot);
+    const morphRow = this.writeMorphRow(record);
     for (let ordinal = 0; ordinal < allocation.instanceCount; ordinal += 1) {
       const instanceIndex = allocation.instanceStart + ordinal;
       const instanceOffset = instanceIndex * INSTANCE.stride;
@@ -1256,7 +1389,7 @@ export class GpuScene {
           transformIndex,
         ) || metadataChanged;
       metadataChanged =
-        writeChangedU32(instance, instanceOffset + offset(INSTANCE, 'customDataStart'), 0) ||
+        writeChangedU32(instance, instanceOffset + offset(INSTANCE, 'customDataStart'), morphRow) ||
         metadataChanged;
       metadataChanged =
         writeChangedU32(instance, instanceOffset + offset(INSTANCE, 'flags'), PRIMITIVE_ACTIVE) ||
@@ -1266,67 +1399,20 @@ export class GpuScene {
         const hasLocal = transforms !== undefined && transforms.length >= (ordinal + 1) * 16;
         const local = hasLocal ? transforms : IDENTITY_MATRIX;
         const sourceOffset = hasLocal ? ordinal * 16 : 0;
-        const localOffset = transformIndex * TRANSFORM.stride;
-        const changed = writeChangedMat4(
-          transform,
-          localOffset + offset(TRANSFORM, 'currentWorld'),
-          local,
-          sourceOffset,
-        );
         const identityChanged = instanceIdentityChanged(
           residentGenerations,
           currentGenerations,
           ordinal,
         );
-        if (resetPrevious) {
-          const previousOrdinal = previousOrdinals?.(ordinal);
-          const previousSource =
-            previousOrdinal === undefined || previousInstances === undefined
-              ? undefined
-              : previousInstances.transforms;
-          if (previousSource === undefined || previousOrdinal === undefined) {
-            writeChangedMat4(
-              transform,
-              localOffset + offset(TRANSFORM, 'previousWorld'),
-              local,
-              sourceOffset,
-            );
-          } else {
-            writeChangedMat4(
-              transform,
-              localOffset + offset(TRANSFORM, 'previousWorld'),
-              previousSource,
-              previousOrdinal * 16,
-            );
-            this.pendingTemporalTransforms.add(transformIndex);
-          }
-        } else if (changed || identityChanged) {
-          const previousOrdinal = previousOrdinals?.(ordinal);
-          const previousSource =
-            previousOrdinal === undefined || previousInstances === undefined
-              ? undefined
-              : previousInstances.transforms;
-          if (previousSource === undefined || previousOrdinal === undefined) {
-            // A changed row without an identity proof must not borrow the
-            // compacted row's old velocity. Seed only this row and keep other
-            // stable instances eligible for motion.
-            writeChangedMat4(
-              transform,
-              localOffset + offset(TRANSFORM, 'previousWorld'),
-              local,
-              sourceOffset,
-            );
-          } else {
-            writeChangedMat4(
-              transform,
-              localOffset + offset(TRANSFORM, 'previousWorld'),
-              previousSource,
-              previousOrdinal * 16,
-            );
-          }
-          this.pendingTemporalTransforms.add(transformIndex);
-        }
-        if (changed || identityChanged || resetPrevious) writes.transform.push(transformIndex);
+        this.writeInstanceTransform(
+          transformIndex,
+          local,
+          sourceOffset,
+          resetPrevious || identityChanged,
+          previousOrdinals?.(ordinal),
+          previousInstances,
+          writes,
+        );
       }
       if (metadataChanged || resetPrevious) writes.instance.push(instanceIndex);
     }
@@ -1335,6 +1421,8 @@ export class GpuScene {
     this.rememberInstanceResident(record);
 
     this.writeRootTransform(record, resetPrevious, writes);
+    // Pulses hold only while the root row carries this frame's stamp.
+    if (temporalFlags !== 0) this.stampTransform(allocation.transformStart, writes);
 
     this.writeMaterialSlot(record, writes, materialRows, resetPrevious);
   }
@@ -1474,43 +1562,15 @@ export class GpuScene {
       const end = Math.min(range.end, allocation.instanceTransformCount);
       this.instanceRowsVisited += Math.max(0, end - range.start);
       for (let ordinal = range.start; ordinal < end; ordinal += 1) {
-        const transformIndex = allocation.instanceTransformStart + ordinal;
-        const transformOffset = transformIndex * TRANSFORM.stride;
-        const changed = writeChangedMat4(
-          this.transformView,
-          transformOffset + offset(TRANSFORM, 'currentWorld'),
+        this.writeInstanceTransform(
+          allocation.instanceTransformStart + ordinal,
           instances.transforms,
           ordinal * 16,
+          instanceIdentityChanged(residentGenerations, currentGenerations, ordinal),
+          previousOrdinals?.(ordinal),
+          previousInstances,
+          writes,
         );
-        const identityChanged = instanceIdentityChanged(
-          residentGenerations,
-          currentGenerations,
-          ordinal,
-        );
-        if (changed || identityChanged) {
-          const previousOrdinal = previousOrdinals?.(ordinal);
-          const previousSource =
-            previousOrdinal === undefined || previousInstances === undefined
-              ? undefined
-              : previousInstances.transforms;
-          if (previousSource === undefined || previousOrdinal === undefined) {
-            writeChangedMat4(
-              this.transformView,
-              transformOffset + offset(TRANSFORM, 'previousWorld'),
-              instances.transforms,
-              ordinal * 16,
-            );
-          } else {
-            writeChangedMat4(
-              this.transformView,
-              transformOffset + offset(TRANSFORM, 'previousWorld'),
-              previousSource,
-              previousOrdinal * 16,
-            );
-          }
-          this.pendingTemporalTransforms.add(transformIndex);
-          writes.transform.push(transformIndex);
-        }
       }
     }
     this.rememberInstanceGenerations(
@@ -1547,6 +1607,28 @@ export class GpuScene {
     this.instanceGenerations.set(slot, generations);
   }
 
+  /**
+   * One instance-local row. A row whose stable identity maps to a submitted
+   * row borrows that row's pose as previous; a new, reset or unmapped row
+   * seeds previous = current instead of inheriting another row's velocity.
+   */
+  private writeInstanceTransform(
+    index: number,
+    local: Float32Array,
+    sourceOffset: number,
+    reset: boolean,
+    previousOrdinal: number | undefined,
+    previousInstances: GpuSceneTemporalSnapshot['previousInstances'],
+    writes: Record<GpuSceneTableName, number[]>,
+  ): void {
+    const at = index * TRANSFORM.stride + TRANSFORM_CURRENT;
+    if (reset) writeMat4(this.transformView, at, local, sourceOffset);
+    else if (!writeChangedMat4(this.transformView, at, local, sourceOffset)) return;
+    if (previousOrdinal !== undefined && previousInstances !== undefined)
+      this.writePrevious(index, previousInstances.transforms, previousOrdinal * 16, writes);
+    else this.seedPrevious(index, writes);
+  }
+
   private writeRootTransform(
     record: RenderSceneSlot,
     resetPrevious: boolean,
@@ -1554,26 +1636,125 @@ export class GpuScene {
   ): void {
     const allocation = this.allocations.get(record.slot);
     if (allocation === undefined) throw new RangeError('GPU Scene allocation unavailable');
-    const transformOffset = allocation.transformStart * TRANSFORM.stride;
-    const previousOffset = transformOffset + offset(TRANSFORM, 'previousWorld');
+    const index = allocation.transformStart;
+    const world = record.snapshot.transform.world;
     if (resetPrevious) {
-      writeMat4(this.transformView, previousOffset, record.snapshot.transform.world);
+      writeMat4(this.transformView, index * TRANSFORM.stride + TRANSFORM_CURRENT, world);
+      this.seedPrevious(index, writes);
+    } else this.writeTransform(index, world, 0, writes);
+  }
+
+  /**
+   * Publish one row's morph weights beside its Mesh's shared target deltas and
+   * return the descriptor its instance rows name; 0 is no morph. The arena
+   * uploads only changed words, so a weight edit is one row-sized write.
+   */
+  private writeMorphRow(record: RenderSceneSlot): number {
+    const morph = record.snapshot.morph;
+    const deltas =
+      morph === undefined
+        ? undefined
+        : this.meshes.get(record.worldId, record.snapshot.assetHandle)?.morph;
+    let row = this.morphRows.get(record.slot);
+    if (row !== undefined && (deltas === undefined || row.deltas !== deltas)) {
+      this.releaseMorphRow(record.slot, row);
+      row = undefined;
     }
-    const changed = writeChangedMat4(
-      this.transformView,
-      transformOffset + offset(TRANSFORM, 'currentWorld'),
-      record.snapshot.transform.world,
-    );
-    if (changed && !resetPrevious) this.pendingTemporalTransforms.add(allocation.transformStart);
-    if (changed || resetPrevious) writes.transform.push(allocation.transformStart);
+    if (morph === undefined || deltas === undefined || morph.targetCount !== deltas.targetCount)
+      return 0;
+    const words = MORPH_ROW_HEADER_WORDS + deltas.targetCount;
+    if (row === undefined) {
+      row = {
+        descriptor: this.inputs.arena.allocateDescriptor(words),
+        words,
+        worldId: record.worldId,
+        handle: record.snapshot.assetHandle as number,
+        deltas,
+      };
+      this.acquireMorphDeltas(deltas);
+      this.morphRows.set(record.slot, row);
+    }
+    if (this.morphScratch.byteLength < words * 4)
+      this.morphScratch = new DataView(new ArrayBuffer(words * 8));
+    const scratch = this.morphScratch;
+    this.writeMorphHeader(scratch, deltas);
+    for (let target = 0; target < deltas.targetCount; target++)
+      scratch.setFloat32((MORPH_ROW_HEADER_WORDS + target) * 4, morph.weights[target] ?? 0, true);
+    this.inputs.arena.writeDescriptor(row.descriptor, scratch, words);
+    return row.descriptor;
+  }
+
+  private writeMorphHeader(scratch: DataView, deltas: MeshMorphDeltas): void {
+    scratch.setUint32(0, deltas.vertexCount, true);
+    scratch.setUint32(4, deltas.targetCount, true);
+    scratch.setUint32(8, (this.morphDeltas.get(deltas) as MorphDeltaAllocation).descriptor, true);
+  }
+
+  private acquireMorphDeltas(deltas: MeshMorphDeltas): void {
+    let shared = this.morphDeltas.get(deltas);
+    if (shared === undefined) {
+      const descriptor = this.inputs.arena.allocateDescriptor(deltas.deltas.length);
+      this.inputs.arena.writeDescriptor(
+        descriptor,
+        new DataView(deltas.deltas.buffer, deltas.deltas.byteOffset, deltas.deltas.byteLength),
+        deltas.deltas.length,
+      );
+      shared = { descriptor, holders: 0 };
+      this.morphDeltas.set(deltas, shared);
+    }
+    shared.holders++;
+  }
+
+  private releaseMorphDeltas(deltas: MeshMorphDeltas): void {
+    const shared = this.morphDeltas.get(deltas);
+    if (shared === undefined || --shared.holders > 0) return;
+    this.morphDeltas.delete(deltas);
+    this.inputs.arena.releaseDescriptor(shared.descriptor, deltas.deltas.length);
+  }
+
+  private releaseMorphRow(slot: number, row: MorphRowAllocation): void {
+    this.morphRows.delete(slot);
+    this.inputs.arena.releaseDescriptor(row.descriptor, row.words);
+    this.releaseMorphDeltas(row.deltas);
+  }
+
+  /**
+   * A replaced Mesh rebinds its morphed rows to the new deltas in place; rows
+   * keep their addresses and weights. A changed target count disables the row
+   * (vertexCount 0 keeps the shared positions) until its next extraction.
+   */
+  private adoptMorphDeltas(geometry: MeshGeometry): void {
+    for (const row of this.morphRows.values()) {
+      if (row.worldId !== geometry.worldId || row.handle !== geometry.handle) continue;
+      const next = geometry.morph;
+      if (next === row.deltas) continue;
+      if (next === undefined || next.targetCount !== row.deltas.targetCount) {
+        this.inputs.arena.writeDescriptorWord(row.descriptor, row.words, 0, 0);
+        continue;
+      }
+      this.acquireMorphDeltas(next);
+      this.releaseMorphDeltas(row.deltas);
+      row.deltas = next;
+      this.writeMorphHeader(this.morphScratch, next);
+      for (let word = 0; word < MORPH_ROW_HEADER_WORDS; word++)
+        this.inputs.arena.writeDescriptorWord(
+          row.descriptor,
+          row.words,
+          word,
+          this.morphScratch.getUint32(word * 4, true),
+        );
+    }
   }
 
   private clearSlot(slot: number, writes: Record<GpuSceneTableName, number[]>): void {
+    const morphRow = this.morphRows.get(slot);
+    if (morphRow !== undefined) this.releaseMorphRow(slot, morphRow);
     const allocation = this.allocations.get(slot);
     if (allocation === undefined) return;
     this.instanceGenerations.delete(slot);
     this.instanceResidents.delete(slot);
     this.clearAllocation(allocation, writes);
+    this.releaseRanges(allocation.materialRanges);
     this.allocations.delete(slot);
     this.allocationRevisionValue += 1;
   }
@@ -1661,8 +1842,11 @@ export class GpuScene {
         ? this.acquireMaterial(resource, count, writes)
         : undefined;
     });
-    if (existing !== undefined) this.clearAllocationRanges(existing, writes);
-    const materialRanges = materialUnits.map(
+    if (existing !== undefined) {
+      this.clearAllocationRanges(existing, writes);
+      this.releaseRanges(existing.materialRanges);
+    }
+    const ranges = materialUnits.map(
       (count, index) =>
         retainedMaterials[index] ??
         this.acquireMaterial(
@@ -1671,6 +1855,7 @@ export class GpuScene {
           writes,
         ),
     );
+    const materialRanges = this.internRanges(ranges);
     const allocation = {
       mesh,
       // Member nodes name this live slot's physical record. Resizing its
@@ -1686,6 +1871,25 @@ export class GpuScene {
     };
     this.allocations.set(record.slot, allocation);
     this.allocationRevisionValue += 1;
+  }
+
+  private internRanges(ranges: readonly MaterialAllocation[]): readonly MaterialAllocation[] {
+    let key = '';
+    for (const range of ranges) key += `${getOpaqueResourceIdentity(range)},`;
+    let shared = this.rangeLists.get(key);
+    if (shared === undefined) {
+      shared = { ranges: Object.freeze([...ranges]), holders: 0 };
+      this.rangeLists.set(key, shared);
+    }
+    shared.holders++;
+    return shared.ranges;
+  }
+
+  private releaseRanges(ranges: readonly MaterialAllocation[]): void {
+    let key = '';
+    for (const range of ranges) key += `${getOpaqueResourceIdentity(range)},`;
+    const shared = this.rangeLists.get(key);
+    if (shared?.ranges === ranges && --shared.holders === 0) this.rangeLists.delete(key);
   }
 
   private acquireMesh(geometry: MeshGeometry): MeshAllocation {
@@ -1937,18 +2141,46 @@ export class GpuScene {
     void this.device.queue.onSubmittedWorkDone().then(release, release);
   }
 
-  private grow(requiredCapacity: number, requiredMaterialCapacity: number): Result<void, RhiError> {
-    let nextCapacity = this.capacity;
-    while (nextCapacity < requiredCapacity) nextCapacity *= 2;
-    let nextMaterialCapacity = this.materialCapacity;
-    while (nextMaterialCapacity < requiredMaterialCapacity) nextMaterialCapacity *= 2;
+  private grow(
+    requiredCapacity: number,
+    requiredTransformCapacity: number,
+    requiredMaterialCapacity: number,
+  ): Result<void, RhiError> {
+    const limit = gpuSceneTableByteLimit(this.device);
+    const rows = growGpuSceneTableCapacity(
+      this.capacity,
+      requiredCapacity,
+      GPU_SCENE_ROW_TABLE_STRIDE,
+      limit,
+    );
+    if (!rows.ok) return rows;
+    const transforms = growGpuSceneTableCapacity(
+      this.transformCapacity,
+      requiredTransformCapacity,
+      TRANSFORM.stride,
+      limit,
+    );
+    if (!transforms.ok) return transforms;
+    const materials = growGpuSceneTableCapacity(
+      this.materialCapacity,
+      requiredMaterialCapacity,
+      MATERIAL.stride,
+      limit,
+    );
+    if (!materials.ok) return materials;
+    const next: Record<GpuSceneTableName, number> = {
+      primitive: rows.value,
+      instance: rows.value,
+      transform: transforms.value,
+      material: materials.value,
+    };
     const nextBuffers = { ...this.buffers };
     const nextTables = { ...this.tableBytes };
     const replacements: GpuSceneTableName[] = [];
     let uploadedBytes = 0;
     for (const name of TABLE_NAMES) {
-      const oldCapacity = name === 'material' ? this.materialCapacity : this.capacity;
-      const newCapacity = name === 'material' ? nextMaterialCapacity : nextCapacity;
+      const oldCapacity = this.tableBytes[name].byteLength / TABLE_LAYOUTS[name].stride;
+      const newCapacity = next[name];
       if (oldCapacity === newCapacity) continue;
       const result = this.device.createBuffer({
         label: `gpu-scene-${name}-table`,
@@ -1976,8 +2208,9 @@ export class GpuScene {
     this.buffers = nextBuffers;
     this.tableBytes = nextTables;
     this.refreshTransformViews();
-    this.capacity = nextCapacity;
-    this.materialCapacity = nextMaterialCapacity;
+    this.capacity = next.primitive;
+    this.transformCapacity = next.transform;
+    this.materialCapacity = next.material;
     this.capacityGrows += 1;
     this.uploadRanges += replacements.length;
     this.uploadBytes += uploadedBytes;
@@ -2002,7 +2235,8 @@ export class GpuScene {
   }
 
   private writeIdentityTransform(): void {
-    writeMat4(this.transformView, offset(TRANSFORM, 'currentWorld'), IDENTITY_MATRIX);
-    writeMat4(this.transformView, offset(TRANSFORM, 'previousWorld'), IDENTITY_MATRIX);
+    writeMat4(this.transformView, TRANSFORM_CURRENT, IDENTITY_MATRIX);
+    // Row 0 also carries the frame stamp every stamped row is compared with.
+    this.transformView.setUint32(TRANSFORM_STAMP, this.frameStamp, true);
   }
 }

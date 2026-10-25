@@ -20,6 +20,7 @@ import {
 } from './renderer-diffuse-reconstruction';
 import { rayReferenceFailure } from './scene';
 import { projectRayScene } from './scene-projection';
+import type { VisibleSurfaceProjection } from './visible-surface';
 
 type TexturePreparation = Extract<
   ReturnType<typeof prepareSurfaceMaterialTextures>,
@@ -33,6 +34,8 @@ interface RayDiffuseFrameInput {
   readonly lights: readonly LightSnapshot[];
   readonly sampler: Sampler;
   readonly profile: StandardExactDiffuseGi;
+  /** The frame's visible-surface addresses; raster rays resolve rows through them. */
+  readonly visibleSurface: VisibleSurfaceProjection;
   readonly width: number;
   readonly height: number;
 }
@@ -214,12 +217,9 @@ export class RendererRayDiffuse {
     const retained = input.scene.retained;
     if (retained === undefined)
       throw new Error('reference diffuse GI requires the complete retained scene');
-    const projected = projectRayScene(
-      retained.slots,
-      input.worlds,
-      Math.min(1_048_576, Math.floor(device.limits.maxStorageBufferBindingSize / 64)),
-      retained,
-    );
+    // The surface layout is the frame's own: rows written by the raster pass
+    // resolve through exactly these addresses. Copied before the first await.
+    const projected = projectRayScene(retained.slots, input.worlds, input.visibleSurface, retained);
     if (projected.surfaces.records.byteLength === 0)
       throw new Error('no admitted receiver records');
     const entries = [...shaders.entries()];

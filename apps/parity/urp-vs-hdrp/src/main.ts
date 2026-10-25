@@ -1,4 +1,6 @@
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { captureDisplayFrame } from '../../../../scripts/bench/capture-display-frame.mjs';
 // Standard direct vs clustered pixel-parity fixture
 // (feat-20260608-cluster-lighting / M7 / w26).
 //
@@ -109,13 +111,13 @@ async function bootstrap(): Promise<void> {
 
   // Initial draw so canvases have content before the first capture call.
   directWorld.update().unwrap();
-  directRenderer.draw({
+  await drawReadyFrame(directRenderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
   clusteredWorld.update().unwrap();
-  clusteredRenderer.draw({
+  await drawReadyFrame(clusteredRenderer, {
     leases: [worldAttachment2.value],
     camera: { lease: worldAttachment2.value },
     environment: { lease: worldAttachment2.value },
@@ -124,11 +126,9 @@ async function bootstrap(): Promise<void> {
   declareCaptureHooks(
     directRenderer,
     directWorld,
-    directCanvas,
     worldAttachment1.value,
     clusteredRenderer,
     clusteredWorld,
-    clusteredCanvas,
     worldAttachment2.value,
   );
 }
@@ -203,42 +203,23 @@ declare global {
 function declareCaptureHooks(
   direct: Renderer,
   directWorld: World,
-  directCanvas: HTMLCanvasElement,
   directLease: RenderWorldLease,
   clustered: Renderer,
   clusteredWorld: World,
-  clusteredCanvas: HTMLCanvasElement,
   clusteredLease: RenderWorldLease,
 ): void {
   const captureFor = (
     renderer: Renderer,
     world: World,
-    canvas: HTMLCanvasElement,
     lease: RenderWorldLease,
   ): (() => Promise<Uint8Array>) => async () => {
     world.update().unwrap();
-    const drawn = renderer.draw({
+    return captureDisplayFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
     });
-    if (!drawn.ok) throw drawn.error;
-    const bitmap = await createImageBitmap(canvas);
-    const captureCanvas = new OffscreenCanvas(CANVAS_W, CANVAS_H);
-    const captureContext = captureCanvas.getContext('2d');
-    if (captureContext === null) throw new Error('parity-standard-lanes: capture context missing');
-    captureContext.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const flat = new Uint8Array(captureContext.getImageData(0, 0, CANVAS_W, CANVAS_H).data);
-    const out = new Uint8Array(CANVAS_W * CANVAS_H * 4);
-    const rowBytes = CANVAS_W * 4;
-    for (let y = 0; y < CANVAS_H; y++) {
-      const srcOffset = y * rowBytes;
-      const dstOffset = (CANVAS_H - 1 - y) * rowBytes;
-      out.set(flat.subarray(srcOffset, srcOffset + rowBytes), dstOffset);
-    }
-    return out;
   };
-  window.__captureLeft = captureFor(direct, directWorld, directCanvas, directLease);
-  window.__captureRight = captureFor(clustered, clusteredWorld, clusteredCanvas, clusteredLease);
+  window.__captureLeft = captureFor(direct, directWorld, directLease);
+  window.__captureRight = captureFor(clustered, clusteredWorld, clusteredLease);
 }

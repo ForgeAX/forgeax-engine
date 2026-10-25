@@ -1,12 +1,12 @@
 // shadow-csm-extract.test.ts — feat-20260621-merge-directionallightshadow-into-directionallight M2
-// TDD red test: castShadow gate + ExtractedLights bias/PCF fields.
+// TDD red test: castShadow gate + LightRoster bias/PCF fields.
 //
 // After M1 (component merge), DirectionalLight carries the 9 shadow fields
 // and castShadow:bool (default true).
 // This test asserts the extract stage:
 //   (a) castShadow:true  → CSM path runs (lightViewProj + cascades populated)
 //   (b) castShadow:false → CSM path skipped (no cascade output)
-//   (c) ExtractedLights carries depthBias/normalBias and accepted filter quality
+//   (c) LightRoster carries depthBias/normalBias and accepted filter quality
 //   (d) bias/filter fields are undefined when castShadow:false
 // RED before m2-t2/m2-t3: extract still queries the deleted
 // castShadow: true; lightViewProj won't populate.
@@ -16,12 +16,22 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import { Camera, DirectionalLight } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import type { LightRoster } from '../../../render/src/render-system-extract';
 import {
   type CsmCameraData,
   computeDirectionalCsm,
   prepareExtractContext,
 } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
+import { fitDirectionalCascades } from '../../../render/src/world/render-lights';
+
+/** The cascades a display view of `frame` fits (the renderer fits per view). */
+function cascadesOf(frame: {
+  readonly lights: LightRoster;
+  readonly cameras: readonly CsmCameraData[];
+}) {
+  return fitDirectionalCascades(frame.lights, { camera: frame.cameras[0] });
+}
 
 function makeWorld(castShadow?: boolean): World {
   const world = new World();
@@ -47,12 +57,12 @@ function makeWorld(castShadow?: boolean): World {
   return world;
 }
 
-describe('ExtractedLights interface (M2 castShadow gate)', () => {
+describe('LightRoster interface (M2 castShadow gate)', () => {
   describe('castShadow=true (default): CSM path runs', () => {
     it('lightViewProj is an array of 4 Float32Array mat4s', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
-      const { lightViewProj } = frame.lights;
+      const lightViewProj = cascadesOf(frame)?.lightViewProj;
       expect(lightViewProj).toBeDefined();
       if (lightViewProj === undefined) return;
       expect(Array.isArray(lightViewProj)).toBe(true);
@@ -67,7 +77,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     it('splitPlanes is a Float32Array of four vec4 metric lanes', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
-      const { splitPlanes } = frame.lights;
+      const splitPlanes = cascadesOf(frame)?.splitPlanes;
       expect(splitPlanes).toBeDefined();
       if (splitPlanes === undefined) return;
       expect(splitPlanes).toBeInstanceOf(Float32Array);
@@ -82,8 +92,8 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     it('cascadeCount and cascadeBlend scalars match component defaults', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
-      expect(frame.lights.cascadeCount).toBe(3);
-      expect(frame.lights.cascadeBlend).toBeCloseTo(0.2, 5);
+      expect(cascadesOf(frame)?.cascadeCount).toBe(3);
+      expect(cascadesOf(frame)?.cascadeBlend).toBeCloseTo(0.2, 5);
     });
   });
 
@@ -91,19 +101,19 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     it('lightViewProj is undefined when castShadow=false', () => {
       const world = makeWorld(false);
       const frame = extractFrame(world, prepareExtractContext(world));
-      expect(frame.lights.lightViewProj).toBeUndefined();
+      expect(cascadesOf(frame)?.lightViewProj).toBeUndefined();
     });
 
     it('splitPlanes, cascadeCount, cascadeBlend are undefined', () => {
       const world = makeWorld(false);
       const frame = extractFrame(world, prepareExtractContext(world));
-      expect(frame.lights.splitPlanes).toBeUndefined();
-      expect(frame.lights.cascadeCount).toBeUndefined();
-      expect(frame.lights.cascadeBlend).toBeUndefined();
+      expect(cascadesOf(frame)?.splitPlanes).toBeUndefined();
+      expect(cascadesOf(frame)?.cascadeCount).toBeUndefined();
+      expect(cascadesOf(frame)?.cascadeBlend).toBeUndefined();
     });
   });
 
-  describe('ExtractedLights carries bias and accepted Directional quality', () => {
+  describe('LightRoster carries bias and accepted Directional quality', () => {
     it('depthBias populated when castShadow=true', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
@@ -119,7 +129,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     it('accepted Directional quality is populated when castShadow=true', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
-      expect(frame.lights.directionalShadowQuality).toEqual({ kind: 'pcf', kernel: 5 });
+      expect(cascadesOf(frame)?.directionalShadowQuality).toEqual({ kind: 'pcf', kernel: 5 });
     });
 
     it('quality is undefined when castShadow=false', () => {
@@ -127,7 +137,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
       const frame = extractFrame(world, prepareExtractContext(world));
       expect(frame.lights.depthBias).toBeUndefined();
       expect(frame.lights.normalBias).toBeUndefined();
-      expect(frame.lights.directionalShadowQuality).toBeUndefined();
+      expect(cascadesOf(frame)?.directionalShadowQuality).toBeUndefined();
     });
 
     it('withholds an invalid PCSS candidate and exposes a structured error', () => {
@@ -154,9 +164,9 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
         field: 'shadowAngularRadius',
         actual: 999,
       });
-      expect(frame.lights.directionalShadowQuality).toBeUndefined();
+      expect(cascadesOf(frame)?.directionalShadowQuality).toBeUndefined();
       expect(frame.lights.directionalCsmConfig).toBeUndefined();
-      expect(frame.lights.lightViewProj).toBeUndefined();
+      expect(cascadesOf(frame)?.lightViewProj).toBeUndefined();
     });
   });
 
@@ -171,9 +181,9 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
       );
       if (light === undefined) throw new Error('expected a directional light');
       world.set(light, DirectionalLight, { staticShadowCache: false }).unwrap();
-      const disabled = extractFrame(world, prepareExtractContext(world)).lights;
-      expect(disabled.directionalCsmConfig?.staticShadowCache).toBe(false);
-      expect(disabled.lightViewProj).toBeDefined();
+      const disabled = extractFrame(world, prepareExtractContext(world));
+      expect(disabled.lights.directionalCsmConfig?.staticShadowCache).toBe(false);
+      expect(cascadesOf(disabled)?.lightViewProj).toBeDefined();
     });
   });
 
@@ -190,7 +200,9 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
       );
 
       const frame = extractFrame(world, prepareExtractContext(world));
-      const { lightViewProj, cascadeCount } = frame.lights;
+      const cascades = cascadesOf(frame);
+      const lightViewProj = cascades?.lightViewProj;
+      const cascadeCount = cascades?.cascadeCount;
       expect(cascadeCount).toBe(1);
       expect(lightViewProj).toBeDefined();
       if (lightViewProj === undefined) return;
@@ -217,7 +229,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
   });
 
   describe('lightSpaceMatrix deleted', () => {
-    it('ExtractedLights does not have lightSpaceMatrix property', () => {
+    it('LightRoster does not have lightSpaceMatrix property', () => {
       const world = makeWorld(true);
       const frame = extractFrame(world, prepareExtractContext(world));
       expect('lightSpaceMatrix' in frame.lights).toBe(false);
@@ -249,7 +261,7 @@ describe('ExtractedLights interface (M2 castShadow gate)', () => {
     it('projects PCSS quality from the same Directional query', () => {
       const world = setupWorldWithQuality(4);
       const frame = extractFrame(world, prepareExtractContext(world));
-      expect(frame.lights.directionalShadowQuality).toEqual({
+      expect(cascadesOf(frame)?.directionalShadowQuality).toEqual({
         kind: 'pcss',
         preset: 'medium',
         angularRadiusRadians: expect.closeTo(0.01, 0.000001),

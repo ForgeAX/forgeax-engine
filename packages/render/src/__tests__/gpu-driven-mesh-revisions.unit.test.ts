@@ -1118,11 +1118,10 @@ describe('selected GPU material graph dependencies', () => {
           },
         })),
       };
-      const before = f.projection.slotsSnapshot();
       const delta = f.projection.apply([
         { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot },
       ]);
-      skinInputs.apply(before, delta);
+      skinInputs.apply(delta);
       skinInputs.joint(0, 19, mat4.identity(mat4.create()));
       Object.assign(f.input.scene, { skin: skinInputs.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();

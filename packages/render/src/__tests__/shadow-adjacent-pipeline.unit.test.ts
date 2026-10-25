@@ -143,7 +143,12 @@ it('resolves one actual PSO request per invocation for 64 adjacent batches over 
   try {
     for (let frame = 0; frame < 60; frame++) f.run();
     expect(f.draws).toHaveLength(3840);
-    expect(f.create).toHaveBeenCalledTimes(1);
+    expect(f.create).toHaveBeenCalledTimes(2);
+    expect(
+      f.create.mock.calls.filter(
+        ([descriptor]) => descriptor.label === 'shadow-static-depth-clear',
+      ),
+    ).toHaveLength(1);
     expect(f.draws.every((draw) => draw.pipeline === f.lookup.mock.results[0]?.value)).toBe(true);
     expect(f.lookup).toHaveBeenCalledTimes(60);
   } finally {

@@ -620,7 +620,6 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
           if (frozenSource(url) === undefined) await warmup(url);
         };
         markDevProgramResources(environment.plugins);
-        await server.environments.client?.depsOptimizer?.init();
         await options.pack.ready();
         const inventory = await options.inventory();
         const tools =

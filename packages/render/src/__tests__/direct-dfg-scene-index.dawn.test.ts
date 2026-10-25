@@ -248,10 +248,13 @@ it.each([
               return poison;
             })
           : worlds;
+      const transformWords = new Uint32Array(transformBytes.buffer);
+      const previousWord = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousIndex') / 4;
       for (const [index, world] of [identity, ...rootWorlds].entries()) {
         const offset = (index * GPU_SCENE_LAYOUTS.transform.stride) / 4;
         transformBytes.set(world, offset);
-        transformBytes.set(world, offset + 16);
+        // Every stamp matches row 0, so each row is its own previous pose.
+        transformWords[offset + previousWord] = index;
       }
       device.queue.writeBuffer(bufferAt(2, 0), 0, transformBytes);
       const primitive = new Uint32Array((GPU_SCENE_LAYOUTS.primitive.stride * 2) / 4);

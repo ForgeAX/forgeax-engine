@@ -19,7 +19,6 @@ import type {
   PointsLinesRecordSubmission,
   RenderSystemInternals,
 } from '../record/render-context';
-import type { RecoveryPointsLinesCandidate } from '../recovery/types';
 import { admitPointsLines } from './admission';
 import { PointsLinesExpansionCache, pointsLinesSourceSlot } from './expansion-cache';
 import type { PointsLinesInspection, PointsLinesSourceError } from './inspection';
@@ -66,74 +65,6 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
 
   prepare(entry: ValidatedRenderable, clustered: boolean): PointsLinesRecordSubmission | undefined {
     return this.prepareWithMaps(entry, clustered, this.internals, this.preparations, this.active);
-  }
-
-  prepareRecoveryCandidate(
-    entries: readonly ValidatedRenderable[],
-    clustered: boolean,
-    runtime: RenderSystemInternals,
-  ): RecoveryPointsLinesCandidate | undefined {
-    const stagedPreparations = new Map<string, PointsLinesPreparationAdapter>();
-    const stagedInspections = new Map<string, PointsLinesInspection>();
-    let pointEntryCount = 0;
-    try {
-      for (const entry of entries) {
-        const snapshot = entry.source.pointsLines;
-        if (snapshot?.component === undefined) continue;
-        pointEntryCount += 1;
-        const prepared = this.prepareWithMaps(
-          entry,
-          clustered,
-          runtime,
-          stagedPreparations,
-          stagedInspections,
-        );
-        if (prepared === undefined) {
-          throw new Error(
-            `recovery Points/Lines preparation failed for ${snapshot.worldId}:${snapshot.entityKey}`,
-          );
-        }
-      }
-    } catch (cause) {
-      for (const preparation of stagedPreparations.values()) {
-        preparation.resetForDeviceLoss();
-      }
-      throw cause;
-    }
-    if (pointEntryCount === 0) return undefined;
-
-    let released = false;
-    let published = false;
-    const candidate: RecoveryPointsLinesCandidate = {
-      createRecoveryRoot: (scope) => ({
-        kind: 'buffer',
-        create: () => {
-          if (!scope.isAlive() || released) {
-            throw new Error('Points/Lines recovery candidate scope is not active.');
-          }
-          return candidate;
-        },
-        cleanup: () => candidate.release(),
-      }),
-      publish: () => {
-        if (released || published) return;
-        this.preparations.clear();
-        for (const [key, preparation] of stagedPreparations) {
-          this.preparations.set(key, preparation);
-        }
-        published = true;
-      },
-      release: () => {
-        if (released || published) return;
-        released = true;
-        for (const preparation of stagedPreparations.values()) {
-          preparation.resetForDeviceLoss();
-        }
-        stagedPreparations.clear();
-        stagedInspections.clear();
-      },
-    };
-    return candidate;
   }
 
   private prepareWithMaps(

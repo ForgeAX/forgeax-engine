@@ -35,9 +35,9 @@ import {
 import { ANTIALIAS_FXAA, ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 type HeldPass = 'color' | 'shadow' | 'transmission';
@@ -256,12 +256,12 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
       candidate === undefined
         ? undefined
         : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
+            transfer: renderPublicationTransfers(candidate.message),
           });
     candidate?.accept();
     const request =
       packet !== undefined
-        ? { publication: packet }
+        ? { publication: encodeRenderPublication(packet) }
         : lease === undefined
           ? undefined
           : { leases: [lease], camera: { lease }, environment: { lease } };
@@ -272,7 +272,7 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     expect((await receipt.completed).ok).toBe(true);
     await new Promise<void>((resolve) => setImmediate(resolve));
     if (packet !== undefined) {
-      const transfer = renderPublicationTransfers(packet);
+      const transfer = renderPublicationTransfers(encodeRenderPublication(packet));
       publisher?.recycle(packet.revision, structuredClone(transfer, { transfer })).unwrap();
     }
     return receipt;

@@ -345,35 +345,9 @@ describe('normalizePnpmStore', () => {
     await expect(readFile(join(store, 'index.db-shm'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('removes empty sideEffects metadata whose deps key is not reproducible', async () => {
-    const { root, path } = await writeIndex('empty.json', {
-      checkedAt: 123,
-      name: '@forgeax/engine-fbx',
-      sideEffects: { 'darwin;arm64;node26;deps=volatile': {} },
-    });
-
-    await normalizePnpmStore(root);
-
-    await expect(readFile(path, 'utf8')).resolves.toBe(
-      '{"checkedAt":0,"name":"@forgeax/engine-fbx"}\n',
-    );
-  });
-
-  it('keeps sideEffects metadata when it carries installed files', async () => {
-    const { root, path } = await writeIndex('non-empty.json', {
-      name: 'esbuild',
-      sideEffects: {
-        'darwin;arm64;node26;deps=stable': {
-          added: { 'bin/esbuild': { checkedAt: 123, mode: 493 } },
-        },
-      },
-    });
-
-    await normalizePnpmStore(root);
-
-    await expect(readFile(path, 'utf8')).resolves.toBe(
-      '{"name":"esbuild","sideEffects":{"darwin;arm64;node26;deps=stable":{"added":{"bin/esbuild":{"checkedAt":0,"mode":493}}}}}\n',
-    );
+  it('rejects a legacy JSON store instead of adapting it', async () => {
+    const { root } = await writeIndex('legacy.json', { name: 'legacy-store' });
+    await expect(normalizePnpmStore(root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 

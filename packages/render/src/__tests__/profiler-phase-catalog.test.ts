@@ -52,7 +52,6 @@ describe('Render profiler phase catalog ownership', () => {
         'record/scene-state/hdrp-cluster/binner/light-index-write',
         'record/scene-state/hdrp-cluster/binner/light-index-write/bounds-read',
         'record/scene-state/hdrp-cluster/binner/light-index-write/cluster-write',
-        'record/scene-state/hdrp-cluster/payload-packing',
         'record/scene-state/hdrp-cluster/buffer-upload',
       ]),
     );

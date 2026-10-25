@@ -1,4 +1,3 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { adaptDynamicTextureDevice, DynamicTextureStore } from '@forgeax/engine-assets-runtime';
 import type {
   BindGroupLayout,
@@ -14,23 +13,13 @@ import type { ParamSchemaEntry } from '@forgeax/engine-types';
 import { adoptBackendDevice, DeviceScope } from '../../device/device-scope';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { RecoverError, type RecoverFailure } from '../../errors/recover';
-import { createRenderFeatureHost, type RenderFeatureHost } from '../../features/host';
-import {
-  type PostProcessShaderEntry,
-  postProcessShaderEntrySignature,
-  postProcessShaderPipelineLabel,
-} from '../../fullscreen-post-process-pass';
 import type { FirstEntryMap } from '../../record/first-entry-map';
 import type {
   GpuPassTimingObservation,
   GpuPassTimingSession,
 } from '../../record/gpu-pass-timing/index.js';
 import type { PipelineState, RenderSystemInternals } from '../../record/render-context';
-import type {
-  RecoveryGraphCandidate,
-  RecoveryPostProcessResources,
-  RecoveryRootBundle,
-} from '../../recovery/types';
+import type { RecoveryPostProcessResources, RecoveryRootBundle } from '../../recovery/types';
 import type { RenderSystem } from '../../render-system';
 import {
   prepareMaterialShaders,
@@ -47,7 +36,6 @@ import { buildGenerationAggregate, type GenerationAggregate } from './generation
 import {
   acquireDeviceGeneration,
   probeCandidateDeviceExecution,
-  probeCandidateGraphExecution,
   runRecoveryStep,
 } from './recovery-attempt';
 
@@ -161,39 +149,12 @@ interface RendererRecoveryDependencies {
   readonly getCandidateMaterialShaderUvSetCounts: () => Map<string, number> | undefined;
   readonly setCandidateMaterialShaderUvSetCounts: (state: Map<string, number> | undefined) => void;
   readonly setCandidateEmptyPostProcessBgl: (layout: BindGroupLayout | null | undefined) => void;
-  readonly getShaderModuleAdapter: () => ShaderDeviceAdapterInternal;
-  readonly getImmediateShaderModuleAdapter: () => ShaderDeviceAdapterInternal;
   readonly getShader: () => ShaderCatalog;
-  readonly assets: AssetRegistry;
   readonly buildPipeline: (
     scope?: DeviceScope,
     device?: RhiDevice,
     residencyStore?: GpuResidencyCache,
   ) => Promise<PipelineState>;
-  readonly getMaterialShaderPipeline: NonNullable<
-    RenderSystemInternals['getMaterialShaderPipeline']
-  >;
-  readonly getMaterialShaderPipelineEntry: NonNullable<
-    RenderSystemInternals['getMaterialShaderPipelineEntry']
-  >;
-  readonly prepareMaterialShaderPipeline: NonNullable<
-    RenderSystemInternals['prepareMaterialShaderPipeline']
-  >;
-  readonly prepareMaterialShaderPipelineEntry: NonNullable<
-    RenderSystemInternals['prepareMaterialShaderPipelineEntry']
-  >;
-  readonly getMaterialShaderArtifact: NonNullable<
-    RenderSystemInternals['getMaterialShaderArtifact']
-  >;
-  readonly getMaterialShaderBindingContract: NonNullable<
-    RenderSystemInternals['getMaterialShaderBindingContract']
-  >;
-  readonly getParamSchema: NonNullable<RenderSystemInternals['getParamSchema']>;
-  readonly getMaterialBindGroupLayout: NonNullable<
-    RenderSystemInternals['getMaterialBindGroupLayout']
-  >;
-  readonly metrics: RenderSystemInternals['metrics'];
-  readonly buildPostProcessPipeline: NonNullable<RenderSystemInternals['buildPostProcessPipeline']>;
   readonly renderSystem: RenderSystem;
   readonly createRecoveryFailureLocation: (
     phase: RecoveryPhase,
@@ -204,7 +165,6 @@ interface RendererRecoveryDependencies {
     candidate: RendererGeneration,
     candidatePostProcessResources: RecoveryPostProcessResources,
     recoveryRootBundle: RecoveryRootBundle,
-    recoveryGraphCandidate: RecoveryGraphCandidate | undefined,
     canvas: RhiCanvasTarget,
   ) => void;
 }
@@ -238,21 +198,8 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     getCandidateMaterialShaderUvSetCounts,
     setCandidateMaterialShaderUvSetCounts,
     setCandidateEmptyPostProcessBgl,
-    getShaderModuleAdapter,
-    getImmediateShaderModuleAdapter,
     getShader,
-    assets,
     buildPipeline,
-    getMaterialShaderPipeline,
-    getMaterialShaderPipelineEntry,
-    prepareMaterialShaderPipeline,
-    prepareMaterialShaderPipelineEntry,
-    getMaterialShaderArtifact,
-    getMaterialShaderBindingContract,
-    getParamSchema,
-    getMaterialBindGroupLayout,
-    metrics,
-    buildPostProcessPipeline,
     renderSystem,
     createRecoveryFailureLocation,
     publishAndRetireRendererGeneration,
@@ -403,12 +350,7 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     // getShader forks the admitted CPU catalog into the candidate on first
     // access. Shader modules and all device-bound caches start empty.
     let candidatePostProcessResources: RecoveryPostProcessResources | undefined;
-    let recoveryGraphCandidate: RecoveryGraphCandidate | undefined;
     let recoveryRootBundle: RecoveryRootBundle | undefined;
-    // This owner is intentionally optional before candidate construction. The
-    // continuation may invoke cleanup while an earlier async recovery step is
-    // still pending; cleanup must therefore never close over a TDZ binding.
-    let candidateFeatureHost: RenderFeatureHost | undefined;
     let candidateReleased = false;
     const releaseCandidate = (): void => {
       if (candidateReleased) return;
@@ -418,24 +360,11 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
         renderSystem.discardRecoveryPostProcessResources(candidatePostProcessResources);
         candidatePostProcessResources = undefined;
       }
-      const featureHost = candidateFeatureHost;
-      candidateFeatureHost = undefined;
       const rootBundle = recoveryRootBundle;
       recoveryRootBundle = undefined;
-      const candidateGraphOwned = recoveryGraphCandidate !== undefined;
-      if (rootBundle !== undefined) {
-        rootBundle.discard();
-      } else if (recoveryGraphCandidate !== undefined) {
-        renderSystem.discardRecoveryGraphCandidate(recoveryGraphCandidate);
-      } else if (featureHost !== undefined) {
-        const disposedFeatureHost = featureHost.dispose();
-        if (!disposedFeatureHost.ok) internals.errorRegistry.fire(disposedFeatureHost.error);
-      }
-      recoveryGraphCandidate = undefined;
+      rootBundle?.discard();
       candidateState.pipelineState?.perPassResources.drainBloomResources?.();
-      if (!candidateGraphOwned) {
-        candidateGpuStore.destroyAll();
-      }
+      candidateGpuStore.destroyAll();
       candidateDynamicTextureStore.destroyAll();
       candidateState.gpuPassTimingSession?.dispose();
       recoveryScope.abandon();
@@ -619,97 +548,17 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
       releaseCandidate();
       return err(cause);
     }
-    const candidatePostProcess = candidatePostProcessResources;
-    // Prepare the replacement context and graph through detached candidate
-    // bindings. The active device, stores, scope, generation and feature
-    // owners remain untouched until publishAndRetireRendererGeneration.
-    const candidatePostProcessPipelineCache = new Map<string, RenderPipeline>();
-    const candidateFeatureHostResult = createRenderFeatureHost(
-      internals.featureHost?.features ?? [],
-    );
-    if (!candidateFeatureHostResult.ok) {
-      recordFailure('compile-graph', candidateFeatureHostResult.error, {
-        owner: 'feature',
-        resourceKind: 'feature',
-      });
-      releaseCandidate();
-      return err(new RecoverError('recover-device-unavailable'));
-    }
-    candidateFeatureHost = candidateFeatureHostResult.value;
-    const createdCandidateFeatureHost = candidateFeatureHost;
+    // Recovery prepares only the device, context and generation roots. The
+    // first frame on the replacement device rebuilds every derived owner
+    // through the ordinary extract/prepare/record path from current sources.
     const candidateInternals = Object.create(internals) as WebGPURendererInternals &
       RenderSystemInternals;
     Object.defineProperties(candidateInternals, {
       canvas: { value: canvas },
-      assets: { value: assets },
       device: { value: candidateState.device },
-      gpuPassTimingSession: { value: candidateState.gpuPassTimingSession },
       context: { value: candidateState.context },
       deviceScope: { value: candidateState.scope },
-      gpuStore: { value: candidateState.gpuStore },
-      dynamicTextureStore: { value: candidateState.dynamicTextureStore },
-      getMaterialShaderPipeline: { value: getMaterialShaderPipeline },
-      getMaterialShaderPipelineEntry: { value: getMaterialShaderPipelineEntry },
-      prepareMaterialShaderPipeline: { value: prepareMaterialShaderPipeline },
-      prepareMaterialShaderPipelineEntry: { value: prepareMaterialShaderPipelineEntry },
-      getMaterialShaderArtifact: { value: getMaterialShaderArtifact },
-      getMaterialShaderBindingContract: { value: getMaterialShaderBindingContract },
-      getParamSchema: { value: getParamSchema },
-      getMaterialBindGroupLayout: { value: getMaterialBindGroupLayout },
-      metrics: { value: metrics },
-      shaderModuleFactory: {
-        value: {
-          createShaderModule: (
-            descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
-          ) => getShaderModuleAdapter().createShaderModule(descriptor),
-        },
-      },
-      immediateShaderModuleFactory: {
-        value: {
-          createShaderModule: (
-            descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
-          ) => getImmediateShaderModuleAdapter().createShaderModule(descriptor),
-        },
-      },
-      buildPostProcessPipeline: { value: buildPostProcessPipeline },
       getPipelineState: { value: () => candidatePipelineState },
-      featureHost: { value: createdCandidateFeatureHost },
-      lookupPostProcess: { value: renderSystem.lookupPostProcess },
-      getRenderTargetPhysical: { value: () => undefined },
-      resolveRenderTargetTextureSource: { value: () => undefined },
-      encodeRenderTargetReadbacks: { value: () => undefined },
-      encodeFramebufferSnapshots: { value: undefined },
-      getPostProcessParamsBuffer: {
-        value: (id: string) => candidatePostProcess.paramsBuffers.get(id),
-      },
-      getPostProcessPipeline: {
-        value: (
-          id: string,
-          bgl: BindGroupLayout,
-          colorFormats: readonly GPUTextureFormat[],
-          entryOverride?: PostProcessShaderEntry,
-        ) => {
-          const entry = entryOverride ?? candidateInternals.lookupPostProcess?.(id);
-          if (entry === undefined || candidateInternals.buildPostProcessPipeline === undefined) {
-            return null;
-          }
-          const key = `${id}|${colorFormats.join(',')}|${postProcessShaderEntrySignature(entry)}`;
-          const cached = candidatePostProcessPipelineCache.get(key);
-          if (cached !== undefined) return cached;
-          const built = candidateInternals.buildPostProcessPipeline(
-            entry,
-            bgl,
-            colorFormats,
-            postProcessShaderPipelineLabel(id, entry.source),
-          );
-          if (built === null) return null;
-          candidatePostProcessPipelineCache.set(key, built);
-          return built;
-        },
-      },
-      getRecoveryPostProcessPipelines: {
-        value: () => candidatePostProcessPipelineCache,
-      },
     });
     const configured = ensureContextConfigured(
       candidateInternals,
@@ -724,159 +573,9 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
       releaseCandidate();
       return err(new RecoverError('recover-device-unavailable'));
     }
-    const textures = await runRecoveryStep(
-      async () => {
-        await renderSystem.prepareRecoveryTextureData({
-          internals: candidateInternals,
-          pipelineState: candidatePipelineState,
-        });
-        return ok(undefined);
-      },
-      'compile-graph',
-      deadline,
-      () => Date.now(),
-      continuation,
-    );
-    if (textures.kind !== 'value') {
-      recordFailure('compile-graph', textures.error);
-      releaseCandidate();
-      return err(new RecoverError('recover-device-unavailable'));
-    }
-    const abortedAfterTextures = abortDisposedRecovery('compile-graph');
-    if (abortedAfterTextures !== undefined) return abortedAfterTextures;
-    const graphPreparation = renderSystem.prepareRecoveryGraphCandidate({
-      internals: candidateInternals,
-      pipelineState: candidatePipelineState,
-    });
-    if (graphPreparation.kind === 'failed') {
-      // prepareRecoveryGraphCandidate owns and releases the detached feature
-      // host before returning a failed result. Do not let the outer recovery
-      // cleanup call the same host's dispose method a second time.
-      candidateFeatureHost = undefined;
-      recordFailure(
-        'compile-graph',
-        structuredRendererCause(
-          graphPreparation.cause ?? new Error(graphPreparation.reason),
-          'recovery graph candidate',
-        ),
-        {
-          owner: 'render-graph',
-          resourceKind: 'pipeline',
-        },
-      );
-      releaseCandidate();
-      return err(new RecoverError('recover-device-unavailable'));
-    }
-    if (graphPreparation.kind === 'ready') {
-      recoveryGraphCandidate = graphPreparation.candidate;
-      const candidateGraph = recoveryGraphCandidate.frameState.compiledFrameGraph?.targets;
-      const candidateGraphTexture = candidateGraph?.getColorTargetTexture('scene-color');
-      const candidateGraphView = candidateGraph?.getColorTargetView('scene-color');
-      const candidateGraphDescriptor = candidateGraph?.getColorTargetDescriptor('scene-color');
-      const candidateGraphFormat = candidateGraphDescriptor?.format;
-      if (
-        candidateGraphTexture !== undefined &&
-        candidateGraphView !== undefined &&
-        (candidateGraphFormat === 'rgba16float' || candidateGraphFormat === 'rgba8unorm')
-      ) {
-        const graphProbe = await runRecoveryStep(
-          () =>
-            probeCandidateGraphExecution(device, {
-              texture: candidateGraphTexture,
-              view: candidateGraphView,
-              format: candidateGraphFormat,
-            }),
-          'compile-graph',
-          deadline,
-          () => Date.now(),
-          continuation,
-        );
-        if (graphProbe.kind !== 'value') {
-          recordFailure('compile-graph', graphProbe.error, {
-            retryable: true,
-            guidance: 'retry',
-            owner: 'render-graph',
-            resourceKind: 'texture',
-          });
-          releaseCandidate();
-          return err(new RecoverError('recover-device-unavailable'));
-        }
-      }
-      const candidateIsValid = (): boolean =>
-        !isRendererDisposed() &&
-        !candidateLost &&
-        recoveryScope.isAlive() &&
-        !deadlineExpired('compile-graph');
-      const setupSubmission = renderSystem.submitCandidateSetup(
-        recoveryGraphCandidate,
-        candidateIsValid,
-      );
-      if (!setupSubmission.ok) {
-        recordFailure('compile-graph', setupSubmission.error, {
-          owner: 'gpu-residency',
-          resourceKind: 'texture',
-        });
-        releaseCandidate();
-        return err(new RecoverError('recover-device-unavailable'));
-      }
-      const completion = setupSubmission.value.completion;
-      if (completion !== undefined) {
-        const setupCompletion = await runRecoveryStep(
-          async (attemptToken) => {
-            try {
-              await completion;
-            } catch (cause) {
-              if (cause instanceof RhiError) return err(cause);
-              return err(
-                new RhiError({
-                  code: 'webgpu-runtime-error',
-                  expected: 'recovery mip setup completion resolves after candidate submission',
-                  hint: `discard the candidate after setup completion raised: ${String(cause)}`,
-                }),
-              );
-            }
-            if (attemptToken !== undefined && !attemptToken.isValid('compile-graph', Date.now())) {
-              return err(
-                new RhiError({
-                  code: 'webgpu-runtime-error',
-                  expected: 'recovery mip setup completion belongs to the live attempt',
-                  hint: 'discard the late candidate completion',
-                }),
-              );
-            }
-            return candidateIsValid()
-              ? ok(undefined)
-              : err(
-                  new RhiError({
-                    code: 'webgpu-runtime-error',
-                    expected: 'recovery mip setup completes before candidate publication',
-                    hint: 'discard the stale recovery candidate and retry after device loss',
-                  }),
-                );
-          },
-          'compile-graph',
-          deadline,
-          () => Date.now(),
-          continuation,
-        );
-        if (setupCompletion.kind !== 'value') {
-          recordFailure('compile-graph', setupCompletion.error, {
-            owner: 'gpu-residency',
-            resourceKind: 'texture',
-          });
-          releaseCandidate();
-          return err(new RecoverError('recover-device-unavailable'));
-        }
-      }
-    }
     const abortedAfterPrewarm = abortDisposedRecovery('compile-graph');
     if (abortedAfterPrewarm !== undefined) return abortedAfterPrewarm;
-    const preparedRecoveryRoots = renderSystem.prepareRecoveryRoots({
-      scope: recoveryScope,
-      device,
-      gpuStore: candidateGpuStore,
-      graphCandidate: recoveryGraphCandidate,
-    });
+    const preparedRecoveryRoots = renderSystem.prepareRecoveryRoots({ scope: recoveryScope });
     recoveryRootBundle = preparedRecoveryRoots;
     const timingSession = candidateState.gpuPassTimingSession;
     const recoveryRoots = [
@@ -986,12 +685,8 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
         candidateGeneration.value,
         candidatePostProcessResources,
         preparedRecoveryRoots,
-        recoveryGraphCandidate,
         canvas,
       );
-      if (recoveryGraphCandidate !== undefined) {
-        recoveryGraphCandidate = undefined;
-      }
     } catch (cause) {
       recordFailure('publish', cause, {
         guidance: 'rebuild-renderer',
@@ -1011,9 +706,8 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     setCandidateMaterialShaderUvSetCounts(undefined);
     setCandidateEmptyPostProcessBgl(undefined);
 
-    // Step (f): the renderer is alive again. The retained candidate frame has
-    // already configured the context, compiled the graph, and populated the
-    // visible residency set before this publication boundary.
+    // Step (f): the renderer is alive again. The next frame rebuilds its
+    // graph and residency from current sources on the published device.
     internals.healthRegistry.fire({ reason: 'alive', recoverable: false });
     return ok(undefined);
   }

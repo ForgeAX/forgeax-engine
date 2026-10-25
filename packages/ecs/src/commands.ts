@@ -128,7 +128,8 @@ export interface CommandBufferImpl extends CommandBuffer {
  */
 class CommandBufferState implements CommandBufferImpl {
   readonly _queue: Command[] = [];
-  readonly _pendingEntities = new Set<number>();
+  /** Created by the first deferred spawn; most system buffers never spawn. */
+  private pending: Set<number> | undefined;
   _queueError: CommandBufferImpl['_queueError'] = null;
   private currentStatus: CommandBuffer['status'] = 'open';
 
@@ -140,6 +141,11 @@ class CommandBufferState implements CommandBufferImpl {
 
   get status(): CommandBuffer['status'] {
     return this.currentStatus;
+  }
+
+  get _pendingEntities(): Set<number> {
+    this.pending ??= new Set<number>();
+    return this.pending;
   }
 
   private ensureOpen(): void {
@@ -158,18 +164,19 @@ class CommandBufferState implements CommandBufferImpl {
     this.ensureOpen();
     this.currentStatus = 'committed';
     this._queue.length = 0;
-    this._pendingEntities.clear();
+    this.pending?.clear();
     this._queueError = null;
   }
 
   abort(): void {
     if (this.currentStatus !== 'open') return;
-    for (const raw of this._pendingEntities) {
-      this.world[worldInternal].cancelPendingEntity(raw as EntityHandle);
-    }
+    if (this.pending !== undefined)
+      for (const raw of this.pending) {
+        this.world[worldInternal].cancelPendingEntity(raw as EntityHandle);
+      }
     this.currentStatus = 'aborted';
     this._queue.length = 0;
-    this._pendingEntities.clear();
+    this.pending?.clear();
     this._queueError = null;
   }
 
@@ -222,7 +229,7 @@ class CommandBufferState implements CommandBufferImpl {
   }
 
   isDeferred(entity: EntityHandle): boolean {
-    return this._pendingEntities.has(entity as unknown as number);
+    return this.pending?.has(entity as unknown as number) === true;
   }
 }
 
@@ -580,6 +587,11 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
  */
 export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands): void {
   if (buffer.status !== 'open') return;
+  // Most system buffers stay empty: commit without the batch preflight.
+  if (buffer._queue.length === 0 && buffer._queueError === null) {
+    buffer.commit();
+    return;
+  }
   const queue = buffer._queue;
   try {
     preflightCommands(buffer, world);

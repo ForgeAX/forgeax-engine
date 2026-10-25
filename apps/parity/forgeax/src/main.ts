@@ -1,4 +1,6 @@
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { captureDisplayFrame } from '../../../../scripts/bench/capture-display-frame.mjs';
 // apps/parity/forgeax/src/main.ts - right fixture full implementation
 // (M2 T-006; D-P5 case C unlit + D-P6 8-dimension lock).
 //
@@ -154,18 +156,22 @@ world.spawn(
   // Static fixture: draw once. window.__captureRight re-issues a draw
   // before each readback so the canvas observes the latest frame even
   // if the compositor cleared it between calls.
-  const drawFrame = (): void => {
+  const drawFrame = async (): Promise<void> => {
     world.update().unwrap();
-    const drawn = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
     });
-    if (!drawn.ok) throw drawn.error;
   };
-  drawFrame();
+  await drawFrame();
 
-  declare_capture_hook(target, drawFrame);
+  declare_capture_hook(async () => {
+    world.update().unwrap();
+    return captureDisplayFrame(renderer, {
+      leases: [lease], camera: { lease }, environment: { lease },
+    });
+  });
 }
 
 declare global {
@@ -175,36 +181,11 @@ declare global {
   }
 }
 
-function declare_capture_hook(
-  target: HTMLCanvasElement,
-  drawOnce: () => void,
-): void {
+function declare_capture_hook(capture: () => Promise<Uint8Array>): void {
   // D-1: both __captureLeft and __captureRight share the same capture
   // function. The parity bench now drives a single ForgeaX preview; left
   // vs right is a self-consistency check (same renderer, same frame,
   // same scene — epsilon should be 0 or near-0).
-  const capture = async (): Promise<Uint8Array> => {
-    drawOnce();
-    // Canvas capture is a host-owned inspection path. The renderer receipt
-    // proves the submit; the browser surface owns conversion to RGBA bytes.
-    const bitmap = await createImageBitmap(target);
-    const captureCanvas = new OffscreenCanvas(CANVAS_W, CANVAS_H);
-    const captureContext = captureCanvas.getContext('2d');
-    if (captureContext === null) throw new Error('parity-forgeax: 2d capture context missing');
-    captureContext.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const flat = new Uint8Array(
-      captureContext.getImageData(0, 0, CANVAS_W, CANVAS_H).data,
-    );
-    const out = new Uint8Array(CANVAS_W * CANVAS_H * 4);
-    const rowBytes = CANVAS_W * 4;
-    for (let y = 0; y < CANVAS_H; y++) {
-      const srcOffset = y * rowBytes;
-      const dstOffset = (CANVAS_H - 1 - y) * rowBytes;
-      out.set(flat.subarray(srcOffset, srcOffset + rowBytes), dstOffset);
-    }
-    return out;
-  };
   window.__captureLeft = capture;
   window.__captureRight = capture;
 }

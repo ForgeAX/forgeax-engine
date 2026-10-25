@@ -470,7 +470,10 @@ function geometryRecordPhase(
   return `record/graph-execute/${pass}/${segment}` as RenderRecordPhase;
 }
 
+// The resolver reads only whether a Pass was selected; its shader, state and
+// entries are compared as candidate facts. Per-draw dispatch entries share one key.
 const NO_SELECTED_PASS = {};
+const SELECTED_PASS = {};
 
 interface DrawPipelineSelection {
   readonly flags: number;
@@ -1231,7 +1234,7 @@ export function recordGeometryDraws(
       (isReflectedTransform(source.transform.world) ? 4 : 0) |
       (source.spriteInstances !== undefined ? 8 : 0) |
       (oitAccumulateDraw ? 16 : 0);
-    const passKey = selectedPass ?? NO_SELECTED_PASS;
+    const passKey = selectedPass === undefined ? NO_SELECTED_PASS : SELECTED_PASS;
     let byPass = drawPipelines.get(submeshMaterial);
     const candidates = byPass?.get(passKey);
     if (candidates !== undefined)

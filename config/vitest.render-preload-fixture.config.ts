@@ -28,6 +28,7 @@ export default defineConfig({
             '@forgeax/engine-pack > acorn',
             '@forgeax/engine-geometry > earcut',
             '@forgeax/engine-image > @forgeax/engine-codec > fzstd',
+            '@forgeax/engine-image > @forgeax/engine-codec > @hpcc-js/wasm-zstd',
             '@forgeax/engine-image > jpeg-js',
             '@forgeax/engine-image > pako',
             '@forgeax/engine-assets-runtime > @forgeax/engine-ui > css-tree/dist/csstree.esm',

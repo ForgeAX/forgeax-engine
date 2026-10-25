@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { type PlayReport, playCommand } from '../play.js';
 
 const PACKAGE = '019fb7ce-2200-7000-8000-000000000000';
@@ -274,9 +274,16 @@ it(
       if (String(chunk).startsWith('forgeax project play:')) progress.push(String(chunk));
       return write(chunk, ...rest);
     }) as typeof process.stderr.write;
+    // Exercise the cold failing-script startup seen in CI, then queue the
+    // passing journey behind its live lock. Neither script may race Vite's cache.
+    const coldFailing = playCommand({ root, script: 'scripts/failing.mjs' });
+    await vi.waitFor(
+      () => expect(existsSync(resolve(root, '.forgeax/play/lock.json'))).toBe(true),
+      { timeout: 15_000 },
+    );
     const [journey, failing] = await Promise.all([
       playCommand({ root, script: 'scripts/journey.mjs', headless: true, requireUi: true }),
-      playCommand({ root, script: 'scripts/failing.mjs' }),
+      coldFailing,
     ]).finally(() => {
       process.stderr.write = write;
     });

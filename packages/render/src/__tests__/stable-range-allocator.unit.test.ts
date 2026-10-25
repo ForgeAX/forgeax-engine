@@ -60,6 +60,23 @@ it('extends an aligned retired tail while retaining its prefix hole', () => {
   expect(owner.requiredCapacity()).toBe(17);
 });
 
+it('derives the live end from released tail ranges without changing reusable capacity', () => {
+  for (const spareLimit of [0, 64]) {
+    const owner = new StableRangeAllocator(spareLimit);
+    expect(owner.allocatedEnd()).toBe(0);
+    for (let index = 0; index < 4096; index++) owner.allocate(4);
+    for (let index = 0; index < 4096; index += 2) owner.release(index * 4, 4);
+    expect(owner.allocatedEnd()).toBe(4096 * 4);
+    owner.release(4095 * 4, 4);
+    const visits = countRangeVisits(owner);
+    expect(owner.allocatedEnd()).toBe(4093 * 4 + 4);
+    expect(visits()).toBeLessThan(128);
+    expect(owner.requiredCapacity()).toBe(4096 * 4);
+    expect(owner.allocate(4)).toBe(0);
+    expect(owner.allocatedEnd()).toBe(4093 * 4 + 4);
+  }
+});
+
 it('does not sort the complete free roster when one middle interval is released', () => {
   const owner = new StableRangeAllocator();
   for (let index = 0; index < 4096; index++) owner.allocate(4);

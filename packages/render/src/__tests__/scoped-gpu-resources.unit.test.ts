@@ -79,7 +79,6 @@ it('keeps overlapping World and numeric texture owners through replacement, comp
     expect(entries[0]?.texture.isDestroyed).toBe(true);
     expect(store.getTextureGpuView(handle, scopes[0])).toBe(replacement.view);
     store.releaseUnreferenced(new Set());
-    expect(store.recoveryResourceCount()).toBe(0);
     for (const entry of entries) expect(entry.texture.isDestroyed).toBe(true);
     expect(replacement.texture.isDestroyed).toBe(true);
     expect(store.ensureResident(handle, texture, scopes[0]).unwrap().view).not.toBe(

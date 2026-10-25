@@ -166,7 +166,6 @@ export function projectTerrainView(
                 reactiveReasons: ['geometry-revision'],
                 previousTransform: temporal?.previousTransform ?? source.transform,
                 previousInstances: undefined,
-                previousMorphWeights: undefined,
               },
             }
           : {}),

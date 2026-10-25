@@ -6,11 +6,14 @@ describe('frame targets shadow removal', () => {
     const internals = {
       device: { limits: { maxTextureDimension2D: 2048 } },
     };
-    const lights = { shadowMapSize: 4096, cascadeCount: 4 };
+    const lights = { cascades: { shadowMapSize: 4096, cascadeCount: 4 } };
 
     expect(resolveShadowMapSize(internals as never, lights as never)).toBe(2048);
     expect(
-      resolveShadowMapSize(internals as never, { ...lights, shadowMapSize: 2048 } as never),
+      resolveShadowMapSize(
+        internals as never,
+        { cascades: { ...lights.cascades, shadowMapSize: 2048 } } as never,
+      ),
     ).toBe(2048);
   });
 
@@ -21,7 +24,7 @@ describe('frame targets shadow removal', () => {
         limits: { maxTextureDimension2D: 2048 },
       },
     };
-    const lights = { shadowMapSize: 2048, cascadeCount: 1 };
+    const lights = { cascades: { shadowMapSize: 2048, cascadeCount: 1 } };
 
     expect(resolveShadowMapSize(internals as never, lights as never)).toBe(1024);
   });
@@ -32,8 +35,7 @@ describe('frame targets shadow removal', () => {
     };
     const lights = {
       directional: 'disabled',
-      shadowMapSize: 2048,
-      cascadeCount: undefined,
+      cascades: { shadowMapSize: 2048, cascadeCount: undefined },
     };
 
     expect(resolveShadowMapSize(internals as never, lights as never)).toBeUndefined();

@@ -528,7 +528,7 @@ function writeDirectionalViewUbo(
       intensity: 1,
       contactShadowLength: 0,
     },
-    { lightViewProj: [lightViewProj], point: [], spot: [], rect: [] } as never,
+    { cascades: { lightViewProj: [lightViewProj] }, point: [], spot: [], rect: [] } as never,
     [],
   );
 }

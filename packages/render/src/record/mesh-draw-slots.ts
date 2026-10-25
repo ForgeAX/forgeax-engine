@@ -89,6 +89,13 @@ export class MeshDrawSlots {
     this.rows[record.slot] = undefined;
   }
 
+  /** A reused Scene address drops the draw addresses of its prior generation. */
+  releaseStale(record: RenderSceneRecord): void {
+    const row = this.rows[record.slot];
+    if (row === undefined || row.generation === record.generation) return;
+    this.release({ ...record, generation: row.generation });
+  }
+
   get capacity(): number {
     return this.allocator.requiredCapacity();
   }

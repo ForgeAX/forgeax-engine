@@ -1,12 +1,13 @@
 import type { Texture } from '@forgeax/engine-rhi';
 import type { ShadowViewIdentity } from '../gpu-driven/shadow-views';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import type { ExtractedLights, PointShadowSnapshot } from '../render-system-extract';
+import type { PointShadowSnapshot } from '../render-system-extract';
+import type { ViewLights } from '../world/render-lights';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 export function shadowUpdatePolicy(
   identity: ShadowViewIdentity,
-  lights: ExtractedLights,
+  lights: ViewLights,
   worlds: readonly RenderResourceScope[],
   effectiveShadowMapSize: number | undefined,
   effectiveSpotShadowMapSize: number | undefined,

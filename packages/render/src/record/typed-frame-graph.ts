@@ -32,6 +32,7 @@ import {
   terrainShadowTopology,
 } from '../terrain/shadow-family';
 import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
+import type { ViewLights } from '../world/render-lights';
 import { resolveSpotShadowMapSize } from './frame-targets';
 import { flushMeshDrawUploads } from './mesh-ssbo';
 import { addReflectionProbePmremPasses } from './reflection-probe-pmrem';
@@ -126,8 +127,8 @@ import type {
   RenderPipelineFrame,
   RenderPipelineTopology,
 } from '../render-pipeline';
-import type { ExtractedLights, ExtractedVolumetricFog } from '../render-system-extract';
-import { SHADOW_ATLAS_DEFAULT_FACE_SIZE, SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
+import type { ExtractedVolumetricFog } from '../render-system-extract';
+import { SHADOW_ATLAS_DEFAULT_FACE_SIZE } from '../shadow-atlas';
 import type { SsrSpatialAdmission } from '../ssr/admission';
 import {
   abortStagedTemporalGpuState,
@@ -1013,15 +1014,6 @@ function graphRetirementFailureSet(
   return created;
 }
 
-/** Share the renderer-owned graph ledger with a detached recovery frame state. */
-export function shareRenderGraphGenerationAllocationOwner(
-  source: RenderFrameState,
-  target: RenderFrameState,
-): void {
-  graphGenerationAllocationOwners.set(target, graphGenerationAllocationOwner(source));
-  graphRetirementFailures.set(target, graphRetirementFailureSet(source));
-}
-
 function graphGenerationAllocationTotals(records: Iterable<GraphGenerationAllocationRecord>): {
   liveBytes: number;
   pendingRetirementBytes: number;
@@ -1509,17 +1501,17 @@ function commitFeatureCandidate(
 
 function directionalTopologyOf(
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
   shadowMapSize: number | undefined,
   terrainReceivers: readonly TerrainShadowReceiver[],
 ): Result<RenderPipelineTopology['shadow']['directional'], RhiError> {
-  const cascadeCount = Math.max(1, Math.min(4, Math.round(lights.cascadeCount ?? 1))) as
+  const cascadeCount = Math.max(1, Math.min(4, Math.round(lights.cascades?.cascadeCount ?? 1))) as
     | 1
     | 2
     | 3
     | 4;
   return terrainShadowTopology(
-    shadowMapSize === undefined || lights.cascadeCount === undefined
+    shadowMapSize === undefined || lights.cascades?.cascadeCount === undefined
       ? 'disabled'
       : {
           mapSize: shadowMapSize,
@@ -1528,7 +1520,7 @@ function directionalTopologyOf(
             ? { staticLayer: false as const }
             : {}),
         },
-    lights.directionalShadowQuality?.kind === 'pcss' ? [] : terrainReceivers,
+    lights.cascades?.directionalShadowQuality?.kind === 'pcss' ? [] : terrainReceivers,
     internals.device.limits.maxTextureArrayLayers,
   );
 }
@@ -1583,7 +1575,7 @@ function preTemporalEffectsOf(
 
 /** Whether the light the volumetric fog selected is still present in this frame. */
 function hasSelectedVolumeLight(
-  lights: ExtractedLights,
+  lights: ViewLights,
   volumetricFog: ExtractedVolumetricFog | undefined,
 ): boolean {
   switch (volumetricFog?.lightKind) {
@@ -1648,13 +1640,19 @@ function outputTopologyOf(
   };
 }
 
-function isVarianceSpotShadow(light: ExtractedLights['spot'][number]): boolean {
+function isVarianceSpotShadow(light: ViewLights['spot'][number]): boolean {
   return light.shadowFilter === 8 && light.shadowAtlasTile >= 0;
+}
+
+function layerSpan<T>(lights: readonly T[], layerOf: (light: T) => number): number {
+  let span = 0;
+  for (const light of lights) span = Math.max(span, layerOf(light) + 1);
+  return span;
 }
 
 function shadowTopologyOf(
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
   directional: RenderPipelineTopology['shadow']['directional'],
 ): RenderPipelineTopology['shadow'] {
   const directionalVariance = lights.directionalCsmConfig?.shadowFilter === 8;
@@ -1669,19 +1667,19 @@ function shadowTopologyOf(
         }
       : {}),
     spotMapSize: resolveSpotShadowMapSize(internals, lights) ?? 1024,
-    pointCount: Math.min(SHADOW_ATLAS_DEFAULT_LAYERS, lights.pointShadow.length),
+    // Layers are stable per light, so the graph spans the highest held layer;
+    // a free layer below it records an empty pass.
+    pointCount: layerSpan(lights.pointShadow, (light) => light.shadowAtlasLayer),
     pointFaceSize: lights.pointShadow[0]?.mapSize ?? SHADOW_ATLAS_DEFAULT_FACE_SIZE,
-    spotCount: Math.min(
-      4,
-      lights.spot.filter((light) => light.shadowAtlasTile >= 0 && light.lightViewProj !== undefined)
-        .length,
+    spotCount: layerSpan(lights.spot, (light) =>
+      light.lightViewProj === undefined ? -1 : light.shadowAtlasTile,
     ),
   };
 }
 
 function volumetricFogTopologyOf(
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
   volumetricFog: ExtractedVolumetricFog | undefined,
   width: number,
   height: number,
@@ -1768,7 +1766,7 @@ function topologyOf(
   pipelineState: PipelineState,
   camera: CameraSnapshot,
   clearOnly: boolean,
-  lights: ExtractedLights,
+  lights: ViewLights,
   width: number,
   height: number,
   shadowMapSize: number | undefined,
@@ -2575,7 +2573,7 @@ export function ensureCompiledFrameGraph(
   frameState: RenderFrameState,
   pipelineState: PipelineState,
   camera: CameraSnapshot,
-  lights: ExtractedLights,
+  lights: ViewLights,
   width: number,
   height: number,
   shadowMapSize: number | undefined,
@@ -3048,7 +3046,7 @@ export function compileTargetCaptureFrameGraph(
   frameState: RenderFrameState,
   pipelineState: PipelineState,
   camera: CameraSnapshot,
-  lights: ExtractedLights,
+  lights: ViewLights,
   shadowMapSize: number | undefined,
   state: CubeCaptureGraphState,
   lighting: StandardTopologyInputValue,

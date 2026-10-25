@@ -7,9 +7,9 @@ import { standardSurfaceParameters } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { samplerContribution } from '../assets/asset-decoders';
 import { Camera } from '../components';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
@@ -80,13 +80,17 @@ function fixture(worker: boolean, columns = 2, rows = 2, n = 2, entities = 1) {
         assert(bytes);
         new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setFloat32(0, NaN, true);
         const revision = receiver.acceptedRevision;
-        expect(receiver.accept(invalid, assets).ok).toBe(false);
+        expect(receiver.accept(encodeRenderPublication(invalid), assets).ok).toBe(false);
         expect(receiver.acceptedRevision).toBe(revision);
       }
       candidate.accept();
       upserts += packet.upserts.length;
-      const frame = scene.consumePublication(receiver.accept(packet, assets).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const frame = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet), assets).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return frame;
     }
     return scene.extractComposition(

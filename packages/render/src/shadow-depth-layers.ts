@@ -66,7 +66,11 @@ export class ShadowDepthLayers {
 
   /**
    * The array for `label`, allocated on first use and replaced when its shape
-   * changes. Called from graph import resolution, so allocation failure throws.
+   * changes. A replacement that only changes the layer count carries every
+   * retained layer it still holds across with one GPU copy, so an array sized
+   * to its present lights grows or shrinks without discarding the other
+   * lights' retained depth. Called from graph import resolution, so
+   * allocation failure throws.
    */
   texture(
     label: string,
@@ -95,6 +99,10 @@ export class ShadowDepthLayers {
       textureBindingViewDimension: undefined,
     });
     if (!created.ok) throw created.error;
+    const retained =
+      current !== undefined && current.size === size && current.format === format
+        ? this.carryRetained(current, created.value, layers)
+        : new Set<number>();
     // Frames already submitted may still read the old array; it is destroyed
     // after the next successful submit.
     if (current !== undefined) this.retiring.push(current.texture);
@@ -104,11 +112,28 @@ export class ShadowDepthLayers {
       layers,
       format,
       views: new Map(),
-      retained: new Set(),
+      retained,
       pending: new Set(),
     };
     this.arrays.set(label, array);
     return array.texture;
+  }
+
+  /** Copy the retained layers that fit into `texture`; a failed copy carries none. */
+  private carryRetained(from: ShadowDepthArray, texture: Texture, layers: number): Set<number> {
+    const carried = [...from.retained].filter((layer) => layer < layers);
+    if (carried.length === 0) return new Set();
+    const encoder = this.device.createCommandEncoder({ label: 'shadow-depth-layers.carry' });
+    if (!encoder.ok) return new Set();
+    for (const layer of carried)
+      encoder.value.copyTextureToTexture(
+        { texture: from.texture, origin: [0, 0, layer] },
+        { texture, origin: [0, 0, layer] },
+        { width: from.size, height: from.size, depthOrArrayLayers: 1 },
+      );
+    const finished = encoder.value.finish();
+    if (!finished.ok) return new Set();
+    return this.device.queue.submit([finished.value]).ok ? new Set(carried) : new Set();
   }
 
   /** Physical resident bytes, including arrays imported by a compiled graph. */

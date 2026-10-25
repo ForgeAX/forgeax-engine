@@ -9,8 +9,8 @@ import { loadRhiPack } from '../assembly/backend-contract';
 import { createRenderer } from '../assembly/factory';
 import { CAMERA_PROJECTION_ORTHOGRAPHIC, Camera } from '../components';
 import { Tilemap } from '../components/tilemap';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 
 /** Complete native rendering and Worker pack/clone/admission path; exactly 60 ready frames. */
 export async function verifyRuntimeTilemap(
@@ -152,7 +152,7 @@ export async function verifyRuntimeTilemap(
         candidate?.accept();
         const request =
           packet !== undefined
-            ? { publication: packet }
+            ? { publication: encodeRenderPublication(packet) }
             : (() => {
                 assert(lease);
                 return { leases: [lease] as const, camera: { lease }, environment: { lease } };
@@ -167,7 +167,9 @@ export async function verifyRuntimeTilemap(
         const complete = await receipt.completed;
         assert(complete.ok);
         if (packet !== undefined)
-          publisher?.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+          publisher
+            ?.recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+            .unwrap();
         return receipt;
       });
       if (capture !== undefined) {

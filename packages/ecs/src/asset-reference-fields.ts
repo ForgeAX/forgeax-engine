@@ -6,12 +6,10 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import type { Component, FieldReflection } from './component';
-import { componentDeclaresField, componentDefinition } from './component-schema';
+import type { Component } from './component';
+import { componentDefinition } from './component-schema';
 
 const NO_ASSET_FIELDS: Result<undefined, AssetError> = Object.freeze(ok(undefined));
-const isAssetField = (field: FieldReflection): boolean =>
-  (field.arrayMeta?.elementType ?? field.type).startsWith('asset<');
 
 /** Visit references in the supplied binding only; never inspect existing holders. */
 export function visitAssetFields(
@@ -19,8 +17,17 @@ export function visitAssetFields(
   data: Readonly<Record<string, unknown>>,
   visit: (handle: number, target: string) => Result<void, AssetError>,
 ): Result<void, AssetError> {
+  // Guard outside the closure-capturing body (see holdAssetFields).
+  if (!componentDefinition(component).plan.hasAssetField) return NO_ASSET_FIELDS;
+  return visitDeclaredAssetFields(component, data, visit);
+}
+
+function visitDeclaredAssetFields(
+  component: Component,
+  data: Readonly<Record<string, unknown>>,
+  visit: (handle: number, target: string) => Result<void, AssetError>,
+): Result<void, AssetError> {
   const fields = componentDefinition(component).fields;
-  if (!componentDeclaresField(component, isAssetField)) return NO_ASSET_FIELDS;
   for (const key of Object.keys(data)) {
     const field = fields[key];
     if (field === undefined) continue;
@@ -81,7 +88,17 @@ export function holdAssetFields(
   component: Component,
   data: Readonly<Record<string, unknown>>,
 ): Result<(() => void) | undefined, AssetError> {
-  if (!componentDeclaresField(component, isAssetField)) return NO_ASSET_FIELDS;
+  // The guard lives outside the closure-capturing body: V8 allocates that
+  // body's context on entry, before any early return.
+  if (!componentDefinition(component).plan.hasAssetField) return NO_ASSET_FIELDS;
+  return holdDeclaredAssetFields(owner, component, data);
+}
+
+function holdDeclaredAssetFields(
+  owner: AssetReferenceOwner | undefined,
+  component: Component,
+  data: Readonly<Record<string, unknown>>,
+): Result<(() => void) | undefined, AssetError> {
   let held: number[] | undefined;
   const release = () => {
     if (held !== undefined) for (const handle of held) releaseAssetReference(owner, handle);

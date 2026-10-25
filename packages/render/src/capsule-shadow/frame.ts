@@ -3,7 +3,7 @@ import type { DirectionalShadowQuality } from '../components/directional-shadow-
 import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import { type CapsuleShadowSubmission, capsuleShadowParticipates } from './inspection';
 import { WORLD_CAPSULE_STRIDE } from './world-capsules';
@@ -94,7 +94,7 @@ export function buildCapsuleShadowFrame(
   const cy = camera.position[1] ?? 0;
   const cz = camera.position[2] ?? 0;
   const candidates: Candidate[] = [];
-  for (const source of renderables) {
+  for (const source of sparseRowsOf(renderables, 'capsule')) {
     const state = demand(source);
     if (state?.status !== 'ready' || !capsuleShadowParticipates(source, materials)) continue;
     for (let offset = 0; offset < state.capsules.length; offset += WORLD_CAPSULE_STRIDE) {

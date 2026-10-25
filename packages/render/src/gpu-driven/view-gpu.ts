@@ -62,6 +62,7 @@ import {
   GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
   GPU_DRIVEN_LOD_LEVEL_CAPACITY,
 } from './batch-layout';
+import { MemberCandidates } from './batch-members';
 import type { GpuDrivenBatch, GpuDrivenCandidate, SubmissionPlan } from './batch-topology';
 import { hasFixedTaskHeaders } from './fixed-task-plan';
 import {
@@ -77,6 +78,7 @@ import {
   PreparedRasterPass,
 } from './prepared-raster-bundle';
 import { admittedRasterBatchCount, SHADOW_LOD_MAX_COARSER } from './production-raster-lod';
+import { suppressionPatchOf } from './production-raster-prepare';
 import {
   GpuResourceAllocationLedger,
   type GpuResourceAllocationToken,
@@ -192,10 +194,7 @@ struct PrimitiveRecord {
   localBoundsMax: vec4<f32>,
 };
 
-struct TransformRecord {
-  currentWorld: mat4x4<f32>,
-  previousWorld: mat4x4<f32>,
-};
+${gpuSceneWgsl(GPU_SCENE_LAYOUTS.transform)}
 
 ${gpuSceneWgsl(GPU_SCENE_LAYOUTS.lod)}
 
@@ -283,7 +282,7 @@ struct ViewConstants {
 
 @group(0) @binding(0) var<storage, read> primitives: array<PrimitiveRecord>;
 @group(0) @binding(1) var<storage, read> instances: array<InstanceRecord>;
-@group(0) @binding(2) var<storage, read> transforms: array<TransformRecord>;
+@group(0) @binding(2) var<storage, read> transforms: array<GpuSceneTransform>;
 @group(0) @binding(3) var<storage, read> sceneInputs: array<u32>;
 @group(0) @binding(4) var<storage, read> batchWords: array<u32>;
 @group(0) @binding(5) var<uniform> view: ViewConstants;
@@ -340,9 +339,19 @@ fn candidateAt(work: u32) -> CandidateRecord {
     if (ordinal < leftWeight) {
       member = sceneInputs[member];
     } else if (ordinal - leftWeight < ownCount) {
-      return CandidateRecord(sceneInputs[member + 4u], sceneInputs[member + 5u],
-        ordinal - leftWeight + sceneInputs[member + 7u], batchIndex,
-        sceneInputs[member + 6u]);
+      // Page records: [laneStart, physical, generation, sourceSlot, ordinalBase].
+      let lane = ordinal - leftWeight;
+      let records = sceneInputs[member + 4u];
+      var low = 0u;
+      var high = sceneInputs[member + 5u];
+      while (high - low > 1u) {
+        let middle = low + (high - low) / 2u;
+        if (sceneInputs[records + middle * 5u] <= lane) { low = middle; } else { high = middle; }
+      }
+      let record = records + low * 5u;
+      return CandidateRecord(sceneInputs[record + 1u], sceneInputs[record + 2u],
+        lane - sceneInputs[record] + sceneInputs[record + 4u], batchIndex,
+        sceneInputs[record + 3u]);
     } else {
       ordinal -= leftWeight + ownCount;
       member = sceneInputs[member + 1u];
@@ -1261,7 +1270,11 @@ export interface GpuDrivenLodSelectionInspection {
    * candidates the pyramid rejected and visible items drawn only late.
    */
   readonly occlusion?: { readonly culled: number; readonly late: number };
-  /** Actual visible rows copied from the submitted GPU selector. */
+  /**
+   * Actual visible rows copied from the submitted GPU selector, each with the
+   * slot generation encoded in that submission; a reader joins only rows whose
+   * current generation still matches.
+   */
   readonly actualMembers: readonly {
     readonly batchId: number;
     readonly primitiveIndex: number;
@@ -1285,6 +1298,37 @@ function nextCapacity(required: number): number {
   return 2 ** Math.ceil(Math.log2(Math.max(1, required)));
 }
 
+/** Raster binds windows at 256-byte storage offsets: 64 visible entries. */
+const VISIBLE_ALIGNMENT = 64;
+const VISIBLE_ENTRY_BYTES = 16;
+const VISIBLE_GROWTH = 1.5;
+/** First-allocation headroom: one small window relocation must not rebuild every binding. */
+const VISIBLE_HEADROOM = 1.25;
+
+function alignVisible(entries: number): number {
+  return Math.ceil(Math.max(VISIBLE_ALIGNMENT, entries) / VISIBLE_ALIGNMENT) * VISIBLE_ALIGNMENT;
+}
+
+/**
+ * Visible-index allocation for one view: the aligned requirement plus bounded
+ * headroom on first allocation, then geometric growth, so a stable workload
+ * never reallocates and a growing one reallocates amortized O(1) times. Slack
+ * never exceeds what the device can bind; the requirement itself is never clamped.
+ */
+export function growGpuDrivenVisibleCapacity(
+  current: number,
+  required: number,
+  maxEntries: number,
+): number {
+  const needed = alignVisible(required);
+  if (needed <= current) return current;
+  const grown = alignVisible(
+    current === 0 ? Math.ceil(needed * VISIBLE_HEADROOM) : Math.ceil(current * VISIBLE_GROWTH),
+  );
+  const ceiling = Math.floor(Math.max(0, maxEntries) / VISIBLE_ALIGNMENT) * VISIBLE_ALIGNMENT;
+  return Math.max(needed, Math.min(grown, ceiling));
+}
+
 /**
  * Derive each GPU-driven allocation from its own logical capacity domain.
  * Candidate records are dense; visible indices use the sparse, 64-entry
@@ -1295,32 +1339,38 @@ function nextCapacity(required: number): number {
 export function deriveGpuDrivenViewBufferCapacities(
   plan: Pick<SubmissionPlan, 'candidateCount' | 'batches'>,
 ): GpuDrivenViewBufferCapacities {
-  const memberships = new Set(plan.batches.map((batch) => batch.candidates));
+  const cached = viewBufferCapacities.get(plan);
+  if (cached !== undefined) return cached;
+  const memberships = new Set<FrameList<GpuDrivenCandidate>>();
   let candidateCount = 0;
-  for (const members of memberships) candidateCount += members.length;
-  return Object.freeze({
-    candidate: nextCapacity(candidateCount),
+  let visible = 0;
+  let indirect = 0;
+  for (const batch of plan.batches) {
+    const members = batch.candidates;
+    if (!memberships.has(members)) {
+      memberships.add(members);
+      candidateCount += members.length;
+    }
     // Derived from the batch segments the kernels address, so a plan whose
-    // LOD chain grew never lets a level segment write past the buffer.
-    visible: nextCapacity(
-      plan.batches.reduce(
-        (maximum, batch) => Math.max(maximum, batch.visibleBase + batchVisibleSpan(batch)),
-        0,
-      ),
-    ),
+    // LOD chain grew never lets a level segment write past the buffer. Exact
+    // (aligned): growth slack is the allocator's decision, bounded by limits.
+    visible = Math.max(visible, batch.visibleBase + batchVisibleSpan(batch));
+    indirect = Math.max(
+      indirect,
+      batch.indirectOffset / INDIRECT_COMMAND_BYTES + batchLodLevelCount(batch),
+    );
+  }
+  const capacities = Object.freeze({
+    candidate: nextCapacity(candidateCount),
+    visible: alignVisible(visible),
     batch: nextCapacity(plan.batches.length),
-    indirect: nextCapacity(
-      plan.batches.reduce(
-        (maximum, batch) =>
-          Math.max(
-            maximum,
-            batch.indirectOffset / INDIRECT_COMMAND_BYTES + batchLodLevelCount(batch),
-          ),
-        0,
-      ),
-    ),
+    indirect: nextCapacity(indirect),
   });
+  // Plans are immutable and shared by every view (cascade, layer) drawing them.
+  viewBufferCapacities.set(plan, capacities);
+  return capacities;
 }
+const viewBufferCapacities = new WeakMap<object, GpuDrivenViewBufferCapacities>();
 
 function bufferBinding(buffer: Buffer): {
   readonly kind: 'buffer';
@@ -1331,14 +1381,14 @@ function bufferBinding(buffer: Buffer): {
 
 interface EncodedViewTopology {
   readonly batchBytes: Uint8Array;
-  /** Fixed source rows and their candidate bases; an identical row keeps its encoded bytes. */
-  readonly plan?: SubmissionPlan;
-  readonly candidateBases?: Uint32Array;
-  readonly memberships: readonly {
-    readonly candidates: FrameList<GpuDrivenCandidate>;
-    readonly offsets: readonly number[];
-  }[];
+  /** Fixed source batches in row order; an identical row keeps its encoded bytes. */
+  readonly rows?: readonly GpuDrivenBatch[];
+  /** Each row's logical member root; header word 12 of that row holds its physical address. */
+  readonly members: readonly FrameList<GpuDrivenCandidate>[];
 }
+/** Rows a successor searches past its cursor for a retained owner; local edits stay in range. */
+const ROW_LOOKAHEAD = 8;
+const MEMBER_ADDRESS_OFFSET = 48;
 const encodedTopologies = new WeakMap<GpuScene, WeakMap<SubmissionPlan, EncodedViewTopology>>();
 
 /**
@@ -1355,17 +1405,18 @@ function patchMemberAddresses(
   let batchBytes = template.batchBytes;
   let patched = false;
   let header = new DataView(batchBytes.buffer);
-  for (const membership of template.memberships) {
-    const address = inputs.members(membership.candidates);
-    for (const offset of membership.offsets) {
-      if (header.getUint32(offset, true) === address) continue;
-      if (!patched) {
-        batchBytes = batchBytes.slice();
-        header = new DataView(batchBytes.buffer);
-        patched = true;
-      }
-      header.setUint32(offset, address, true);
+  const { members } = template;
+  for (let row = 0; row < members.length; row++) {
+    // Rows sharing one root resolve it once through the read frame's memo.
+    const address = inputs.members(members[row] as FrameList<GpuDrivenCandidate>);
+    const offset = row * BATCH_STRIDE + MEMBER_ADDRESS_OFFSET;
+    if (header.getUint32(offset, true) === address) continue;
+    if (!patched) {
+      batchBytes = batchBytes.slice();
+      header = new DataView(batchBytes.buffer);
+      patched = true;
     }
+    header.setUint32(offset, address, true);
   }
   if (!patched) return template;
   const encoded = { ...template, batchBytes };
@@ -1373,13 +1424,15 @@ function patchMemberAddresses(
   return encoded;
 }
 
-/** Each batch owner's row in a previously encoded plan. */
-function rowsByBatch(plan: SubmissionPlan | undefined): Map<GpuDrivenBatch, number> | undefined {
-  if (plan === undefined) return undefined;
-  const rows = new Map<GpuDrivenBatch, number>();
-  let row = 0;
-  for (const batch of plan.batches) rows.set(batch, row++);
-  return rows;
+/** The retained row of `batch` at or shortly after `cursor`, if its owner is unchanged. */
+function retainedRow(
+  rows: readonly GpuDrivenBatch[],
+  cursor: number,
+  batch: GpuDrivenBatch,
+): number | undefined {
+  const end = Math.min(rows.length, cursor + ROW_LOOKAHEAD);
+  for (let row = cursor; row < end; row++) if (rows[row] === batch) return row;
+  return undefined;
 }
 
 /** Task headers retain logical member roots; physical roots are leased on each read. */
@@ -1394,21 +1447,28 @@ function encodedViewTopology(
   if (cached !== undefined) return cached;
   // A replaced fixed plan copies each identical logical row from the last
   // encoding of the same scene; only edited rows and shifted bases re-encode.
-  const reusable =
-    fixed && previous?.plan !== undefined && previous.candidateBases !== undefined
-      ? previous
-      : undefined;
-  const candidateBases = fixed ? new Uint32Array(plan.batches.length) : undefined;
-  // Rows are matched by owner, so an insertion does not re-encode later rows;
-  // a moved row only rewrites its candidate base word.
-  const previousRows = rowsByBatch(reusable?.plan);
+  // Plans keep stable batch order, so rows are matched by owner from a cursor
+  // that follows the predecessor: an insertion or removal does not re-encode
+  // later rows, and a moved row only rewrites its candidate base word.
+  const previousRows = fixed ? previous?.rows : undefined;
+  const previousWords =
+    previousRows === undefined || previous === undefined
+      ? undefined
+      : new Uint32Array(
+          previous.batchBytes.buffer,
+          previous.batchBytes.byteOffset,
+          previous.batchBytes.byteLength / 4,
+        );
+  let cursor = 0;
   if (owner === undefined) {
     owner = new WeakMap();
     encodedTopologies.set(scene, owner);
   }
-  const memberships = new Map<FrameList<GpuDrivenCandidate>, number[]>();
+  const rows: GpuDrivenBatch[] = [];
+  const members: FrameList<GpuDrivenCandidate>[] = [];
   const batchBytes = new Uint8Array(Math.max(1, plan.batches.length) * BATCH_STRIDE);
   const batches = new DataView(batchBytes.buffer);
+  const words = new Uint32Array(batchBytes.buffer);
   const lodRow = {
     generation: 0,
     level: 0,
@@ -1424,22 +1484,20 @@ function encodedViewTopology(
   for (const batch of plan.batches) {
     const index = batchIndex++;
     const offset = index * BATCH_STRIDE;
-    let offsets = memberships.get(batch.candidates);
-    if (offsets === undefined) {
-      offsets = [];
-      memberships.set(batch.candidates, offsets);
-    }
-    offsets.push(offset + 48);
-    if (candidateBases !== undefined) candidateBases[index] = candidateIndex;
+    rows.push(batch);
+    members.push(batch.candidates);
     const previousRow =
-      reusable !== undefined &&
+      previousRows !== undefined &&
       batch.materialAddress !== undefined &&
       batch.geometryAddress !== undefined
-        ? previousRows?.get(batch)
+        ? retainedRow(previousRows, cursor, batch)
         : undefined;
-    if (reusable !== undefined && previousRow !== undefined) {
-      const source = previousRow * BATCH_STRIDE;
-      batchBytes.set(reusable.batchBytes.subarray(source, source + BATCH_STRIDE), offset);
+    if (previousWords !== undefined && previousRow !== undefined) {
+      cursor = previousRow + 1;
+      const source = (previousRow * BATCH_STRIDE) / 4;
+      const target = offset / 4;
+      for (let word = 0; word < BATCH_STRIDE / 4; word++)
+        words[target + word] = previousWords[source + word] as number;
       batches.setUint32(offset + 28, candidateIndex, true);
       candidateIndex += batch.candidates.length;
       continue;
@@ -1488,11 +1546,7 @@ function encodedViewTopology(
     }
     candidateIndex += batch.candidates.length;
   }
-  const encoded = {
-    batchBytes,
-    ...(candidateBases === undefined ? {} : { plan, candidateBases }),
-    memberships: Array.from(memberships, ([candidates, offsets]) => ({ candidates, offsets })),
-  };
+  const encoded = { batchBytes, ...(fixed ? { rows } : {}), members };
   if (fixed) owner.set(plan, encoded);
   return encoded;
 }
@@ -1523,7 +1577,16 @@ export class GpuDrivenView {
   private readonly viewUpload = new Uint8Array(this.viewBytes);
   private candidateCapacity = 0;
   private sceneRef: GpuScene | undefined;
+  /** Canonical memberships of the last accepted topology stay encoded for its successor. */
+  private memberHolds: { readonly topology: EncodedViewTopology; readonly release: () => void }[] =
+    [];
   private visibleBufferCapacity = 0;
+  /**
+   * Two-phase occlusion mirrors late items after the union region. Only a view
+   * that has been given an occlusion camera reserves it; once reserved it stays,
+   * so toggling occlusion never thrashes the allocation.
+   */
+  private lateMirror = false;
   private batchCapacity = 0;
   private indirectCapacity = 0;
   private plan: SubmissionPlan | undefined;
@@ -1535,6 +1598,7 @@ export class GpuDrivenView {
   private sceneMaterial: Buffer | undefined;
   private sceneMaterialBytes = 0;
   private sceneCapacity = 0;
+  private sceneTransformBytes = 0;
   private updateCount = 0;
   private uploadBytes = 0;
   private sharedInputUploadBytes = 0;
@@ -1547,6 +1611,8 @@ export class GpuDrivenView {
   private suppressionMirror = new Uint32Array(0);
   /** A replacement batches buffer has no bitmap yet; the next update seeds it whole. */
   private suppressionReseed = false;
+  /** Bitmap the mirror currently equals; `null` when unknown and a full diff must run. */
+  private suppressionSource: Uint32Array | undefined | null = null;
   private bindGroupCreates = 0;
   private bufferRebuilds = 0;
   private resourceGeneration = 0;
@@ -1870,6 +1936,7 @@ export class GpuDrivenView {
         suppressedPrimitives,
         visibleSurfaceRows !== undefined,
         skin,
+        this.lateMirror || occlusionCamera !== undefined,
       );
       if (!ensured.ok) return ensured;
       const buffersRebuilt = ensured.value;
@@ -1906,6 +1973,7 @@ export class GpuDrivenView {
       this.plan = plan;
       this.sceneInputs = sharedInput.value.buffer;
       this.sceneInputBytes = sharedInput.value.byteLength;
+      this.holdMembers(scene, encoded);
       this.adoptScene(scene);
       this.updateCount += 1;
       return ok(undefined);
@@ -1943,14 +2011,15 @@ export class GpuDrivenView {
     suppressedPrimitives: Uint32Array | undefined,
     surfaceRows: boolean,
     skin: SkinSceneFrame | undefined,
+    lateMirror: boolean,
   ): Result<boolean, RhiError> {
     const skinJointCapacity = Math.max(this.skinJointCapacity, skin?.current.jointCapacity ?? 0);
     // A shared membership may execute in several Passes. Task references
     // address actual candidate work, independently of unique member storage.
-    const rosterCapacity = this.skinLayout?.rosterCapacity ?? 0;
-    const skinCandidateCapacity = Math.max(plan.candidateCount, rosterCapacity);
+    const skinCandidates = this.skinLayout?.candidateCapacity ?? 0;
+    const skinCandidateCapacity = Math.max(plan.candidateCount, skinCandidates);
     const skinGrows =
-      (skinJointCapacity > 0 && skinCandidateCapacity > rosterCapacity) ||
+      (skinJointCapacity > 0 && skinCandidateCapacity > skinCandidates) ||
       skinJointCapacity > this.skinJointCapacity;
     const suppressionWords = Math.max(
       1,
@@ -1959,6 +2028,7 @@ export class GpuDrivenView {
     );
     const structureGrows =
       skinGrows ||
+      lateMirror !== this.lateMirror ||
       surfaceRows !== (this.buffers?.visibleSurfaceRows !== undefined) ||
       this.buffers === undefined ||
       suppressionWords > this.suppressionWordCapacity;
@@ -1985,6 +2055,7 @@ export class GpuDrivenView {
       surfaceRows,
       skinJointCapacity,
       skinCandidateCapacity,
+      lateMirror,
     );
     return rebuilt.ok ? ok(true) : rebuilt;
   }
@@ -2059,10 +2130,12 @@ export class GpuDrivenView {
       this.surfaceRows = undefined;
       return ok(undefined);
     }
+    // Producers never mutate a published row array, so identity proves equality.
     if (
       !buffersRebuilt &&
-      this.surfaceRows?.length === visibleSurfaceRows.length &&
-      visibleSurfaceRows.every((row, index) => this.surfaceRows?.[index] === row)
+      (this.surfaceRows === visibleSurfaceRows ||
+        (this.surfaceRows?.length === visibleSurfaceRows.length &&
+          visibleSurfaceRows.every((row, index) => this.surfaceRows?.[index] === row)))
     )
       return ok(undefined);
     const written = this.device.queue.writeBuffer(
@@ -2071,7 +2144,7 @@ export class GpuDrivenView {
       visibleSurfaceRows,
     );
     if (!written.ok) return written;
-    this.surfaceRows = visibleSurfaceRows.slice();
+    this.surfaceRows = visibleSurfaceRows;
     this.uploadBytes += visibleSurfaceRows.byteLength;
     return ok(undefined);
   }
@@ -2245,6 +2318,17 @@ export class GpuDrivenView {
     return ok(undefined);
   }
 
+  private holdMembers(scene: GpuScene, topology: EncodedViewTopology): void {
+    const previous = this.memberHolds;
+    if (this.sceneRef === scene && previous[0]?.topology === topology) return;
+    const holds: (typeof previous)[number][] = [];
+    for (const candidates of topology.members)
+      if (MemberCandidates.is(candidates))
+        holds.push({ topology, release: scene.inputs.holdMembers(candidates) });
+    this.memberHolds = holds;
+    for (const hold of previous) hold.release();
+  }
+
   /** Retain the scene buffers this view's bind groups and receipts now address. */
   private adoptScene(scene: GpuScene): void {
     this.scenePrimitive = scene.primitiveBuffer;
@@ -2255,6 +2339,7 @@ export class GpuDrivenView {
     this.sceneMaterialBytes = scene.materialByteLength;
     this.sceneRef = scene;
     this.sceneCapacity = scene.inspect().capacity;
+    this.sceneTransformBytes = scene.transformByteLength;
   }
 
   get computeResourceGeneration(): number {
@@ -2306,6 +2391,11 @@ export class GpuDrivenView {
       resourceGeneration: this.currentResourceGeneration,
       resourceAllocation: this.allocationLedger.inspect(),
     };
+  }
+
+  /** Shared GPU Scene inputs this view last read; vertex stages share it. */
+  get sceneInputBuffer(): Buffer | undefined {
+    return this.sceneInputs;
   }
 
   get visibleSurfaceRowsBuffer(): Buffer | undefined {
@@ -2370,7 +2460,7 @@ export class GpuDrivenView {
     )
       throw Error('indirect-buffer-mismatch');
     const indirectBytes = this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2;
-    const visibleBytes = this.visibleBufferCapacity * 16 * 2;
+    const visibleBytes = this.visiblePrefixBytes(this.visibleBufferCapacity, this.lateMirror);
     const counterBytes = this.batchCapacity * COUNTER_STRIDE;
     const viewOffset = indirectBytes + visibleBytes + counterBytes;
     const size = viewOffset + VIEW_BYTES;
@@ -2478,7 +2568,10 @@ export class GpuDrivenView {
   > {
     const copy = this.readableTelemetryCopy();
     if (copy === undefined) return Promise.resolve(undefined);
-    return this.readTelemetryCopy(copy, (values) => {
+    // Counters lead the readback; mapping the visible-member and indirect
+    // tail would cost bytes proportional to the candidate capacity per view.
+    const counterBytes = Math.max(4, copy.plan.batches.length * COUNTER_STRIDE);
+    return this.readTelemetryCopy(copy, counterBytes, (values) => {
       let texelCulled = 0;
       let cameraCulled = 0;
       for (let batchIndex = 0; batchIndex < copy.plan.batches.length; batchIndex += 1) {
@@ -2534,14 +2627,20 @@ export class GpuDrivenView {
       : undefined;
   }
 
+  /** `bytes` maps only the readback prefix the decoder reads; undefined maps all of it. */
   private async readTelemetryCopy<T>(
     copy: LodTelemetryCopy,
+    bytes: number | undefined,
     decode: (values: DataView<ArrayBuffer>) => T,
   ): Promise<T | undefined> {
     const buffers = copy.buffers;
-    const mapped = await buffers.lodReadback.mapAsync(GPU_BUFFER_USAGE_MAP_READ);
+    const mapped =
+      bytes === undefined
+        ? await buffers.lodReadback.mapAsync(GPU_BUFFER_USAGE_MAP_READ)
+        : await buffers.lodReadback.mapAsync(GPU_BUFFER_USAGE_MAP_READ, 0, bytes);
     if (!mapped.ok) return undefined;
-    const range = mapped.value.getMappedRange();
+    const range =
+      bytes === undefined ? mapped.value.getMappedRange() : mapped.value.getMappedRange(0, bytes);
     if (!range.ok) {
       mapped.value.unmap();
       return undefined;
@@ -2567,7 +2666,7 @@ export class GpuDrivenView {
   private readLodSelectionCopy(
     copy: LodTelemetryCopy,
   ): Promise<GpuDrivenLodSelectionInspection | undefined> {
-    return this.readTelemetryCopy(copy, (values) => {
+    return this.readTelemetryCopy(copy, undefined, (values) => {
       const plan = copy.plan;
       let visible = 0;
       let overflow = false;
@@ -2586,22 +2685,18 @@ export class GpuDrivenView {
       }> = [];
       const histogram = new Map<number, number>();
       let batchIndex = 0;
+      let firstCandidate = 0;
       for (const batch of plan.batches) {
         const offset = batchIndex++ * COUNTER_STRIDE;
         const batchOverflow = values.getUint32(offset + 4, true) !== 0;
         const batchVisible = batchOverflow
           ? 0
           : Math.min(values.getUint32(offset, true), batch?.visibleCapacity ?? 0);
-        // Visible items carry the GPU Scene instance row; map it back to the
-        // admitted candidate that owns that row in the current allocation.
-        const admittedByRow = new Map<number, GpuDrivenCandidate>();
-        for (const candidate of batch?.candidates ?? []) {
-          const row = this.sceneRef?.instanceIndexForSlot(
-            candidate.primitiveIndex,
-            candidate.instanceOrdinal,
-          );
-          if (row !== undefined) admittedByRow.set(row, candidate);
-        }
+        // Visible items carry their candidate row (z) in the submitted plan, so
+        // each record names the (slot, generation) encoded with this copy and
+        // never consults the current allocation; joins drop stale generations.
+        const batchFirst = firstCandidate;
+        firstCandidate += batch.candidates.length;
         const levels = batch === undefined || batchOverflow ? 0 : batchLodLevelCount(batch);
         for (let level = 0; level < levels; level += 1) {
           if (batch === undefined) break;
@@ -2613,7 +2708,11 @@ export class GpuDrivenView {
           for (let visibleIndex = 0; visibleIndex < segmentVisible; visibleIndex += 1) {
             const visibleOffset =
               this.batchCapacity * COUNTER_STRIDE + (segmentBase + visibleIndex) * 16;
-            const candidate = admittedByRow.get(values.getUint32(visibleOffset, true));
+            const ordinal = values.getUint32(visibleOffset + 8, true) - batchFirst;
+            const candidate =
+              ordinal >= 0 && ordinal < batch.candidates.length
+                ? batch.candidates.at(ordinal)
+                : undefined;
             if (candidate !== undefined) {
               actualMembers.push({
                 batchId: batch.batchId,
@@ -2789,7 +2888,7 @@ export class GpuDrivenView {
     const transform = importBuffer(
       `${scenePrefix}.transform`,
       live(() => this.sceneTransform, this.sceneTransform as Buffer),
-      this.sceneCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+      this.sceneTransformBytes,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
     );
     if (!transform.ok) return transform;
@@ -3155,7 +3254,7 @@ export class GpuDrivenView {
           return owner.indirectCapacity * INDIRECT_COMMAND_BYTES;
         },
         get lateVisibleBase() {
-          return owner.visibleBufferCapacity;
+          return owner.lateVisibleBase();
         },
       });
     };
@@ -3182,7 +3281,7 @@ export class GpuDrivenView {
       state[3] = bitsBase + next * words;
       state[4] = words;
       state[5] = (this.indirectCapacity * INDIRECT_COMMAND_BYTES) / 4;
-      state[6] = this.visibleBufferCapacity;
+      state[6] = this.lateVisibleBase();
     }
     // A late phase that never encodes leaves no history for the next frame.
     this.visibilityHistoryReady = false;
@@ -3219,7 +3318,18 @@ export class GpuDrivenView {
     return (this.skinCounterBase() + (this.skinLayout?.counterWords ?? 0)) * 4;
   }
   private visibleBytes(): number {
-    return this.skinLayout?.outputBytes ?? this.visibleBufferCapacity * 16 * 2;
+    return (
+      this.skinLayout?.outputBytes ??
+      this.visiblePrefixBytes(this.visibleBufferCapacity, this.lateMirror)
+    );
+  }
+  /** Union region plus, when reserved, the late-phase mirror of two-phase occlusion. */
+  private visiblePrefixBytes(capacity: number, lateMirror: boolean): number {
+    return capacity * VISIBLE_ENTRY_BYTES * (lateMirror ? 2 : 1);
+  }
+  /** Without a reserved mirror, late items alias the union region and draw nothing new. */
+  private lateVisibleBase(): number {
+    return this.lateMirror ? this.visibleBufferCapacity : 0;
   }
   private indirectBytes(): number {
     return (this.skinDispatchBase() + (this.skinLayout === undefined ? 0 : 3)) * 4;
@@ -3227,6 +3337,9 @@ export class GpuDrivenView {
 
   dispose(): void {
     this.shadowRaster = undefined;
+    const holds = this.memberHolds;
+    this.memberHolds = [];
+    for (const hold of holds) hold.release();
     const buffers = [
       ...this.supersededBuffers,
       ...(this.buffers === undefined ? [] : [this.buffers]),
@@ -3243,6 +3356,7 @@ export class GpuDrivenView {
     this.plan = undefined;
     this.encodedTopology = undefined;
     this.visibleBufferCapacity = 0;
+    this.lateMirror = false;
     this.sceneInputs = undefined;
     this.sceneInputBytes = 0;
     this.scenePrimitive = undefined;
@@ -3250,8 +3364,10 @@ export class GpuDrivenView {
     this.sceneTransform = undefined;
     this.sceneMaterial = undefined;
     this.sceneCapacity = 0;
+    this.sceneTransformBytes = 0;
     this.suppressionWordCapacity = 0;
     this.suppressionMirror = new Uint32Array(0);
+    this.suppressionSource = null;
     this.telemetryPending = undefined;
     this.telemetrySubmit = undefined;
     this.occlusionCamera = undefined;
@@ -3292,7 +3408,8 @@ export class GpuDrivenView {
       this.suppressionWordCapacity,
       this.buffers.visibleSurfaceRows !== undefined,
       this.skinJointCapacity,
-      (this.skinLayout?.rosterCapacity ?? 0) * 2,
+      (this.skinLayout?.candidateCapacity ?? 0) * 2,
+      this.lateMirror,
     );
   }
 
@@ -3324,6 +3441,36 @@ export class GpuDrivenView {
       );
       if (!initial.ok) return initial;
       this.suppressionUploadBytes += this.suppressionMirror.byteLength;
+    } else if (target === this.suppressionSource) {
+      // Same bitmap object: the mirror already equals it.
+    } else if (
+      target !== undefined &&
+      this.suppressionSource !== null &&
+      this.suppressionSource !== undefined &&
+      suppressionPatchOf(target)?.base === this.suppressionSource
+    ) {
+      // A patched successor of the uploaded bitmap: visit only the words it
+      // changed, so the upload cost follows the changes rather than capacity.
+      const patch = suppressionPatchOf(target)?.words ?? [];
+      const mirror = this.suppressionMirror;
+      const dirty = [...patch].sort((a, b) => a - b);
+      let index = 0;
+      while (index < dirty.length) {
+        const first = dirty[index] as number;
+        let word = first;
+        while (index < dirty.length && (dirty[index] as number) <= word) {
+          word = (dirty[index] as number) + 1;
+          index += 1;
+        }
+        for (let at = first; at < word; at++) mirror[at] = target[at] ?? 0;
+        const written = this.device.queue.writeBuffer(
+          buffer,
+          base + first * 4,
+          new Uint8Array(mirror.buffer, first * 4, (word - first) * 4),
+        );
+        if (!written.ok) return written;
+        this.suppressionUploadBytes += (word - first) * 4;
+      }
     } else {
       const mirror = this.suppressionMirror;
       let word = 0;
@@ -3346,6 +3493,7 @@ export class GpuDrivenView {
         this.suppressionUploadBytes += (word - first) * 4;
       }
     }
+    this.suppressionSource = target;
     this.uploadBytes += this.suppressionUploadBytes;
     return ok(undefined);
   }
@@ -3358,19 +3506,39 @@ export class GpuDrivenView {
     suppressionWords: number,
     surfaceRows = this.buffers?.visibleSurfaceRows !== undefined,
     skinJointCapacity = this.skinJointCapacity,
-    skinCandidateCapacity = this.skinLayout?.rosterCapacity ?? candidateCapacity,
+    skinCandidateCapacity = this.skinLayout?.candidateCapacity ?? candidateCapacity,
+    lateMirror = this.lateMirror,
   ): Result<void, RhiError> {
     const nextCandidate = nextCapacity(candidateCapacity);
     const nextSuppression = Math.max(nextCapacity(suppressionWords), this.suppressionWordCapacity);
-    // The late mirror starts at the capacity and raster binds its windows at
-    // static storage offsets, so the capacity keeps the 64-entry alignment
-    // BatchTopology gives every early window.
-    const nextVisible = nextCapacity(Math.max(64, visibleCapacity));
     const nextBatch = nextCapacity(batchCapacity);
     const nextIndirect = nextCapacity(indirectCapacity);
+    // The late mirror starts at the capacity and raster binds its windows at
+    // static storage offsets, so the capacity keeps the 64-entry alignment
+    // BatchTopology gives every early window. Skin output follows the visible
+    // prefix inside the same binding, so its tail shares the binding budget.
+    const skinTail =
+      skinJointCapacity > 0
+        ? skinDemandLayout(skinCandidateCapacity, skinJointCapacity).outputBytes
+        : 0;
+    const storageLimit = Number(this.device.limits.maxStorageBufferBindingSize);
+    const visibleCeiling =
+      Number.isFinite(storageLimit) && storageLimit > 0
+        ? (storageLimit - skinTail - 64) / this.visiblePrefixBytes(1, lateMirror)
+        : Number.MAX_SAFE_INTEGER;
+    const nextVisible = growGpuDrivenVisibleCapacity(
+      // A changed mirror reserves a new allocation; its capacity restarts exact.
+      lateMirror === this.lateMirror ? this.visibleBufferCapacity : 0,
+      visibleCapacity,
+      visibleCeiling,
+    );
     const skinLayout =
       skinJointCapacity > 0
-        ? skinDemandLayout(skinCandidateCapacity, skinJointCapacity, nextVisible * 16 * 2)
+        ? skinDemandLayout(
+            skinCandidateCapacity,
+            skinJointCapacity,
+            this.visiblePrefixBytes(nextVisible, lateMirror),
+          )
         : undefined;
     const previous = this.buffers;
     const created: Partial<MutableViewBuffers> = {};
@@ -3423,10 +3591,9 @@ export class GpuDrivenView {
         usage: storage | GPU_BUFFER_USAGE_COPY_DST,
         storage: true,
       },
-      // Union region plus the late-phase mirror of two-phase occlusion.
       {
         name: 'visible',
-        size: skinLayout?.outputBytes ?? nextVisible * 16 * 2,
+        size: skinLayout?.outputBytes ?? this.visiblePrefixBytes(nextVisible, lateMirror),
         usage: storage,
         storage: true,
       },
@@ -3513,6 +3680,7 @@ export class GpuDrivenView {
     this.surfaceRows = undefined;
     this.candidateCapacity = nextCandidate;
     this.visibleBufferCapacity = nextVisible;
+    this.lateMirror = lateMirror;
     this.batchCapacity = nextBatch;
     this.indirectCapacity = nextIndirect;
     this.suppressionWordCapacity = nextSuppression;

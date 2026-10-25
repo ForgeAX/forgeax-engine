@@ -101,6 +101,7 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
       '#pragma variant_axis VERTEX_COLOR_AVAILABLE',
       '#pragma variant_axis COVERAGE_ONLY',
       '#pragma variant_axis SKINNING_DISABLED',
+      '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
     ]);
   });
 });

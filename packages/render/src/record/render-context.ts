@@ -497,6 +497,10 @@ export interface PipelineState {
 }
 
 export interface RenderSystemInternals extends RenderSystemRuntime {
+  /** The Renderer's one Render World; its entities are the composed camera views. */
+  readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
+  /** Renderer-shared instance projections of published rows, prepared once at acceptance. */
+  readonly instanceCollections?: import('../instances').InstanceProjectionStore | undefined;
   /** Renderer-owned screen UI is encoded after all views, before the one submit. */
   encodePresentation?: (encoder: RhiCommandEncoder) => void;
   /** Optional final display target; private camera selection remains with viewOutput. */
@@ -584,9 +588,6 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
 }
 
 export interface _StandardForwardSceneView {
-  readonly cameraVisible?: (
-    source: import('../render-system-extract').RenderableSnapshot,
-  ) => boolean;
   readonly capturedAtmosphere?: import('../environment/storage').AtmosphereStorage | undefined;
   readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
   readonly environmentIbl?: { readonly irradiance: TextureView; readonly prefilter: TextureView };

@@ -21,6 +21,7 @@ import { MeshFilter, MeshRenderer } from '../components';
 import { renderMaterialContext } from '../extract/material-context';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
 import {
   materialSurfaceProgramsForMaterial,
@@ -291,7 +292,7 @@ it('carries both accepted Surface programs through value edits and detached publ
     expect(packet.programs.some((program) => program.key === latest.cardKey)).toBe(false);
     expect(packet.programs.some((program) => program.key === latest.key)).toBe(false);
     const accepted = new RenderPublicationReceiver(identity)
-      .accept(packet, receiverAssets)
+      .accept(encodeRenderPublication(packet), receiverAssets)
       .unwrap();
     const material = accepted.frame.renderables.at(0)?.material.snapshot;
     expect(material?.materialParamSchema).toBe(

@@ -45,8 +45,7 @@ function fixture() {
     materialBindingSources: ['engine-default'],
     skinBinding: { skeleton: 7, joints: [19] },
   };
-  const before = scene.slotsSnapshot();
-  skin.apply(before, scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: row }]));
+  skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: row }]));
   skin.joint(0, 19, matrix(3));
   const slot = required(scene.slotsSnapshot().lookup(0, 17)).slot;
   const x = (root: ReturnType<SkinSceneInputs['capture']>) => {
@@ -153,8 +152,7 @@ it('uses the actual fixed Scene slot root when a later frame reuses its address'
   try {
     const a = required(skin.prepareFrame(scene.slotsSnapshot())),
       released = skin.submitFrame(a, done.promise, true);
-    const before = scene.slotsSnapshot();
-    skin.apply(before, scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]));
+    skin.apply(scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]));
     const row: RenderableSnapshot = {
       worldId: 0,
       entityKey: 29,
@@ -164,8 +162,7 @@ it('uses the actual fixed Scene slot root when a later frame reuses its address'
       materialBindingSources: ['engine-default'],
       skinBinding: { skeleton: 7, joints: [19] },
     };
-    const empty = scene.slotsSnapshot();
-    skin.apply(empty, scene.apply([{ kind: 'update', worldId: 0, entityKey: 29, snapshot: row }]));
+    skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 29, snapshot: row }]));
     skin.joint(0, 19, matrix(8));
     const b = required(skin.prepareFrame(scene.slotsSnapshot()));
     expect(b.slots.lookup(0, 29)?.slot).toBe(slot);
@@ -200,8 +197,7 @@ it('does no root capture without Skin demand and retires old history after a suc
   try {
     const a = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
     await f.skin.submitFrame(a, Promise.resolve(), true);
-    const before = f.scene.slotsSnapshot();
-    f.skin.apply(before, f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]));
+    f.skin.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]));
     const empty = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
     expect(empty.current.jointCapacity).toBe(0);
     expect(f.x(required(empty.previous))).toBe(4);

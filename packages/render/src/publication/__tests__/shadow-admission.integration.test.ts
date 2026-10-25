@@ -27,17 +27,20 @@ import type { RenderableSnapshot } from '../../render-system-extract';
 import { MaterialDispatch } from '../../scene/material-dispatch';
 import { effectiveMeshMaterials } from '../../scene/mesh-materials';
 import { PersistentRenderScene } from '../../scene/render-scene';
-import { renderPublicationTransfers } from '../contract';
 import { preparePublicationGeometry } from '../prepare-geometry';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 function artifact(material: string, pass: 'forward' | 'shadow'): MaterialShaderArtifact {
   const receipt = createStandardPbrArtifactReceipt();
   return {
     material,
     pass,
-    program: createMaterialShaderProgram(`shadow-admission-${pass}`),
+    // The scene-index vertex stage reads the GPU Scene morph inputs, as cooked Standard does.
+    program: createMaterialShaderProgram(`shadow-admission-${pass}`, [
+      { name: 'vs_scene_index', stage: 'vertex', bindings: [{ group: 3, binding: 8 }] },
+    ]),
     layoutIdentity: receipt.reflection.layoutIdentity,
     bindings: [],
     deps: [],
@@ -75,14 +78,16 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
     world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     const replay = structuredClone(packet);
-    const received = receiver.accept(packet).unwrap();
+    const received = receiver.accept(encodeRenderPublication(packet)).unwrap();
     const prepared = preparePublicationGeometry(received, assets, instances);
     const frame = scene.consumePublication(prepared);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { received, frame, packet: replay };
   };
   const admit = (select: BatchArtifactResolver = resolve, source = scene) => {
@@ -293,7 +298,7 @@ it('adopts an edited shared asset without an entity update and uses the current 
   }
 });
 
-it('keeps active morph deformation on the direct lane and admits neutralized geometry', () => {
+it('admits active morph deformation as a morph GPU batch and neutralized geometry as shared', () => {
   const f = fixture();
   try {
     const mesh = createBoxGeometry(1, 1, 1).unwrap();
@@ -309,14 +314,35 @@ it('keeps active morph deformation on the direct lane and admits neutralized geo
       .addComponent(f.entity, { component: MorphWeights, data: { weights: new Float32Array([1]) } })
       .unwrap();
     f.publish();
-    expect(f.scene.compositionSlots().at(0)?.snapshot.morph).toBeDefined();
-    expect(f.admit().batches.length).toBe(0);
+    const morphed = f.scene.compositionSlots().at(0)?.snapshot;
+    assert(morphed?.morph);
+    // Weighted target deltas expand the producer bounds conservatively.
+    expect([...(morphed.localAabb ?? [])].map((value) => Math.round(value * 1e4) / 1e4)).toEqual([
+      -0.5, -0.5, -0.5, 0.6, 0.6, 0.6,
+    ]);
+    const active = f.admit();
+    expect(active.batches.map((batch) => batch.key.morph)).toEqual([true]);
+    expect(active.batches.at(0)?.binding?.morph).toBe(true);
+    expect(active.batches.at(0)?.lod).toBeUndefined();
+    expect(active.selection.has(f.actualSource(morphed), 0)).toBe(true);
+    // A program whose scene-index vertex stage does not read the morph rows stays direct.
+    const unaware = { ...f.forward, program: createMaterialShaderProgram('no-morph-reads') };
+    const direct = f.admit((material, request) =>
+      request.pass === 'forward'
+        ? material === unaware.material
+          ? unaware
+          : undefined
+        : undefined,
+    );
+    expect(direct.selection.has(f.actualSource(morphed), 0)).toBe(false);
     f.world.set(f.entity, MorphWeights, { weights: new Float32Array([0]) }).unwrap();
     f.publish();
     const neutral = f.scene.compositionSlots().at(0)?.snapshot;
     assert(neutral);
     expect(neutral.morph).toBeUndefined();
-    expect(f.admit().selection.has(f.actualSource(neutral), 0)).toBe(true);
+    const shared = f.admit();
+    expect(shared.batches.map((batch) => batch.key.morph)).toEqual([undefined]);
+    expect(shared.selection.has(f.actualSource(neutral), 0)).toBe(true);
   } finally {
     f.close();
   }
@@ -341,7 +367,7 @@ it.each([
   const receiver = new RenderPublicationReceiver(f.publisher.identity);
   try {
     const { packet } = f.publish();
-    const received = receiver.accept(packet).unwrap();
+    const received = receiver.accept(encodeRenderPublication(packet)).unwrap();
     rebuilt.consumePublication(
       preparePublicationGeometry(received, f.assets, new InstanceProjectionStore()),
     );

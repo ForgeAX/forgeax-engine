@@ -180,6 +180,24 @@ export interface Schedule {
   predecessors: Map<string, Set<string>>;
   /** Reverse set membership derived with the schedule graph. */
   systemToSets: Map<string, string[]>;
+  /**
+   * Every built system is query-free, ungated and edge-free: one run needs no
+   * set gate, query materialization or predecessor flush. Derived on build.
+   */
+  plain: boolean;
+  /** `scheduleRevision` at which cross-schedule references last validated. */
+  validatedRevision: number;
+}
+
+/**
+ * Process-wide registration revision: any system addition, removal or
+ * replacement in any schedule advances it, so a run revalidates references
+ * only after registration actually changed.
+ */
+let scheduleRevision = 0;
+
+export function currentScheduleRevision(): number {
+  return scheduleRevision;
 }
 
 /** Create a fresh Schedule. */
@@ -193,6 +211,8 @@ export function createSchedule(token: ScheduleToken): Schedule {
     sortedOrder: [],
     predecessors: new Map(),
     systemToSets: new Map(),
+    plain: true,
+    validatedRevision: -1,
   };
 }
 
@@ -216,6 +236,7 @@ export function addSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
   };
   schedule.systems.set(descriptor.name, record);
   schedule.dirty = true;
+  scheduleRevision += 1;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -361,6 +382,7 @@ export function removeSystem(
     setRecord.members.delete(name);
   }
   schedule.dirty = true;
+  scheduleRevision += 1;
   return ok(undefined);
 }
 
@@ -395,6 +417,7 @@ export function replaceSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
   // Reset cached query states — descriptor.queries may have changed shape.
   record.queries = null;
   schedule.dirty = true;
+  scheduleRevision += 1;
   return ok(undefined);
 }
 
@@ -441,6 +464,7 @@ export function addSystems<const Qs extends ReadonlyArray<QueryDescriptor>>(
   }
 
   schedule.dirty = true;
+  scheduleRevision += 1;
   return ok(undefined);
 }
 
@@ -588,6 +612,17 @@ export function buildSchedule(schedule: Schedule): string[] {
   schedule.sortedOrder = sorted;
   schedule.predecessors = predecessors;
   schedule.systemToSets = systemToSets;
+  schedule.plain =
+    schedule.sets.size === 0 &&
+    sorted.every((name) => {
+      const record = systems.get(name);
+      return (
+        record !== undefined &&
+        record.descriptor.queries.length === 0 &&
+        record.descriptor.runIf === undefined &&
+        (predecessors.get(name)?.size ?? 0) === 0
+      );
+    });
   schedule.dirty = false;
   return sorted;
 }
@@ -692,20 +727,7 @@ function runScheduleBody(
   if (schedule.dirty) {
     buildSchedule(schedule);
   }
-  if (
-    selectedNames === undefined &&
-    schedule.sets.size === 0 &&
-    commandsBySystem.size === 0 &&
-    schedule.sortedOrder.every((name) => {
-      const record = schedule.systems.get(name);
-      return (
-        record !== undefined &&
-        record.descriptor.queries.length === 0 &&
-        record.descriptor.runIf === undefined &&
-        (schedule.predecessors.get(name)?.size ?? 0) === 0
-      );
-    })
-  ) {
+  if (selectedNames === undefined && commandsBySystem.size === 0 && schedule.plain) {
     for (const name of schedule.sortedOrder) {
       const record = schedule.systems.get(name);
       /* istanbul ignore next -- sortedOrder comes from systems Map keys */

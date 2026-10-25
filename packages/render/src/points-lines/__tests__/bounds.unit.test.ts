@@ -19,4 +19,10 @@ describe('Points/Lines conservative transformed culling bounds', () => {
     });
     expect([...expanded]).toEqual([-9, -9, -8, 9, 9, 8]);
   });
+
+  it('returns immutable Float32Array bounds without a copy when no style expands them', () => {
+    const bounds = new Float32Array([-1, -1, -1, 1, 1, 1]);
+    expect(expandPointsLinesBounds(bounds, undefined)).toBe(bounds);
+    expect([...expandPointsLinesBounds([0, 0, 0, 1, 1, 1], undefined)]).toEqual([0, 0, 0, 1, 1, 1]);
+  });
 });

@@ -6,8 +6,9 @@ import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
 import type { CloudShadowProjection } from '../cloud/shadow';
 import { stageAtmospherePublish } from '../environment/storage';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import type { DirectionalLightSnapshot, ExtractedLights } from '../render-system-extract';
+import type { DirectionalLightSnapshot } from '../render-system-extract';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
+import type { ViewLights } from '../world/render-lights';
 import type { CubeCaptureFrameInput } from './frame';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import type { BindGroupCounts, RenderFrameState } from './frame-snapshot';
@@ -44,7 +45,7 @@ function compileCubeCaptureFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
-  lights: ExtractedLights,
+  lights: ViewLights,
   cubeCapture: CubeCaptureFrameInput,
   work: CubeCaptureGraphWork,
   graphShadowMapSize: number | undefined,
@@ -77,7 +78,7 @@ function compileProbeCaptureFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
-  lights: ExtractedLights,
+  lights: ViewLights,
   cubeCapture: CubeCaptureFrameInput,
   probe: NonNullable<CubeCaptureFrameInput['reflectionProbes']>['graph']['work'][number],
   graphShadowMapSize: number | undefined,
@@ -118,7 +119,7 @@ export function compileCaptureFrames(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
-  lights: ExtractedLights,
+  lights: ViewLights,
   cubeCapture: CubeCaptureFrameInput | undefined,
   cubeCaptureWork: readonly CubeCaptureGraphWork[],
   graphShadowMapSize: number | undefined,
@@ -203,12 +204,11 @@ function executeCaptureFrame(
     capturedAtmosphere: capture.capturedAtmosphere,
     pipelineState: capture.pipeline,
     camera: capture.work.faceCamera,
-    shadowViewPlanesByView: shadowViewPlanesByView(capture.lights),
+    shadowViewPlanesByView: shadowViewPlanesByView(capture.lights.shadowViews),
     frameState: capture.frameState,
     standardLighting: capture.lighting,
   };
   delete context.gpuDrivenShadowViews;
-  delete context.cameraVisible;
   delete context.shadowDirectRequired;
   delete context.directionalShadowCascadeMiss;
   delete context.gpuDrivenShadowBatchProjections;

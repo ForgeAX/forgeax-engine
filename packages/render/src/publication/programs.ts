@@ -13,12 +13,12 @@ import {
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import {
-  equalDescriptorValue,
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
   ownRenderFeatureProgramDataWith,
 } from '../features/prepared-gpu-work';
 import type { MaterialSnapshot } from '../render-system-extract';
+import { sameValue } from '../same-value';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 
@@ -247,7 +247,7 @@ export class PublicationMaterialProjectionAdmission {
         : this.#projections.find(key, (value) => {
             const equalValues = equalProjectionExceptPasses(value, candidate);
             if (!equalValues && samePrograms !== undefined) return false;
-            const equalPasses = equalDescriptorValue(value.passes, candidate.passes);
+            const equalPasses = sameValue(value.passes, candidate.passes);
             if (equalPasses) samePrograms ??= value;
             return equalValues && equalPasses;
           });
@@ -280,7 +280,7 @@ export class PublicationMaterialProjectionAdmission {
       const prior =
         programKey === undefined
           ? undefined
-          : this.#programs.find(programKey, (value) => equalDescriptorValue(value, program));
+          : this.#programs.find(programKey, (value) => sameValue(value, program));
       if (prior !== undefined) {
         this.#retain(prior);
         reused.set(program, prior);
@@ -307,21 +307,14 @@ export class PublicationMaterialProjectionAdmission {
   }
 }
 
+const PASSES: ReadonlySet<string> = new Set(['passes']);
+
 /** Structural equality of every projection field except the program closure. */
 function equalProjectionExceptPasses(owned: object, received: object): boolean {
-  const left = owned as Record<string, unknown>;
-  const right = received as Record<string, unknown>;
-  const keys = Object.keys(left);
-  if (keys.length !== Object.keys(right).length) return false;
-  for (const field of keys) {
-    if (field === 'passes') {
-      if (!Object.hasOwn(right, field)) return false;
-      continue;
-    }
-    if (!Object.hasOwn(right, field) || !equalDescriptorValue(left[field], right[field]))
-      return false;
-  }
-  return true;
+  return (
+    Object.hasOwn(received, 'passes') === Object.hasOwn(owned, 'passes') &&
+    sameValue(owned, received, PASSES)
+  );
 }
 
 function projectionKeyOf(value: PublishedMaterialProjection): string | undefined {

@@ -47,6 +47,7 @@ import type {
   QuerySet,
   QuerySetDescriptor,
   RenderBundle,
+  RenderBundleDescriptor,
   RenderBundleEncoderDescriptor,
   RenderPassDescriptor,
   RenderPipeline,
@@ -237,25 +238,7 @@ const TEXTURE_META_MAP: WeakMap<Texture, TextureMeta> = new WeakMap();
 interface EncoderState {
   raw: GPUCommandEncoder;
   finished: boolean;
-  activePass: RhiRenderPassEncoder | null;
-}
-
-interface PassState {
-  raw: GPURenderPassEncoder;
-  ended: boolean;
-  encoder: RhiCommandEncoder;
-  // [[occlusion_query_set]] (research §2.1): the QuerySet injected via
-  // GPURenderPassDescriptor.occlusionQuerySet at beginRenderPass time.
-  // null means occlusion queries are unavailable in this pass.
-  occlusionQuerySet: QuerySet | null;
-  // [[occlusion_query_active]] (research §2.1): true when a beginOcclusionQuery
-  // has been issued without a matching endOcclusionQuery yet. Spec normative:
-  // pairs cannot nest.
-  occlusionQueryActive: boolean;
-  // queryIndex written by a previous beginOcclusionQuery in this pass; spec
-  // normative: a queryIndex written previously in this pass cannot be reused
-  // (cross-pass reuse on the same querySet is legal per dawn `Rewrite` mode).
-  occlusionQueryWritten: Set<number>;
+  activePass: WebGpuRenderPassEncoder | null;
 }
 
 /** WeakMap that tracks raw GPUQuerySet for createQuerySet handles so the shim
@@ -489,255 +472,342 @@ const BUNDLE_LANE: RenderCommandLane = {
   vertexBufferSets: 'bundleVertexBufferSets',
 };
 
-/** Shared native draw, binding and debug commands for passes and bundles. */
-function makeRenderCommands(
-  rawPass: GPURenderPassEncoder | GPURenderBundleEncoder,
-  lane: RenderCommandLane,
-): RhiRenderCommands {
-  return {
-    setPipeline(pipeline: RenderPipeline): void {
-      COMMAND_COUNTS[lane.pipelineSets]++;
-      rawPass.setPipeline(pipeline as unknown as GPURenderPipeline);
-    },
-    setVertexBuffer(
-      slot: number,
-      buffer: Buffer,
-      offset?: number | undefined,
-      size?: number | undefined,
-    ): void {
-      // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
-      COMMAND_COUNTS[lane.vertexBufferSets]++;
-      const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
-      rawPass.setVertexBuffer(slot, rawBuf, offset, size);
-    },
-    setIndexBuffer(
-      buffer: Buffer,
-      format: 'uint16' | 'uint32',
-      offset?: number | undefined,
-      size?: number | undefined,
-    ): void {
-      // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
-      const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
-      rawPass.setIndexBuffer(rawBuf, format, offset, size);
-    },
-    setBindGroup(
-      index: number,
-      bindGroup: BindGroup,
-      arg3?: readonly number[] | Uint32Array | undefined,
-      arg4?: number | undefined,
-      arg5?: number | undefined,
-    ): void {
-      // Two overload forms (D-S4 setBindGroup):
-      //   (a) (index, bindGroup, dynamicOffsets?: readonly number[])
-      //   (b) (index, bindGroup, dynamicOffsetsData: Uint32Array,
-      //        dynamicOffsetsDataStart, dynamicOffsetsDataLength)
-      COMMAND_COUNTS[lane.bindGroupSets]++;
-      if (arg3 instanceof Uint32Array) {
-        rawPass.setBindGroup(
-          index,
-          bindGroup as unknown as GPUBindGroup,
-          arg3,
-          arg4 ?? 0,
-          arg5 ?? arg3.length,
-        );
-      } else if (arg3 === undefined) {
-        rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup);
-      } else {
-        rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup, arg3);
-      }
-    },
-    draw(
-      vertexCount: number,
-      instanceCount?: number | undefined,
-      firstVertex?: number | undefined,
-      firstInstance?: number | undefined,
-    ): void {
-      COMMAND_COUNTS[lane.draws]++;
-      rawPass.draw(vertexCount, instanceCount, firstVertex, firstInstance);
-    },
-    drawIndexed(
-      indexCount: number,
-      instanceCount?: number | undefined,
-      firstIndex?: number | undefined,
-      baseVertex?: number | undefined,
-      firstInstance?: number | undefined,
-    ): void {
-      COMMAND_COUNTS[lane.draws]++;
-      rawPass.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
-    },
-    drawIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
-      const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
-      COMMAND_COUNTS[lane.draws]++;
-      rawPass.drawIndirect(rawBuf, indirectOffset);
-    },
-    drawIndexedIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
-      const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
-      COMMAND_COUNTS[lane.draws]++;
-      rawPass.drawIndexedIndirect(rawBuf, indirectOffset);
-    },
-    pushDebugGroup(groupLabel: string): void {
-      rawPass.pushDebugGroup(groupLabel);
-    },
-    popDebugGroup(): void {
-      rawPass.popDebugGroup();
-    },
-    insertDebugMarker(markerLabel: string): void {
-      rawPass.insertDebugMarker(markerLabel);
-    },
-  };
+/**
+ * Shared native draw, binding and debug commands for passes and bundles.
+ * Encoders are class instances: one allocation per pass instead of a closure
+ * per command, which every recorded pass and bundle paid on every frame.
+ */
+class WebGpuRenderCommands implements RhiRenderCommands {
+  constructor(
+    protected readonly rawPass: GPURenderPassEncoder | GPURenderBundleEncoder,
+    private readonly lane: RenderCommandLane,
+  ) {}
+
+  setPipeline(pipeline: RenderPipeline): void {
+    COMMAND_COUNTS[this.lane.pipelineSets]++;
+    this.rawPass.setPipeline(pipeline as unknown as GPURenderPipeline);
+  }
+
+  setVertexBuffer(
+    slot: number,
+    buffer: Buffer,
+    offset?: number | undefined,
+    size?: number | undefined,
+  ): void {
+    // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
+    COMMAND_COUNTS[this.lane.vertexBufferSets]++;
+    const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
+    this.rawPass.setVertexBuffer(slot, rawBuf, offset, size);
+  }
+
+  setIndexBuffer(
+    buffer: Buffer,
+    format: 'uint16' | 'uint32',
+    offset?: number | undefined,
+    size?: number | undefined,
+  ): void {
+    // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
+    const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
+    this.rawPass.setIndexBuffer(rawBuf, format, offset, size);
+  }
+
+  setBindGroup(
+    index: number,
+    bindGroup: BindGroup,
+    arg3?: readonly number[] | Uint32Array | undefined,
+    arg4?: number | undefined,
+    arg5?: number | undefined,
+  ): void {
+    // Two overload forms (D-S4 setBindGroup):
+    //   (a) (index, bindGroup, dynamicOffsets?: readonly number[])
+    //   (b) (index, bindGroup, dynamicOffsetsData: Uint32Array,
+    //        dynamicOffsetsDataStart, dynamicOffsetsDataLength)
+    COMMAND_COUNTS[this.lane.bindGroupSets]++;
+    if (arg3 instanceof Uint32Array) {
+      this.rawPass.setBindGroup(
+        index,
+        bindGroup as unknown as GPUBindGroup,
+        arg3,
+        arg4 ?? 0,
+        arg5 ?? arg3.length,
+      );
+    } else if (arg3 === undefined) {
+      this.rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup);
+    } else {
+      this.rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup, arg3);
+    }
+  }
+
+  draw(
+    vertexCount: number,
+    instanceCount?: number | undefined,
+    firstVertex?: number | undefined,
+    firstInstance?: number | undefined,
+  ): void {
+    COMMAND_COUNTS[this.lane.draws]++;
+    this.rawPass.draw(vertexCount, instanceCount, firstVertex, firstInstance);
+  }
+
+  drawIndexed(
+    indexCount: number,
+    instanceCount?: number | undefined,
+    firstIndex?: number | undefined,
+    baseVertex?: number | undefined,
+    firstInstance?: number | undefined,
+  ): void {
+    COMMAND_COUNTS[this.lane.draws]++;
+    this.rawPass.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+  }
+
+  drawIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
+    const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+    COMMAND_COUNTS[this.lane.draws]++;
+    this.rawPass.drawIndirect(rawBuf, indirectOffset);
+  }
+
+  drawIndexedIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
+    const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+    COMMAND_COUNTS[this.lane.draws]++;
+    this.rawPass.drawIndexedIndirect(rawBuf, indirectOffset);
+  }
+
+  pushDebugGroup(groupLabel: string): void {
+    this.rawPass.pushDebugGroup(groupLabel);
+  }
+
+  popDebugGroup(): void {
+    this.rawPass.popDebugGroup();
+  }
+
+  insertDebugMarker(markerLabel: string): void {
+    this.rawPass.insertDebugMarker(markerLabel);
+  }
 }
 
-function makeRenderPassEncoder(
-  rawPass: GPURenderPassEncoder,
-  encoder: RhiCommandEncoder,
-  occlusionQuerySet: QuerySet | null,
-): RhiRenderPassEncoder {
-  // The pass closures own their state directly. A module WeakMap keyed by
-  // per-frame passes left one unresolvable entry per dead pass in every
-  // MajorGC ephemeron fixpoint.
-  const state: PassState = {
-    raw: rawPass,
-    ended: false,
-    encoder,
-    occlusionQuerySet,
-    occlusionQueryActive: false,
-    occlusionQueryWritten: new Set<number>(),
-  };
-  const pass: RhiRenderPassEncoder = {
-    ...makeRenderCommands(rawPass, PASS_LANE),
-    setViewport(
-      x: number,
-      y: number,
-      w: number,
-      h: number,
-      minDepth: number,
-      maxDepth: number,
-    ): void {
-      rawPass.setViewport(x, y, w, h, minDepth, maxDepth);
-    },
-    setScissorRect(x: number, y: number, w: number, h: number): void {
-      rawPass.setScissorRect(x, y, w, h);
-    },
-    setBlendConstant(color: GPUColor): void {
-      rawPass.setBlendConstant(color);
-    },
-    setStencilReference(reference: number): void {
-      rawPass.setStencilReference(reference);
-    },
-    executeBundles(bundles: Iterable<RenderBundle>): Result<void, RhiError> {
-      try {
-        const rawBundles = Array.from(bundles, (bundle) => bundle as unknown as GPURenderBundle);
-        rawPass.executeBundles(rawBundles);
-        COMMAND_COUNTS.bundlesExecuted += rawBundles.length;
-        return ok(undefined);
-      } catch (cause) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'compatible render bundles from this device in an open render pass',
-            hint: String(cause),
-          }),
-        );
-      }
-    },
-    beginOcclusionQuery(queryIndex: number): Result<void, RhiError> {
-      // Step 1 (research §2.1): [[occlusion_query_set]] != null.
-      if (state.occlusionQuerySet === null) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'GPURenderPassDescriptor.occlusionQuerySet must be set',
-            hint: 'pass occlusionQuerySet in RenderPassDescriptor before beginOcclusionQuery',
-          }),
-        );
-      }
-      // Step 4 (research §2.1): [[occlusion_query_active]] == false (no nesting).
-      // K-2: nested begin maps to webgpu-runtime-error (NOT a new code).
-      if (state.occlusionQueryActive) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected:
-              '[[occlusion_query_active]] == false; pair beginOcclusionQuery / endOcclusionQuery',
-            hint: 'call endOcclusionQuery() before beginOcclusionQuery() again; occlusion queries cannot nest (spec §render-passes)',
-          }),
-        );
-      }
-      // Step 2 (research §2.1): queryIndex < querySet.count.
-      const rawQs = QUERY_SET_RAW_MAP.get(state.occlusionQuerySet);
-      const qsCount =
-        rawQs !== undefined && typeof rawQs.count === 'number'
-          ? rawQs.count
-          : Number.MAX_SAFE_INTEGER;
-      if (queryIndex < 0 || queryIndex >= qsCount) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'queryIndex < querySet.count',
-            hint: `got queryIndex=${queryIndex}; querySet.count=${qsCount}`,
-          }),
-        );
-      }
-      // Step 3 (research §2.1): queryIndex not yet written in this pass.
-      // Cross-pass reuse on the same querySet is legal (dawn `Rewrite` mode).
-      if (state.occlusionQueryWritten.has(queryIndex)) {
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'queryIndex must not have been written in this pass',
-            hint: `queryIndex=${queryIndex} was already written; cross-pass reuse on the same querySet is legal but in-pass reuse is not (spec §queries)`,
-          }),
-        );
-      }
-      try {
-        rawPass.beginOcclusionQuery(queryIndex);
-        state.occlusionQueryActive = true;
-        state.occlusionQueryWritten.add(queryIndex);
-        return ok(undefined);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'underlying GPURenderPassEncoder.beginOcclusionQuery to succeed',
-            hint: `beginOcclusionQuery raised: ${message}`,
-          }),
-        );
-      }
-    },
-    endOcclusionQuery(): Result<void, RhiError> {
-      // Spec normative (research §2.1): [[occlusion_query_active]] must be true.
-      // K-2: end without active begin maps to render-pass-not-ended (existing
-      // 14-member union).
-      if (!state.occlusionQueryActive) {
-        return err(renderPassNotEnded());
-      }
-      try {
-        rawPass.endOcclusionQuery();
-        state.occlusionQueryActive = false;
-        return ok(undefined);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'underlying GPURenderPassEncoder.endOcclusionQuery to succeed',
-            hint: `endOcclusionQuery raised: ${message}`,
-          }),
-        );
-      }
-    },
-    end(): void {
-      state.ended = true;
-      rawPass.end();
-      // Clear active-pass tracking on the owning encoder.
-      const encState = ENCODER_STATE.get(encoder);
-      if (encState !== undefined && encState.activePass === pass) {
-        encState.activePass = null;
-      }
-    },
-  };
-  return pass;
+/** Render pass encoder; its own fields are the spec pass state. */
+class WebGpuRenderPassEncoder extends WebGpuRenderCommands implements RhiRenderPassEncoder {
+  ended = false;
+  // [[occlusion_query_active]] (research §2.1): true when a beginOcclusionQuery
+  // has been issued without a matching endOcclusionQuery yet. Spec normative:
+  // pairs cannot nest.
+  private occlusionQueryActive = false;
+  // Query indices written in this pass (spec §queries); allocated on first use.
+  private occlusionQueryWritten: Set<number> | undefined;
+
+  constructor(
+    private readonly renderPass: GPURenderPassEncoder,
+    private readonly encoder: RhiCommandEncoder,
+    // [[occlusion_query_set]] (research §2.1): the QuerySet injected via
+    // GPURenderPassDescriptor.occlusionQuerySet at beginRenderPass time.
+    // null means occlusion queries are unavailable in this pass.
+    private readonly occlusionQuerySet: QuerySet | null,
+  ) {
+    super(renderPass, PASS_LANE);
+  }
+
+  setViewport(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    minDepth: number,
+    maxDepth: number,
+  ): void {
+    this.renderPass.setViewport(x, y, w, h, minDepth, maxDepth);
+  }
+
+  setScissorRect(x: number, y: number, w: number, h: number): void {
+    this.renderPass.setScissorRect(x, y, w, h);
+  }
+
+  setBlendConstant(color: GPUColor): void {
+    this.renderPass.setBlendConstant(color);
+  }
+
+  setStencilReference(reference: number): void {
+    this.renderPass.setStencilReference(reference);
+  }
+
+  executeBundles(bundles: Iterable<RenderBundle>): Result<void, RhiError> {
+    try {
+      const rawBundles = Array.from(bundles, (bundle) => bundle as unknown as GPURenderBundle);
+      this.renderPass.executeBundles(rawBundles);
+      COMMAND_COUNTS.bundlesExecuted += rawBundles.length;
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'compatible render bundles from this device in an open render pass',
+          hint: String(cause),
+        }),
+      );
+    }
+  }
+
+  beginOcclusionQuery(queryIndex: number): Result<void, RhiError> {
+    // Step 1 (research §2.1): [[occlusion_query_set]] != null.
+    if (this.occlusionQuerySet === null) {
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'GPURenderPassDescriptor.occlusionQuerySet must be set',
+          hint: 'pass occlusionQuerySet in RenderPassDescriptor before beginOcclusionQuery',
+        }),
+      );
+    }
+    // Step 4 (research §2.1): [[occlusion_query_active]] == false (no nesting).
+    // K-2: nested begin maps to webgpu-runtime-error (NOT a new code).
+    if (this.occlusionQueryActive) {
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected:
+            '[[occlusion_query_active]] == false; pair beginOcclusionQuery / endOcclusionQuery',
+          hint: 'call endOcclusionQuery() before beginOcclusionQuery() again; occlusion queries cannot nest (spec §render-passes)',
+        }),
+      );
+    }
+    // Step 2 (research §2.1): queryIndex < querySet.count.
+    const rawQs = QUERY_SET_RAW_MAP.get(this.occlusionQuerySet);
+    const qsCount =
+      rawQs !== undefined && typeof rawQs.count === 'number'
+        ? rawQs.count
+        : Number.MAX_SAFE_INTEGER;
+    if (queryIndex < 0 || queryIndex >= qsCount) {
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'queryIndex < querySet.count',
+          hint: `got queryIndex=${queryIndex}; querySet.count=${qsCount}`,
+        }),
+      );
+    }
+    // Step 3 (research §2.1): queryIndex not yet written in this pass.
+    // Cross-pass reuse on the same querySet is legal (dawn `Rewrite` mode).
+    if (this.occlusionQueryWritten?.has(queryIndex) === true) {
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'queryIndex must not have been written in this pass',
+          hint: `queryIndex=${queryIndex} was already written; cross-pass reuse on the same querySet is legal but in-pass reuse is not (spec §queries)`,
+        }),
+      );
+    }
+    try {
+      this.renderPass.beginOcclusionQuery(queryIndex);
+      this.occlusionQueryActive = true;
+      this.occlusionQueryWritten ??= new Set<number>();
+      this.occlusionQueryWritten.add(queryIndex);
+      return ok(undefined);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'underlying GPURenderPassEncoder.beginOcclusionQuery to succeed',
+          hint: `beginOcclusionQuery raised: ${message}`,
+        }),
+      );
+    }
+  }
+
+  endOcclusionQuery(): Result<void, RhiError> {
+    // Spec normative (research §2.1): [[occlusion_query_active]] must be true.
+    // K-2: end without active begin maps to render-pass-not-ended (existing
+    // 14-member union).
+    if (!this.occlusionQueryActive) {
+      return err(renderPassNotEnded());
+    }
+    try {
+      this.renderPass.endOcclusionQuery();
+      this.occlusionQueryActive = false;
+      return ok(undefined);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'underlying GPURenderPassEncoder.endOcclusionQuery to succeed',
+          hint: `endOcclusionQuery raised: ${message}`,
+        }),
+      );
+    }
+  }
+
+  end(): void {
+    this.ended = true;
+    this.renderPass.end();
+    // Clear active-pass tracking on the owning encoder.
+    const encState = ENCODER_STATE.get(this.encoder);
+    if (encState !== undefined && encState.activePass === this) {
+      encState.activePass = null;
+    }
+  }
+}
+
+class WebGpuRenderBundleEncoder extends WebGpuRenderCommands implements RhiRenderBundleEncoder {
+  private finished = false;
+
+  constructor(private readonly bundle: GPURenderBundleEncoder) {
+    super(bundle, BUNDLE_LANE);
+  }
+
+  finish(descriptor?: RenderBundleDescriptor | undefined): Result<RenderBundle, RhiError> {
+    if (this.finished) return err(commandEncoderFinished('render bundle'));
+    this.finished = true;
+    try {
+      return ok(
+        this.bundle.finish(descriptor as GPURenderBundleDescriptor) as unknown as RenderBundle,
+      );
+    } catch (cause) {
+      return err(
+        new RhiErrorClass({
+          code: 'webgpu-runtime-error',
+          expected: 'a valid render bundle command sequence',
+          hint: String(cause),
+        }),
+      );
+    }
+  }
+}
+
+class WebGpuComputePassEncoder implements RhiComputePassEncoder {
+  constructor(private readonly rawPass: GPUComputePassEncoder) {}
+
+  setPipeline(pipeline: ComputePipeline): void {
+    COMMAND_COUNTS.pipelineSets++;
+    this.rawPass.setPipeline(pipeline as unknown as GPUComputePipeline);
+  }
+
+  setBindGroup(
+    index: number,
+    bindGroup: BindGroup,
+    dynamicOffsets?: readonly number[] | undefined,
+  ): void {
+    COMMAND_COUNTS.bindGroupSets++;
+    if (dynamicOffsets === undefined) {
+      this.rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup);
+    } else {
+      this.rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup, dynamicOffsets);
+    }
+  }
+
+  dispatchWorkgroups(x: number, y?: number | undefined, z?: number | undefined): void {
+    COMMAND_COUNTS.dispatches++;
+    this.rawPass.dispatchWorkgroups(x, y, z);
+  }
+
+  dispatchWorkgroupsIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
+    COMMAND_COUNTS.dispatches++;
+    const rawBuffer =
+      BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+    this.rawPass.dispatchWorkgroupsIndirect(rawBuffer, indirectOffset);
+  }
+
+  end(): void {
+    this.rawPass.end();
+  }
 }
 
 function throwIfFinished(state: EncoderState | undefined): void {
@@ -751,6 +821,8 @@ function rawTextureView(view: TextureView): GPUTextureView {
 }
 
 function mirrorRenderPassDescriptor(desc: RenderPassDescriptor): GPURenderPassDescriptor {
+  // Optional members are assigned rather than spread: this runs for every
+  // render pass of every frame, and each spread allocates a temporary object.
   const colorAttachments: Array<GPURenderPassColorAttachment | null> = [];
   for (const attachment of desc.colorAttachments) {
     if (attachment === null || attachment === undefined) {
@@ -760,76 +832,51 @@ function mirrorRenderPassDescriptor(desc: RenderPassDescriptor): GPURenderPassDe
     if (attachment.loadOp === undefined || attachment.storeOp === undefined) {
       throw new TypeError('RHI render-pass color attachments require loadOp and storeOp');
     }
-    colorAttachments.push({
+    const color: GPURenderPassColorAttachment = {
       view: rawTextureView(attachment.view),
-      ...(attachment.depthSlice === undefined ? {} : { depthSlice: attachment.depthSlice }),
-      ...(attachment.resolveTarget === undefined
-        ? {}
-        : { resolveTarget: rawTextureView(attachment.resolveTarget) }),
-      ...(attachment.clearValue === undefined ? {} : { clearValue: attachment.clearValue }),
       loadOp: attachment.loadOp,
       storeOp: attachment.storeOp,
-    });
+    };
+    if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
+    if (attachment.resolveTarget !== undefined)
+      color.resolveTarget = rawTextureView(attachment.resolveTarget);
+    if (attachment.clearValue !== undefined) color.clearValue = attachment.clearValue;
+    colorAttachments.push(color);
   }
 
-  return {
-    ...(desc.label === undefined ? {} : { label: desc.label }),
-    colorAttachments,
-    ...(desc.depthStencilAttachment === undefined
-      ? {}
-      : {
-          depthStencilAttachment: {
-            view: rawTextureView(desc.depthStencilAttachment.view),
-            ...(desc.depthStencilAttachment.depthClearValue === undefined
-              ? {}
-              : { depthClearValue: desc.depthStencilAttachment.depthClearValue }),
-            ...(desc.depthStencilAttachment.depthLoadOp === undefined
-              ? {}
-              : { depthLoadOp: desc.depthStencilAttachment.depthLoadOp }),
-            ...(desc.depthStencilAttachment.depthStoreOp === undefined
-              ? {}
-              : { depthStoreOp: desc.depthStencilAttachment.depthStoreOp }),
-            ...(desc.depthStencilAttachment.depthReadOnly === undefined
-              ? {}
-              : { depthReadOnly: desc.depthStencilAttachment.depthReadOnly }),
-            ...(desc.depthStencilAttachment.stencilClearValue === undefined
-              ? {}
-              : { stencilClearValue: desc.depthStencilAttachment.stencilClearValue }),
-            ...(desc.depthStencilAttachment.stencilLoadOp === undefined
-              ? {}
-              : { stencilLoadOp: desc.depthStencilAttachment.stencilLoadOp }),
-            ...(desc.depthStencilAttachment.stencilStoreOp === undefined
-              ? {}
-              : { stencilStoreOp: desc.depthStencilAttachment.stencilStoreOp }),
-            ...(desc.depthStencilAttachment.stencilReadOnly === undefined
-              ? {}
-              : { stencilReadOnly: desc.depthStencilAttachment.stencilReadOnly }),
-          },
-        }),
-    ...(desc.occlusionQuerySet === undefined
-      ? {}
-      : {
-          occlusionQuerySet:
-            QUERY_SET_RAW_MAP.get(desc.occlusionQuerySet) ??
-            (desc.occlusionQuerySet as unknown as GPUQuerySet),
-        }),
-    ...(desc.timestampWrites === undefined
-      ? {}
-      : {
-          timestampWrites: {
-            querySet:
-              QUERY_SET_RAW_MAP.get(desc.timestampWrites.querySet) ??
-              (desc.timestampWrites.querySet as unknown as GPUQuerySet),
-            ...(desc.timestampWrites.beginningOfPassWriteIndex === undefined
-              ? {}
-              : { beginningOfPassWriteIndex: desc.timestampWrites.beginningOfPassWriteIndex }),
-            ...(desc.timestampWrites.endOfPassWriteIndex === undefined
-              ? {}
-              : { endOfPassWriteIndex: desc.timestampWrites.endOfPassWriteIndex }),
-          },
-        }),
-    ...(desc.maxDrawCount === undefined ? {} : { maxDrawCount: desc.maxDrawCount }),
-  };
+  const out: GPURenderPassDescriptor = { colorAttachments };
+  if (desc.label !== undefined) out.label = desc.label;
+  const depth = desc.depthStencilAttachment;
+  if (depth !== undefined) {
+    const raw: GPURenderPassDepthStencilAttachment = { view: rawTextureView(depth.view) };
+    if (depth.depthClearValue !== undefined) raw.depthClearValue = depth.depthClearValue;
+    if (depth.depthLoadOp !== undefined) raw.depthLoadOp = depth.depthLoadOp;
+    if (depth.depthStoreOp !== undefined) raw.depthStoreOp = depth.depthStoreOp;
+    if (depth.depthReadOnly !== undefined) raw.depthReadOnly = depth.depthReadOnly;
+    if (depth.stencilClearValue !== undefined) raw.stencilClearValue = depth.stencilClearValue;
+    if (depth.stencilLoadOp !== undefined) raw.stencilLoadOp = depth.stencilLoadOp;
+    if (depth.stencilStoreOp !== undefined) raw.stencilStoreOp = depth.stencilStoreOp;
+    if (depth.stencilReadOnly !== undefined) raw.stencilReadOnly = depth.stencilReadOnly;
+    out.depthStencilAttachment = raw;
+  }
+  if (desc.occlusionQuerySet !== undefined)
+    out.occlusionQuerySet =
+      QUERY_SET_RAW_MAP.get(desc.occlusionQuerySet) ??
+      (desc.occlusionQuerySet as unknown as GPUQuerySet);
+  const writes = desc.timestampWrites;
+  if (writes !== undefined) {
+    const raw: GPURenderPassTimestampWrites = {
+      querySet:
+        QUERY_SET_RAW_MAP.get(writes.querySet) ?? (writes.querySet as unknown as GPUQuerySet),
+    };
+    if (writes.beginningOfPassWriteIndex !== undefined)
+      raw.beginningOfPassWriteIndex = writes.beginningOfPassWriteIndex;
+    if (writes.endOfPassWriteIndex !== undefined)
+      raw.endOfPassWriteIndex = writes.endOfPassWriteIndex;
+    out.timestampWrites = raw;
+  }
+  if (desc.maxDrawCount !== undefined) out.maxDrawCount = desc.maxDrawCount;
+  return out;
 }
 
 function mirrorRenderPipelineDescriptor(
@@ -884,7 +931,8 @@ function makeCommandEncoder(
     desc: ComputePassDescriptor | undefined,
   ): GPUComputePassDescriptor | undefined {
     if (desc === undefined) return undefined;
-    const out = mirror(desc, ['label']);
+    const out: MirrorOut = {};
+    if ('label' in desc) out.label = desc.label;
     if ('timestampWrites' in desc) {
       const writes = desc.timestampWrites;
       out.timestampWrites =
@@ -921,7 +969,7 @@ function makeCommandEncoder(
       // RenderPassDescriptor declares occlusionQuerySet as `QuerySet |
       // undefined`; the raw GPU descriptor is structurally compatible.
       const occlusionQuerySet = desc.occlusionQuerySet ?? null;
-      const pass = makeRenderPassEncoder(rawPass, enc, occlusionQuerySet);
+      const pass = new WebGpuRenderPassEncoder(rawPass, enc, occlusionQuerySet);
       if (state !== undefined) state.activePass = pass;
       return pass;
     },
@@ -934,34 +982,7 @@ function makeCommandEncoder(
           ? rawEncoder.beginComputePass()
           : rawEncoder.beginComputePass(rawDescriptor);
       COMMAND_COUNTS.computePasses++;
-      const pass: RhiComputePassEncoder = {
-        setPipeline(pipeline) {
-          COMMAND_COUNTS.pipelineSets++;
-          rawPass.setPipeline(pipeline as unknown as GPUComputePipeline);
-        },
-        setBindGroup(index, bindGroup, dynamicOffsets) {
-          COMMAND_COUNTS.bindGroupSets++;
-          if (dynamicOffsets === undefined) {
-            rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup);
-          } else {
-            rawPass.setBindGroup(index, bindGroup as unknown as GPUBindGroup, dynamicOffsets);
-          }
-        },
-        dispatchWorkgroups(x, y, z) {
-          COMMAND_COUNTS.dispatches++;
-          rawPass.dispatchWorkgroups(x, y, z);
-        },
-        dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
-          COMMAND_COUNTS.dispatches++;
-          const rawBuffer =
-            BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
-          rawPass.dispatchWorkgroupsIndirect(rawBuffer, indirectOffset);
-        },
-        end() {
-          rawPass.end();
-        },
-      };
-      return pass;
+      return new WebGpuComputePassEncoder(rawPass);
     },
     encodeEmptyComputePass(desc: ComputePassDescriptor): void {
       const state = ENCODER_STATE.get(enc);
@@ -1137,8 +1158,7 @@ function makeCommandEncoder(
       if (state.finished) {
         return err(commandEncoderFinished());
       }
-      // end() clears activePass, so a remaining active pass has not ended.
-      if (state.activePass !== null) {
+      if (state.activePass !== null && !state.activePass.ended) {
         return err(renderPassNotEnded());
       }
       const rawCommandBuffer = rawEncoder.finish();
@@ -2119,27 +2139,7 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
     ): Result<RhiRenderBundleEncoder, RhiError> {
       try {
         const raw = rawDevice.createRenderBundleEncoder(desc as GPURenderBundleEncoderDescriptor);
-        let finished = false;
-        return ok({
-          ...makeRenderCommands(raw, BUNDLE_LANE),
-          finish(descriptor) {
-            if (finished) return err(commandEncoderFinished('render bundle'));
-            finished = true;
-            try {
-              return ok(
-                raw.finish(descriptor as GPURenderBundleDescriptor) as unknown as RenderBundle,
-              );
-            } catch (cause) {
-              return err(
-                new RhiErrorClass({
-                  code: 'webgpu-runtime-error',
-                  expected: 'a valid render bundle command sequence',
-                  hint: String(cause),
-                }),
-              );
-            }
-          },
-        });
+        return ok(new WebGpuRenderBundleEncoder(raw));
       } catch (cause) {
         return err(
           new RhiErrorClass({

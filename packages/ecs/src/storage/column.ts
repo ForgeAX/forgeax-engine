@@ -200,3 +200,11 @@ export function normalizeBufferWrite(raw: unknown): Uint8Array | null {
   }
   return null;
 }
+
+/** The backing buffer of a buffer-source write payload, without a byte view. */
+export function bufferOfWrite(raw: unknown): ArrayBufferLike | null {
+  if (ArrayBuffer.isView(raw)) return raw.buffer;
+  if (raw instanceof ArrayBuffer) return raw;
+  if (typeof SharedArrayBuffer !== 'undefined' && raw instanceof SharedArrayBuffer) return raw;
+  return null;
+}

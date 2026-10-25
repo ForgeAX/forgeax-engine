@@ -11,6 +11,7 @@ import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 import { MeshFilter } from '../components/mesh-filter';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
+import { EnvironmentGate } from '../extract/environment-gate';
 import { renderMaterialContext } from '../extract/material-context';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import {
@@ -21,6 +22,8 @@ import type { RenderFeature, RenderFeatureExtractContext } from '../features/typ
 import { renderFeatureCameraView } from '../features/view';
 import { MaterialResource } from '../material-resource';
 import {
+  type DispatchEntry,
+  type EnvironmentFrameGate,
   type MaterialSnapshot,
   type MaterialSnapshotCachesByWorld,
   type RenderableSnapshot,
@@ -48,12 +51,20 @@ import {
   type RenderPublication,
   RenderPublicationError,
   type RenderPublicationIdentity,
+  type RenderPublicationMetadata,
   type RenderPublicationTemplate,
 } from './contract';
 import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
+import { EntityMaterialLists } from './material-lists';
 import { PublishedMaterialProjections } from './material-projections';
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
 import { publicationMaterialProgramKeys } from './programs';
+import {
+  encodeRenderPublication,
+  type RenderPublicationMessage,
+  renderPublicationRecordBytes,
+  renderPublicationRecordColumns,
+} from './record';
 import { worldRenderResources } from './resource-scope';
 import { SkinJointReferences } from './skin-joints';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
@@ -68,6 +79,14 @@ const EMPTY_ASSET_ROWS: readonly (readonly [number, Asset, number])[] = Object.f
 type PreparedAssetRow = NonNullable<RenderPublication['preparedAssets']>[number];
 const EMPTY_IDENTITIES: readonly number[] = Object.freeze([]);
 const EMPTY_MATERIAL_ROWS: RenderPublication['materials'] = Object.freeze([]);
+/** Distinct shareable contents compared per mesh/material tuple before keying. */
+const TEMPLATE_BUCKET_LIMIT = 4;
+/** Array elements never name a special publication field. */
+const ARRAY_FIELD = '0';
+const EMPTY_MATERIAL_RESOURCES: readonly (MaterialResource | undefined)[] = Object.freeze([]);
+/** Column capacity above this floor shrinks once demand falls below 1/ratio of it. */
+const STORAGE_SHRINK_FLOOR = 64 * 1024;
+const STORAGE_SHRINK_RATIO = 8;
 
 function publicationKeyValue(key: string, value: unknown): unknown {
   return value instanceof Map
@@ -86,15 +105,65 @@ function publicationKeyValue(key: string, value: unknown): unknown {
       : value;
 }
 
+/** One renderable's dispatch entries: `order[start..end)` indexes `entries`. */
+interface RowDispatch {
+  readonly entries: readonly DispatchEntry[];
+  readonly order: Int32Array;
+  readonly start: number;
+  readonly end: number;
+}
+
+function strippedDispatch(dispatch: RowDispatch): RenderPublicationTemplate['dispatch'] {
+  const rows: RenderPublicationTemplate['dispatch'][number][] = [];
+  for (let index = dispatch.start; index < dispatch.end; index++) {
+    const {
+      entityIndex: _entity,
+      renderableIndex: _renderable,
+      ...entry
+    } = dispatch.entries[dispatch.order[index] as number] as DispatchEntry;
+    rows.push(entry);
+  }
+  return rows;
+}
+
+interface MaterialReferences {
+  readonly source: MaterialResource;
+  readonly sources: readonly MaterialResource[];
+  readonly overrideSources: readonly (MaterialResource | undefined)[] | undefined;
+  readonly material: number;
+  readonly materials: readonly number[];
+  readonly overrides: readonly number[] | undefined;
+  readonly dependencies: readonly number[];
+  /** Bucket key part naming the material tuple. */
+  readonly key: string;
+}
+
+function sameList(a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+  return true;
+}
+
+function hasExternalTextureSource(material: MaterialResource | undefined): boolean {
+  const sources = material?.snapshot.textureSources;
+  if (sources === undefined) return false;
+  for (const source of sources.values()) if (isExternalTextureSource(source)) return true;
+  return false;
+}
+
 /** The source kind a publication packet cannot carry for this renderable, if any. */
-function unsupportedRenderableSource(row: RenderableSnapshot): string | undefined {
+function unsupportedRenderableSource(
+  row: RenderableSnapshot,
+  checked: Set<MaterialResource>,
+): string | undefined {
   if ('skin' in row && row.skin !== undefined) return 'source GPU skin receipt';
-  if (
-    [...row.materials, ...(row.materialOverrides ?? [])].some((material) =>
-      [...(material?.snapshot.textureSources?.values() ?? [])].some(isExternalTextureSource),
-    )
-  )
-    return 'renderer-local external texture source';
+  for (const list of [row.materials, row.materialOverrides ?? EMPTY_MATERIAL_RESOURCES])
+    for (const material of list) {
+      if (material === undefined || checked.has(material)) continue;
+      if (hasExternalTextureSource(material)) return 'renderer-local external texture source';
+      checked.add(material);
+    }
   return undefined;
 }
 
@@ -107,7 +176,10 @@ function publicationAssetBrand(asset: Asset | undefined) {
 }
 
 export interface RenderPublicationCandidate {
+  /** Source-side contents; diagnostics and tests read it, it never crosses a realm. */
   readonly packet: RenderPublication;
+  /** The only form a Worker transfers and a Renderer draws. */
+  readonly message: RenderPublicationMessage;
   /** Source-local diagnostic; never serialized with the packet. */
   readonly observation?: SourcePreparationObservation;
   /** Call synchronously after successful postMessage; never wait for remote ACK. */
@@ -149,7 +221,7 @@ export function createRenderPublisher(
       readonly holds: number;
     }
   >();
-  const materialsByEntity = new Map<number, readonly number[]>();
+  const materialsByEntity = new EntityMaterialLists();
   const materialRows = new Map<number, MaterialSnapshot>();
   const materialSources = new Map<number, MaterialResource>();
   const nextMaterialDependencies = new Map<number, readonly number[]>();
@@ -206,17 +278,28 @@ export function createRenderPublisher(
     active = false;
   let lastScannedRows = 0,
     allocations = 0;
-  let storage = Array.from({ length: 5 }, () => new ArrayBuffer(0));
-  const spareStorage: ArrayBuffer[][] = [];
-  const buffer = (index: number, bytes: number): ArrayBuffer => {
-    let value = storage[index] as ArrayBuffer;
-    if (value.byteLength < bytes) {
-      let capacity = Math.max(16, value.byteLength);
+  // One record per publication slot: it crosses with its publication and
+  // returns with the frame completion, so slots never allocate in steady state.
+  let storage: ArrayBuffer | undefined;
+  const spareStorage: ArrayBuffer[] = [];
+  // Metadata of the last accepted publication; the next message omits unchanged entries.
+  let acceptedMetadata: RenderPublicationMetadata | undefined;
+  // Camera, light and environment entries re-extract only when their inputs change.
+  const environmentGate: EnvironmentFrameGate = new EnvironmentGate();
+  const record = (bytes: number): ArrayBuffer => {
+    let value = storage ?? new ArrayBuffer(0);
+    // A baseline-sized record must not keep crossing the Worker boundary: every
+    // transfer re-registers its full capacity as external memory in both
+    // realms, and that pressure forces whole-heap GC proportional to N.
+    const oversized =
+      value.byteLength > STORAGE_SHRINK_FLOOR && value.byteLength > bytes * STORAGE_SHRINK_RATIO;
+    if (value.byteLength < bytes || oversized) {
+      let capacity = oversized ? 256 : Math.max(256, value.byteLength);
       while (capacity < bytes) capacity *= 2;
       value = new ArrayBuffer(capacity);
-      storage[index] = value;
       allocations++;
     }
+    storage = value;
     return value;
   };
 
@@ -266,6 +349,13 @@ export function createRenderPublisher(
     // both so each pass/entity does not serialize that same payload again.
     // The value table lives only for this preparation.
     private readonly valueIds = new Map<object, number>();
+    private readonly tokens = new Map<object, { readonly field: string; readonly token: string }>();
+    private readonly structuralIds = new Map<string, number>();
+    private recentReferences: MaterialReferences | undefined;
+    private readonly templateBuckets = new Map<
+      string,
+      { index: number; dependencies: readonly number[] }[]
+    >();
     private readonly values = new Map<string, number>();
     private readonly templates: RenderPublicationTemplate[] = [];
     private readonly templateIds = new Map<
@@ -495,11 +585,13 @@ export function createRenderPublisher(
       const observation = this.observation;
       observation?.phase('extract');
       const extracted = this.withoutPreparingRenderables();
+      environmentGate.assetsChanged = this.baseline || this.assetBatch.changes.length > 0;
       const frame = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets, caches, {
         ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
         cull: 'none',
         retainHidden: true,
         renderables: extracted.size ? { kind: 'partial', entitiesByWorld: [extracted] } : 'none',
+        environmentGate,
       });
       observation?.phase('templates');
       observation?.fact('renderables', frame.renderables.length);
@@ -529,16 +621,15 @@ export function createRenderPublisher(
         materialCanvasSources,
       );
       this.canvasFrames = publicationCanvasFrames(nextCanvasConsumers);
-      const transformEntities = this.transformEntityColumn();
-      const matrices = this.transformMatrixColumn();
       const {
         renderables: _rows,
         dispatch: _dispatch,
         visibilitySnapshots: _visibility,
         featureVisibilitySnapshots: _features,
         hiddenEntityReports: _hidden,
-        ...metadata
+        ...extractedMetadata
       } = frame;
+      const metadata = retainStatistics(extractedMetadata, acceptedMetadata);
       const removedConsumers = new Set([...this.removed, ...this.nextDependencies.keys()]);
       this.updateAssetClosure(removedConsumers, nextFrameDependencies);
       const assetRows = this.closure?.rows() ?? EMPTY_ASSET_ROWS;
@@ -550,18 +641,10 @@ export function createRenderPublisher(
       const preparedRows: PreparedAssetRow[] = [];
       const sentAssetRows = this.unpreparedAssetRows(assetRows, preparedRows);
       observation?.fact('preparedAssets', preparedRows.length);
-      const upsertColumn = new Uint32Array(
-        buffer(0, this.upserts.length * 4),
-        0,
-        this.upserts.length,
-      );
-      upsertColumn.set(this.upserts);
-      const removedColumn = new Uint32Array(buffer(1, this.removed.size * 4), 0, this.removed.size);
-      removedColumn.set([...this.removed]);
+      const columns = this.recordColumns();
       observation?.phase('packet');
       const packet: RenderPublication = {
         ...identity,
-        protocol: 3,
         materials: publishedMaterials,
         retiredMaterials,
         revision: revision + 1,
@@ -581,11 +664,7 @@ export function createRenderPublisher(
         assetVersions: this.addedAssetVersions(),
         retiredAssetVersions: this.retiredAssetVersions(),
         programs: [...this.programs.values()],
-        upserts: upsertColumn,
-        removed: removedColumn,
-        transformEntities,
-        transforms: matrices,
-        retiredJoints: this.retiredJointColumn(),
+        ...columns,
         ...(preparedRows.length === 0 ? {} : { preparedAssets: preparedRows }),
         assets: sentAssetRows.map(([handle, value, revision]) =>
           this.packetAsset(handle, value, revision, materialProjections, retired),
@@ -596,12 +675,14 @@ export function createRenderPublisher(
       observation?.fact('assets', packet.assets.length);
       observation?.fact('templates', this.templates.length);
       observation?.fact('upsertRows', this.upserts.length / 2);
+      const message = encodeRenderPublication(packet, acceptedMetadata);
       observation?.phase('candidate');
       this.batch.validate();
       active = true;
       let closed = false;
       return ok({
         packet,
+        message,
         ...(observation === undefined ? {} : { observation }),
         accept: () => {
           if (closed || disposed || failed)
@@ -623,12 +704,13 @@ export function createRenderPublisher(
             closed = true;
             active = false;
             revision++;
+            acceptedMetadata = packet.metadata;
             flights.set(revision, {
               features: featureRows,
               owners: this.featureSources,
               submitted: false,
             });
-            storage = spareStorage.pop() ?? Array.from({ length: 5 }, () => new ArrayBuffer(0));
+            storage = spareStorage.pop();
             closeFrames(this.videoFrames, this.canvasFrames);
             videoConsumers = nextVideoConsumers;
             canvasConsumers = nextCanvasConsumers;
@@ -694,24 +776,41 @@ export function createRenderPublisher(
       for (const row of frame.renderables)
         if (row.assetHandle !== undefined)
           meshCounts.set(row.assetHandle, (meshCounts.get(row.assetHandle) ?? 0) + 1);
-      const byRenderable = new Map<number, RenderPublicationTemplate['dispatch'][number][]>();
-      for (const { entityIndex: _entity, renderableIndex, ...dispatch } of frame.dispatch) {
-        const rows = byRenderable.get(renderableIndex) ?? [];
-        rows.push(dispatch);
-        byRenderable.set(renderableIndex, rows);
+      // Group dispatch entries by renderable with two numeric columns; entries
+      // are copied without their row identity only when a new template needs them.
+      const count = frame.renderables.length;
+      const entries: readonly DispatchEntry[] = [...frame.dispatch];
+      const starts = new Int32Array(count + 1);
+      for (const entry of entries)
+        if (entry.renderableIndex >= 0 && entry.renderableIndex < count)
+          starts[entry.renderableIndex + 1] = (starts[entry.renderableIndex + 1] as number) + 1;
+      for (let index = 0; index < count; index++)
+        starts[index + 1] = (starts[index + 1] as number) + (starts[index] as number);
+      const order = new Int32Array(starts[count] as number);
+      const cursor = starts.slice(0, count);
+      for (let index = 0; index < entries.length; index++) {
+        const renderable = (entries[index] as DispatchEntry).renderableIndex;
+        if (renderable < 0 || renderable >= count) continue;
+        order[cursor[renderable] as number] = index;
+        cursor[renderable] = (cursor[renderable] as number) + 1;
       }
-      for (let i = 0; i < frame.renderables.length; i++) {
+      const checked = new Set<MaterialResource>();
+      for (let i = 0; i < count; i++) {
         const row = frame.renderables.at(i) as RenderableSnapshot;
-        const unsupported = unsupportedRenderableSource(row);
+        const unsupported = unsupportedRenderableSource(row, checked);
         if (unsupported !== undefined) return unsupported;
-        this.addRenderableTemplate(row, byRenderable.get(i) ?? [], meshCounts);
+        this.addRenderableTemplate(
+          row,
+          { entries, order, start: starts[i] as number, end: starts[i + 1] as number },
+          meshCounts,
+        );
       }
       return undefined;
     }
 
     private addRenderableTemplate(
       row: RenderableSnapshot,
-      dispatch: RenderPublicationTemplate['dispatch'],
+      rowDispatch: RowDispatch,
       meshCounts: ReadonlyMap<number, number>,
     ): void {
       const {
@@ -723,24 +822,34 @@ export function createRenderPublisher(
         materialOverrides,
         ...content
       } = row;
-      const materialReferences = materials.map((resource) => this.publishMaterial(resource));
-      const overrides = materialOverrides?.map((resource) =>
-        resource === undefined ? 0 : this.publishMaterial(resource),
-      );
-      nextMaterialDependencies.set(entityKey, [
-        ...materialReferences,
-        ...(overrides ?? []).filter((id) => id !== 0),
-      ]);
+      const references = this.materialReferences(material, materials, materialOverrides);
+      const { materials: materialReferences, overrides } = references;
+      nextMaterialDependencies.set(entityKey, references.dependencies);
       const snapshot = {
         ...content,
-        material: this.publishMaterial(material),
+        material: references.material,
         materials: materialReferences,
         ...(overrides === undefined ? {} : { materialOverrides: overrides }),
       };
-      const template = { snapshot, dispatch };
-      const key = this.templateKey(template, meshCounts);
-      let known = key === undefined ? undefined : this.templateIds.get(key);
+      const shareable = this.shareable(snapshot, meshCounts);
+      // Rows of one mesh/material tuple almost always share content: compare
+      // against that tuple's templates before deriving a content key.
+      const bucketKey = shareable ? `${snapshot.assetHandle}|${references.key}` : undefined;
+      const bucket = bucketKey === undefined ? undefined : this.templateBuckets.get(bucketKey);
+      let known =
+        bucket === undefined ? undefined : this.matchTemplate(snapshot, rowDispatch, bucket);
+      let template: RenderPublicationTemplate | undefined;
+      let key: string | undefined;
       if (known === undefined) {
+        template = { snapshot, dispatch: strippedDispatch(rowDispatch) };
+        if (shareable) {
+          key = this.templateKey(template);
+          known = this.templateIds.get(key);
+        }
+      }
+      if (known !== undefined && bucketKey !== undefined && bucket?.includes(known) !== true)
+        this.addTemplateBucket(bucketKey, known);
+      if (known === undefined && template !== undefined) {
         const index = this.templates.length;
         this.templates.push(template);
         this.publishPrograms(
@@ -751,18 +860,55 @@ export function createRenderPublisher(
         );
         known = { index, dependencies: renderableAssetRoots(row) };
         if (key !== undefined) this.templateIds.set(key, known);
+        if (bucketKey !== undefined) this.addTemplateBucket(bucketKey, known);
       }
+      if (known === undefined) throw new Error('renderable template was not published');
       this.upserts.push(entityKey, known.index);
       this.matrixRows.set(entityKey, transform.world);
       this.nextDependencies.set(entityKey, known.dependencies);
     }
 
-    /** Shared-template identity, or undefined for payloads only one entity can own. */
-    private templateKey(
-      template: RenderPublicationTemplate,
+    /**
+     * Published material ids of one row. Consecutive rows of one template carry
+     * equal material lists; they share the previous row's id lists and
+     * dependency list instead of rebuilding them.
+     */
+    private materialReferences(
+      material: MaterialResource,
+      materials: readonly MaterialResource[],
+      overrides: readonly (MaterialResource | undefined)[] | undefined,
+    ): MaterialReferences {
+      const recent = this.recentReferences;
+      if (
+        recent !== undefined &&
+        recent.source === material &&
+        sameList(recent.sources, materials) &&
+        sameList(recent.overrideSources, overrides)
+      )
+        return recent;
+      const ids = materials.map((resource) => this.publishMaterial(resource));
+      const overrideIds = overrides?.map((resource) =>
+        resource === undefined ? 0 : this.publishMaterial(resource),
+      );
+      const id = this.publishMaterial(material);
+      this.recentReferences = {
+        source: material,
+        sources: [...materials],
+        overrideSources: overrides === undefined ? undefined : [...overrides],
+        material: id,
+        materials: ids,
+        overrides: overrideIds,
+        dependencies: [...ids, ...(overrideIds ?? []).filter((value) => value !== 0)],
+        key: `${id}|${ids.join(',')}|${overrideIds?.join(',') ?? ''}`,
+      };
+      return this.recentReferences;
+    }
+
+    /** False for payloads only one entity can own. */
+    private shareable(
+      snapshot: RenderPublicationTemplate['snapshot'],
       meshCounts: ReadonlyMap<number, number>,
-    ): string | undefined {
-      const snapshot = template.snapshot;
+    ): boolean {
       // These payloads already contain the source entity identity. They
       // cannot share a template, regardless of equal pose/instance bytes.
       const entityOwned =
@@ -770,22 +916,183 @@ export function createRenderPublisher(
         snapshot.spriteInstances !== undefined ||
         snapshot.skinBinding !== undefined ||
         snapshot.pointsLines !== undefined;
-      if (
+      return !(
         entityOwned ||
         (snapshot.assetHandle !== undefined && meshCounts.get(snapshot.assetHandle) === 1)
-      )
-        return undefined;
-      return JSON.stringify(
-        {
-          snapshot: {
-            ...snapshot,
-            material: snapshot.material,
-            materials: snapshot.materials,
-          },
-          dispatch: template.dispatch,
-        },
-        this.keyValue,
       );
+    }
+
+    /** Shared-template content identity. */
+    private templateKey(template: RenderPublicationTemplate): string {
+      return `${this.keyToken('snapshot', template.snapshot, 0)}|${this.keyToken('dispatch', template.dispatch, 0)}`;
+    }
+
+    private addTemplateBucket(
+      bucketKey: string,
+      known: { index: number; dependencies: readonly number[] },
+    ): void {
+      const bucket = this.templateBuckets.get(bucketKey);
+      if (bucket === undefined) this.templateBuckets.set(bucketKey, [known]);
+      else if (bucket.length < TEMPLATE_BUCKET_LIMIT) bucket.push(known);
+    }
+
+    private matchTemplate(
+      snapshot: RenderPublicationTemplate['snapshot'],
+      dispatch: RowDispatch,
+      bucket: readonly { index: number; dependencies: readonly number[] }[],
+    ): { index: number; dependencies: readonly number[] } | undefined {
+      for (const known of bucket) {
+        const candidate = this.templates[known.index] as RenderPublicationTemplate;
+        if (
+          this.sameContent('snapshot', snapshot, candidate.snapshot, 0) &&
+          this.sameDispatch(dispatch, candidate.dispatch)
+        )
+          return known;
+      }
+      return undefined;
+    }
+
+    /** {@link sameContent} of a row's dispatch entries without their row identity fields. */
+    private sameDispatch(
+      dispatch: RowDispatch,
+      candidate: RenderPublicationTemplate['dispatch'],
+    ): boolean {
+      if (dispatch.end - dispatch.start !== candidate.length) return false;
+      for (let index = dispatch.start; index < dispatch.end; index++) {
+        const entry = dispatch.entries[dispatch.order[index] as number] as unknown as Record<
+          string,
+          unknown
+        >;
+        const other = candidate[index - dispatch.start] as unknown as Record<string, unknown>;
+        let count = 0;
+        for (const key in entry) {
+          if (key === 'entityIndex' || key === 'renderableIndex') continue;
+          const value = entry[key];
+          if (value === undefined || typeof value === 'function') continue;
+          count++;
+          if (!this.sameContent(key, value, other[key], 2)) return false;
+        }
+        for (const key in other) {
+          const value = other[key];
+          if (value !== undefined && typeof value !== 'function') count--;
+        }
+        if (count !== 0) return false;
+      }
+      return true;
+    }
+
+    /**
+     * Allocation-free content equality with {@link keyToken}'s meaning, except
+     * that plain-object member order is ignored. Identical references
+     * short-circuit; leaves fall back to their cached content tokens.
+     */
+    private sameContent(field: string, a: unknown, b: unknown, depth: number): boolean {
+      if (a === b) return true;
+      if (typeof a !== typeof b) return false;
+      if (typeof a === 'number') return Object.is(a, b);
+      if (typeof a !== 'object' || a === null || b === null) return false;
+      const left = this.structural(field, a, depth);
+      if (left !== this.structural(field, b as object, depth)) return false;
+      if (left === 'leaf') return this.keyToken(field, a, depth) === this.keyToken(field, b, depth);
+      if (left === 'array') {
+        const x = a as readonly unknown[];
+        const y = b as readonly unknown[];
+        if (x.length !== y.length) return false;
+        for (let index = 0; index < x.length; index++)
+          if (!this.sameContent(ARRAY_FIELD, x[index], y[index], depth + 1)) return false;
+        return true;
+      }
+      const x = a as Record<string, unknown>;
+      const y = b as Record<string, unknown>;
+      let count = 0;
+      for (const key in x) {
+        const entry = x[key];
+        if (entry === undefined || typeof entry === 'function') continue;
+        count++;
+        if (!this.sameContent(key, entry, y[key], depth + 1)) return false;
+      }
+      for (const key in y) {
+        const entry = y[key];
+        if (entry !== undefined && typeof entry !== 'function') count--;
+      }
+      return count === 0;
+    }
+
+    private structural(field: string, value: object, depth: number): 'array' | 'object' | 'leaf' {
+      if (
+        depth >= 8 ||
+        field === 'paramSnapshot' ||
+        typeof (value as { toJSON?: unknown }).toJSON === 'function'
+      )
+        return 'leaf';
+      if (Array.isArray(value)) return 'array';
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null ? 'object' : 'leaf';
+    }
+
+    /**
+     * Content token of one template field: plain containers are walked
+     * structurally and every other object (Map, typed array, class value or
+     * deep leaf) becomes the content id of its publication JSON, cached by
+     * identity for this preparation. Equal tokens imply equal publication
+     * JSON, so bulk admission shares the existing template identity without
+     * stringifying every row's shared leaves again.
+     */
+    private keyToken(field: string, value: unknown, depth: number): string {
+      switch (typeof value) {
+        case 'undefined':
+          return 'u';
+        case 'number':
+          return Object.is(value, -0) ? 'n-0' : `n${value}`;
+        case 'boolean':
+          return value ? 't' : 'f';
+        case 'string':
+          return `s${value.length}:${value}`;
+        case 'object':
+          break;
+        default:
+          return `x${this.leafId(field, value as object)}`;
+      }
+      if (value === null) return 'z';
+      const cached = this.tokens.get(value);
+      if (cached !== undefined && cached.field === field) return cached.token;
+      let token: string;
+      const prototype = Object.getPrototypeOf(value);
+      if (
+        depth < 8 &&
+        field !== 'paramSnapshot' &&
+        typeof (value as { toJSON?: unknown }).toJSON !== 'function' &&
+        (Array.isArray(value) || prototype === Object.prototype || prototype === null)
+      ) {
+        if (Array.isArray(value)) {
+          token = `[${value.length}`;
+          for (let index = 0; index < value.length; index++)
+            token += `,${this.keyToken(String(index), value[index], depth + 1)}`;
+          token += ']';
+        } else {
+          token = '{';
+          for (const key of Object.keys(value)) {
+            const entry = (value as Record<string, unknown>)[key];
+            // JSON omits undefined and function members of objects.
+            if (entry === undefined || typeof entry === 'function') continue;
+            token += `${key.length}:${key}=${this.keyToken(key, entry, depth + 1)};`;
+          }
+          token += '}';
+        }
+        // Intern the content so enclosing tokens stay short.
+        let id = this.structuralIds.get(token);
+        if (id === undefined) {
+          id = this.structuralIds.size;
+          this.structuralIds.set(token, id);
+        }
+        token = `@${id}`;
+      } else token = `#${this.leafId(field, value)}`;
+      this.tokens.set(value, { field, token });
+      return token;
+    }
+
+    private leafId(field: string, value: object): number {
+      return this.valueId({ [field]: value });
     }
 
     private extractFeatureRows(
@@ -900,30 +1207,30 @@ export function createRenderPublisher(
       } else this.matrixRows.set(joint, matrix);
     }
 
-    private transformEntityColumn(): Uint32Array {
-      const column = new Uint32Array(buffer(2, this.matrixRows.size * 4), 0, this.matrixRows.size);
-      let index = 0;
-      for (const entity of this.matrixRows.keys()) column[index++] = entity;
-      return column;
-    }
-
-    private transformMatrixColumn(): Float32Array {
-      const column = new Float32Array(
-        buffer(3, this.matrixRows.size * 64),
-        0,
-        this.matrixRows.size * 16,
+    /** The five change columns, written once at their offsets in this slot's record. */
+    private recordColumns(): ReturnType<typeof renderPublicationRecordColumns> {
+      const counts = {
+        upserts: this.upserts.length,
+        removed: this.removed.size,
+        transforms: this.matrixRows.size,
+        retiredJoints: this.retiredJoints?.size ?? 0,
+      };
+      const columns = renderPublicationRecordColumns(
+        record(renderPublicationRecordBytes(counts)),
+        counts,
       );
+      columns.upserts.set(this.upserts);
       let index = 0;
-      for (const matrix of this.matrixRows.values()) column.set(matrix, 16 * index++);
-      return column;
-    }
-
-    private retiredJointColumn(): Uint32Array {
-      const count = this.retiredJoints?.size ?? 0;
-      const column = new Uint32Array(buffer(4, count * 4), 0, count);
-      let index = 0;
-      for (const joint of this.retiredJoints ?? EMPTY_IDENTITIES) column[index++] = joint;
-      return column;
+      for (const entity of this.removed) columns.removed[index++] = entity;
+      index = 0;
+      this.matrixRows.forEach((matrix, entity) => {
+        columns.transformEntities[index] = entity;
+        columns.transforms.set(matrix, 16 * index++);
+      });
+      index = 0;
+      for (const joint of this.retiredJoints ?? EMPTY_IDENTITIES)
+        columns.retiredJoints[index++] = joint;
+      return columns;
     }
 
     // New holds precede old releases so a rebinding keeps shared closure members resident.
@@ -986,7 +1293,7 @@ export function createRenderPublisher(
       for (const ids of nextMaterialDependencies.values())
         for (const id of ids) holdMaterial(id, 1);
       for (const entity of new Set([...this.removed, ...nextMaterialDependencies.keys()]))
-        for (const id of materialsByEntity.get(entity) ?? []) holdMaterial(id, -1);
+        for (const id of materialsByEntity.get(entity)) holdMaterial(id, -1);
     }
 
     private addedAssetVersions(): NonNullable<RenderPublication['assetVersions']> {
@@ -1245,11 +1552,11 @@ export function createRenderPublisher(
         return fail('disposed', 'publisher retired or failed; start a new source epoch');
       if (flights.keys().next().value !== acceptedRevision)
         return fail('revision', 'returned storage revision');
-      if (buffers.length !== 5 || buffers.some((value) => !(value instanceof ArrayBuffer)))
+      const returned = buffers[0];
+      if (buffers.length !== 1 || !(returned instanceof ArrayBuffer))
         return fail('shape', 'returned storage');
-      if (active || storage.some((buffer) => buffer.byteLength > 0))
-        spareStorage.push([...buffers]);
-      else storage = [...buffers];
+      if (active || storage !== undefined) spareStorage.push(returned);
+      else storage = returned;
       flights.delete(acceptedRevision);
       return ok(undefined);
     },
@@ -1272,8 +1579,62 @@ export function createRenderPublisher(
       canvasConsumers.clear();
       flights.clear();
       spareStorage.length = 0;
+      storage = undefined;
+      acceptedMetadata = undefined;
       frameDependencies.clear();
       skinJoints.clear();
     },
   };
+}
+
+type FrameStatistics = Pick<
+  RenderPublicationMetadata,
+  'frustumStats' | 'visibilityStats' | 'materialTextureSources'
+>;
+
+/**
+ * Keep the accepted statistics objects whose counts did not change, so the
+ * identity-compared metadata delta omits them. Every other entry is retained
+ * by the environment gate.
+ */
+function retainStatistics(
+  metadata: RenderPublicationMetadata,
+  accepted: FrameStatistics | undefined,
+): RenderPublicationMetadata {
+  if (accepted === undefined) return metadata;
+  const frustum =
+    accepted.frustumStats.culled === metadata.frustumStats.culled &&
+    accepted.frustumStats.total === metadata.frustumStats.total
+      ? accepted.frustumStats
+      : metadata.frustumStats;
+  const visibility =
+    accepted.visibilityStats.explicitlyHidden === metadata.visibilityStats.explicitlyHidden
+      ? accepted.visibilityStats
+      : metadata.visibilityStats;
+  const textures = sameTextureSources(
+    accepted.materialTextureSources,
+    metadata.materialTextureSources,
+  )
+    ? accepted.materialTextureSources
+    : metadata.materialTextureSources;
+  return {
+    ...metadata,
+    frustumStats: frustum,
+    visibilityStats: visibility,
+    ...(textures === undefined ? {} : { materialTextureSources: textures }),
+  };
+}
+
+function sameTextureSources(
+  left: FrameStatistics['materialTextureSources'],
+  right: FrameStatistics['materialTextureSources'],
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  if (left.sourceFieldsVisited !== right.sourceFieldsVisited) return false;
+  const routes = Object.keys(right.producerRoutes);
+  if (routes.length !== Object.keys(left.producerRoutes).length) return false;
+  for (const route of routes)
+    if (left.producerRoutes[route] !== right.producerRoutes[route]) return false;
+  return true;
 }

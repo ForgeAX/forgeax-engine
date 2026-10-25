@@ -30,7 +30,7 @@ export default defineFeature({
   catalog: 'Morph/BlendShape GPU deformation',
   kind: 'visual',
   summary:
-    'A MeshAsset with morphTargets plus a MorphWeights component is deformed on the GPU (compute + storage buffer) before raster; up to eight targets per mesh.',
+    'A MeshAsset with morphTargets plus a MorphWeights component is deformed in the GPU-driven vertex stage from per-row weights, so entities sharing the Mesh draw in one batch.',
   expect:
     'ON: weights [1, 1] - the green sphere is stretched into a wide egg with a raised top. OFF: weights [0, 0] - a plain round sphere.',
   setup({ world, hud }) {

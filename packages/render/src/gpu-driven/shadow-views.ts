@@ -13,7 +13,6 @@ import { SHADOW_RASTER_GUARD_TEXELS } from '../components/directional-shadow-fil
 import type { GpuScene } from '../gpu-scene';
 import type { ShadowViewIdentity, ShadowViewInvalidationReason } from '../inspection-types';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
-import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import {
   type ShadowMaterialContent,
@@ -21,20 +20,26 @@ import {
 } from '../scene/material-shadow-content';
 import { ShadowDepthLayers } from '../shadow-depth-layers';
 import { captureBatchLod } from './batch-execution';
-import { batchVisibleSpan } from './batch-layout';
-import {
-  buildBatchAlignedSubmission,
-  buildSubmissionCandidateMembership,
-  type GpuDrivenBatch,
-  type GpuDrivenCandidate,
-  type SubmissionCandidateMembershipEntry,
-  type SubmissionMembershipWork,
-  type SubmissionPlan,
+import { MemberCandidates } from './batch-members';
+import type {
+  GpuDrivenBatch,
+  GpuDrivenCandidate,
+  SubmissionCandidateMembershipEntry,
+  SubmissionPlan,
 } from './batch-topology';
 import { GpuDrawSelection } from './draw-selection';
 import { inheritTaskHeaders } from './fixed-task-plan';
 import type { LodViewCamera } from './lod-projection.wgsl';
 import { ShadowSlotSelection } from './shadow-caster-classes';
+import {
+  projectShadowCandidates,
+  projectShadowLayer,
+  type ShadowCandidates,
+  type ShadowDrawnSlots,
+  type ShadowLayerProjection,
+  type ShadowLayerWork,
+  sameShadowCandidates,
+} from './shadow-layer-projection';
 import { sameShadowLodLevels, shadowLodLevels } from './shadow-lod-selections';
 import {
   type GpuDrivenCullingObservation,
@@ -176,7 +181,7 @@ interface SceneBuffers {
   readonly transform: GpuScene['transformBuffer'];
 }
 
-export interface ShadowPreparationCounters extends SubmissionMembershipWork {
+export interface ShadowPreparationCounters extends ShadowLayerWork {
   cacheHits: number;
   cacheRebuilds: number;
   cacheRebuildReasons: Partial<Record<ShadowViewInvalidationReason, number>>;
@@ -204,8 +209,8 @@ interface ShadowViewRecord {
   planes: Float32Array;
   candidateSource: ShadowViewUpdateInput['candidatePrimitiveIndices'];
   candidates: ShadowCandidates | undefined;
-  /** Geometry ranges survive Pass removal while this view's caster class stays fixed. */
-  readonly memberships: WeakMap<FrameList<GpuDrivenCandidate>, FrameList<GpuDrivenCandidate>>;
+  /** Fixed-source caster subsets this view's next selection patches. */
+  projection: ShadowLayerProjection | undefined;
   lodSelection: string | undefined;
   lodProjectedHeights: ReadonlyMap<number, number> | undefined;
   generation: number;
@@ -303,30 +308,6 @@ function sameMatrix(left: Float32Array | undefined, right: Float32Array | undefi
   return left.length === right.length && samePrefix(left, right, left.length);
 }
 
-type ShadowCandidates = readonly number[] | FrameSet | ShadowSlotSelection;
-
-function sameCandidates(
-  left: ShadowCandidates | undefined,
-  right: ShadowCandidates | undefined,
-): boolean {
-  if (left === right) return true;
-  if (left === undefined || right === undefined) return false;
-  if (ShadowSlotSelection.isFixed(left) && ShadowSlotSelection.isFixed(right))
-    return left.same(right);
-  if (
-    ShadowSlotSelection.isFixed(left) ||
-    ShadowSlotSelection.isFixed(right) ||
-    FrameSet.isFixed(left) ||
-    FrameSet.isFixed(right)
-  )
-    return false;
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
 function sceneBuffers(scene: GpuScene): SceneBuffers {
   return {
     primitive: scene.primitiveBuffer,
@@ -407,101 +388,6 @@ function captureExecution(source: SubmissionPlan, scene: GpuScene): SubmissionPl
     visibleCapacity: source.visibleCapacity,
     batches: Object.freeze(batches),
   });
-}
-
-function projectPlan(
-  source: SubmissionPlan,
-  primitiveIndices: ShadowCandidates | undefined,
-): SubmissionPlan {
-  if (primitiveIndices === undefined) return source;
-  const membership = buildSubmissionCandidateMembership(source);
-  const candidatesByBatch = new Map<number, GpuDrivenCandidate[]>();
-  const indices = ShadowSlotSelection.isFixed(primitiveIndices)
-    ? [...membership.byPrimitiveIndex.keys()].sort((a, b) => a - b)
-    : primitiveIndices;
-  for (const primitiveIndex of indices) {
-    if (ShadowSlotSelection.isFixed(primitiveIndices) && !primitiveIndices.has(primitiveIndex))
-      continue;
-    for (const entry of membership.byPrimitiveIndex.get(primitiveIndex) ?? []) {
-      let candidates = candidatesByBatch.get(entry.batch.batchId);
-      if (candidates === undefined) {
-        candidates = [];
-        candidatesByBatch.set(entry.batch.batchId, candidates);
-      }
-      candidates.push(entry.candidate);
-    }
-  }
-  // The aligned submission owns its frozen candidate copies.
-  return buildBatchAlignedSubmission(source, candidatesByBatch);
-}
-
-function containsCandidate(indices: ShadowCandidates, slot: number): boolean {
-  if (FrameSet.isFixed(indices) || ShadowSlotSelection.isFixed(indices)) return indices.has(slot);
-  let start = 0,
-    end = indices.length;
-  while (start < end) {
-    const middle = Math.floor((start + end) / 2),
-      value = indices[middle];
-    if (value === slot) return true;
-    if (value !== undefined && value < slot) start = middle + 1;
-    else end = middle;
-  }
-  return false;
-}
-
-/** Project captured topology without reconstructing its primitive-to-batch join. */
-function projectOwnedPlan(
-  source: SubmissionPlan,
-  primitiveIndices: ShadowCandidates,
-  memberships: ShadowViewRecord['memberships'],
-): SubmissionPlan {
-  // The public projection groups candidates by sorted primitive index. A producer
-  // permutation must retain that ordering rather than silently changing GPU rows.
-  const batches: GpuDrivenBatch[] = [];
-  let candidateCount = 0;
-  let visibleCapacity = 0;
-  for (const batch of source.batches) {
-    const retained = memberships.get(batch.candidates);
-    if (retained !== undefined) {
-      if (retained.length === 0) continue;
-      batches.push(
-        retained === batch.candidates ? batch : Object.freeze({ ...batch, candidates: retained }),
-      );
-      candidateCount += retained.length;
-      visibleCapacity = Math.max(visibleCapacity, batch.visibleBase + batchVisibleSpan(batch));
-      continue;
-    }
-    let selected: GpuDrivenCandidate[] | undefined;
-    let previous = -1;
-    let ordinal = 0;
-    for (const candidate of batch.candidates) {
-      const index = ordinal++;
-      if (candidate.primitiveIndex < previous) return projectPlan(source, primitiveIndices);
-      previous = candidate.primitiveIndex;
-      if (containsCandidate(primitiveIndices, candidate.primitiveIndex)) {
-        selected?.push(candidate);
-      } else if (selected === undefined) {
-        selected = batch.candidates.slice(0, index);
-      }
-    }
-    const candidates = selected === undefined ? batch.candidates : Object.freeze(selected);
-    memberships.set(batch.candidates, candidates);
-    if (candidates.length === 0) continue;
-    batches.push(selected === undefined ? batch : Object.freeze({ ...batch, candidates }));
-    candidateCount += candidates.length;
-    visibleCapacity = Math.max(visibleCapacity, batch.visibleBase + batchVisibleSpan(batch));
-  }
-  // Keep a fresh plan for aborted/replaced physical views even when every
-  // candidate is selected. The immutable rows remain owned by the source.
-  return inheritTaskHeaders(
-    source,
-    Object.freeze({
-      revision: source.revision,
-      batches: Object.freeze(batches),
-      candidateCount,
-      visibleCapacity,
-    }),
-  );
 }
 
 function planDrawsSkin(plan: SubmissionPlan): boolean {
@@ -602,13 +488,6 @@ function boundsMissView(
 
 type PrimitiveDraw = SubmissionCandidateMembershipEntry;
 
-function primitiveDraws(
-  plan: SubmissionPlan,
-  work?: ShadowPreparationCounters,
-): ReadonlyMap<number, readonly PrimitiveDraw[]> {
-  return buildSubmissionCandidateMembership(plan, work).byPrimitiveIndex;
-}
-
 /** Captured raw resource identity participates in the actual encoder read set. */
 function sameBinding(a: GpuDrivenBatch['binding'], b: GpuDrivenBatch['binding']): boolean {
   if (a === b) return true;
@@ -678,69 +557,6 @@ function sameLod(left: GpuDrivenBatch['lod'], right: GpuDrivenBatch['lod']): boo
   );
 }
 
-/** Rebind execution descriptors to the view's retained shared membership. */
-function adoptSharedExecution(
-  previous: ShadowViewRecord,
-  source: SubmissionPlan,
-): SubmissionPlan | undefined {
-  const before = previous.sourcePlan;
-  if (before === source) return previous.plan;
-  const selectedByBatch = new Map(previous.plan.batches.map((batch) => [batch.batchId, batch]));
-  const memberships = previous.memberships;
-  for (const batch of before.batches) {
-    memberships.set(
-      batch.candidates,
-      selectedByBatch.get(batch.batchId)?.candidates ?? EMPTY_CANDIDATES,
-    );
-  }
-  const batches: GpuDrivenBatch[] = [];
-  let candidateCount = 0;
-  let visibleCapacity = 0;
-  for (const current of source.batches) {
-    const candidates =
-      previous.candidates === undefined ? current.candidates : memberships.get(current.candidates);
-    // Object membership changed; the ordinary spatial delta path judges it.
-    if (candidates === undefined) return undefined;
-    if (candidates.length === 0) continue;
-    const selected = selectedByBatch.get(current.batchId);
-    const unchanged =
-      selected !== undefined &&
-      selected.generation === current.generation &&
-      selected.binding === current.binding &&
-      selected.materialAddress === current.materialAddress &&
-      selected.visibleBase === current.visibleBase &&
-      selected.visibleCapacity === current.visibleCapacity &&
-      selected.visibleAllocationCapacity === current.visibleAllocationCapacity &&
-      selected.indirectOffset === current.indirectOffset &&
-      selected.contentEpoch === current.contentEpoch &&
-      sameShallow(selected.key, current.key) &&
-      samePrepared(selected.prepared, current.prepared) &&
-      sameLod(selected.lod, current.lod);
-    const batch = unchanged
-      ? selected
-      : candidates === current.candidates
-        ? current
-        : Object.freeze({ ...current, candidates });
-    batches.push(batch);
-    candidateCount += candidates.length;
-    visibleCapacity = Math.max(visibleCapacity, batch.visibleBase + batchVisibleSpan(batch));
-  }
-  if (
-    batches.length === previous.plan.batches.length &&
-    batches.every((batch, index) => batch === previous.plan.batches.at(index))
-  )
-    return previous.plan;
-  return inheritTaskHeaders(
-    source,
-    Object.freeze({
-      revision: source.revision,
-      batches: Object.freeze(batches),
-      candidateCount,
-      visibleCapacity,
-    }),
-  );
-}
-
 /** Once shader-read content is proven equal, physical material addresses are not depth facts. */
 function sameShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
   if (a.batches.length !== b.batches.length) return false;
@@ -772,27 +588,88 @@ function sameShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
   });
 }
 
-const EMPTY_CANDIDATES: FrameList<GpuDrivenCandidate> = Object.freeze([]);
-
 /**
  * Drawn content of one candidate: its batch's shared key, prepared receipt and
  * LOD facts plus the candidate row. A member's own preparation facts change
  * only with a scene update of its slot, which the change-log check judges.
  */
 function sameDraw(left: PrimitiveDraw, right: PrimitiveDraw): boolean {
-  const a = left.batch;
-  const b = right.batch;
+  return sameBatchDraw(left.batch, right.batch) && sameCandidate(left.candidate, right.candidate);
+}
+
+function sameBatchDraw(a: GpuDrivenBatch, b: GpuDrivenBatch): boolean {
   return (
-    (a === b ||
-      (sameBinding(a.binding, b.binding) &&
-        sameShallow(a.key, b.key) &&
-        samePrepared(a.prepared, b.prepared) &&
-        sameLod(a.lod, b.lod))) &&
-    sameCandidate(left.candidate, right.candidate)
+    a === b ||
+    (sameBinding(a.binding, b.binding) &&
+      sameShallow(a.key, b.key) &&
+      samePrepared(a.prepared, b.prepared) &&
+      sameLod(a.lod, b.lod))
   );
 }
 
-/** Primitives whose drawn content differs between two plans: added, removed, or changed. */
+/**
+ * Edited member roots of one unchanged batch: in-place lane edits are changed
+ * draws; added or removed members may still be drawn by another edited batch.
+ */
+function changedMembers(
+  before: MemberCandidates,
+  after: MemberCandidates,
+  out: Set<number>,
+  affected: Set<number>,
+  counters: ShadowPreparationCounters | undefined,
+): boolean {
+  let moved = false;
+  after.changesSince(before, (slot, left, right) => {
+    if (counters !== undefined) counters.primitiveChecks++;
+    if (left !== undefined && right !== undefined && left.instanceCount === right.instanceCount) {
+      if (!sameList(before.slotCandidates(slot), after.slotCandidates(slot), sameCandidate))
+        out.add(slot);
+      return;
+    }
+    affected.add(slot);
+    moved = true;
+  });
+  return moved;
+}
+
+/** Draws of `affected` primitives in the edited batches, in plan order. */
+function editedDraws(
+  batches: readonly (GpuDrivenBatch | undefined)[],
+  affected: ReadonlySet<number>,
+  counters: ShadowPreparationCounters | undefined,
+): Map<number, PrimitiveDraw[]> {
+  const draws = new Map<number, PrimitiveDraw[]>();
+  const add = (batch: GpuDrivenBatch, candidate: GpuDrivenCandidate) => {
+    const list = draws.get(candidate.primitiveIndex);
+    if (list === undefined) draws.set(candidate.primitiveIndex, [{ batch, candidate }]);
+    else list.push({ batch, candidate });
+  };
+  for (const batch of batches) {
+    if (batch === undefined) continue;
+    const candidates = batch.candidates;
+    if (MemberCandidates.is(candidates) && affected.size < candidates.memberCount) {
+      for (const slot of affected) {
+        for (const candidate of candidates.slotCandidates(slot)) {
+          if (counters !== undefined) counters.candidateScans++;
+          add(batch, candidate);
+        }
+      }
+      continue;
+    }
+    for (const candidate of candidates) {
+      if (counters !== undefined) counters.candidateScans++;
+      if (affected.has(candidate.primitiveIndex)) add(batch, candidate);
+    }
+  }
+  return draws;
+}
+
+/**
+ * Primitives whose drawn content differs between two plans: added, removed,
+ * or changed. Identical batch rows at the same position draw identically and
+ * are skipped; member roots of an otherwise unchanged batch compare by their
+ * edited paths only.
+ */
 export function changedPrimitives(
   previous: SubmissionPlan,
   next: SubmissionPlan,
@@ -802,12 +679,27 @@ export function changedPrimitives(
   if (counters !== undefined) counters.planComparisons++;
   if (previous === next) return;
   const affected = new Set<number>();
+  const edited: { before: (GpuDrivenBatch | undefined)[]; after: (GpuDrivenBatch | undefined)[] } =
+    { before: [], after: [] };
   const count = Math.max(previous.batches.length, next.batches.length);
   for (let index = 0; index < count; index++) {
     if (counters !== undefined) counters.batchChecks++;
     const before = previous.batches.at(index);
     const after = next.batches.at(index);
     if (before === after) continue;
+    if (
+      before !== undefined &&
+      after !== undefined &&
+      MemberCandidates.is(before.candidates) &&
+      MemberCandidates.is(after.candidates) &&
+      sameBatchDraw(before, after)
+    ) {
+      if (changedMembers(before.candidates, after.candidates, out, affected, counters)) {
+        edited.before.push(before);
+        edited.after.push(after);
+      }
+      continue;
+    }
     if (
       before !== undefined &&
       after !== undefined &&
@@ -837,10 +729,12 @@ export function changedPrimitives(
         affected.add(candidate.primitiveIndex);
       }
     }
+    edited.before.push(before);
+    edited.after.push(after);
   }
   if (affected.size === 0) return;
-  const before = primitiveDraws(previous, counters);
-  const after = primitiveDraws(next, counters);
+  const before = editedDraws(edited.before, affected, counters);
+  const after = editedDraws(edited.after, affected, counters);
   for (const primitive of affected) {
     if (counters !== undefined) counters.primitiveChecks++;
     if (!sameList(before.get(primitive), after.get(primitive), sameDraw)) out.add(primitive);
@@ -880,10 +774,26 @@ function sameSubmissionLayout(left: SubmissionPlan, right: SubmissionPlan): bool
     ) {
       return false;
     }
-    for (let row = 0; row < a.candidates.length; row += 1) {
-      if (a.candidates.at(row)?.primitiveIndex !== b.candidates.at(row)?.primitiveIndex)
-        return false;
-    }
+    if (!sameCandidateRows(a.candidates, b.candidates)) return false;
+  }
+  return true;
+}
+
+/** Equal row slots; member roots compare only their edited paths. */
+function sameCandidateRows(
+  left: GpuDrivenBatch['candidates'],
+  right: GpuDrivenBatch['candidates'],
+): boolean {
+  if (left === right) return true;
+  if (MemberCandidates.is(left) && MemberCandidates.is(right)) {
+    let same = true;
+    right.changesSince(left, (_slot, before, after) => {
+      same &&= before?.instanceCount === after?.instanceCount;
+    });
+    return same;
+  }
+  for (let row = 0; row < left.length; row += 1) {
+    if (left.at(row)?.primitiveIndex !== right.at(row)?.primitiveIndex) return false;
   }
   return true;
 }
@@ -1046,6 +956,7 @@ function partialStaticRects(
   reason: ShadowViewInvalidationReason,
   retainedRevision: number,
   plan: SubmissionPlan,
+  drawn: (plan: SubmissionPlan) => ShadowDrawnSlots,
 ): readonly ShadowDirtyRect[] | undefined {
   if (
     input.identity.layer !== 'static' ||
@@ -1068,7 +979,7 @@ function partialStaticRects(
   const changedContent = scene.changedBoundsSince(
     retainedRevision,
     input.ignoredChangeSlots,
-    primitiveDraws(previous.plan, previous.preparation),
+    drawn(previous.plan),
   );
   if (changedContent === 'unbounded') return undefined;
   const changed = new Set<number>();
@@ -1126,7 +1037,7 @@ function graphStateError(identity: ShadowViewIdentity): RenderGraphError {
 /** The plan a view draws and the retention facts its selection established. */
 interface ShadowPlanSelection {
   readonly plan: SubmissionPlan;
-  readonly memberships: ShadowViewRecord['memberships'];
+  readonly projection: ShadowLayerProjection | undefined;
   /** A new shared execution whose depth differs from the retained one. */
   readonly executionChanged: boolean;
   /** The source or its depth execution is unchanged, so only content checks remain. */
@@ -1142,14 +1053,11 @@ function planesChangedReason(
     : undefined;
 }
 
-/** A published view on unchanged resources adopts the shared fixed execution. */
-function sharedExecutionPlan(
-  previous: ShadowViewRecord,
-  input: ShadowViewUpdateInput,
-): SubmissionPlan | undefined {
-  return previous.published && sameViewResources(previous, input.scene)
-    ? adoptSharedExecution(previous, input.sourcePlan)
-    : undefined;
+function sameBatchRows(plan: SubmissionPlan, batches: readonly GpuDrivenBatch[]): boolean {
+  return (
+    plan.batches.length === batches.length &&
+    batches.every((batch, index) => batch === plan.batches.at(index))
+  );
 }
 
 /** The same source on an intact published view keeps its projected plan. */
@@ -1184,10 +1092,12 @@ function unchangedRawPlan(
 function adoptCacheHit(
   previous: ShadowViewRecord,
   input: ShadowViewUpdateInput,
-  plan: SubmissionPlan,
+  selection: ShadowPlanSelection,
   candidateSource: ShadowViewUpdateInput['candidatePrimitiveIndices'],
   candidates: ShadowCandidates | undefined,
 ): ShadowViewUpdate {
+  const plan = selection.plan;
+  previous.projection = selection.projection;
   previous.frameInput = { input, plan, bound: false };
   previous.preparation.cacheHits++;
   previous.cache = 'hit';
@@ -1230,8 +1140,9 @@ function countRebuild(
     cacheHits: 0,
     cacheRebuilds: 0,
     cacheRebuildReasons: {},
-    membershipBuilds: 0,
-    membershipCandidateScans: 0,
+    layerSlotVisits: 0,
+    layerBatchSelections: 0,
+    layerBatchPatches: 0,
     planComparisons: 0,
     batchChecks: 0,
     candidateScans: 0,
@@ -1250,11 +1161,10 @@ function countRebuild(
  */
 export class ShadowViewStatePool {
   private readonly records = new Map<string, ShadowViewRecord>();
-  // Only this pool's captured executions enter the cache, never caller plans.
-  private drawnMemberships = new WeakMap<
-    SubmissionPlan,
-    ReadonlyMap<number, readonly PrimitiveDraw[]>
-  >();
+  /** Slots each projected plan draws; fixed projections publish theirs. */
+  private drawnByPlan = new WeakMap<SubmissionPlan, ShadowDrawnSlots>();
+  /** One plan object per projection; a replaced view takes a fresh one. */
+  private planByProjection = new WeakMap<ShadowLayerProjection, SubmissionPlan>();
   private readonly activeKeys = new Set<string>();
   private readonly retiring = new Map<string, ShadowViewRecord>();
   private readonly pendingPublication = new Set<string>();
@@ -1292,13 +1202,13 @@ export class ShadowViewStatePool {
     const normalized = candidateIndices(candidateSource);
     if (!normalized.ok) return normalized;
     const candidates = normalized.value;
-    const sameRestriction = sameCandidates(previous?.candidates, candidates);
+    const sameRestriction = sameShadowCandidates(previous?.candidates, candidates);
     this.activeKeys.add(key);
     this.retiring.delete(key);
     const retainedRevision = previous?.contentRevision;
     let invalidationReason =
       this.structureInvalidationReason(previous, input) ?? planesChangedReason(previous, input);
-    const selection = this.selectPlan(previous, input, projectionSource, fixedSource, candidates);
+    const selection = this.selectPlan(previous, input, fixedSource, candidates);
     if (selection.executionChanged) invalidationReason ??= 'content-changed';
     invalidationReason ??= this.retainedInvalidationReason(
       previous,
@@ -1309,7 +1219,7 @@ export class ShadowViewStatePool {
       sameRestriction,
     );
     if (invalidationReason === undefined && previous !== undefined) {
-      return ok(adoptCacheHit(previous, input, selection.plan, candidateSource, candidates));
+      return ok(adoptCacheHit(previous, input, selection, candidateSource, candidates));
     }
 
     const dirtyRects =
@@ -1321,6 +1231,7 @@ export class ShadowViewStatePool {
             invalidationReason,
             retainedRevision ?? previous.contentRevision,
             selection.plan,
+            (plan) => this.drawnSlots(plan),
           );
     return this.rebuild(
       key,
@@ -1342,17 +1253,30 @@ export class ShadowViewStatePool {
   private selectPlan(
     previous: ShadowViewRecord | undefined,
     input: ShadowViewUpdateInput,
-    projectionSource: SubmissionPlan | undefined,
     fixedSource: boolean,
     candidates: ShadowCandidates | undefined,
   ): ShadowPlanSelection {
+    const source = input.sourcePlan;
+    if (!fixedSource) {
+      return {
+        plan: unchangedRawPlan(previous, projectShadowCandidates(source, candidates)),
+        projection: undefined,
+        executionChanged: false,
+        sourceRetained: false,
+      };
+    }
     const sameFixedCandidates =
-      fixedSource && previous !== undefined && sameCandidates(previous.candidates, candidates);
-    const sameSource = sameFixedCandidates && previous.sourcePlan === input.sourcePlan;
-    const memberships = sameFixedCandidates
-      ? previous.memberships
-      : new WeakMap<FrameList<GpuDrivenCandidate>, FrameList<GpuDrivenCandidate>>();
-    const executionPlan = sameFixedCandidates ? sharedExecutionPlan(previous, input) : undefined;
+      previous !== undefined && sameShadowCandidates(previous.candidates, candidates);
+    const sameSource = sameFixedCandidates && previous.sourcePlan === source;
+    const projection = this.projectLayer(previous, source, candidates);
+    let executionPlan: SubmissionPlan | undefined;
+    if (sameFixedCandidates && previous.published && sameViewResources(previous, input.scene)) {
+      if (previous.sourcePlan === source) executionPlan = previous.plan;
+      else if (candidates === undefined || projection.membershipKnown)
+        executionPlan = sameBatchRows(previous.plan, projection.batches)
+          ? previous.plan
+          : this.projectedPlan(projection, previous.plan);
+    }
     const sameDepthExecution =
       previous !== undefined &&
       executionPlan !== undefined &&
@@ -1363,13 +1287,51 @@ export class ShadowViewStatePool {
     const plan =
       executionPlan ??
       retainedPublishedPlan(previous, input.scene, sameSource) ??
-      this.projectSourcePlan(input, candidates, previous?.plan, projectionSource, memberships);
+      (candidates === undefined ? source : this.projectedPlan(projection, previous?.plan));
     return {
-      plan: fixedSource ? plan : unchangedRawPlan(previous, plan),
-      memberships,
+      plan,
+      projection,
       executionChanged,
       sourceRetained: sameSource || sameDepthExecution,
     };
+  }
+
+  /**
+   * Patch the record's own projection, or share an equal one another view of
+   * this source already holds: projections are pure in source and selection.
+   */
+  private projectLayer(
+    previous: ShadowViewRecord | undefined,
+    source: SubmissionPlan,
+    candidates: ShadowCandidates | undefined,
+  ): ShadowLayerProjection {
+    for (const record of this.records.values()) {
+      const shared = record.projection;
+      if (shared?.source === source && sameShadowCandidates(shared.candidates, candidates))
+        return shared;
+    }
+    return projectShadowLayer(previous?.projection, source, candidates, previous?.preparation);
+  }
+
+  /** A fresh plan identity whenever the view must re-upload its retained one. */
+  private projectedPlan(
+    projection: ShadowLayerProjection,
+    retained: SubmissionPlan | undefined,
+  ): SubmissionPlan {
+    const existing = this.planByProjection.get(projection);
+    if (existing !== undefined && existing !== retained) return existing;
+    const plan = inheritTaskHeaders(
+      projection.source,
+      Object.freeze({
+        revision: projection.source.revision,
+        batches: projection.batches,
+        candidateCount: projection.candidateCount,
+        visibleCapacity: projection.visibleCapacity,
+      }),
+    );
+    this.planByProjection.set(projection, plan);
+    this.drawnByPlan.set(plan, projection.drawn);
+    return plan;
   }
 
   /** Re-raster this view: update its physical view and publish a new pending record. */
@@ -1423,7 +1385,7 @@ export class ShadowViewStatePool {
       planes,
       candidateSource: input.candidatePrimitiveIndices,
       candidates,
-      memberships: selection.memberships,
+      projection: selection.projection,
       lodSelection: input.lodSelection,
       lodProjectedHeights: input.lodProjectedHeights,
       generation,
@@ -1517,16 +1479,17 @@ export class ShadowViewStatePool {
     return undefined;
   }
 
-  private primitiveDraws(
-    plan: SubmissionPlan,
-    work: ShadowPreparationCounters,
-  ): ReadonlyMap<number, readonly PrimitiveDraw[]> {
-    let value = this.drawnMemberships.get(plan);
-    if (value === undefined) {
-      value = primitiveDraws(plan, work);
-      this.drawnMemberships.set(plan, value);
+  /** Fixed projections publish their member lookup; other plans are enumerated once. */
+  private drawnSlots(plan: SubmissionPlan): ShadowDrawnSlots {
+    let drawn = this.drawnByPlan.get(plan);
+    if (drawn === undefined) {
+      const slots = new Set<number>();
+      for (const batch of plan.batches)
+        for (const candidate of batch.candidates) slots.add(candidate.primitiveIndex);
+      drawn = slots;
+      this.drawnByPlan.set(plan, drawn);
     }
-    return value;
+    return drawn;
   }
 
   /**
@@ -1546,44 +1509,11 @@ export class ShadowViewStatePool {
       // A removed dynamic caster is absent from the current ignored set but
       // never wrote this static depth. New static members are checked below
       // through changedPrimitives and their old/new bounds.
-      input.identity.layer === 'static'
-        ? this.primitiveDraws(previous.plan, previous.preparation)
-        : undefined,
+      input.identity.layer === 'static' ? this.drawnSlots(previous.plan) : undefined,
     );
     if (!boundsMissView(previous.planes, changed)) return false;
     previous.contentRevision = current;
     return true;
-  }
-
-  /** Share camera-independent projection only within the pending submission. */
-  private projectSourcePlan(
-    input: ShadowViewUpdateInput,
-    candidates: ShadowCandidates | undefined,
-    previousPlan: SubmissionPlan | undefined,
-    projectionSource: SubmissionPlan | undefined,
-    memberships: ShadowViewRecord['memberships'],
-  ): SubmissionPlan {
-    if (input.sourcePlan !== projectionSource) return projectPlan(input.sourcePlan, candidates);
-    if (candidates === undefined) return input.sourcePlan;
-    for (const key of this.pendingPublication) {
-      const record = this.records.get(key);
-      if (
-        record !== undefined &&
-        !record.invalidated &&
-        record.sourcePlan === input.sourcePlan &&
-        // This fallback must give an aborted/replaced view a new identity,
-        // even when another pending view still draws its old accepted plan.
-        record.plan !== previousPlan &&
-        sameCandidates(record.candidates, candidates)
-      ) {
-        for (const batch of input.sourcePlan.batches) {
-          const selected = record.memberships.get(batch.candidates);
-          if (selected !== undefined) memberships.set(batch.candidates, selected);
-        }
-        return record.plan;
-      }
-    }
-    return projectOwnedPlan(input.sourcePlan, candidates, memberships);
   }
 
   /**
@@ -1992,7 +1922,8 @@ export class ShadowViewStatePool {
   }
 
   dispose(): void {
-    this.drawnMemberships = new WeakMap();
+    this.drawnByPlan = new WeakMap();
+    this.planByProjection = new WeakMap();
     const views = new Set([...this.records.values()].map((record) => record.view));
     for (const view of views) view.dispose();
     this.staticLayers.dispose();

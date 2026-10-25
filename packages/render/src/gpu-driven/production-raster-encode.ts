@@ -18,7 +18,6 @@ import type {
   GpuDrivenStandardPbrFrameResources,
   RenderPipelineGpuDrivenFilter,
 } from '../render-pipeline';
-import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { batchLevelStride, batchLodLevelCount } from './batch-layout';
 import type { LiveRasterBatch } from './live-raster';
 import {
@@ -333,26 +332,6 @@ export interface RasterEncodeCall {
   readonly visibleRegionBase: number;
 }
 
-/**
- * One candidate is already classified by the Scene camera owner. Larger
- * batches stay GPU-culled without enumerating members here.
- */
-export function cameraRejectsSingleton(
-  live: LiveRasterBatch,
-  frameResources: GpuDrivenStandardPbrFrameResources,
-  scene: PersistentGpuDrivenState,
-): boolean {
-  if (live.batch.visibleCapacity !== 1 || frameResources.cameraVisible === undefined) return false;
-  const member = live.batch.members?.at(0);
-  if (member === undefined) return false;
-  const source = scene.slotAt(member.primitiveIndex);
-  return (
-    source !== undefined &&
-    source.generation === member.generation &&
-    frameResources.cameraVisible(source.snapshot) === false
-  );
-}
-
 /** The frame-global material slot this pass draws the batch with, or none. */
 export function selectedMaterialSlot(
   live: LiveRasterBatch,
@@ -397,6 +376,20 @@ export function visibleWindowsFor(
   const windows = prepareRasterWindows(resolvedWindows);
   live.visibleBindGroups[windowPhase] = windows;
   return windows;
+}
+
+/**
+ * Only the Surface nearest-layer and color passes feed the frame-local
+ * observation; every other pass may defer and replay its draws.
+ */
+export function observesSurfaceDraws(
+  frameResources: GpuDrivenStandardPbrFrameResources,
+  fragmentEntryPoint: string | undefined,
+): boolean {
+  return (
+    frameResources.surfaceSubmissionObservation !== undefined &&
+    (fragmentEntryPoint === 'fs_nearest_layer' || fragmentEntryPoint === 'fs_color')
+  );
 }
 
 /** Medium Surface draws feed the frame-local observation in recording order. */

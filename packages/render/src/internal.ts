@@ -38,6 +38,12 @@ export {
 } from './prepare/extended-lighting/state';
 export type { MeshPipelinePreparation } from './publication/contract';
 export { captureMeshPipelinePreparation } from './publication/mesh-pipeline-preparation';
+export { RenderPublicationReceiver } from './publication/receiver';
+export {
+  decodeRenderPublication,
+  encodeRenderPublication,
+  renderPublicationTiming,
+} from './publication/record';
 export {
   buildRaySurfaceScene,
   type RaySurfaceInstance,

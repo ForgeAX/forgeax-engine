@@ -53,15 +53,7 @@ parentPort.on('message', async (message) => {
     if (picture === undefined) throw new Error('Fixture picture was not published');
     const submitted = message.fixture === 'submit';
     const p = picture.publication;
-    const buffers = submitted
-      ? []
-      : [
-          p.upserts.buffer,
-          p.removed.buffer,
-          p.transformEntities.buffer,
-          p.transforms.buffer,
-          p.retiredJoints.buffer,
-        ];
+    const buffers = submitted ? [] : [p.record];
     parentPort.postMessage(
       {
         fixture: 'product',

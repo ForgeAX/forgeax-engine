@@ -15,6 +15,8 @@ export interface MeshGeometry {
    * Absence forbids Skin culling; never substitute the rigid/bind-pose box.
    */
   readonly skinEnvelopes: Float32Array | undefined;
+  /** Every target's position deltas, target-major; derived once per admitted Mesh. */
+  readonly morph: MeshMorphDeltas | undefined;
   readonly layout: ReturnType<typeof deriveVertexLayoutProjection>;
   readonly indexed: boolean;
   readonly materialSlots: MeshAsset['materialSlots'];
@@ -22,6 +24,24 @@ export interface MeshGeometry {
   readonly submeshes: MeshAsset['submeshes'];
   readonly lods: MeshAsset['lods'];
   readonly lodHysteresis: MeshAsset['lodHysteresis'];
+}
+
+export interface MeshMorphDeltas {
+  readonly vertexCount: number;
+  readonly targetCount: number;
+  readonly deltas: Float32Array;
+}
+
+function morphDeltas(mesh: MeshAsset): MeshMorphDeltas | undefined {
+  const targets = mesh.morphTargets;
+  const length = targets?.[0]?.position?.length ?? 0;
+  if (targets === undefined || length === 0 || length % 3 !== 0) return undefined;
+  if (targets.some((target) => target.position?.length !== length)) return undefined;
+  const deltas = new Float32Array(length * targets.length);
+  targets.forEach((target, index) => {
+    if (target.position !== undefined) deltas.set(target.position, index * length);
+  });
+  return { vertexCount: length / 3, targetCount: targets.length, deltas };
 }
 
 /** An immutable geometry root; asset edits copy tree paths, never instance bindings. */
@@ -64,6 +84,7 @@ export class MeshFrame {
       handle,
       bounds,
       skinEnvelopes: skinGeometryEnvelopes(mesh),
+      morph: morphDeltas(mesh),
       layout: deriveVertexLayoutProjection(mesh.attributes),
       indexed: mesh.indices !== undefined,
       materialSlots: mesh.materialSlots,

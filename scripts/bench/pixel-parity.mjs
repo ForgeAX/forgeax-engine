@@ -32,11 +32,8 @@
 //                metric-schema-malformed (EX_CONFIG vibe).
 //
 // Env overrides:
-//   PIXEL_PARITY_THRESHOLD             — Layer B int cap (default 999999
-//                                        placeholder; M3 T-014 fills the
-//                                        real value into fixture pkg.json).
-//   PIXEL_PARITY_PER_PIXEL_THRESHOLD   — Layer A float [0,1] (default 0.1
-//                                        via evaluator fallback).
+//   PIXEL_PARITY_THRESHOLD             — diagnostic override of the fixture's pixel-count cap.
+//   PIXEL_PARITY_PER_PIXEL_THRESHOLD   — diagnostic override of its per-pixel epsilon.
 //   FORGEAX_BROWSER_HEADLESS           — set to 0/false for headed Chromium
 //                                        under Xvfb on Linux software-WebGPU
 //                                        runners; headless GPU-process teardown
@@ -96,10 +93,17 @@ const CANVAS_W = 512;
 const CANVAS_H = 512;
 const PIXELMATCH_DEFAULT_PER_PIXEL_THRESHOLD = 0.1;
 
-const THRESHOLD = Number.parseInt(process.env.PIXEL_PARITY_THRESHOLD ?? '999999', 10);
-const PER_PIXEL_THRESHOLD = process.env.PIXEL_PARITY_PER_PIXEL_THRESHOLD
-  ? Number.parseFloat(process.env.PIXEL_PARITY_PER_PIXEL_THRESHOLD)
-  : PIXELMATCH_DEFAULT_PER_PIXEL_THRESHOLD;
+export function readParityThresholds(packageRoot, env = process.env) {
+  const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'));
+  const declared = manifest.forgeax.metrics.bench.pixelDiff;
+  return {
+    threshold: Number.parseInt(env.PIXEL_PARITY_THRESHOLD ?? String(declared.threshold), 10),
+    perPixelThreshold: Number.parseFloat(
+      env.PIXEL_PARITY_PER_PIXEL_THRESHOLD ??
+        String(declared.perPixelThreshold ?? PIXELMATCH_DEFAULT_PER_PIXEL_THRESHOLD),
+    ),
+  };
+}
 
 // ─── learn-render section-1 7-entry placeholder registry (feat-20260515 M4) ───
 //
@@ -432,7 +436,7 @@ export function validateReport(payload) {
   return { ok: false, errors: validator.errors ?? [] };
 }
 
-function buildReportPayload(result) {
+function buildReportPayload(result, thresholds) {
   return result.ok
     ? {
         leftCapture: { bytes: CANVAS_W * CANVAS_H * 4 },
@@ -448,8 +452,7 @@ function buildReportPayload(result) {
         diffPixelCount: result.error.detail?.diffPixelCount ?? 0,
         diffPercent: result.error.detail?.diffPercent ?? 0,
         maxChannelDelta: result.error.detail?.maxChannelDelta ?? 0,
-        threshold: THRESHOLD,
-        perPixelThreshold: PER_PIXEL_THRESHOLD,
+        ...thresholds,
         verdict: 'fail',
         code: result.error.code,
         expected: result.error.expected,
@@ -461,7 +464,10 @@ function buildReportPayload(result) {
 function writeReport(result, targetConfig) {
   mkdirSync(REPORT_DIR, { recursive: true });
   const REPORT_PATH = resolve(REPORT_DIR, targetConfig.reportFile);
-  const payload = buildReportPayload(result);
+  const payload = buildReportPayload(
+    result,
+    readParityThresholds(resolve(REPO_ROOT, targetConfig.root)),
+  );
   // Fail-fast exit-gate: refuse to write a payload that violates the
   // Schema as Contract ($defs.benchReportPixelParity). If this fires the
   // runner's internal data shape has drifted from the schema; bumping the
@@ -554,8 +560,7 @@ async function runTarget(targetName, waitOn, { build = true } = {}) {
     });
     const { left, right } = await captureBothFromSinglePage(targetConfig);
     const result = evaluateParity(left, right, {
-      threshold: THRESHOLD,
-      perPixelThreshold: PER_PIXEL_THRESHOLD,
+      ...readParityThresholds(resolve(REPO_ROOT, targetConfig.root)),
       width: CANVAS_W,
       height: CANVAS_H,
     });

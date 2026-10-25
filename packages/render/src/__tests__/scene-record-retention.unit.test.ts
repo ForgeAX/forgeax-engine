@@ -5,8 +5,7 @@ import { expect, it } from 'vitest';
 import { derivedRenderState } from '../material-render-state';
 import { variantSetFromDefines } from '../record/helpers';
 import { selectedMaterialPasses } from '../record/main-pass-geometry';
-import { type ScenePassRequest, selectRequestDispatch } from '../record/scene-pass-work';
-import type { DispatchEntry, DispatchList } from '../render-system-extract';
+import type { DispatchEntry } from '../render-system-extract';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -40,7 +39,7 @@ it('keeps derived render states and variant keys only while their authored recor
   expect(record.deref()).toBeUndefined();
 });
 
-it('keeps material passes only for live dispatch lists and selections only for the latest projection', async () => {
+it('keeps material passes only for live dispatch lists', async () => {
   const [released, releasedPasses] = (() => {
     const dispatch = [entry(0), entry(1)];
     const passes = selectedMaterialPasses(dispatch, false);
@@ -49,16 +48,7 @@ it('keeps material passes only for live dispatch lists and selections only for t
     return [new WeakRef(dispatch), new WeakRef(passes)] as const;
   })();
 
-  const request = { selector: { LightMode: ['Forward'] } } as unknown as ScenePassRequest;
-  let first: DispatchList | undefined = [entry(0)];
-  const selected = selectRequestDispatch(request, first);
-  expect(selectRequestDispatch(request, first)).toBe(selected);
-  const releasedFirst = new WeakRef(first);
-  first = undefined;
-  const second: DispatchList = [entry(0), entry(1)];
-  expect(selectRequestDispatch(request, second)).toHaveLength(2);
   await collect();
   expect(released.deref()).toBeUndefined();
   expect(releasedPasses.deref()).toBeUndefined();
-  expect(releasedFirst.deref()).toBeUndefined();
 });

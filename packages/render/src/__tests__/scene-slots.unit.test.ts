@@ -1,5 +1,6 @@
 import { assert, expect, test } from 'vitest';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { SceneSlots } from '../scene/scene-slots';
 
@@ -7,6 +8,7 @@ function record(slot: number, generation = 0): RenderSceneSlot {
   return {
     slot,
     generation,
+    version: 0,
     worldId: 0,
     entityKey: slot + generation * 100000,
     snapshot: { entityKey: slot, worldId: 0 } as RenderableSnapshot,
@@ -15,24 +17,24 @@ function record(slot: number, generation = 0): RenderSceneSlot {
 
 test('coalesces known writes per page and preserves captured roots through deletion/reuse', () => {
   const slots = new SceneSlots();
-  for (let slot = 0; slot < 1000; slot++) slots.set(slot, record(slot));
+  for (let slot = 0; slot < 1000; slot++) setSceneRow(slots, slot, record(slot));
   const before = slots.capture();
   expect(slots.capture()).toBe(before);
   expect(before.length).toBe(1000);
   expect(slots.inspect()).toMatchObject({ newPages: 16, copiedPages: 0 });
-  for (let slot = 128; slot < 192; slot++) slots.set(slot, record(slot, 1));
+  for (let slot = 128; slot < 192; slot++) setSceneRow(slots, slot, record(slot, 1));
   const changed = slots.capture();
   expect(slots.inspect()).toMatchObject({ newPages: 16, copiedPages: 1 });
   expect(changed.pageAt(0)).toBe(before.pageAt(0));
   expect(changed.pageAt(2)).not.toBe(before.pageAt(2));
   expect(changed.slotAt(130)?.generation).toBe(1);
   expect(before.slotAt(130)?.generation).toBe(0);
-  slots.set(130, undefined);
+  setSceneRow(slots, 130, undefined);
   const removed = slots.capture();
   expect(removed.slotAt(130)).toBeUndefined();
   expect(removed.slotAt(131)).toBe(changed.slotAt(131));
   expect(removed.indexOfSlot(131)).toBe(130);
-  slots.set(130, record(130, 2));
+  setSceneRow(slots, 130, record(130, 2));
   const reused = slots.capture();
   expect(reused.slotAt(130)?.generation).toBe(2);
   expect(before.slotAt(130)?.generation).toBe(0);
@@ -51,8 +53,7 @@ test('randomized fragmented roots agree with current membership and retain old i
   const saved: { frame: ReturnType<SceneSlots['capture']>; rows: RenderSceneSlot[] }[] = [];
   for (let iteration = 0; iteration < 2000; iteration++) {
     const key = random() % 10000;
-    const value = random() % 4 === 0 ? undefined : record(key, iteration);
-    slots.set(key, value);
+    const value = setSceneRow(slots, key, random() % 4 === 0 ? undefined : record(key, iteration));
     if (value === undefined) model.delete(key);
     else model.set(key, value);
     expect(slots.get(key)).toBe(value);
@@ -71,7 +72,7 @@ test('randomized fragmented roots agree with current membership and retain old i
     if (iteration % 85 === 0) saved.push({ frame, rows });
   }
   for (const { frame, rows } of saved) expect([...frame]).toEqual(rows);
-  for (const key of model.keys()) slots.set(key, undefined);
+  for (const key of model.keys()) setSceneRow(slots, key, undefined);
   const empty = slots.capture();
   expect(empty.length).toBe(0);
   expect(empty.root).toBeUndefined();

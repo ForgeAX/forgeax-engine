@@ -103,12 +103,17 @@ exists; it runs `fetch-basis.mjs` and `build-wasm.mjs` and requires `emcc`.
 
 | Export | Signature | Description |
 |:--|:--|:--|
-| `decompressZstd` | `(bytes: Uint8Array) => Promise<CodecResult<Uint8Array>>` | Decompress a zstd-compressed byte buffer. Lazy-init singleton (fzstd pure JS, zero WASM); concurrent first calls share the same init promise (AC-12). Returns `CodecOk<Uint8Array>` on success, `CodecError` on failure. |
+| `decompressZstd` | `(bytes: Uint8Array) => Promise<CodecResult<Uint8Array>>` | Decompress a zstd-compressed byte buffer. Lazy-init singleton using the pinned WASM Zstd decoder, with the existing fzstd decoder if native initialization fails; concurrent first calls share the same init promise (AC-12). Returns `CodecOk<Uint8Array>` on success, `CodecError` on failure. |
 | `parseKtx2` | `(bytes: Uint8Array) => CodecResult<Ktx2Parsed>` | Parse a KTX2 2.0 container (12B magic validation). Returns header, index, level index, DFD, KV metadata, and SGD descriptor -- all five parts per AC-03. Does **not** interpret block-compressed payload content (OOS-6, Loop 2). Pure synchronous parsing; no codec initialization. |
 | `ktx2LevelsToRGBA` | `(parsed: Ktx2Parsed, level?: number) => Promise<CodecResult<Uint8Array>>` | Extract RGBA bytes from a parsed KTX2 container. Handles scheme=0 (uncompressed, pass-through) and scheme=2 (zstd supercompression, reuses `decompressZstd` per AC-04). The optional `level` parameter selects a mip level (default: 0). Returns the level's RGBA bytes as a flat `Uint8Array`. |
 | `selectTranscodeTarget` | `(dfdModel: number, srgb: boolean, channels: number, caps: TranscodeCaps) => GPUTextureFormat \| null` | Pure-function priority chain (node-safe, zero DOM): given a DFD color model, srgb flag, channel count, and device caps, returns the best native block format. The chain is LDR RGBA: `ASTC4x4 -> BC7 -> ETC2 -> RGBA8` (with srgb variants); single-channel R: `BC4 -> EAC-R11 -> R8`; two-channel RG: `BC5 -> EAC-RG11 -> RG8`; HDR: `BC6H -> rgba16float`. BC-first rule: when BC and ETC2/ASTC coexist, the chain selects BC (D-4 Mesa guard). Input `TranscodeCaps { bc, etc2, astc }` is a local struct -- codec never imports from rhi. Returns non-null (no-cap fallback to rgba8unorm/rgba16float). |
 | `initBasisTranscoder` | `(host?: BasisWasmHost) => Promise<BasisTranscoderModule>` | Lazy-init singleton per realm. First call loads the complete Emscripten factory and initializes Basis; native Hosts supply path-based instantiation before first texture use. Subsequent calls return the cached instance; rejected attempts can retry. |
 | `transcodeKtx2` | `(parsed: Ktx2Parsed, targetFormat: GPUTextureFormat) => Promise<CodecResult<TranscodedMips>>` | Transcode a scheme=1 (BasisLZ) KTX2 payload to a native block format. Iterates every mip level through the transcoder, returning `TranscodedMips { format, mips: { data, width, height }[] }`. Calls init on first use. |
+
+Zstd decoding uses one synchronous streaming session per call and verifies frame
+completion before returning owned output bytes. Native scratch space does not
+allocate the entire decoded output; its capacity still depends on input and the
+encoded window. Sessions never overlap within one realm.
 
 **Priority chain rules** (D-4 BC-first, D-8 local TranscodeCaps):
 
@@ -284,7 +289,7 @@ The codec package declares all 5 `MetricKind` entries in
 
 | Metric | Status | Reason |
 |:--|:--|:--|
-| `bundle-size` | enabled | Measures decode entry dist bundle (`dist/index.mjs` gzip). fzstd is pure JS (no WASM), so this captures the full decode cost. |
+| `bundle-size` | enabled | Measures decode entry dist bundle (`dist/index.mjs` gzip). Runtime decode dependencies include the embedded WASM payload and the pure-JS initialization fallback. |
 | `fps` | disabled | Pure-function library, no render-loop impact |
 | `bench` | disabled | No performance-sensitive hot paths to benchmark in isolation |
 | `gate` | disabled | No codec-specific gates beyond metric declaration itself |

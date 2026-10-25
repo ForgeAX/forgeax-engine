@@ -166,6 +166,10 @@ describe('main-pass Surface material selection', () => {
     const first = buildPerSubmeshMaterialBg(deps, material as never, 4, world);
     events.length = 0;
     expect(buildPerSubmeshMaterialBg(deps, material as never, 4, world)).toBe(first);
+    // One recording resolves a shader's surface model once; a new recording asks again.
+    expect(events).toEqual(['resolve', 'handle', 'probe', 'scope', 'schema', 'layout']);
+    events.length = 0;
+    expect(buildPerSubmeshMaterialBg({ ...deps }, material as never, 4, world)).toBe(first);
     expect(events).toEqual(['resolve', 'handle', 'probe', 'scope', 'artifact', 'schema', 'layout']);
     expect(deps.bindGroupEntries).toHaveLength(1);
   });

@@ -77,7 +77,19 @@ export interface DeviceFeatureAdmission {
     readonly maxSampledTexturesPerShaderStage?: number;
     readonly maxColorAttachmentBytesPerSample?: number;
     readonly maxComputeWorkgroupStorageSize?: number;
+    readonly maxStorageBufferBindingSize?: number;
+    readonly maxBufferSize?: number;
   };
+}
+
+const DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE = 134217728;
+const DEFAULT_MAX_BUFFER_SIZE = 268435456;
+
+/** An adapter value above the spec default, or undefined when nothing is gained. */
+function raisedLimit(value: number | undefined, defaultValue: number): number | undefined {
+  return value !== undefined && Number.isSafeInteger(value) && value > defaultValue
+    ? value
+    : undefined;
 }
 
 type AdapterFeatureProbe = Pick<RhiAdapter, 'features'> & Partial<Pick<RhiAdapter, 'limits'>>;
@@ -119,6 +131,17 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
   const colorAttachmentBytes = adapter.limits?.maxColorAttachmentBytesPerSample ?? 0;
   const workgroupStorage =
     (adapter.limits?.maxComputeWorkgroupStorageSize ?? 0) >= 32768 ? 32768 : undefined;
+  // GPU Scene tables and GPU-driven view streams scale with resident objects
+  // and are each bound whole; admit the adapter's real buffer ceilings so the
+  // capacity owners derive their bounds from it rather than the spec default.
+  const maxBufferSize = raisedLimit(adapter.limits?.maxBufferSize, DEFAULT_MAX_BUFFER_SIZE);
+  const maxStorageBufferBindingSize = raisedLimit(
+    Math.min(
+      adapter.limits?.maxStorageBufferBindingSize ?? 0,
+      maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE,
+    ),
+    DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE,
+  );
   const requiredColorAttachmentBytes = visibleSurface
     ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.visibleSurfaceTemporal)
     : colorAttachmentBytes >= DEFERRED_ATTACHMENT_BYTES.surface
@@ -138,7 +161,9 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
     requiredFeatures,
     ...(requiredSampledTextureLimit === undefined &&
     requiredColorAttachmentBytes === undefined &&
-    workgroupStorage === undefined
+    workgroupStorage === undefined &&
+    maxBufferSize === undefined &&
+    maxStorageBufferBindingSize === undefined
       ? {}
       : {
           requiredLimits: {
@@ -151,6 +176,8 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
             ...(workgroupStorage === undefined
               ? {}
               : { maxComputeWorkgroupStorageSize: workgroupStorage }),
+            ...(maxBufferSize === undefined ? {} : { maxBufferSize }),
+            ...(maxStorageBufferBindingSize === undefined ? {} : { maxStorageBufferBindingSize }),
           },
         }),
   };

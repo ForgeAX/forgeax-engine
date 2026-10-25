@@ -1,8 +1,14 @@
+import { readMaterialContent } from '@forgeax/engine-assets-runtime/internal';
 import { type Buffer, RhiError } from '@forgeax/engine-rhi';
+import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
 import type { RendererGenerationFence } from '../assembly/renderer-frame-transaction';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import type { StandardProbeGlobal, StandardProbePlacementSeed } from '../pipeline/standard-profile';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
+import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import type { RenderSceneSlot } from '../scene/render-scene-types';
+import { projectedRows, type ReadAsset, RowProjection } from '../scene/row-projection';
 import { CARD_LOOKUP_STRIDE } from './card-lookup';
 import { GLOBAL_CARD_CANDIDATE_STRIDE } from './global-card-lookup';
 import { packGlobalSdfQuerySettings } from './global-sdf-query';
@@ -19,6 +25,7 @@ import {
   probeGlobalRegionCurrent,
   probeGlobalSourceReferences,
 } from './renderer-probe-global';
+import { isNativePlacementMaterial, SceneFieldRows } from './scene-field-projection';
 
 type Kernel = Extract<ReturnType<typeof createRasterProbePlacement>, { ok: true }>['value'];
 interface Pair {
@@ -75,7 +82,55 @@ export interface ProbePlacementInspection {
 }
 
 /** One RenderSystem's bounded placement history. Profiles only declare seed inputs. */
+interface PlacementMaterialContext {
+  readonly internals: RenderSystemInternals;
+  readonly world: RenderResourceScope;
+  readonly worlds: readonly RenderResourceScope[];
+  /** Rows with admitted visible surfaces, from the same frame's projection. */
+  readonly surfaces: ReadonlyMap<number, number>;
+}
+
+/** True when one row's admitted surface draws lack a native lit Standard material. */
+function unqualifiedPlacementMaterials(
+  slot: RenderSceneSlot,
+  { internals, world, worlds, surfaces }: PlacementMaterialContext,
+  read: ReadAsset,
+): true | undefined {
+  if (!surfaces.has(slot.slot)) return undefined;
+  for (const draw of slot.snapshot.gpuDrivenDraws ?? []) {
+    if (draw.count === 0) continue;
+    const material = slot.snapshot.materials[draw.materialSlot]?.snapshot;
+    const scope = worlds[slot.worldId] ?? world;
+    const handle = material?.materialHandle ?? (0 as AssetHandle<'material'>);
+    read(scope, handle);
+    const asset = scope.resolveAsset<MaterialAsset>(handle);
+    const projection = asset.ok
+      ? internals.assets.getMaterialProjectionForPayload(asset.value)
+      : undefined;
+    const nativeSource = projection === undefined ? readMaterialContent(scope, handle) : asset;
+    if (
+      material === undefined ||
+      !isNativePlacementMaterial(
+        material,
+        projection,
+        nativeSource.ok ? nativeSource.value : undefined,
+      )
+    )
+      return true;
+  }
+  return undefined;
+}
+
 export class RendererProbePlacement {
+  #materialContext: PlacementMaterialContext | undefined;
+  /** Rows failing native placement admission, re-checked only when they or their materials change. */
+  readonly #unqualified = new RowProjection<true>((slot, _rows, read) =>
+    this.#materialContext === undefined
+      ? undefined
+      : unqualifiedPlacementMaterials(slot, this.#materialContext, read),
+  );
+  /** Global region field roster, kept current from scene row changes. */
+  readonly #fields = new SceneFieldRows();
   #generation = 0;
   #attempt = 0;
   #key = '';
@@ -115,7 +170,7 @@ export class RendererProbePlacement {
         ? {}
         : {
             global: {
-              sourceRevision: this.#region.retained.revision,
+              sourceRevision: this.#region.fieldRevision,
               sourceCount: this.#region.sources.length,
               voxelCount: this.#region.voxelCount,
               compositionBuilds: this.#compositionBuilds,
@@ -187,10 +242,14 @@ export class RendererProbePlacement {
       profile.maxFieldBytes,
       profile.cards,
     ]);
-    const refs = probeGlobalSourceReferences(source);
+    // The roster follows row changes in O(changes); the region rebuilds only
+    // when a field input changed. A failed projection surfaces through preparation.
+    this.#fields.update(retained, source.worlds, profile, runtime.assets);
+    const refs = probeGlobalSourceReferences(source, this.#fields.revision);
     if (
       key !== this.#regionKey ||
-      (this.#region !== undefined && !probeGlobalRegionCurrent(this.#region, source)) ||
+      (this.#region !== undefined &&
+        !probeGlobalRegionCurrent(this.#region, source, this.#fields.revision)) ||
       refs.length !== this.#regionSource.length ||
       refs.some((value, index) => value !== this.#regionSource[index])
     ) {
@@ -209,7 +268,7 @@ export class RendererProbePlacement {
       const token = {};
       this.#regionPending = token;
       this.#compositionBuilds++;
-      void prepareProbeGlobalRegion(runtime, source, profile)
+      void prepareProbeGlobalRegion(runtime, source, profile, false, undefined, this.#fields)
         .then((region) => {
           if (this.#disposed || this.#regionPending !== token) region.lifetime.retire();
           else this.#region = region;
@@ -238,6 +297,27 @@ export class RendererProbePlacement {
         });
     }
     return this.#region;
+  }
+
+  /** Every admitted placement row must carry a native lit Standard material. */
+  admitMaterials(context: PlacementMaterialContext, scene: PersistentGpuDrivenState): void {
+    const before = this.#materialContext;
+    if (
+      before === undefined ||
+      before.internals !== context.internals ||
+      before.world !== context.world ||
+      before.worlds.length !== context.worlds.length ||
+      before.worlds.some((world, index) => world !== context.worlds[index])
+    )
+      this.#unqualified.reset();
+    this.#materialContext = context;
+    this.#unqualified.sync(projectedRows(scene));
+    if (this.#unqualified.size > 0)
+      throw new RhiError({
+        code: 'rhi-not-available',
+        expected: 'native lit Standard materials for every admitted placement row',
+        hint: 'publish the selected native Standard program and Surface; custom/unlit rows are not admitted',
+      });
   }
 
   prepare(input: {
@@ -312,7 +392,7 @@ export class RendererProbePlacement {
         (region === undefined ||
           (input.globalSource !== undefined &&
             sourceCurrent?.() === true &&
-            probeGlobalRegionCurrent(region, input.globalSource))) &&
+            probeGlobalRegionCurrent(region, input.globalSource, this.#fields.revision))) &&
         JSON.stringify([
           runtime.deviceScope.generation,
           input.camera,

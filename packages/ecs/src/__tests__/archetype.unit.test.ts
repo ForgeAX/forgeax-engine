@@ -39,6 +39,7 @@ import {
   getRemoveEdge,
 } from '../storage/archetype-graph';
 import { createColumn, growColumn, HAS_TRANSFER } from '../storage/column';
+import type { EntityRecords } from '../storage/entity-records';
 import {
   appendTableRow,
   createTable as createArchetype,
@@ -946,9 +947,9 @@ function appendEntity(table: Table, entity: number): number {
   function archetypeOf(world: World, e: EntityHandle): Table {
     const graph = (world as unknown as { graph: { archetypes: Archetype[]; tables: Table[] } })
       .graph;
-    const records = (world as unknown as { records: { archetypeId: number }[] }).records;
+    const records = (world as unknown as { records: EntityRecords }).records;
     const indexSlot = (e as unknown as number) & 0xffffff;
-    const archId = records[indexSlot]?.archetypeId ?? -1;
+    const archId = records.archetypeId[indexSlot] ?? -1;
     const arch = graph.archetypes[archId];
     if (!arch) throw new Error('archetype not found for entity');
     const table = graph.tables[arch.tableId];

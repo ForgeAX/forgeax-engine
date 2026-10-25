@@ -2,13 +2,14 @@
 
 Archetype ECS for ForgeaX. The package owns the hot path shared by every
 domain: entity identity, component storage, relationships, queries, structural
-mutation, two schedules, resources, time, and optional shared numeric kernels.
+mutation, schedules, resources, time, and optional shared numeric kernels.
 
 > [!IMPORTANT]
-> `World` is the state authority. Scene instances, render extraction, physics
+> A `World` is the state authority of its realm. Scene instances, physics
 > backends, asset ownership, input collection, and application lifecycle stay
-> in their owning packages. Do not add a second ECS facade for one of those
-> domains.
+> in their owning packages. A domain that needs its own entity store (the
+> renderer's Render World) instantiates another `World` with domain schedules;
+> it never wraps the World in a second ECS facade.
 
 `World` directly owns its graph, entity records, managed stores, relationship
 indexes, row/block revisions, and execution health. Query, command, and
@@ -91,7 +92,7 @@ open-ended metadata do not belong on a component token.
 | `shared<Tag>` | World-owned non-asset shared payload | `{ type: 'shared<RenderTarget>' }` |
 | `array<T>` | variable array replaced as one value or written in place by range | `{ type: 'array<f32>' }` |
 | `array<T,N>` | fixed-size inline array | `{ type: 'array<f32, 4>' }` |
-| sparse tag | presence-only marker | `defineComponent('Disabled', {})` |
+| tag | presence-only marker; `{ storage: 'sparse' }` flips without moving the row | `defineComponent('Residual', {}, { storage: 'sparse' })` |
 
 `world.sharedRefs.acquire(target, payload)` returns one caller-owned reference
 while preserving the interned handle for the same target and payload object.
@@ -140,6 +141,9 @@ after the mutation epoch `since` (read with `readMutationEpoch(world)`), or
 `'whole'` when any other write replaced the field, the entity was despawned,
 or the bounded per-field history (1024 writes) no longer covers `since`.
 `'whole'` is always a safe answer; consumers then reproject the full array.
+A range write covering the whole field (a per-frame pose) keeps no history:
+`'whole'` is then the exact answer, so retained memory stays independent of
+write count.
 
 The Scene package may define a single-field `Name { value: 'string' }` token
 for authoring. ECS stores the value through the same closed `string` schema
@@ -311,7 +315,8 @@ and cursor. Component indices own the only changed epoch for each live component
 row and sparse storage retain only the distinct added epoch. Migration and
 swap-removal move added evidence but never duplicate or move changed evidence.
 Known-identity queries read the same index directly. Removal releases empty
-paths. Repeated writes mutate existing paths; unexpected allocation failure
+paths (a bounded spare list reuses their nodes) and rescans a node only when it
+held the removed maximum. Repeated writes mutate existing paths; unexpected allocation failure
 after a mutation poisons the World through its existing partial-write policy.
 Structural facts coalesce by World slot, retaining deletion and generation
 replacement for independent slow consumers without an append history.
@@ -345,12 +350,19 @@ candidate.accept(); // Only after the consumer successfully applies its changes.
 | Boundary | Contract |
 |:--|:--|
 | Discovery | Prunes unchanged max-epoch index paths; resolves only emitted stable identities. Explicit invalidation may rebuild the consumer baseline. |
-| Acceptance | Synchronous, consumer-local; a new read, invalidation, or World mutation expires an outstanding candidate. |
+| Acceptance | Synchronous, consumer-local; a new read, invalidation, observed/candidate component write or any structural mutation expires an outstanding candidate. Writes to other components and resources do not expire it. |
 | Failure | Leave the batch unaccepted and read again; poisoned Worlds reject projection. |
 | Scratch | `indices` is borrowed until the next `read`; do not retain it as a snapshot. |
 | Invalidation | Preserves prior identities so deleted sources can still leave the consumer. |
-| Fast check | `isCurrent()` compares accepted World epochs without allocating a batch; unrelated writes may return false. |
+| Fast check | `isCurrent()` checks the same component/structure fence without allocating a batch; unrelated component and resource writes leave it current. |
 | Root facts | `membershipChanged` and `changedComponents` conservatively identify work domains; `changed(entity, component)` checks a surviving value against acceptance. Removed components require current-membership reconciliation. |
+
+The observation declaration is the acceptance fence. A producer may read input
+components, write separate derived output components in the same World, then
+accept its inputs. Include every component whose value or membership the
+consumer relies on; resource reads are outside this component projection's
+fence. Structural edits remain conservative and must precede the read or follow
+acceptance. The borrowed batch never becomes an asynchronous frame snapshot.
 
 Derived numeric producers execute under one World-owned synchronous write
 fence. The internal `writeRows` operation covers the producer's numeric writes,
@@ -409,11 +421,31 @@ capability never hands out a storage view and cannot mutate the World.
 Queries never expose table ids, rows, columns, or a duplicate snapshot data
 plane.
 
+### Steady-state cost at scale
+
+Steady per-frame work allocates in proportion to changes, not entity count
+([steady-state bench](bench/steady-state.mjs)):
+
+| Operation | Steady allocation |
+|:--|:--|
+| `set` on a numeric/bool/entity component, `setArrayRange`, `ok(undefined)` | none |
+| `set` with an array payload | none beyond the caller's payload object |
+| sparse tag add/remove | none (no row move); table tags copy the row |
+| changed row iteration | none per row; `row.get` builds one snapshot object (and views) |
+| spawn / despawn | payload validation records only; archetype rosters are memoized |
+
+Small variable arrays (up to 256 bytes) share chunk cells instead of owning
+an ArrayBuffer each; a fixed `array<T,N>` stays cheaper still.
+
 ## Schedules, time, and resources
 
-Only `Update` and `FixedUpdate` are user schedules. Registration is token-first;
-there is no frame-end schedule, system-parameter DSL, terminal render hook, or
-severity/error-handler registry.
+`Update` and `FixedUpdate` are the simulation schedules driven by
+`world.update(dt)`. A domain declares its own phases with `defineSchedule(name)`
+and executes them explicitly with `world.run(token)`; a domain run never
+advances World time and cannot order against another schedule; running a token the World has
+never registered, or ordering across schedules, returns `schedule-scope-mismatch`. Registration is
+token-first; there is no frame-end schedule, system-parameter DSL, terminal
+render hook, or severity/error-handler registry.
 
 ```ts
 world.addSystem(Update, Move).unwrap();
@@ -564,7 +596,7 @@ specific change belong to its closed-loop verification report.
 - [x] Entity and component mutation use one World authority.
 - [x] Relationship targets remain materialized for $O(1 + k)$ reads.
 - [x] Query row/span are the only public data plane.
-- [x] `Update` and `FixedUpdate` are the only schedules.
+- [x] `Update`/`FixedUpdate` drive simulation; domain schedules run only explicitly.
 - [x] Expected failures are structured; unknown partial writes poison the World.
 - [x] Advanced projection/shared/externalization APIs are named subpaths.
 
@@ -580,6 +612,6 @@ allocation failure returns the existing structured managed-buffer error. Small
 fields keep their existing allocation and reuse behavior. Game data, including
 instance transforms, remains World-owned regardless of its size.
 
-Managed buffer slots derive logical length and backing storage from their current byte view. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
+Managed buffer slots are typed columns (size class, chunk, offset, logical length); the pool retains no view per slot and materializes a transient byte view only on request, so a small per-entity array costs no live object. Entity records (generation, archetype, row) are likewise typed columns rather than one object per entity. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
 
 Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only buffer sources and numeric-array inputs widen.

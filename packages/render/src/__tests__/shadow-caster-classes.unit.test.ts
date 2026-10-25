@@ -421,3 +421,27 @@ it('intersects fixed caster roots only in actual membership reads and observes r
   expect(after.staticSlots.has(0)).toBe(false);
   expect(after.staticSlots.has(999)).toBe(true);
 });
+
+it('derives the caster set as the static/dynamic union without a third tree', () => {
+  const of = (...slots: number[]) => slots.reduce((set, slot) => set.with(slot), new FrameSet());
+  const statics = of(0, 2, 4);
+  const dynamics = of(1, 5);
+  const casters = new ShadowSlotSelection([statics, dynamics]);
+  expect([...casters]).toEqual([0, 1, 2, 4, 5]);
+  expect(casters.size).toBe(5);
+  expect(casters.has(1) && casters.has(4) && !casters.has(3)).toBe(true);
+  // A caster flipping class keeps the union: equal, and no slot changes.
+  const flipped = new ShadowSlotSelection([statics.without(4), dynamics.with(4)]);
+  expect(flipped.same(casters)).toBe(true);
+  const visited: number[] = [];
+  expect(flipped.changesSince(casters, (slot) => visited.push(slot))).toBe(true);
+  expect(visited).toEqual([]);
+  // A created caster changes the union and is visited once.
+  const created = new ShadowSlotSelection([statics, dynamics.with(3)]);
+  expect(created.same(casters)).toBe(false);
+  expect(created.changesSince(casters, (slot) => visited.push(slot))).toBe(true);
+  expect(visited).toEqual([3]);
+  const restricted = new ShadowSlotSelection([statics, dynamics], of(1, 2, 3));
+  expect([...restricted]).toEqual([1, 2]);
+  expect(restricted.size).toBe(2);
+});

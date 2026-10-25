@@ -491,6 +491,7 @@ export class MaterialAbiRasterAdapter {
         readonly primitiveBuffer: Buffer;
         readonly primitiveBytes: number;
         readonly visibleSurfaceRows: Buffer | undefined;
+        readonly sceneInputs: Buffer | undefined;
       }
     | undefined;
   private readonly surfaceInputBuffers = new Set<Buffer>();
@@ -819,6 +820,7 @@ export class MaterialAbiRasterAdapter {
           resource: bufferBinding(instanceBuffer.value, 0, instancePayload.byteLength),
         },
         { binding: 7, resource: bufferBinding(input.visibleBuffer) },
+        { binding: 8, resource: bufferBinding(input.visibleBuffer) },
       ],
     });
     if (!instancesBindGroup.ok) {
@@ -872,6 +874,7 @@ export class MaterialAbiRasterAdapter {
           binding: 7,
           resource: bufferBinding(this.sceneTables?.visibleSurfaceRows ?? this.visibleBuffer),
         },
+        { binding: 8, resource: bufferBinding(this.sceneTables?.sceneInputs ?? visibleBuffer) },
       ],
     });
     if (!created.ok) return created;
@@ -901,6 +904,7 @@ export class MaterialAbiRasterAdapter {
     primitiveBuffer: Buffer,
     primitiveBytes: number,
     visibleSurfaceRows?: Buffer,
+    sceneInputs?: Buffer,
   ): void {
     const current = this.sceneTables;
     if (
@@ -908,7 +912,8 @@ export class MaterialAbiRasterAdapter {
       current.instanceBytes === instanceBytes &&
       current.primitiveBuffer === primitiveBuffer &&
       current.primitiveBytes === primitiveBytes &&
-      current.visibleSurfaceRows === visibleSurfaceRows
+      current.visibleSurfaceRows === visibleSurfaceRows &&
+      current.sceneInputs === sceneInputs
     ) {
       return;
     }
@@ -918,6 +923,7 @@ export class MaterialAbiRasterAdapter {
       primitiveBuffer,
       primitiveBytes,
       visibleSurfaceRows,
+      sceneInputs,
     };
     this.resetVisibleWindows();
   }
@@ -1011,6 +1017,8 @@ export class MaterialAbiRasterAdapter {
           resource: bufferBinding(sceneTables.primitiveBuffer, 0, sceneTables.primitiveBytes),
         },
         { binding: 7, resource: bufferBinding(sceneTables.visibleSurfaceRows ?? visibleBuffer) },
+        // Shadow views read the same shared scene inputs as the main view.
+        { binding: 8, resource: bufferBinding(sceneTables.sceneInputs ?? visibleBuffer) },
       ],
     });
     if (!created.ok) return created;
@@ -1585,6 +1593,10 @@ export class MaterialAbiRasterAdapter {
         {
           binding: 7,
           resource: bufferBinding(this.sceneTables?.visibleSurfaceRows ?? this.visibleBuffer),
+        },
+        {
+          binding: 8,
+          resource: bufferBinding(this.sceneTables?.sceneInputs ?? this.visibleBuffer),
         },
       ],
     });

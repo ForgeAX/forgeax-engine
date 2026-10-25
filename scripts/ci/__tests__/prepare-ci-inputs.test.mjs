@@ -313,7 +313,12 @@ test('Bun input fallback runs pnpm commands without replacing the installed depe
     const lockPath = join(root, 'pnpm-lock.yaml');
     if (existsSync(lockPath)) {
       const lockfile = readFileSync(lockPath, 'utf8');
-      assert.match(lockfile, /packageManagerDependencies:[\s\S]*pnpm:[\s\S]*12\.10\.1/);
+      assert.match(
+        lockfile,
+        new RegExp(
+          `packageManagerDependencies:[\\s\\S]*pnpm:[\\s\\S]*${version.stdout.trim().replaceAll('.', '\\.')}`,
+        ),
+      );
       assert.doesNotMatch(lockfile, /fixture-dep/);
     }
   } finally {

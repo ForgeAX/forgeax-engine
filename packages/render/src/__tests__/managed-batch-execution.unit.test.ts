@@ -5,6 +5,7 @@ import { expect, it } from 'vitest';
 import type { GpuDrivenCandidate, SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GPU_DRIVEN_VIEW_WGSL, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { GPU_MEMBER_RECORD_WORDS } from '../gpu-scene-inputs';
 import { MaterialResource } from '../material-resource';
 import { RenderScene } from '../scene/render-scene';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
@@ -114,17 +115,23 @@ it('observes unqualified candidate getters on every actual execution update', as
     update(changed);
     expect(reads).toBe(2 * candidates.length);
     reads = 0;
-    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(candidates.length * 8 * 4);
+    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(
+      candidates.length * GPU_MEMBER_RECORD_WORDS * 4,
+    );
     expect(view.inspect().batchUploadBytes).toBeGreaterThan(0);
     update(original);
     expect(reads).toBe(2 * candidates.length);
     reads = 0;
-    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(candidates.length * 8 * 4);
+    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(
+      candidates.length * GPU_MEMBER_RECORD_WORDS * 4,
+    );
     expect(view.inspect().batchUploadBytes).toBeGreaterThan(0);
     update({ ...original, revision: 3 });
     expect(reads).toBe(2 * candidates.length);
     reads = 0;
-    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(candidates.length * 8 * 4);
+    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(
+      candidates.length * GPU_MEMBER_RECORD_WORDS * 4,
+    );
     expect(view.inspect().batchUploadBytes).toBeGreaterThan(0); // Fresh raw member root.
     const first = snapshots[0];
     if (first === undefined) throw new Error('Missing first candidate');
@@ -143,7 +150,9 @@ it('observes unqualified candidate getters on every actual execution update', as
     update({ ...changed, revision: 4 });
     expect(reads).toBe(2 * candidates.length);
     reads = 0;
-    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(candidates.length * 8 * 4);
+    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(
+      candidates.length * GPU_MEMBER_RECORD_WORDS * 4,
+    );
   } finally {
     view.dispose();
     scene.dispose();

@@ -85,7 +85,7 @@ export function lowerEngineSurfaceEntry(
   defines: Readonly<Record<string, boolean>> = {},
 ): { readonly source: string; readonly imports: Readonly<Record<string, string>> } {
   if (!file.source.includes('#pragma material_slot surface')) {
-    return { source: file.source, imports };
+    return lowerEngineSceneAddresses(file, { source: file.source, imports }, defines);
   }
   const templateModule = extractDefineImportPath(file.source);
   if (templateModule === undefined) {
@@ -159,19 +159,31 @@ export function lowerEngineSurfaceEntry(
     defines,
     Object.keys(defines),
   );
-  if (defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true) {
-    const stride = Math.max(16, derive(engineMaterialParamSchema(identifier)).totalBytes);
-    return {
-      source: lowerSceneMaterialAddresses(loweredSource, stride),
-      imports: Object.fromEntries(
-        Object.entries(loweredImports).map(([module, source]) => [
-          module,
-          lowerSceneMaterialAddresses(source, stride),
-        ]),
-      ),
-    };
-  }
-  return { source: loweredSource, imports: loweredImports };
+  return lowerEngineSceneAddresses(
+    file,
+    { source: loweredSource, imports: loweredImports },
+    defines,
+  );
+}
+
+/** Scene-index variants address the GPU Scene row page with their schema-derived stride. */
+function lowerEngineSceneAddresses(
+  file: EngineShaderFile,
+  entry: { readonly source: string; readonly imports: Readonly<Record<string, string>> },
+  defines: Readonly<Record<string, boolean>>,
+): { readonly source: string; readonly imports: Readonly<Record<string, string>> } {
+  if (defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE !== true) return entry;
+  const identifier = file.reservedIdentifier ?? extractDefineImportPath(file.source) ?? file.id;
+  const stride = Math.max(16, derive(engineMaterialParamSchema(identifier)).totalBytes);
+  return {
+    source: lowerSceneMaterialAddresses(entry.source, stride),
+    imports: Object.fromEntries(
+      Object.entries(entry.imports).map(([module, source]) => [
+        module,
+        lowerSceneMaterialAddresses(source, stride),
+      ]),
+    ),
+  };
 }
 
 export function resolveImportModuleId(

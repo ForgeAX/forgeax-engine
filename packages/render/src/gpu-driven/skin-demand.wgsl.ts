@@ -66,7 +66,7 @@ fn claimSkinDemand(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_wo
         return;
       }
       // Every acquired key is retained for sparse clear, including a rejected
-      // palette allocation. Host admission guarantees rosterCapacity >= candidates.
+      // palette allocation. Every key owns a joint, so rosterCapacity >= keys.
       skinOutput[skinDemand.rosterBase + demand] = vec4<u32>(hashSlot, 0u, 0u, 0u);
       let joints = atomicAdd(&skinCounters[skinDemand.counterBase + 1u], count);
       if (joints > skinDemand.jointCapacity || count > skinDemand.jointCapacity - joints) {

@@ -12,11 +12,21 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
-For an installed SDK `edgesOut` crash in npm Arborist, compare the actual npm
-version with the npm 11.17.0 installed-consumer toolchain in the
+For SDK bootstrap or publication failures, compare the actual Node, npm and pnpm
+versions with `.nvmrc`, `.npm-version` and `.pnpm-version` in the
 [CI guide](../../scripts/ci/README.md). PR, Candidate and Promotion use the same
-CLI. Repair a mismatched release controller while retaining the sealed source,
-version and immutable package bytes.
+toolchain. Repair the owning operation while retaining sealed source, version
+and immutable package bytes.
+
+For a Pack draft that retains a source-declaration error after repair, compare
+the source digest with the draft revision. Explicit reopen uses Pack's serialized
+source refresh and preserves edits; verify the native authoring recovery gate
+before changing View waits or runtime parameter controls.
+
+For Render's `No test suite found` on managed-asset benchmark `.test.mjs` files,
+run their native `node:test` owner in `primary-pnpm`; the Render Vitest project
+must retain its source tests and exclude only those benchmark contracts.
+See [CI reproduction](../../scripts/ci/README.md).
 
 For a Browser measured-roster coverage failure, refresh missing file costs from
 completed successful exact-child observations through [Browser gates](../../scripts/ci/README.md#browser-gates).
@@ -101,7 +111,9 @@ while preserving the full roster, native process isolation and existing deadline
 Check newly discovered files against the same cost table: its largest-file
 fallback can reserve minutes for a short new test. Admit costs only from complete
 successful children, retain process overhead and larger inherited forecasts, and
-exclude interrupted owner tails before running the final full matrix. When all
+exclude interrupted owner tails before running the final full matrix. Distribute
+ordinary-process overhead across emitted skipped files too; a missing file result
+keeps its inherited forecast. When all
 groups complete but one job exceeds its envelope, a complete owner can move from
 a lane with measured headroom to the overrun lane; replay ordinary-file backfill
 for all four lanes before keeping that placement.
@@ -264,6 +276,17 @@ logs for late dependencies. A literal dynamic import remains eligible for Vite
 pretransform even with `@vite-ignore`; Node-only transports must load only on
 their native execution path. Preserve native remote-server and real cold-browser
 regressions when correcting that boundary.
+For Play startup `ERR_OUTDATED_OPTIMIZED_DEP`, check the frozen plugin graph's
+preparation order. Vite optimizer `init()` starts its scan asynchronously;
+plugin capture must await that initial scan before freezing module URLs. Keep
+the cold-start Play, same-project lock, cache-reuse and renderer-failure checks.
+Check the scan's entry set too: declared Runtime Pack secondary exports can
+introduce dependencies outside App's main graph. Resolve those entries through
+the executing client before optimization; retain native Engine module identity.
+For paired replay work-index divergence, compare each consumer's selection
+against the tape's swapchain provenance and trailing probe work. The shared
+application selector owns both defaults and explicit work-index transport;
+retain the same-artifact, backend and pixel oracles.
 
 For Dawn partition roster drift, compare actual Vitest titles with the
 case-sensitive patterns in `scripts/ci/run-dawn-partitions.mjs`. VFX depth's
@@ -403,6 +426,11 @@ alongside the replay before attributing the entire delay to runner variation.
 A completed ordinary process from a cancelled job remains a cost observation;
 the interrupted owner and unstarted tail do not. Verify complete file identity
 when a process-start line is absent before admitting an emitted file set.
+For a native worker exit, compare the selected ordinary roster with emitted
+file results to identify the missing owner. Verify its complete capture/replay
+test in a fresh process, then use the existing isolated-owner route when shared
+native lifetime is implicated. Keep every file, assertion and original deadline;
+the failed process supplies no completed cost sample.
 When a completed file within an interrupted owner already exceeds that owner's
 reservation, the old forecast is disproven even though no new complete duration
 exists. The CI guide documents a reservation estimate using that file's slowdown

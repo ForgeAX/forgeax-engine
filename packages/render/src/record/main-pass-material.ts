@@ -1013,6 +1013,16 @@ export function writePbrMaterialUboPayload(
     if (typeof value === 'number') {
       writeNumericParamValue(dataView, entry, value);
     } else if (Array.isArray(value)) {
+      // A short vector keeps its declared trailing components, as prepared
+      // materials do: an RGB baseColor keeps the default alpha 1.
+      if (value.length < entry.size / 4) {
+        const declared = (
+          (parametersByName === undefined
+            ? schema.find((item) => item.name === entry.name)
+            : parametersByName.get(entry.name)) as { readonly default?: unknown } | undefined
+        )?.default;
+        if (Array.isArray(declared)) writeNumericParamValue(dataView, entry, declared);
+      }
       writeNumericParamValue(dataView, entry, value);
     }
   }
@@ -1206,6 +1216,8 @@ export interface PerSubmeshMaterialBgDeps {
   readonly materialBgShared: Map<string, WeakMap<object, unknown>>;
   /** Cross-frame final BG reuse keyed by the stable source material handle. */
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
+  /** {@link materialDiagnosticsEnabled}, read once per recording instead of per draw. */
+  readonly diagnostics?: boolean;
   /** Producer-owned numeric scene rows consumed by scene-index PBR draws. */
   readonly sceneMaterialBuffer?: Buffer;
   /** Active transmission backdrop; undefined/null means layout placeholder. */
@@ -1554,7 +1566,7 @@ export function buildPerSubmeshMaterialBg(
         deps.surfaceRawDepthView,
       )
     ) {
-      if (materialDiagnosticsEnabled())
+      if (deps.diagnostics ?? materialDiagnosticsEnabled())
         recordIblMaterialBindingHit(
           deps.frameState,
           smMaterialBgl,
@@ -1607,18 +1619,33 @@ function directSceneMaterialBuffer(deps: PerSubmeshMaterialBgDeps): Buffer | und
 }
 
 /** Producer-owned graph resources of the single-layer medium shader, else undefined. */
+// One recording's draws share a few shaders; resolve each artifact's surface model once.
+const mediumShaders = new WeakMap<PerSubmeshMaterialBgDeps, Map<string, boolean>>();
+
+function mediumShaderOf(deps: PerSubmeshMaterialBgDeps, shaderId: string | undefined): boolean {
+  if (shaderId === undefined) return false;
+  if (shaderId === 'forgeax::single-layer-medium') return true;
+  let shaders = mediumShaders.get(deps);
+  const known = shaders?.get(shaderId);
+  if (known !== undefined) return known;
+  const medium =
+    deps.runtime.getMaterialShaderArtifact?.(shaderId)?.receipt?.surface?.model ===
+    'single-layer-medium';
+  if (shaders === undefined) {
+    shaders = new Map();
+    mediumShaders.set(deps, shaders);
+  }
+  shaders.set(shaderId, medium);
+  return medium;
+}
+
 function resolveSurfaceMediumResources(
   deps: PerSubmeshMaterialBgDeps,
   shaderId: string | undefined,
   skylight: SkylightBindGroupResources,
 ): SurfaceMediumBindGroupResources | undefined {
-  const { runtime, pipelineState, surfaceRawDepthView } = deps;
-  const artifact =
-    shaderId === undefined ? undefined : runtime.getMaterialShaderArtifact?.(shaderId);
-  const mediumShader =
-    shaderId === 'forgeax::single-layer-medium' ||
-    artifact?.receipt?.surface?.model === 'single-layer-medium';
-  if (!mediumShader) return undefined;
+  const { pipelineState, surfaceRawDepthView } = deps;
+  if (!mediumShaderOf(deps, shaderId)) return undefined;
   if (surfaceRawDepthView == null) {
     throw new RhiError({
       code: 'rhi-descriptor-invalid',
@@ -1779,7 +1806,7 @@ function assembleMaterialBg(
     resource: { kind: 'buffer', value: { buffer: uniformBuffer, offset: 0, size: materialSlice } },
   };
   const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
-  const diagnosticsEnabled = materialDiagnosticsEnabled();
+  const diagnosticsEnabled = deps.diagnostics ?? materialDiagnosticsEnabled();
   if (diagnosticsEnabled)
     logMaterialCacheHandles(deps, assembly, smMergedEntries, materialCacheHandles);
   const smBindGroup = materialBindingGroup(

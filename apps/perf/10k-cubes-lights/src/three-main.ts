@@ -88,7 +88,19 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const renderer = new WebGPURenderer({ canvas: target, antialias: false, forceWebGL: false });
   await renderer.init();
   renderer.setPixelRatio(1);
+  // The drawing buffer follows CSS size × devicePixelRatio, as the ForgeaX
+  // page does, so both implementations shade the same pixel count.
+  const fitDrawingBuffer = (): void => {
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(target.clientWidth * ratio));
+    const height = Math.max(1, Math.round(target.clientHeight * ratio));
+    if (target.width === width && target.height === height) return;
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  };
   renderer.setSize(target.width, target.height, false);
+  fitDrawingBuffer();
   renderer.outputColorSpace = SRGBColorSpace;
   renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.15;
@@ -213,6 +225,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
       evidence.processedCubeCount = processed;
       evidence.cameraRotationRadians = elapsed * 0.18;
 
+      fitDrawingBuffer();
       const renderStart = performance.now();
       renderer.render(scene, camera);
       evidence.renderSamplesMs.push(performance.now() - renderStart);

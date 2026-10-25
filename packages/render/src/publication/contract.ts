@@ -67,9 +67,12 @@ export interface RenderPublicationTemplate {
   readonly dispatch: readonly Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>[];
 }
 
-/** Numeric storage and published mesh copies are owned; source buffers never transfer. */
+/**
+ * One publication as its source prepared it and its receiver decoded it. The
+ * Worker boundary carries its `RenderPublicationMessage` encoding (`./record`):
+ * the five columns share one record, and published mesh copies are owned.
+ */
 export interface RenderPublication extends RenderPublicationIdentity {
-  readonly protocol: 3;
   readonly materials: readonly {
     readonly id: number;
     readonly value: import('../render-system-extract').MaterialSnapshot;
@@ -148,7 +151,7 @@ export interface RenderPublication extends RenderPublicationIdentity {
 }
 
 export interface PublishedRenderFrameInput {
-  readonly publication: RenderPublication;
+  readonly publication: import('./record').RenderPublicationMessage;
   readonly geometryObservation?: true;
   /** Diagnostic identity of the World that produced this publication. The
    * transport's publication namespace is not an ECS World identity. */
@@ -156,57 +159,6 @@ export interface PublishedRenderFrameInput {
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Realm-local adapter invoked only after the feature's graph is submitted. */
   readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
-}
-
-export function renderPublicationTransfers(packet: RenderPublication): ArrayBuffer[] {
-  return [
-    packet.upserts.buffer,
-    packet.removed.buffer,
-    packet.transformEntities.buffer,
-    packet.transforms.buffer,
-    packet.retiredJoints.buffer,
-  ] as ArrayBuffer[];
-}
-
-/**
- * Bytes one publication carries across the Worker boundary: the five frame
- * columns (logical typed-view bytes) and the transferred asset buffers. The
- * structured-cloned rows (objects, materials, programs, features) are not counted.
- */
-export function renderPublicationBytes(packet: RenderPublication): {
-  readonly columns: number;
-  readonly assets: number;
-} {
-  const columns =
-    packet.upserts.byteLength +
-    packet.removed.byteLength +
-    packet.transformEntities.byteLength +
-    packet.transforms.byteLength +
-    packet.retiredJoints.byteLength;
-  let assets = 0;
-  if (packet.assets.length > 0 || packet.assetPatches.length > 0)
-    for (const buffer of renderPublicationAssetTransfers(packet)) assets += buffer.byteLength;
-  return { columns, assets };
-}
-
-/** Mesh copies stay with the receiver; only the five frame columns are recycled. */
-export function renderPublicationAssetTransfers(packet: RenderPublication): ArrayBuffer[] {
-  const buffers = new Set<ArrayBuffer>();
-  const collect = (value: unknown): void => {
-    if (value instanceof ArrayBuffer) {
-      buffers.add(value);
-    } else if (ArrayBuffer.isView(value)) {
-      if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
-    } else if (value !== null && typeof value === 'object') {
-      for (const child of Object.values(value)) collect(child);
-    }
-  };
-  for (const row of packet.assets) collect(row.value);
-  for (const patch of packet.assetPatches) {
-    collect(patch.fields);
-    for (const range of patch.ranges) collect(range.bytes);
-  }
-  return [...buffers];
 }
 
 export type RenderPublicationFailure =

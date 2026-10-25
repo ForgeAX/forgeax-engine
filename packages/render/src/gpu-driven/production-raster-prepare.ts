@@ -12,6 +12,7 @@ import { geometryRenderStateForTopology } from '../record/main-pass-material';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import { SceneSlotFrame, SlotIdentityKeys } from '../scene/scene-slots';
 import { type BatchExecution, captureBatchLod } from './batch-execution';
 import { batchVisibleSpan, GPU_DRIVEN_LOD_LEVEL_CAPACITY } from './batch-layout';
 import { MemberCandidates } from './batch-members';
@@ -434,6 +435,88 @@ export function suppressedPrimitiveWords(
     const word = slot.slot >>> 5;
     if (word < words.length) words[word] = (words[word] ?? 0) | (1 << (slot.slot & 31));
   }
+  return words;
+}
+
+/** The inputs one suppression bitmap was derived from. */
+export interface SuppressionSource {
+  readonly slots: PersistentGpuDrivenState['slots'];
+  readonly worldKeys: readonly number[] | undefined;
+  readonly activeEntityKeys: ReadonlySet<number>;
+  readonly words: Uint32Array;
+}
+
+/**
+ * Words a patched bitmap changed relative to the bitmap it was patched from,
+ * so each view uploading the earlier bitmap visits only those words.
+ */
+const suppressionPatches = new WeakMap<
+  Uint32Array,
+  { readonly base: Uint32Array; readonly words: readonly number[] }
+>();
+
+export function suppressionPatchOf(
+  words: Uint32Array,
+): { readonly base: Uint32Array; readonly words: readonly number[] } | undefined {
+  return suppressionPatches.get(words);
+}
+
+/**
+ * Patch an earlier bitmap to `suppressedPrimitiveWords(slots, ...)`, visiting
+ * only the slots whose rows or active identities entered or left since the
+ * earlier inputs, read from the scene's row-change log. `undefined` when the
+ * inputs are not fixed rosters of the same routing or the log cannot answer,
+ * so only the complete derivation can answer.
+ */
+export function patchSuppressedPrimitiveWords(
+  previous: SuppressionSource,
+  slots: PersistentGpuDrivenState['slots'],
+  worldKeys: readonly number[] | undefined,
+  activeEntityKeys: ReadonlySet<number>,
+  sceneCapacity: number,
+): Uint32Array | undefined {
+  if (
+    !(slots instanceof SceneSlotFrame) ||
+    !(previous.slots instanceof SceneSlotFrame) ||
+    !(activeEntityKeys instanceof SlotIdentityKeys) ||
+    !(previous.activeEntityKeys instanceof SlotIdentityKeys) ||
+    previous.worldKeys?.length !== worldKeys?.length ||
+    previous.worldKeys?.some((key, index) => key !== worldKeys?.[index]) === true ||
+    // Capacity bounds which rows the earlier bitmap could address.
+    previous.words.length !== Math.max(1, Math.ceil(sceneCapacity / 32))
+  )
+    return undefined;
+  const words = previous.words.slice();
+  const changed: number[] = [];
+  const evaluate = (slot: number): void => {
+    const word = slot >>> 5;
+    if (word >= words.length) return;
+    const record = slots.slotAt(slot);
+    const suppressed =
+      record !== undefined &&
+      !activeEntityKeys.has(
+        worldEntityKey(
+          worldKeys?.[record.snapshot.worldId] ?? record.snapshot.worldId,
+          record.snapshot.entityKey,
+        ),
+      );
+    const bit = 1 << (slot & 31);
+    const before = words[word] ?? 0;
+    const after = suppressed ? before | bit : before & ~bit;
+    if (after === before) return;
+    // A word enters the list when it first diverges from the base bitmap.
+    if (before === previous.words[word]) changed.push(word);
+    words[word] = after;
+  };
+  // A row's bit depends only on its presence and identity, never on its content.
+  if (
+    !activeEntityKeys.changesSince(previous.activeEntityKeys, evaluate) ||
+    !slots.changesSince(previous.slots, (slot, kind) => {
+      if (kind !== 'update') evaluate(slot);
+    })
+  )
+    return undefined;
+  suppressionPatches.set(words, { base: previous.words, words: changed });
   return words;
 }
 

@@ -355,9 +355,9 @@ it.each([
       if (immediate) expect(beforeAsync).toBe(0);
       else if (generation === 0) expect(beforeAsync).toBeGreaterThan(0);
       else expect(beforeAsync).toBe(1);
-      // Boot keeps synchronous lanes lazy; a replacement generation must
-      // prepare the one previously used lane before its first recorded frame.
-      expect(targetModules(device, 'immediate')).toHaveLength(immediate ? generation : 0);
+      // Boot and recovery keep synchronous lanes lazy; each generation's first
+      // recorded frame prepares the lane it actually uses.
+      expect(targetModules(device, 'immediate')).toHaveLength(0);
       world.update().unwrap();
       indexedDraws.mockClear();
       boundPipelines.mockClear();
@@ -378,7 +378,7 @@ it.each([
       );
       expect(errors).toEqual([]);
       expect(asyncTargetRequests()).toHaveLength(beforeAsyncRequests);
-      if (generation === 1) expect(requests).toHaveLength(beforeRequests);
+      if (generation === 1) expect(requests).toHaveLength(beforeRequests + (immediate ? 1 : 0));
       expect(targetModules(device, 'async')).toHaveLength(beforeAsync);
       expect(targetModules(device, 'immediate')).toHaveLength(immediate ? 1 : 0);
       const targetHandles = new Set(

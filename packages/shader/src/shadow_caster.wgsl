@@ -17,7 +17,7 @@
 
 #import forgeax_view::common::{applyLodCoverage, View, Mesh, InstanceData, ShadowCasterCascade, view, shadowCasterCascade, sampleMaterialTexture}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
 #else
 #import forgeax_view::common::{meshes, instances}
 #endif
@@ -122,10 +122,12 @@ fn standardVertexPosition(in : VsInput) -> vec3<f32> {
 #endif
 }
 
-fn shadowVertex(in : VsInput, idx : u32) -> VsOut {
+fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
+  var in = source;
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   // visible = (scene instance row, material row, candidate row, LOD fade).
   let visible = visibleItems[idx];
+  in.position = sceneIndexMorphPosition(visible.x, vertex, in.position);
   let materialIndex = visible.y;
   let lodFadeBits = visible.w;
   let sceneDraw = sceneIndexDraw(visible.x);
@@ -219,15 +221,15 @@ fn shadowVertex(in : VsInput, idx : u32) -> VsOut {
 }
 
 @vertex
-fn vs_main(in : VsInput, @builtin(instance_index) idx : u32) -> VsOut {
-  return shadowVertex(in, idx);
+fn vs_main(in : VsInput, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return shadowVertex(in, idx, vertex);
 }
 
 // Scene-index shadow batches use a receipt-owned entry point so the indirect
 // lane cannot silently reinterpret the visible stream as instance indices.
 @vertex
-fn vs_scene_index(in : VsInput, @builtin(instance_index) idx : u32) -> VsOut {
-  return shadowVertex(in, idx);
+fn vs_scene_index(in : VsInput, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return shadowVertex(in, idx, vertex);
 }
 
 fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {

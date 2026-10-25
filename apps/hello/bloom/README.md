@@ -10,7 +10,7 @@
 - **Camera bloom columns**: `bloom`, `bloomThreshold`, `bloomIntensity`, `bloomSmoothWidth`, and `bloomRadius` configured per-Camera alongside `tonemap`/`antialias`.
 - **Zero-overhead default**: bloom=0 (BLOOM_DISABLED) allocates no Bloom textures, binds no Bloom pipelines, and performs no Bloom uploads or encodes.
 - **Runtime toggle**: Space-key press-edge system swaps Camera.bloom between BLOOM_ENABLED and BLOOM_DISABLED via world.set. DOM HUD overlay mirrors state as text; the carrier smoke verifies on -> off -> resize -> on surface reconfiguration.
-- **HDR+Reinhard pipeline**: This scene explicitly selects Reinhard-Extended and threshold 1.0. Bloom also works with NoToneMapping; its engine defaults are threshold 0, smooth width 0.01, intensity 1, and radius 0.
+- **HDR+Reinhard pipeline**: This scene explicitly selects Reinhard-Extended and threshold 1.0. Bloom also works with NoToneMapping; its engine defaults are threshold 1, smooth width 0.01, intensity 0.5, and radius 0.
 
 Game-facing imports use the public umbrella route:
 

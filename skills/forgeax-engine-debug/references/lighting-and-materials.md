@@ -47,6 +47,7 @@ Tests must feed production's negative viewZ. An embedded test kernel using posit
 |:--|:--|:--|:--|
 | R1 | castShadow was explicitly disabled. | world.get(lightEntity, DirectionalLight).unwrap().castShadow === false | Remove the override or set true. Shadow fields live on DirectionalLight; no second component is required. |
 | R2 | The entity opted out with ShadowParticipation. | world.get(entity, ShadowParticipation) reports cast === false | Set cast: true or remove the component; it is the only per-entity casting switch. |
+| R2b | Every material on the entity blends (transparent/additive); blended-only meshes cast nothing by default. | Material passes carry renderState.blend and the entity has no ShadowParticipation. | Author ShadowParticipation { cast: true } to opt in. |
 | R3 | Material lacks ShadowCaster; depth filtering selects shadow-caster passes. Standard factories add it, but hand-authored forward/deferred-only materials do not. | No material.passes entry with passKind shadow-caster. | Add { name: 'ShadowCaster', shader: 'forgeax::default-standard-pbr' } or use Materials.standard. See the material skill. |
 
 castShadow controls whether the light populates the atlas; material ShadowCaster controls whether that mesh enters it. Both are required. The light default is true, so missing material passes are a common hand-authoring failure.

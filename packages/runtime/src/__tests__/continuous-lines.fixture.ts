@@ -200,7 +200,7 @@ export async function verifyContinuousLines(options: {
         )
         .unwrap();
       if (topology === 'point-list')
-        world.addComponent(entity, { component: Points, data: { sizePx: 10, shape: 1 } }).unwrap();
+        world.addComponent(entity, { component: Points, data: { size: 10, shape: 1 } }).unwrap();
       else world.addComponent(entity, { component: Lines, data: { width: 8, ...style } }).unwrap();
       entities.push(entity);
       return entity;

@@ -1732,7 +1732,7 @@ function spawnValidatedLight(
         expect(Array.from(view.color)).toEqual([1, 1, 1]);
         expect(view.intensity).toBe(1);
         expect(view.range).toBe(Number.POSITIVE_INFINITY);
-        expect(view.innerConeDeg).toBe(60);
+        expect(view.innerConeDeg).toBe(0);
         expect(view.outerConeDeg).toBe(60);
       });
 

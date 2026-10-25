@@ -178,6 +178,7 @@ import {
   cubeCameraUpdateIntentFromF32,
   DynamicResolution,
   Fog,
+  fogModeFromU32,
   MotionBlur,
   ReflectionProbe,
   reflectionProbeUpdateIntentFromF32,
@@ -705,6 +706,8 @@ export interface SkylightSnapshot {
   // cube (record falls to fallback resources when no IBL views are cached).
   readonly equirectHandle: number;
   readonly color: readonly [number, number, number];
+  /** World-space downward diffuse tint; absent or all-zero keeps uniform `color`. */
+  readonly groundColor?: readonly [number, number, number];
   readonly intensity: number;
   /** Environment-space quaternion [x, y, z, w], identity by default. */
   readonly rotation: readonly [number, number, number, number];
@@ -3684,6 +3687,9 @@ export function selectFogFrame(world: World): FogFrame | undefined {
       density: value.density,
       heightFalloff: value.heightFalloff,
       maxOpacity: value.maxOpacity,
+      mode: fogModeFromU32(value.mode),
+      near: value.near,
+      far: value.far,
     });
   }
   const fogSelection = selectEnvironment({

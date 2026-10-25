@@ -10,6 +10,7 @@ import {
   type GpuDrivenPreparationErrorDetail,
 } from '../errors/gpu-driven';
 import type { MaterialSnapshot } from '../render-system-extract';
+import { GenerationalWeakMap } from '../scene/generational-weak-map';
 
 export interface GpuDrivenGeometryReceipt {
   readonly identity: string;
@@ -130,7 +131,8 @@ function failure(
 }
 
 // Only scene-owned tables retain admission results. Borrowed inputs remain live.
-const ownedVertexInputs = new WeakMap<
+// Re-owning a forgotten immutable table returns the same table; see GenerationalWeakMap.
+const ownedVertexInputs = new GenerationalWeakMap<
   readonly MaterialProgramVertexInput[],
   {
     readonly admissions: WeakMap<readonly MaterialProgramVertexInput[], boolean>;

@@ -190,9 +190,14 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
         });
         expect(blended).toEqual([...Array(8).fill(false), ...Array(8).fill(true)]);
         // Preserve renderer order within each group; no per-particle sort or draw is lost.
-        expect(draws.map((draw) => Number(draw.program.match(/renderer-(\d+)/)?.[1]))).toEqual([
-          2, 3, 2, 3, 2, 3, 2, 3, 0, 1, 0, 1, 0, 1, 0, 1,
-        ]);
+        // Programs are shared by content; each draw's own instance stream names its renderer.
+        const rendererOf = (draw: (typeof draws)[number]) =>
+          Number(
+            draw.vertexData
+              .map((row) => row.resource.match(/renderer-(\d+)\.vertex-data$/)?.[1])
+              .find((index) => index !== undefined),
+          );
+        expect(draws.map(rendererOf)).toEqual([2, 3, 2, 3, 2, 3, 2, 3, 0, 1, 0, 1, 0, 1, 0, 1]);
         const firstRaster = work.passes.findIndex((pass) => pass.kind === 'raster');
         expect(work.passes.slice(firstRaster).every((pass) => pass.kind === 'raster')).toBe(true);
         const shadows = work.passes.filter((pass) => pass.kind === 'shadow-caster');

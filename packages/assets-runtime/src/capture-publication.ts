@@ -24,7 +24,7 @@ import type { CatalogSource } from './catalog-source.js';
 import { PackReader } from './internal/pack-reader.js';
 import { runtimeSourceReader } from './internal/runtime-assets.js';
 import { assetLoadCancelled } from './internal/wait-for-asset.js';
-import { readArtifact } from './registry/artifact-io.js';
+import { readArtifact, readStoredArtifact } from './registry/artifact-io.js';
 import { resolveCatalogAssetUrl } from './registry/catalog.js';
 
 // Matches the AssetGraph read bound so one capture cannot monopolize the host connection pool.
@@ -124,6 +124,9 @@ export async function captureAssetPublication(
     if (!verifiedPack.ok) return verifiedPack;
     const pack = verifiedPack.value;
     const bodies = new Map<string, Promise<Result<Uint8Array<ArrayBuffer>, PackageResponse>>>();
+    // Fixed capture owns immutable whole files until publication returns. Verify
+    // each retained Bundle once, then keep per-artifact decode/integrity checks.
+    const bundles = new Map<string, ReturnType<typeof readStoredArtifact>>();
     const executions: Partial<
       Record<
         PluginBuildTarget,
@@ -228,29 +231,45 @@ export async function captureAssetPublication(
             };
             continue;
           }
-          const verified = await readArtifact(
-            { packageUrl: row.packageUrl, guid: asset.guid, artifactKey, descriptor },
-            async (url) => {
-              let bytes = bodies.get(descriptor.path);
-              if (bytes === undefined) {
-                bytes = (async () => {
-                  const response = await bound(url, request);
-                  if (!response.ok) {
-                    bodies.delete(descriptor.path);
-                    return err(response);
-                  }
-                  // Descriptor integrity describes decoded bytes. Preserve the stored encoding.
-                  return ok(new Uint8Array(await response.arrayBuffer()));
-                })().catch((error) => {
-                  if (bodies.get(descriptor.path) === bytes) bodies.delete(descriptor.path);
-                  throw error;
-                });
-                bodies.set(descriptor.path, bytes);
-              }
-              const body = await bytes;
-              return body.ok ? createPackageResponse(body.value) : body.error;
-            },
-          );
+          const artifact = {
+            packageUrl: row.packageUrl,
+            guid: asset.guid,
+            artifactKey,
+            descriptor,
+          };
+          const fetchBody: PackageFetcher = async (url) => {
+            let bytes = bodies.get(descriptor.path);
+            if (bytes === undefined) {
+              bytes = (async () => {
+                const response = await bound(url, request);
+                if (!response.ok) {
+                  bodies.delete(descriptor.path);
+                  return err(response);
+                }
+                // Descriptor integrity describes decoded bytes. Preserve the stored encoding.
+                return ok(new Uint8Array(await response.arrayBuffer()));
+              })().catch((error) => {
+                if (bodies.get(descriptor.path) === bytes) bodies.delete(descriptor.path);
+                throw error;
+              });
+              bodies.set(descriptor.path, bytes);
+            }
+            const body = await bytes;
+            return body.ok ? createPackageResponse(body.value) : body.error;
+          };
+          const verified = await readArtifact(artifact, fetchBody, async (url, range) => {
+            if (range === undefined) return readStoredArtifact(artifact, fetchBody, url);
+            const key = JSON.stringify([url, range.bundleDigest]);
+            let stored = bundles.get(key);
+            if (stored === undefined) {
+              stored = readStoredArtifact(artifact, fetchBody, url, range);
+              bundles.set(key, stored);
+            }
+            const body = await stored;
+            return body.ok
+              ? ok(body.value.subarray(range.offset, range.offset + range.length))
+              : body;
+          });
           results[index] = { status: 'fulfilled', value: verified };
         } catch (reason) {
           results[index] = { status: 'rejected', reason };

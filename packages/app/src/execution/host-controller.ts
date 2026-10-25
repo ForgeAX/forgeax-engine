@@ -16,7 +16,7 @@ import {
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { ErrorFanoutRegistry } from '../internal/error-fanout';
 import { browserInputOptions } from '../internal/input-attach';
-import type { BundlerOptions, CanvasDrawingBufferSize } from '../types';
+import type { AppStepFrameOptions, BundlerOptions, CanvasDrawingBufferSize } from '../types';
 import {
   APP_PHASE_CATALOG,
   type AppDispatchError,
@@ -42,6 +42,17 @@ import type {
   ExecutionReport,
   ExecutionSelection,
 } from './types';
+
+function forwardPipelineLibraries(
+  options: CreateAppOptions,
+): Pick<CreateAppOptions, 'pipelineLibrary' | 'backgroundPipelineLibrary'> {
+  return {
+    ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
+    ...(options.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
+  };
+}
 
 export interface CreateWorkerExecutionAppOptions {
   readonly canvas: HTMLCanvasElement;
@@ -169,9 +180,7 @@ export async function createWorkerExecutionApp(
         ? {}
         : { diagnostics: executionOptions.diagnostics }),
       ...forwardGpuStub(options.appOptions),
-      ...(options.appOptions.pipelineLibrary === undefined
-        ? {}
-        : { pipelineLibrary: options.appOptions.pipelineLibrary }),
+      ...forwardPipelineLibraries(options.appOptions),
       ...(options.appOptions.outputColorSpace === undefined
         ? {}
         : { outputColorSpace: options.appOptions.outputColorSpace }),
@@ -563,6 +572,9 @@ export async function createWorkerExecutionApp(
   // Source frame IDs are monotonic across renderer replacement. A lost epoch
   // retires its outstanding frames; a new baseline starts at this floor.
   let renderRecoveryFloor = 0;
+  // Ascending ids of issued update-only steps, which the Render Worker never
+  // completes; render back-pressure counts only the pictures still in flight.
+  let updateOnlyFrames: number[] = [];
   const renderPipelineCapacity =
     executionOptions.diagnostics?.renderPipelineCapacity === 4
       ? 4
@@ -610,6 +622,14 @@ export async function createWorkerExecutionApp(
       capacity: renderPipelineCapacity,
     });
   };
+  const renderBlocked = (): boolean => {
+    if (report.render === undefined) return false;
+    if (report.render.state === 'rebuilding') return true;
+    const floor = Math.max(renderRecoveryFloor, report.render.completedFrame);
+    const settled = updateOnlyFrames.findIndex((frameId) => frameId > floor);
+    updateOnlyFrames.splice(0, settled === -1 ? updateOnlyFrames.length : settled);
+    return ledger.inspect().submitted - floor - updateOnlyFrames.length >= renderPipelineCapacity;
+  };
   const admitFrame = (): void => {
     if (state !== 'running') {
       traceAdmission('host-admission', 'not-running');
@@ -619,12 +639,7 @@ export async function createWorkerExecutionApp(
       traceAdmission('host-admission', 'simulation-in-flight');
       return;
     }
-    if (
-      report.render !== undefined &&
-      (report.render.state === 'rebuilding' ||
-        ledger.inspect().submitted - Math.max(renderRecoveryFloor, report.render.completedFrame) >=
-          renderPipelineCapacity)
-    ) {
+    if (renderBlocked()) {
       traceAdmission('host-admission', 'render-blocked');
       return;
     }
@@ -639,6 +654,13 @@ export async function createWorkerExecutionApp(
     const timestamp = time.value;
     const deltaSeconds = lastTimestamp === undefined ? 0 : (timestamp - lastTimestamp) / 1_000;
     lastTimestamp = timestamp;
+    if (postFrame(deltaSeconds, timestamp / 1_000)) scheduleFrame();
+  };
+  /**
+   * Issues one frame with credit; an omitted sample time lets the Worker
+   * advance its render-sample clock by the delta, as manual steps require.
+   */
+  const postFrame = (deltaSeconds: number, sampleTimeSeconds?: number, render = true): boolean => {
     const canvasSize =
       syncCanvas?.(canvas, display) ??
       ({
@@ -649,13 +671,14 @@ export async function createWorkerExecutionApp(
       deltaSeconds,
       () => input.sample(),
       canvasSize,
-      timestamp / 1_000,
+      sampleTimeSeconds,
       temporalResetAfterFrame !== undefined,
+      render,
     );
     report = { ...report, frame: ledger.inspect() };
     if (frame === undefined) {
       traceAdmission('host-admission', 'not-issued');
-      return;
+      return false;
     }
     traceAdmission('host-admission', 'issued', frame);
     frameProfile = profiler?.activeSession();
@@ -683,7 +706,42 @@ export async function createWorkerExecutionApp(
     rejectedAudioPublications.clear();
     // Charge snapshot creation and synchronous publication as well as consumption.
     musicFeedbackMs = performance.now() - musicFeedbackStarted;
-    scheduleFrame();
+    return true;
+  };
+  const stepFrame = (
+    deltaSeconds: number,
+    options?: AppStepFrameOptions,
+  ): Result<void, AppErrorType> => {
+    const render = options?.render ?? true;
+    const reason =
+      state !== 'paused'
+        ? 'state'
+        : !Number.isFinite(deltaSeconds) || deltaSeconds < 0
+          ? 'delta'
+          : ledger.hasCreditInFlight || (render && renderBlocked())
+            ? 'credit'
+            : undefined;
+    if (reason === undefined && postFrame(deltaSeconds, undefined, render)) {
+      if (!render) {
+        // The next drawn picture follows skipped ones: it carries a temporal reset.
+        const frameId = ledger.inspect().submitted;
+        updateOnlyFrames.push(frameId);
+        temporalResetAfterFrame = frameId;
+      }
+      return ok(undefined);
+    }
+    return err(
+      new AppError({
+        code: 'app-frame-step-invalid',
+        expected: APP_EXPECTED['app-frame-step-invalid'],
+        hint: APP_ERROR_HINTS['app-frame-step-invalid'],
+        detail: {
+          state: state === 'faulted' ? 'stopped' : state,
+          deltaSeconds,
+          reason: reason ?? 'credit',
+        },
+      }),
+    );
   };
   const scheduleFrame = (): void => {
     if (state !== 'running' || !platform.visible()) return;
@@ -1140,6 +1198,7 @@ export async function createWorkerExecutionApp(
     if (!replaceHostAudio(message)) return;
     ledger = new FrameCreditLedger(message.worldIdentity);
     renderRecoveryFloor = 0;
+    updateOnlyFrames = [];
     hostFrameMeasurements.clear();
     engineMeasurements.clear();
     kernelMeasurements.clear();
@@ -1462,6 +1521,7 @@ export async function createWorkerExecutionApp(
       resumeFrames();
       return ok(undefined);
     },
+    stepFrame,
     onError: (listener) => fanout.add(listener),
     get lastError() {
       return lastError;

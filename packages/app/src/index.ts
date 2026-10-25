@@ -292,6 +292,7 @@ export {
 export type {
   App,
   AppAssembleArgs,
+  AppStepFrameOptions,
   AssembleAppError,
   BundlerOptions,
   CanvasAppError,

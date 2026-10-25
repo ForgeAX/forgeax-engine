@@ -17,6 +17,14 @@ resolved version, URL, OS and architecture with the run. `--from-file` replays s
 metadata; it does not prove the metadata is current. Windows uses `64`/`32` and macOS
 uses `ARM64`/`x64` as the metadata's architecture vocabulary.
 
+On 2026-10-25 the live official metadata resolved Stable `2.02.2608080`
+(2026-09-30) and Nightly `2.02.2610212` (2026-10-21). Re-resolve those versions
+before reuse. The [Stable 2.02.2608080 release notes](https://devtools.wxqcloud.qq.com.cn/WechatWebDev/nightly/versions/logs/stable_v2.02.2608080.json)
+explicitly list a Mini Game `loadSubPackage` timeout/missing-callback fix. For that
+symptom on the preceding Stable `2.02.2608070`, compare the same publication on
+the official patch before attributing it to Engine package IO. The notes do not
+establish an FPS improvement; that still needs new completed-frame evidence.
+
 ## macOS installation
 
 Download the selected HTTPS URL on the target machine. Before installing a PKG, run
@@ -58,6 +66,21 @@ operations as `wechatide -c Codex <tool> ...`. The older executable named `cli` 
 different command vocabulary; do not send AI tool names to it or infer new AI flags
 from legacy CLI documentation. For Windows, locate the installed official skill and
 executable from the official installer; the macOS file layout is not portable.
+
+## Select an existing Mini Game identity
+
+Inspect the selected project's `project.config.json` and earlier ordinary build
+outputs before asking for an AppID. After official client/login readiness, use
+the installed initializer's `get_user_appids --type minigame` to discover Mini
+Games managed by the current account. Match the returned identity to the intended
+project; an unrelated project is not authorization to reuse its AppID. Keep IDs
+and account responses in private run evidence.
+
+The current Engine CLI accepts an omitted `appid` for tourist-mode builds. A
+missing ID need not block source/build or simulator diagnosis; phone preview
+requires an admitted project identity. Use the selected checkout's
+`forgeax help project build --json` to verify its actual options. A built source
+checkout can run its own CLI without a separate SDK archive.
 
 ## Remote access
 

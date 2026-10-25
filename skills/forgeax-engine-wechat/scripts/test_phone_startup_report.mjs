@@ -30,7 +30,8 @@ function fixture(initial, options = {}, methods = {}, configureConsole, configur
     env: { USER_DATA_PATH: '/private' },
     getFileSystemManager: () => ({ mkdirSync() {}, writeFileSync(path, body) { saved.push({ path, body }); } }),
     request(request) {
-      assert.equal(Object.keys(handlers).length, 0, 'owned events must be released before transfer');
+      if (JSON.parse(request.data).kind !== 'forgeax-phone-startup-checkpoint')
+        assert.equal(Object.keys(handlers).length, 0, 'owned events must be released before terminal transfer');
       requests.push(request);
       return { abort() {} };
     },
@@ -51,7 +52,7 @@ function fixture(initial, options = {}, methods = {}, configureConsole, configur
   configureContext?.(context);
   configureError?.(realmError);
   const originalStackDescriptor = Object.getOwnPropertyDescriptor(realmError, 'stackTraceLimit');
-  runInNewContext(prefix.replace('__FORGEAX_PROBE_OPTIONS__', JSON.stringify({ source, deadlineMs: 20000, pollMs: 250, ...options })), context);
+  runInNewContext(prefix.replace('__FORGEAX_PROBE_OPTIONS__', JSON.stringify({ source, runId: 'c'.repeat(32), deadlineMs: 20000, pollMs: 250, ...options })), context);
   return { context, handlers, timers, requests, saved, logs, consoleCalls, originalErrorDescriptor, realmError, originalStackDescriptor,
     state(value) { state = value; },
     report() { return JSON.parse(saved[0].body); },
@@ -66,6 +67,202 @@ function fixture(initial, options = {}, methods = {}, configureConsole, configur
 }
 
 const panicText = "panicked at third_party/wgpu/wgpu-core/src/storage.rs:113:24:\nTexture is no longer alive";
+
+test('keyboard diagnosis waits a bounded ready window and releases before terminal export', () => {
+  const f = fixture(ready(1, 1), { observeKeyboard: true, deadlineMs: 120000 },
+    { ui: () => ({ ok: true, value: { focused: 'height' } }) }, undefined, undefined,
+    wx => { wx.showKeyboard = () => 7; wx.hideKeyboard = () => {}; });
+  f.state(ready(70, 70)); f.advance(500);
+  assert.equal(f.saved.length, 0);
+  assert.equal(f.context.wx.showKeyboard(), 7);
+  f.advance(60000);
+  assert.equal(f.report().reason, 'scene-presented');
+  assert.equal(f.report().keyboard.events[0].operation, 'showKeyboard');
+  assert.equal(f.report().keyboard.ended, true);
+});
+
+test('retains native weak-reference capability absence without installing a substitute', () => {
+  const f = fixture({ phase: 'scene' }, {}, {}, undefined, undefined, undefined,
+    context => { context.WeakRef = undefined; context.FinalizationRegistry = undefined; });
+  f.advance(20000);
+  assert.deepEqual(f.report().runtimeFeatures, { weakRef: 'undefined', finalizationRegistry: 'undefined' });
+  assert.equal(f.context.WeakRef, undefined);
+  assert.equal(f.context.FinalizationRegistry, undefined);
+});
+
+test('opt-in native phase UI updates before timers and restores the original logger', () => {
+  const loading = [];
+  let hidden = 0;
+  const f = fixture({ phase: 'graphics' }, { showStartupProgress: true }, {}, undefined, undefined,
+    wx => { wx.showLoading = value => loading.push(value.title); wx.hideLoading = () => { hidden++; }; });
+  f.context.console.info('[forgeax.wechat.startup]', JSON.stringify({ generation: 1, phase: 'graphics' }));
+  assert.equal(loading.at(-1), 'cccccc:graphics');
+  assert.equal(f.logs.at(-1)[0], '[forgeax.wechat.startup]');
+  const replacement = () => {};
+  f.context.console.info = replacement;
+  f.advance(20000);
+  assert.equal(f.context.console.info, replacement, 'preserve a later logger owner');
+  assert.equal(hidden, 1);
+  assert.equal(f.report().nativePhaseUi.updates, 2);
+});
+
+test('native phase UI composes and restores the existing Codec asset trace sink', () => {
+  const loading = [], events = [];
+  const prior = event => { events.push(event.phase); return 'prior-result'; };
+  const f = fixture({ phase: 'scene' }, { showStartupProgress: true }, {}, undefined, undefined,
+    wx => { wx.showLoading = value => loading.push(value.title); wx.hideLoading = () => {}; },
+    context => { context.__forgeaxAssetLoadTrace = prior; });
+  assert.equal(f.context.__forgeaxAssetLoadTrace({ phase: 'codec.basis.wasm.factory.start' }), 'prior-result');
+  assert.equal(loading.at(-1), 'cccccc:factory-start');
+  assert.deepEqual(events, ['codec.basis.wasm.factory.start']);
+  f.advance(20000);
+  assert.equal(f.context.__forgeaxAssetLoadTrace, prior);
+});
+
+test('native phase UI identifies a fresh diagnostic run of the same publication', () => {
+  const loading = [];
+  const runId = '123abc00000000000000000000000000';
+  const f = fixture({ phase: 'scene' }, { showStartupProgress: true, runId }, {}, undefined, undefined,
+    wx => { wx.showLoading = value => loading.push(value.title); wx.hideLoading = () => {}; });
+  assert.equal(loading[0], '123abc:observer');
+  f.advance(20000);
+  assert.equal(f.report().runId, runId);
+});
+
+test('native phase UI retains the latest phase and marks its bounded display limit', () => {
+  const loading = [];
+  const f = fixture({ phase: 'scene' }, { showStartupProgress: true }, {}, undefined, undefined,
+    wx => { wx.showLoading = value => loading.push(value.title); wx.hideLoading = () => {}; });
+  for (let i = 0; i < 80; i++) {
+    f.context.console.info('[forgeax.wechat.startup]', i % 2 ? 'scene' : 'graphics');
+  }
+  f.context.console.info('[forgeax.wechat.startup]', 'ready');
+  assert.equal(loading.length, 32);
+  assert.equal(loading.at(-1), 'cccccc:phase-cap');
+  f.advance(20000);
+  assert.equal(f.report().nativePhaseUi.lastPhase, 'ready');
+  assert.equal(f.report().nativePhaseUi.status, 'capped');
+});
+
+test('opt-in result UI shows the retained startup cause after observation has ended', () => {
+  const modals = [];
+  const f = fixture({ phase: 'failed', startupError: { code: 'asset-fetch-failed' } },
+    { showFrameResult: true }, {}, undefined, undefined,
+    wx => { wx.showModal = value => modals.push(value); });
+  assert.equal(modals.length, 1);
+  assert.equal(Object.keys(f.handlers).length, 0);
+  const result = JSON.parse(modals[0].content);
+  assert.equal(result.reason, 'startup-failed');
+  assert.equal(result.phase, 'failed');
+  assert.equal(result.startupError.code, 'asset-fetch-failed');
+  assert.equal(f.report().reason, 'startup-failed');
+});
+
+test('startup diagnosis includes native package failures, plugin waits and bounded asset traces without UI flags', () => {
+  let nativeRequest;
+  const fibers = { fibers: [{ name: 'game-3d/scene', state: 'loading', missingServices: [] }], truncated: false };
+  const f = fixture({ phase: 'scene' }, {}, { plugins: () => fibers }, undefined, undefined,
+    wx => { wx.loadSubpackage = options => { nativeRequest = options; }; });
+  f.context.wx.loadSubpackage({ name: 'payload' });
+  const native = Object.defineProperty({}, 'errMsg', { get: () => 'module not found' });
+  nativeRequest.fail(native);
+  f.context.__forgeaxAssetLoadTrace({ phase: 'asset.decode.begin', guid: 'original-guid' });
+  f.advance(2000);
+  for (let i = 0; i < 70; i++) f.context.__forgeaxAssetLoadTrace({ phase: 'package.slot.admitted', packageUrl: 'https://forgeax.package/a.pack.json', detail: { index: i } });
+  f.advance(20000);
+  const report = f.report();
+  assert.equal(report.packageIo.recent[0].error.value.errMsg, 'module not found');
+  assert.deepEqual(report.observation.plugins, fibers);
+  assert.equal(report.assetTrace.recent.length, 64);
+  assert.equal(report.assetTrace.dropped, 7);
+  assert.equal(report.assetTrace.maximumEventGap.elapsedMs, 2000);
+  assert.equal(report.assetTrace.maximumEventGap.before.phase, 'asset.decode.begin');
+  assert.equal(report.assetTrace.maximumEventGap.after.phase, 'package.slot.admitted');
+  assert.equal(report.assetTrace.packageReads.rows.length, 1);
+  assert.equal(report.assetTrace.packageReads.rows[0].admitted, 70);
+  assert.equal(report.assetTrace.recent.at(-1).detail.index, 69);
+  assert.equal(f.context.__forgeaxAssetLoadTrace, undefined);
+});
+
+test('source-bound checkpoints precede the terminal report and stop on completion', () => {
+  const f = fixture({ phase: 'scene' }, { reportUrl: 'http://127.0.0.1:19143/checkpoints' });
+  f.advance(15000);
+  assert.equal(f.requests.length, 3);
+  const first = JSON.parse(f.requests[0].data);
+  assert.equal(first.kind, 'forgeax-phone-startup-checkpoint');
+  assert.equal(first.sequence, 1);
+  assert.equal(first.runId, 'c'.repeat(32));
+  assert.equal(first.finishedAt, undefined);
+  assert.equal(first.reason, undefined);
+  assert.equal(first.sceneFrames.passed, false);
+  assert.equal(f.saved.length, 0, 'periodic transfer does not create native artifact directories');
+  f.advance(20000);
+  assert.equal(f.requests.length, 4);
+  assert.equal(JSON.parse(f.requests[3].data).reason, 'deadline');
+  f.advance(30000);
+  assert.equal(f.requests.length, 4);
+});
+
+test('checkpoint request failures remain visible in the bounded terminal receipt', () => {
+  const f = fixture({ phase: 'scene' }, { deadlineMs: 200000, reportUrl: 'http://127.0.0.1:19143/checkpoints' });
+  f.advance(5000);
+  f.requests[0].fail({ errMsg: 'request:fail connection refused' });
+  f.advance(200000);
+  const report = f.report();
+  assert.equal(report.reason, 'deadline');
+  assert.equal(report.checkpoints.attempted, 32);
+  assert.equal(report.checkpoints.transfers.length, 32);
+  assert.equal(report.checkpoints.transfers[0].transfer.status, 'failed');
+  assert.equal(report.checkpoints.transfers[0].transfer.error, 'request:fail connection refused');
+  assert.equal(report.checkpoints.transfers[1].transfer.status, 'timeout');
+  assert.equal(f.requests.length, 33);
+});
+
+test('the explicit dependency-free package control terminates without scene acceptance', () => {
+  const state = { phase: 'package-entry-control', state: 'initializing' };
+  for (const mode of ['entry', 'data', 'empty']) {
+    const f = fixture(state, { packageControl: mode });
+    assert.equal(f.saved.length, 1);
+    assert.equal(f.report().reason, 'package-entry-control');
+    assert.equal(f.report().packageControl, mode);
+    assert.equal(f.report().sceneFrames.passed, false);
+    assert.equal(f.report().observation.renderer.phase, 'package-entry-control');
+  }
+  const ordinary = fixture(state);
+  assert.equal(ordinary.saved.length, 0, 'ordinary startup does not infer control mode from a phase');
+});
+
+test('ordinary startup retains bounded WASM instantiation timing without a progress UI', async () => {
+  const result = Promise.resolve({ module: 'native-other-module' });
+  const owner = { instantiate: () => result };
+  const f = fixture({ phase: 'scene' }, {}, {}, undefined, undefined, undefined,
+    context => { context.WXWebAssembly = owner; });
+  assert.equal(owner.instantiate('payload/wasm/rapier3d.wasm.br', {}), result);
+  await result;
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(20000);
+  assert.deepEqual(f.report().wasmLoads.events, [
+    { path: 'payload/wasm/rapier3d.wasm.br', phase: 'load', at: 0 },
+    { path: 'payload/wasm/rapier3d.wasm.br', phase: 'done', at: 0 },
+  ]);
+  assert.equal(f.report().wasmLoads.limit, 32);
+  const bounded = fixture({ phase: 'scene' }, {}, {}, undefined, undefined, undefined,
+    context => { context.WXWebAssembly = { instantiate: () => result }; });
+  const loads = [];
+  for (let i = 0; i < 20; i++) loads.push(bounded.context.WXWebAssembly.instantiate('payload/wasm/rapier3d.wasm.br', {}));
+  await Promise.all(loads);
+  await new Promise(resolve => setImmediate(resolve));
+  bounded.advance(20000);
+  assert.equal(bounded.report().wasmLoads.events.length, 32);
+  assert.equal(bounded.report().wasmLoads.dropped, 8);
+});
+
+test('an unavailable result dialog cannot replace the original startup failure', () => {
+  const f = fixture({ phase: 'failed', startupError: { code: 'original-failure' } },
+    { showFrameResult: true }, {}, undefined, undefined,
+    wx => { wx.showModal = () => { throw Error('native dialog unavailable'); }; });
+  assert.equal(f.report().observation.renderer.startupError.code, 'original-failure');
+});
 const wasmStack = '    at wgpu_core::storage::Storage::get (wasm://wasm/wgpu_wasm.wasm-015fe636:3617609:1)\n    at wasm-function[3210]:0x373426';
 const panicMessage = panicText + '\n\nStack:\n\nError\n    at error (https://private-host.invalid/game.js?token=private-query:1:2)\n' + wasmStack + '\n\n';
 
@@ -798,7 +995,7 @@ for (const scenario of ['failure', 'sixty-frames', 'rust-panic']) test('bundled 
         return { abort() { request.destroy(); } };
       } },
     };
-    runInNewContext(prefix.replace('__FORGEAX_PROBE_OPTIONS__', JSON.stringify({ source, deadlineMs: 20000,
+    runInNewContext(prefix.replace('__FORGEAX_PROBE_OPTIONS__', JSON.stringify({ source, runId: 'c'.repeat(32), deadlineMs: 20000,
       minimumSceneFrames: 60, pollMs: 10, reportUrl: 'http://127.0.0.1:' + port + '/startup-test' })), context);
     if (scenario === 'sixty-frames') state = ready(170, 110);
     if (scenario === 'rust-panic') {

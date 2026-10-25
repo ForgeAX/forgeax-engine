@@ -940,7 +940,19 @@ export function withMaterialPublicationGeneration(
   if (!isGeneration(generation)) return invalid('publicationGeneration', generation);
   const checked = validateCookedMaterialRecord(value);
   if (!checked.ok) return checked;
-  const record = checked.value;
+  return rebindMaterialPublicationGeneration(checked.value, generation);
+}
+
+/**
+ * {@link withMaterialPublicationGeneration} for a record this producer already
+ * validated, such as an integrity-checked DDC entry stored after validation.
+ * Revalidating its program set is the largest cost of a warm Pack cache hit.
+ */
+export function rebindMaterialPublicationGeneration(
+  record: CookedMaterialRecord,
+  generation: number,
+): Result<CookedMaterialRecord, MaterialCookRecordError> {
+  if (!isGeneration(generation)) return invalid('publicationGeneration', generation);
   return ok({
     ...record,
     publicationGeneration: generation,

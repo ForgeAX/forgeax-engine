@@ -5,6 +5,7 @@ import {
   type PipelineLibraryCompute,
   type PipelineLibraryInspection,
   type PipelineLibraryManifest,
+  type PipelineLibraryPrepareOptions,
   type PipelineLibraryRender,
   type Result,
   RhiError,
@@ -30,6 +31,34 @@ const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 export function pipelineWarmupConcurrency(hardwareConcurrency: number | undefined): number {
   const cores = Number.isSafeInteger(hardwareConcurrency) ? (hardwareConcurrency as number) : 0;
   return Math.max(4, Math.min(16, Math.floor(cores / 2)));
+}
+
+/**
+ * The background lane overlaps menu frames and Engine Worker CPU work;
+ * native requests are capped independently of machine core count. Foreground
+ * frames share the browser GPU process with this optional work.
+ */
+export function backgroundPipelineWarmupConcurrency(
+  hardwareConcurrency: number | undefined,
+): number {
+  const cores = Number.isSafeInteger(hardwareConcurrency) ? (hardwareConcurrency as number) : 0;
+  return Math.max(1, Math.min(4, Math.floor(cores / 8)));
+}
+
+const BACKGROUND_REQUEST_GAP_MS = 8;
+const backgroundTurn = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, BACKGROUND_REQUEST_GAP_MS));
+
+function warmupConcurrency(options: PipelineLibraryPrepareOptions): number {
+  const cores = globalThis.navigator?.hardwareConcurrency;
+  const background = options.background === true;
+  const concurrency =
+    options.concurrency ??
+    (background ? backgroundPipelineWarmupConcurrency(cores) : pipelineWarmupConcurrency(cores));
+  const limit = background ? 4 : 16;
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > limit)
+    throw new Error(`Pipeline warmup concurrency must be an integer in 1..${limit}`);
+  return concurrency;
 }
 
 function entry<T>(rows: readonly T[], index: number): T {
@@ -130,6 +159,15 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     sourceBytes: 0,
   };
   private readonly warmup = { requested: 0, completed: 0, failed: 0, elapsedMs: 0 };
+  private readonly backgroundWarmup = {
+    requested: 0,
+    completed: 0,
+    failed: 0,
+    elapsedMs: 0,
+    state: 'idle' as PipelineLibraryInspection['backgroundWarmup']['state'],
+  };
+  private backgroundRunning = 0;
+  private backgroundFailed = false;
 
   constructor(private readonly device: GPUDevice) {}
 
@@ -398,6 +436,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       computePipelines: [...this.programs.values()].filter((p) => p.kind === 'compute').length,
       ...this.counts,
       warmup: { ...this.warmup },
+      backgroundWarmup: { ...this.backgroundWarmup },
     };
   }
   export(): Result<PipelineLibraryManifest, RhiError> {
@@ -474,17 +513,35 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   }
   async prepare(
     input: PipelineLibraryManifest,
+    options: PipelineLibraryPrepareOptions = {},
   ): Promise<Result<PipelineLibraryInspection, RhiError>> {
     const started = performance.now();
+    const background = options.background === true;
+    const lane = background ? this.backgroundWarmup : this.warmup;
+    if (background) {
+      this.backgroundRunning++;
+      this.backgroundWarmup.state = 'running';
+    }
+    const settle = (failed: boolean) => {
+      lane.elapsedMs += performance.now() - started;
+      if (!background) return;
+      this.backgroundFailed ||= failed;
+      if (--this.backgroundRunning === 0)
+        this.backgroundWarmup.state = this.backgroundFailed ? 'failed' : 'done';
+    };
     try {
       this.active();
+      const concurrency = warmupConcurrency(options);
+      if (background) await backgroundTurn();
       const manifest = validateManifest(input);
       if (
         typeof this.device.createRenderPipelineAsync !== 'function' ||
         typeof this.device.createComputePipelineAsync !== 'function'
       )
         throw new Error('Native asynchronous pipeline compilation is unavailable');
-      const shaders = manifest.shaders.map((d) => this.createShaderModule(d));
+      const shaders = background
+        ? await this.backgroundShaders(manifest.shaders, concurrency)
+        : manifest.shaders.map((d) => this.createShaderModule(d));
       for (const projection of manifest.computeEntryModules ?? []) {
         const module = this.shaderIds.get(entry(shaders, projection.module));
         const specializedModule = this.shaderIds.get(entry(shaders, projection.specializedModule));
@@ -500,10 +557,18 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           throw new Error('Conflicting compute entry projection');
         entries.set(projection.entryPoint, specializedModule);
       }
-      const groups = manifest.bindGroupLayouts.map((d) => this.createBindGroupLayout(d));
-      const layouts = manifest.pipelineLayouts.map((ids) =>
-        this.createPipelineLayout({ bindGroupLayouts: ids.map((id) => entry(groups, id)) }),
-      );
+      const groups: GPUBindGroupLayout[] = [];
+      for (const descriptor of manifest.bindGroupLayouts) {
+        if (background) await backgroundTurn();
+        groups.push(this.createBindGroupLayout(descriptor));
+      }
+      const layouts: GPUPipelineLayout[] = [];
+      for (const ids of manifest.pipelineLayouts) {
+        if (background) await backgroundTurn();
+        layouts.push(
+          this.createPipelineLayout({ bindGroupLayouts: ids.map((id) => entry(groups, id)) }),
+        );
+      }
       const stage = <T extends { module: number }>(
         s: T,
       ): Omit<T, 'module'> & { module: GPUShaderModule } => ({
@@ -538,43 +603,79 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
             ),
         ),
       ];
-      this.warmup.requested += requests.length;
+      lane.requested += requests.length;
       addLoadWork('pipelines', { total: requests.length });
-      let cursor = 0,
-        firstError: unknown;
-      // Await every started request, including failures and disposal. Never mark a partial import ready.
-      await Promise.all(
-        Array.from(
-          {
-            length: Math.min(
-              pipelineWarmupConcurrency(globalThis.navigator?.hardwareConcurrency),
-              requests.length,
-            ),
-          },
-          async () => {
-            while (cursor < requests.length && !this.closed) {
-              const index = cursor++;
-              const request = entry(requests, index);
-              try {
-                await request();
-                this.warmup.completed++;
-              } catch (cause) {
-                this.warmup.failed++;
-                firstError ??= cause;
-              }
-              addLoadWork('pipelines', { done: 1, item: recipeLabel(manifest, index) });
-            }
-          },
-        ),
-      );
+      await this.warmRequests(requests, concurrency, background, lane, manifest);
       this.active();
-      if (firstError !== undefined) throw firstError;
-      this.warmup.elapsedMs += performance.now() - started;
+      settle(false);
       return ok(this.inspect());
     } catch (cause) {
-      this.warmup.elapsedMs += performance.now() - started;
+      settle(true);
       return err(failure(cause));
     }
+  }
+
+  private async backgroundShaders(
+    descriptors: readonly GPUShaderModuleDescriptor[],
+    concurrency: number,
+  ): Promise<GPUShaderModule[]> {
+    const shaders = new Array<GPUShaderModule>(descriptors.length);
+    let cursor = 0,
+      firstError: unknown;
+    // Validation shares the pipeline lane's bound. Retain manifest order even
+    // when native modules finish out of order, and settle every started request.
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, descriptors.length) }, async () => {
+        while (cursor < descriptors.length && !this.closed) {
+          await backgroundTurn();
+          if (this.closed || cursor >= descriptors.length) break;
+          const index = cursor++;
+          try {
+            const module = this.createShaderModule(entry(descriptors, index));
+            shaders[index] = module;
+            await this.getCompilationInfo(module);
+          } catch (cause) {
+            firstError ??= cause;
+          }
+        }
+      }),
+    );
+    this.active();
+    if (firstError !== undefined) throw firstError;
+    return shaders;
+  }
+
+  private async warmRequests(
+    requests: readonly (() => NativePipeline | Promise<NativePipeline>)[],
+    concurrency: number,
+    background: boolean,
+    lane: { completed: number; failed: number },
+    manifest: PipelineLibraryManifest,
+  ): Promise<void> {
+    let cursor = 0,
+      firstError: unknown;
+    // Every started request settles; each completed program is immediately a hit.
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, requests.length) }, async () => {
+        while (cursor < requests.length && !this.closed) {
+          // Cache hits also yield. Native work already submitted cannot be reprioritized.
+          if (background) await backgroundTurn();
+          if (this.closed || cursor >= requests.length) break;
+          const index = cursor++;
+          const request = entry(requests, index);
+          try {
+            await request();
+            lane.completed++;
+          } catch (cause) {
+            lane.failed++;
+            firstError ??= cause;
+          }
+          addLoadWork('pipelines', { done: 1, item: recipeLabel(manifest, index) });
+        }
+      }),
+    );
+    if (cursor < requests.length) addLoadWork('pipelines', { done: requests.length - cursor });
+    if (firstError !== undefined) throw firstError;
   }
   dispose(): void {
     this.closed = true;

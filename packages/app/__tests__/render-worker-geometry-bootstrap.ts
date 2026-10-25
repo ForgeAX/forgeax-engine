@@ -163,7 +163,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
               .addComponent(entity, { component: Instances, data: { transforms: matrix } })
               .unwrap();
           if (mode === 'points')
-            world.addComponent(entity, { component: Points, data: { sizePx: 8 } }).unwrap();
+            world.addComponent(entity, { component: Points, data: { size: 8 } }).unwrap();
           if (mode === 'lines')
             world.addComponent(entity, { component: Lines, data: { width: 5 } }).unwrap();
           const port = ctx.executionBootstrapHost.port;

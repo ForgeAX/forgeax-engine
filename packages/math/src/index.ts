@@ -16,6 +16,7 @@
 //          plan-strategy D-P9 no sub-path + §1.1 file layering.
 
 // === type SSOT top-level re-export ===
+export type { Rng } from './rng';
 export type {
   Color,
   ColorLike,
@@ -44,6 +45,7 @@ export type {
 //   - color (sRGB↔linear + hex/CSS parse/format)
 //   - easing (scalar S-curve time remaps)
 //   - noise (Perlin noise, growable home for further variants)
+//   - rng (seeded sfc32 streams for deterministic procedural content)
 
 export * as box2 from './box2';
 export * as box3 from './box3';
@@ -60,6 +62,7 @@ export * as noise from './noise';
 export * as quat from './quat';
 export * as ray from './ray';
 export * as ray2 from './ray2';
+export * as rng from './rng';
 export * as sphere from './sphere';
 export * as vec2 from './vec2';
 export * as vec3 from './vec3';

@@ -7,6 +7,24 @@ description: >-
 
 # forgeax-engine-assets
 
+## Procedural content
+
+Choose the owner by when the content is known, not by how it is computed:
+
+| Known | Owner | Reference | Change |
+|:--|:--|:--|:--|
+| At build time: props, level meshes, materials, seeded variants | `.pack.ts` `build` calling `@forgeax/engine/geometry` factories; `parameters` (for example `seed`) select variants | GUID `AssetGuid.derive(packageId, sourceKey)`; `await assets.load(guid, kind)` | Edit source or parameter `values`; the producer re-cooks and caches |
+| During play: debris, growth, deforming water | `assets.create(meshAsset)` in a plugin; no Pack declaration, GUID or saved file | The returned handle; release it after the ECS binding takes its own reference | `writeRange` keeps vertex/index counts (per frame); `replace` changes topology |
+
+- A Pack `build` is a pure function of its source and `values`: derive randomness from a
+  seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), never
+  `Math.random()` or `Date.now()`. Runtime generation takes a gameplay seed so
+  playthroughs and tests reproduce.
+- Factories and `meshFromInterleaved` emit the vec4 `tangent` Standard materials need;
+  `createMeshBuilder` input needs `tangent: computeTangentVec4(...)`.
+- Runtime meshes can use Pack materials. Material `values` edits never move vertices.
+- Compiled recipes: [procedural props and runtime meshes](../forgeax-engine-sdk/references/gameplay-cookbook.md#procedural-props-built-at-pack-time).
+
 ## View Pack parameters
 
 For a View parameter request, edit the selected Pack's `parameters` array. Start
@@ -68,6 +86,13 @@ Use `source(handle)` / `sourceOf(handle)` for adopted provenance and explicit
 `reload(handle, { conflict: 'reject' | 'overwrite' })` to adopt a newer source
 closure. Catalog changes alone do not overwrite runtime content. See the
 [runtime contract](../../packages/assets-runtime/README.md#runtime-content).
+
+Content generated during play (debris, per-wave ships, a reseeded town) needs no
+Pack: a plugin injecting `assets` calls `create` on geometry factory or
+`Materials` output and yields each `release`/`despawn` from its generator effect.
+Edit existing handles rather than creating per frame. Static-switch materials,
+identity, Worker publication and tangent facts are in
+[content created during play](../../packages/assets-runtime/README.md#content-created-during-play).
 
 ## Engine Content library
 

@@ -1,3 +1,4 @@
+import type { FogMode } from '../components/fog';
 import { AtmosphereInvalidParameterError, type AtmosphereParameterRange } from '../errors/render';
 import type { TemporalView } from '../temporal/view';
 
@@ -62,6 +63,12 @@ export interface FogCandidate {
   readonly density: number;
   readonly heightFalloff: number;
   readonly maxOpacity: number;
+  /** Distance law; `undefined` is an unknown serialized label and fails validation. */
+  readonly mode: FogMode | undefined;
+  /** Linear-mode start depth (world units). */
+  readonly near: number;
+  /** Linear-mode full-fog depth (world units). */
+  readonly far: number;
 }
 
 export type EnvironmentSource =
@@ -79,6 +86,19 @@ export type EnvironmentSource =
     };
 
 export interface FogFrame extends FogCandidate {}
+
+/** Extracted GradientSky facts; its sun is the selected environment sun. */
+export interface GradientSkyFrame {
+  readonly entityKey: number;
+  readonly zenith: readonly [number, number, number];
+  readonly horizon: readonly [number, number, number];
+  readonly ground: readonly [number, number, number];
+  readonly exponent: number;
+  readonly sunSize: number;
+  readonly sunGlow: number;
+  readonly fogBlend: number;
+  readonly toneMapped: boolean;
+}
 
 export interface FogParameterIssue {
   readonly field: string;
@@ -103,6 +123,8 @@ export interface EnvironmentFrame {
     readonly bytesPerPixel: number;
   }>;
   readonly fog: FogFrame | undefined;
+  /** Procedural background; absent keeps the camera clear colour. */
+  readonly sky?: GradientSkyFrame | undefined;
   readonly environmentSignature: string;
   readonly fogSignature: string;
   readonly signature: string;
@@ -116,23 +138,43 @@ export interface FramePlan {
 
 /** Validate the bounded Fog domain once for every frame-selection producer. */
 export function validateFogParameters(candidate: FogCandidate): FogParameterIssue | undefined {
-  if (candidate.color.length !== 3) {
+  return (
+    validateFogColor(candidate.color) ?? validateFogScalars(candidate) ?? validateFogLaw(candidate)
+  );
+}
+
+/** True when the selected Fog contributes to any pixel; inactive fog records no pass. */
+export function fogIsActive(
+  fog: Pick<FogCandidate, 'mode' | 'density' | 'maxOpacity' | 'near' | 'far'>,
+): boolean {
+  if (fog.maxOpacity <= 0) return false;
+  return fog.mode === 'linear' ? fog.far > fog.near : fog.density > 0;
+}
+
+function validateFogColor(color: FogCandidate['color']): FogParameterIssue | undefined {
+  if (color.length !== 3) {
     return {
       field: 'color',
-      value: candidate.color.length,
-      expected: 'exactly three finite channels in [0, 1]',
+      value: color.length,
+      expected: 'exactly three finite channels >= 0',
     };
   }
-  for (let index = 0; index < candidate.color.length; index += 1) {
-    const value = candidate.color[index];
-    if (value === undefined || !Number.isFinite(value) || value < 0 || value > 1) {
+  // Fog colour is scene-linear inscatter radiance, which the HDR scene already
+  // carries above 1 whenever Atmosphere adds sky and sun light to it.
+  for (let index = 0; index < color.length; index += 1) {
+    const value = color[index];
+    if (value === undefined || !Number.isFinite(value) || value < 0) {
       return {
         field: `color[${index}]`,
         value: value ?? Number.NaN,
-        expected: 'a finite number in [0, 1]',
+        expected: 'a finite number >= 0 (scene-linear; values above 1 are HDR)',
       };
     }
   }
+  return undefined;
+}
+
+function validateFogScalars(candidate: FogCandidate): FogParameterIssue | undefined {
   if (!Number.isFinite(candidate.density) || candidate.density < 0) {
     return { field: 'density', value: candidate.density, expected: 'a finite number >= 0' };
   }
@@ -153,6 +195,65 @@ export function validateFogParameters(candidate: FogCandidate): FogParameterIssu
       value: candidate.maxOpacity,
       expected: 'a finite number in [0, 1]',
     };
+  }
+  return undefined;
+}
+
+/** Mode-specific fields: height falloff is exp-only; linear needs 0 <= near < far. */
+function validateFogLaw(candidate: FogCandidate): FogParameterIssue | undefined {
+  if (candidate.mode === undefined) {
+    return {
+      field: 'mode',
+      value: Number.NaN,
+      expected: 'a known FogModeValue label: exp, exp2 or linear',
+    };
+  }
+  if (candidate.mode !== 'exp' && candidate.heightFalloff !== 0) {
+    return {
+      field: 'heightFalloff',
+      value: candidate.heightFalloff,
+      expected: '0 outside mode exp (exp2 and linear follow the Three.js laws)',
+    };
+  }
+  if (candidate.mode !== 'linear') return undefined;
+  if (!Number.isFinite(candidate.near) || candidate.near < 0) {
+    return { field: 'near', value: candidate.near, expected: 'a finite number >= 0' };
+  }
+  if (!Number.isFinite(candidate.far) || candidate.far <= candidate.near) {
+    return { field: 'far', value: candidate.far, expected: 'a finite number greater than near' };
+  }
+  return undefined;
+}
+
+const SKY_COLOR_FIELDS = ['zenith', 'horizon', 'ground'] as const;
+const SKY_SCALAR_RANGES = {
+  exponent: { min: 1e-3, max: 64, expected: 'a finite number in [0.001, 64]' },
+  sunSize: { min: 0, max: 0.5, expected: 'a finite angular radius in [0, 0.5] radians' },
+  sunGlow: { min: 0, max: 16, expected: 'a finite number in [0, 16]' },
+  fogBlend: { min: 0, max: 1, expected: 'a finite elevation sine in [0, 1]' },
+} as const;
+
+/** Validate the bounded GradientSky domain at the frame-selection boundary. */
+export function validateGradientSky(sky: GradientSkyFrame): FogParameterIssue | undefined {
+  for (const field of SKY_COLOR_FIELDS) {
+    const color = sky[field];
+    for (let index = 0; index < 3; index += 1) {
+      const value = color[index];
+      if (value === undefined || !Number.isFinite(value) || value < 0) {
+        return {
+          field: `GradientSky.${field}[${index}]`,
+          value: value ?? Number.NaN,
+          expected: 'a finite linear channel >= 0',
+        };
+      }
+    }
+  }
+  for (const field of Object.keys(SKY_SCALAR_RANGES) as (keyof typeof SKY_SCALAR_RANGES)[]) {
+    const range = SKY_SCALAR_RANGES[field];
+    const value = sky[field];
+    if (!Number.isFinite(value) || value < range.min || value > range.max) {
+      return { field: `GradientSky.${field}`, value, expected: range.expected };
+    }
   }
   return undefined;
 }

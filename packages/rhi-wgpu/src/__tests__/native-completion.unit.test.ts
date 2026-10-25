@@ -67,22 +67,55 @@ it('bounds unsignaled polling and releases the ticket on timeout', async () => {
   const request = { poll: vi.fn(() => false), free: vi.fn() };
   const result = driveNativeCompletion(() => request, Promise.resolve(undefined));
   const rejected = expect(result).rejects.toThrow('bounded native polls');
+  const detail = expect(result).rejects.toMatchObject({
+    detail: {
+      operation: 'native-queue-completion',
+      polls: 10_000,
+      firstPollDelayMs: 0,
+      maximumPollGapMs: 1,
+      deadlineMs: 30_000,
+      pollLimit: 10_000,
+      lastPollCompleted: false,
+    },
+  });
   await vi.advanceTimersByTimeAsync(10_001);
   await rejected;
+  await detail;
   expect(request.poll).toHaveBeenCalledTimes(10_000);
   expect(request.free).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it('rejects at the first wake after the elapsed deadline without another native poll', async () => {
+it('observes a completed native ticket after a long host stall before applying the wait deadline', async () => {
+  vi.useFakeTimers();
+  const request = { poll: vi.fn(() => true), free: vi.fn() };
+  const result = driveNativeCompletion(() => request, Promise.resolve(undefined));
+  const completed = expect(result).resolves.toBeUndefined();
+  vi.setSystemTime(Date.now() + 30_000);
+  await vi.runAllTimersAsync();
+  await completed;
+  expect(request.poll).toHaveBeenCalledOnce();
+  expect(request.free).toHaveBeenCalledOnce();
+});
+
+it('rejects an actually incomplete ticket at the first wake after the elapsed deadline', async () => {
   vi.useFakeTimers();
   const request = { poll: vi.fn(() => false), free: vi.fn() };
   const result = driveNativeCompletion(() => request, Promise.resolve(undefined));
   const rejected = expect(result).rejects.toThrow('bounded native polls');
+  const detail = expect(result).rejects.toMatchObject({
+    detail: {
+      polls: 1,
+      firstPollDelayMs: 30_000,
+      maximumPollGapMs: 30_000,
+      elapsedMs: 30_000,
+    },
+  });
   vi.setSystemTime(Date.now() + 30_000);
   await vi.runAllTimersAsync();
   await rejected;
-  expect(request.poll).not.toHaveBeenCalled();
+  await detail;
+  expect(request.poll).toHaveBeenCalledOnce();
   expect(request.free).toHaveBeenCalledOnce();
 });
 

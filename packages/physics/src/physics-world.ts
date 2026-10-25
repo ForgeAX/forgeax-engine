@@ -247,6 +247,18 @@ export interface PhysicsWorld {
     candidates: readonly DerivedPhysicsCandidate[],
     commitGeometry?: () => Result<void, Error>,
   ) => Result<readonly DerivedPhysicsCandidate[], DerivedPhysicsError>;
+  /**
+   * Queue the union of complete declared preparation groups (each the full
+   * roster returned by one prepareDerivedShapeCandidates call) as one bounded
+   * replacement with the same single geometry callback and atomic rollback as
+   * admitDerivedShapeCandidates. Lets a caller prepare disabled native shapes
+   * over several ticks; every group keeps its in-flight preparation slot until
+   * this admission. Individually prepared candidates and subsets are refused.
+   */
+  admitDerivedShapeCandidateGroups?: (
+    groups: readonly (readonly DerivedPhysicsCandidate[])[],
+    commitGeometry?: () => Result<void, Error>,
+  ) => Result<readonly DerivedPhysicsCandidate[], DerivedPhysicsError>;
   /** Optional discoverable pre-Native veto. Preparation budgets, atomic rollback
    * and the later geometry commit are identical to admitDerivedShapeCandidates.
    * The guard observes a frozen detached complete roster before Native mutation;

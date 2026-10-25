@@ -245,6 +245,25 @@ before renderer readiness, including a replacement device. `renderer.inspect()` 
 counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.
 Worker execution uses `await execution.inspectRenderer({pipelineLibrary:true})`.
 Watch new synchronous/asynchronous creations after loading to find missing scenario coverage.
+`prepare(manifest, {concurrency, background})` bounds outstanding native requests
+(default `pipelineWarmupConcurrency`, half the logical processors in 4..16; background
+default 1..4, capped independently of core count). Explicit background concurrency
+must be in 1..4; blocking concurrency must be in 1..16. Shader validation uses the same
+bound and preserves manifest dependency order. Background workers yield
+8 ms before each request, including cache hits, and stop scheduling after disposal.
+Native compilations already submitted cannot be cancelled or reprioritized; bounded
+concurrency is not proof of battle-frame nonregression. Qualify that path through
+the actual consumer's loading and combat windows.
+Each program becomes a library hit as soon as its native
+creation resolves; the returned Result still never reports a partial import ready.
+`RendererOptions.backgroundPipelineLibrary` / `CreateAppOptions.backgroundPipelineLibrary`
+starts a `background: true` prepare after first renderer readiness without awaiting it,
+so menus and Engine Worker loading overlap native compilation. Its progress is
+`inspect().backgroundWarmup` (`requested`, `completed`, `failed`, `elapsedMs`,
+`state: 'idle' | 'running' | 'done' | 'failed'`). A failure logs one console warning and
+never fails the renderer; affected pipelines compile on first use. Device recovery
+replays only the blocking library; the background lane is not re-run on a replacement
+device.
 The cumulative `warmup.elapsedMs` reports preparation wall time, including failed attempts.
 Export refuses in-flight compilation so pending requirements cannot silently disappear.
 Collection is bounded to 4096 entries per dependency class and 64 MiB of UTF-16 shader

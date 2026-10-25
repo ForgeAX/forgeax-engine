@@ -16,7 +16,7 @@ import { PointLightShadow } from '../point-light-shadow';
 import { RectAreaLight } from '../rect-area-light';
 import { SpotLight } from '../spot-light';
 
-describe('Three r184 punctual defaults', () => {
+describe('punctual light defaults', () => {
   it('keeps bare light shadows off and admits only explicit per-light requests', () => {
     const world = new World();
     world
@@ -68,7 +68,7 @@ describe('Three r184 punctual defaults', () => {
     expect(disabled.lights.spot[0]?.shadowAtlasTile).toBe(-1);
   });
 
-  it('transports no cutoff and a hard 60-degree spot through actual extraction', () => {
+  it('transports no cutoff and a full-falloff 60-degree spot through actual extraction', () => {
     const world = new World();
     const point = world
       .spawn({ component: Transform, data: {} }, { component: PointLight, data: {} })
@@ -85,7 +85,7 @@ describe('Three r184 punctual defaults', () => {
     const frame = extractFrame(world, prepareExtractContext(world));
     expect(frame.lights.point[0]?.invRangeSquared).toBe(0);
     expect(frame.lights.spot[0]).toMatchObject({ invRangeSquared: 0 });
-    expect(frame.lights.spot[0]?.cosInner).toBeCloseTo(0.5, 6);
+    expect(frame.lights.spot[0]?.cosInner).toBeCloseTo(1, 6);
     expect(frame.lights.spot[0]?.cosOuter).toBeCloseTo(0.5, 6);
     expect(computeInvRangeSquared(10)).toBe(0.01);
   });
@@ -155,6 +155,8 @@ describe('Three r184 punctual defaults', () => {
     const data = { direction: [0, -1, 0], castShadow };
     expect(validateSpotLightData({ ...data, innerConeDeg: 30, outerConeDeg: 30 }).ok).toBe(true);
     expect(validateSpotLightData({ ...data, innerConeDeg: 0, outerConeDeg: 60 }).ok).toBe(true);
+    // The default inner angle admits any authored outer angle on its own.
+    expect(validateSpotLightData({ ...data, outerConeDeg: 20 }).ok).toBe(true);
     for (const [innerConeDeg, outerConeDeg] of [
       [31, 30],
       [-1, 30],

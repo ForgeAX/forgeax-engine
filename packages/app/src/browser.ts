@@ -637,6 +637,8 @@ function rendererOptionsFor(
   }
   if (opts?.pipelineLibrary !== undefined)
     Object.assign(rendererOpts, { pipelineLibrary: opts.pipelineLibrary });
+  if (opts?.backgroundPipelineLibrary !== undefined)
+    Object.assign(rendererOpts, { backgroundPipelineLibrary: opts.backgroundPipelineLibrary });
   if (opts?.outputColorSpace !== undefined) {
     Object.assign(rendererOpts, { outputColorSpace: opts.outputColorSpace });
   }

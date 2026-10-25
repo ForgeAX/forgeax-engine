@@ -26,6 +26,7 @@ import { SDK_ARCHIVE_VERIFY_GROUPS } from './sdk-pr-preflight.mjs';
 import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
+import { buildCacheEntries } from './sdk-template-cache.mjs';
 import { createSdkVerifierProcess } from './verify-sdk-process.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
@@ -492,6 +493,11 @@ if (selected('project')) {
   }
   if (createdProjectEnvelope.value?.sdkUpdate?.status !== 'skipped')
     throw new Error('sdk-new-update-check-offline');
+  // The template ships its cooked Pack products; the project's first cook must
+  // reuse them instead of writing its own (checked after the first build).
+  const shippedBuildCache = await buildCacheEntries(project);
+  if (!shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')))
+    throw new Error('sdk-new-template-build-cache-missing');
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/api-index.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/sdk-production.md'));
@@ -638,6 +644,11 @@ if (selected('project')) {
       maxBuffer: 128 * 1024 * 1024,
     },
   );
+  const cookedBuildCache = (await buildCacheEntries(project)).filter(
+    (entry) => !shippedBuildCache.includes(entry),
+  );
+  if (cookedBuildCache.length > 0)
+    throw new Error(`sdk-new-template-build-cache-miss: ${cookedBuildCache.join(', ')}`);
   const staticManifest = JSON.parse(
     await readFile(resolve(staticOutput, 'forgeax-dist.json'), 'utf8'),
   );

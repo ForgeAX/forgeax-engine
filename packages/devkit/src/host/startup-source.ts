@@ -366,9 +366,11 @@ export function hostStartupScript(
         };
         // Receipt observation outlives the loading overlay. It does not request
         // render frames or sample rAF; one timer updates text only when changed.
+        // Browser pages opt in with ?fps=1 so capture, play and release frames
+        // stay free of developer chrome; URL-less native hosts keep the badge.
         const frameRate = (() => {
           const node = document.querySelector('#forgeax-fps');
-          let closed = !gamePage || node?.id !== 'forgeax-fps';
+          let closed = !gamePage || node?.id !== 'forgeax-fps' || (host === undefined && query.get('fps') !== '1');
           let session, surface, deviceGeneration = -1, lastFrame = -1;
           let since, count = 0, timer;
           const text = value => {

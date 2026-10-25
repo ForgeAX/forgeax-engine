@@ -124,22 +124,21 @@ async function start(
   vi.stubGlobal('onmessage', undefined);
   await import('../execution/render-worker-runtime');
   const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
-  receive({
-    data: {
-      kind: 'init',
-      canvas: {} as OffscreenCanvas,
-      bootstrapUrl: 'test://bootstrap',
-      identity: { source: 'test', epoch: 1 },
-      worldIdentity: 'test-world',
-      ...options,
-    } satisfies Extract<RenderWorkerInput, { kind: 'init' }>,
-  });
+  const initMessage = {
+    kind: 'init',
+    canvas: {} as OffscreenCanvas,
+    bootstrapUrl: 'test://bootstrap',
+    identity: { source: 'test', epoch: 1 },
+    worldIdentity: 'test-world',
+    ...options,
+  } satisfies Extract<RenderWorkerInput, { kind: 'init' }>;
+  receive({ data: initMessage });
   await vi.waitFor(() =>
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ kind: ready ? 'ready' : 'failed' }),
     ),
   );
-  return { post, receive };
+  return { post, receive, initMessage };
 }
 
 function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canvas' = 'video') {
@@ -1679,6 +1678,17 @@ it('forwards a ready-time public Renderer error without consuming frame credit',
   const delivered = post.mock.calls.length;
   mocks.listener?.({ kind: 'error', error });
   expect(post).toHaveBeenCalledTimes(delivered);
+});
+
+it('retains a snapshot of init identity for later Renderer errors', async () => {
+  const { post, receive, initMessage } = await start();
+  const identity = { ...initMessage.identity };
+  (initMessage.identity as { source: string; epoch: number }).source = 'replaced';
+  mocks.listener?.({ kind: 'error', error: asynchronousRendererError() });
+  expect(post).toHaveBeenCalledWith(expect.objectContaining({ kind: 'renderer-error', identity }));
+  expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
 });
 
 it('retains initialization Renderer errors as failure without posting ready', async () => {

@@ -1887,6 +1887,90 @@ describe('declared derived-physics preparation groups', () => {
     }
   });
 
+  it('admits the union of complete groups prepared separately with one geometry commit', async () => {
+    const { physics, inputs } = await fixture();
+    try {
+      const ray = () => physics.raycast(vec3.create(4.25, 0.5, 3), vec3.create(0, 0, -1), 5);
+      // Three ticks of native preparation; nothing is queryable until admission.
+      const groups = [inputs.slice(0, 1), inputs.slice(1, 20), inputs.slice(20)].map((group) =>
+        physics.prepareDerivedShapeCandidates(group).unwrap(),
+      );
+      expect(ray()).toBeUndefined();
+      // A single group remains admissible on its own path; a union needs the group API.
+      expect(physics.admitDerivedShapeCandidates(groups.flat())).toMatchObject({
+        ok: false,
+        error: { code: 'derived-candidate-invalid' },
+      });
+      let commits = 0;
+      const queued = physics
+        .admitDerivedShapeCandidateGroups(groups, () => {
+          commits++;
+          for (const input of inputs)
+            expect(physics.getDerivedAdmission(input.entity)?.revision).toBe(1);
+          return ok(undefined);
+        })
+        .unwrap();
+      expect(queued).toHaveLength(33);
+      expect(ray()).toBeUndefined();
+      physics.step(1 / 60);
+      expect(commits).toBe(1);
+      expect(ray()?.entity).toBe(1);
+      for (const input of inputs)
+        expect(physics.getDerivedPublication(input.entity)?.revision).toBe(1);
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('refuses a group union with a subset, an individual member or an empty group', async () => {
+    const { physics, inputs } = await fixture();
+    try {
+      const count = physics.raw.colliders.len();
+      const left = physics.prepareDerivedShapeCandidates(inputs.slice(0, 4)).unwrap();
+      const right = physics.prepareDerivedShapeCandidates(inputs.slice(4, 8)).unwrap();
+      const single = physics.prepareDerivedShapeCandidate(member(inputs[8])).unwrap();
+      for (const groups of [
+        [left, right.slice(1)],
+        [left, [single]],
+        [left, []],
+      ])
+        expect(physics.admitDerivedShapeCandidateGroups(groups)).toMatchObject({
+          ok: false,
+          error: { code: 'derived-candidate-invalid' },
+        });
+      // Refused admissions leave every preparation intact and admissible.
+      physics.admitDerivedShapeCandidateGroups([left, right]).unwrap();
+      physics.admitDerivedShapeCandidate(single).unwrap();
+      physics.step(1 / 60);
+      for (const input of inputs.slice(0, 9))
+        expect(physics.getDerivedPublication(input.entity)?.revision).toBe(1);
+      expect(physics.raw.colliders.len()).toBeGreaterThan(count);
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('rolls back every group of a refused union and retains the old publication', async () => {
+    const { physics, inputs } = await fixture();
+    try {
+      const groups = [inputs.slice(0, 2), inputs.slice(2, 4)].map((group) =>
+        physics.prepareDerivedShapeCandidates(group).unwrap(),
+      );
+      const count = physics.raw.colliders.len();
+      physics
+        .admitDerivedShapeCandidateGroups(groups, () => err(new Error('geometry refused')))
+        .unwrap();
+      physics.step(1 / 60);
+      for (const input of inputs.slice(0, 4)) {
+        expect(physics.getDerivedPublication(input.entity)).toBeUndefined();
+        expect(physics.getDerivedFailure(input.entity)).toBeDefined();
+      }
+      expect(physics.raw.colliders.len()).toBeLessThanOrEqual(count);
+    } finally {
+      physics.dispose();
+    }
+  });
+
   it('counts the complete group as one of 32 in-flight preparations', async () => {
     const { physics, inputs } = await fixture();
     try {

@@ -1334,8 +1334,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
-      expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
       // Clear-color default: transparent black array [0,0,0,0] (feat-20260709 M3;
@@ -1362,8 +1362,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.whitePoint).toBeCloseTo(4.0, 6);
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
-      expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
     });
@@ -1389,8 +1389,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
-      expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
       // Clear-color default: transparent black array [0,0,0,0] (feat-20260709 M3).
@@ -1514,8 +1514,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(d.historyVersion.default).toBe(0);
       expect(d.targetLayer.default).toBe(0);
       expect(d.bloom.default).toBe(0);
-      expect(d.bloomThreshold.default).toBeCloseTo(0, 6);
-      expect(d.bloomIntensity.default).toBeCloseTo(1.0, 6);
+      expect(d.bloomThreshold.default).toBeCloseTo(1, 6);
+      expect(d.bloomIntensity.default).toBeCloseTo(0.5, 6);
       expect(d.bloomSmoothWidth.default).toBeCloseTo(0.01, 6);
       expect(d.bloomRadius.default).toBeCloseTo(0, 6);
       // Clear-color default: explicit layer-2 transparent black array (feat-20260709
@@ -1559,8 +1559,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         historyVersion: 0,
         targetLayer: 0,
         bloom: 0,
-        bloomThreshold: 0,
-        bloomIntensity: 1.0,
+        bloomThreshold: 1,
+        bloomIntensity: 0.5,
         bloomSmoothWidth: 0.01,
         bloomRadius: 0,
         clearColor: new Float32Array([0, 0, 0, 0]),

@@ -12,6 +12,12 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For an installed SDK `edgesOut` crash in npm Arborist, compare the actual npm
+version with the npm 11.17.0 installed-consumer toolchain in the
+[CI guide](../../scripts/ci/README.md). PR, Candidate and Promotion use the same
+CLI. Repair a mismatched release controller while retaining the sealed source,
+version and immutable package bytes.
+
 For a Browser measured-roster coverage failure, refresh missing file costs from
 completed successful exact-child observations through [Browser gates](../../scripts/ci/README.md#browser-gates).
 Keep the 85% floor, inherited costs and retained cases; skipped or interrupted
@@ -95,7 +101,10 @@ while preserving the full roster, native process isolation and existing deadline
 Check newly discovered files against the same cost table: its largest-file
 fallback can reserve minutes for a short new test. Admit costs only from complete
 successful children, retain process overhead and larger inherited forecasts, and
-exclude interrupted owner tails before running the final full matrix.
+exclude interrupted owner tails before running the final full matrix. When all
+groups complete but one job exceeds its envelope, a complete owner can move from
+a lane with measured headroom to the overrun lane; replay ordinary-file backfill
+for all four lanes before keeping that placement.
 
 For Linux software validation, use `pnpm ci:graphics setup` and the
 [isolated graphics contract](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
@@ -764,6 +773,7 @@ change. Localized ordinary README files remain permitted.
 | Meshes do not cast shadows although castShadow is enabled | Hand-authored materials omit ShadowCaster and never enter the shadow depth pass. | [ShadowCaster](references/lighting-and-materials.md#missing-directional-shadows-castshadow-and-shadowcaster) |
 | Standard material black during cold startup or without IBL | Asynchronous Skylight cubemap is the only ambient source. | [Ambient readiness](references/lighting-and-materials.md#ambient-black-until-ibl-loads) |
 | Multi-mesh glTF nodes bind every mesh's materials | Bridge fails to filter by meshIndex. | [glTF materials](references/lighting-and-materials.md#gltf-bridge-mixes-mesh-materials) |
+| One mesh missing while the rest of the frame renders; onError `rhi-descriptor-invalid` names a missing `@location(N)` | The material's vertex stage reads an attribute the mesh layout lacks; the renderer skips that draw instead of creating an invalid pipeline. Author the attribute (MeshBuilder completes normal/uv/tangent for triangle lists) or use a material that does not read it. | `packages/render/src/vertex-input-guard.ts` |
 | pbr-skin pipeline fails with missing binding/vertex slot 5 | Skin shader reuses standard PBR layout; JOINTS_0/WEIGHTS_0 are not uploaded. | [Skin pipeline](references/skinning-and-fbx.md#pbr-skin-pipeline-build-fail) |
 | Browser skin black but Dawn passes; VBO 768 instead of 1152 bytes | Break in parser, bridge, mesh-loader, render-data, pipeline context, or extraction. | [Attribute chain](references/skinning-and-fbx.md#skin-vertex-attribute-chain) |
 | hello-skin dev Fox black with asset-not-imported while smoke passes | Missing build/submodule or sibling using the port. | [Fox dev loading](references/skinning-and-fbx.md#fox-development-loading-asset-not-imported) |

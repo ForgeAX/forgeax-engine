@@ -121,6 +121,14 @@ const isolatedCoverageFileSets = [
     weight: 20,
   },
   {
+    project: '@forgeax/engine-devkit',
+    // Two real `project play` runs (Vite runtime + sandboxed Chromium) share one
+    // fixture root. Weight is an estimate from two cold-start Vite fixtures,
+    // not yet a CI measurement.
+    files: ['packages/devkit/src/__tests__/project-play.e2e.test.ts'],
+    weight: 120,
+  },
+  {
     // Run 37342840315 exceeded both 5 s GI fixture budgets while this child
     // shared eight CPUs with DevKit. Keep the real compiler fixtures exclusive;
     // its complete isolated cost is included below.

@@ -613,8 +613,9 @@ export const Camera = defineComponent('Camera', {
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },
-  bloomThreshold: { type: 'f32', default: 0 },
-  bloomIntensity: { type: 'f32', default: 1.0 },
+  // Only above-white HDR luminance blooms by default; threshold 0 would bloom the whole frame.
+  bloomThreshold: { type: 'f32', default: 1 },
+  bloomIntensity: { type: 'f32', default: 0.5 },
   bloomSmoothWidth: { type: 'f32', default: 0.01 },
   bloomRadius: { type: 'f32', default: 0 },
   // M1 target camera role: zero means this camera is eligible for display;

@@ -46,7 +46,7 @@ async function nativeWorld(p, shadows) {
     ...(p.kind === 'point' ? [
       { component: PointLight, data: light },
       ...(shadows ? [{ component: PointLightShadow, data: shadow }] : []),
-    ] : [{ component: SpotLight, data: { ...light, ...shadow, direction: position.map((v, i) => (i === 2 ? -1 : 0) - v), castShadow: shadows } }]),
+    ] : [{ component: SpotLight, data: { ...light, ...shadow, innerConeDeg: 60, outerConeDeg: 60, direction: position.map((v, i) => (i === 2 ? -1 : 0) - v), castShadow: shadows } }]),
   ).unwrap();
   return world;
 }

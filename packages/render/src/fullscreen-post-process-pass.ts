@@ -26,6 +26,7 @@ import type {
 import { GPU_SHADER_STAGE_FRAGMENT } from './gpu-stage';
 import type { BglKind } from './pipeline-spec';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from './pipeline-spec';
+import { GenerationalWeakMap } from './scene/generational-weak-map';
 
 // Default fullscreen-post spec stub. The dispatcher's 'fullscreen-post' arm
 // reads spec.attachments.depthFormat / colorFormats[0] to derive the texture
@@ -160,7 +161,10 @@ interface PostProcessSignatureCapture {
   readonly storageBindingValues: readonly number[] | undefined;
 }
 
-const postProcessSignatures = new WeakMap<PostProcessShaderEntry, PostProcessSignatureCapture>();
+const postProcessSignatures = new GenerationalWeakMap<
+  PostProcessShaderEntry,
+  PostProcessSignatureCapture
+>();
 
 function sameSignatureInputs(
   entry: PostProcessShaderEntry,

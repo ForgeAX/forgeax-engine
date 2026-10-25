@@ -1,6 +1,6 @@
 // @perf-budget-skip: bundles the published standards entry and native UI consumer into an isolated realm.
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { posix, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -30,11 +30,24 @@ beforeAll(async () => {
   const owner = resolve(import.meta.dirname, '../..');
   temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-encoding-'));
   // Use the package's actual publication config, without writing shared dist.
-  await promisify(execFile)(
-    'pnpm',
-    ['exec', 'tsup', 'src/standards.ts', '--out-dir', temporary, '--silent'],
-    { cwd: owner, maxBuffer: 1024 * 1024 },
+  await promisify(execFile)('pnpm', ['exec', 'tsup', '--out-dir', temporary, '--silent'], {
+    cwd: owner,
+    maxBuffer: 1024 * 1024,
+  });
+  // The first entry must execute before any Engine chunks and native globals.
+  const standards = await readFile(resolve(temporary, 'standards.mjs'), 'utf8');
+  const standalone = createContext({ setTimeout, clearTimeout });
+  // Removing only the published export leaves any external import as a syntax
+  // error, and evaluates the complete bootstrap with no native encoders.
+  runInContext(
+    `(function () { 'use strict';
+    ${standards.replace('export { installWechatStandards };', '')}
+    installWechatStandards().unwrap();
+  })()`,
+    standalone,
   );
+  expect(runInContext('typeof TextEncoder', standalone)).toBe('function');
+  expect(runInContext('typeof TextDecoder', standalone)).toBe('function');
   await symlink(resolve(owner, 'node_modules'), resolve(temporary, 'node_modules'), 'dir');
   const entry = resolve(temporary, 'bootstrap.js');
   const meshProgram =

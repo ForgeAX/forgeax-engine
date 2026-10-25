@@ -52,9 +52,14 @@ def utc_ms(value):
 
 def headroom_facts(report):
     """Parse the existing Mac collector; totals are never treated as current paging."""
-    required = ('intervalCpu', 'gpu', 'memory', 'pressure', 'thermal', 'vmBefore', 'vmAfter')
+    required = ('intervalCpu', 'gpu', 'memory', 'pressure', 'thermal', 'vmBefore', 'vmAfter',
+                'consoleBefore', 'consoleAfter')
     if any(report.get(key, {}).get('exitCode') != 0 for key in required):
         raise ToolFailure('headroom-observation-unavailable')
+    for key in ('consoleBefore', 'consoleAfter'):
+        state = report[key]
+        if any(type(state.get(flag)) is not bool for flag in ('consoleLocked', 'screenLocked')):
+            raise ToolFailure('headroom-console-state-unavailable')
     cpu = [float(x) for x in re.findall(r'([\d.]+)% idle', report['intervalCpu']['stdout'])][1:]
     samples = report['gpu']['samples']
     gpu = [float(v) for row in samples for stats in row.get('statistics', [])
@@ -76,6 +81,9 @@ def headroom_facts(report):
              'Note: No performance warning level has been recorded',
              'Note: No CPU power status has been recorded')
     return {'cpuIdlePercent': cpu, 'gpuDevicePercent': gpu, 'pagingDelta': paging,
+            'console': {stage: {flag: report['console' + stage.capitalize()][flag]
+                               for flag in ('consoleLocked', 'screenLocked')}
+                        for stage in ('before', 'after')},
             'memoryFreePercent': int(free[1]) if free else None,
             'normalPressure': bool(pressure and pressure[1] == '1'),
             'noRecordedThermalWarning': bool(thermal) and all(line in known for line in thermal),

@@ -142,12 +142,20 @@ callbacks and surface presentation are separate facts.
 The driver calls native registration synchronously and polls a short-lived native
 ticket from JavaScript, so native exceptions and WASM traps reject the Promise.
 It releases the ticket on completion or failure and stops after 10,000 polls or
-30 seconds, whichever is observed first. Suspended host timers defer observation
-until the next wake. If a trap also prevents Rust ticket release, an
+30 seconds, whichever is observed first. Suspended or busy host timers defer
+observation until the next wake. That wake first polls the actual native ticket:
+a completed ticket remains a valid receipt, while an incomplete ticket rejects
+at the expired deadline without another wait. Host scheduling delay cannot alone
+replace an available completion with a GPU timeout. If a trap also prevents Rust ticket release, an
 `AggregateError` preserves the original failure as `cause` and both errors in
 `errors`; retire that native realm. A rejected request does not block later FIFO
 settlement. The real WebGL regression includes this failure path, copy-only
 uploads, and earlier buffer-map ordering.
+
+A polling exhaustion error retains bounded `detail`: elapsed time, poll count,
+first-poll delay, maximum gap between polls, configured limits and the last false
+completion observation. These are Host/native observation facts, not GPU duration;
+they survive the Renderer error's ordinary cause chain without a profiler.
 
 - Request the adapter with the compatible canvas before calling `rhi.acquireCanvasContext(canvas)`; the singleton retains the initialized instance for surface creation.
 - The wasm bundle is lazily loaded and only downloaded when needed

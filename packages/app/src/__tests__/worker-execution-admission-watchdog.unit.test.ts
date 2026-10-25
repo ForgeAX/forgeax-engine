@@ -408,6 +408,78 @@ describe('Worker frame admission watchdog', () => {
     expect(probes.platformDispose).toHaveBeenCalledTimes(1);
   });
 
+  it('steps a paused Worker App with the explicit delta, one frame credit at a time', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    expect(app.stepFrame(1 / 60)).toMatchObject({
+      ok: false,
+      error: { code: 'app-frame-step-invalid', detail: { reason: 'state' } },
+    });
+    listener()(completeMessage(frame));
+    app.pause().unwrap();
+    callbacks.at(-1)?.(16);
+    expect(frames()).toHaveLength(1);
+    expect(app.stepFrame(Number.NaN)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'delta' } },
+    });
+    expect(app.stepFrame(0.05).ok).toBe(true);
+    const stepped = frames().at(-1);
+    expect(stepped).toMatchObject({ frameId: 2, deltaSeconds: 0.05 });
+    expect(app.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    listener()(completeMessage(stepped as ExecutionFrameMessage));
+    expect(app.stepFrame(0.05).ok).toBe(true);
+    expect(frames()).toHaveLength(3);
+    expect(app.execution.report().engine.health).toBe('idle');
+    listener()(completeMessage(frames().at(-1) as ExecutionFrameMessage));
+    app.resume().unwrap();
+    callbacks.at(-1)?.(5_000);
+    expect(frames().at(-1)).toMatchObject({ frameId: 4, deltaSeconds: 0 });
+    await app.dispose();
+  });
+
+  it('steps update-only frames past a full render pipeline and resets the next picture', async () => {
+    const { app, frame } = await createRunningApp('render-worker');
+    const emit = listener();
+    const settle = (message: ExecutionFrameMessage | undefined) =>
+      emit({
+        ...completeMessage(message as ExecutionFrameMessage),
+        kind: 'simulation-complete',
+      } as EngineToHostMessage);
+    settle(frame);
+    app.pause().unwrap();
+    app.stepFrame(0.05).unwrap();
+    settle(frames().at(-1));
+    // Pictures 1 and 2 fill the two-frame render pipeline.
+    expect(app.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    for (let step = 0; step < 4; step++) {
+      expect(app.stepFrame(0.05, { render: false }).ok).toBe(true);
+      expect(frames().at(-1)).toMatchObject({ frameId: 3 + step, render: false });
+      expect(app.stepFrame(0.05, { render: false })).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'credit' } },
+      });
+      settle(frames().at(-1));
+    }
+    emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(frame) as never });
+    // Only picture 2 is in flight: the skipped frames 3-6 hold no render credit.
+    expect(app.stepFrame(0.05).ok).toBe(true);
+    const picture = frames().at(-1);
+    expect(picture).toMatchObject({ frameId: 7, deltaSeconds: 0.05, temporalReset: true });
+    expect(picture).not.toHaveProperty('render');
+    settle(picture);
+    expect(app.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    await app.dispose();
+  });
+
   it('cancels queued host callbacks and preserves an explicit pause through show', async () => {
     const { app, callbacks, frame } = await createRunningApp();
     listener()(completeMessage(frame));

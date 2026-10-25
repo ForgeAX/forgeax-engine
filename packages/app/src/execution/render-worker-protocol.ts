@@ -85,6 +85,7 @@ export type RenderWorkerInput =
       | 'build'
       | 'outputColorSpace'
       | 'pipelineLibrary'
+      | 'backgroundPipelineLibrary'
       | 'dynamicGeometryMeshBudgetBytes'
       | 'assetBudgetBytes'
       | 'loadProgressScope'

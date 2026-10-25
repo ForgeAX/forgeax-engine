@@ -30,6 +30,16 @@ selector used lowercase `projects` although the imported filesystem path used
 before interpreting post-close GPU load. A shared GPU helper can remain busy
 after this game's renderer exits; its load is not attributable to the closed game.
 
+For an explicitly requested recovery of an existing window, the installed
+`open_project_window --help` confirms that the exact same project is reused.
+Check `type: "reuse"` and the existing `winId`; a reuse acknowledgment alone does
+not prove OS foreground focus. If native UI control returns `cgWindowNotFound`,
+read the Mac console lock flags through `mac_headroom.py` before retrying UI calls.
+An OS-locked console can prevent native desktop control, while reopening the exact
+project can still restore continuous simulator frames. Verify actual frame
+progress after recovery; lock flags or a stale screenshot alone cannot establish
+whether the game is executing.
+
 `project_list` is an imported-project catalogue, not an open-window registry;
 its scopes are `miniprogram` (default), `other` and `all`. A successfully opened
 game can be absent from that catalogue. Preserve the actual `newopen` receipt,
@@ -392,6 +402,23 @@ program in that entry or modules it imports. In the qualified simulator, requiri
 `module is not defined`; use the native subpackage entry execution boundary.
 
 ## Native keyboard round trip
+
+For a keyboard that immediately closes, use `trace_simulator_keyboard.py` with
+`--config`, the exact `--project`, a new `--out` and `--action install`. Perform
+the original tap, then use `--action read` and finally `--action release`, each
+with its own new output directory. The bounded observer records native show/hide,
+keyboard, window, visibility and touch-cancel events with the existing UI focus
+path. It records input lengths, never entered text; the hide call retains a short
+stack. Its own callbacks/method wrappers retire automatically after 120 seconds,
+and explicit release removes its simulator handle. Preserve unavailable hooks.
+This is intrusive input diagnosis, not a performance sample. A keyboard staying
+open here is a simulator control, not evidence that the phone issue is resolved.
+
+On the phone, `diagnose_phone_startup.py --observe-startup --observe-keyboard`
+reuses that same observer for a 60-second window after the first ready scene
+snapshot. Keep the existing source-bound receiver and reviewed native-input
+workflow. Scene completion remains independently required; keyboard traces do not
+qualify editing success or FPS by themselves.
 
 The qualified official Mini Game touch tool does not expose typing. Tap a real
 Blitz input first and inspect the native keyboard in `simulator_screenshot`.

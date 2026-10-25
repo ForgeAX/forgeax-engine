@@ -173,11 +173,12 @@ describe('ReflectionProbe global diffuse availability', () => {
   it('preserves constant irradiance independently of a local reflection probe', () => {
     const { payload } = write({ ...sky, ambientIrradiance: [1, 2, 3] });
     expect(payload.slice(8, 11)).toEqual([0, 0, 0]);
-    expect(payload.slice(16)).toEqual([1, 2, 3, 0]);
+    expect(payload.slice(16, 20)).toEqual([1, 2, 3, 0]);
+    expect(payload.slice(20)).toEqual([0, 0, 0, 0]);
   });
   it('keeps explicit unavailable image diffuse zero without removing local probe specular', () => {
     const { payload } = write(sky);
-    expect(payload).toHaveLength(20);
+    expect(payload).toHaveLength(24);
     expect(payload[0]).toBe(-2);
     expect(payload.slice(1, 8)).toEqual([0, 0, 0, 2, 2, 2, 0]);
     expect(payload.slice(8, 11)).toEqual([0, 0, 0]);
@@ -188,6 +189,12 @@ describe('ReflectionProbe global diffuse availability', () => {
     const { payload } = write(sky, true);
     expect(payload.slice(8, 11)).toEqual([...new Float32Array([0.8, 1.2, 1.6])]);
     expect(payload.slice(12, 16)).toEqual([...new Float32Array(sky.rotation)]);
+  });
+  it('carries the hemisphere ground lane only with available diffuse', () => {
+    const ground = { ...sky, groundColor: [0.5, 0.25, 0.125] as const };
+    expect(write({ ...ground, equirectHandle: 0 }).payload.slice(20)).toEqual([1, 0.5, 0.25, 1]);
+    expect(write(ground).payload.slice(20)).toEqual([0, 0, 0, 0]);
+    expect(write(ground, true).payload.slice(20)).toEqual([1, 0.5, 0.25, 1]);
   });
   it('retains explicit solid-color ambient without an image or cache', () => {
     expect(write({ ...sky, equirectHandle: 0 }).payload.slice(8, 11)).toEqual([

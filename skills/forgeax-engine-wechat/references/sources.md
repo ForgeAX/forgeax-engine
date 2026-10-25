@@ -197,3 +197,124 @@ The full-source CI passed, including all 20 required checks. Those checks and th
 phone diagnostics do not establish stable 60 FPS during continuous gameplay.
 Use [memory diagnosis](memory-diagnosis.md), [parameter receipts](android-device.md#parameter-interaction-receipts)
 and [performance](performance.md) for the reusable methods and their current tools.
+
+## Maintained startup diagnostics on 2026-10-24
+
+The ordinary game-3d publication was rebuilt from the source worktree, retaining
+187 artifacts and 16,951,275 artifact bytes. Manifest
+`ea428c09eab94cdb64cf38b637855741760f8e2388f2d4ac0b4382835dbb32fa`
+and root entry `05340a35a39193df0d544f0fb9cfb161244f295a40e77413d9ebb66e2b2794b1`
+identify this candidate; these are historical identities, not current release claims.
+
+The maintained `diagnose_phone_startup.py --observe-startup` route, with no
+generated-chunk edits, delivered six early checkpoints and one 4,269-byte terminal
+report through an explicitly owned ADB reverse. The receiver verified source/run
+identity and exact body hash
+`f95e33650f643538a271c744156d72a6314dc61f00a6cb3b2b5d27ff8f3b09c6`.
+A reviewed Android screenshot matched that run's native caption. The native
+package hook retained accessor-backed `errMsg` and `loadInfo`, while the generic
+serializer continued marking those original accessors unavailable.
+
+The result was `startup-failed`: `wx.loadSubpackage('payload')` returned
+`loadSubpackage:fail module not found (no errMsg)` after 30.254 seconds;
+`loadInfo` reported `loaded:false`, `progress:0`, `hitOptimizations:{}`. No Host,
+WASM instance, GL context or scene presentation had started. Static analysis
+found 45 JavaScript files with all eager literal references present; a deferred
+external import and eight computed requests stayed explicitly unqualified.
+This establishes diagnostic collection and the failing native admission boundary.
+It does not establish a missing on-disk module, a network/driver cause, scene
+correctness or any FPS result.
+
+A second run of the same frozen publication opened and then closed only its
+owned official project window before preview, checking the documented IDE file-tree
+recovery. The receiver started after that simulator retired. The phone again
+returned the same native error after 30.258 seconds with `loaded:false` and
+`progress:0`. That recovery did not resolve this native failure; do not cite the
+earlier simulator file-tree incident as its established cause.
+
+A third run entered through an official preview QR, with the user's scan and a
+matching Android run caption. It returned the same error after 30.297 seconds.
+Changing preview entry did not resolve the failure; ordinary follow-up continues
+through automatic preview rather than requiring repeated scans. All three runs
+retained the same native AppBrand process, so they do not establish behavior in a
+fresh native process.
+
+The user then restarted WeChat; the prior AppBrand PID was verified absent.
+Automatic preview of the same candidate still failed after 30.253 seconds in
+the new native process. The maintained package controls narrowed the boundary:
+
+| Diagnostic control | Native subpackage bytes | Native callback result / elapsed |
+| --- | ---: | --- |
+| Dependency-free entry, retaining every other payload file | 16,948,293 | Same failure / 30.225 s |
+| Empty subpackage, dependency-free marker only | 135 | Marker executed / 0.373 s |
+| Non-JS resources retained, other JS/MJS/CJS removed | 10,321,350 | Same failure / 30.261 s |
+| Marker plus unchanged UI WASM | 2,249,507 | Marker executed / 18.068 s |
+| Marker plus unchanged UI and wgpu WASM | 3,521,877 | Same failure / 51.686 s |
+| Marker plus unchanged wgpu WASM | 1,272,505 | Marker executed / 10.172 s |
+
+All results used source/run-bound hashed reports and official automatic preview;
+the original distribution was preserved. The empty control proves native loading
+can work with that configuration. Failure without other JS means the deferred
+Node transport import is not required to reproduce it. The varying callback
+times do not establish a universal 30-second limit, a fixed package-size cap,
+network throughput or a WASM compilation cause. Native task progress and separate
+CPU observations are needed to distinguish those hypotheses. These controls
+activate no Engine scene and cannot provide FPS evidence.
+
+Offline collector/native-hook, real loopback receiver, clone/module-closure and
+reverse-port regressions passed, as did the generated Host's real Cordis Fiber
+inspection tests. Required rendering gates still had separate browser alpha-hash
+and Dawn SSR pixel failures; there was no all-green delivery or 60 FPS acceptance.
+Use [the maintained startup workflow](android-device.md#retrieve-structured-startup-errors)
+for future investigations and keep raw phone/account artifacts private.
+
+### Network recovery and the subsequent completion failure
+
+The generated root's native task progress exposed a later failed full-package
+download at 30%, or 3,600,483 of 12,204,242 wire bytes, despite the native failure's
+`loadInfo` claiming zero progress. After the user connected Wi-Fi and disabled
+the phone VPN, the same frozen publication
+`a61656f3ee51e0abc81c346ac814ccd7dca9fd4c9c4ed6d91dc652d2050105b2`
+loaded the subpackage successfully in 2.069 seconds. This qualifies an environment
+change, not an Engine optimization, and does not identify the individual network
+cause.
+
+Startup then failed in native queue completion before any scene frame. Polling
+the actual ticket before applying an expired deadline repaired a separate late-wake
+bug in deterministic tests, but did not resolve this phone failure. The following
+source-bound publication
+`fbb96812c6d8262ebc617041f30d0644d5b939342d2d98d24c2a367e7fe13fc7`
+retained 40 actual polls over 123,058 ms, with a maximum inter-poll gap of
+123,011 ms and a final incomplete native ticket. Resource trace events continued
+through that gap; their maximum adjacent gap was 3,395 ms. Only the first periodic
+checkpoint ran. These facts select Host execution/scheduling and asset preparation
+for further diagnosis; they do not establish a 123-second GPU workload.
+
+Separate native instantiation observations completed UI, wgpu, Basis and Rapier
+WASM within 148, 42, 10 and 17 ms respectively in one run. Callback delivery timing
+is included, so these are not pure compiler timings. Disabling the native diagnostic
+loading/result UI still reproduced the completion failure, and an unchanged ordinary
+publication remained on its loading screen. Neither control established a scene
+pass or 60 FPS. Do not loosen completion bounds or remove asset integrity checks
+to turn this startup failure into an apparent pass.
+
+The maintained per-URL package-reader counters then exposed 592 reads of the
+23,476,844-byte material Bundle. These counters include retained transport
+responses, so they must not be described as 592 native filesystem reads. The
+fixed dependency capture cached native bytes but recreated a whole response and
+verified the complete Bundle for each of its 591 artifact references. A Mac
+regression reproduced 24 complete-Bundle hashes for 24 references, in both cold
+and Registry-owned capture. The Engine repair verifies each captured URL/digest
+once and still verifies all 24 individual artifacts; corrupt bytes in a later
+capture still fail. All 1,049 Assets Runtime tests passed.
+
+The rebuilt ordinary publication
+`f0b5df26ef5502a37e2a9378edd006f26c0aafd4f572c3b9130b536a1f476d3e`
+reached ready on the phone and produced 61 new scene-ready completions by
+17.028 seconds from diagnostic startup. The material Bundle's package-reader
+count fell to two (ordinary source loading plus capture), with no current Renderer
+error. A reviewed screenshot showed the complete scene and controls. The same
+ordinary publication also reached ready in the official simulator. This resolves
+the reproduced startup stall; neither those frame counts nor the displayed FPS
+overlay establishes stable 60 FPS. The user observed under 30 FPS on the phone,
+and the simulator also remained below a stable 60 FPS; performance work continues.

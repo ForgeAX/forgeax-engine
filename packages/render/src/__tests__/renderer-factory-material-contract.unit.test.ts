@@ -734,6 +734,10 @@ describe('temporal material PSO creation contract', () => {
       return vec4<f32>(1.0);
     }
   `;
+  // The pipeline builder rejects a vertex stage whose inputs no buffer supplies.
+  const positionBuffers = [
+    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+  ] as const;
   const capabilities = { storageBuffer: false, rgba16floatRenderable: true };
   const context = {
     colorFormat: 'rgba16float' as GPUTextureFormat,
@@ -756,7 +760,7 @@ describe('temporal material PSO creation contract', () => {
           createShaderModule: () => ({ ok: true, value: {} }),
         },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
         label: 'pbr-pipeline-default-unlit-temporal',
       } as unknown as PipelineBuilderContext,
       { depthWriteEnabled: false, depthCompare: 'less-equal' },
@@ -802,7 +806,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       { depthWriteEnabled: true, depthCompare: 'less-equal' },
       undefined,
@@ -839,7 +843,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       renderState,
       undefined,
@@ -875,7 +879,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       undefined,
       undefined,
@@ -906,7 +910,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       undefined,
       undefined,

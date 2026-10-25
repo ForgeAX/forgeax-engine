@@ -44,6 +44,23 @@ type EngineWorkspaceResolverPlugin = {
   ) => Promise<unknown>;
 };
 
+function assertDynamicGeometryMeshBudgetOverrides(source: string, budget: number): void {
+  const expression = source.slice(
+    source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
+    source.indexOf('const cpuProfileRequested ='),
+  );
+  for (const [queryString, expected] of [
+    ['', budget],
+    ['forgeax-dynamic-mesh-budget-bytes=512', 512],
+    ['forgeax-dynamic-mesh-budget-bytes=0', 0],
+  ] as const)
+    expect(
+      runInNewContext(`${expression}\ndynamicGeometryMeshBudgetBytes`, {
+        query: new URLSearchParams(queryString),
+      }),
+    ).toBe(expected);
+}
+
 function hasPluginNamed(plugins: readonly unknown[] | undefined, name: string): boolean {
   return (plugins ?? []).some(
     (plugin) =>
@@ -155,6 +172,7 @@ describe('standalone host', () => {
         renderPipelines: [],
         computePipelines: [],
       };
+      const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: 'background' }] };
       const time = {
         fixedDeltaSeconds: 1 / 20,
         maxStepsPerUpdate: 2,
@@ -180,7 +198,9 @@ describe('standalone host', () => {
                     assetBudgetBytes: budget * 16,
                     standardProfile,
                     pipelineLibrary,
+                    backgroundPipelineLibrary,
                     time,
+                    renderTaskYield: 'features',
                   },
                 },
               },
@@ -193,17 +213,17 @@ describe('standalone host', () => {
             const source = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
             // The page realm reads the catalog through its one installed source.
             expect(source).not.toContain('configurePackIndex(');
-            const expression = source.slice(
-              source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
-              source.indexOf('const cpuProfileRequested ='),
-            );
+            assertDynamicGeometryMeshBudgetOverrides(source, budget);
+            // The project default selects cooperative draws; the query still overrides it.
+            const taskYield = source.match(/^const renderTaskYield = .*;$/m)?.[0];
+            expect(taskYield).toBeDefined();
             for (const [queryString, expected] of [
-              ['', budget],
-              ['forgeax-dynamic-mesh-budget-bytes=512', 512],
-              ['forgeax-dynamic-mesh-budget-bytes=0', 0],
+              ['', 'features'],
+              ['forgeax-render-task-yield=none', 'none'],
+              ['forgeax-render-task-yield=completion', 'completion'],
             ] as const)
               expect(
-                runInNewContext(`${expression}\ndynamicGeometryMeshBudgetBytes`, {
+                runInNewContext(`${taskYield}\nrenderTaskYield`, {
                   query: new URLSearchParams(queryString),
                 }),
               ).toBe(expected);
@@ -213,6 +233,11 @@ describe('standalone host', () => {
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
+            expect(
+              call.split(
+                '...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),',
+              ),
+            ).toHaveLength(3);
             // Both placements receive the stub selected by ?forgeax-gpu-stub=1.
             expect(call.split('...(gpuStub === undefined ? {} : { gpuStub }),')).toHaveLength(3);
             // Both execution placements receive the admitted AssetRegistry content budget.
@@ -238,6 +263,7 @@ describe('standalone host', () => {
                   animation: {},
                   dynamicGeometryMeshBudgetBytes: budget,
                   pipelineLibrary,
+                  backgroundPipelineLibrary,
                   gpuStub: undefined,
                   executionWorkers: {},
                   programDeliveryChannel: 'test',
@@ -292,6 +318,23 @@ describe('standalone host', () => {
             expect(source.indexOf('await fetch(pipelineLibraryUrl)')).toBeLessThan(
               source.indexOf('const result = await createApp('),
             );
+            // The background library is a separate asset whose fetch starts before
+            // the blocking startup fetch and never fails the App.
+            expect(
+              JSON.parse(
+                await readFile(
+                  resolve(config.root ?? '', 'background-pipeline-library.json'),
+                  'utf8',
+                ),
+              ),
+            ).toEqual(backgroundPipelineLibrary);
+            expect(source).toContain(
+              "import backgroundPipelineLibraryUrl from './background-pipeline-library.json?url'",
+            );
+            expect(source.indexOf('fetch(backgroundPipelineLibraryUrl)')).toBeLessThan(
+              source.indexOf('await fetch(pipelineLibraryUrl)'),
+            );
+            expect(source).toContain('.catch((cause) => {');
             // Execute the generated renderer-realm hook, including failure propagation.
             const bootstrap = await readFile(
               resolve(config.root ?? '', 'execution-bootstrap.ts'),
@@ -746,6 +789,7 @@ describe('standalone host', () => {
       expect(devKitDdcRoots('/workspace/game')).toEqual({
         buildCacheRoot: resolve('/workspace/game', '.forgeax/ddc/build-cache'),
         projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
+        identityRoot: resolve('/workspace/game'),
       });
     } finally {
       vi.unstubAllEnvs();
@@ -758,6 +802,7 @@ describe('standalone host', () => {
       expect(devKitDdcRoots('/workspace/game')).toEqual({
         buildCacheRoot: resolve('/machine/build-cache'),
         projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
+        identityRoot: resolve('/workspace/game'),
       });
     } finally {
       vi.unstubAllEnvs();
@@ -1757,28 +1802,86 @@ describe('standalone host', () => {
         storageBuffer: false,
       };
       const rendererLimits = { maxStorageBuffersPerShaderStage: 0 };
-      const inspected = runInNewContext(
-        `${generated.slice(inspectionStart, inspectionEnd)}\nexposeGameInspection(app); globalThis.__forgeaxGameInspection.renderer();`,
-        {
-          app: {
-            renderer: {
-              inspect: () => ({
-                state: 'alive',
-                frame: rendererFrame,
-                capabilities: rendererCapabilities,
-                limits: rendererLimits,
-              }),
-            },
-            execution: { report: () => executionReport },
-            lastError,
+      const errorListeners: Array<(error: unknown) => void> = [];
+      const consoleWarnings: string[] = [];
+      const inspectionContext = {
+        app: {
+          renderer: {
+            inspect: () => ({
+              state: 'alive',
+              frame: rendererFrame,
+              capabilities: rendererCapabilities,
+              limits: rendererLimits,
+            }),
+          },
+          execution: { report: () => executionReport },
+          lastError,
+          onError: (listener: (error: unknown) => void) => {
+            errorListeners.push(listener);
+            return () => undefined;
           },
         },
+        console: { warn: (message: string) => consoleWarnings.push(message) },
+      };
+      const inspectionSource = generated
+        .slice(inspectionStart, inspectionEnd)
+        .replaceAll('import.meta.env.DEV', 'true');
+      const inspected = runInNewContext(
+        `${inspectionSource}\nexposeGameInspection(app); globalThis.__forgeaxGameInspection.renderer();`,
+        inspectionContext,
       );
       expect(inspected.frame).toBe(rendererFrame);
       expect(inspected.capabilities).toBe(rendererCapabilities);
       expect(inspected.limits).toBe(rendererLimits);
       expect(inspected.execution).toBe(executionReport);
       expect(inspected.lastError).toBe(lastError);
+      expect(inspected.rendererError).toBeNull();
+
+      // Renderer errors: the latest one with its frame and count, logged once per
+      // distinct error, named by its innermost coded cause. A Render Worker error
+      // arrives inside app-system-update-failed and a GPU error inside
+      // device-operation-failed; App-level errors are not renderer errors.
+      const submitHint =
+        'GPU validation: [Buffer "gpu-scene-material-table"] used in submit while destroyed';
+      const submitFailed = { code: 'queue-submit-failed', expected: 'valid', hint: submitHint };
+      const fire = (error: unknown) => {
+        for (const listener of errorListeners) listener(error);
+      };
+      fire({ code: 'app-pointer-lock-failed', hint: 'refused' });
+      fire({ code: 'app-system-update-failed', detail: { cause: new Error('game system') } });
+      expect(
+        runInNewContext('__forgeaxGameInspection.renderer().rendererError', inspectionContext),
+      ).toBeNull();
+      fire(submitFailed);
+      executionReport.frame.completed = 5;
+      fire({
+        code: 'app-system-update-failed',
+        detail: {
+          cause: {
+            code: 'device-operation-failed',
+            hint: 'inspect renderer state and the structured cause',
+            detail: { operation: 'renderer-event', cause: submitFailed },
+          },
+        },
+      });
+      executionReport.frame.completed = 9;
+      expect(
+        JSON.parse(
+          runInNewContext(
+            'JSON.stringify(__forgeaxGameInspection.renderer().rendererError)',
+            inspectionContext,
+          ),
+        ),
+      ).toEqual({
+        code: 'queue-submit-failed',
+        message: submitHint,
+        frame: 5,
+        framesAgo: 4,
+        count: 2,
+      });
+      expect(consoleWarnings).toEqual([
+        `[forgeax] renderer error queue-submit-failed at frame 2: ${submitHint} (logged once; __forgeaxGameInspection.renderer().rendererError counts repeats)`,
+      ]);
       const installLine = generated
         .split('\n')
         .find((line) => line.includes('exposeGameInspection(app as App)'));

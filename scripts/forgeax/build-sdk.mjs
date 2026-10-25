@@ -50,6 +50,7 @@ import {
 } from './sdk-lib.mjs';
 import { archiveEngineSource, seedSourcePackageBuilds } from './sdk-source.mjs';
 import { sdkStage } from './sdk-stage.mjs';
+import { seedTemplateBuildCache } from './sdk-template-cache.mjs';
 import { stageViewToolPackage } from './sdk-view.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -637,7 +638,6 @@ try {
     // npm carrier can install online; the ZIP's immutable store supplies those same integrities
     // offline under the generated lockfile trust boundary and complete packaged store.
     await normalizeTemplateLockfile(template);
-    await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
   }
 } finally {
   await new Promise((accept, reject) =>
@@ -645,6 +645,33 @@ try {
   );
 }
 await copySdkTemplateResources(stage);
+// Every new project otherwise cooks the template's and Engine Content's Packs
+// on its first `dev start` / `project play`. Cook each installed template once
+// with the shipped Engine and ship its location-independent Pack products;
+// `project new` copies them into the project's own build cache.
+for (const sdkTemplate of SDK_TEMPLATES) {
+  const template = resolve(stage, sdkTemplate.sourceRoot);
+  const { FORGEAX_BUILD_CACHE_DIR: _sharedCache, ...seedEnv } = process.env;
+  await seedTemplateBuildCache(template, () =>
+    sdkStage(`seed ${sdkTemplate.id} template build cache`, () =>
+      execFileAsync(
+        process.execPath,
+        [
+          resolve(template, 'node_modules/@forgeax/engine/dist/bin/forgeax.mjs'),
+          'project',
+          'build',
+          '--json',
+        ],
+        {
+          cwd: template,
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...seedEnv, CI: 'true', FORGEAX_DISABLE_UPDATE_CHECK: '1' },
+        },
+      ),
+    ),
+  );
+  await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
+}
 await rm(pnpmMetadataCache, { recursive: true, force: true });
 const pnpmStoreFormat = await detectPnpmStoreFormat(resolve(stage, 'store', 'pnpm'));
 await rm(resolve(stage, 'store', 'pnpm', pnpmStoreFormat, 'projects'), {

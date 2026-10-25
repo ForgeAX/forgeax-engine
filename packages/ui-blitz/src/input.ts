@@ -39,7 +39,8 @@ export interface BlitzUiInput {
   /** Commit an accepted edit without submitting a form or changing DOM focus. */
   commitText(): void;
   confirm(): void;
-  cancel(): void;
+  /** Revoke contacts; display-only changes may retain the document's editing focus. */
+  cancel(options?: { readonly preserveFocus?: boolean }): void;
   focusedText(): UiTextEditor | null;
   subscribeFocus(listener: () => void): () => void;
   /** Explicit user activation of an editable control; focus alone is not an edit request. */
@@ -572,7 +573,7 @@ export class BlitzInput implements BlitzUiInput {
       if (fields.length === 1 && fields[0] === control) form.requestSubmit();
     }
   }
-  cancel(): void {
+  cancel(options: { readonly preserveFocus?: boolean } = {}): void {
     if (this.disposed) return;
     const contacts = [...this.contacts];
     this.contacts.clear();
@@ -596,7 +597,7 @@ export class BlitzInput implements BlitzUiInput {
       try {
         this.dom.read('input.active', (core) => core.set_active(0n));
         this.dom.read('input.hover', (core) => core.set_hover(0n));
-        this.dom.focus(null);
+        if (!options.preserveFocus) this.dom.focus(null);
       } catch (cause) {
         failures.push(cause);
       }

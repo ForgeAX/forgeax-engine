@@ -17,6 +17,7 @@ import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry'
 import type { FramePresentationPendingReason } from '../render-contract';
 import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
@@ -105,7 +106,8 @@ export interface GpuDrivenMaterialProgramIndex {
   readonly overlays: DispatchOverlays;
 }
 
-const sharedProgramSelections = new WeakMap<
+// Accepted versions are replaced as materials change; see GenerationalWeakMap.
+const sharedProgramSelections = new GenerationalWeakMap<
   AcceptedMaterial,
   MaterialPrograms & { readonly snapshot: MaterialSnapshot }
 >();

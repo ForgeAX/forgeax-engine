@@ -190,6 +190,7 @@ export class SourceRenderWorker {
   async start(
     canvas: OffscreenCanvas,
     pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'],
+    backgroundPipelineLibrary?: ExecutionInitMessage['backgroundPipelineLibrary'],
   ): Promise<void> {
     if (this.disposed) return;
     const epoch = this.epoch;
@@ -204,6 +205,7 @@ export class SourceRenderWorker {
     this.worker = worker;
     // Session closures outlive startup and must not capture the library.
     this.startupPipelineLibrary = pipelineLibrary;
+    this.startupBackgroundPipelineLibrary = backgroundPipelineLibrary;
     await new Promise<void>((resolve, reject) => {
       let ready = false;
       const failure = (
@@ -529,10 +531,19 @@ export class SourceRenderWorker {
   }
   private armFrameDeadline: () => void = () => {};
   private startupPipelineLibrary: ExecutionInitMessage['pipelineLibrary'];
-  private takeStartupPipelineLibrary(): Pick<ExecutionInitMessage, 'pipelineLibrary'> {
+  private startupBackgroundPipelineLibrary: ExecutionInitMessage['backgroundPipelineLibrary'];
+  private takeStartupPipelineLibrary(): Pick<
+    ExecutionInitMessage,
+    'pipelineLibrary' | 'backgroundPipelineLibrary'
+  > {
     const pipelineLibrary = this.startupPipelineLibrary;
+    const backgroundPipelineLibrary = this.startupBackgroundPipelineLibrary;
     this.startupPipelineLibrary = undefined;
-    return pipelineLibrary === undefined ? {} : { pipelineLibrary };
+    this.startupBackgroundPipelineLibrary = undefined;
+    return {
+      ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
+      ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
+    };
   }
   get hasPublicationCapacity(): boolean {
     return this.inspectionReady && this.publishedFrames.size < this.publicationCapacity;
@@ -905,6 +916,7 @@ export class SourceRenderWorker {
   }
   private clear(): void {
     this.startupPipelineLibrary = undefined;
+    this.startupBackgroundPipelineLibrary = undefined;
     this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
     this.inspectionReady = false;
     this.deviceGeneration = undefined;

@@ -67,6 +67,71 @@ Full signatures live in [AssetRegistry](src/asset-registry.ts). Mesh geometry
 factories belong to [Geometry](../geometry/README.md); there are no reserved
 built-in mesh handles or additional World payload registrations.
 
+## Content created during play
+
+Debris, grown plants, per-wave ships or a town regenerated from a new seed need
+no Pack declaration. A game plugin injects the realm's `assets` owner, creates
+content with `create`, and registers each inverse in a generator effect, so
+Fiber disposal (removal, hot replacement or failure) despawns before releasing:
+
+```ts
+import { createBoxGeometry } from '@forgeax/engine/geometry';
+import type { Plugin } from '@forgeax/engine/plugin';
+import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
+import { Transform } from '@forgeax/engine/scene';
+
+export const debris: Plugin.Object = {
+  name: 'game/debris',
+  inject: ['world', 'assets'],
+  apply(ctx) {
+    const assets = ctx.assets!;
+    ctx.effect(function* () {
+      const mesh = assets.create(createBoxGeometry(0.5, 0.5, 0.5).unwrap()).unwrap();
+      yield () => assets.release(mesh).unwrap();
+      const material = assets.create(Materials.standard({ baseColor: '#ff6a1a' })).unwrap();
+      yield () => assets.release(material).unwrap();
+      const entity = ctx.world.spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      ).unwrap();
+      yield () => ctx.world.despawn(entity).unwrap();
+      assets.update(material, { values: { roughness: 0.2 } }).unwrap();
+    });
+  },
+};
+```
+
+| Fact | Contract |
+|:--|:--|
+| Identity | Owner-local handle only: `guidOf` and `sourceOf` return `undefined`, `reload` fails with `asset-reference-invalid`, and nothing enters Catalog, source or DDC |
+| Edits | `update`, `replace` and `writeRange` keep the handle and bound entities; create per wave or seed and edit existing handles per frame |
+| Worker boundary | The Engine Worker's owner publishes rows for new content, field patches for material values, and retires handles after the last reference is released |
+| Materials | Default program selections need no cook; authored `staticSwitches` require a published selection, otherwise `material-specialization-not-cooked`. `load` a Pack material that publishes the selection and `copy` it for per-instance values |
+| Tangents | Geometry factories emit `TANGENT`. Normal-mapped surfaces read it, so custom meshes for them supply `computeTangentVec4(positions, normals, uvs, indices)` |
+| Inspection and save | View target inspection reports these references as `unregistered`; exporting them to durable Scene source requires an explicit publication |
+
+`packages/app/src/__tests__/runtime-procedural-content.integration.test.ts`
+runs this plugin against a separate Renderer namespace through structured-clone
+publication, including edit and retirement evidence.
+
+`await assets.readMeshGeometry(guid, { signal })` reads independently owned
+published base geometry for CPU processing. The `MeshGeometry` result contains
+vertices, attributes, optional indices, submeshes and optional AABB, with no
+Asset `kind`, runtime handle or render-readiness receipt. It uses the configured
+source's verified Pack/artifact transport and Mesh decoder, checks canonical
+geometry, and rejects cancellation, invalidation, decoder retirement, changed
+publication or owner replacement before returning. Concurrent readers share
+transport, while their returned buffers remain independent.
+
+This operation does not load default materials or LOD Assets, install material
+programs, retain a decoded source root, or adopt runtime content. Read it only
+when the consumer separately owns its actual rendering materials and LOD policy.
+Use ordinary `load(guid, 'mesh')` for the complete render dependency closure and
+`read(handle)` for runtime-edited content; a source geometry read neither reads
+nor overwrites those edits. Import, cooking and Catalog authority remain with
+the existing producers.
+
 ## Source loading and Catalog
 
 Source GUIDs identify authored outputs. Runtime handles identify admitted content
@@ -378,6 +443,10 @@ Catalog sources and capture share the ordinary Catalog locator resolution.
 Artifact reads overlap in batches of at most eight, preserving descriptor error
 order and checking every attachment. Shared paths join one byte request; failed
 requests remain retryable through the existing transport policy.
+During one fixed capture, immutable Bundle bytes share one verification per URL
+and declared Bundle digest. Each artifact still validates its own window, decoded
+length and digest. This avoids copying and hashing a whole Bundle for every
+referencing material program; the verification cache retires with that capture.
 When the Registry owns the exact selected Catalog source, capture reuses that
 source's Pack reader and stored artifact cache, including zstd bodies. It verifies
 the frozen descriptor's decoded length and digest again without repeating I/O.

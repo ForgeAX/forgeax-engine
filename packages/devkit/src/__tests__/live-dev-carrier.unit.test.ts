@@ -14,6 +14,7 @@ import { err, ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { serializeBridgeResult } from '../../../app/src/internal/browser-remote-bridge';
+import { publicPageUrl } from '../live-bridge-url.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
 const snapshotFixture = vi.hoisted(() => ({ create: vi.fn() }));
@@ -176,6 +177,48 @@ async function request(
   return response.json();
 }
 
+/** The owner page URL is the only place the daemon hands out its bridge token. */
+function ownerBridgeUrl(port: number): string {
+  const options = fixtures.browser.open.mock.lastCall?.[0] as { serverUrl?: string } | undefined;
+  const token =
+    options?.serverUrl === undefined
+      ? null
+      : new URL(options.serverUrl).searchParams.get('forgeaxBridge');
+  return `ws://127.0.0.1:${port}/bridge${token === null ? '' : `?forgeaxBridge=${token}`}`;
+}
+
+/** A fake page bridge that answers status and records evals for the test to settle. */
+function bridgePage(url: string, sockets: WebSocket[]) {
+  const socket = new WebSocket(url);
+  sockets.push(socket);
+  const evals: number[] = [];
+  socket.on('message', (raw) => {
+    const message = JSON.parse(String(raw));
+    if (message.type === 'status')
+      socket.send(
+        JSON.stringify({
+          type: 'result',
+          id: message.id,
+          payload: { ok: true, value: { worldIdentity: 'owner-world' } },
+        }),
+      );
+    if (message.type === 'eval') evals.push(message.id);
+  });
+  const closeEvent = new Promise<{ code: number; reason: string }>((resolve) =>
+    socket.once('close', (code, reason) => resolve({ code, reason: String(reason) })),
+  );
+  const opened = new Promise<void>((resolve) => socket.once('open', () => resolve()));
+  /** The close the page observes, or 'open' when it stays connected for 2 s. */
+  const closed = () =>
+    Promise.race([
+      closeEvent,
+      new Promise<'open'>((resolve) => setTimeout(() => resolve('open'), 2_000)),
+    ]);
+  const answer = (id: number | undefined, value: unknown) =>
+    socket.send(JSON.stringify({ type: 'result', id, payload: { ok: true, value } }));
+  return { socket, evals, opened, closed, answer };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -227,7 +270,7 @@ describe('live DevKit borrowed carrier boundary', () => {
     };
     let execution: unknown = healthyExecution;
     await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
-    const bridge = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    const bridge = new WebSocket(ownerBridgeUrl(port));
     bridge.on('message', (raw) => {
       const message = JSON.parse(String(raw));
       bridge.send(
@@ -374,7 +417,7 @@ describe('live DevKit borrowed carrier boundary', () => {
     fixtures.page.evaluate.mockResolvedValue(2);
     try {
       await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
-      bridge = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+      bridge = new WebSocket(ownerBridgeUrl(port));
       bridge.on('message', async (raw) => {
         const message = JSON.parse(String(raw));
         if (message.type !== 'status' && message.type !== 'eval') return;
@@ -458,7 +501,7 @@ describe('live DevKit borrowed carrier boundary', () => {
     };
     try {
       await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
-      bridge = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+      bridge = new WebSocket(ownerBridgeUrl(port));
       bridge.on('message', (raw) => {
         const message = JSON.parse(String(raw));
         if (message.type === 'status')
@@ -489,6 +532,122 @@ describe('live DevKit borrowed carrier boundary', () => {
       });
     } finally {
       bridge?.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the bridge with the owner page when another page of the same server connects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-bridge-owner-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.browser.open.mockImplementation(async (options: unknown) => ({
+      ...fixtures.session,
+      // Browser capture publishes the page URL without the owner token.
+      url: publicPageUrl((options as { serverUrl: string }).serverUrl),
+    }));
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    const sockets: WebSocket[] = [];
+    const page = (url: string) => bridgePage(url, sockets);
+    fixtures.page.evaluate.mockResolvedValue('2');
+    try {
+      await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
+      const owner = page(ownerBridgeUrl(port));
+      await owner.opened;
+      let revision = '';
+      await vi.waitFor(async () => {
+        const status = (await request(port, '/status', 'GET')) as {
+          value: { phase: string; revision: string; url: string };
+        };
+        expect(status.value.phase).toBe('ready');
+        revision = status.value.revision;
+        // The public URL is what other pages open; it never carries the owner token.
+        expect(new URL(status.value.url).searchParams.has('forgeaxBridge')).toBe(false);
+      });
+      const evaluation = request(port, '/eval', 'POST', { code: 'return 7;', revision });
+      await vi.waitFor(() => expect(owner.evals).toHaveLength(1));
+
+      // A human tab or an agent's own Playwright page served by the same Vite.
+      const observer = page(`ws://127.0.0.1:${port}/bridge`);
+      expect(await observer.closed()).toEqual({ code: 4403, reason: 'live-bridge-not-owner' });
+      expect(owner.socket.readyState).toBe(WebSocket.OPEN);
+      const stale = page(`ws://127.0.0.1:${port}/bridge?forgeaxBridge=not-the-owner`);
+      expect(await stale.closed()).toMatchObject({ code: 4403 });
+
+      owner.socket.send(
+        JSON.stringify({
+          type: 'result',
+          id: owner.evals[0],
+          payload: { ok: true, value: 7 },
+        }),
+      );
+      expect(await evaluation).toMatchObject({
+        ok: true,
+        value: { revision, result: 7 },
+      });
+      expect(await request(port, '/status', 'GET')).toMatchObject({
+        value: { phase: 'ready', bridgeConnected: true, revision },
+      });
+    } finally {
+      fixtures.page.evaluate.mockResolvedValue(undefined);
+      for (const socket of sockets) socket.terminate();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('lets only the newest holder of the current owner token keep the bridge', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-bridge-takeover-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    const sockets: WebSocket[] = [];
+    fixtures.page.evaluate.mockResolvedValue('2');
+    try {
+      await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
+      const first = bridgePage(ownerBridgeUrl(port), sockets);
+      await first.opened;
+      let revision = '';
+      await vi.waitFor(async () => {
+        const status = (await request(port, '/status', 'GET')) as {
+          value: { phase: string; revision: string };
+        };
+        expect(status.value.phase).toBe('ready');
+        revision = status.value.revision;
+      });
+      const stranded = request(port, '/eval', 'POST', { code: 'return 1;', revision });
+      await vi.waitFor(() => expect(first.evals).toHaveLength(1));
+
+      // The owner page reloaded itself: the same token takes over, finally.
+      const second = bridgePage(ownerBridgeUrl(port), sockets);
+      expect(await first.closed()).toEqual({ code: 4409, reason: 'live-bridge-displaced' });
+      expect(await stranded).toMatchObject({
+        ok: false,
+        error: { code: 'live-app-bridge-disconnected' },
+      });
+      const next = request(port, '/eval', 'POST', { code: 'return 8;', revision });
+      await vi.waitFor(() => expect(second.evals).toHaveLength(1));
+      second.answer(second.evals[0], 8);
+      expect(await next).toMatchObject({ ok: true, value: { revision, result: 8 } });
+
+      // Reload opens a new owner page with a new token; the old one is refused.
+      const previous = ownerBridgeUrl(port);
+      await request(port, '/reload', 'POST');
+      expect(fixtures.browser.open).toHaveBeenCalledTimes(2);
+      expect(ownerBridgeUrl(port)).not.toBe(previous);
+      const stale = bridgePage(previous, sockets);
+      expect(await stale.closed()).toEqual({ code: 4403, reason: 'live-bridge-not-owner' });
+      const current = bridgePage(ownerBridgeUrl(port), sockets);
+      expect(await current.closed()).toBe('open');
+    } finally {
+      fixtures.page.evaluate.mockResolvedValue(undefined);
+      for (const socket of sockets) socket.terminate();
       await request(port, '/stop', 'POST');
       await daemon;
       await rm(root, { recursive: true, force: true });
@@ -743,7 +902,7 @@ function reconnectingBridge(
   let closed = false;
   const connect = () => {
     if (closed) return;
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    const socket = new WebSocket(ownerBridgeUrl(port));
     sockets.push(socket);
     socket.on('message', async (raw) => {
       const message = JSON.parse(String(raw));
@@ -922,7 +1081,10 @@ describe('live readiness waiting', () => {
     })();
     try {
       await vi.waitFor(() => expect(readyStatus).toBeDefined(), { timeout: 10_000 });
-      expect(readyStatus?.phase).toBe('ready');
+      // The owner page dials its token-bearing bridge after the session opens,
+      // so the first published phase may still be `waiting`; never `failed`.
+      expect(['ready', 'waiting']).toContain(readyStatus?.phase);
+      await vi.waitFor(() => expect(phases.has('ready')).toBe(true), { timeout: 10_000 });
       expect(fixtures.spawn).toHaveBeenCalledTimes(2);
       expect(phases.has('failed')).toBe(false);
       // The superseded cause stays observable while its replacement starts.
@@ -1239,7 +1401,7 @@ it('recovers cached run observation after its existing App bridge reconnects', a
   };
   const sockets: WebSocket[] = [];
   const connect = async () => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    const socket = new WebSocket(ownerBridgeUrl(port));
     sockets.push(socket);
     socket.on('message', (raw) => {
       const message = JSON.parse(String(raw));

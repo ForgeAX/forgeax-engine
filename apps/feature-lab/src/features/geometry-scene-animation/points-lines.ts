@@ -37,7 +37,7 @@ export default defineFeature({
   catalog: 'Points/Lines rendering',
   kind: 'visual',
   summary:
-    'Points { sizePx, shape } and Lines { width, dash } expand ordinary point-list / line-list MeshAssets drawn with Materials.unlit into screen-space quads in the Standard main pass.',
+    'Points { size, sizeUnits, shape } and Lines { width, dash } expand ordinary point-list / line-list MeshAssets drawn with Materials.unlit into screen-space quads in the Standard main pass.',
   expect:
     'ON: five large yellow round dots above three thick magenta bars. OFF: the same vertices at 1 px - nearly invisible specks and hairlines.',
   setup({ app, world }) {
@@ -82,7 +82,7 @@ export default defineFeature({
       sceneAssets.create(points).unwrap(),
       style([1, 0.9, 0.1, 1]),
       {},
-      { component: Points, data: { sizePx: 40, shape: PointShapeValue.circle } },
+      { component: Points, data: { size: 40, shape: PointShapeValue.circle } },
     );
     const bars: EntityHandle = spawnMesh(
       world,
@@ -93,7 +93,7 @@ export default defineFeature({
     );
     return {
       toggle(on) {
-        world.set(dots, Points, { sizePx: on ? 40 : 1 } as never);
+        world.set(dots, Points, { size: on ? 40 : 1 } as never);
         world.set(bars, Lines, { width: on ? 16 : 1 } as never);
       },
       checks() {

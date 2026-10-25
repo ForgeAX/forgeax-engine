@@ -19,6 +19,16 @@ const sourceDigest = (parts: readonly string[]) =>
     .digest('hex');
 const digest = sourceDigest([wgsl]);
 
+it('loads before native text standards while retaining the source digest wire bytes', async () => {
+  vi.resetModules();
+  vi.stubGlobal('TextEncoder', undefined);
+  vi.stubGlobal('TextDecoder', undefined);
+  const shader = await import('../manifest-publication.js');
+  expect(Buffer.from(shader.shaderSourceDigestInput([]))).toEqual(
+    Buffer.concat([Buffer.from('forgeax.shader.source.v4\0'), Buffer.alloc(4)]),
+  );
+});
+
 function publication() {
   return {
     schemaVersion: '5.0.0',

@@ -263,8 +263,12 @@ intact. See the complete
 
 ## Standard profile recovery
 
-The host exposes one `forgeax::standard` profile. `lightCount` is one of
-`1 | 32 | 256`, `renderPath` is `forward | deferred`, and local finite lights
+The host exposes one `forgeax::standard` profile. `lightCount` is the local-light
+budget, one of `1 | 32 | 256` (default 256, the cluster maximum; the cluster
+buffers are sized for 256 at every budget, so the default costs no memory), and a
+frame over budget returns `standard-light-budget-exceeded`. Change it with
+`renderer.setProfile({ ...renderer.inspect().profile, lightCount })`.
+`renderPath` is `forward | deferred`, and local finite lights
 are always prepared for the shared Cluster transport. Invalid profile input
 returns `standard-profile-invalid` with `expected`, `hint`, and `detail`; the
 failed transaction keeps the last-known-good profile and device generation.

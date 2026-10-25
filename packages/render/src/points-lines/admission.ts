@@ -5,7 +5,14 @@ import {
   lineCapFromU32,
   lineWidthUnitsFromU32,
 } from '../components/lines';
-import { type PointShape, PointShapeValue, pointShapeFromU32 } from '../components/points';
+import {
+  type PointShape,
+  PointShapeValue,
+  type PointSizeUnits,
+  PointSizeUnitsValue,
+  pointShapeFromU32,
+  pointSizeUnitsFromU32,
+} from '../components/points';
 import type {
   PointsLinesBudgetExceededError,
   PointsLinesInvalidStyleError,
@@ -21,7 +28,10 @@ import {
 } from '../errors/render';
 
 export interface PointsStyleInput {
-  readonly sizePx?: number;
+  readonly size?: number;
+  /** `PointSizeUnitsValue` label; decoded and validated at admission. */
+  readonly sizeUnits?: number;
+  /** `PointShapeValue` label; decoded and validated at admission. */
   readonly shape?: number;
 }
 
@@ -55,7 +65,8 @@ type AdmittedPointsLinesStyle =
   | {
       readonly component: 'Points';
       readonly shape: PointShape;
-      readonly sizePx: number;
+      readonly size: number;
+      readonly sizeUnits: PointSizeUnits;
     }
   | {
       readonly component: 'Lines';
@@ -99,6 +110,39 @@ function topologyMismatch(
   return err(new TopologyError({ entity: input.entity, submesh, expected, actual }));
 }
 
+function checkPointsStyle(
+  input: PointsLinesAdmissionInput,
+  points: PointsStyleInput,
+): Result<AdmittedPointsLinesStyle, PointsLinesAdmissionError> {
+  const size = points.size ?? 4;
+  const unitsValue = points.sizeUnits ?? PointSizeUnitsValue.pixels;
+  const shapeValue = points.shape ?? PointShapeValue.square;
+  const sizeUnits = pointSizeUnitsFromU32(unitsValue);
+  const shape = pointShapeFromU32(shapeValue);
+  if (!Number.isFinite(size) || size <= 0) {
+    return invalidStyle(input, 'Points', 'size', size, 'finite size > 0');
+  }
+  if (sizeUnits === undefined) {
+    return invalidStyle(
+      input,
+      'Points',
+      'sizeUnits',
+      unitsValue,
+      "sizeUnits is 'pixels' or 'world'",
+    );
+  }
+  if (shape === undefined) {
+    return invalidStyle(
+      input,
+      'Points',
+      'shape',
+      shapeValue,
+      "shape is 'square', 'circle' or 'soft'",
+    );
+  }
+  return ok({ component: 'Points', shape, size, sizeUnits });
+}
+
 function checkStyle(
   input: PointsLinesAdmissionInput,
 ): Result<AdmittedPointsLinesStyle, PointsLinesAdmissionError> {
@@ -117,18 +161,7 @@ function checkStyle(
     return invalidStyle(input, 'Points/Lines', 'components', undefined, 'one style component');
   }
 
-  if (hasPoints) {
-    const sizePx = input.points?.sizePx ?? 4;
-    const shapeValue = input.points?.shape ?? PointShapeValue.square;
-    const shape = pointShapeFromU32(shapeValue);
-    if (!Number.isFinite(sizePx) || sizePx <= 0) {
-      return invalidStyle(input, 'Points', 'sizePx', sizePx, 'finite sizePx > 0');
-    }
-    if (shape === undefined) {
-      return invalidStyle(input, 'Points', 'shape', shapeValue, "shape is 'square' or 'circle'");
-    }
-    return ok({ component: 'Points', shape, sizePx });
-  }
+  if (hasPoints) return checkPointsStyle(input, input.points ?? {});
 
   const width = input.lines?.width ?? 1;
   if (!Number.isFinite(width) || width <= 0) {

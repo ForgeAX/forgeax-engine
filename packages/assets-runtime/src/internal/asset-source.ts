@@ -1,3 +1,4 @@
+import { prepareMeshData } from '@forgeax/engine-geometry';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import type {
@@ -13,12 +14,14 @@ import type {
   BuiltinAssetKind,
   BuiltinAssetPayload,
   CatalogEntry,
+  MeshAsset,
   PackageFetcher,
   PluginAssetDefinition,
   Result,
 } from '@forgeax/engine-types';
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import type { CatalogSource } from '../catalog-source.js';
+import type { MeshGeometry } from '../mesh-geometry.js';
 import {
   type ArtifactReadRequest,
   readArtifact,
@@ -98,6 +101,10 @@ export interface AssetSource {
   invalidate(guid: string): void;
   revision(guid: string): number;
   readPluginDefinition(guid: string): Promise<Result<PluginAssetDefinition, AssetLoadError>>;
+  readMeshGeometry(
+    guid: string,
+    options?: AssetLoadOptions,
+  ): Promise<Result<MeshGeometry, AssetLoadError>>;
   installDecoder<P, K extends string>(
     kind: AssetKind<P, K>,
     decoder: AssetDecoder<P>,
@@ -282,70 +289,74 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     return ok({ stored: stored.value, decoded: decoded.value });
   };
   const decoders = options.decoders;
+  const decodeRoot = async (
+    guid: string,
+    signal: AbortSignal,
+  ): Promise<Result<SourceEntry, AssetLoadError>> => {
+    const row = session.get(guid);
+    if (row === undefined) return err(missing(guid));
+    const fetcher = sourceFetcher(row.packageUrl);
+    const validated = validateRuntimeRow(row);
+    if (!validated.ok) return validated;
+    const publication = validated.value.publication;
+    const tuple = {
+      ...publication,
+      scopeId: session.scopeId,
+    };
+    const pack = await reader.read(row.packageUrl, tuple, signal, fetcher);
+    if (!pack.ok) return pack;
+    const envelope = pack.value.assets.find(
+      (asset) => asset.guid.toLowerCase() === guid.toLowerCase(),
+    );
+    if (envelope === undefined) return err(missing(guid));
+    const output = publication.outputs.find(
+      (output) => output.guid.toLowerCase() === guid.toLowerCase(),
+    );
+    if (output === undefined) return err(missing(guid));
+    const artifacts: AssetArtifactReader = {
+      locate: (descriptor) => {
+        const path = validateArtifactPath(descriptor.path, {
+          packageRoot: row.packageUrl,
+          guid,
+          artifactKey: descriptor.path,
+        });
+        return path.ok ? resolveArtifactUrl(row.packageUrl, path.value) : undefined;
+      },
+      read: async (descriptor) => {
+        if (descriptor.integrity === undefined)
+          return Promise.resolve(err(artifactError(guid, descriptor.path)));
+        const result = await storedArtifact(
+          { packageUrl: row.packageUrl, guid, artifactKey: descriptor.path, descriptor },
+          signal,
+          fetcher,
+        );
+        return result.ok ? ok(result.value.decoded) : result;
+      },
+    };
+    const input: AssetDecoderInput<unknown> = { envelope, artifacts, signal };
+    const decoded = await decoders.loadByKind(envelope.kind, input);
+    if (!decoded.ok) return decoded;
+    return ok({
+      value: freezeRuntimePayload(decoded.value),
+      kind: envelope.kind,
+      refs: [
+        ...new Set([
+          ...envelope.refs,
+          ...publication.externalEvidence
+            .filter((edge) => edge.usage !== 'content')
+            .map((edge) => edge.guid),
+        ]),
+      ],
+      publication: tuple,
+      digest: output.digest,
+      references: decoders.referencePolicy(envelope.kind),
+    });
+  };
   const graph = new AssetGraph<SourceEntry>({
     ...(options.maxConcurrentReads === undefined
       ? {}
       : { maxConcurrentReads: options.maxConcurrentReads }),
-    read: async (guid, signal) => {
-      const row = session.get(guid);
-      if (row === undefined) return err(missing(guid));
-      const fetcher = sourceFetcher(row.packageUrl);
-      const validated = validateRuntimeRow(row);
-      if (!validated.ok) return validated;
-      const publication = validated.value.publication;
-      const tuple = {
-        ...publication,
-        scopeId: session.scopeId,
-      };
-      const pack = await reader.read(row.packageUrl, tuple, signal, fetcher);
-      if (!pack.ok) return pack;
-      const envelope = pack.value.assets.find(
-        (asset) => asset.guid.toLowerCase() === guid.toLowerCase(),
-      );
-      if (envelope === undefined) return err(missing(guid));
-      const output = publication.outputs.find(
-        (output) => output.guid.toLowerCase() === guid.toLowerCase(),
-      );
-      if (output === undefined) return err(missing(guid));
-      const artifacts: AssetArtifactReader = {
-        locate: (descriptor) => {
-          const path = validateArtifactPath(descriptor.path, {
-            packageRoot: row.packageUrl,
-            guid,
-            artifactKey: descriptor.path,
-          });
-          return path.ok ? resolveArtifactUrl(row.packageUrl, path.value) : undefined;
-        },
-        read: async (descriptor) => {
-          if (descriptor.integrity === undefined)
-            return Promise.resolve(err(artifactError(guid, descriptor.path)));
-          const result = await storedArtifact(
-            { packageUrl: row.packageUrl, guid, artifactKey: descriptor.path, descriptor },
-            signal,
-            fetcher,
-          );
-          return result.ok ? ok(result.value.decoded) : result;
-        },
-      };
-      const input: AssetDecoderInput<unknown> = { envelope, artifacts, signal };
-      const decoded = await decoders.loadByKind(envelope.kind, input);
-      if (!decoded.ok) return decoded;
-      return ok({
-        value: freezeRuntimePayload(decoded.value),
-        kind: envelope.kind,
-        refs: [
-          ...new Set([
-            ...envelope.refs,
-            ...publication.externalEvidence
-              .filter((edge) => edge.usage !== 'content')
-              .map((edge) => edge.guid),
-          ]),
-        ],
-        publication: tuple,
-        digest: output.digest,
-        references: decoders.referencePolicy(envelope.kind),
-      });
-    },
+    read: decodeRoot,
   });
 
   const unsubscribeCatalog = session.subscribe((delta) => {
@@ -368,6 +379,16 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     });
     if (invalidated.length) graph.invalidateForCatalogChange(invalidated);
   });
+
+  const startCatalog = async (guid: string): Promise<Result<void, AssetLoadError>> => {
+    const started = await session.start();
+    if (!started.ok) return err(sourceFailure(guid, started.error.message));
+    if (!session.isStale) return ok(undefined);
+    const reconciled = await session.reconcile();
+    if (!reconciled.ok) return err(sourceFailure(guid, reconciled.error.message));
+    const discontinuity = session.discontinuity();
+    return discontinuity === undefined ? ok(undefined) : err(discontinuity);
+  };
 
   const registry: AssetSource = {
     catalog: session,
@@ -421,6 +442,52 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       }
       graph.prepare(prepared);
     },
+    readMeshGeometry: async (guid, loadOptions = {}) => {
+      if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
+      const signal = loadOptions.signal ?? lifetime.signal;
+      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
+      const started = await startCatalog(guid);
+      if (!started.ok) return started;
+      // Demand only this published output's metadata. References remain checked,
+      // but a CPU source read never admits their render dependency closures.
+      const admitted = await session.require(guid);
+      if (!admitted.ok) return admitted;
+      if (admitted.value.kind !== 'mesh') return err(mismatch(guid, 'mesh', admitted.value.kind));
+      const before = validatePublicationReferences(guid, admitted.value, (key) => session.get(key));
+      if (!before.ok) return before;
+      // First demand may publish the declared output. Capture invalidation only
+      // after that admission, just as ordinary source loads do.
+      const revision = graph.revision(guid);
+      const decoded = await decodeRoot(guid, signal);
+      if (!decoded.ok) return decoded;
+      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
+      const current = checkCurrent(guid, {
+        ...admitted.value.publication,
+        scopeId: session.scopeId,
+      });
+      if (!current.ok) return current;
+      if (graph.revision(guid) !== revision)
+        return err({
+          code: 'asset-superseded',
+          expected: 'the source read to remain current until completion',
+          hint: 'retry the current Mesh publication',
+          detail: { guid, generation: revision },
+        });
+      // DecoderRegistry captured this fresh result; move only its independently
+      // owned CPU geometry out. No graph Ready entry or runtime handle is made.
+      const mesh = decoded.value.value as MeshAsset;
+      if (mesh?.kind !== 'mesh')
+        return err(sourceFailure(guid, 'decoder returned another payload kind'));
+      const geometry = prepareMeshData(mesh, guid);
+      if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
+      return ok({
+        vertices: mesh.vertices,
+        attributes: mesh.attributes,
+        submeshes: mesh.submeshes,
+        ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
+        ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
+      });
+    },
     readPluginDefinition: async (guid) => {
       const loaded = await registry.load(guid, 'plugin');
       if (!loaded.ok) return loaded;
@@ -446,14 +513,8 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       if (loadOptions.signal?.aborted) return err(assetLoadCancelled(guid));
       const request = (async () => {
         const expectedKind = typeof kind === 'string' ? kind : kind.kind;
-        const started = await session.start();
-        if (!started.ok) return err(sourceFailure(guid, started.error.message));
-        if (session.isStale) {
-          const reconciled = await session.reconcile();
-          if (!reconciled.ok) return err(sourceFailure(guid, reconciled.error.message));
-          const discontinuity = session.discontinuity();
-          if (discontinuity !== undefined) return err(discontinuity);
-        }
+        const started = await startCatalog(guid);
+        if (!started.ok) return started;
         const declared = session.get(guid);
         if (declared !== undefined && declared.kind !== expectedKind)
           return err(mismatch(guid, expectedKind, declared.kind));

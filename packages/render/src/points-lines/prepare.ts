@@ -85,6 +85,9 @@ export class PointsLinesPreparation<Resource> {
       return ok(this.live);
     }
 
+    if (this.live !== undefined && sameByteLengths(this.live.geometry, geometry)) {
+      return this.rewrite(this.live, snapshot, geometry);
+    }
     this.pendingCandidateBytes = geometry.derivedBytes;
     const created = this.options.adapter.create(geometry);
     if (!created.ok) return this.fail(snapshot, created.error);
@@ -113,6 +116,32 @@ export class PointsLinesPreparation<Resource> {
     this.status = 'resident';
     this.rebuilds += 1;
     if (previous !== undefined) this.options.adapter.destroy(previous.resource);
+    return ok(this.live);
+  }
+
+  /**
+   * A same-sized generation (per-frame JS particle writes) reuses the
+   * resident buffers: queue writes are ordered after earlier submissions, so
+   * frames already recorded keep their contents and no buffer is reallocated.
+   */
+  private rewrite(
+    live: PointsLinesPreparedResource<Resource>,
+    snapshot: PointsLinesPreparedSnapshot,
+    geometry: PointsLinesExpandedGeometry,
+  ): Result<PointsLinesPreparedResource<Resource>, PointsLinesPrepareFailedError> {
+    const validated = this.options.adapter.validate(live.resource, geometry);
+    if (!validated.ok) return this.fail(snapshot, validated.error);
+    const uploaded = this.options.adapter.upload(live.resource, geometry);
+    if (!uploaded.ok) {
+      // The resident contents are partial: rebuild on the next preparation.
+      this.options.adapter.destroy(live.resource);
+      this.live = undefined;
+      this.status = 'rebuild-pending';
+      return this.fail(snapshot, uploaded.error);
+    }
+    this.uploads += 1;
+    this.live = { ...live, geometry, snapshot, uploadedBytes: uploaded.value };
+    this.status = 'resident';
     return ok(this.live);
   }
 
@@ -163,6 +192,12 @@ export class PointsLinesPreparation<Resource> {
       }),
     );
   }
+}
+
+function sameByteLengths(a: PointsLinesExpandedGeometry, b: PointsLinesExpandedGeometry): boolean {
+  return (
+    a.vertices.byteLength === b.vertices.byteLength && a.indices.byteLength === b.indices.byteLength
+  );
 }
 
 /**

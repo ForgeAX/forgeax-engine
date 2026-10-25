@@ -41,12 +41,12 @@ afterEach(() => vi.restoreAllMocks());
       expect(componentFieldDefault(Camera, 'bloom')).toBe(0);
     });
 
-    it('Camera defaults bloomThreshold to 0', () => {
-      expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(0);
+    it('Camera defaults bloomThreshold to 1 (highlights only)', () => {
+      expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(1);
     });
 
-    it('Camera defaults bloomIntensity to 1.0', () => {
-      expect(componentFieldDefault(Camera, 'bloomIntensity')).toBe(1.0);
+    it('Camera defaults bloomIntensity to 0.5', () => {
+      expect(componentFieldDefault(Camera, 'bloomIntensity')).toBe(0.5);
     });
 
     it('Camera defaults bloomSmoothWidth to 0.01', () => {

@@ -79,6 +79,8 @@ export interface PlayerDistOptions {
    * small. Defaults to true.
    */
   readonly compressDocuments?: boolean;
+  /** Disable per-entry zstd when the host compresses the whole Bundle. */
+  readonly compressEntries?: boolean;
 }
 
 /** Prepare delivery bytes without changing the verified build's diagnostic evidence. */
@@ -148,6 +150,7 @@ export async function preparePlayerDist(
       pathOf: (url, from) => paths.get(new URL(url, new URL(from, base)).href),
       packIndexPath: manifest.runtime.packIndexUrl,
       delivery,
+      compressEntries: options.compressEntries ?? true,
     });
     const written = new Map(bundled.written.map((artifact) => [artifact.path, artifact]));
     const copied = [...candidates.values()].filter(

@@ -1,6 +1,7 @@
 import { halfFloat } from '@forgeax/engine-math';
 import { textureReadbackLayout } from '@forgeax/engine-rhi';
 import {
+  FRAME_RECORDING_CHECKPOINT,
   type FrameRecording,
   profileFrameRecording,
   recordPreparationBarrier,
@@ -10,8 +11,9 @@ import { capsuleConeHalfAngle } from '../capsule-shadow/frame';
 import { inspectCapsuleShadow } from '../capsule-shadow/inspection';
 import { PlanarCaptureState } from '../capture/planar-state';
 import { PlanarReflectionInvalidError } from '../components/planar-reflection';
+import { gradientSkyClearColor } from '../environment/gradient-sky';
 import { RenderTargetLayerInvalidError } from '../errors/render';
-import type { FogFrame } from '../extract/environment';
+import { type FogFrame, fogIsActive } from '../extract/environment';
 import { EMPTY_GPU_DRAW_SELECTION } from '../gpu-driven/draw-selection';
 import { EMPTY_MATERIAL_BINDINGS } from '../gpu-driven/material-bindings';
 import { resolveTransparencyView } from '../oit/view';
@@ -2343,6 +2345,21 @@ function observeReflectionFallbackReadback(
   );
 }
 
+function driveFrameEquirectProjections(
+  internals: RenderSystemInternals,
+  world: RenderResourceScope,
+  frameState: RenderFrameState,
+  skylight: SkylightSnapshot | undefined,
+  skybox: SkyboxSnapshot | undefined,
+): void {
+  for (const handle of selectLazyEquirectHandles(skylight, skybox))
+    driveLazyEquirectProjection(internals, world, frameState, handle);
+}
+
+function activeFrameCameras(cameras: CameraSnapshot[]): CameraSnapshot[] {
+  return cameras.length === 0 ? [makeZeroCameraFallbackSnapshot()] : cameras;
+}
+
 export function recordFrame(...args: Parameters<typeof prepareFrameRecording>): boolean {
   return submitFrameRecordings([prepareFrameRecording(...args)]);
 }
@@ -2412,7 +2429,7 @@ export function* prepareFrameRecording(
   // unsubmitted buffer leases.
   // No Camera is a valid scene state. The internal snapshot supplies only
   // stable clear/UI frame parameters; it never becomes an authored view.
-  const activeCameras = cameras.length === 0 ? [makeZeroCameraFallbackSnapshot()] : cameras;
+  const activeCameras = activeFrameCameras(cameras);
   if (cameras.length === 0) {
     renderables = [];
     transparentDispatch = [];
@@ -2507,9 +2524,7 @@ export function* prepareFrameRecording(
         //                          handle (R-2/AC-09: store records failed
         //                          permanently and never retries; the latch keeps
         //                          the channel from flooding)
-        for (const lazyEquirectHandle of selectLazyEquirectHandles(skylight, skybox)) {
-          driveLazyEquirectProjection(internals, world, frameState, lazyEquirectHandle);
-        }
+        driveFrameEquirectProjections(internals, world, frameState, skylight, skybox);
       });
 
       // Zero-light standard-material once-warn (no Skylight + 0 direct light +
@@ -2895,7 +2910,7 @@ export function* prepareFrameRecording(
             ssrAdmission,
             renderExtent,
             fixedMaterials.hasMedium || preparationMaterials?.hasMedium === true,
-            analyticFog !== undefined && analyticFog.density > 0 && analyticFog.maxOpacity > 0,
+            analyticFog !== undefined && fogIsActive(analyticFog),
             cloudShadowProjection?.resolution,
             transparencyView.topology,
             terrainReceivers,
@@ -2986,13 +3001,9 @@ export function* prepareFrameRecording(
     const activeVolumetricFogContext = volumeHistory.context;
 
     // The clear color is read from the active CameraSnapshot's single
-    // `clearColor` field; the zero-camera fallback carries [0, 0, 0, 1].
-    const clear: readonly [number, number, number, number] = [
-      camera.clearColor[0],
-      camera.clearColor[1],
-      camera.clearColor[2],
-      camera.clearColor[3],
-    ];
+    // `clearColor` field; the zero-camera fallback carries [0, 0, 0, 1]. A
+    // GradientSky owns the background and clears transparent instead.
+    const clear = gradientSkyClearColor(frameState.environmentFrame?.sky, camera.clearColor);
     publishShadowPassResources(pipelineState, lights, camera, graphShadowMapSize);
 
     // Tonemap + skybox-active resolution (skybox requires tonemap HDR target +
@@ -3345,6 +3356,11 @@ export function* prepareFrameRecording(
       featureGraphCandidate?.onRejected?.();
       return pending;
     }
+    // CPU preparation is complete and nothing is bound to this task yet: a
+    // cooperative driver may let an older queue completion return its credit
+    // here. The swap-chain texture is acquired only after resuming.
+    const resumed = yield FRAME_RECORDING_CHECKPOINT;
+    if (!resumed.ok) return false;
     swapTarget = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
       captureOnly
         ? captureSwapTarget(cubeCaptureWork)

@@ -1,4 +1,4 @@
-import type { PointShape } from '../components/points';
+import type { PointShape, PointSizeUnits } from '../components/points';
 import type { LinesStyleInput } from './admission';
 
 interface PointsLinesViewport {
@@ -8,7 +8,12 @@ interface PointsLinesViewport {
 }
 
 export type PointsLinesStyle =
-  | { readonly kind: 'points'; readonly sizePx: number; readonly shape: PointShape }
+  | {
+      readonly kind: 'points';
+      readonly size: number;
+      readonly sizeUnits: PointSizeUnits;
+      readonly shape: PointShape;
+    }
   | ({ readonly kind: 'lines'; readonly width: number } & LinesStyleInput);
 
 /**

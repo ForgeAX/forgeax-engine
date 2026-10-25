@@ -3,6 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import {
   encodeDirectionalShadowPass,
   encodeStaticShadowPass,
@@ -370,6 +371,58 @@ it('resolves shared opaque resources once per view and observes the next resourc
     expect(recorded.draws).toHaveLength(0);
   } finally {
     lookups.mockRestore();
+    fixture.dispose();
+  }
+});
+
+it.each([
+  ['static layer', true],
+  ['final pass', false],
+] as const)('rebinds retained opaque %s rows when the scene material table is replaced', async (_name, layer) => {
+  // GPU Scene growth retires the old material table. A retained bundle that
+  // still binds the singleton over it fails Queue.submit (destroyed buffer).
+  const fixture = await preparedFixture();
+  const { context, shared, replacement, shadowMaterialBindGroups } = fixture;
+  const recorded = recorder();
+  const encode = () =>
+    layer
+      ? encodeStaticShadowPass(
+          context,
+          recorded.pass,
+          { kind: 'directional', index: 0 },
+          undefined,
+          true,
+        )
+      : encodeDirectionalShadowPass(context, recorded.pass, 0, undefined, undefined, true);
+  try {
+    encode();
+    expect(recorded.draws).toHaveLength(64);
+    expect(recorded.draws.every(({ material }) => material === shared.materialGroup)).toBe(true);
+
+    const grown = fixture.group();
+    const state = context.pipelineState;
+    getOrCreateFromChain(
+      shadowMaterialBindGroups,
+      [
+        state.materialBindGroupLayout,
+        fixture.materialBuffer.buffer,
+        state.defaultSampler,
+        state.defaultNormalTextureView,
+        state.fallbackTextureView,
+        replacement,
+      ],
+      'shadow-material-singleton',
+      () => grown,
+      context.bindGroupCounts,
+    );
+    Object.assign(context, {
+      gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: replacement },
+    });
+    recorded.draws.length = 0;
+    encode();
+    expect(recorded.draws).toHaveLength(64);
+    expect(recorded.draws.filter(({ material }) => material !== grown)).toHaveLength(0);
+  } finally {
     fixture.dispose();
   }
 });

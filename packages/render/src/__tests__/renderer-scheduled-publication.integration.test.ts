@@ -185,13 +185,18 @@ it.each([
   }
 });
 
-it('resumes a real published Renderer frame through the shared Feature checkpoint exactly once', async () => {
+it('resumes a real published Renderer frame through the Feature and recording checkpoints exactly once', async () => {
   const f = await fixture();
-  let resume!: () => void;
-  const paused = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
-  const checkpoint = vi.fn(() => paused);
+  const resumes: (() => void)[] = [];
+  const resume = () => {
+    for (const release of resumes.splice(0)) release();
+  };
+  const checkpoint = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resumes.push(resolve);
+      }),
+  );
   try {
     if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
     const pending = f.renderer.drawScheduled(f.request, { checkpoint });
@@ -200,17 +205,104 @@ it('resumes a real published Renderer frame through the shared Feature checkpoin
     expect(f.featureSubmitted).not.toHaveBeenCalled();
     expect(f.sourceAcknowledged).not.toHaveBeenCalled();
     resume();
+    // The view pauses again after CPU preparation, before swap-chain acquisition and submit.
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    expect(f.submit).not.toHaveBeenCalled();
+    expect(f.featureSubmitted).not.toHaveBeenCalled();
+    expect(f.sourceAcknowledged).not.toHaveBeenCalled();
+    resume();
     const result = await pending;
     if (!result.ok) throw result.error;
     expect(result.value.presentation).toBe('ready');
     expect((await result.value.completed).ok).toBe(true);
-    expect(checkpoint).toHaveBeenCalledOnce();
+    expect(checkpoint).toHaveBeenCalledTimes(2);
     expect(f.submit).toHaveBeenCalledOnce();
     expect(f.featureSubmitted).toHaveBeenCalledOnce();
     expect(f.sourceAcknowledged).toHaveBeenCalledExactlyOnceWith('submitted-feedback');
     expect(f.featureAborted).not.toHaveBeenCalled();
   } finally {
     resume();
+    const disposed = await f.renderer.dispose();
+    expect(disposed.ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
+  }
+});
+
+it('holds completion-driven delivery while a scheduled frame is paused and returns credit unheld', async () => {
+  const f = await fixture();
+  const resumes: (() => void)[] = [];
+  const checkpoint = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resumes.push(resolve);
+      }),
+  );
+  const settled = async (promise: Promise<unknown>): Promise<boolean> => {
+    let done = false;
+    void promise.then(() => {
+      done = true;
+    });
+    for (let turn = 0; turn < 8 && !done; turn++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    return done;
+  };
+  try {
+    const first = f.renderer.draw(f.request);
+    if (!first.ok) throw first.error;
+    expect((await first.value.creditCompleted)?.ok).toBe(true);
+    expect((await first.value.completed).ok).toBe(true);
+    const queue = f.submit.mock.instances[0] as RhiNullQueue;
+    if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
+    const pending = f.renderer.drawScheduled(f.nextRequest(), { checkpoint });
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledOnce());
+    const held = queue.onSubmittedWorkDone();
+    const unheld = queue.onSubmittedWorkDoneUnheld();
+    expect(await settled(unheld)).toBe(true);
+    expect(await settled(held)).toBe(false);
+    for (const release of resumes.splice(0)) release();
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    expect(await settled(held)).toBe(false);
+    for (const release of resumes.splice(0)) release();
+    const result = await pending;
+    if (!result.ok) throw result.error;
+    expect(await settled(held)).toBe(true);
+    expect((await result.value.creditCompleted)?.ok).toBe(true);
+    expect((await result.value.completed).ok).toBe(true);
+  } finally {
+    for (const release of resumes.splice(0)) release();
+    expect((await f.renderer.dispose()).ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
+  }
+});
+
+it('aborts at the recording checkpoint without submitting and keeps the next frame drawable', async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  const checkpoint = vi.fn(
+    (): Promise<void> =>
+      checkpoint.mock.calls.length === 1 ? Promise.resolve() : new Promise<void>(() => {}),
+  );
+  try {
+    if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
+    const pending = f.renderer.drawScheduled(f.request, { checkpoint, signal: controller.signal });
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    expect(f.submit).not.toHaveBeenCalled();
+    controller.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(f.submit).not.toHaveBeenCalled();
+    expect(f.featureSubmitted).not.toHaveBeenCalled();
+    expect(f.sourceAcknowledged).not.toHaveBeenCalled();
+    expect(f.featureAborted).toHaveBeenCalledOnce();
+    // The suspended view was closed, so an ordinary frame records and submits normally.
+    const next = f.renderer.draw(f.nextRequest());
+    if (!next.ok) throw next.error;
+    expect((await next.value.completed).ok).toBe(true);
+    expect(f.submit).toHaveBeenCalledOnce();
+  } finally {
+    controller.abort();
     const disposed = await f.renderer.dispose();
     expect(disposed.ok).toBe(true);
     f.publisher.dispose();

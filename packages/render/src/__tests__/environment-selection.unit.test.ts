@@ -27,6 +27,9 @@ const fog = (entityKey: number, density = 0.01): FogCandidate => ({
   density,
   heightFalloff: 0.2,
   maxOpacity: 0.8,
+  mode: 'exp',
+  near: 0,
+  far: 100,
 });
 
 const sun = (entityKey: number) => ({

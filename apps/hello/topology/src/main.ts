@@ -91,7 +91,7 @@ async function bootstrapFocused(
     {
       component: Points,
       data: {
-        sizePx: 16,
+        size: 16,
         shape: falsify === 'point-square' ? PointShapeValue.square : PointShapeValue.circle,
       },
     },

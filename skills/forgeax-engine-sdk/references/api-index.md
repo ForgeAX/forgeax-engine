@@ -2,21 +2,25 @@
 
 > Generated from Engine sources by `node scripts/forgeax/sdk-api-index.mjs`; do not edit.
 > Look signatures up here before searching `node_modules`; `...` marks an abridged member list.
+> Three.js names map to these APIs in [three-equivalents.md](three-equivalents.md).
 
 ## Gotchas
 
 - Import from `@forgeax/engine/<facade>` only, never physical `@forgeax/engine-*` packages.
 - Expected failures return `Result` (`r.ok ? r.value : r.error`, `.unwrap()` throws): World methods, asset loads, geometry, pack builds.
 - Math values are branded `Float32Array`s from `vec3.create(x, y, z)` / `quat.create()`; functions write into `out` and return it. Component data takes plain arrays (`{ pos: [0, 1, 0] }`).
-- Euler order is a required argument: `quat.fromEuler(out: Quat, x: number, y: number, z: number, order: EulerOrder): Quat`.
 - Pack output keys (sourceKeys) must match `PACK_SOURCE_KEY_RE = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)*$/` (lower case).
-- Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for a ground plane. `pick` returns the nearest entity AABB hit.
+- Pack or runtime: build-time content (meshes, materials) is a `.pack.ts` output: `parameters` for variants, GUID `AssetGuid.derive(packageId, sourceKey)` from `@forgeax/engine/pack/guid`, `assets.load(guid, kind)`. Play-time content is `assets.create(mesh)`: bind the handle, then `release` it (the binding holds a reference). Change vertices with `writeRange` (same vertex count, per frame) or `replace` (new topology); material `values` never move vertices.
+- Standard materials read normal, uv and a vec4 `tangent`. Geometry factories, `meshFromInterleaved` and `createMeshBuilder` (triangle lists) derive omitted ones; other topologies author them.
+- Procedural variation is a pure function of a seed: a Pack `seed` parameter or math `rng.create(seed)`. Never `Math.random()` or `Date.now()` in a Pack `build`: its output is cached.
+- Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for the ground. `pick` returns the nearest entity AABB hit.
 - Input: in a system read `world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.
 - Declare every service a plugin reads in `inject` (`inject: ['world', 'assets', 'gameHost']`); add systems inside `ctx.effect` and `yield` their removal.
-- Camera: `{ component: Camera, data: { ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), clearColor: [0, 0, 0, 1] } }`; `fov` is radians. `DirectionalLight.direction` points from the light toward the scene (opposite of Three.js).
-- Material transparency has no `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`. Additive glow: `blend: { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } }`.
-- `SpotLight` takes its position from `Transform` but aims by its world `direction` field (not the Transform rotation); cone angles are half-angles in degrees. Give a light-volume mesh `ShadowParticipation { cast: false, receive: false }` so it never shadows its own light.
-- Custom lit shader: `Materials.standard({ surfaceModule, parameters, values })` names a `.wgsl` module under `assets/` (`#define_import_path`) that exports `evaluate_surface(input: SurfaceInput) -> SurfaceData` from `forgeax_material::surface_v1`; read parameters as `material.<name>` and seconds as `input.frameTime`. Feed a uniform per frame with `assets.update(handle, { values: { name } })`.
+- Camera data: `{ ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), tonemap: TONEMAP_ACES_FILMIC }`; `fov` is radians. Sky: `GradientSky { zenith, horizon, ground }` shows as set (cookbook 0); an opaque `clearColor` is tone-mapped. `DirectionalLight.direction` points from the light toward the scene (opposite of Three.js).
+- No `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`; per entity: bind an `assets.copy`, `assets.update` its `baseColor`. Additive: `color: { srcFactor: 'src-alpha', dstFactor: 'one' }`.
+- `SpotLight` takes its position from `Transform` but aims by its world `direction` field (not Transform rotation); cone angles are half-angles in degrees. Beam: `createConeGeometry(r, h, 48, 1, true)` (open-ended). Blended-only meshes cast no shadow unless `ShadowParticipation { cast: true }`.
+- Particles (rain, snow, sparks, fire, dust): `point-list` mesh + `color`/`uv1` streams + `Points { size, sizeUnits: world, shape: soft }` + blended unlit material; `writeRange` per frame (cookbook 12). 10k+: VFX (cookbook 5).
+- Custom lit shader: `Materials.standard({ surfaceModule, parameters, values })` names an `assets/` `.wgsl` module (`#define_import_path`) exporting `evaluate_surface(input: SurfaceInput) -> SurfaceData` from `forgeax_material::surface_v1`; read parameters as `material.<name>` and seconds as `input.frameTime`. Feed a uniform per frame with `assets.update(handle, { values: { name } })`.
 
 ## `@forgeax/engine/types`
 - `ok<T>(value: T): ResultOk<T>`
@@ -49,9 +53,10 @@
 - Also: `Name`, `worldDespawnScene`, `GlobalTransform`, `ChildOf`, `Children`, `PROPAGATE_TRANSFORMS_SYSTEM`
 
 ## `@forgeax/engine/math`
-- `vec3 { create(x?, y?, z?): Vec3; add(out: Vec3, a: Vec3Like, b: Vec3Like): Vec3; sub(out: Vec3, a: Vec3Like, b: Vec3Like): Vec3; scale(out: Vec3, a: Vec3Like, s: number): Vec3; normalize(out: Vec3, a: Vec3Like): Vec3; length(a: Vec3Like): number; distance(a: Vec3Like, b: Vec3Like): number; lerp(out: Vec3, a: Vec3Like, b: Vec3Like, t: number): Vec3; ... }`
+- `vec3 { create(x?, y?, z?): Vec3; add(out: Vec3, a: Vec3Like, b: Vec3Like): Vec3; sub(out: Vec3, a: Vec3Like, b: Vec3Like): Vec3; scale(out: Vec3, a: Vec3Like, s: number): Vec3; normalize(out: Vec3, a: Vec3Like): Vec3; distance(a: Vec3Like, b: Vec3Like): number; lerp(out: Vec3, a: Vec3Like, b: Vec3Like, t: number): Vec3; ... }`
 - `quat { create(): Quat; fromEuler(out: Quat, x: number, y: number, z: number, order: EulerOrder): Quat; fromAxisAngle(out: Quat, axis: Vec3Like, angleRadians: number): Quat; fromLookAt(out: Quat, eye: Vec3Like, target: Vec3Like, up: Vec3Like): Quat; multiply(out: Quat, a: QuatLike, b: QuatLike): Quat; slerp(out: Quat, a: QuatLike, b: QuatLike, t: number): Quat; ... }`
 - `ray { getOrigin(out: Vec3, r: RayLike): Vec3; getDirection(out: Vec3, r: RayLike): Vec3; ... }`
+- `rng { create(seed: number | string): Rng; ... }`
 - `type EulerOrder = 'XYZ' | 'YXZ' | 'ZXY' | 'ZYX' | 'YZX' | 'XZY'`
 - Also: `vec2`, `vec4`, `mat3`, `mat4`, `euler`, `color`, `box3`, `easing`, `noise`
 
@@ -69,23 +74,37 @@
 ## `@forgeax/engine/render`
 - `perspective(opts) { fov: number; aspect: number; near?: number; far?: number; autoAspect?: boolean; ... }`
 - `orthographic(opts) { left: number; right: number; bottom: number; top: number; near?: number; far?: number; ... }`
-- `Camera { clearColor: array<f32, 4> = [0, 0, 0, 0]; tonemap: f32 = 0; exposure: f32 = 1.0; antialias: f32 = 0; bloom: f32 = 0; bloomThreshold: f32 = 0; bloomIntensity: f32 = 1.0; ... }` component
+- `Camera { clearColor: array<f32, 4> = [0, 0, 0, 0]; tonemap: f32 = 0; exposure: f32 = 1.0; antialias: f32 = 0; bloom: f32 = 0; bloomThreshold: f32 = 1; bloomIntensity: f32 = 0.5; ... }` component
 - `DirectionalLight { direction: array<f32, 3>; color: array<f32, 3> = [1, 1, 1]; intensity: f32 = 1; castShadow: bool = false; ... }` component
 - `PointLight { color: array<f32, 3> = [1, 1, 1]; intensity: f32 = 1; range: f32; ... }` component
-- `SpotLight { direction: array<f32, 3>; color: array<f32, 3> = [1, 1, 1]; intensity: f32 = 1; range: f32; innerConeDeg: f32 = 60; outerConeDeg: f32 = 60; castShadow: bool = false; ... }` component
-- `Skylight { color: array<f32, 3> = [1, 1, 1]; intensity: f32 = 1.0; ... }` component
-- `Fog { color: array<f32, 3> = [0.5, 0.5, 0.5]; density: f32 = 0.01; heightFalloff: f32 = 0; ... }` component
-- `VolumetricFog { light: entity; spotLight: entity; density: asset<texture>; boundsMin: array<f32, 3>; boundsMax: array<f32, 3>; ... }` component
+- `SpotLight { direction: array<f32, 3>; color: array<f32, 3> = [1, 1, 1]; intensity: f32 = 1; range: f32; innerConeDeg: f32 = 0; outerConeDeg: f32 = 60; castShadow: bool = false; ... }` component
+- `Skylight { color: array<f32, 3> = [1, 1, 1]; groundColor: array<f32, 3>; intensity: f32 = 1.0; ... }` component
+- `Fog { color: array<f32, 3> = [0.5, 0.5, 0.5]; mode: enum; near: f32 = 0; far: f32 = 100; ... }` component
 - `ShadowParticipation { cast: bool = true; receive: bool = true; ... }` component
 - `MeshFilter { assetHandle: asset<mesh> }` component
 - `MeshRenderer { materials: array<asset<material>>; ... }` component
 - `Materials.standard(options) { baseColor: MaterialColorInput4; metallic?: number; roughness?: number; emissive?: MaterialColorInput3; emissiveIntensity?: number; baseColorTexture?: MaterialValue; alphaCutoff?: number; renderState?: MaterialRenderState; queue?: number; surfaceModule: string; parameters: MaterialParameter[]; values: Readonly<Record<string, MaterialValue>>; ... }`
 - `Materials { unlit(rgba: MaterialColorInput4, opts?: UnlitOpts): MaterialRootAsset; ... }`
-- Also: `setActiveCamera`, `SkyboxBackground`, `Atmosphere`, `TONEMAP_ACES_FILMIC`, `ANTIALIAS_FXAA`, `BLOOM_ENABLED`
+- Also: `setActiveCamera`, `GradientSky`, `SkyboxBackground`, `Atmosphere`, `TONEMAP_ACES_FILMIC`, `ANTIALIAS_FXAA`, `BLOOM_ENABLED`, `FogModeValue`, `VolumetricFog`, `Lines`, `Points`, `Instances`, `CanvasTexture`, `PlanarReflection`
 
 ## `@forgeax/engine/geometry`
 - `createBoxGeometry(width: number, height: number, depth: number, widthSegments?: number, heightSegments?: number, depthSegments?: number): Result<MeshAsset, AssetError>`
-- Also: `createSphereGeometry`, `createPlaneGeometry`, `createCylinderGeometry`, `createCapsuleGeometry`, `createConeGeometry`, `createTorusGeometry`, `createMeshBuilder`
+- Also: `createSphereGeometry`, `createPlaneGeometry`, `createCylinderGeometry`, `createCapsuleGeometry`, `createConeGeometry`, `createTorusGeometry`, `createIcosahedronGeometry`, `createDodecahedronGeometry`, `createOctahedronGeometry`, `createTetrahedronGeometry`
+- Also: `create2dGeometry`, `create2dRingGeometry`, `createEdgesGeometry`
+- `createRevolutionGeometry(profile: Vec2Point[], radialSegments?): Result<MeshAsset, AssetError>`
+- `createExtrusionGeometry(contour: Vec2Point[], depth: number, options?: ExtrusionOptions): Result<MeshAsset, AssetError>`
+- `ExtrusionOptions { holes?: (Vec2Point[])[]; bevelSize?: number; bevelSegments?: number }`
+- `createProfileSweepGeometry(shape: PolygonShape, path: Vec3Point[], options?: ProfileSweepOptions): Result<MeshAsset, AssetError>`
+- `ProfileSweepOptions { capped?: boolean; closed?: boolean; up?: Vec3Point }`
+- `createSweepGeometry(path: Vec3Point[], radius: number, radialSegments?, options?: Pick<ProfileSweepOptions, 'capped'>): Result<MeshAsset, AssetError>`
+- `PolygonShape { contour: Vec2Point[]; holes?: (Vec2Point[])[] }`
+- `Vec2Point { x: number; y: number }`
+- `type Vec3Point = [number, number, number]`
+- `createMeshBuilder(options?: MeshBuilderOptions): MeshBuilder`
+- `MeshBuilderOptions { attributes?: VertexAttributeMap; indices?: ArrayLike<number>; submeshes?: MeshBuilderSubmesh[]; materialSlots?: MeshMaterialSlot[] }`
+- `MeshBuilder { appendVertices(attributes: VertexAttributeMap): Result<void, AssetError>; appendIndices(indices: ArrayLike<number>): Result<void, AssetError>; addSubmesh(submesh: MeshBuilderSubmesh): Result<void, AssetError>; build(): Result<MeshAsset, AssetError> }`
+- `meshFromInterleaved(vertices: Float32Array, indices: Uint16Array | Uint32Array): Result<MeshAsset, AssetError>`
+- `PROCEDURAL_FLOATS_PER_VERTEX = 12`
 
 ## `@forgeax/engine/physics`
 - `physicsPlugin(backend: PhysicsBackend): Plugin`
@@ -101,7 +120,8 @@
 - `definePackageId(value: string | PackageId): PackageId`
 
 ## `@forgeax/engine/assets-runtime`
-- `AssetRegistry { load<K>(guid: AssetGuid | string, kind: K, options?: AssetLoadOptions): Promise<Result<AssetHandle<K>, RuntimeAssetError>> /* +1 overload */; create<P, K>(kind: AssetKind<P, K>, input: P): Result<AssetHandle<K, P>, AssetError | MaterialError> /* +2 overloads */; update<K, P>(handle: AssetHandle<K, P>, patch: Partial<Omit<P extends ParticleEffectAsset ? ParticleEffectInput : P, 'kind'>>): Result<void, AssetError | MaterialError>; release(handle: number): Result<void, AssetError>; instantiate(handle: AssetHandle<'scene'>, world: World, parent?: EntityHandle): Result<EntityHandle, SceneInstantiateError>; parseGuid(guidStr: string): AssetGuid; ... }`
+- `AssetRegistry { load<K>(guid: AssetGuid | string, kind: K, options?: AssetLoadOptions): Promise<Result<AssetHandle<K>, RuntimeAssetError>> /* +1 overload */; create<P, K>(kind: AssetKind<P, K>, input: P): Result<AssetHandle<K, P>, AssetError | MaterialError> /* +2 overloads */; release(handle: number): Result<void, AssetError>; instantiate(handle: AssetHandle<'scene'>, world: World, parent?: EntityHandle): Result<EntityHandle, SceneInstantiateError>; read<K, P>(handle: AssetHandle<K, P>): Result<P, AssetError>; update<K, P>(handle: AssetHandle<K, P>, patch: Partial<Omit<P extends ParticleEffectAsset ? ParticleEffectInput : P, 'kind'>>): Result<void, AssetError | MaterialError>; replace<K, P>(handle: AssetHandle<K, P>, input: P extends ParticleEffectAsset ? ParticleEffectInput : P): Result<void, AssetError | MaterialError>; writeRange(handle: AssetHandle<'mesh'>, range: MeshRange | MeshRange[]): Result<void, AssetError> /* +2 overloads */; copy<K, P>(handle: AssetHandle<K, P>): Result<AssetHandle<K, P>, AssetError>; ... }`
+- `type MeshRange = | {attribute: Exclude<keyof VertexAttributeMap, 'skinIndex'>; first: number; values: Float32Array } | {attribute: 'skinIndex'; first: number; values: Uint16Array } | {first: number; indices: Uint16Array | Uint32Array } | {first: number; vertices: Float32Array }`
 
 ## `@forgeax/engine/animation`
 - `AnimationPlayer { clips: array<asset<animation-clip>>; times: array<f64>; speeds: array<f32>; looping: bool = true; ... }` component

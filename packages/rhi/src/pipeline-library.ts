@@ -55,11 +55,36 @@ export interface PipelineLibraryInspection {
     /** Cumulative prepare wall time, including failed attempts; not summed GPU pass time. */
     readonly elapsedMs: number;
   };
+  /**
+   * Non-blocking lane started after renderer readiness. Each completed entry is
+   * a library hit immediately; a failed entry compiles on first use as before.
+   */
+  readonly backgroundWarmup: {
+    readonly requested: number;
+    readonly completed: number;
+    readonly failed: number;
+    /** Cumulative background prepare wall time, including failed attempts. */
+    readonly elapsedMs: number;
+    readonly state: 'idle' | 'running' | 'done' | 'failed';
+  };
 }
 
-/** One physical device owns its library; initialization awaits prepare before drawing. */
+export interface PipelineLibraryPrepareOptions {
+  /** Outstanding native compilations: background 1..4, blocking 1..16; backend default otherwise. */
+  readonly concurrency?: number;
+  /** Account the request on the background lane instead of the blocking startup warmup. */
+  readonly background?: boolean;
+}
+
+/**
+ * One physical device owns its library; initialization awaits the startup
+ * prepare before drawing, and a background prepare may run after readiness.
+ */
 export interface PipelineLibrary {
   inspect(): PipelineLibraryInspection;
   export(): Result<PipelineLibraryManifest, RhiError>;
-  prepare(manifest: PipelineLibraryManifest): Promise<Result<PipelineLibraryInspection, RhiError>>;
+  prepare(
+    manifest: PipelineLibraryManifest,
+    options?: PipelineLibraryPrepareOptions,
+  ): Promise<Result<PipelineLibraryInspection, RhiError>>;
 }

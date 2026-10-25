@@ -94,7 +94,7 @@ export function createPointsLinesRecordPlan(
   const visible = snapshot.visible && primitiveCount > 0;
   const conservativeMargin =
     snapshot.style?.kind === 'points'
-      ? snapshot.style.sizePx * 0.5
+      ? snapshot.style.size * 0.5
       : (snapshot.style?.width ?? 0) * 2;
   return {
     lane: contract.lane,

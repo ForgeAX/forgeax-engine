@@ -27,7 +27,9 @@ describe('vite-plugin-pack public type surface', () => {
       | 'runtimeBinding'
       | 'ddc'
     >();
-    expectTypeOf<keyof PluginPackDdcOptions>().toEqualTypeOf<'buildCacheRoot' | 'projectDdcRoot'>();
+    expectTypeOf<keyof PluginPackDdcOptions>().toEqualTypeOf<
+      'buildCacheRoot' | 'projectDdcRoot' | 'identityRoot'
+    >();
     expectTypeOf<AssetHostRefreshPolicy>().toBeFunction();
   });
 });

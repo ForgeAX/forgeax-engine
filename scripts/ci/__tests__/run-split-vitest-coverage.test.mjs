@@ -112,8 +112,8 @@ test('real generated-game coverage drains compiler children before starting the 
   });
   assert.equal(
     browserRuns,
-    3,
-    'both native Renderer files and the Vite process owner remain isolated',
+    4,
+    'both native Renderer files, the Vite process owner and project play remain isolated',
   );
   assert.equal(active.size, 0);
 });
@@ -134,6 +134,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     'packages/vite-plugin-shader/src/__tests__/vite-plugin-shader.unit.test.ts',
     'packages/vite-plugin-shader/src/__tests__/public-surface.unit.test.ts',
     'packages/devkit/src/__tests__/live-dev-process.integration.test.ts',
+    'packages/devkit/src/__tests__/project-play.e2e.test.ts',
     'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
     'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
   ]) {
@@ -163,7 +164,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 7);
+  assert.equal(exclusiveRuns, 8);
 });
 
 test('cold large-scene contracts execute once without competing coverage children', () => {
@@ -307,8 +308,9 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
   ];
   const liveProcessFile = 'packages/devkit/src/__tests__/live-dev-process.integration.test.ts';
+  const playFile = 'packages/devkit/src/__tests__/project-play.e2e.test.ts';
   const sceneFile = 'packages/scene/src/__tests__/flat-propagation.contract.test.ts';
-  const allFiles = [sceneFile, ...nativeFiles, liveProcessFile];
+  const allFiles = [sceneFile, ...nativeFiles, liveProcessFile, playFile];
   const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-devkit'], 8);
   assert.deepEqual(
     groups.map(({ projects, files, excludes, gpuLease }) => ({
@@ -336,6 +338,12 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       {
         projects: ['@forgeax/engine-devkit'],
         files: [liveProcessFile],
+        excludes: [],
+        gpuLease: false,
+      },
+      {
+        projects: ['@forgeax/engine-devkit'],
+        files: [playFile],
         excludes: [],
         gpuLease: false,
       },

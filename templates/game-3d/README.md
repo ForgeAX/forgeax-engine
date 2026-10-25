@@ -273,6 +273,7 @@ pnpm test
 pnpm exec forgeax project build --json
 pnpm typecheck
 pnpm exec forgeax project preview --json
+pnpm exec forgeax project play scripts/playthrough.mjs --require-ui --json
 pnpm exec forgeax project package --output release/game-3d-web.zip --json
 ```
 

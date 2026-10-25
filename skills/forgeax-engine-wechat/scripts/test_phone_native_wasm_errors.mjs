@@ -81,6 +81,34 @@ test('skips unrelated WASM without changing its promise and preserves original i
   observer.release();
 });
 
+test('optional module progress retains unrelated Promise identity and native rejection', async () => {
+  const events = [], value = result();
+  const promise = Promise.resolve(value), owner = { instantiate: () => promise };
+  const observer = observeNativeWasmErrors(owner, { onInstantiate: (path, stage) => events.push([path, stage]) });
+  assert.equal(owner.instantiate('basis.wasm', {}), promise);
+  assert.equal(await promise, value);
+  await Promise.resolve();
+  assert.deepEqual(events, [['basis.wasm', 'load'], ['basis.wasm', 'done']]);
+  observer.release();
+  const error = new Error('native failure'), failed = Promise.reject(error);
+  const secondOwner = { instantiate: () => failed };
+  const second = observeNativeWasmErrors(secondOwner, { onInstantiate() { throw Error('observer failure'); } });
+  assert.equal(secondOwner.instantiate('physics.wasm', {}), failed);
+  await assert.rejects(failed, value => value === error);
+  second.release();
+});
+
+test('a retired module progress observer ignores late native completion', async () => {
+  let complete;
+  const events = [], promise = new Promise(resolve => { complete = resolve; });
+  const owner = { instantiate: () => promise };
+  const observer = observeNativeWasmErrors(owner, { onInstantiate: (_path, stage) => events.push(stage) });
+  assert.equal(owner.instantiate('basis.wasm', {}), promise);
+  observer.release(); complete(result());
+  await promise; await Promise.resolve();
+  assert.deepEqual(events, ['load']);
+});
+
 test('reports unavailable factory descriptors and never invokes an arbitrary factory accessor', () => {
   let getters = 0;
   const accessor = Object.defineProperty({}, 'instantiate', { get() { getters++; throw new Error('do not call'); } });

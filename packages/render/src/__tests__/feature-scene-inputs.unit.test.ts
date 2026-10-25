@@ -185,8 +185,7 @@ describe('Renderer scene inputs', () => {
     expect(nextDestroyed).not.toHaveBeenCalled();
     f.owner.begin(3);
     f.owner.complete(true);
-    await Promise.resolve();
-    expect(nextDestroyed).toHaveBeenCalled();
+    await vi.waitFor(() => expect(nextDestroyed).toHaveBeenCalled());
     f.owner.dispose();
   });
 

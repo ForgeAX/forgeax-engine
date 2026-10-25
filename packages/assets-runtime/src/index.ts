@@ -1,3 +1,4 @@
+export type { MeshGeometry } from './mesh-geometry.js';
 export type { TextureRegion } from './runtime-texture';
 // Runtime assets: one owner for identity, content, revisions and lifetime.
 

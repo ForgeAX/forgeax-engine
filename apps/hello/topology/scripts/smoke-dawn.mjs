@@ -248,7 +248,7 @@ if (FALSIFY !== 'degenerate') {
     {
       component: Points,
       data: {
-        sizePx: 16,
+        size: 16,
         shape: FALSIFY === 'point-square' ? PointShapeValue.square : PointShapeValue.circle,
       },
     },
@@ -339,7 +339,7 @@ if (FALSIFY === '') {
   if (meshPayload.indices !== undefined) failures.push('normal output unexpectedly indexed');
   if (surfaceEdgeCount !== 12) failures.push(`boundary edge count=${surfaceEdgeCount} expected 12`);
   if (pointsLinesInspection.length !== 2) failures.push(`points-lines inspection count=${pointsLinesInspection.length} expected 2`);
-  if (pointInspection?.style?.kind !== 'points' || pointInspection.style.sizePx !== 16) {
+  if (pointInspection?.style?.kind !== 'points' || pointInspection.style.size !== 16) {
     failures.push('Points authoring did not remain resident in inspection');
   }
   if (lineInspection?.style?.kind !== 'lines' || lineInspection.style.width !== 4) {

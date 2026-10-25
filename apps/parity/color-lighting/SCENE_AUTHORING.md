@@ -17,7 +17,8 @@ five-tap PCF and no cascade fade.
 
 The default has no post-processing. The selector adds ACES + FXAA, then Bloom
 before ACES. Bloom strength is 1, threshold 1, radius 0 and smooth width 0.01.
-Threshold 1 is an explicit scene choice, not the default threshold 0.
+Threshold 1 matches the engine default; strength 1 is an explicit scene choice
+(the engine default intensity is 0.5).
 The shadow control toggles reception while preserving casters in both engines.
 Camera switching, resizing and disposal/recreation are included.
 

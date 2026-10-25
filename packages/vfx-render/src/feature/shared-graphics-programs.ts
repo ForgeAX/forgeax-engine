@@ -68,6 +68,17 @@ function programKey(program: Descriptor, state: string | undefined): string {
   ]);
 }
 
+/**
+ * Content key of one producer-owned descriptor, identical to the key that
+ * names its shared declaration below; undefined when its render state is not
+ * plain data (such a descriptor keeps its private declaration).
+ */
+export function vfxGraphicsProgramKey(program: Descriptor): string | undefined {
+  const state = program.renderState;
+  if (state !== undefined && !plainData(state)) return undefined;
+  return programKey(program, state === undefined ? undefined : JSON.stringify(state));
+}
+
 /** The stock native producer has finished every current source read. Collapse
  * identical pipeline declarations in this scope before Host prepares them.
  * Accessor-bearing states keep the complete original normalization order.

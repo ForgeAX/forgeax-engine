@@ -15,7 +15,7 @@ Reach a first correct edit with this short path, not by reading large skills up 
 
 1. Signatures and import paths: `references/api-index.md` before
    searching `node_modules` READMEs or `.d.ts` files.
-2. Recipes for an `empty` project (character, camera, physics boxes, lights, VFX burst,
+2. Recipes for an `empty` project (character, camera, physics boxes, lights, VFX burst, particles,
    HUD, playthrough state): copy from `references/gameplay-cookbook.md`.
 3. Commands: the **Quick contract** at the top of
    [`forgeax-engine-cli`](../forgeax-engine-cli/SKILL.md); camera, lights and post
@@ -25,11 +25,34 @@ Reach a first correct edit with this short path, not by reading large skills up 
    relevant section. Project layout, assets and setup live in the
    [game project guide](references/game-project-guide.md); acceptance, release and
    blocked checks in the [game delivery guide](references/game-delivery.md).
+5. A Three.js effect (fog, bloom, lines, instancing, reflections, canvas textures, solids):
+   look up its native equivalent and the known gaps in
+   [`references/three-equivalents.md`](references/three-equivalents.md) before
+   simplifying it or building it from boxes.
 
 Large skills (`forgeax-engine-cli`, `forgeax-engine-render-pipeline`,
 `forgeax-engine-debug`, `forgeax-engine-material`, `forgeax-engine-app`) are references:
 search them for the needed heading instead of reading them whole, and do not re-read a
 file already in context.
+
+## Visual self-review
+
+For look-dev use `forgeax dev look --hide-ui true --json` after each lighting, material,
+fog or camera edit (seconds against a running `dev start --headless true`; it waits for
+your edit and reports luma, saturation, contrast, clipping and subject separation with
+findings); use `project play` only for gameplay acceptance. After the first look, and
+again before delivery, open the PNG and answer each question in one sentence; fix every
+"no", then look again:
+
+1. Brightness: does the frame read as the brief's time of day (daylight bright, night dark
+   with lit pools), with no blown-out white or crushed black areas?
+2. Saturation: are colours as vivid as the brief implies? A pale or grey frame usually
+   means fog over the subject, a cool `Skylight` fill or AgX (cookbook 0).
+3. Contrast: does the subject stand out from its background? A flat slab or empty void
+   behind it needs a `GradientSky` (cookbook 0 presets), `SkyboxBackground` or set dressing.
+4. Mood: do palette and lighting match the brief's words (warm, eerie, neon, cosy)?
+5. Framing: does the subject fill about half the frame, with nothing clipping the near
+   plane or blocking the camera, and the HUD off the subject?
 
 ## First five minutes: understand before authoring
 
@@ -63,7 +86,7 @@ Defer: <available capabilities not needed now>
 | Scene, imported files, code-first packs, GUID loading | `forgeax-engine-assets`; discover operations through `forgeax-engine-cli` | `asset verify`, build catalog, runtime load by GUID |
 | PBR, textures, custom WGSL | `forgeax-engine-material`, then `forgeax-engine-shader` | Shader check, material readiness, browser pixels |
 | Lighting, shadows, sky, fog, AA, post effects, custom passes | `forgeax-engine-render-pipeline` | Requested pipeline active and real GPU/browser evidence |
-| GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Cooked effect, runtime playback, browser pixels |
+| Particles: rain, snow, sparks, dust, fire (`Points` + cookbook 12); GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Path choice; cooked effect, runtime playback, browser pixels |
 | Bodies, colliders, character motion | `forgeax-engine-physics` | Fixed-step/collision test plus playable behavior |
 | BGM, SFX, spatial audio | `forgeax-engine-audio` | Host playback, intent/cleanup evidence, user gesture handling |
 | Black frame, wrong binding, GPU divergence | `forgeax-engine-rhi-debug`; use `forgeax-engine-debug` for symptom routing | One capture artifact, inspect/replay or paired differential |

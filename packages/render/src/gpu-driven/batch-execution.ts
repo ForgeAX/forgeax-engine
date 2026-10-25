@@ -153,7 +153,7 @@ export function prepareBatchExecution(
     ...(pass.fragmentEntry === undefined ? {} : { fragmentEntry: pass.fragmentEntry }),
   };
   const sourceInputs = geometry.receipt.vertexInputs;
-  // UV aliases may reuse existing bytes, but cannot invent a zero-UV region in an uploaded mesh.
+  // UV aliases reuse bytes inside the uploaded stride (Geometry owns the alias choice).
   const layout =
     geometry.layout === undefined ||
     artifact.uvSetCount === undefined ||

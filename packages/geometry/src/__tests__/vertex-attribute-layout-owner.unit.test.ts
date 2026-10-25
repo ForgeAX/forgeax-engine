@@ -273,6 +273,23 @@ describe('vertex attribute layout owner', () => {
     ]);
   });
 
+  it('aliases UV sets of a UV-less mesh inside its uploaded stride', () => {
+    const map = { position: makeBuffer(), normal: makeBuffer() };
+    const fromMap = deriveVertexBufferLayout(map, { shaderUvSetCount: 2 });
+    const fromProjection = deriveVertexBufferLayoutFromProjection(
+      deriveVertexLayoutProjection(map),
+      { shaderUvSetCount: 2 },
+    );
+    expect(fromMap).toEqual(fromProjection);
+    // The stride must equal the 24-byte uploaded vertex; inventing a trailing
+    // zero-UV region would make every later vertex read the wrong bytes.
+    expect(fromMap[0]?.arrayStride).toBe(24);
+    expect(fromMap[0]?.attributes.filter((entry) => entry.shaderLocation === 2)).toEqual([
+      { shaderLocation: 2, offset: 0, format: 'float32x2' },
+    ]);
+    expect(deriveVertexBufferLayout({}, { shaderUvSetCount: 2 })).toEqual([]);
+  });
+
   it('aliases sparse UV holes without duplicating authored shader locations', () => {
     const map = { position: makeBuffer(), uv: makeBuffer(), uv7: makeBuffer() };
     const projection = deriveVertexLayoutProjection(map);

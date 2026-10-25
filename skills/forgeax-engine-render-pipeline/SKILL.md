@@ -16,14 +16,16 @@ Import components from `@forgeax/engine/render` and `Transform` from
 | Camera | `Transform` + `Camera { fov }` (vertical radians; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
 | Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | At most one: the first is used and others are dropped with a `render-system-multi-light` warning; no `Transform` needed. `Atmosphere` needs exactly one |
 | Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
-| Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL) | With no light and no Skylight, Standard surfaces render black |
+| Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
+| Sky | `GradientSky { zenith, horizon, ground }` (display-referred like Three `scene.background`; disc toward the `DirectionalLight`, `sunSize` radians; `Fog` covers its horizon by `fogBlend`; `toneMapped: true` for HDR) | One per World; replaces `clearColor`; conflicts with `Atmosphere` / `SkyboxBackground`. [Contract](../../packages/render/README.md#gradient-sky-background) |
 | Mesh | `Transform` + `MeshFilter { assetHandle }` + `MeshRenderer { materials: [handle] }` | Handles come from `assets.load(guid, 'mesh' \| 'material')` |
 
 - Materials: build in a Pack with `Materials.standard({ baseColor, roughness, metallic,
   emissive, emissiveIntensity })` or `Materials.unlit(...)`; CSS/hex strings are sRGB,
   numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
-- Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC`,
-  `TONEMAP_AGX` or another constant with `exposure` (1). `antialias`
+- Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC` with
+  `exposure` about 1.1 for games (`TONEMAP_AGX` is the desaturated base curve, only for a
+  muted grade; presets in the SDK gameplay cookbook §0). `antialias`
   (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
   are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
 - Shadows: set `castShadow: true` on the light, then choose
@@ -72,7 +74,9 @@ output transform; it does not enable or disable the medium.
 
 ## Fog and translucency
 
-`Fog` fogs the opaque scene in place (`analytic-fog`, before transmission and
+`Fog.mode` selects the law: `exp` (default, density and height falloff, no start
+distance), `exp2` (Three.js `FogExp2`) or `linear` (`near`/`far`, Three.js `Fog`);
+`exp2` and `linear` use view depth, so Three.js values transfer. `Fog` fogs the opaque scene in place (`analytic-fog`, before transmission and
 translucent draws); every blended writer fogs itself at its own depth through
 `translucent_fog` and the View copy selected by its blend composition. Do not add
 a post-translucency fog pass or composite particles before fog. The
@@ -145,9 +149,10 @@ picking, so cast interaction rays from the mono Camera. Contract:
 Enable `DirectionalLight.castShadow: true` before choosing a shadow filter;
 bare lights default off. DirectionalLight.shadowFilter selects the receiver.
 It is an ECS enum; assign
-DirectionalShadowFilterValue.pcfVogel, .pcf1, .pcf3, .pcf5, .pcssMedium, or
-.pcssHigh numeric constants, not string labels. Valid labels are
-pcfVogel, pcf1, pcf3, pcf5, pcssMedium, pcssHigh; default is pcfVogel. Do not create
+DirectionalShadowFilterValue.pcfVogel, .pcf1, .pcf3, .pcf5, .pcfSoft, .variance,
+.pcssMedium, or .pcssHigh numeric constants, not string labels. Valid labels are
+pcfVogel, pcf1, pcf3, pcf5, pcfSoft (Three.js PCFSoftShadowMap), variance (Three.js
+VSMShadowMap), pcssMedium, pcssHigh; default is pcfVogel. Do not create
 numeric or compatibility aliases. PCSS
 shadowAngularRadius is in radians, defaults to 0.00465, and accepts
 [0.0001, 0.05]. maxPenumbraTexels is in texels, defaults to 32, and must be
@@ -170,12 +175,15 @@ import) instead of re-rasterizing the mesh into every cascade. It needs
 See Capsule character shadows in the render README.
 
 Per-entity opt-out is `ShadowParticipation { cast, receive }` (Bevy
-`NotShadowCaster` / `NotShadowReceiver`; absent means both true). `cast: false`
+`NotShadowCaster` / `NotShadowReceiver`; absent means both true, except that a
+mesh whose every material blends casts nothing unless the component is authored). `cast: false`
 leaves every shadow map, and `receive: false` skips all shadow sampling on that
 surface. The WebGL2 fallback always receives. `PointLightShadow` bias uses
 Bevy units: `depthBias` in world meters (default 0.08), `normalBias` in cube
 texels (default 0.6). Point sampling is hardware 2x2 and needs
-`forgeaxShader({ engineEntries: { pointShadows: true } })`; without it
+`forgeaxShader({ engineEntries: { pointShadows: true } })`; a DevKit game project
+(`forgeax dev` / `project play` / `project build`) sets
+`package.json#forgeax.pointShadows: true` instead. Without it
 `renderer.inspect().pointShadow.status` is `unavailable`, never `ready`. Directional and
 spot bias keep normalized depth plus world-meter normal offset.
 
@@ -787,8 +795,9 @@ search, relative threshold 0.063 and subpixel blend 1. The public
 [comparison page](../../apps/parity/color-lighting/render-defaults.html) and its
 verification script use production shaders and the pinned Three dependency.
 
-Bloom is opt-in and independent of tone mapping. Defaults follow WebGPU
-BloomNode: intensity 1, threshold 0, smooth width 0.01, radius 0. Use
+Bloom is opt-in and independent of tone mapping. Defaults bloom only
+highlights: threshold 1, intensity 0.5, smooth width 0.01, radius 0 (WebGPU
+BloomNode uses threshold 0 and intensity 1, which blooms the whole frame). Use
 `bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
 The five Gaussian levels and their weighted composite share one Renderer graph.
 SSR is opt-in, full internal resolution, maxDistance 1, thickness 0.1 and

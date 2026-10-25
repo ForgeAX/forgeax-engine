@@ -1,10 +1,21 @@
 import { meshGeometryDraws } from '../gpu-driven/mesh-batches';
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { MeshFrame, MeshGeometry } from './mesh-frame';
+import {
+  GenerationalWeakMap,
+  identityOrdinal,
+  versionedGet,
+  versionedSet,
+} from './generational-weak-map';
+import type { MeshFrame } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
 
-// Pose-only source replacements share one weak instance table per Mesh version.
-const draws = new WeakMap<MeshGeometry, WeakMap<RenderableSnapshot, RenderableSnapshot>>();
+// Pose-only source replacements are new snapshots every frame. One generational
+// table names the Mesh version by ordinal, so neither a dead source nor an
+// obsolete Mesh version stays resident until a full collection.
+const draws = new GenerationalWeakMap<
+  RenderableSnapshot,
+  readonly { readonly version: number; readonly value: RenderableSnapshot }[]
+>();
 
 /**
  * The effective draw materials only, without a draw snapshot. Pose-only
@@ -30,13 +41,9 @@ export function meshDrawSnapshot(
   const mesh = meshes.get(source.worldId, source.assetHandle);
   if (mesh === undefined || source.terrain !== undefined || source.materialOverrides === undefined)
     return source;
-  let instances = draws.get(mesh);
-  if (instances === undefined) {
-    instances = new WeakMap();
-    draws.set(mesh, instances);
-  }
-  const cached = instances.get(source);
-  if (cached !== undefined) return cached;
+  const meshOrdinal = identityOrdinal(mesh);
+  const cached = versionedGet(draws, source, meshOrdinal);
+  if (cached !== undefined) return cached.value;
   const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
   const materials = effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
   const result: RenderableSnapshot = {
@@ -55,6 +62,6 @@ export function meshDrawSnapshot(
     ...(mesh.lods === undefined ? {} : { lods: mesh.lods }),
     ...(mesh.lodHysteresis === undefined ? {} : { lodHysteresis: mesh.lodHysteresis }),
   };
-  instances.set(source, result);
+  versionedSet(draws, source, { version: meshOrdinal, value: result });
   return result;
 }

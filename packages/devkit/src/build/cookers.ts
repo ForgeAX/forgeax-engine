@@ -294,15 +294,23 @@ export async function loadProjectCookers(
           : {}),
       }),
     );
+    const { pipelineLibrary, backgroundPipelineLibrary } = started.appOptions;
+    const precompute =
+      pipelineLibrary === undefined && backgroundPipelineLibrary === undefined
+        ? undefined
+        : (await import('./pipeline-library.js')).precomputePipelineLibrary;
     return {
       appOptions:
-        started.appOptions.pipelineLibrary === undefined
+        precompute === undefined
           ? started.appOptions
           : {
               ...started.appOptions,
-              pipelineLibrary: await (
-                await import('./pipeline-library.js')
-              ).precomputePipelineLibrary(started.appOptions.pipelineLibrary),
+              ...(pipelineLibrary === undefined
+                ? {}
+                : { pipelineLibrary: await precompute(pipelineLibrary) }),
+              ...(backgroundPipelineLibrary === undefined
+                ? {}
+                : { backgroundPipelineLibrary: await precompute(backgroundPipelineLibrary) }),
             },
       delivery: started.delivery,
       cookers: [...builtins, ...remote],

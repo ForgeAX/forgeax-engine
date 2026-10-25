@@ -112,6 +112,11 @@ test('four Dawn jobs cover every complete native group exactly once', () => {
     );
     assert.equal(lane.filter((id) => id.startsWith('ordinary-')).length, 1);
   }
+  assert.equal(
+    DAWN_GATE_SHARDS.findIndex((lane) => lane.includes('gi-5')),
+    1,
+    'the measured GI reservation belongs on the former overrun lane',
+  );
   assert.throws(() => selectDawnShard('0/4'), /outside/);
   assert.throws(() => selectDawnShard('1/3'), /outside/);
   assert.throws(() => selectDawnShard('1/8'), /outside/);

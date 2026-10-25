@@ -5,9 +5,14 @@ import { promisify } from 'node:util';
 import { deserialize, serialize } from 'node:v8';
 import { brotliCompress, brotliDecompress, constants } from 'node:zlib';
 import { DdcEntryStore, ddcOutputDigest, semanticDdcKey } from '@forgeax/engine-ddc';
-import { withMaterialPublicationGeneration } from '@forgeax/engine-pack/material-cook';
+import {
+  type CookedMaterialRecord,
+  rebindMaterialPublicationGeneration,
+  withMaterialPublicationGeneration,
+} from '@forgeax/engine-pack/material-cook';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { AssetGuid, isScriptablePackAssetKind, PackageId } from '@forgeax/engine-pack/source';
+import { engineProducerVersion } from './engine-version.js';
 import type {
   ScriptablePackBuildProduct,
   ScriptablePackBuildProductCache,
@@ -323,9 +328,16 @@ export async function createScriptablePackProductCache(options: {
   // The material record retains a publication fence, but its compiled programs
   // are immutable. Normalize only that fence in the DDC body, then bind the
   // current generation after a verified hit; generation never enters the key.
+  // A write validates each record before it is stored; a hit's body passed the
+  // DDC integrity digests, so it rebinds the stored records without validating
+  // their program sets again.
   const bindGeneration = (
     product: ScriptablePackBuildProduct,
     generation: number,
+    rebind: (
+      cooked: unknown,
+      generation: number,
+    ) => ReturnType<typeof withMaterialPublicationGeneration> = withMaterialPublicationGeneration,
   ): ScriptablePackBuildProduct | undefined => {
     const assets = [];
     for (const asset of product.product.assets) {
@@ -338,7 +350,7 @@ export async function createScriptablePackProductCache(options: {
         assets.push(asset);
         continue;
       }
-      const rebound = withMaterialPublicationGeneration(payload.cooked, generation);
+      const rebound = rebind(payload.cooked, generation);
       if (!rebound.ok) return undefined;
       assets.push({ ...asset, payload: { ...payload, cooked: rebound.value } });
     }
@@ -362,6 +374,7 @@ export async function createScriptablePackProductCache(options: {
           values: subject.values ?? null,
           inheritedValues: subject.inheritedValues ?? null,
           outputVersions: options.outputVersions,
+          engine: engineProducerVersion(),
           ...(schema === KINDS_SCHEMA
             ? {}
             : {
@@ -416,7 +429,15 @@ export async function createScriptablePackProductCache(options: {
             (JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
               nativeFreeProduct(product) === dependencies.nativeFree))
         ) {
-          const rebound = bindGeneration(product, subject.publicationGeneration ?? 1);
+          // Only this producer's format was validated before it was stored.
+          const rebound = bindGeneration(
+            product,
+            subject.publicationGeneration ?? 1,
+            schema === CACHE_SCHEMA
+              ? (cooked, at) =>
+                  rebindMaterialPublicationGeneration(cooked as CookedMaterialRecord, at)
+              : withMaterialPublicationGeneration,
+          );
           return rebound === undefined
             ? { reason: 'generation-invalid', key }
             : { product: rebound, reason: 'hit', key };

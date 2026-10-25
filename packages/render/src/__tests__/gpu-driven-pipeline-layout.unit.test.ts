@@ -136,8 +136,9 @@ describe('GPU-driven pipeline vertex layout ownership', () => {
       expect(call?.[13]).toBe(positionOnly);
       expect(call?.[14]).toBe('immediate');
       expect(call?.[15]).toBe('gpu-driven-pbr');
+      // UV-less geometry aliases its UV sets inside the uploaded 12-byte stride.
       expect(owner.createPipeline.mock.calls[0]?.[0].vertex.buffers?.[0]).toMatchObject({
-        arrayStride: 20,
+        arrayStride: 12,
       });
       expect(vi.mocked(geometry.deriveVertexBufferLayoutFromProjection).mock.calls.length).toBe(0);
     } finally {
@@ -150,9 +151,9 @@ describe('GPU-driven pipeline vertex layout ownership', () => {
     {
       map: { position: empty },
       uvCount: 3,
-      stride: 20,
+      stride: 12,
       locations: [0, 2, 6, 7],
-      offsets: [0, 12, 12, 12],
+      offsets: [0, 0, 0, 0],
     },
     {
       map: { position: empty, uv: empty },

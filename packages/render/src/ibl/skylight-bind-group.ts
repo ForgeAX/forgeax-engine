@@ -30,6 +30,31 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 // Every 1x1 fallback upload pads its texel to this row stride per layer.
 export const FALLBACK_BYTES_PER_ROW = 256;
 
+/** `SkylightUniforms` in standard-lighting.wgsl: five vec4 lanes plus the ground lane. */
+export const SKYLIGHT_UNIFORM_BYTES = 96;
+
+/**
+ * The `ground` lane of `SkylightUniforms`: xyz is the downward diffuse scale
+ * (`groundColor * intensity`, matching the sky's `color * intensity`), w = 1
+ * enables the hemisphere lerp. An absent or all-zero ground color, or an
+ * unavailable diffuse source, writes zeros so shading stays uniform.
+ */
+export function skylightGroundLane(
+  skylight: { readonly groundColor?: readonly number[]; readonly intensity: number } | undefined,
+  available: boolean,
+): [number, number, number, number] {
+  const ground = skylight?.groundColor;
+  if (skylight === undefined || !available || ground === undefined || !ground.some((v) => v !== 0))
+    return [0, 0, 0, 0];
+  const { intensity } = skylight;
+  return [
+    (ground[0] ?? 0) * intensity,
+    (ground[1] ?? 0) * intensity,
+    (ground[2] ?? 0) * intensity,
+    1,
+  ];
+}
+
 type TexelFallbackDescriptor = TextureDescriptor & {
   readonly size: { readonly width: 1; readonly height: 1; readonly depthOrArrayLayers: number };
 };
@@ -456,11 +481,11 @@ export function createSkylightFallback(
   if (!brdfLutViewResult.ok) throw brdfLutViewResult.error;
   const brdfLutView = brdfLutViewResult.value;
 
-  // The environment payload retains probe diffuse color/rotation and an
-  // independent constant diffuse-irradiance lane.
+  // The environment payload retains probe diffuse color/rotation, an
+  // independent constant diffuse-irradiance lane and the hemisphere ground lane.
   const intensityBufResult = device.createBuffer({
     label: 'skylight-fallback-intensity',
-    size: 80,
+    size: SKYLIGHT_UNIFORM_BYTES,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
   });
   if (!intensityBufResult.ok) throw intensityBufResult.error;

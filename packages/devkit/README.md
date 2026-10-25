@@ -134,6 +134,12 @@ production Hosts use this policy. This does not change startup or GPU recovery d
 `package.json#forgeax.startupTimeoutMs` overrides that wait for a project; set
 it to `null` to wait until startup completes or the backend process exits.
 
+`package.json#forgeax.pointShadows: true` builds the Standard shaders with the
+point-shadow cube-array lane in dev, play and production builds, so
+`PointLightShadow` casters render (a custom Vite build passes
+`forgeaxShader({ engineEntries: { pointShadows: true } })`). It is off by default;
+any other non-boolean value fails as `package-manifest-invalid`.
+
 Live dev waits for source preparation within the same 30-minute default as its
 server Host, then uses the generated development App's 120-second first-frame
 budget. The project startup override also reaches these waits; `null` disables
@@ -246,6 +252,7 @@ forgeax project test
 forgeax dev start
 forgeax project build
 forgeax project capture --backend auto --require-ui --output artifacts/capture/game-ui.png --json
+forgeax project play scripts/playthrough.mjs --json
 forgeax project preview [--dist directory]
 forgeax project package [--format web-zip|single-html] [--output release/game-web.zip] [--compress=false]
 forgeax help --tree --json
@@ -325,6 +332,18 @@ Host-owned `ExecutionReport`, including Engine health, frame credits and Render
 Worker completion. It samples the existing report without scheduling an eval in
 the Engine Worker, so stalled frame progress remains directly diagnosable.
 
+The App bridge belongs to the page the owner launched. The owner mints a
+token per opened page and passes it only in that page's URL; `dev status.url`
+omits it. Any other page served by the same Vite (a human tab, your own
+Playwright script opening `dev status.url`) runs the game normally, but the
+owner refuses its bridge connection with close code `4403`
+(`live-bridge-not-owner`); that page logs one warning and does not reconnect.
+If the owner page itself is reloaded, its newest instance takes over: the
+displaced socket is closed with `4409` (`live-bridge-displaced`) and its pending
+calls fail at once with `live-app-bridge-disconnected`. `dev reload` mints a new
+token, so pages from an earlier generation are refused. `dev` commands therefore
+keep targeting the owner page while other pages play.
+
 ```bash
 forgeax dev start --headless false --json
 forgeax dev find --name Player --json
@@ -368,6 +387,17 @@ Canceling its wait does not stop already-running code; reload/stop destroys
 its execution environment. Camera control is temporary: set/focus acquires
 an observation camera, get reports `control`, and release returns control to
 the game. These operations do not save scene edits.
+
+`dev look` is the look-dev loop over the same owner page. Its route admits like
+`capture` (it waits for an edited revision), waits for the startup overlay and two
+fresh submissions, and captures each `--viewports` x `--cameras` view, restoring the
+viewport and releasing the observation camera afterwards. `look-report.ts` computes
+the per-view `metrics` and heuristic `findings` from the composed PNG; the owner keeps
+one retained browser across reloads (each runtime page gets a fresh context, because
+development modules are bound to their program session) and serves its project
+children from a stable `.forgeax/generated/dev` root with a `.forgeax/dev/vite`
+dependency cache, so a reload neither relaunches Chromium nor re-optimizes
+dependencies.
 
 `dev capture` returns PNG and JSON report references with absolute paths and
 digests. Default artifacts live in the user's data directory and survive
@@ -508,7 +538,10 @@ Host while retaining the same `forge.json` engine/frontend roots, producer
 inventory, cooked assets and shader variants. The output opens directly as a
 mini-game project in WeChat Developer Tools. Its main package loads one `payload`
 subpackage; that package owns all CommonJS chunks and losslessly Brotli-compressed
-resources. The Host uses `WXWebAssembly` and package filesystem decompression, and
+resources. It reuses Player Asset Bundles with identity-encoded entries and plain
+documents (`preparePlayerDist` options `compressEntries: false` and
+`compressDocuments: false`), then applies Brotli across each whole file. The Host
+uses `WXWebAssembly` and package filesystem decompression, and
 the build rejects an actual deployment larger than 4 MiB main / 20 MiB total.
 The total budget follows the official preview service's observed 20 MB limit;
 the broader code-package documentation does not establish preview admission.
@@ -552,6 +585,11 @@ App errors leave the game running. The first terminal cause survives cleanup,
 input is disabled, and Reload retires the current startup lifecycle once.
 Native input transport failures, including a rejected keyboard request, keep the
 scene and field value available for retry and log their structured cause.
+Before Host assembly, native startup inspection includes `packageLoad` from the
+actual `LoadSubpackageTask`: progress availability, event count/time, percentage
+and written/expected bytes. Invalid fields and observer failures remain explicit;
+late progress after the loading phase cannot mutate the retained facts. This
+observes the existing native task and changes no download, timeout or retry policy.
 Earlier initialization failures
 retire partial resources and show a native modal with the most specific available
 cause message, bounded to 160 characters, followed by Reload/reopen guidance.
@@ -563,6 +601,13 @@ cancelable; a live document retires after its startup/game/input consumers, and
 late canceled initialization cannot reactivate the Host. Native WASM finalization
 failures remain terminal in that realm and require closing and reopening the game;
 Reload preserves their original cause instead of replacing it with a lease error.
+
+The native Host's same inspection owner exposes `plugins()` from its actual
+Cordis registry through `inspectPluginFiber`: at most 128 Fiber identities,
+states, asset origins and missing services, with explicit truncation. This is an
+on-demand read of existing owners; it adds no plugin lifecycle or event ledger.
+Correlate a loading Fiber with the startup diagnostic's pending package reads
+before assigning a failure to Scene, assets or rendering.
 
 The same ordinary inspection entry offers `__forgeaxGameInspection.ui(request)`
 through the [UI-owned live inspection contract](../ui/README.md). It reads the
@@ -686,7 +731,7 @@ A build root is a native Plugin installed in an isolated Node process. It regist
 Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
 object projected into generated dev/build hosts before `createApp`. It accepts
 the public `dynamicGeometryMeshBudgetBytes`, `assetBudgetBytes`, `standardProfile`,
-`pipelineLibrary`, and `time` options. DevKit rejects unknown fields, accessors and non-data values;
+`pipelineLibrary`, `backgroundPipelineLibrary`, and `time` options. DevKit rejects unknown fields, accessors and non-data values;
 Render's shared validators reject invalid byte counts and profiles before host
 preparation, while Engine World owns time-policy validation. Missing configuration
 keeps App's 64 MiB mesh-budget and 4 GiB asset-content-budget defaults. An explicit
@@ -1018,18 +1063,19 @@ unsupported.
 
 #### Player Asset Bundles
 
-Both package formats also replace per-artifact files with Asset Bundles. A Pack is the
+Both package formats and WeChat replace per-artifact files with Asset Bundles. A Pack is the
 smallest delivery unit: all of its verified, non-streaming artifacts land in exactly one
 Bundle, and a Bundle carries one or more complete Packs. Bytes used by Packs in different
 Bundles are stored once in a shared Bundle. Streaming artifacts (`delivery: 'stream'`)
-keep their own files and URLs. The build `dist/` keeps one file per artifact.
+keep their own files and URLs. Browser build `dist/` keeps one file per artifact;
+WeChat emits Bundles directly into its native payload.
 
 | Rule | Behavior |
 |:--|:--|
 | Named Bundle | A build root provides `ctx.devkitDelivery = { bundles: { dust2: ['assets/maps/dust2/'] } }`; every Pack whose source path starts with a listed prefix ships in that Bundle. |
 | Automatic Bundle | Unmatched Packs are grouped by stable `packageId`-path hash bits until each Bundle holds at most 8 MiB; a larger Pack ships alone and is never split. |
 | Conflict | A Pack matched by two Bundles, or a prefix matching no published Pack, fails packaging. |
-| Entry encoding | Each entry is zstd-compressed when that saves at least 10%; descriptor integrity still covers the decoded bytes. |
+| Entry encoding | By default, each entry is zstd-compressed when that saves at least 10%; descriptor integrity still covers the decoded bytes. `compressEntries: false` keeps identity entries for a whole-file transport such as WeChat Brotli. |
 
 The Bundle file is `FXBUNDL1`, a u32 entry count, u32 entry lengths, then the entries
 (`@forgeax/engine-pack/bundle`). Rewritten descriptors keep their GUID, integrity and
@@ -1139,7 +1185,12 @@ backend, and fallback reason.
 
 The witness screenshot temporarily hides every non-canvas element, so a visible HUD cannot
 disguise a black 3D frame. Readiness and settling sample only that Canvas witness;
-the final capture composes the complete page once, then refreshes runtime diagnostics.
+the final capture composes the complete page once, witnesses the canvas again (a canvas that went
+flat after the first witness is reported as not rendered), then refreshes runtime diagnostics.
+The runtime witness carries the generated development host's latest renderer error
+(`rendererError`: `code`, `message`, `frame`, `framesAgo`, `count`); one at most 60 completed frames
+old fails a validating capture as `renderer-error` with a one-line hint, because a rejected
+submit leaves the HUD running over a canvas that is no longer presented.
 Readiness polls observe the frame, UI and fatal state without repeatedly requesting a GPU adapter;
 the completed capture still probes its actual adapter before backend validation.
 Successful captures, observations and visible fatal diagnostics retain the full page and UI.
@@ -1184,6 +1235,151 @@ wall-clock delay is useful only as extra settle and is not parity evidence.
 forgeax project capture --backend software --require-ui --deterministic \
   --width 1280 --height 720 --output artifacts/capture/parity.png --json
 ```
+
+### Scripted playthrough (`project play`)
+
+`forgeax project play <script> --json` is the one-command loop from source to
+interaction evidence. It starts a temporary development runtime (the same owner as
+`project capture`) and a private sandboxed Chromium page, waits for the first ready
+frame with `<html data-forgeax-input="open">`, then calls the module's default
+export with a small helper. After the script returns it applies the `dev verify`
+runtime gate to the final frame: no visible fatal, no console or page errors, a
+non-uniform canvas, a healthy execution report (shared `executionHealth` predicate)
+and, with `--require-ui`, a mounted `#game-ui` child. The caller passes no
+`--revision` and polls nothing; one result reports pass or the first failure.
+
+```js
+// scripts/playthrough.mjs
+import assert from 'node:assert/strict';
+/** @param {import('@forgeax/engine/devkit').PlayContext} play */
+export default async function playthrough(play) {
+  await play.step('start', () => play.mouse.click([0.5, 0.8]));
+  const started = await play.waitFor((s) => s.phase === 'playing');
+  await play.keyboard.hold('KeyW', (s) => s.speed > 12);
+  await play.screenshot('running');
+  await play.reload();
+  assert.equal((await play.state()).phase, 'menu');
+  return { startedAt: started.elapsed };
+}
+```
+
+| Helper | Contract |
+|:--|:--|
+| `step(name, run)` | Labels work; a failure reports the innermost step and the last helper action. |
+| `state(read?)` / `waitFor(predicate, { read, timeoutMs })` | Read `gameHost.gameProjection.registerRead({ id, read })`; the id defaults to the only registered read. `waitFor` polls every 50 ms (default 10 s). |
+| `keyboard.press(key)` / `keyboard.hold(keys, ms \| predicate)` | Real key events; `press` (and `mouse.click`) holds until the execution report completes three more frames (at least 50 ms, at most 2 s), so the frame-start input scan observes it; a game that tells a tap from a hold by frame count sees a three-frame press, so use `hold(key, ms)` for an exact duration. Chords use `Shift+KeyA`. |
+| `mouse.click/move(point)`, `mouse.drag(from, to, { button })` | Canvas-normalized `[x, y]` or `{ x, y }`; `[0, 0]` is the canvas top-left. |
+| `screenshot(name)` | Composed page PNG (canvas and DOM UI) with a `rendered` flag; never fails on pixels. |
+| `advance(seconds, { stepSeconds, render, read })` | Pauses the App, steps whole frames of explicit game time (`stepSeconds` default 1/60, in (0, 0.1] so ECS Time never clamps; `seconds` in (0, 600], at most 36000 frames) inside one page evaluation through `App.stepFrame`, resumes and returns `state(read)`. Frames before the last are `stepFrame(dt, { render: false })` (World update only, no draw or receipt credit) and the last one renders, so `advance(180)` takes about a second instead of a minute; `render: true` draws every frame, for logic that reads the submitted picture (GPU picking, submitted terrain height). It sends no input; keys held through the browser stay held for every stepped frame. Out-of-range arguments fail as `play-step-failed` reason `advance-invalid`, an App step refusal as `advance-failed`. For timers, day/night cycles or long waits, call `play.advance(seconds)` instead of `play.wait`/long `waitFor` timeouts; never poll a running play from the shell — run `project play` in the foreground with a timeout longer than the script. |
+| `reload()`, `wait(ms)`, `page`, `signal` | Reload and wait for input again; plain delay; the Playwright Page for anything else; the abort signal of the run. |
+
+The default `--json` value or error stays within 900 bytes (`PLAY_COMPACT_BYTES`):
+`passed`, step count, a bounded `state` and `returned` summary, screenshot paths,
+`rendered`, `layout` warnings (when any), error counts and the report path. Output lives in
+`artifacts/play/<script path without extension>/` (`scripts/playthrough.mjs` ->
+`artifacts/play/scripts/playthrough/`; a script outside the project uses
+`artifacts/play/external/<name>-<digest>/`). A rerun deletes only the files the
+previous `play.json` recorded there. `--detail` returns the complete report (steps
+with timings, digests, console text, script `console` output, phase timings) plus its
+digest-bearing artifact reference. Failures use the closed `PlayErrorCode` union with
+`detail.reason` narrowed per code: `play-script-invalid` (`missing`, `import-failed`,
+`no-default-export`), `play-not-ready` (`session-failed`, `startup-failed`,
+`input-closed`, `busy`, `lock-unavailable`), `play-step-failed` (`script-error`, `wait-timeout`,
+`state-unavailable`), `play-timeout` (`--timeout-ms`, default 300000) and
+`play-runtime-failed` (`fatal`, `renderer-error`, `browser-errors`, `flat-canvas`, `ui-missing`,
+`execution-unhealthy`, `execution-unavailable`, `final-frame-timeout`). A failed step
+carries its `step`, `action`, a failure screenshot, the summarized state and the
+first browser error; a `session-failed` start keeps the browser owner's error in
+`detail.cause`. The project startup budget bounds catalog publication, navigation,
+first frame and open input.
+
+The module runs in the CLI process because it drives the live Playwright Page; its
+console output during import and run goes to the report, not stdout. That redirect is
+process-global, so an embedding process runs its `playCommand` calls one after another:
+the project lock serializes runs, not the console of plays of different projects. On
+`--timeout-ms` (default 300000, `play-timeout`) or ToolRun cancellation (the tool
+runtime's `tool-run-cancelled`, also before the script starts) `play.signal` aborts,
+every helper rejects and the browser closes. If the module is still running, the
+console is restored with its stdout methods diverted to stderr, and the CLI exits
+after printing.
+A synchronous infinite loop blocks the process and cannot be interrupted; raw `page`
+loops should check `play.signal`. The private browser is headless unless
+`--headless false`. Vite uses a play-owned dependency cache
+(`.forgeax/play/vite`), so it never races a `dev start` child's optimizer.
+
+**One play per project.** Plays of one project run one at a time under
+`.forgeax/play/lock.json`: two Vite optimizers on one cache invalidate each other's
+modules (`ERR_OUTDATED_OPTIMIZED_DEP`), and two runs of one script share its output
+directory. A second play (another script, or the same one) prints one waiting line
+naming the holder and the lock file, keeps its progress lines (elapsed time includes
+the wait) and records `timings.lockMs`. It waits up to one ordinary play budget
+(`--timeout-ms` plus the startup budget, 7 min at defaults), then fails as
+`play-not-ready` reason `busy` with the holder and `detail.lock`. An invalid script
+never queues: it fails at once. The holder refreshes the lock file's mtime every 30 s.
+On this host a lock is taken over only when its holder's pid is dead (a live pid is
+trusted, whatever its heartbeat). A lock from another host (container, network file
+system) is taken over once the waiter itself has seen it unchanged for 2 min, on its
+own clock, so clock skew cannot make a live lock look old. Takeovers and releases
+remove the file only under a short `lock.json.takeover` mutex and only while it holds
+the content they expect, so neither a racing waiter nor a resumed old holder deletes
+a newer lock; a contender that finds the mutex taken waits one poll. Windows
+`EPERM`/`EBUSY`/`EACCES` (a file pending deletion) retry for a few polls; a lock file
+that still cannot be created or inspected fails as `play-not-ready` reason
+`lock-unavailable` with its path. Releasing is best effort and never loses the result.
+
+**Waiting from an agent harness.** Run `project play` in the foreground and wait for
+it; stdout carries exactly one JSON document, printed when the run ends. stderr
+carries progress: one line at start (script, startup and script budgets), one with the
+expected duration (the previous run's time and step count from its `play.json`, else
+1-3 minutes) telling the agent to wait in a single call, then at
+most one line every 30 s (`PLAY_PROGRESS_INTERVAL_MS`) naming the phase and the
+current step, including while waiting for the lock; `--progress false` silences it.
+A harness that returns before the command ends should wait at least 30 s between
+polls; a shorter poll returns nothing new. A typical play takes 1-3 minutes. Each
+phase has a deadline: opening (catalog, navigation, first frame) and open input each
+up to the startup budget, the script `--timeout-ms`, and verification about a minute
+(15 s per gated frame). At defaults (120 s startup, 300 s script) one play is bounded
+by about 14 min and a queued one by about 21 min, so set a harness timeout of at
+least that, or lower `--timeout-ms` and `package.json#forgeax.startupTimeoutMs`;
+otherwise run it in the background and poll at least 30 s apart. The
+one unbounded case is a script that blocks the event loop (a synchronous infinite
+loop), which no deadline can interrupt.
+
+**Viewports and HUD layout.** `--viewports WxH[,WxH...]` (default
+`1280x720,1280x600`, at most four) runs the script in the first viewport. After the
+final frame passes the gate and the execution report reads healthy, each further
+viewport resizes the same page (not replayed) and applies the same strict gate to a
+`viewport-WxH` screenshot: a fatal, a browser error, a uniform canvas, a missing
+`#game-ui` child under `--require-ui`, or no frame in
+time fails the play as `play-runtime-failed` with `At viewport WxH` in the message. A
+single viewport skips the resize. In every viewport, after two animation frames, an
+automatic check reads the `#game-ui` tree (light and open shadow DOM) and reports, as
+`layout` warnings that never fail the play: `text-overlap` (text drawn over other
+text), `text-over-panel` (text over an effectively opaque background, image, SVG or
+canvas outside its own component; background alpha times opacity at least 0.5) and
+`text-clipped` (text cut by the viewport edge). Only visible text counts: an ancestor
+with `overflow` other than `visible` clips it first. It skips full-viewport backdrops,
+a panel and text inside one component smaller than a quarter of the viewport (a
+health bar fill and its label), a panel that precedes the text inside a component
+smaller than 90% of the viewport (painted behind it, such as a dialog portrait),
+tightly stacked lines, text parked fully off-screen, and any subtree marked
+`data-forgeax-layout="ignore"` (world-anchored name tags, damage numbers). Games
+legitimately overlap HUD text, so the check warns rather than gates. Its exemptions
+are heuristics with known limits: document order stands in for paint order, so a
+`z-index` or a later stacking context can put an earlier panel in front of the text
+(missed) or a later one behind it (false warning); and an absolutely or fixed
+positioned descendant escapes an `overflow` ancestor's clip in the browser but is
+still clipped by the check, so its overlaps can be missed. A failed resize
+or DOM read, or a walk that stops at its 600-element limit, adds an `incomplete`
+warning for that viewport instead of passing silently. The compact result lists up to
+three `<viewport> <kind> <selector "text"> vs <other>` lines (one plus `+N more` when
+the 900-byte budget is tight); `play.json` keeps up to 20.
+
+`play` never attaches to a `dev start` owner: that owner's page holds the single
+live App bridge, and a second page served by its Vite child would replace that
+bridge. Pointer lock depends on the browser environment: headless Chromium and an
+unfocused macOS window reject it (`WrongDocumentError`, counted as input warnings), so
+a scripted mouse-look uses a game control path such as `mouse.drag(a, b, { button: 'right' })`.
 
 ### Persistent playthrough capture
 
@@ -1230,7 +1426,7 @@ and one `run.json` (schema `3.0.0`). Its `requests` block counts every request (
 `documents`, `http`, `https`, `failed`, `resourceMisses`, `pending`) and lists `notable`
 requests: failed, missing, HTTP 4xx/5xx, still pending, and every http(s) request of a
 single-HTML target. While the run is not ok, `entries` also lists every request. A live `Page` or session belongs to the ordinary Node or Bun
-module that created it; the unified CLI does not provide a script execution command.
+module that created it; `forgeax project play` runs a playthrough module under DevKit ownership instead.
 
 | Browser backend | Owner | What it proves |
 |:--|:--|:--|
@@ -1400,8 +1596,10 @@ repair the validator rather than obfuscating Engine code or bypassing publishing
 
 ## Startup diagnostics
 
-Ordinary game pages show a compact FPS badge after their first scene-ready
-Renderer completion. Browser and WeChat hosts count the same successful scene
+Ordinary game pages opened with `?fps=1` (and URL-less WeChat hosts) show a
+compact FPS badge after their first scene-ready Renderer completion. Without
+the flag, browser pages omit it, so `dev capture`, `dev verify`, `project play`
+and released builds never record developer chrome. Browser and WeChat hosts count the same successful scene
 receipts over one-second monotonic-clock windows; rAF, loading-only completions
 and duplicate/retired receipts do not count. The badge updates text only when its
 value changes, takes no input and requests no extra render frames. Visibility,
@@ -2354,7 +2552,11 @@ Read that JSON in the project's build-root plugin and provide it as
 `devkitAppOptions.pipelineLibrary`. The generated host emits a separate URL asset, loads
 it before `createApp`, and carries it through either execution placement. Renderer
 readiness awaits native asynchronous preparation. Inspect `pipelineLibrary` after loading
-and gameplay to compare prepared work with newly encountered pipelines. See the
+and gameplay to compare prepared work with newly encountered pipelines.
+`devkitAppOptions.backgroundPipelineLibrary` is emitted as a separate
+`background-pipeline-library.json` URL asset. Its fetch starts before the blocking library
+fetch, a load failure only logs a warning, and the renderer compiles it after readiness
+without blocking startup; observe `pipelineLibrary.backgroundWarmup`. See the
 [WebGPU library contract](../rhi-webgpu/README.md#device-pipeline-library) for invalidation,
 device compatibility, memory limits and driver-cache constraints.
 

@@ -34,6 +34,8 @@ export interface ProjectFacts {
   readonly roots: GameProjectRoots;
   readonly startupTimeoutMs?: number | null;
   readonly frameTimeoutMs?: number | null;
+  /** `package.json#forgeax.pointShadows`: build Standard shaders with the point-shadow lane. */
+  readonly pointShadows?: true;
   readonly assetRoots: readonly string[];
   readonly assetLibraries: readonly ProjectAssetLibrary[];
   readonly packageJson: Readonly<Record<string, unknown>>;

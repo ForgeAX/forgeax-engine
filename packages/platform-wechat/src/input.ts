@@ -151,7 +151,9 @@ export function createWechatInputBackend(
         event.kind === 'surface-lost'
       ) {
         clear();
-        ui?.cancel();
+        // Native keyboard opening also emits resize. Revoke old coordinates,
+        // but keep its editor focused instead of immediately hiding the keyboard.
+        ui?.cancel({ preserveFocus: event.kind === 'display' });
         synchronizeOwnership();
       }
     });

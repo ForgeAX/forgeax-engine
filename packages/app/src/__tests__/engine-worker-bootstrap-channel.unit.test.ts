@@ -87,6 +87,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       renderPipelines: [],
       computePipelines: [],
     };
+    const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: '// bg' }] };
     const worker = new FakeWorker();
     const offscreen = {} as OffscreenCanvas;
     const transferControlToOffscreen = vi.fn(() => offscreen);
@@ -98,6 +99,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
       assetBudgetBytes: 6 * 1024 * 1024 * 1024,
       pipelineLibrary,
+      backgroundPipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',
@@ -118,6 +120,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
       assetBudgetBytes: 6 * 1024 * 1024 * 1024,
       pipelineLibrary,
+      backgroundPipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',

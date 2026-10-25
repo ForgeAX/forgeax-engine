@@ -395,6 +395,41 @@ import { describe, expect, it } from 'vitest';
     });
   });
 
+  describe('openEnded cylinder / cone (Three.js openEnded)', () => {
+    const counts = (mesh: MeshAsset) => ({
+      vertices: asF32(mesh.attributes.position).length / 3,
+      indices: mesh.indices.length,
+    });
+
+    it('omits both caps of a cylinder and every cap vertex of a cone', () => {
+      const rs = 12;
+      const hs = 2;
+      const side = { vertices: (rs + 1) * (hs + 1), indices: rs * hs * 6 };
+      expect(counts(unwrap(createCylinderGeometry(1, 0.5, 2, rs, hs, true)))).toEqual(side);
+      expect(counts(unwrap(createConeGeometry(1, 2, rs, hs, true)))).toEqual(side);
+      // Closed shapes keep their caps: two on the cylinder, the base on the cone.
+      expect(counts(unwrap(createCylinderGeometry(1, 0.5, 2, rs, hs)))).toEqual({
+        vertices: side.vertices + 2 * (rs + 2),
+        indices: side.indices + 2 * rs * 3,
+      });
+      expect(counts(unwrap(createConeGeometry(1, 2, rs, hs, false)))).toEqual({
+        vertices: side.vertices + rs + 2,
+        indices: side.indices + rs * 3,
+      });
+    });
+
+    it('keeps the open side identical to the closed side', () => {
+      const closed = unwrap(createConeGeometry(1, 2, 8, 1));
+      const open = unwrap(createConeGeometry(1, 2, 8, 1, true));
+      const sideVertices = (8 + 1) * 2;
+      expect(asF32(open.attributes.position)).toEqual(
+        asF32(closed.attributes.position).subarray(0, sideVertices * 3),
+      );
+      expect(Array.from(open.indices)).toEqual(Array.from(closed.indices).slice(0, 8 * 6));
+      expect(asF32(open.attributes.tangent).length).toBe(sideVertices * 4);
+    });
+  });
+
   describe('createConeGeometry tangent emit (M4 / w21)', () => {
     it('emits tangent attribute of length vertexCount * 4 (normal)', () => {
       const m = unwrap(createConeGeometry(1, 2));

@@ -21,7 +21,7 @@ caller-owned output storage; decomposition outputs must not overlap each other.
 ## 30-second self-introduction
 
 - **ABI**: `Float32Array & { readonly __<dim>: void }` 七件套（`Vec2 / Vec3 / Vec4 / Quat / Mat3 / Mat4 / Color`）+ `Euler` plain-object；branded 维度互斥（编译期）+ TypedArray 即时上传 GPU（运行期）。
-- **Surface**: 19 namespace × 214 函数（vec2:20 / vec3:21 / vec4:18 / mat3:10 / mat4:35 / quat:23 / euler:6 / color:12 / curve3:4 / easing:4 / noise:1 / frustum:4 / ray:9 / ray2:11 / box2:13 / box3:7 / circle2:10 / sphere:5 / f32-to-f16-bytes:1）；单 entry `import { Vec3, vec3, ... } from '@forgeax/engine-math'`。
+- **Surface**: 20 namespace × 217 函数（vec2:20 / vec3:21 / vec4:18 / mat3:10 / mat4:35 / quat:23 / euler:6 / color:12 / curve3:4 / easing:4 / noise:1 / frustum:4 / ray:9 / ray2:11 / box2:13 / box3:7 / circle2:10 / sphere:5 / f32-to-f16-bytes:3 / rng:1）；单 entry `import { Vec3, vec3, ... } from '@forgeax/engine-math'`。
 - **Style**: gl-matrix / wgpu-matrix 风纯函数 namespace + out-param-first（`func(out, ...args)`）；零分配；aliasing-safe（`add(v, v, v)` 合法）。
 - **Errors**: 全库静默回退（不抛错、不返回 `null`、不返回 `Result`、不 `console.warn`）；退化语义靠 JSDoc `@degrade` + 本 README §退化策略表 + `*.test-d.ts` 三层共担。
 
@@ -48,7 +48,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 
 > 上述代码覆盖 v0.1 PBR 渲染管线 90% 的典型 transform / projection / shader-uniform 准备路径——LLM 一次扫读即可拿到 "概念→签名→典型流程" 完整闭包（charter 命题 1）。
 
-## quick-ref：19 namespace × 214 函数
+## quick-ref：20 namespace × 217 函数
 
 每 namespace 内函数顺序粗略按 "构造 → 比较 → 算术 → 几何 → 高级" 分组。完整签名以 `.d.ts` JSDoc 为 SSOT。
 
@@ -65,6 +65,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 | **`curve3`** (4) | `catmullRom / catmullRomTangent / arcLengths / parameterAtDistance` |
 | **`easing`** (4) | `cubicInOut / smoothstep / smootherstep / elasticInOut` — scalar time-remaps (clamp t to [0,1]; Bevy `EaseFunction`; slow-in/slow-out with elastic overshoot). Growable home for further ease variants |
 | **`noise`** (1) | `perlin1d` — 1D Perlin noise returning [-1,1]. Deterministic, smooth (nearby inputs → nearby outputs); canonical permutation table matching Bevy's `2d_screen_shake`. Growable home for 2D/3D/Simplex variants |
+| **`rng`** (1) | `create` — seeded sfc32 stream `Rng { seed, next, int, range, pick, fork }` for deterministic procedural content; see [rng](#rng-seeded-procedural-streams) |
 | **`frustum`** (4) | `create / fromViewProjection / intersectsBox / intersectsSphere` |
 | **`ray`** (9) | `create / getOrigin / getDirection / setOrigin / setDirection / rayAabbIntersects / screenToRay / worldToScreen / rayTriangleIntersects` |
 | **`ray2`** (11) | `create / getOrigin / getDirection / getMaxDistance / setOrigin / setDirection / setMaxDistance / rayAabbIntersects / rayCircleIntersects / aabbCastIntersects / circleCastIntersects` |
@@ -78,6 +79,39 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 > Surface 由 `packages/math/scripts/count-math-exports.mjs` AST 计数（`node packages/math/scripts/count-math-exports.mjs`）SSOT 派生；表格中函数清单与计数器同步（M5 verify 已锁；surface 增减需同步本表）。
 
 `mat4.view(storage, index = 0)` returns a branded 16-float window of packed `Float32Array` storage. Matrix indices address disjoint windows, including when storage itself has a byte offset; writes share the caller-owned backing buffer. An invalid window follows the math degradation contract and returns a detached zero matrix.
+
+## rng (seeded procedural streams)
+
+`rng.create(seed: number | string): Rng` returns a deterministic stream: the same
+seed yields the same sequence on every JavaScript engine, so Pack builds and
+"same seed, same world" games reproduce exactly. Use it instead of `Math.random()`
+in any generator whose output must be repeatable.
+
+| Member | Result | Notes |
+|:--|:--|:--|
+| `seed` | uint32 | Seed identity this stream derives from |
+| `next()` | float in [0, 1) | Multiples of 2^-32 |
+| `int(min, max)` | integer in [min, max] | Inclusive; bounds round inward; empty interval returns `ceil(min)` |
+| `range(min, max)` | float in [min, max) | |
+| `pick(items)` | element or `undefined` | `undefined` only for an empty array |
+| `fork(label)` | child `Rng` | Derived from `seed` and `label` only: independent of parent draw position, does not advance the parent |
+
+Algorithm: sfc32 (128-bit state, Small Fast Chaotic generator) seeded by four
+splitmix32 outputs. String seeds and fork labels hash with FNV-1a over UTF-16
+code units plus the murmur3 fmix32 finalizer. All steps are int32 arithmetic, so
+output is platform-independent. Number seeds follow ToUint32 (`seed >>> 0`):
+fractions and bits above 2^32 are dropped and NaN / Infinity become 0; pass a
+string for wider seeds. The seed space is 32 bits; it identifies worlds, it is
+not a cryptographic source.
+
+```ts
+import { rng } from '@forgeax/engine/math';
+
+const world = rng.create('island-7');
+const trees = world.fork('trees'); // adding a 'rocks' fork later never shifts trees
+for (let i = 0; i < 40; i++) placeTree(trees.range(-50, 50), trees.range(-50, 50));
+const biome = world.pick(['forest', 'desert', 'tundra'] as const);
+```
 
 ## frustum (feat-20260528-frustum-culling)
 

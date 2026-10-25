@@ -32,6 +32,7 @@ import {
   type PmremAtlas,
   pmremLevelCount,
 } from '../ibl/pmrem';
+import { SKYLIGHT_UNIFORM_BYTES, skylightGroundLane } from '../ibl/skylight-bind-group';
 import type {
   ReflectionFallbackReadbackReceipt,
   ReflectionFallbackReceipt,
@@ -727,7 +728,7 @@ export class ReflectionProbeRecordOwner {
     const skylightSignature =
       skylight === undefined
         ? ''
-        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0]), skyContent])}`;
+        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0]), ...skylightGroundLane(skylight, true), skyContent])}`;
     for (const [renderableKey, selection] of stagedSelections) {
       const probeKey =
         selection.kind === 'probe' ? `${selection.worldId}:${selection.entityKey}` : undefined;
@@ -1214,7 +1215,7 @@ export class ReflectionProbeRecordOwner {
           cache.brdfLutView !== undefined));
     const diffuse =
       skylight === undefined
-        ? [0, 0, 0, index + 1, 0, 0, 0, 1, 0, 0, 0, 0]
+        ? [0, 0, 0, index + 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
         : [
             ...(diffuseAvailable
               ? skylight.color.map((value) => value * skylight.intensity)
@@ -1223,6 +1224,7 @@ export class ReflectionProbeRecordOwner {
             ...skylight.rotation,
             ...(skylight.ambientIrradiance ?? [0, 0, 0]),
             0,
+            ...skylightGroundLane(skylight, diffuseAvailable),
           ];
     let existing = this.resources.get(key);
     if (
@@ -1317,7 +1319,7 @@ export class ReflectionProbeRecordOwner {
     }
     const uniformBuffer = this.internals.device.createBuffer({
       label: `reflection-probe-${index}-uniforms`,
-      size: 80,
+      size: SKYLIGHT_UNIFORM_BYTES,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
       mappedAtCreation: false,
     });

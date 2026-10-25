@@ -30,10 +30,10 @@ Accept the final game only with evidence from the actual entry and host handed t
 
 | Required evidence | Passing condition |
 |:--|:--|
-| Startup and errors | Run `dev verify --revision <current-revision> --json` against the delivery execution (or, where available, `project play <script> --json`, which applies the same gate to a scripted real-input playthrough); inspect its runtime report and artifacts. A failed or blocked gate cannot establish runtime acceptance. |
-| Appearance | Open the captured screenshot and confirm the requested scene and UI are visible; a saved image path alone is insufficient. |
-| Core interaction | Drive the requested controls and observe their gameplay result in the running game; data/unit tests do not exercise this path. |
-| Restart/reload | Repeat startup and a core interaction after reload; use evidence from the final code and build. |
+| Startup and errors | Run `project play <script> --json` (its final-frame gate is `dev verify`'s), or `dev verify --revision <current-revision> --json` against a live delivery execution; inspect its runtime report and artifacts. A failed or blocked gate cannot establish runtime acceptance. |
+| Appearance | Open the captured screenshot and confirm the requested scene and UI are visible; a saved image path alone is insufficient. Enemies and other actors must contrast with the background in luminance (pale or saturated on dark, emissive rims or eyes at night); fades and deaths stay visible ([cookbook 10](gameplay-cookbook.md#10-fade-out-one-enemy-per-entity-tint-and-opacity)). Scenes sit on a sky, not on a grey slab or void: a `GradientSky` preset, fog for 3D horizons ([cookbook 0](gameplay-cookbook.md#0-content-pack-and-composition)). |
+| Core interaction | Drive the requested controls with the playthrough's real input and assert their gameplay result through the game's read projection; data/unit tests do not exercise this path. |
+| Restart/reload | Repeat startup and a core interaction after `play.reload()`; use evidence from the final code and build. |
 
 Before the first real input after a page load or reload, wait for the generated host's
 input readiness signal when it publishes one
@@ -56,6 +56,20 @@ or gameplay. Missing observations remain unverified. A visible fatal or failed E
 startup fails acceptance even when other checks pass.
 Fix the failing owner and verify a fresh session; never suppress the error or remove the
 required plugin to obtain a pass.
+
+### Requirement coverage
+
+Before delivery, list every requirement the user stated (objects, mechanics, controls,
+enemies, UI, endings). The playthrough reaches each one with real input, asserts it
+through the game's read projection, and saves one named screenshot per requirement:
+every ending or result screen, every requested object type in view, multi-enemy states
+with several enemies on screen, and the core input's visible effect (the rotated shape,
+not only a state change). A requirement without both stays unverified in the report.
+`artifacts/` holds only accepted screenshots: failure frames, startup-error pages and
+rejected or provisional captures go to `.forgeax/diag/`, so never hand those over as evidence;
+save debug probes there too.
+Production code never bends the game for the test: no enemies spawned directly ahead,
+no screen targets or aim helpers exposed for the script, no test-only shortcuts.
 
 Use `project build` and `project preview` to verify served `dist` when delivery or
 changed build/asset paths require production output. Local delivery provides a usable

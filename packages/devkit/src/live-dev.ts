@@ -23,7 +23,18 @@ import type { JSHandle } from 'playwright';
 import { WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
 import type { BrowserCapture, BrowserCaptureSession } from './browser-capture.js';
+import { captureRenderFailure } from './capture-render-failure.js';
+import { executionHealth } from './execution-health.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
+import { failureSummary } from './failure-summary.js';
+import { LIVE_BRIDGE_OWNER_PARAM, ownerPageUrl } from './live-bridge-url.js';
+import {
+  type LookDriver,
+  LookRequestError,
+  type LookResult,
+  lookAtLive,
+  parseLookRequest,
+} from './live-look.js';
 import { liveProjectReadyLogLine, readLiveProjectInputs } from './live-project-inputs.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
 import { DEV_EXECUTION_TIMEOUT_MS, DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
@@ -108,6 +119,7 @@ type LiveOperation =
   | 'reload'
   | 'stop'
   | 'capture'
+  | 'look'
   | 'verify'
   | 'rhi/capture'
   | 'profile/capture'
@@ -154,6 +166,8 @@ interface LiveDevDaemonState {
   server: ReturnType<typeof createServer> | undefined;
   bridgeServer: WebSocketServer | undefined;
   bridge: WebSocket | undefined;
+  /** Minted per opened page; only the page this owner launched presents it. */
+  bridgeToken: string;
   bridgeNextId: number;
   bridgePending: Map<
     number,
@@ -308,6 +322,7 @@ async function submittedFrameId(session: BrowserCaptureSession): Promise<number 
 async function waitForFrameAfter(
   session: BrowserCaptureSession,
   previous: number | undefined,
+  timeoutMs = 120_000,
 ): Promise<void> {
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
   await realm.waitForFunction(
@@ -318,7 +333,7 @@ async function waitForFrameAfter(
       );
     },
     previous ?? 0,
-    { timeout: 120_000 },
+    { timeout: timeoutMs },
   );
 }
 
@@ -402,28 +417,23 @@ function assertRuntimeHealth(status: LiveDevStatus): ReturnType<typeof commandEr
       },
     );
   }
-  if (
-    execution.fault !== null ||
-    execution.engine.health !== 'running' ||
-    execution.world.health !== 'healthy' ||
-    execution.world.partialWrite ||
-    (execution.render !== undefined && execution.render.state !== 'alive')
-  ) {
-    return commandError(
-      'live-runtime-failed',
-      'Repair the execution fault before verifying again.',
-      {
-        execution,
-      },
-    );
+  switch (executionHealth(execution)) {
+    case 'faulted':
+      return commandError(
+        'live-runtime-failed',
+        'Repair the execution fault before verifying again.',
+        {
+          execution,
+        },
+      );
+    case 'no-completed-frame':
+      return commandError(
+        'live-verification-unavailable',
+        'No completed Engine frame has been observed.',
+      );
+    case 'healthy':
+      return undefined;
   }
-  if (execution.frame.completed < 1) {
-    return commandError(
-      'live-verification-unavailable',
-      'No completed Engine frame has been observed.',
-    );
-  }
-  return undefined;
 }
 
 async function refreshFrameStatus(state: LiveDevDaemonState): Promise<void> {
@@ -431,6 +441,10 @@ async function refreshFrameStatus(state: LiveDevDaemonState): Promise<void> {
   const frameId = await submittedFrameId(state.session);
   if (frameId !== undefined) state.status = { ...state.status, frameId };
 }
+
+// Close codes shared with packages/app/src/internal/browser-remote-bridge.ts.
+const BRIDGE_NOT_OWNER_CLOSE = 4403;
+const BRIDGE_DISPLACED_CLOSE = 4409;
 
 function bridgeError(code: string, hint: string): Error & { readonly code: string } {
   const error = new Error(hint) as Error & { code: string };
@@ -713,6 +727,7 @@ interface LiveOutcome {
 /** Observations: re-running one against the replacement runtime has no effect to duplicate. */
 const LIVE_OBSERVATIONS: ReadonlySet<string> = new Set([
   'capture',
+  'look',
   'verify',
   'rhi/capture',
   'profile/capture',
@@ -906,12 +921,29 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
       socket.destroy();
       return;
     }
-    bridgeServer.handleUpgrade(request, socket, head, (client) =>
-      bridgeServer.emit('connection', client, request),
-    );
+    bridgeServer.handleUpgrade(request, socket, head, (client) => {
+      // Every page the project's Vite serves dials this relay. Only the owner
+      // page may replace the bridge; others are told once and keep running.
+      if (url.searchParams.get(LIVE_BRIDGE_OWNER_PARAM) !== state.bridgeToken) {
+        client.close(BRIDGE_NOT_OWNER_CLOSE, 'live-bridge-not-owner');
+        return;
+      }
+      bridgeServer.emit('connection', client, request);
+    });
   });
   bridgeServer.on('connection', (client: WebSocket) => {
-    state.bridge?.close();
+    // A newer owner page (same token) takes over for good: the displaced page
+    // must not retry, and its close handler no longer owns the pending calls.
+    if (state.bridge !== undefined) {
+      state.bridge.close(BRIDGE_DISPLACED_CLOSE, 'live-bridge-displaced');
+      rejectBridgePending(
+        state,
+        bridgeError(
+          'live-app-bridge-disconnected',
+          'A newer owner page replaced the App execution bridge.',
+        ),
+      );
+    }
     state.bridge = client;
     state.status = { ...state.status, bridgeConnected: true };
     client.on('message', (raw) => {
@@ -1022,14 +1054,18 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
     if (stopped()) return;
     const { createBrowserCapture } = await import('./browser-capture.js');
     if (stopped()) return;
-    state.browser ??= createBrowserCapture(state.executionRoot);
+    // A reload opens its replacement page in the same warm browser.
+    state.browser ??= createBrowserCapture(state.executionRoot, { retainBrowser: true });
+    state.bridgeToken = randomUUID();
     state.session = await state.browser.open({
       backend: state.status.backendRequested,
       headless: state.status.headless,
       launchProfile: 'development',
       ...ciCaptureViewport(),
       outputDir: liveArtifactDirectory(revision),
-      ...(state.projectUrl === undefined ? {} : { serverUrl: state.projectUrl }),
+      ...(state.projectUrl === undefined
+        ? {}
+        : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken) }),
       ...(state.carrier === undefined
         ? {}
         : {
@@ -1444,36 +1480,6 @@ async function replaceProjectProcess(state: LiveDevDaemonState, generation: numb
   });
 }
 
-function structuredCause(value: unknown): CommandError | undefined {
-  if (value === null || typeof value !== 'object') return undefined;
-  const cause = (value as { readonly cause?: unknown }).cause;
-  if (cause === null || typeof cause !== 'object') return undefined;
-  const fields = cause as Partial<Record<keyof CommandError, unknown>>;
-  return typeof fields.code === 'string' &&
-    typeof fields.expected === 'string' &&
-    typeof fields.hint === 'string'
-    ? (cause as CommandError)
-    : undefined;
-}
-
-/**
- * The status line names the innermost structured cause, because `dev start`
- * reports only this string; a wrapper code alone sends the reader to dev.log.
- */
-function startupFailureSummary(error: CommandError): string {
-  const codes = [error.code];
-  let owner = error;
-  for (let cause = structuredCause(owner); cause; cause = structuredCause(owner)) {
-    owner = cause;
-    codes.push(owner.code);
-  }
-  if (owner === error) return `${error.code}: ${error.hint}`;
-  const detail = owner.detail === undefined ? '' : JSON.stringify(owner.detail);
-  return `${codes.join(' <- ')}: expected ${owner.expected}; hint: ${owner.hint}${
-    detail === '' || detail === '{}' ? '' : `; detail: ${detail.slice(0, 2048)}`
-  }`;
-}
-
 /** Internal dev resource entry; it is never a public command. */
 export async function runLiveProjectProcess(
   rootInput: string,
@@ -1497,16 +1503,28 @@ export async function runLiveProjectProcess(
           `live project: starting project backend after ${Date.now() - startedAt}ms\n`,
         );
         return startOnPreferredPort(projectPort, (port) =>
-          startDevProjectWithHost({ root, json: true, port }, (paths) => {
-            inputPaths = paths;
-          }),
+          startDevProjectWithHost(
+            {
+              root,
+              json: true,
+              port,
+              // Children of one owner run one at a time; see startDevProjectWithHost.
+              reuse: {
+                generatedRoot: resolve(root, '.forgeax/generated/dev'),
+                viteCacheDir: resolve(root, '.forgeax/dev/vite'),
+              },
+            },
+            (paths) => {
+              inputPaths = paths;
+            },
+          ),
         );
       })
     : facts;
   if (!built.ok) {
     process.stderr.write(`${JSON.stringify(built.error)}\n`);
     process.stdout.write(
-      `${JSON.stringify({ error: `${startupFailureSummary(built.error)}; inspect ${resolve(root, '.forgeax/dev.log')}`, generation })}\n`,
+      `${JSON.stringify({ error: `${failureSummary(built.error)}; inspect ${resolve(root, '.forgeax/dev.log')}`, generation })}\n`,
     );
     process.exitCode = 1;
     return;
@@ -1708,6 +1726,73 @@ function captureResponseError(result: unknown, code: string, hint: string): unkn
   if (result !== null && typeof result === 'object' && Reflect.get(result, 'error') !== undefined)
     return Reflect.get(result, 'error');
   return commandError(code, hint);
+}
+
+function sameLiveInstance(before: LiveDevStatus, after: LiveDevStatus): boolean {
+  return (
+    before.revision === after.revision &&
+    before.loadId === after.loadId &&
+    before.worldIdentity === after.worldIdentity
+  );
+}
+
+function lookDriver(
+  state: LiveDevDaemonState,
+  session: BrowserCaptureSession,
+  outputDir: string,
+): LookDriver {
+  const camera = async (script: string): Promise<unknown> =>
+    bridgeCall(state, script, 5_000).promise;
+  return {
+    execution: session.execution ?? { kind: 'page', ownerPage: session.page, realm: session.page },
+    outputDir,
+    nextFrame: async (timeoutMs) =>
+      waitForFrameAfter(session, await submittedFrameId(session), timeoutMs),
+    cameraControl: async () => {
+      const value = (await camera('return simulation.observation?.camera.get();')) as {
+        readonly control?: unknown;
+      } | null;
+      return value?.control === 'observer' ? 'observer' : 'game';
+    },
+    setCamera: async (preset) => {
+      const { name: _name, ...pose } = preset;
+      await camera(`return simulation.observation?.camera.set(${JSON.stringify(pose)});`);
+    },
+    releaseCamera: async () => {
+      await camera('simulation.observation?.release();');
+    },
+  };
+}
+
+function lookResponse(
+  status: LiveDevStatus,
+  look: LookResult,
+  session: BrowserCaptureSession,
+  elapsedMs: number,
+): unknown {
+  const report = session.report();
+  return {
+    ok: true,
+    artifacts: look.views.map((view) => ({
+      kind: 'png',
+      uri: view.screenshot,
+      mediaType: 'image/png',
+      digest: view.digest,
+    })),
+    value: {
+      revision: status.revision,
+      frameId: status.frameId,
+      elapsedMs,
+      views: look.views.map(({ name, screenshot, metrics, findings }) => ({
+        name,
+        screenshot,
+        metrics,
+        findings,
+      })),
+      ...(look.rendererError === null ? {} : { rendererError: look.rendererError }),
+      errors: { console: report.consoleErrors.length, page: report.pageErrors.length },
+    },
+  };
 }
 
 async function routeLiveOperation(
@@ -1991,6 +2076,7 @@ async function routeLiveOperation(
       await publishImageResult();
       async function publishImageResult(): Promise<void> {
         const report = session.report();
+        const renderFailure = captureRenderFailure(record);
         const reportPath = `${record.output}.json`;
         const reportBytes = `${JSON.stringify({ revision: after.revision, ...(verifying ? { execution: after.execution } : {}), record, consoleErrors: report.consoleErrors, pageErrors: report.pageErrors }, null, 2)}\n`;
         await writeFile(reportPath, reportBytes, 'utf8');
@@ -2042,13 +2128,88 @@ async function routeLiveOperation(
             pixels: {
               width: record.pixels.width,
               height: record.pixels.height,
-              rendered: record.pixels.rendered,
+              rendered: renderFailure === undefined,
+              ...(renderFailure === undefined ? {} : { reason: renderFailure.reason }),
             },
+            ...(renderFailure === undefined ? {} : { hint: renderFailure.hint }),
+            ...(record.runtime.rendererError === null
+              ? {}
+              : { rendererError: record.runtime.rendererError }),
             errors: { console: report.consoleErrors.length, page: report.pageErrors.length },
           },
         });
         return;
       }
+    } finally {
+      state.captureRunning = false;
+    }
+  }
+
+  /** `dev look`: views of the current revision with an automatic visual report. */
+  async function captureLook(): Promise<void> {
+    if (state.captureRunning) {
+      reply(409, {
+        ok: false,
+        error: commandError('run-capture-busy', 'Wait for the current capture.'),
+      });
+      return;
+    }
+    state.captureRunning = true;
+    await state.observationInFlight;
+    try {
+      const startedAt = Date.now();
+      if (state.evaluation !== undefined) {
+        reply(409, {
+          ok: false,
+          error: commandError(
+            'live-eval-running',
+            'Look is blocked until the current evaluation completes.',
+          ),
+        });
+        return;
+      }
+      const request = parseLookRequest(input);
+      if (!(await requireCurrentBridge(state, reply))) return;
+      await refreshFrameStatus(state);
+      const before = state.status;
+      const identityError = assertLiveIdentity(state, input);
+      if (identityError !== undefined) {
+        reply(409, { ok: false, error: identityError });
+        return;
+      }
+      const session = state.session;
+      if (session === undefined || before.phase !== 'ready') {
+        reply(409, {
+          ok: false,
+          error: commandError(
+            'live-not-ready',
+            'Wait for the live instance to reach a submitted frame.',
+          ),
+        });
+        return;
+      }
+      if (!admit()) return;
+      const outputDir =
+        typeof input.output === 'string'
+          ? resolve(state.root, input.output)
+          : resolve(liveArtifactDirectory(before.revision), `look-${Date.now()}`);
+      const look = await lookAtLive(lookDriver(state, session, outputDir), request);
+      if (!(await requireCurrentBridge(state, reply))) return;
+      await refreshFrameStatus(state);
+      if (!sameLiveInstance(before, state.status)) {
+        reply(409, {
+          ok: false,
+          error: commandError(
+            'live-instance-changed',
+            'The live instance changed while looking; look again at the new revision.',
+          ),
+        });
+        return;
+      }
+      reply(200, lookResponse(state.status, look, session, Date.now() - startedAt));
+    } catch (error) {
+      if (!(error instanceof LookRequestError)) throw error;
+      reply(400, { ok: false, error: commandError(error.code, error.hint) });
     } finally {
       state.captureRunning = false;
     }
@@ -2459,6 +2620,10 @@ async function routeLiveOperation(
       await captureImage();
       return;
     }
+    if (url.pathname === '/look') {
+      await captureLook();
+      return;
+    }
     if (
       url.pathname === '/camera/get' ||
       url.pathname === '/camera/set' ||
@@ -2679,6 +2844,7 @@ export async function runLiveDevDaemon(
     server: undefined,
     bridgeServer: undefined,
     bridge: undefined,
+    bridgeToken: randomUUID(),
     bridgeNextId: 1,
     bridgePending: new Map(),
     projectProcess: undefined,

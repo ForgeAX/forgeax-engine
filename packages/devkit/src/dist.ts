@@ -61,13 +61,8 @@ async function filesUnder(root: string, directory = root): Promise<string[]> {
   return result;
 }
 
-export async function writeDistManifest(
-  facts: ProjectFacts,
-  base: string,
-  rootInput = resolve(facts.root, 'dist'),
-  target: NonNullable<BuildOptions['target']> = 'browser',
-  materialProfile?: BuildOptions['materialProfile'],
-): Promise<DistManifest> {
+/** Inventory the producer's current files before selecting a delivery transport. */
+export async function collectDistArtifacts(rootInput: string): Promise<DistArtifact[]> {
   const root = resolve(rootInput);
   const paths = await filesUnder(root);
   const artifacts: DistArtifact[] = [];
@@ -88,6 +83,18 @@ export async function writeDistManifest(
       )),
     );
   }
+  return artifacts;
+}
+
+export async function writeDistManifest(
+  facts: ProjectFacts,
+  base: string,
+  rootInput = resolve(facts.root, 'dist'),
+  target: NonNullable<BuildOptions['target']> = 'browser',
+  materialProfile?: BuildOptions['materialProfile'],
+): Promise<DistManifest> {
+  const root = resolve(rootInput);
+  const artifacts = await collectDistArtifacts(root);
   const manifest: DistManifest = {
     schemaVersion: '1.0.0',
     target,

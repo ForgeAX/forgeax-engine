@@ -17,8 +17,8 @@ import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
 import type { RenderFeature } from '../features/types';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import type { FrameReceipt } from '../render-contract';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -167,7 +167,7 @@ it.each([
       propagateTransforms(world).unwrap();
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       expect(packet.assets.find(({ handle }) => handle === mesh.meshHandle)?.value).toEqual(
@@ -182,7 +182,7 @@ it.each([
     for (const [index, packet] of packets.entries()) {
       const start = bindings.mock.calls.length;
       const result = await renderer.draw({
-        publication: packet,
+        publication: encodeRenderPublication(packet),
         onFeatureSourceSubmitted: (identity, feedback) => {
           publisher.acknowledgeFeatures(packet.revision, [{ identity, feedback }]).unwrap();
         },
@@ -223,7 +223,7 @@ it.each([
       expect((await receipt.completed).ok).toBe(true);
       await releases[index];
       expect(released[index]).toBe(true);
-      const transport = renderPublicationTransfers(packet);
+      const transport = renderPublicationTransfers(encodeRenderPublication(packet));
       const returned = structuredClone(transport, { transfer: transport });
       publisher.recycle(packet.revision, returned).unwrap();
       expect(publisher.inspect().inFlightCount).toBe(capacity - index - 1);

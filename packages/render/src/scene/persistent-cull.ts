@@ -1,18 +1,24 @@
 import { box3, frustum } from '@forgeax/engine-math';
 import { buildCameraFrusta } from '../camera-frusta';
+import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { worldEntityKey } from '../record/frame-snapshot';
 import type {
+  CameraAdmission,
   DispatchEntry,
   DispatchList,
   ExtractedFrame,
+  GpuOwnedFrame,
   RenderableSnapshot,
 } from '../render-system-extract';
 import { SubsurfaceSelection } from '../subsurface/selection';
+import { withRenderableIndex } from './dispatch-entry';
 import type { FrameList } from './frame-list';
+import { FrameSet } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
 import type { MeshFrame } from './mesh-frame';
 import type { PersistentShadowCasterProjection } from './render-scene';
 import { worldBounds, writeBounds } from './render-scene-snapshots';
+import type { RenderSceneSlot } from './render-scene-types';
 import { buildShadowFrusta } from './shadow-visibility';
 
 let cullProjectedIndexScratch = new Int32Array(0);
@@ -261,7 +267,7 @@ class PersistentFrameCull {
   private shadowCasterVisible(index: number): boolean {
     this.casterIndices ??= shadowCasterIndices(this.frame.dispatch);
     if (!this.casterIndices.has(index)) return false;
-    this.shadowFrusta ??= buildShadowFrusta(this.frame.lights);
+    this.shadowFrusta ??= buildShadowFrusta(this.frame.lights, this.frame.cameras[0]);
     return this.shadowFrusta.some((lightPlanes) =>
       frustum.intersectsBox(lightPlanes, this.worldAabb as box3.Box3Like),
     );
@@ -487,7 +493,8 @@ class PersistentFrameCull {
         dispatch.push(entry);
       } else {
         let mapped = previousRemapping?.get(entry);
-        if (mapped?.renderableIndex !== renderableIndex) mapped = { ...entry, renderableIndex };
+        if (mapped?.renderableIndex !== renderableIndex)
+          mapped = withRenderableIndex(entry, renderableIndex);
         dispatchRemapping.set(entry, mapped);
         dispatch.push(mapped);
       }
@@ -522,4 +529,144 @@ class PersistentFrameCull {
       admittedSubsurface,
     );
   }
+}
+
+/** Retained across GPU-lane frames. */
+export interface ResidualCullMemo {
+  readonly subsurface: SubsurfaceSelection;
+  readonly admission: CameraAdmission;
+  readonly planes: readonly Float32Array[];
+}
+
+function samePlanes(left: readonly Float32Array[], right: readonly Float32Array[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((planes, index) => {
+      const other = right[index] as Float32Array;
+      return planes.length === other.length && planes.every((value, at) => value === other[at]);
+    })
+  );
+}
+
+/**
+ * GPU-lane cull. Owned rows are admitted without a CPU visit: their view pass
+ * culls them. Only residual rows, which keep a CPU-recorded draw under
+ * `selection`, are tested. The frame stays slot-ordered and uncompacted;
+ * `cameraVisible` carries the camera admission, so no dispatch address depends
+ * on another row's visibility.
+ */
+export function cullResidualFrame(
+  frame: ExtractedFrame,
+  materials: MaterialFrame,
+  boundsOf: (
+    snapshot: RenderableSnapshot,
+    index: number,
+    out: box3.Box3,
+    row?: RenderSceneSlot,
+  ) => boolean,
+  gpuOwned: GpuOwnedFrame,
+  selection: GpuDrawSelection,
+  memo: { value: ResidualCullMemo | undefined },
+): PersistentCullResult {
+  const planes = buildCameraFrusta(frame.cameras);
+  const intersects = (aabb: box3.Box3): boolean =>
+    planes.length === 0 ||
+    planes.some(
+      (cameraPlanes) =>
+        cameraPlanes.length === 0 ||
+        frustum.intersectsBox(cameraPlanes as frustum.Frustum, aabb as box3.Box3Like),
+    );
+  const aabb = box3.create();
+  const hidden = new Set<number>();
+  const residualKeys = new Set<number>();
+  const previous = memo.value?.admission;
+  const residual = gpuOwned.residualSet(selection);
+  // Each frame derives from the previous sets, so their diffs name only flips.
+  let hiddenSlots = previous?.hidden ?? new FrameSet();
+  if (previous !== undefined && previous.residual !== residual)
+    residual.changesSince(previous.residual, (slot) => {
+      if (!residual.has(slot)) hiddenSlots = hiddenSlots.without(slot);
+    });
+  let total = 0;
+  let culled = 0;
+  // Scene rows carry every fact this test reads; frame rows are never resolved here.
+  for (const record of gpuOwned.residualSlots(selection)) {
+    const candidate = record.snapshot;
+    residualKeys.add(worldEntityKey(candidate.worldId, candidate.entityKey));
+    if (candidate.authorVisible === false || !boundsOf(candidate, -1, aabb, record)) {
+      hiddenSlots = hiddenSlots.without(record.slot);
+      continue;
+    }
+    total += 1;
+    if (intersects(aabb)) {
+      hiddenSlots = hiddenSlots.without(record.slot);
+      continue;
+    }
+    culled += 1;
+    hidden.add(worldEntityKey(candidate.worldId, candidate.entityKey));
+    hiddenSlots = hiddenSlots.with(record.slot);
+  }
+  const subsurface = memo.value?.subsurface ?? new SubsurfaceSelection();
+  subsurface.trackAll(materials);
+  const sameFrusta = memo.value !== undefined && samePlanes(memo.value.planes, planes);
+  const admission: CameraAdmission =
+    previous !== undefined &&
+    sameFrusta &&
+    previous.hidden === hiddenSlots &&
+    previous.residual === residual
+      ? previous
+      : {
+          hidden: hiddenSlots,
+          residual,
+          frusta: sameFrusta && previous !== undefined ? previous.frusta : {},
+        };
+  memo.value = { subsurface, admission, planes };
+  // Owned rows are tested only when a reader asks; the answer is fixed per frame.
+  const ownedVisible = new Map<number, boolean | undefined>();
+  const ownedAabb = box3.create();
+  const ownedVisibility = (source: RenderableSnapshot, key: number): boolean | undefined => {
+    if (ownedVisible.has(key)) return ownedVisible.get(key);
+    const visible = boundsOf(source, -1, ownedAabb) ? intersects(ownedAabb) : undefined;
+    ownedVisible.set(key, visible);
+    return visible;
+  };
+  const cameraVisible = (source: RenderableSnapshot): boolean => {
+    const key = worldEntityKey(source.worldId, source.entityKey);
+    if (hidden.has(key)) return false;
+    return residualKeys.has(key) || ownedVisibility(source, key) !== false;
+  };
+  let ownedStats: { readonly culled: number; readonly total: number } | undefined;
+  const ownedStatistics = () => {
+    if (ownedStats !== undefined) return ownedStats;
+    let ownedCulled = 0;
+    let ownedTotal = 0;
+    for (const source of frame.renderables) {
+      const key = worldEntityKey(source.worldId, source.entityKey);
+      if (source.authorVisible === false || residualKeys.has(key)) continue;
+      const visible = ownedVisibility(source, key);
+      if (visible === undefined) continue;
+      ownedTotal += 1;
+      if (!visible) ownedCulled += 1;
+    }
+    ownedStats = { culled: ownedCulled, total: ownedTotal };
+    return ownedStats;
+  };
+  const demand = subsurface.demand;
+  return {
+    frame: {
+      ...frame,
+      frustumStats: {
+        get culled() {
+          return culled + ownedStatistics().culled;
+        },
+        get total() {
+          return total + ownedStatistics().total;
+        },
+      },
+      cameraVisible,
+      cameraAdmission: admission,
+      gpuOwned,
+    },
+    subsurface: { source: demand, authorVisible: demand, admitted: demand },
+  };
 }

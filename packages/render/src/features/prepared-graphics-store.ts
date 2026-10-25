@@ -1,6 +1,5 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type {
   PreparedGraphicsValidationProjection,
@@ -107,7 +106,6 @@ export interface PreparedGraphicsStore {
   beginFrame(featureIdentity: string, generation: number): PreparedGraphicsTransaction;
   snapshot(featureIdentity: string): PreparedGraphicsStoreSnapshot;
   invalidate(featureIdentity: string, generation: number): void;
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown>;
 }
 
 interface Slot {
@@ -772,21 +770,6 @@ class PreparedGraphicsStoreImpl implements PreparedGraphicsStore {
     if (slot !== undefined && slot.generation < generation) {
       this.slots.delete(featureIdentity);
     }
-  }
-
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown> {
-    return {
-      kind: 'buffer',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('Prepared graphics candidate scope is not active.');
-        const itemCount = [...this.slots.values()].reduce(
-          (count, slot) => count + slot.items.size,
-          0,
-        );
-        return Object.freeze({ generation: scope.generation, itemCount });
-      },
-      cleanup: () => undefined,
-    };
   }
 
   registerReference(reference: object, item: PreparedGraphicsItem): void {

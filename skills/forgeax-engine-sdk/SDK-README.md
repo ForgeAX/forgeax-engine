@@ -5,12 +5,12 @@
 
 Online users can install the publishable SDK carrier through npm without private GitHub Release access:
 
-The registry transport uses npm 11.17.0 in the verified toolchain. Update npm
-before installing if Node 22 supplied npm 10; its Arborist peer resolver can
-crash while resolving the Engine tool dependencies:
+The registry transport uses npm 12.2.1, pinned by the source workspace's
+`.npm-version`. Use Node 22.22.3 or 24.18.0 with this toolchain and activate the
+pinned npm before installing:
 
 ```bash
-npm install --global npm@11.17.0
+npm install --global npm@12.2.1
 pnpm dlx @forgeax/engine sdk install ~/ForgeaX/1.2.3
 ```
 
@@ -35,7 +35,7 @@ for 3D games, empty otherwise. It copies templates, installs skills,
 and creates external games with --ignore-scripts. Multiple games reuse the preflight
 instead of repeating native installation.
 
-The SDK pins pnpm 12.10.1. Full ZIPs install offline from store/pnpm/
+The SDK pins pnpm 12.15.0. Full ZIPs install offline from store/pnpm/
 without npm; generated .npmrc pins that store, so later development,
 tests, typechecks, and builds reuse it. npm carriers omit the store and install
 the same locked Engine versions from npm. Both surfaces share the pnpm lockfile and

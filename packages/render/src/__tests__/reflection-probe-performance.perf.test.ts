@@ -6,6 +6,7 @@ import {
   probeFilterIsSteady,
 } from '../reflection/filter';
 import { ReflectionProbeProjection } from '../reflection/projection';
+import { primitiveRows } from './helpers/reflection-rows';
 
 describe('ReflectionProbe steady-state performance contract', () => {
   it('keeps off and steady filter work exactly zero', () => {
@@ -46,15 +47,16 @@ describe('ReflectionProbe steady-state performance contract', () => {
         revision: 1,
       },
     ];
-    const primitives = [
-      { worldId: 0, entityKey: 8, center: [0, 0, 0] as const },
-      { worldId: 0, entityKey: 9, center: [3, 0, 0] as const },
-    ];
-    const first = projection.update(facts, primitives);
-    const second = projection.update(facts, primitives);
+    const scene = primitiveRows([
+      { worldId: 0, entityKey: 8, center: [0, 0, 0] },
+      { worldId: 0, entityKey: 9, center: [3, 0, 0] },
+    ]);
+    const first = projection.update(facts, scene.rows(), scene.centerOf);
+    const second = projection.update(facts, scene.rows(), scene.centerOf);
 
     expect(first.revision).toBe(1);
     expect(second.revision).toBe(1);
-    expect(second.scannedPrimitives).toBe(first.scannedPrimitives);
+    expect(first.scannedPrimitives).toBe(2);
+    expect(second.scannedPrimitives).toBe(0);
   });
 });

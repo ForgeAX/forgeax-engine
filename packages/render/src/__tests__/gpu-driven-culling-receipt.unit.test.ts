@@ -9,6 +9,7 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import { type GpuDrivenCullingProducerReceipt, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
@@ -116,12 +117,12 @@ function mappedCounters(view: GpuDrivenView) {
   let state = 'unmapped';
   let settle: (() => void) | undefined;
   const mapped = {
-    getMappedRange: () => ok(bytes),
+    getMappedRange: vi.fn((_offset?: number, _size?: number) => ok(bytes)),
     unmap: vi.fn(() => {
       state = 'unmapped';
     }),
   };
-  const mapAsync = vi.fn(() => {
+  const mapAsync = vi.fn((_mode: number, _offset?: number, _size?: number) => {
     state = 'pending';
     return new Promise<ReturnType<typeof ok<typeof mapped>>>((resolve) => {
       settle = () => {
@@ -142,6 +143,7 @@ function mappedCounters(view: GpuDrivenView) {
       settle();
     },
     unmap: mapped.unmap,
+    getMappedRange: mapped.getMappedRange,
   };
 }
 
@@ -154,6 +156,10 @@ describe('existing shadow culling readback producer receipt', () => {
     mapped.settle();
     expect(await pending).toEqual({ texelCulled: 6, cameraCulled: 8 });
     expect(mapped.mapAsync).toHaveBeenCalledTimes(1);
+    // Only the per-batch counters are mapped: the visible-member and indirect
+    // tail scale with candidate capacity and never cross for culling counts.
+    expect(mapped.mapAsync).toHaveBeenCalledWith(GPU_BUFFER_USAGE_MAP_READ, 0, 2 * stride);
+    expect(mapped.getMappedRange).toHaveBeenCalledWith(0, 2 * stride);
     expect(mapped.unmap).toHaveBeenCalledTimes(1);
     f.view.dispose();
     f.scene.dispose();

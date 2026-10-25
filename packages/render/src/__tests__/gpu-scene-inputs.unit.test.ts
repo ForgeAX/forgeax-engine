@@ -146,12 +146,13 @@ it.each([
     const address = frame.members(batch.candidates);
     const buffer = frame.buffer().unwrap();
     frame.seal().unwrap();
-    expect(inputs.memberNodesWritten).toBe(1);
+    // One member node and its one-record page.
+    expect(inputs.memberNodesWritten).toBe(2);
     expect(buffer.byteLength).toBe(1024);
     const uploaded = writes.mock.calls.find(([target]) => target === buffer.buffer)?.[2];
     if (!(uploaded instanceof Uint32Array)) throw new Error('Missing actual shared input words');
     expect(uploaded[address + 3]).toBe(count);
-    expect(uploaded[address + 4]).toBe(10);
+    expect(uploaded[(uploaded[address + 4] as number) + 1]).toBe(10);
     expect(iterator).not.toHaveBeenCalled();
   } finally {
     iterator.mockRestore();

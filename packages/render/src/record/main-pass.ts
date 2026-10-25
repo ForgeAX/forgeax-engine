@@ -973,6 +973,7 @@ function createPerSubmeshMaterialBgDeps(
       : { planarReflectionView: c.planarReflectionView }),
     materialBgShared: frameState.materialBgShared,
     materialBgAssemblyCache: c.materialBgAssemblyCache,
+    diagnostics: materialDiagnosticsEnabled(),
     frameState,
     bindGroupCounts: c.bindGroupCounts,
     ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),
@@ -1015,8 +1016,6 @@ function publishGpuDrivenMaterialSlots(
   else resources.bundleDescriptor = options.bundleDescriptor;
   if (selectedGpuMaterialSlots === undefined) delete resources.selectedMaterialSlots;
   else resources.selectedMaterialSlots = selectedGpuMaterialSlots;
-  if (c.cameraVisible === undefined) delete resources.cameraVisible;
-  else resources.cameraVisible = c.cameraVisible;
   // Rebuilt for every pass: keep each material's class map and refill it in
   // place, then drop materials this pass no longer binds. The GPU-driven
   // encoder only reads this table during the pass.

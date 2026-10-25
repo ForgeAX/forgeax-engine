@@ -29,9 +29,9 @@ import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   DispatchList,
-  ExtractedLights,
   MaterialSnapshot,
   RenderableSnapshot,
+  SpotLightSnapshot,
 } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
@@ -41,7 +41,8 @@ import type {
   PersistentShadowCasterProjection,
 } from '../scene/render-scene';
 import { SHADOW_CASTER_PASS_SELECTOR } from '../systems/pass-selector';
-import { directDrawRows } from './direct-draws';
+import type { ViewLights } from '../world/render-lights';
+import { directDrawPhase } from './direct-draw-phase';
 import type { ShadowMeshInput } from './directional-shadow-cache';
 import type { CubeCaptureFrameInput, FrameRecordingAttempt, GpuDrivenRecordInput } from './frame';
 import type { RenderFrameState, ValidatedRenderable } from './frame-snapshot';
@@ -59,7 +60,11 @@ type PrepareSources = (
   sources: FrameList<RenderableSnapshot>,
   dispatch?: DispatchList,
 ) => readonly ValidatedRenderable[];
-type PrepareShadowGeometry = (mesh: MeshGpuHandles, material: MaterialSnapshot) => MeshGpuHandles;
+type PrepareShadowGeometry = (
+  mesh: MeshGpuHandles,
+  material: MaterialSnapshot,
+  source?: RenderableSnapshot,
+) => MeshGpuHandles;
 type LodRows = (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[];
 
 /** Clustered Standard lighting binds its cluster owner only with local lights or SSAO. */
@@ -247,18 +252,18 @@ export function gpuDrivenPrepareRequest(
   };
 }
 
-function shadowCasterChannelsFor(lights: ExtractedLights, identity: ShadowViewIdentity) {
-  return identity.kind === 'directional'
-    ? lights.directionalCsmConfig?.shadowCasterChannels
-    : identity.kind === 'point'
-      ? lights.pointShadow[identity.index]?.shadowCasterChannels
-      : lights.spot.filter((light) => (light.shadowAtlasTile ?? -1) >= 0)[identity.index]
-          ?.shadowCasterChannels;
+/** The light owning a shadow view's layer: its stable cube layer or spot tile. */
+function shadowLightOf(lights: ViewLights, identity: ShadowViewIdentity) {
+  return identity.kind === 'point'
+    ? lights.pointShadow.find((light) => light.shadowAtlasLayer === identity.index)
+    : identity.kind === 'spot'
+      ? lights.spot.find((light) => light.shadowAtlasTile === identity.index)
+      : undefined;
 }
 
 function pushShadowViewRequest(
   views: ShadowViewRequest[],
-  lights: ExtractedLights,
+  lights: ViewLights,
   planesByView: ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
@@ -268,7 +273,10 @@ function pushShadowViewRequest(
 ): void {
   views.push({
     identity,
-    casterChannels: shadowCasterChannelsFor(lights, identity),
+    casterChannels:
+      identity.kind === 'directional'
+        ? lights.directionalCsmConfig?.shadowCasterChannels
+        : shadowLightOf(lights, identity)?.shadowCasterChannels,
     planes: planesByView.get(shadowViewIdentityKey(identity)) ?? shadowPlanes(matrix),
     matrix,
     targetSize,
@@ -280,67 +288,57 @@ function pushShadowViewRequest(
   });
 }
 
-/** Directional cascades, point cube faces and atlas spots, in GPU shadow view order. */
+/**
+ * Every shadow view of this view: its directional cascades, then the Render
+ * World's point-face and spot views, each keyed by its light's stable layer.
+ */
 function gpuShadowViewRequests(
-  lights: ExtractedLights,
+  lights: ViewLights,
   planesByView: ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
   directionalLimit: number | undefined,
 ): ShadowViewRequest[] {
   const views: ShadowViewRequest[] = [];
+  const quality = lights.cascades?.directionalShadowQuality;
   const directionalCameraCull =
-    lights.directionalShadowQuality === undefined
+    quality === undefined
       ? undefined
       : shadowCameraCullDilation(
-          directionalShadowFilterRadiusTexels(lights.directionalShadowQuality),
+          directionalShadowFilterRadiusTexels(quality),
           lights.normalBias ?? 0.05,
           targetSize,
         );
-  for (const [index, matrix] of (lights.lightViewProj ?? []).entries()) {
-    if (directionalLimit !== undefined && index >= directionalLimit) continue;
+  for (const view of lights.shadowViews) {
+    const identity = view.identity;
+    if (
+      identity.kind === 'directional' &&
+      directionalLimit !== undefined &&
+      identity.index >= directionalLimit
+    )
+      continue;
+    const spot =
+      identity.kind === 'spot'
+        ? (shadowLightOf(lights, identity) as SpotLightSnapshot | undefined)
+        : undefined;
     pushShadowViewRequest(
       views,
       lights,
       planesByView,
       targetSize,
       graphGeneration,
-      { kind: 'directional', index },
-      matrix,
-      directionalCameraCull,
+      identity,
+      view.matrix,
+      identity.kind === 'directional'
+        ? directionalCameraCull
+        : spot === undefined
+          ? undefined
+          : shadowCameraCullDilation(
+              Math.min(2, Math.max(0, (Math.round(spot.pcfKernelSize ?? 3) - 1) / 2)),
+              0,
+              targetSize,
+            ),
     );
-  }
-  for (const [index, point] of lights.pointShadow.entries()) {
-    for (let face = 0; face < 6; face += 1) {
-      pushShadowViewRequest(
-        views,
-        lights,
-        planesByView,
-        targetSize,
-        graphGeneration,
-        { kind: 'point', index, face },
-        point.shadowMatrices.subarray(face * 16, face * 16 + 16),
-      );
-    }
-  }
-  let shadowSpotIndex = 0;
-  for (const spot of lights.spot) {
-    if (spot.lightViewProj === undefined) continue;
-    pushShadowViewRequest(
-      views,
-      lights,
-      planesByView,
-      targetSize,
-      graphGeneration,
-      { kind: 'spot', index: shadowSpotIndex },
-      spot.lightViewProj,
-      shadowCameraCullDilation(
-        Math.min(2, Math.max(0, (Math.round(spot.pcfKernelSize ?? 3) - 1) / 2)),
-        0,
-        targetSize,
-      ),
-    );
-    shadowSpotIndex += 1;
   }
   return views;
 }
@@ -358,7 +356,7 @@ export function prepareGpuDrivenOwner(
   request: GpuDrivenPrepareInput,
   profilePhase: RecordProfileRunner | undefined,
   gpuShadowViews: boolean,
-  lights: ExtractedLights,
+  lights: ViewLights,
   shadowPlanesByView: () => ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
@@ -371,7 +369,7 @@ export function prepareGpuDrivenOwner(
   }
   if (prepared.value === undefined) return true;
   attempt.preparedGpuDriven = prepared.value;
-  const shadowViews = gpuShadowViews
+  const requests = gpuShadowViews
     ? gpuShadowViewRequests(
         lights,
         shadowPlanesByView(),
@@ -385,7 +383,7 @@ export function prepareGpuDrivenOwner(
   const shadowUpdate = runRecordProfilePhase(
     profilePhase,
     'record/gpu-driven-prepare/shadow-views',
-    () => updateShadowViews(shadowViews),
+    () => updateShadowViews(requests),
   );
   if (!shadowUpdate.ok) {
     internals.errorRegistry.fire(shadowUpdate.error);
@@ -405,80 +403,89 @@ function captureViewsCastShadows(
   );
 }
 
+/** Shadow consumers of one view's retained direct phases. */
+const GPU_LANE_SHADOWS = {};
+const DIRECT_SHADOWS = {};
+
+/** Shadow rows of one retained phase; `derived` reports material-derived geometry. */
+export interface DirectShadowRows {
+  readonly rows: readonly ValidatedRenderable[];
+  readonly derived: boolean;
+}
+
+/** Inputs both shadow consumers share. */
+export interface DirectShadowInputs {
+  readonly scene: PersistentGpuDrivenState;
+  readonly view: object;
+  readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
+  readonly worlds: readonly RenderResourceScope[];
+  readonly materials: MaterialFrame;
+  readonly prepareSources: PrepareSources;
+  readonly viewDraws: FrameList<RenderableSnapshot> | undefined;
+  readonly prepareGeometry: PrepareShadowGeometry;
+  readonly geometry: readonly unknown[];
+  readonly lodRows: LodRows;
+}
+
+function shadowRows(
+  inputs: DirectShadowInputs,
+  consumer: object,
+  selection: readonly unknown[],
+  select: (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined,
+): DirectShadowRows {
+  const phase = directDrawPhase(inputs.view, consumer);
+  const output = phase.sync({
+    scene: inputs.scene,
+    selection,
+    select,
+    meshes: inputs.meshes,
+    worlds: inputs.worlds,
+    shadow: true,
+    materials: inputs.materials,
+    prepareUnbatched: inputs.prepareSources,
+    viewDraws: inputs.viewDraws ?? [],
+    prepareGeometry: inputs.prepareGeometry,
+    lod: (rows) => rows,
+    geometry: inputs.geometry,
+  });
+  return { rows: inputs.lodRows(output.rows), derived: phase.derivesGeometry };
+}
+
 /** Unbatched and capture-visible shadow casters beside the GPU shadow view pool. */
 export function gpuLaneDirectShadowRows(
   prepared: PreparedGpuDrivenFrame | undefined,
-  scene: PersistentGpuDrivenState | undefined,
   gpuShadowViews: boolean,
   batchExecutions: CollectedMaterialArtifacts['batchExecutions'],
   captureWorkCount: number,
   cubeCapture: CubeCaptureFrameInput | undefined,
-  meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
-  worlds: readonly RenderResourceScope[],
-  prepareSources: PrepareSources,
-  viewDraws: FrameList<RenderableSnapshot> | undefined,
-  prepareShadowGeometry: PrepareShadowGeometry,
-  shadowLodRows: LodRows,
-): readonly ValidatedRenderable[] | undefined {
+  inputs: DirectShadowInputs,
+): DirectShadowRows | undefined {
   if (
     !gpuShadowViews ||
     prepared?.shadowViewPool === undefined ||
-    scene?.unbatchedSlots === undefined
+    inputs.scene.unbatchedSlots === undefined
   ) {
     return undefined;
   }
   const captureShadows = captureViewsCastShadows(captureWorkCount, cubeCapture);
-  return shadowLodRows(
-    directDrawRows(
-      scene,
-      (binding) => {
-        const execution = batchExecutions.get(binding)?.shadow;
-        if (execution === undefined) throw new Error('Missing accepted Shadow execution');
-        if (execution.route === 'none') return undefined;
-        return captureShadows || execution.route === 'direct' ? execution.material : undefined;
-      },
-      meshes,
-      worlds,
-      'shadow',
-      prepareSources,
-      viewDraws,
-      prepareShadowGeometry,
-    ),
-  );
+  return shadowRows(inputs, GPU_LANE_SHADOWS, [batchExecutions, captureShadows], (binding) => {
+    const execution = batchExecutions.get(binding)?.shadow;
+    if (execution === undefined) throw new Error('Missing accepted Shadow execution');
+    if (execution.route === 'none') return undefined;
+    return captureShadows || execution.route === 'direct' ? execution.material : undefined;
+  });
 }
 
 /** CPU shadow rows when the GPU lane did not provide its own direct roster. */
-export function validateDirectShadowRows(
-  nativeScene: PersistentGpuDrivenState | undefined,
-  sourceRenderables: FrameList<RenderableSnapshot>,
-  dispatch: DispatchList,
-  materials: MaterialFrame,
-  meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
-  worlds: readonly RenderResourceScope[],
-  prepareSources: PrepareSources,
-  viewDraws: FrameList<RenderableSnapshot> | undefined,
-  prepareShadowGeometry: PrepareShadowGeometry,
-  shadowLodRows: LodRows,
-): readonly ValidatedRenderable[] {
-  if (nativeScene === undefined) return shadowLodRows(prepareSources(sourceRenderables, dispatch));
-  return shadowLodRows(
-    directDrawRows(
-      nativeScene,
-      (binding) => {
-        const material = materials.get(binding.material);
-        if (material === undefined) throw new Error('Shadow draw requires its accepted material');
-        return materialMatchesPass(material, SHADOW_CASTER_PASS_SELECTOR, undefined, undefined)
-          ? material.snapshot
-          : undefined;
-      },
-      meshes,
-      worlds,
-      'shadow',
-      prepareSources,
-      viewDraws,
-      prepareShadowGeometry,
-    ),
-  );
+export function validateDirectShadowRows(inputs: DirectShadowInputs): DirectShadowRows {
+  const { materials } = inputs;
+  return shadowRows(inputs, DIRECT_SHADOWS, [], (binding) => {
+    const material = materials.get(binding.material);
+    if (material === undefined) throw new Error('Shadow draw requires its accepted material');
+    return materialMatchesPass(material, SHADOW_CASTER_PASS_SELECTOR, undefined, undefined)
+      ? material.snapshot
+      : undefined;
+  });
 }
 
 export function collectDirectShadowMaterials(

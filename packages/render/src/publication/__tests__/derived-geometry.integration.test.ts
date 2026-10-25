@@ -13,10 +13,10 @@ import { InstanceProjectionStore } from '../../instances';
 import { Materials } from '../../materials';
 import { SkinTasks } from '../../record/skin-tasks';
 import { PersistentRenderScene } from '../../scene/render-scene';
-import { renderPublicationTransfers } from '../contract';
 import { preparePublicationGeometry } from '../prepare-geometry';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing expected render projection');
@@ -46,18 +46,22 @@ function fixture() {
   const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   const identity = { source: 'derived-geometry', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
-  const receiver = new RenderPublicationReceiver(identity);
-  const scene = new PersistentRenderScene({ assets });
   const instances = new InstanceProjectionStore();
+  const receiver = new RenderPublicationReceiver(identity, undefined, (prepared) =>
+    preparePublicationGeometry(prepared, assets, instances),
+  );
+  const scene = new PersistentRenderScene({ assets });
   const publish = () => {
     world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const received = receiver.accept(packet).unwrap();
-    const prepared = preparePublicationGeometry(received, assets, instances);
-    const frame = scene.consumePublication(prepared);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const frame = scene.consumePublication(
+      receiver.accept(encodeRenderPublication(packet)).unwrap(),
+    );
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, frame };
   };
   const spawn = () =>

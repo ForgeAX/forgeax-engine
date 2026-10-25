@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // hello-scene-nesting headless smoke — dawn-node structural smoke.
 //
 // This script boots dawn-node WebGPU, creates a renderer with inline
@@ -273,9 +274,17 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  else void renderer.observe(r.value, { include: ['draws'] });
+  // Asynchronous scene pipeline preparation may hold early pictures pending.
+  try {
+    const frame = await drawReadyFrame(renderer, {
+      leases: [lease],
+      camera: { lease },
+      environment: { lease },
+    });
+    void renderer.observe(frame, { include: ['draws'] });
+  } catch (error) {
+    console.error(`[smoke] draw frame ${i} error: ${error?.code ?? String(error)}`);
+  }
   framesObserved++;
 }
 const device = sharedDevice;

@@ -4,7 +4,9 @@ import type { Component } from '../component';
 import * as componentOwner from '../component';
 import { type EntityHandle, entityIndex } from '../entity-handle';
 
+import { archetypeComponentIndex } from './archetype';
 import type { ArchetypeGraph } from './archetype-graph';
+import type { EntityRecords } from './entity-records';
 
 export const PROJECTION_BLOCK_SIZE = 256;
 
@@ -95,14 +97,10 @@ export interface ChangeTicks {
   changed: number;
 }
 
-interface EntityLocation {
-  readonly archetypeId: number;
-  readonly archetypeRow: number;
-}
-
 export function readComponentAdded(
   graph: ArchetypeGraph,
-  location: EntityLocation,
+  records: EntityRecords,
+  slot: number,
   entity: EntityHandle,
   componentId: number,
 ): number | undefined {
@@ -112,28 +110,31 @@ export function readComponentAdded(
     if (denseIndex < 0) return undefined;
     return sparseSet.added[denseIndex] ?? 0;
   }
-  const archetype = graph.archetypes[location.archetypeId];
+  const archetype = graph.archetypes[records.archetypeId[slot] as number];
   if (archetype === undefined) return undefined;
   const added = graph.tables[archetype.tableId]?.storage.get(componentId)?.added;
   if (added === undefined) return undefined;
-  const tableRow = archetype.rows[location.archetypeRow] ?? -1;
+  const tableRow = archetype.rows[records.archetypeRow[slot] as number] ?? -1;
   return added[tableRow] ?? 0;
 }
 
 export function markComponentsAdded(
   graph: ArchetypeGraph,
-  location: EntityLocation,
+  records: EntityRecords,
+  slot: number,
   entity: EntityHandle,
-  componentIds: readonly number[],
+  componentIds: ArrayLike<number>,
   epoch: number,
 ): void {
-  const archetype = graph.archetypes[location.archetypeId];
+  const archetype = graph.archetypes[records.archetypeId[slot] as number];
   const table = archetype === undefined ? undefined : graph.tables[archetype.tableId];
-  const tableRow = archetype?.rows[location.archetypeRow] ?? -1;
-  for (const componentId of componentIds) {
-    const component = archetype?.components.find(
-      (candidate) => componentOwner.componentId(candidate) === componentId,
-    );
+  const tableRow = archetype?.rows[records.archetypeRow[slot] as number] ?? -1;
+  for (let index = 0; index < componentIds.length; index++) {
+    const componentId = componentIds[index] as number;
+    const component =
+      archetype === undefined
+        ? undefined
+        : archetype.components[archetypeComponentIndex(archetype, componentId)];
     if (component?.storage === 'sparse') {
       insertSparseTag(getOrCreateSparseTagSet(graph, component), entity, epoch);
       continue;

@@ -30,6 +30,8 @@ export interface Table {
   readonly key: string;
   readonly components: ReadonlyArray<Component>;
   storage: Map<ComponentId, TableComponentStorage>;
+  /** The essential `Entity.self` column (replaced with the others on growth). */
+  entities: Column;
   size: number;
   capacity: number;
   version: number;
@@ -94,11 +96,14 @@ export function createTable(
       added: new Float64Array(capacity),
     });
   }
+  const entities = storage.get(componentId(Entity))?.fields.get('self');
+  if (entities === undefined) throw new Error('Table has no Entity.self column.');
   return {
     id,
     key: tableKey(sortedComponents.map((component) => componentId(component))),
     components: sortedComponents,
     storage,
+    entities,
     size: 0,
     capacity,
     version: 0,
@@ -110,8 +115,7 @@ export function createTable(
 export function appendTableRow(table: Table, entity: EntityHandle, epoch = 0): number {
   if (table.size === table.capacity) growTable(table, table.capacity * 2);
   const row = table.size;
-  const self = table.storage.get(componentId(Entity))?.fields.get('self');
-  if (self !== undefined) self.view[row] = entity as number;
+  table.entities.view[row] = entity as number;
   table.size = row + 1;
   if (row === 0) for (const directory of table.activeDirectories) directory.add(table);
   markTableMembership(table, row, epoch);
@@ -131,17 +135,40 @@ export function removeTableRow(
     table.size = lastRow;
     return null;
   }
-  const movedEntity = (table.storage.get(componentId(Entity))?.fields.get('self')?.view[lastRow] ??
-    0) as EntityHandle;
+  const movedEntity = (table.entities.view[lastRow] ?? 0) as EntityHandle;
   for (const componentStorage of table.storage.values()) {
-    for (const column of componentStorage.fields.values()) {
-      const arity = column.arity;
-      column.view.set(column.view.subarray(lastRow * arity, lastRow * arity + arity), row * arity);
-    }
+    for (const column of componentStorage.fields.values())
+      copyColumnRow(column, lastRow, column, row);
     componentStorage.added[row] = componentStorage.added[lastRow] ?? 0;
   }
   table.size = lastRow;
   return { movedEntity, newRow: row };
+}
+
+/**
+ * Copy one row's stride window between same-typed columns. Short strides copy
+ * element-wise: a `subarray` per column per row move is pure garbage.
+ */
+export function copyColumnRow(
+  source: Column,
+  sourceRow: number,
+  target: Column,
+  targetRow: number,
+): void {
+  const arity = source.arity;
+  if (arity === 1) {
+    target.view[targetRow] = source.view[sourceRow] as number;
+    return;
+  }
+  const from = sourceRow * arity;
+  const to = targetRow * arity;
+  if (arity <= 64) {
+    const sourceView = source.view;
+    const targetView = target.view;
+    for (let i = 0; i < arity; i++) targetView[to + i] = sourceView[from + i] as number;
+    return;
+  }
+  target.view.set(source.view.subarray(from, from + arity), to);
 }
 
 export function growTable(table: Table, targetCapacity: number): void {
@@ -154,6 +181,9 @@ export function growTable(table: Table, targetCapacity: number): void {
       fields.set(fieldName, growColumn(column, capacity));
     }
     componentStorage.fields = fields;
+    const self = fields.get('self');
+    if (self !== undefined && componentStorage.component === (Entity as unknown as Component))
+      table.entities = self;
     const added = new Float64Array(capacity);
     added.set(componentStorage.added);
     componentStorage.added = added;

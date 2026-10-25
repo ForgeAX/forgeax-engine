@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { projectDirectionalShadowInspectionSource } from '../../assembly/directional-shadow-inspection';
 import { prepareExtractContext } from '../../render-system-extract';
 import { extractFrame } from '../../render-system-extract-tail';
+import { fitDirectionalCascades } from '../../world/render-lights';
 import { Camera, orthographic, perspective } from '../camera';
 import { DirectionalLight, DirectionalShadowFilterValue } from '../directional-light';
 
@@ -49,8 +50,9 @@ describe('Camera and directional shadow defaults', () => {
     expect(light.mapSize).toBe(2048);
     expect(light.shadowFilter).toBe(DirectionalShadowFilterValue.pcfVogel);
     const frame = extractFrame(world, prepareExtractContext(world));
-    expect(frame.lights.splitPlanes?.[8]).toBe(expected);
-    expect(frame.lights.directionalShadowQuality).toEqual({ kind: 'pcf-vogel' });
+    const cascades = fitDirectionalCascades(frame.lights, { camera: frame.cameras[0] });
+    expect(cascades?.splitPlanes[8]).toBe(expected);
+    expect(cascades?.directionalShadowQuality).toEqual({ kind: 'pcf-vogel' });
   });
 
   it('reports the accepted five-sample receiver without relabeling PCF5', () => {

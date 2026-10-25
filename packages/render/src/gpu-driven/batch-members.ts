@@ -1,6 +1,5 @@
-import { type FrameList, FrameListBase, FrameProjection } from '../scene/frame-list';
-import { changes, type Node, nodes, prefix, put, remove } from '../scene/frame-tree';
-import { TreeFrame } from '../scene/frame-tree-list';
+import { FrameListBase } from '../scene/frame-list';
+import { changes, type Node, nodes, put, remove, treeKind } from '../scene/frame-tree';
 import { captureMaterialOverrides } from '../scene/mesh-materials';
 import { captureBatchGeometry, captureBatchLod } from './batch-execution';
 import type {
@@ -25,116 +24,196 @@ function numeric(value: number): number {
   return value;
 }
 
-const WIDTH = 64;
-type Page = readonly GpuDrivenCandidate[];
-const EMPTY: Page = Object.freeze([]);
-type Candidates = GpuDrivenCandidate | Page | CandidatePages;
+/**
+ * Member facts interleaved per member, in ascending slot order. A page is
+ * never written after its owner places it; edits copy one page.
+ */
+export const MEMBER_PAGE = Object.freeze({
+  stride: 5,
+  slot: 0,
+  generation: 1,
+  entity: 2,
+  drawItem: 3,
+  count: 4,
+});
+const STRIDE = MEMBER_PAGE.stride;
+const GENERATION = MEMBER_PAGE.generation;
+const ENTITY = MEMBER_PAGE.entity;
+const DRAW = MEMBER_PAGE.drawItem;
+const COUNT = MEMBER_PAGE.count;
+const PAGE_MAX = 64;
+/** A page smaller than this merges into a neighbor when they fit one page. */
+const PAGE_MERGE = PAGE_MAX / 4;
+export type MemberPage = Float64Array;
+/** Admission scratch: `#put` copies the facts it keeps. */
+const ADMITTED = new Float64Array(STRIDE);
 
-function isSingle(value: Candidates): value is GpuDrivenCandidate {
-  return 'primitiveIndex' in value;
+/** Pages key by their first slot and weigh their candidates; one node kind keeps keys unboxed. */
+const MEMBER_KIND = treeKind();
+
+function pageWeight(page: MemberPage): number {
+  let weight = 0;
+  for (let base = COUNT; base < page.length; base += STRIDE) weight += page[base] as number;
+  return weight;
 }
 
-function candidateCount(value: Candidates): number {
-  return isSingle(value) ? 1 : value.length;
+function place(
+  root: Node<MemberPage> | undefined,
+  page: MemberPage,
+  weight: number,
+): Node<MemberPage> {
+  return put(root, page, 0, page[0] as number, weight, MEMBER_KIND);
 }
 
-function candidateAt(value: Candidates, index: number): GpuDrivenCandidate | undefined {
-  return isSingle(value) ? (index === 0 ? value : undefined) : value.at(index);
-}
-
-function candidate(member: GpuDrivenBatchMember, instanceOrdinal: number): GpuDrivenCandidate {
-  return Object.freeze({
-    primitiveIndex: member.primitiveIndex,
-    generation: member.generation,
-    drawItemIndex: member.drawItemIndex,
-    instanceOrdinal,
-  });
-}
-
-function resizedPage(
-  member: GpuDrivenBatchMember,
+/** Element copy; a short page loop allocates no subarray views. */
+function copy(
+  target: MemberPage,
+  at: number,
+  source: MemberPage,
   start: number,
-  length: number,
-  previous: Candidates = EMPTY,
-): Page {
-  const values = new Array<GpuDrivenCandidate>(length);
-  const retained = Math.min(length, candidateCount(previous));
-  for (let lane = 0; lane < retained; lane++)
-    values[lane] = candidateAt(previous, lane) as GpuDrivenCandidate;
-  for (let lane = retained; lane < length; lane++) values[lane] = candidate(member, start + lane);
-  return Object.freeze(values);
+  end: number,
+): void {
+  for (let index = start; index < end; index++)
+    target[at + index - start] = source[index] as number;
 }
 
-function pageAt(root: Node<Page> | undefined, key: number): Page | undefined {
-  while (root !== undefined) {
-    if (key === root.key) return root.value;
-    root = key < root.key ? root.left : root.right;
-  }
-  return undefined;
-}
-
-/** Candidate objects are created at admission, never at each execution read. */
-class CandidatePages extends FrameListBase<GpuDrivenCandidate> {
-  readonly length: number;
-  constructor(readonly root: Node<Page> | undefined) {
-    super();
-    sealPath(root);
-    this.length = root?.count ?? 0;
-    Object.freeze(this);
-  }
-  // Only the retained same-binding owner may resize. Recreate/move/generation
-  // replacement must start with an empty page root, even at equal cardinality.
-  resize(member: GpuDrivenBatchMember): CandidatePages {
-    const count = member.instanceCount;
-    if (count === this.length) return this;
-    if (count === 0) return new CandidatePages(undefined);
-    let root = count < this.length ? prefix(this.root, 0, Math.ceil(count / WIDTH)) : this.root;
-    const firstPage = Math.floor(Math.min(count, this.length) / WIDTH);
-    const lastPage = Math.ceil(count / WIDTH);
-    for (let key = firstPage; key < lastPage; key++) {
-      const start = key * WIDTH;
-      const length = Math.min(WIDTH, count - start);
-      const previous = pageAt(root, key);
-      root = put(root, resizedPage(member, start, length, previous), 0, key, length);
+/** The page holding `slot`'s position: the greatest first slot <= slot, else the first page. */
+function pageNode(root: Node<MemberPage>, slot: number): Node<MemberPage> {
+  let node: Node<MemberPage> | undefined = root;
+  let floor: Node<MemberPage> | undefined;
+  let first = root;
+  while (node !== undefined) {
+    if (node.key <= slot) {
+      floor = node;
+      node = node.right;
+    } else {
+      first = node;
+      node = node.left;
     }
-    return new CandidatePages(root);
   }
-  at(index: number): GpuDrivenCandidate | undefined {
-    index = Math.trunc(index) || 0;
-    if (index < 0) index += this.length;
-    if (index < 0 || index >= this.length) return undefined;
-    return pageAt(this.root, Math.floor(index / WIDTH))?.[index % WIDTH];
+  if (floor !== undefined) return floor;
+  while (first.left !== undefined) first = first.left;
+  return first;
+}
+
+function successor(root: Node<MemberPage> | undefined, key: number): Node<MemberPage> | undefined {
+  let found: Node<MemberPage> | undefined;
+  while (root !== undefined) {
+    if (root.key > key) {
+      found = root;
+      root = root.left;
+    } else root = root.right;
   }
-  *[Symbol.iterator](): Generator<GpuDrivenCandidate> {
-    for (const page of nodes(this.root))
-      for (let lane = 0; lane < page.value.length; lane++)
-        yield page.value[lane] as GpuDrivenCandidate;
+  return found;
+}
+
+function predecessor(
+  root: Node<MemberPage> | undefined,
+  key: number,
+): Node<MemberPage> | undefined {
+  let found: Node<MemberPage> | undefined;
+  while (root !== undefined) {
+    if (root.key < key) {
+      found = root;
+      root = root.right;
+    } else root = root.left;
+  }
+  return found;
+}
+
+/** First index in `[start, end)` whose slot is >= `slot` (or > it when `after`). */
+function slotBound(
+  slots: readonly number[],
+  slot: number,
+  start: number,
+  end: number,
+  after: boolean,
+): number {
+  while (start < end) {
+    const middle = (start + end) >>> 1;
+    const value = slots[middle] as number;
+    if (value < slot || (after && value === slot)) start = middle + 1;
+    else end = middle;
+  }
+  return start;
+}
+
+/** Ascending `slots[start, end)` held by pages under `node`, appended to `out`. */
+function heldSlotsIn(
+  node: Node<MemberPage> | undefined,
+  slots: readonly number[],
+  start: number,
+  end: number,
+  out: number[],
+): void {
+  while (node !== undefined && start < end) {
+    const low = slotBound(slots, node.key, start, end, false);
+    heldSlotsIn(node.left, slots, start, low, out);
+    const page = node.value;
+    const high = slotBound(slots, page[page.length - STRIDE] as number, low, end, true);
+    let base = 0;
+    for (let index = low; index < high; index++) {
+      const slot = slots[index] as number;
+      while (base < page.length && (page[base] as number) < slot) base += STRIDE;
+      if (base < page.length && page[base] === slot) out.push(slot);
+    }
+    start = high;
+    node = node.right;
   }
 }
 
-export interface BatchMemberEntry {
-  readonly member: GpuDrivenBatchMember;
-  readonly candidates: Candidates;
+/** Base offset of the first member whose slot is >= `slot`. */
+function lowerBound(page: MemberPage, slot: number): number {
+  let low = 0;
+  let high = page.length / STRIDE;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((page[middle * STRIDE] as number) < slot) low = middle + 1;
+    else high = middle;
+  }
+  return low * STRIDE;
 }
 
-/** One candidate is its own extent; only larger extents require containers. */
-function resizeCandidates(member: GpuDrivenBatchMember, previous: Candidates = EMPTY): Candidates {
-  const count = member.instanceCount;
-  if (count === candidateCount(previous)) return previous;
-  if (count === 0) return EMPTY;
-  if (count === 1) return candidateAt(previous, 0) ?? candidate(member, 0);
-  if (count <= WIDTH) return resizedPage(member, 0, count, previous);
-  const seed = isSingle(previous) ? Object.freeze([previous]) : previous;
-  const pages =
-    seed instanceof CandidatePages
-      ? seed
-      : new CandidatePages(seed.length === 0 ? undefined : put(undefined, seed, 0, 0, seed.length));
-  return pages.resize(member);
+function memberOf(page: MemberPage, base: number): GpuDrivenBatchMember {
+  return {
+    primitiveIndex: page[base] as number,
+    generation: page[base + GENERATION] as number,
+    entityKey: page[base + ENTITY] as number,
+    drawItemIndex: page[base + DRAW] as number,
+    instanceCount: page[base + COUNT] as number,
+  };
 }
 
-/** Candidate order shares the member root; reading never allocates a candidate. */
+/** Candidates are read views of their member's facts, never stored. */
+function candidateOf(page: MemberPage, base: number, instanceOrdinal: number): GpuDrivenCandidate {
+  return {
+    primitiveIndex: page[base] as number,
+    generation: page[base + GENERATION] as number,
+    drawItemIndex: page[base + DRAW] as number,
+    instanceOrdinal,
+  };
+}
+
+function sameFacts(left: MemberPage, a: number, right: MemberPage, b: number): boolean {
+  for (let column = 0; column < STRIDE; column++)
+    if (left[a + column] !== right[b + column]) return false;
+  return true;
+}
+
+/** Pages a changed root path holds, ascending by first slot. */
+function changedPages(pages: MemberPage[]): MemberPage[] {
+  return pages.sort((left, right) => (left[0] as number) - (right[0] as number));
+}
+
+/**
+ * The canonical batch membership: a persistent treap of numeric member pages.
+ * One node and one page per up to 64 members; candidate order is member slot
+ * order, then instance ordinal. Reading never retains a per-member object.
+ */
 export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
-  #root: Node<BatchMemberEntry> | undefined;
+  #root: Node<MemberPage> | undefined;
+  #members = 0;
+  #frame: MemberFrame | undefined;
   constructor() {
     super();
     // biome-ignore lint/complexity/noArguments: reject JS root injection without allocating a rest array.
@@ -142,18 +221,19 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
       throw new TypeError('MemberCandidates owns its root; admit numeric members');
     Object.freeze(this);
   }
-  get root(): Node<BatchMemberEntry> | undefined {
+  get root(): Node<MemberPage> | undefined {
     return this.#root;
   }
   get length(): number {
     return this.#root?.count ?? 0;
   }
   get memberCount(): number {
-    return this.#root?.size ?? 0;
+    return this.#members;
   }
-  static #from(root: Node<BatchMemberEntry> | undefined): MemberCandidates {
+  static #from(root: Node<MemberPage> | undefined, members: number): MemberCandidates {
     const value = new MemberCandidates();
     value.#root = sealPath(root);
+    value.#members = members;
     return value;
   }
   static is(value: unknown): value is MemberCandidates {
@@ -164,67 +244,275 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
       Object.getPrototypeOf(value) === MemberCandidates.prototype
     );
   }
-  get(slot: number): BatchMemberEntry | undefined {
-    let node = this.#root;
-    while (node !== undefined) {
-      if (node.key === slot) return node.value;
-      node = slot < node.key ? node.left : node.right;
-    }
-    return undefined;
+  /** The page and base offset of `slot`'s member, or undefined. */
+  #find(slot: number): { page: MemberPage; base: number } | undefined {
+    if (this.#root === undefined) return undefined;
+    const page = pageNode(this.#root, slot).value;
+    const base = lowerBound(page, slot);
+    return base < page.length && page[base] === slot ? { page, base } : undefined;
+  }
+  get(slot: number): GpuDrivenBatchMember | undefined {
+    const found = this.#find(slot);
+    return found === undefined ? undefined : memberOf(found.page, found.base);
   }
   with(member: GpuDrivenBatchMember): MemberCandidates {
-    const captured = Object.freeze({
-      primitiveIndex: numeric(member.primitiveIndex),
-      generation: numeric(member.generation),
-      entityKey: numeric(member.entityKey),
-      drawItemIndex: numeric(member.drawItemIndex),
-      instanceCount: numeric(member.instanceCount),
-    });
-    const previous = this.get(captured.primitiveIndex);
-    const sameBinding =
-      previous !== undefined &&
-      previous.member.primitiveIndex === captured.primitiveIndex &&
-      previous.member.generation === captured.generation &&
-      previous.member.drawItemIndex === captured.drawItemIndex &&
-      previous.member.entityKey === captured.entityKey;
-    if (sameBinding && previous.member.instanceCount === captured.instanceCount) return this;
-    const entry = Object.freeze({
-      member: captured,
-      candidates: resizeCandidates(captured, sameBinding ? previous.candidates : EMPTY),
-    });
+    const facts = ADMITTED;
+    facts[0] = numeric(member.primitiveIndex);
+    facts[GENERATION] = numeric(member.generation);
+    facts[ENTITY] = numeric(member.entityKey);
+    facts[DRAW] = numeric(member.drawItemIndex);
+    facts[COUNT] = numeric(member.instanceCount);
+    return this.#put(facts, 0);
+  }
+  /** Admit the member at `source[base]`; an equal member keeps this owner. */
+  #put(source: MemberPage, base: number): MemberCandidates {
+    const slot = source[base] as number;
+    const count = source[base + COUNT] as number;
+    const root = this.#root;
+    if (root === undefined) {
+      const page = new Float64Array(STRIDE);
+      copy(page, 0, source, base, base + STRIDE);
+      return MemberCandidates.#from(place(undefined, page, count), 1);
+    }
+    const node = pageNode(root, slot);
+    const page = node.value;
+    const at = lowerBound(page, slot);
+    if (at < page.length && page[at] === slot) {
+      if (sameFacts(page, at, source, base)) return this;
+      const next = page.slice();
+      copy(next, at, source, base, base + STRIDE);
+      const weight = node.weight - (page[at + COUNT] as number) + count;
+      return MemberCandidates.#from(
+        put(root, next, 0, node.key, weight, MEMBER_KIND),
+        this.#members,
+      );
+    }
+    const members = this.#members + 1;
+    const full = page.length === PAGE_MAX * STRIDE;
+    if (full && at === page.length && successor(root, node.key) === undefined) {
+      // Appending past the last full page starts a page: ascending admission fills pages.
+      const tail = new Float64Array(STRIDE);
+      copy(tail, 0, source, base, base + STRIDE);
+      return MemberCandidates.#from(place(root, tail, count), members);
+    }
+    if (full) {
+      // Split around the insertion: each half is one new page.
+      const next = new Float64Array(page.length + STRIDE);
+      copy(next, 0, page, 0, at);
+      copy(next, at, source, base, base + STRIDE);
+      copy(next, at + STRIDE, page, at, page.length);
+      const half = (PAGE_MAX / 2) * STRIDE;
+      const left = next.slice(0, half);
+      const right = next.slice(half);
+      const rest = remove(root, 0, node.key);
+      return MemberCandidates.#from(
+        place(place(rest, left, pageWeight(left)), right, pageWeight(right)),
+        members,
+      );
+    }
+    const next = new Float64Array(page.length + STRIDE);
+    copy(next, 0, page, 0, at);
+    copy(next, at, source, base, base + STRIDE);
+    copy(next, at + STRIDE, page, at, page.length);
+    const weight = node.weight + count;
+    // A smaller first slot re-keys the first page.
     return MemberCandidates.#from(
-      put(this.#root, entry, 0, captured.primitiveIndex, captured.instanceCount),
+      at === 0
+        ? place(remove(root, 0, node.key), next, weight)
+        : put(root, next, 0, node.key, weight, MEMBER_KIND),
+      members,
     );
   }
   without(slot: number): MemberCandidates {
-    return this.get(slot) === undefined
-      ? this
-      : MemberCandidates.#from(remove(this.#root, 0, slot));
+    const root = this.#root;
+    if (root === undefined) return this;
+    const node = pageNode(root, slot);
+    const page = node.value;
+    const at = lowerBound(page, slot);
+    if (at >= page.length || page[at] !== slot) return this;
+    const members = this.#members - 1;
+    if (page.length === STRIDE) return MemberCandidates.#from(remove(root, 0, node.key), members);
+    const weight = node.weight - (page[at + COUNT] as number);
+    const length = page.length - STRIDE;
+    if (length < PAGE_MERGE * STRIDE) {
+      // An underfull page merges with a neighbor that still fits one page.
+      const fits = (other: Node<MemberPage> | undefined) =>
+        other !== undefined && length + other.value.length <= PAGE_MAX * STRIDE ? other : undefined;
+      const following = fits(successor(root, node.key));
+      const preceding = following === undefined ? fits(predecessor(root, node.key)) : undefined;
+      const neighbor = following ?? preceding;
+      if (neighbor !== undefined) {
+        const merged = new Float64Array(length + neighbor.value.length);
+        const offset = preceding === undefined ? 0 : neighbor.value.length;
+        copy(
+          merged,
+          preceding === undefined ? length : 0,
+          neighbor.value,
+          0,
+          neighbor.value.length,
+        );
+        copy(merged, offset, page, 0, at);
+        copy(merged, offset + at, page, at + STRIDE, page.length);
+        const rest = remove(remove(root, 0, neighbor.key), 0, node.key);
+        return MemberCandidates.#from(place(rest, merged, weight + neighbor.weight), members);
+      }
+    }
+    const next = new Float64Array(length);
+    copy(next, 0, page, 0, at);
+    copy(next, at, page, at + STRIDE, page.length);
+    return MemberCandidates.#from(
+      at === 0
+        ? place(remove(root, 0, node.key), next, weight)
+        : put(root, next, 0, node.key, weight, MEMBER_KIND),
+      members,
+    );
   }
-  membersFrame(): FrameList<GpuDrivenBatchMember> {
-    const entries = Object.freeze(new TreeFrame(this.#root));
-    return Object.freeze(new FrameProjection(entries, (entry) => entry.member));
+  /** The members `selected` admits, in fresh full pages; all admitted returns `this`. */
+  selectMembers(selected: (slot: number) => boolean): MemberCandidates {
+    let root: Node<MemberPage> | undefined;
+    let members = 0;
+    const pending = new Float64Array(PAGE_MAX * STRIDE);
+    let filled = 0;
+    let weight = 0;
+    for (const node of nodes(this.#root)) {
+      const page = node.value;
+      for (let base = 0; base < page.length; base += STRIDE) {
+        if (!selected(page[base] as number)) continue;
+        copy(pending, filled, page, base, base + STRIDE);
+        filled += STRIDE;
+        weight += page[base + COUNT] as number;
+        members++;
+        if (filled === pending.length) {
+          root = place(root, pending.slice(), weight);
+          filled = 0;
+          weight = 0;
+        }
+      }
+    }
+    if (members === this.#members) return this;
+    if (filled > 0) root = place(root, pending.slice(0, filled), weight);
+    return MemberCandidates.#from(root, members);
+  }
+  /**
+   * Re-judge `slots` of a subset previously selected from this owner's
+   * ancestry. Every other subset member must already equal this owner's member.
+   */
+  patchSelection(
+    subset: MemberCandidates,
+    slots: Iterable<number>,
+    selected: (slot: number) => boolean,
+  ): MemberCandidates {
+    let result = subset;
+    for (const slot of slots) {
+      const found = this.#find(slot);
+      result =
+        found !== undefined && selected(slot)
+          ? result.#put(found.page, found.base)
+          : result.without(slot);
+    }
+    return result.#members === this.#members ? this : result;
+  }
+  /**
+   * Append to `out` each of the ascending `slots` this owner holds a member
+   * for, in ascending order. Pages outside the remaining slot range are
+   * skipped, so a small owner or a short slot list costs only its own size.
+   */
+  heldSlots(slots: readonly number[], out: number[]): void {
+    heldSlotsIn(this.#root, slots, 0, slots.length, out);
+  }
+  /** Visit each slot whose member differs from `before`, with both members. */
+  changesSince(
+    before: MemberCandidates,
+    visit: (
+      slot: number,
+      before: GpuDrivenBatchMember | undefined,
+      after: GpuDrivenBatchMember | undefined,
+    ) => void,
+  ): void {
+    if (before.#root === this.#root) return;
+    const removed: MemberPage[] = [];
+    const added: MemberPage[] = [];
+    changes(before.#root, this.#root, (left, right) => {
+      if (left !== undefined) removed.push(left);
+      if (right !== undefined) added.push(right);
+    });
+    // A split or merge moves members between pages: compare the union by slot.
+    const lefts = changedPages(removed);
+    const rights = changedPages(added);
+    let leftPage = 0,
+      leftBase = 0,
+      rightPage = 0,
+      rightBase = 0;
+    for (;;) {
+      const left = lefts[leftPage];
+      const right = rights[rightPage];
+      if (left === undefined && right === undefined) return;
+      const leftSlot = left === undefined ? Number.POSITIVE_INFINITY : (left[leftBase] as number);
+      const rightSlot =
+        right === undefined ? Number.POSITIVE_INFINITY : (right[rightBase] as number);
+      if (leftSlot < rightSlot) visit(leftSlot, memberOf(left as MemberPage, leftBase), undefined);
+      else if (rightSlot < leftSlot)
+        visit(rightSlot, undefined, memberOf(right as MemberPage, rightBase));
+      else if (!sameFacts(left as MemberPage, leftBase, right as MemberPage, rightBase))
+        visit(
+          leftSlot,
+          memberOf(left as MemberPage, leftBase),
+          memberOf(right as MemberPage, rightBase),
+        );
+      if (leftSlot <= rightSlot && left !== undefined) {
+        leftBase += STRIDE;
+        if (leftBase === left.length) {
+          leftPage++;
+          leftBase = 0;
+        }
+      }
+      if (rightSlot <= leftSlot && right !== undefined) {
+        rightBase += STRIDE;
+        if (rightBase === right.length) {
+          rightPage++;
+          rightBase = 0;
+        }
+      }
+    }
+  }
+  /** The ordered lanes one member draws in this batch. */
+  slotCandidates(slot: number): readonly GpuDrivenCandidate[] {
+    const found = this.#find(slot);
+    if (found === undefined) return [];
+    const count = found.page[found.base + COUNT] as number;
+    return Array.from({ length: count }, (_, lane) => candidateOf(found.page, found.base, lane));
+  }
+  membersFrame(): MemberFrame {
+    this.#frame ??= new MemberFrame(this);
+    return this.#frame;
   }
   /** Native member identity lookup, independent of its instance cardinality. */
   containsSlot(slot: number, generation: number): boolean {
-    let node = this.root;
-    while (node !== undefined) {
-      if (node.key === slot) return node.weight > 0 && node.value.member.generation === generation;
-      node = slot < node.key ? node.left : node.right;
-    }
-    return false;
+    const found = this.#find(slot);
+    return (
+      found !== undefined &&
+      (found.page[found.base + COUNT] as number) > 0 &&
+      found.page[found.base + GENERATION] === generation
+    );
   }
   at(index: number): GpuDrivenCandidate | undefined {
     index = Math.trunc(index) || 0;
     if (index < 0) index += this.length;
     if (index < 0 || index >= this.length) return undefined;
-    let node = this.root;
+    let node = this.#root;
     while (node !== undefined) {
       const before = node.left?.count ?? 0;
       if (index < before) node = node.left;
-      else if (index < before + node.weight)
-        return candidateAt(node.value.candidates, index - before);
-      else {
+      else if (index < before + node.weight) {
+        const page = node.value;
+        let lane = index - before;
+        for (let base = 0; base < page.length; base += STRIDE) {
+          const count = page[base + COUNT] as number;
+          if (lane < count) return candidateOf(page, base, lane);
+          lane -= count;
+        }
+        return undefined;
+      } else {
         index -= before + node.weight;
         node = node.right;
       }
@@ -232,71 +520,90 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
     return undefined;
   }
   [Symbol.iterator](): IterableIterator<GpuDrivenCandidate> {
-    return new CandidateIterator(this.root);
+    return new PageIterator(this.#root, true) as IterableIterator<GpuDrivenCandidate>;
+  }
+}
+
+/** Members of one canonical owner, in slot order, read from its pages. */
+class MemberFrame extends FrameListBase<GpuDrivenBatchMember> {
+  readonly #owner: MemberCandidates;
+  constructor(owner: MemberCandidates) {
+    super();
+    this.#owner = owner;
+    Object.freeze(this);
+  }
+  get length(): number {
+    return this.#owner.memberCount;
+  }
+  at(index: number): GpuDrivenBatchMember | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.length;
+    if (index < 0 || index >= this.length) return undefined;
+    for (const node of nodes(this.#owner.root)) {
+      const page = node.value;
+      const members = page.length / STRIDE;
+      if (index < members) return memberOf(page, index * STRIDE);
+      index -= members;
+    }
+    return undefined;
+  }
+  [Symbol.iterator](): IterableIterator<GpuDrivenBatchMember> {
+    return new PageIterator(this.#owner.root, false) as IterableIterator<GpuDrivenBatchMember>;
   }
 }
 
 /**
- * Walks members, then each member's lanes, reusing one result object (consumers
- * read each value before the next step): a walk allocates per walk, not per lane.
+ * Walks pages, then members (and each member's lanes for candidates), reusing
+ * one result object; each step reads a fresh value from the page columns.
  */
-class CandidateIterator implements IterableIterator<GpuDrivenCandidate> {
-  readonly #members: IterableIterator<Node<BatchMemberEntry>>;
-  readonly #pages: Node<Page>[] = [];
-  #page: Node<Page> | undefined;
-  #lanes: Page | undefined;
+class PageIterator implements IterableIterator<GpuDrivenCandidate | GpuDrivenBatchMember> {
+  readonly #pages: IterableIterator<Node<MemberPage>>;
+  #page: MemberPage | undefined;
+  #base = 0;
   #lane = 0;
-  readonly #result: { value: GpuDrivenCandidate | undefined; done: boolean } = {
-    value: undefined,
-    done: false,
-  };
-  constructor(root: Node<BatchMemberEntry> | undefined) {
-    this.#members = nodes(root);
+  readonly #result: {
+    value: GpuDrivenCandidate | GpuDrivenBatchMember | undefined;
+    done: boolean;
+  } = { value: undefined, done: false };
+  constructor(
+    root: Node<MemberPage> | undefined,
+    readonly lanes: boolean,
+  ) {
+    this.#pages = nodes(root);
   }
-  #yield(value: GpuDrivenCandidate): IteratorResult<GpuDrivenCandidate> {
-    this.#result.value = value;
-    return this.#result as IteratorResult<GpuDrivenCandidate>;
-  }
-  next(): IteratorResult<GpuDrivenCandidate> {
+  next(): IteratorResult<GpuDrivenCandidate | GpuDrivenBatchMember> {
+    const result = this.#result;
     for (;;) {
-      const lanes = this.#lanes;
-      if (lanes !== undefined) {
-        if (this.#lane < lanes.length)
-          return this.#yield(lanes[this.#lane++] as GpuDrivenCandidate);
-        this.#lanes = undefined;
-      }
-      // Next page of the current paged member, in key order.
-      let page = this.#page;
-      if (page !== undefined || this.#pages.length > 0) {
-        while (page !== undefined) {
-          this.#pages.push(page);
-          page = page.left;
-        }
-        const current = this.#pages.pop();
-        if (current !== undefined) {
-          this.#page = current.right;
-          this.#lanes = current.value;
+      const page = this.#page;
+      if (page !== undefined) {
+        while (this.#base < page.length) {
+          const base = this.#base;
+          if (!this.lanes) {
+            this.#base += STRIDE;
+            result.value = memberOf(page, base);
+            return result as IteratorResult<GpuDrivenBatchMember>;
+          }
+          if (this.#lane < (page[base + COUNT] as number)) {
+            result.value = candidateOf(page, base, this.#lane++);
+            return result as IteratorResult<GpuDrivenCandidate>;
+          }
+          this.#base += STRIDE;
           this.#lane = 0;
-          continue;
         }
         this.#page = undefined;
       }
-      const member = this.#members.next();
-      if (member.done === true) {
-        this.#result.value = undefined;
-        this.#result.done = true;
-        return this.#result as IteratorResult<GpuDrivenCandidate>;
+      const next = this.#pages.next();
+      if (next.done === true) {
+        result.value = undefined;
+        result.done = true;
+        return result as IteratorResult<GpuDrivenCandidate>;
       }
-      const candidates = member.value.value.candidates;
-      if (isSingle(candidates)) return this.#yield(candidates);
-      if (candidates instanceof CandidatePages) this.#page = candidates.root;
-      else {
-        this.#lanes = candidates;
-        this.#lane = 0;
-      }
+      this.#page = next.value.value;
+      this.#base = 0;
+      this.#lane = 0;
     }
   }
-  [Symbol.iterator](): IterableIterator<GpuDrivenCandidate> {
+  [Symbol.iterator](): IterableIterator<GpuDrivenCandidate | GpuDrivenBatchMember> {
     return this;
   }
 }
@@ -451,5 +758,6 @@ function captureLeafBinding(raw: GpuDrivenBatchBinding): GpuDrivenBatchBinding {
     material: binding.material,
     geometry: captureBatchGeometry(binding.geometry),
     ...(binding.lods === undefined ? {} : { lods: Object.freeze([...binding.lods]) }),
+    ...(binding.morph === undefined ? {} : { morph: binding.morph }),
   });
 }

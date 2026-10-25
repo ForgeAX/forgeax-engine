@@ -1,5 +1,5 @@
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { CapsuleShadowFallbackReason } from './world-capsules';
 
@@ -66,7 +66,7 @@ export function inspectCapsuleShadow(
   let requested = 0;
   let admitted = 0;
   const fallbacks: Partial<Record<CapsuleShadowFallbackReason, number>> = {};
-  for (const source of renderables) {
+  for (const source of sparseRowsOf(renderables, 'capsule')) {
     const state = demand(source);
     if (state === undefined) continue;
     requested += 1;

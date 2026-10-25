@@ -8,6 +8,7 @@ import {
   type MaterialSnapshot,
   type RenderableSnapshot,
 } from '../render-system-extract';
+import { dispatchEntry } from './dispatch-entry';
 import { type FrameList, FrameListBase } from './frame-list';
 import { at, changes, type Node, nodes, put, range, remove } from './frame-tree';
 import { GenerationalWeakMap } from './generational-weak-map';
@@ -24,6 +25,7 @@ import {
   retainMeshMaterialBindings,
 } from './mesh-materials';
 import type { SceneSlotFrame } from './scene-slots';
+import { type Roster, RosterCursor, rosterMerge, rosterRemove, rosterValues } from './slot-roster';
 
 /** Ordered frame work; arrays and shared execution groups have the same consumption surface. */
 export type DispatchList = FrameList<DispatchEntry>;
@@ -60,16 +62,40 @@ export function materialPasses(snapshot: MaterialSnapshot): readonly MaterialDis
   return prepared;
 }
 
-interface Binding {
-  readonly slot: number;
-  readonly worldId: number;
-  readonly entity: number;
-  readonly layer: number;
-  readonly shadowCaster: boolean;
-  readonly visible: boolean;
-  readonly prepared: boolean;
-  /** Strong: a binding sees only its own few Pass versions and dies with its slot. */
-  readonly entries: Map<Pass, DispatchEntry>;
+/** Binding membership facts, one numeric bit per flag. */
+const VISIBLE = 1;
+const CASTER = 2;
+const PREPARED = 4;
+
+/**
+ * Per-slot binding facts as numeric columns: member trees hold the slot
+ * address only, so a binding allocates no object of its own.
+ */
+class BindingColumns {
+  groups: (BindingGroup | undefined)[] = [];
+  identity = new Float64Array(64);
+  layer = new Float64Array(64);
+  flags = new Uint8Array(64);
+  count = 0;
+
+  ensure(slot: number): void {
+    if (slot < this.flags.length) return;
+    let capacity = this.flags.length;
+    while (capacity <= slot) capacity *= 2;
+    const identity = new Float64Array(capacity);
+    identity.set(this.identity);
+    this.identity = identity;
+    const layer = new Float64Array(capacity);
+    layer.set(this.layer);
+    this.layer = layer;
+    const flags = new Uint8Array(capacity);
+    flags.set(this.flags);
+    this.flags = flags;
+  }
+
+  entity(slot: number): number {
+    return (this.identity[slot] ?? 0) % 4294967296;
+  }
 }
 /** The binding group key; equal keys select the same held materials and members. */
 function materialBindingKey(
@@ -96,13 +122,24 @@ function tryMaterialBindingKey(snapshot: RenderableSnapshot): string | undefined
 
 interface Work {
   readonly pass: Pass;
-  readonly groups: Node<Node<Binding>>;
+  /** The accepted resource whose Pass this is; Passes are owned per resource. */
+  readonly resource: MaterialResource;
+  readonly groups: Node<Roster>;
+}
+
+/** One Pass's work in dispatch order; its member entries are visited only on demand. */
+export interface DispatchPassWork {
+  readonly pass: MaterialDispatchPass;
+  readonly resource: MaterialResource;
+  /** Member entries, equal to the length of `entries()`. */
+  readonly count: number;
+  entries(): Iterable<DispatchEntry>;
 }
 interface QueryWork {
-  members: Node<Node<Binding>> | undefined;
-  casters: Node<Node<Binding>> | undefined;
+  members: Node<Roster> | undefined;
+  casters: Node<Roster> | undefined;
   /** Pipeline-preparation demand: accepted materials without Pass work. */
-  prepared: Node<Node<Binding>> | undefined;
+  prepared: Node<Roster> | undefined;
   passes: readonly Pass[];
 }
 
@@ -254,27 +291,8 @@ export class MaterialFrame {
       readonly entry: DispatchEntry;
     }[] = [];
     for (const draw of draws) {
-      for (const resource of new Set(
-        draw.materials ??
-          (draw.source.materials.length === 0 ? [draw.source.material] : draw.source.materials),
-      )) {
-        const accepted = this.get(resource);
-        if (accepted === undefined) throw new Error('Direct draw has no accepted material version');
-        for (const pass of accepted.passes) {
-          if (pass.tags.LightMode === 'ShadowCaster' && draw.source.shadowCaster === false)
-            continue;
-          entries.push({
-            pass: getOpaqueResourceIdentity(pass),
-            identity: worldEntityKey(draw.source.worldId, draw.source.entityKey),
-            entry: {
-              ...pass,
-              entityIndex: draw.source.entityKey as EntityHandle,
-              renderableIndex: draw.renderableIndex,
-              layer: draw.source.layer ?? 0,
-            },
-          });
-        }
-      }
+      const identity = worldEntityKey(draw.source.worldId, draw.source.entityKey);
+      this.drawEntries(draw, (entry, pass) => entries.push({ pass, identity, entry }));
     }
     entries.sort(
       (a, b) =>
@@ -285,6 +303,40 @@ export class MaterialFrame {
     );
     return entries.map(({ entry }) => entry);
   }
+
+  /**
+   * One draw's entries with their Pass identities, in material and Pass order.
+   * Draw order is (queue, Pass identity, entity identity, draw index).
+   */
+  drawEntries(
+    draw: {
+      readonly source: RenderableSnapshot;
+      readonly renderableIndex: number;
+      readonly materials?: readonly MaterialResource[];
+    },
+    visit: (entry: DispatchEntry, pass: number) => void,
+  ): void {
+    for (const resource of new Set(
+      draw.materials ??
+        (draw.source.materials.length === 0 ? [draw.source.material] : draw.source.materials),
+    )) {
+      const accepted = this.get(resource);
+      if (accepted === undefined) throw new Error('Direct draw has no accepted material version');
+      for (const pass of accepted.passes) {
+        if (pass.tags.LightMode === 'ShadowCaster' && draw.source.shadowCaster === false) continue;
+        visit(
+          {
+            ...pass,
+            entityIndex: draw.source.entityKey as EntityHandle,
+            renderableIndex: draw.renderableIndex,
+            layer: draw.source.layer ?? 0,
+          },
+          getOpaqueResourceIdentity(pass),
+        );
+      }
+    }
+  }
+
   get(material: MaterialResource): AcceptedMaterial | undefined {
     const key = getOpaqueResourceIdentity(material);
     let current = this.root;
@@ -307,9 +359,9 @@ export class MaterialFrame {
 // Only a completed real traversal can populate this cache. Fixed Work is
 // retained across parameter adoption, so later draws and slices reuse its order.
 // Work nodes are rebuilt with their dispatch; see GenerationalWeakMap.
-const consumedBindings = new GenerationalWeakMap<Work, readonly Binding[]>();
+const consumedBindings = new GenerationalWeakMap<Work, readonly number[]>();
 
-function* workBindings(work: Work, start = 0, end = Infinity): Generator<Binding> {
+function* workBindings(work: Work, start = 0, end = Infinity): Generator<number> {
   const cached = consumedBindings.get(work);
   if (cached !== undefined) {
     for (let index = Math.max(0, start); index < Math.min(end, cached.length); index++) {
@@ -322,7 +374,7 @@ function* workBindings(work: Work, start = 0, end = Infinity): Generator<Binding
     yield* mergeWorkBindings(work, start, end);
     return;
   }
-  const consumed: Binding[] = [];
+  const consumed: number[] = [];
   for (const binding of mergeWorkBindings(work, start, end)) {
     consumed.push(binding);
     yield binding;
@@ -331,12 +383,12 @@ function* workBindings(work: Work, start = 0, end = Infinity): Generator<Binding
 }
 
 /** Merge shared member trees only while their actual draw work is consumed. */
-function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<Binding> {
+function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<number> {
   if (work.groups.left === undefined && work.groups.right === undefined) {
-    for (const member of range(work.groups.value, start, end)) yield member.value;
+    yield* rosterValues(work.groups.value, start, end);
     return;
   }
-  type Cursor = { binding: Binding; iterator: IterableIterator<Node<Binding>>; key: number };
+  type Cursor = { binding: number; iterator: RosterCursor; key: number };
   const heap: Cursor[] = [];
   const push = (cursor: Cursor) => {
     let index = heap.length;
@@ -351,9 +403,8 @@ function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<Bi
     heap[index] = cursor;
   };
   for (const { value: root } of nodes(work.groups)) {
-    const iterator = nodes(root);
-    const first = iterator.next();
-    if (!first.done) push({ binding: first.value.value, iterator, key: first.value.key });
+    const iterator = new RosterCursor(root);
+    if (iterator.next()) push({ binding: iterator.value, iterator, key: iterator.key });
   }
   let index = 0;
   while (heap.length > 0 && index < end) {
@@ -377,9 +428,53 @@ function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<Bi
       heap[current] = last;
     }
     if (index++ >= start) yield first.binding;
-    const next = first.iterator.next();
-    if (!next.done)
-      push({ binding: next.value.value, iterator: first.iterator, key: next.value.key });
+    const iterator = first.iterator;
+    if (iterator.next()) {
+      first.binding = iterator.value;
+      first.key = iterator.key;
+      push(first);
+    }
+  }
+}
+
+/**
+ * Dispatch entries keyed by (Pass, slot). An entry keeps its identity while
+ * consecutive generations read it; one no generation read is dropped, so a
+ * cold complete traversal never stays resident per binding.
+ */
+class DispatchEntries {
+  generation = 0;
+  private current = new Map<number, DispatchEntry>();
+  private previous = new Map<number, DispatchEntry>();
+
+  constructor(private readonly columns: BindingColumns) {}
+
+  rotate(): void {
+    this.previous = this.current;
+    this.current = new Map();
+    this.generation++;
+  }
+
+  get(pass: Pass, slot: number, renderableIndex: number): DispatchEntry {
+    const key = getOpaqueResourceIdentity(pass) * 4294967296 + slot;
+    const entityIndex = this.columns.entity(slot) as EntityHandle;
+    const layer = this.columns.layer[slot] ?? 0;
+    let entry = this.current.get(key) ?? this.previous.get(key);
+    if (
+      entry === undefined ||
+      entry.renderableIndex !== renderableIndex ||
+      entry.entityIndex !== entityIndex ||
+      entry.layer !== layer
+    )
+      entry = dispatchEntry(pass, entityIndex, renderableIndex, layer);
+    this.current.set(key, entry);
+    return entry;
+  }
+
+  clear(): void {
+    this.current.clear();
+    this.previous.clear();
+    this.generation++;
   }
 }
 
@@ -388,27 +483,28 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
   constructor(
     private readonly root: Node<Work> | undefined,
     readonly slots: SceneSlotFrame,
+    private readonly dispatchEntries: DispatchEntries,
   ) {
     super();
     this.length = root?.count ?? 0;
   }
-  private entry(pass: Pass, binding: Binding): DispatchEntry {
-    const renderableIndex = this.slots.indexOfSlot(binding.slot);
+  private entry(pass: Pass, slot: number): DispatchEntry {
+    const renderableIndex = this.slots.indexOfSlot(slot);
     if (renderableIndex === undefined) throw new Error('Missing material binding frame address');
-    let entry = binding.entries.get(pass);
-    if (entry === undefined || entry.renderableIndex !== renderableIndex) {
-      entry = { ...pass, entityIndex: binding.entity, renderableIndex, layer: binding.layer };
-      binding.entries.set(pass, entry);
-    }
-    return entry;
+    return this.dispatchEntries.get(pass, slot, renderableIndex);
   }
-  /** Complete traversals are fixed for this root and slot roster; later readers reuse them. */
+  /** Complete traversals are fixed for this root, slot roster and entry generation. */
   private traversed: readonly DispatchEntry[] | undefined;
+  private traversedGeneration = -1;
   *[Symbol.iterator](): Generator<DispatchEntry> {
-    if (this.traversed !== undefined) {
+    if (
+      this.traversed !== undefined &&
+      this.traversedGeneration === this.dispatchEntries.generation
+    ) {
       yield* this.traversed;
       return;
     }
+    this.traversed = undefined;
     const traversed: DispatchEntry[] = [];
     for (const { value: work } of nodes(this.root))
       for (const binding of workBindings(work)) {
@@ -417,6 +513,21 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
         yield entry;
       }
     this.traversed = traversed;
+    this.traversedGeneration = this.dispatchEntries.generation;
+  }
+  /** Pass-level work without visiting members; a pass fact classifies all of its entries. */
+  *passWork(): Generator<DispatchPassWork> {
+    for (const { value: work } of nodes(this.root)) {
+      const dispatch = this;
+      yield {
+        pass: work.pass,
+        resource: work.resource,
+        count: work.groups.count,
+        *entries() {
+          for (const binding of workBindings(work)) yield dispatch.entry(work.pass, binding);
+        },
+      };
+    }
   }
   at(index: number): DispatchEntry | undefined {
     index = Math.trunc(index) || 0;
@@ -440,6 +551,18 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
   }
 }
 
+/**
+ * Pass-level work of a material query result, with the slot roster its entry
+ * addresses rank into; `undefined` for any other (already flat) list.
+ */
+export function dispatchPassWork(
+  list: DispatchList,
+): { readonly slots: number; readonly work: Iterable<DispatchPassWork> } | undefined {
+  return list instanceof FrameDispatch
+    ? { slots: list.slots.length, work: list.passWork() }
+    : undefined;
+}
+
 type MaterialBinding = Pick<
   RenderableSnapshot,
   'material' | 'materials' | 'materialBindingSources' | 'materialOverrides'
@@ -452,45 +575,92 @@ interface BindingGroup {
   readonly key: string;
   readonly geometry: MeshMaterialGeometry;
   holders: number;
-  members: Node<Binding> | undefined;
-  casters: Node<Binding> | undefined;
+  members: Roster | undefined;
+  /**
+   * Visible members that cast no shadow. While none exist the caster set is
+   * `members` itself; the first one forks `ownCasters` from the persistent
+   * member tree, so all-caster groups keep one tree instead of two.
+   */
+  nonCasters: number;
+  ownCasters: Roster | undefined;
   // Hidden preparation rows draw nothing but validate against the accepted
   // frame, so their effective (Mesh-default) materials must be resolved too.
-  prepared: Node<Binding> | undefined;
+  prepared: Roster | undefined;
+  /** Ascending joins not yet appended to each roster; see {@link stageJoin}. */
+  readonly staged: Record<GroupRoster, number[]>;
 }
 interface MeshExpression {
   readonly worldId: number;
   readonly handle: number;
   holders: number;
 }
-function joinGroup(group: BindingGroup, binding: Binding, identity: number): void {
-  if (binding.visible) {
-    group.members = put(group.members, binding, 0, identity, 1);
-    if (binding.shadowCaster) group.casters = put(group.casters, binding, 0, identity, 1);
-  }
-  if (binding.prepared) group.prepared = put(group.prepared, binding, 0, identity, 1);
+type GroupRoster = 'members' | 'ownCasters' | 'prepared';
+const GROUP_ROSTERS: readonly GroupRoster[] = ['members', 'ownCasters', 'prepared'];
+/**
+ * Joins are staged and merged in bulk on the next read of the group, so bulk
+ * admission fills roster pages once instead of copying one page per member.
+ */
+function stageJoin(group: BindingGroup, roster: GroupRoster, identity: number, slot: number): void {
+  group.staged[roster].push(identity, slot);
 }
-function leaveGroup(group: BindingGroup, binding: Binding, identity: number): void {
-  group.members = remove(group.members, 0, identity);
-  if (binding.shadowCaster) group.casters = remove(group.casters, 0, identity);
-  if (binding.prepared) group.prepared = remove(group.prepared, 0, identity);
+function flushGroupRoster(group: BindingGroup, roster: GroupRoster): void {
+  const pending = group.staged[roster];
+  if (pending.length === 0) return;
+  group[roster] = rosterMerge(group[roster], pending);
+  pending.length = 0;
+}
+function flushGroup(group: BindingGroup): BindingGroup {
+  for (const roster of GROUP_ROSTERS) flushGroupRoster(group, roster);
+  return group;
+}
+function joinGroup(group: BindingGroup, slot: number, flags: number, identity: number): void {
+  if ((flags & VISIBLE) !== 0) {
+    if ((flags & CASTER) === 0) {
+      if (group.nonCasters++ === 0) {
+        flushGroupRoster(group, 'members');
+        group.ownCasters = group.members;
+      }
+    } else if (group.nonCasters > 0) {
+      stageJoin(group, 'ownCasters', identity, slot);
+    }
+    stageJoin(group, 'members', identity, slot);
+  }
+  if ((flags & PREPARED) !== 0) stageJoin(group, 'prepared', identity, slot);
+}
+function leaveGroup(group: BindingGroup, flags: number, identity: number): void {
+  flushGroup(group);
+  group.members = rosterRemove(group.members, identity);
+  if ((flags & VISIBLE) !== 0) {
+    if ((flags & CASTER) === 0) {
+      if (--group.nonCasters === 0) group.ownCasters = undefined;
+    } else if (group.nonCasters > 0) {
+      group.ownCasters = rosterRemove(group.ownCasters, identity);
+    }
+  }
+  if ((flags & PREPARED) !== 0) group.prepared = rosterRemove(group.prepared, identity);
+}
+function groupCasters(group: BindingGroup): Roster | undefined {
+  flushGroup(group);
+  return group.nonCasters === 0 ? group.members : group.ownCasters;
 }
 /** Draw members or pipeline preparation both need the group's effective materials. */
 function groupHasDemand(group: BindingGroup): boolean {
+  flushGroup(group);
   return group.members !== undefined || group.prepared !== undefined;
 }
 function addRoot(
-  roots: Node<Node<Binding>> | undefined,
-  members: Node<Binding> | undefined,
+  roots: Node<Roster> | undefined,
+  members: Roster | undefined,
   identity: number,
-): Node<Node<Binding>> | undefined {
+): Node<Roster> | undefined {
   return members === undefined ? roots : put(roots, members, 0, identity, members.count);
 }
 function addGroupWork(value: QueryWork, group: BindingGroup): QueryWork {
+  flushGroup(group);
   return {
     ...value,
     members: addRoot(value.members, group.members, group.identity),
-    casters: addRoot(value.casters, group.casters, group.identity),
+    casters: addRoot(value.casters, groupCasters(group), group.identity),
     prepared: addRoot(value.prepared, group.prepared, group.identity),
   };
 }
@@ -512,8 +682,29 @@ const EMPTY_WORK: QueryWork = Object.freeze({
   passes: [],
 });
 /** Source bindings and asset roots; Pass work is produced only by an actual query. */
+function sameElements(
+  a: readonly unknown[] | undefined,
+  b: readonly unknown[] | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+  return true;
+}
+interface BindingInputs {
+  readonly materials: RenderableSnapshot['materials'];
+  readonly material: MaterialResource;
+  readonly materialOverrides: RenderableSnapshot['materialOverrides'];
+  readonly worldId: number;
+  readonly assetHandle: number | undefined;
+  readonly geometry: MeshMaterialGeometry;
+  readonly overrides: readonly (MaterialResource | undefined)[] | undefined;
+  readonly direct: readonly MaterialResource[];
+  readonly key: string;
+}
 export class MaterialDispatch {
   private querying = false;
+  private recentBinding: BindingInputs | undefined;
 
   constructor(private readonly resolveMaterial?: MeshMaterialResolver) {}
 
@@ -522,7 +713,8 @@ export class MaterialDispatch {
   }
   private readonly groups = new Map<string, BindingGroup>();
   private readonly meshes = new Map<string, MeshExpression>();
-  private readonly bindings = new Map<number, { group: BindingGroup; binding: Binding }>();
+  private readonly bindings = new BindingColumns();
+  private readonly entries = new DispatchEntries(this.bindings);
   private readonly holds = new Map<MaterialResource, number>();
   private readonly unpublished = new Set<MaterialResource>();
   private meshFrame: MeshFrame | undefined;
@@ -556,6 +748,18 @@ export class MaterialDispatch {
     this.queryDirty = true;
     this.previous = undefined;
     if (!this.fullQuery) this.dirtyGroups.add(group);
+  }
+
+  /** Does the last query give this slot a display (non-ShadowCaster) Pass entry? */
+  displays(slot: number): boolean {
+    const group = this.bindings.groups[slot];
+    if (group === undefined || ((this.bindings.flags[slot] ?? 0) & VISIBLE) === 0) return false;
+    for (const resource of this.groupResources.get(group) ?? [])
+      if (
+        this.queryWork.get(resource)?.passes.some((pass) => pass.tags.LightMode !== 'ShadowCaster')
+      )
+        return true;
+    return false;
   }
 
   materials(): MaterialFrame {
@@ -619,18 +823,21 @@ export class MaterialDispatch {
 
   bind(slot: number, snapshot: RenderableSnapshot): void {
     this.assertSourceWritable();
-    const current = this.bindings.get(slot);
+    const columns = this.bindings;
+    const current = columns.groups[slot];
+    const identity = worldEntityKey(snapshot.worldId, snapshot.entityKey);
+    const flags =
+      (snapshot.authorVisible !== false ? VISIBLE : 0) |
+      (snapshot.shadowCaster !== false ? CASTER : 0) |
+      (snapshot.pipelinePreparation !== undefined ? PREPARED : 0);
     if (current !== undefined) {
-      const { group, binding } = current;
+      const group = current;
       // Pose-only republication keeps every material and membership fact; the
       // retained query root, ranks and dispatch entries stay valid.
       if (
-        binding.worldId === snapshot.worldId &&
-        binding.entity === snapshot.entityKey &&
-        binding.layer === (snapshot.layer ?? 0) &&
-        binding.shadowCaster === (snapshot.shadowCaster !== false) &&
-        binding.visible === (snapshot.authorVisible !== false) &&
-        binding.prepared === (snapshot.pipelinePreparation !== undefined) &&
+        columns.identity[slot] === identity &&
+        columns.layer[slot] === (snapshot.layer ?? 0) &&
+        columns.flags[slot] === flags &&
         group.key === tryMaterialBindingKey(snapshot)
       ) {
         for (const resource of group.held) {
@@ -646,15 +853,7 @@ export class MaterialDispatch {
     // while leaving retired holds and member roots retired.
     this.materialFrame = accepted;
     try {
-      const overrides =
-        snapshot.materialOverrides === undefined
-          ? undefined
-          : captureMaterialOverrides(snapshot.materialOverrides);
-      const direct = [
-        ...new Set(snapshot.materials.length === 0 ? [snapshot.material] : snapshot.materials),
-      ];
-      const geometry = meshMaterialGeometry(snapshot);
-      const key = materialBindingKey(snapshot, overrides, direct, geometry);
+      const { overrides, direct, geometry, key } = this.bindingInputs(snapshot);
       let group = this.groups.get(key);
       if (group === undefined) {
         let mesh: MeshExpression | undefined;
@@ -699,8 +898,10 @@ export class MaterialDispatch {
           geometry,
           holders: 0,
           members: undefined,
-          casters: undefined,
+          nonCasters: 0,
+          ownCasters: undefined,
           prepared: undefined,
+          staged: { members: [], ownCasters: [], prepared: [] },
         };
         this.groups.set(key, group);
         if (mesh !== undefined) mesh.holders++;
@@ -710,19 +911,14 @@ export class MaterialDispatch {
         this.adopt(resource);
         this.unpublished.delete(resource);
       }
-      const binding: Binding = {
-        slot,
-        worldId: snapshot.worldId,
-        entity: snapshot.entityKey,
-        layer: snapshot.layer ?? 0,
-        shadowCaster: snapshot.shadowCaster !== false,
-        visible: snapshot.authorVisible !== false,
-        prepared: snapshot.pipelinePreparation !== undefined,
-        entries: new Map(),
-      };
       group.holders++;
-      joinGroup(group, binding, worldEntityKey(binding.worldId, binding.entity));
-      this.bindings.set(slot, { group, binding });
+      columns.ensure(slot);
+      columns.identity[slot] = identity;
+      columns.layer[slot] = snapshot.layer ?? 0;
+      columns.flags[slot] = flags;
+      columns.groups[slot] = group;
+      columns.count++;
+      joinGroup(group, slot, flags, identity);
       this.revision++;
       this.invalidateGroup(group);
     } catch (error) {
@@ -731,12 +927,54 @@ export class MaterialDispatch {
     }
   }
 
+  /**
+   * The binding key and its inputs. Bulk admission binds many rows of one
+   * template whose material fields are the same references; they reuse the
+   * previous row's derivation instead of re-deriving the key.
+   */
+  private bindingInputs(snapshot: RenderableSnapshot): BindingInputs {
+    const recent = this.recentBinding;
+    const geometry = meshMaterialGeometry(snapshot);
+    // Element-wise: an admitted binding is captured, never borrowed.
+    if (
+      recent !== undefined &&
+      recent.material === snapshot.material &&
+      recent.worldId === snapshot.worldId &&
+      recent.assetHandle === snapshot.assetHandle &&
+      recent.geometry === geometry &&
+      sameElements(recent.materials, snapshot.materials) &&
+      sameElements(recent.materialOverrides, snapshot.materialOverrides)
+    )
+      return recent;
+    const overrides =
+      snapshot.materialOverrides === undefined
+        ? undefined
+        : captureMaterialOverrides(snapshot.materialOverrides);
+    const direct = [
+      ...new Set(snapshot.materials.length === 0 ? [snapshot.material] : snapshot.materials),
+    ];
+    const key = materialBindingKey(snapshot, overrides, direct, geometry);
+    this.recentBinding = {
+      materials: [...snapshot.materials],
+      material: snapshot.material,
+      materialOverrides:
+        snapshot.materialOverrides === undefined ? undefined : [...snapshot.materialOverrides],
+      worldId: snapshot.worldId,
+      assetHandle: snapshot.assetHandle,
+      geometry,
+      overrides,
+      direct,
+      key,
+    };
+    return this.recentBinding;
+  }
+
   remove(slot: number): void {
     this.assertSourceWritable();
-    const previous = this.bindings.get(slot);
-    if (previous === undefined) return;
-    const { group, binding } = previous;
-    leaveGroup(group, binding, worldEntityKey(binding.worldId, binding.entity));
+    const columns = this.bindings;
+    const group = columns.groups[slot];
+    if (group === undefined) return;
+    leaveGroup(group, columns.flags[slot] ?? 0, columns.identity[slot] ?? 0);
     if (--group.holders === 0) {
       this.groups.delete(group.key);
       const mesh = group.mesh;
@@ -747,14 +985,17 @@ export class MaterialDispatch {
       }
       for (const resource of group.held) this.release(resource);
     }
-    this.bindings.delete(slot);
+    columns.groups[slot] = undefined;
+    columns.count--;
     this.invalidateGroup(group);
     this.revision++;
     this.clearEmptyMaterialRoots();
   }
 
   private clearEmptyMaterialRoots(): void {
-    if (this.bindings.size === 0) {
+    if (this.bindings.count === 0) {
+      this.bindings.groups.length = 0;
+      this.entries.clear();
       this.invalidateQuery();
       this.sourceMaterials = new MaterialFrame(undefined);
       this.materialFrame = this.sourceMaterials;
@@ -770,6 +1011,8 @@ export class MaterialDispatch {
   query(slots: SceneSlotFrame, meshes = this.meshFrame, validate?: () => void): DispatchList {
     if (this.querying) throw new Error('Recursive material Pass query');
     this.querying = true;
+    // One generation per query: entries the previous query read stay shared.
+    this.entries.rotate();
     try {
       validate?.();
       if (meshes !== this.meshFrame)
@@ -810,7 +1053,7 @@ export class MaterialDispatch {
             if (members !== undefined)
               root = put(
                 root,
-                { pass, groups: members },
+                { pass, resource, groups: members },
                 pass.queue,
                 getOpaqueResourceIdentity(pass),
                 members.count,
@@ -841,7 +1084,7 @@ export class MaterialDispatch {
         this.previous === undefined ||
         (this.previous.slots !== slots && this.previous.slots.identities !== slots.identities)
       )
-        this.previous = new FrameDispatch(this.queryRoot, slots);
+        this.previous = new FrameDispatch(this.queryRoot, slots, this.entries);
       return this.previous;
     } finally {
       this.querying = false;
@@ -903,7 +1146,7 @@ export class MaterialDispatch {
         if (members !== undefined)
           root = put(
             root,
-            { pass, groups: members },
+            { pass, resource, groups: members },
             pass.queue,
             getOpaqueResourceIdentity(pass),
             members.count,

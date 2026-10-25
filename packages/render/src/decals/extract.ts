@@ -4,6 +4,7 @@ import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import type { AssetHandle, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
+import { noteEnvironmentPose } from '../extract/environment-gate';
 import { worldRenderResources } from '../publication/resource-scope';
 import { deriveRenderDataTexture } from '../render-data';
 import {
@@ -65,6 +66,7 @@ export function extractProjectedDecals(
       (data.colorOpacity === 0 && data.normalOpacity === 0 && data.roughnessOpacity === 0)
     )
       continue;
+    noteEnvironmentPose(row.entity);
     const raw = readRenderArrayView(world, row.entity, GlobalTransform, 'world');
     if (raw === undefined)
       throw new ProjectedDecalInvalidError('transform', 'a propagated world transform');

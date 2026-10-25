@@ -262,8 +262,8 @@ function buildSnapshotScene(
     const packet =
       candidate === undefined
         ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
+        : structuredClone(candidate.message, {
+            transfer: renderPublicationTransfers(candidate.message),
           });
     candidate?.accept();
     try {

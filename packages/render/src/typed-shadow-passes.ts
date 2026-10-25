@@ -39,6 +39,7 @@ import {
 } from './record/shadow-pass';
 import type { RenderPipelineFrame, RenderPipelineTopology } from './render-pipeline';
 import { createRenderPipelineTarget, type RenderPipelineTarget } from './render-pipeline';
+import { SPOT_SHADOW_LAYERS } from './world/render-lights';
 
 export interface TypedShadowTargets {
   readonly directional?: RenderPipelineTarget | undefined;
@@ -250,7 +251,6 @@ function shadowViewRaster(
  * sampled as `texture_depth_2d_array`; layered shadow maps keep two or more.
  */
 const MIN_SHADOW_ARRAY_LAYERS = 2;
-const SPOT_SHADOW_LAYERS = 4;
 
 function createShadowArrayTarget(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -908,6 +908,7 @@ function addPointShadowPasses(
     true,
     'point-shadow-static',
     shadow.pointFaceSize,
+    // Sized to the held cube layers; resizing carries the retained faces across.
     shadow.pointCount * 6,
   );
   if (!staticTarget.ok) return staticTarget;
@@ -1012,8 +1013,8 @@ function addSpotShadowPasses(
     SPOT_SHADOW_LAYERS,
   );
   if (!spotStatic.ok) return spotStatic;
-  // Spot shadow tiles are assigned in snapshot order, so pass index i writes
-  // the layer the receiver samples through `shadowAtlasTile == i`.
+  // Pass i writes tile i, the layer the Render World holds for one casting
+  // spot; the receiver samples it through `shadowAtlasTile == i`.
   for (let spotIndex = 0; spotIndex < Math.max(1, shadow.spotCount); spotIndex += 1) {
     const added = addSpotShadowPass(
       graph,

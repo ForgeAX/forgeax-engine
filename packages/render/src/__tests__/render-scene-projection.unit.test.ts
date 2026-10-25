@@ -45,6 +45,7 @@ import {
   RenderScene,
 } from '../scene/render-scene';
 import { classifySceneDataCoverage } from '../temporal/coverage';
+import { fitDirectionalCascades } from '../world/render-lights';
 
 function projected<T>(value: T): Exclude<T, Error> {
   if (value instanceof Error) throw value;
@@ -55,6 +56,11 @@ const assets = new AssetRegistry();
 const material = defaultMaterialSnapshot();
 const resource = MaterialResource.from(material);
 
+/** The cascades a view of `frame`'s display camera fits. */
+function cascadesOf(frame: ExtractedFrame) {
+  return fitDirectionalCascades(frame.lights, { camera: frame.cameras[0] });
+}
+
 function emptyLights(): ExtractedFrame['lights'] {
   return {
     directional: undefined,
@@ -63,14 +69,8 @@ function emptyLights(): ExtractedFrame['lights'] {
     spot: [],
     rect: [],
     pointShadow: [],
-    lightViewProj: undefined,
-    splitPlanes: undefined,
-    cascadeCount: undefined,
-    cascadeBlend: undefined,
-    shadowMapSize: undefined,
     depthBias: undefined,
     normalBias: undefined,
-    directionalShadowQuality: undefined,
     directionalShadowError: undefined,
     directionalCsmConfig: undefined,
     directionalCsmDirection: undefined,
@@ -1028,7 +1028,7 @@ describe('RenderScene canonical owner', () => {
       expect(previousSpot).toBeDefined();
       expect(previousProbe).toBeDefined();
       expect(previous.cameras[0]).toBeDefined();
-      expect(previous.lights.lightViewProj).toBeDefined();
+      expect(cascadesOf(previous)?.lightViewProj).toBeDefined();
       expect(previousWorldOnePoint).toBeDefined();
 
       first.world.set(first.entity, Transform, { pos: [4, 5, 6] }).unwrap();
@@ -1054,7 +1054,7 @@ describe('RenderScene canonical owner', () => {
       expect(probe?.position).toEqual([4, 5, 6]);
       expect(refreshed.cameras[0]?.world[12]).toBeCloseTo(4);
       expect(refreshed.cameras[0]?.world[13]).toBeCloseTo(5);
-      expect(refreshed.lights.lightViewProj).not.toEqual(previous.lights.lightViewProj);
+      expect(cascadesOf(refreshed)?.lightViewProj).not.toEqual(cascadesOf(previous)?.lightViewProj);
       expect(worldOnePoint?.position).toEqual(previousWorldOnePoint?.position);
       expect(refreshed.lights.point.find((light) => light.worldId === 1)?.position).not.toEqual(
         point?.position,

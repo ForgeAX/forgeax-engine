@@ -2,6 +2,7 @@ import type { ShadowMeshReads } from '../device/mesh-changes';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { FramePresentationPendingReason } from '../render-contract';
+import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { CpuLodSelection } from './cpu-lod';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 // @forgeax/engine-runtime - RenderSystem record stage: frame-snapshot.
@@ -21,7 +22,6 @@ import type {
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { BarrelDistortionMapping } from '../barrel-distortion';
 import type { ClusterBinScratch } from '../cluster-binner';
 import type { DirectionalShadowQuality } from '../components/directional-shadow-filter';
@@ -520,6 +520,8 @@ export interface RenderFrameState {
   /** Physical scene commands survive unrelated feature-graph replacement. */
   renderBundleCaches?: import('./render-bundle-cache').SceneRenderBundleState['renderBundleCaches'];
   dynamicResolution?: import('../pipeline/dynamic-resolution').DynamicResolutionController;
+  /** Visible-surface addresses kept current from retained row changes. */
+  visibleSurfaceRows?: import('../raytracing/visible-surface').VisibleSurfaceRows | undefined;
   rayDiffuse?: import('../raytracing/renderer-diffuse').RendererRayDiffuse | undefined;
   irradianceField?:
     | import('../raytracing/renderer-irradiance-field').RendererIrradianceField
@@ -536,10 +538,6 @@ export interface RenderFrameState {
   surfaceSubmissionObservation:
     | import('../surface/submission-observation').SurfaceSubmissionCandidate
     | undefined;
-  /** Exact producer artifacts accepted by the last submitted GPU frame. */
-  recoveryMaterialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
-  /** Exact ShadowCaster artifacts accepted by the last submitted GPU frame. */
-  recoveryShadowMaterialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   /** Last successful Motion Blur compute execution; failed submits retain the prior receipt. */
   motionBlurExecution?: MotionBlurExecutionReceipt;
   /** Final-submit Standard IBL binding-chain receipt for this frame. */
@@ -692,8 +690,6 @@ export interface RenderFrameState {
     readonly device: RhiDevice;
     readonly buffer: GpuBuffer | undefined;
   };
-  /** Per-entity vertex buffers for the Standard CPU morph lane. */
-  readonly morphBuffers?: Map<number, MorphBufferCacheEntry>;
   readonly hdrpClusterBinScratch: ClusterBinScratch;
   /** Reusable HDRP cluster output buffers; sized once and grown only if the grid/cap changes. */
   hdrpClusterGridScratch: Uint32Array | null;
@@ -912,11 +908,15 @@ export interface RenderFrameState {
    * shadow-casting spots means zero spot shadow passes (AC-03).
    */
   spotShadowSnapshots: readonly SpotLightSnapshot[];
-}
-
-export interface MorphBufferCacheEntry {
-  readonly buffer: GpuBuffer;
-  readonly byteLength: number;
+  /**
+   * The shadow params buffer and the retained light roster arrays its last
+   * accepted write came from; an unchanged roster skips the rewrite.
+   */
+  shadowParamsSource?: {
+    readonly buffer: unknown;
+    readonly point: readonly PointShadowSnapshot[];
+    readonly spot: readonly SpotLightSnapshot[];
+  };
 }
 
 /**
@@ -974,6 +974,12 @@ export interface ValidatedRenderable {
   /** Exact source submeshes selected by native batch execution; absent selects the whole mesh. */
   readonly submeshIndices?: readonly number[];
   readonly source: RenderableSnapshot;
+  /**
+   * Scene row the draw was selected from. Consumers address the row's
+   * retained facts (draw address, culling bounds, GPU-lane ownership) through
+   * it instead of an identity lookup per pass and view.
+   */
+  readonly sceneSlot?: RenderSceneSlot;
   /** RenderResourceScope that owns the renderable's asset handles and material snapshots. */
   readonly world?: RenderResourceScope;
   readonly mesh: MeshGpuHandles;

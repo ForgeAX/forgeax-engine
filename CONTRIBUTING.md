@@ -4,8 +4,9 @@ Thanks for your interest! This monorepo runs **two package managers in parallel*
 
 ## Prerequisites
 
-- **Node.js ≥ 22.13.0** (active LTS; `.nvmrc` pins the exact patch — currently `22.22.3`)
-- **pnpm** — `package.json#packageManager` pins the Corepack-managed version (currently `12.10.1`)
+- **Node.js 22.22.3 or 24.18.0** for the verified toolchain (`.nvmrc` pins the CI version)
+- **npm** — `.npm-version` pins the CLI used by CI and SDK consumers (currently `12.2.1`)
+- **pnpm** — `package.json#packageManager` pins the Corepack-managed version (currently `12.15.0`)
 - **Bun ≥ 1.2.0** (`.bun-version` is checked into the repo)
 
 If you use `corepack enable`, pnpm comes bundled with the right version automatically.

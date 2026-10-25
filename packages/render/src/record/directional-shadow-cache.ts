@@ -3,7 +3,7 @@ import type { DirectionalShadowQuality } from '../components/directional-shadow-
 import { type MeshChange, type MeshChanges, ShadowMeshReads } from '../device/mesh-changes';
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { renderableDrawKey } from '../scene/draw-key';
 import type { FrameList } from '../scene/frame-list';
 import {
@@ -12,6 +12,7 @@ import {
 } from '../scene/material-shadow-content';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import { terrainDrawSection } from '../terrain/source';
+import type { ViewLights } from '../world/render-lights';
 import {
   currentDirectionalShadowPublication,
   directionalShadowSourceChanged,
@@ -227,15 +228,15 @@ export function prepareDirectionalShadowCache(
   frameState: RenderFrameState,
   worlds: readonly RenderResourceScope[],
   leases: readonly RenderReadLease[] | undefined,
-  lights: ExtractedLights,
+  lights: ViewLights,
   shadowMapSize: number | undefined,
   mesh: ShadowMeshInput | undefined,
   casters: PersistentShadowCasterProjection | undefined,
   shadowMaterials?: readonly ShadowMaterialContent[],
   lodSelection?: object,
 ): DirectionalShadowCacheDecision {
-  const cascadeCount = lights.cascadeCount;
-  const lightViewProj = lights.lightViewProj;
+  const cascadeCount = lights.cascades?.cascadeCount;
+  const lightViewProj = lights.cascades?.lightViewProj;
   // GPU feature buffers can change without an ECS mesh mutation. Until a
   // producer provides a stable content revision, never reuse their shadow atlas.
   if (
@@ -252,7 +253,7 @@ export function prepareDirectionalShadowCache(
     cascadeCount === undefined ||
     cascadeCount <= 0 ||
     lightViewProj === undefined ||
-    lights.directionalShadowQuality === undefined ||
+    lights.cascades?.directionalShadowQuality === undefined ||
     mesh === undefined ||
     !shadowMeshInputCurrent(mesh) ||
     mesh.reads.tokens.size === 0
@@ -297,7 +298,7 @@ export function prepareDirectionalShadowCache(
           cached.cascadeCount !== cascadeCount ||
           !sameDirectionalShadowQuality(
             cached.directionalShadowQuality,
-            lights.directionalShadowQuality,
+            lights.cascades?.directionalShadowQuality,
           ) ||
           cached.pipelineHandle !== frameState.installedPipelineHandle ||
           cached.graphTopologyKey !== frameState.compiledFrameGraph.topologyKey
@@ -348,7 +349,7 @@ export function prepareDirectionalShadowCache(
       graphTopologyKey: frameState.compiledFrameGraph.topologyKey,
       shadowMapSize,
       cascadeCount,
-      directionalShadowQuality: lights.directionalShadowQuality,
+      directionalShadowQuality: lights.cascades?.directionalShadowQuality,
       lightViewProj: lightViewProj.map((matrix) => new Float32Array(matrix)),
       meshReads,
       meshEpoch: mesh.epoch,

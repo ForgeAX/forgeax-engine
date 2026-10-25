@@ -66,6 +66,7 @@ export function uploadFixture(device: RhiDevice, shader: ShaderModule) {
       instanceUpdatedSlots: [],
       removedSlots: [],
       recreatedSlots: [],
+      previous: new Map(),
       resynced: 0,
     })
     .unwrap();

@@ -258,13 +258,15 @@ function selectPublishedVariant(
 
 // Registry entries and manifest publications are immutable. Replace the projection
 // when either owner identity changes; old registrations remain weakly held.
+// A request with no published variant or artifact stays absent until the owner identity changes.
+const ABSENT = Symbol('absent material artifact');
 const publishedArtifacts = new WeakMap<
   MaterialShaderEntry,
   {
     readonly manifest: MaterialShaderManifestEntry | undefined;
     readonly requests: Map<
       string,
-      Map<string | undefined, Map<number | string, MaterialShaderArtifact>>
+      Map<string | undefined, Map<number | string, MaterialShaderArtifact | typeof ABSENT>>
     >;
   }
 >();
@@ -339,7 +341,15 @@ export function resolveMaterialShaderArtifact(
     const shaderRequests = cache.requests.get(materialShaderId);
     const variantRequests = shaderRequests?.get(variant);
     const cached = variantRequests?.get(requestKey);
+    if (cached === ABSENT) continue;
     if (cached !== undefined) return cached;
+    const remember = (value: MaterialShaderArtifact | typeof ABSENT) => {
+      const shaders = shaderRequests ?? new Map();
+      const variants = variantRequests ?? new Map();
+      variants.set(requestKey, value);
+      shaders.set(variant, variants);
+      cache.requests.set(materialShaderId, shaders);
+    };
     const selected =
       manifestEntry === undefined || manifestEntry.variants.length === 0
         ? undefined
@@ -352,6 +362,7 @@ export function resolveMaterialShaderArtifact(
       manifestEntry.variants.length > 0 &&
       selected === undefined
     ) {
+      remember(ABSENT);
       continue;
     }
     const selectedEntry =
@@ -379,13 +390,10 @@ export function resolveMaterialShaderArtifact(
         // output support from its declared axes rather than from the key text.
         reflectionFallbackOutputAvailable: selected?.defines.REFLECTION_FALLBACK_AVAILABLE === true,
       };
-      const shaders = shaderRequests ?? new Map();
-      const variants = variantRequests ?? new Map();
-      variants.set(requestKey, published);
-      shaders.set(variant, variants);
-      cache.requests.set(materialShaderId, shaders);
+      remember(published);
       return published;
     }
+    remember(ABSENT);
   }
   return undefined;
 }

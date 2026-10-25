@@ -64,6 +64,33 @@ describe('material row defaults', () => {
     }
   });
 
+  it('completes a short authored vector from its declared default in CPU and GPU rows', () => {
+    const member = derive(STANDARD_PIPELINE_PARAM_SCHEMA).numericMembers.find(
+      (member) => member.name === 'baseColor',
+    );
+    assert(member, 'Standard baseColor must be present');
+    const material: MaterialSnapshot = {
+      passes: [],
+      ...materialValueSnapshot({ baseColor: [0.34, 0.48, 0.72] }),
+      paramSnapshot: { baseColor: [0.34, 0.48, 0.72] },
+    };
+    for (const row of [
+      packStandardPbrMaterialRow(createStandardPbrArtifactReceipt(), material),
+      packMaterialProgramRow(STANDARD_PIPELINE_PARAM_SCHEMA, material),
+      buildPbrMaterialUboPayload(material),
+    ]) {
+      expect(float(row, member.offset + 8)).toBeCloseTo(0.72);
+      expect(float(row, member.offset + 12)).toBe(1);
+    }
+    const custom: ParamSchemaEntry[] = [{ name: 'tint', type: 'vec4', default: [1, 1, 1, 0.5] }];
+    const row = packMaterialProgramRow(
+      custom,
+      { ...snapshot(), paramSnapshot: { tint: [0.1] } },
+      16,
+    );
+    expect([4, 8, 12].map((offset) => float(row, offset))).toEqual([1, 1, 0.5]);
+  });
+
   it('packs admitted defaults with the same numeric WGSL encodings as raw schemas', () => {
     const schema: ParamSchemaEntry[] = [
       { name: 'color', type: 'vec4', default: [0.25, 0.5, 0.75, 1] },

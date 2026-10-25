@@ -111,6 +111,7 @@ export {
   type RelationshipTargetComponent,
 } from './relationship-index';
 export {
+  defineSchedule,
   FixedUpdate,
   type ScheduleName,
   type ScheduleToken,

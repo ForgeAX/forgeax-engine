@@ -1743,7 +1743,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       try {
         // Settle the first edit's derived-field removal before measuring steady state.
         f.assets.update(f.handle, { vertices: makeQuadMesh().vertices }).unwrap();
-        f.publish();
+        let previous = f.publish();
         const initial = runtimeAssets(f.assets).inspect();
         for (let frame = 0; frame < 50; frame++) {
           const vertices = makeQuadMesh().vertices;
@@ -1751,7 +1751,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
           f.assets.update(f.handle, { vertices }).unwrap();
           const entry = f.publish();
           expect(entry.vertexCount).toBe(4);
-          expect(f.store.recoveryResourceCount()).toBe(1);
+          if (entry.vertexBuffer !== previous.vertexBuffer) {
+            expect(previous.vertexBuffer.isDestroyed).toBe(true);
+          }
+          previous = entry;
           expect(runtimeAssets(f.assets).inspect().assets).toBe(initial.assets);
           expect(runtimeAssets(f.assets).inspect().bytes).toBe(initial.bytes);
           const position = f.assets.read(f.handle).unwrap().attributes.position;
@@ -1802,7 +1805,6 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         expect(next.indexCount).toBe(12);
         expect(f.entry.vertexBuffer.isDestroyed).toBe(true);
         expect(f.assets.read(f.handle).unwrap().vertices.length).toBe(8 * 12);
-        expect(f.store.recoveryResourceCount()).toBe(1);
         expect(runtimeAssets(f.assets).inspect().assets).toBe(1);
       } finally {
         f.store.destroyAll();

@@ -8,9 +8,9 @@ import { expect, it, vi } from 'vitest';
 import { samplerContribution } from '../../assets/asset-decoders';
 import { DeviceScope } from '../../device/device-scope';
 import { createSkylightFallback } from '../../ibl/skylight-bind-group';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { preparedMaterialBindings } from '../prepared-material-bindings';
 import type { RenderSystemInternals } from '../render-context';
@@ -77,7 +77,9 @@ it.each([
   const groups = vi.spyOn(device, 'createBindGroup');
   try {
     const candidate = publisher.prepare(0).unwrap();
-    const remote = receiver.accept(structuredClone(candidate.packet)).unwrap().resources;
+    const remote = receiver
+      .accept(encodeRenderPublication(structuredClone(candidate.packet)))
+      .unwrap().resources;
     candidate.accept();
     for (const source of [worldRenderResources(world), remote]) {
       const binding = preparedMaterialBindings(
@@ -182,8 +184,10 @@ it('uploads accepted values on World and published-reader paths without mutating
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const resources = receiver.accept(packet).unwrap().resources;
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const resources = receiver.accept(encodeRenderPublication(packet)).unwrap().resources;
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return resources;
   };
   const reader = publish();

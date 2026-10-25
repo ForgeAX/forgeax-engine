@@ -8,9 +8,9 @@ import { assert, expect, it, vi } from 'vitest';
 import { projectCaptureScene } from '../capture/scene-projection';
 import { Camera, MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../components';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { subsurfaceDemand } from '../subsurface/demand';
@@ -73,8 +73,12 @@ function fixture(worker: boolean) {
         const packet = structuredClone(candidate.packet);
         candidate.accept();
         upserts += packet.upserts.length;
-        const frame = scene.consumePublication(receiver.accept(packet).unwrap());
-        publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        const frame = scene.consumePublication(
+          receiver.accept(encodeRenderPublication(packet)).unwrap(),
+        );
+        publisher
+          .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+          .unwrap();
         return frame;
       }
       return scene.extractComposition(

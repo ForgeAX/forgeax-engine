@@ -15,8 +15,10 @@ import type { GenerationalWeakMap } from './generational-weak-map';
 import type { MaterialFrame } from './material-dispatch';
 import type { MeshGeometry } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
+import { ownPose } from './pose-slab';
 import type { RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
 import type { SceneSlotFrame } from './scene-slots';
+import { sharedAabb } from './shared-aabb';
 
 /** Mutable accumulator behind a readonly `FrameCacheCounters` inspection. */
 export interface FrameCacheTally {
@@ -149,19 +151,61 @@ interface TemporalMemo {
   readonly submitted: RenderableSnapshot | undefined;
   readonly submittedGeneration: number | undefined;
   readonly wasVisible: boolean;
-  readonly previousWorld: Float32Array | undefined;
   readonly displacementSource: boolean;
   readonly value: RenderableSnapshot;
 }
 // Slots and their snapshots are replaced every frame; see GenerationalWeakMap.
 export type TemporalCache = GenerationalWeakMap<RenderSceneSlot, TemporalMemo>;
 
+/**
+ * The last submitted frame of one view, written at change time: each row that
+ * changed since that frame keeps the record the frame drew (`undefined` when
+ * it drew none), and every other row is still its submitted record. Memory is
+ * O(changed rows); a submission starts a fresh history, so an earlier one
+ * stays exact for the frame lists that captured it.
+ */
+export class SubmittedHistory {
+  private readonly changed = new Map<number, RenderSceneSlot | undefined>();
+
+  /** No submitted frame since the last temporal cut: every row is new. */
+  static cut(): SubmittedHistory {
+    return new SubmittedHistory(true);
+  }
+
+  /** `visible` maps slot to its submitted visible generation; absent: every submitted row was visible. */
+  static submitted(visible?: ReadonlyMap<number, number>): SubmittedHistory {
+    return new SubmittedHistory(false, visible);
+  }
+
+  private constructor(
+    readonly isCut: boolean,
+    private readonly visible?: ReadonlyMap<number, number>,
+  ) {}
+
+  /** Keep the first pre-change record of `slot` since the submitted frame. */
+  record(slot: number, before: RenderSceneSlot | undefined): void {
+    if (!this.isCut && !this.changed.has(slot)) this.changed.set(slot, before);
+  }
+
+  /** The record `slot` had in the submitted frame; `current` is any later frame of this history. */
+  at(slot: number, current: SceneSlotFrame): RenderSceneSlot | undefined {
+    if (this.isCut) return undefined;
+    return this.changed.has(slot) ? this.changed.get(slot) : current.slotAt(slot);
+  }
+
+  wasVisible(slot: number, generation: number, current: SceneSlotFrame): boolean {
+    if (this.isCut) return false;
+    return this.visible === undefined
+      ? this.at(slot, current)?.generation === generation
+      : this.visible.get(slot) === generation;
+  }
+}
+
 export function temporalDrawSnapshot(
   snapshot: RenderableSnapshot,
   counters: FrameCacheTally | undefined,
   current: SceneSlotFrame,
-  submittedFrame: SceneSlotFrame,
-  visible: ReadonlyMap<number, number>,
+  history: SubmittedHistory,
   materials: MaterialFrame | undefined,
   cache: TemporalCache,
 ): RenderableSnapshot {
@@ -169,10 +213,10 @@ export function temporalDrawSnapshot(
   if (snapshot.authorVisible === false) return snapshot;
   const slot = current.lookup(snapshot.worldId, snapshot.entityKey);
   if (slot === undefined) return snapshot;
-  const submitted = submittedFrame.slotAt(slot.slot);
+  const submitted = history.at(slot.slot, current);
   const wasVisible =
-    submitted?.generation === slot.generation && visible.get(slot.slot) === slot.generation;
-  const previousWorld = submitted?.snapshot.transform.world;
+    submitted?.generation === slot.generation &&
+    history.wasVisible(slot.slot, slot.generation, current);
   const displacementSource = hasDisplacementSource(snapshot, materials);
   const memo = cache.get(slot);
   if (
@@ -181,7 +225,6 @@ export function temporalDrawSnapshot(
     memo.submitted === submitted?.snapshot &&
     memo.submittedGeneration === submitted?.generation &&
     memo.wasVisible === wasVisible &&
-    memo.previousWorld === previousWorld &&
     memo.displacementSource === displacementSource
   ) {
     if (counters !== undefined) counters.hits += 1;
@@ -190,14 +233,13 @@ export function temporalDrawSnapshot(
   if (counters !== undefined) counters.misses += 1;
   const value = {
     ...snapshot,
-    temporal: createTemporalSnapshot(slot, false, submittedFrame, visible, displacementSource),
+    temporal: createTemporalSnapshot(slot, false, current, history, displacementSource),
   };
   cache.set(slot, {
     source: snapshot,
     submitted: submitted?.snapshot,
     submittedGeneration: submitted?.generation,
     wasVisible,
-    previousWorld,
     displacementSource,
     value,
   });
@@ -207,13 +249,13 @@ export function temporalDrawSnapshot(
 export function createTemporalSnapshot(
   slot: RenderSceneSlot,
   resetHistory: boolean,
-  submittedFrame: SceneSlotFrame,
-  visible: ReadonlyMap<number, number>,
+  current: SceneSlotFrame,
+  history: SubmittedHistory,
   displacementSource: boolean,
 ): RenderableTemporalSnapshot {
-  const submitted = resetHistory ? undefined : submittedFrame.slotAt(slot.slot);
+  const submitted = resetHistory ? undefined : history.at(slot.slot, current);
   const sameGeneration = submitted?.generation === slot.generation;
-  const wasVisible = sameGeneration && visible.get(slot.slot) === slot.generation;
+  const wasVisible = sameGeneration && history.wasVisible(slot.slot, slot.generation, current);
   const reasons: RenderableReactiveReason[] = [];
   if (!sameGeneration) {
     reasons.push(submitted === undefined ? 'new-slot' : 'generation-reuse');
@@ -286,7 +328,6 @@ export function createTemporalSnapshot(
     // entries.
     previousInstances:
       seedCurrent || submittedRecycled ? slot.snapshot.instances : previous.instances,
-    previousMorphWeights: previous.morph?.weights,
   };
 }
 
@@ -313,6 +354,36 @@ export function ownInstances(instances: InstancesSnapshot): InstancesSnapshot {
   };
 }
 
+// Owned draw tables of frozen (shared) sources are themselves shared: rows of
+// one template retain one table instead of one deep copy per row.
+const ownedDrawTables = new WeakMap<
+  NonNullable<RenderableSnapshot['gpuDrivenDraws']>,
+  NonNullable<RenderableSnapshot['gpuDrivenDraws']>
+>();
+
+function ownGpuDrivenDraws(
+  draws: NonNullable<RenderableSnapshot['gpuDrivenDraws']>,
+): NonNullable<RenderableSnapshot['gpuDrivenDraws']> {
+  const shared = Object.isFrozen(draws) && draws.every((draw) => Object.isFrozen(draw));
+  const cached = shared ? ownedDrawTables.get(draws) : undefined;
+  if (cached !== undefined) return cached;
+  const owned = draws.map((draw) => ({
+    ...draw,
+    geometry: captureBatchGeometry(draw.geometry),
+    ...(draw.prepared === undefined
+      ? {}
+      : {
+          prepared: freezePreparedGpuDrivenDraw({
+            ...draw.prepared,
+            identity: Object.freeze({ ...draw.prepared.identity }),
+            vertexInputs: ownGpuDrivenVertexInputs(draw.prepared.vertexInputs),
+          }),
+        }),
+  }));
+  if (shared) ownedDrawTables.set(draws, owned);
+  return owned;
+}
+
 export function ownSnapshot(snapshot: RenderableSnapshot): RenderableSnapshot {
   const { temporal: _temporal, skinBinding: sourceBinding, ...current } = snapshot;
   let skinBinding: RenderableSnapshot['skinBinding'];
@@ -327,25 +398,9 @@ export function ownSnapshot(snapshot: RenderableSnapshot): RenderableSnapshot {
     ...current,
     ...(snapshot.gpuDrivenDraws === undefined
       ? {}
-      : {
-          gpuDrivenDraws: snapshot.gpuDrivenDraws.map((draw) => ({
-            ...draw,
-            geometry: captureBatchGeometry(draw.geometry),
-            ...(draw.prepared === undefined
-              ? {}
-              : {
-                  prepared: freezePreparedGpuDrivenDraw({
-                    ...draw.prepared,
-                    identity: Object.freeze({ ...draw.prepared.identity }),
-                    vertexInputs: ownGpuDrivenVertexInputs(draw.prepared.vertexInputs),
-                  }),
-                }),
-          })),
-        }),
-    transform: { ...snapshot.transform, world: new Float32Array(snapshot.transform.world) },
-    ...(snapshot.localAabb === undefined
-      ? {}
-      : { localAabb: new Float32Array(snapshot.localAabb) }),
+      : { gpuDrivenDraws: ownGpuDrivenDraws(snapshot.gpuDrivenDraws) }),
+    transform: { ...snapshot.transform, world: ownPose(snapshot.transform.world) },
+    ...(snapshot.localAabb === undefined ? {} : { localAabb: sharedAabb(snapshot.localAabb) }),
     ...(snapshot.instances === undefined ? {} : { instances: ownInstances(snapshot.instances) }),
     ...(snapshot.spriteInstances === undefined
       ? {}

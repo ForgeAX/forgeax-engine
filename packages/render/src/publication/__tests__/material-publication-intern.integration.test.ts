@@ -12,10 +12,11 @@ import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/f
 import { MeshFilter, MeshRenderer } from '../../components';
 import { renderMaterialContext } from '../../extract/material-context';
 import { isOwnedRenderFeatureProgramData } from '../../features/prepared-gpu-work';
-import { type RenderPublication, renderPublicationTransfers } from '../contract';
+import type { RenderPublication } from '../contract';
 import { PublicationMaterialProjectionAdmission } from '../programs';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 type Projection = NonNullable<RenderPublication['assets'][number]['materialProjection']>;
 
@@ -141,20 +142,22 @@ async function fixture() {
     for (const mutate of malformed) {
       const invalid = structuredClone(candidate.packet);
       mutate(invalid);
-      expect(receiver.accept(invalid, receiving).ok).toBe(false);
+      expect(receiver.accept(encodeRenderPublication(invalid), receiving).ok).toBe(false);
     }
     start = performance.now();
     // The Worker boundary: one structured clone per packet.
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     timings.transportMs += performance.now() - start;
     start = performance.now();
-    const accepted = receiver.accept(packet, receiving);
+    const accepted = receiver.accept(encodeRenderPublication(packet), receiving);
     timings.acceptMs += performance.now() - start;
     expect(accepted.ok).toBe(true);
     candidate.accept();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return packet;
   };
   const copy = () => spawn(assets.copy(root).unwrap() as AssetHandle<'material', MaterialAsset>);

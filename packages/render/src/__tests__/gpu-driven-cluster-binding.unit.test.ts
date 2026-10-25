@@ -16,7 +16,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { GpuScene } from '../gpu-scene';
-import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { SkinTaskBinding } from '../record/skin-tasks';
@@ -120,9 +119,8 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   let skinFrame: SkinSceneFrame | undefined;
   const publish = (rows: readonly RenderableSnapshot[]) => {
     skinInputs.discardFrame();
-    const before = scene.slotsSnapshot(),
-      delta = scene.apply(rows.map(updateSnapshot));
-    skinInputs.apply(before, delta);
+    const delta = scene.apply(rows.map(updateSnapshot));
+    skinInputs.apply(delta);
     skinInputs.joint(0, 19, mat4.identity(mat4.create()));
     skinFrame = skinInputs.prepareFrame(scene.slotsSnapshot());
     available.scene.sync(delta).unwrap();
@@ -305,7 +303,7 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       expect(first.bindings).toEqual([{ group: cluster, offsets: [0] }]);
       expect(clusterBindGroupForMesh).toHaveBeenCalledExactlyOnceWith(
         f.scene.transformBuffer,
-        f.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+        f.scene.transformByteLength,
       );
       expect(r.record(frame)).toEqual(first);
       expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(2);
@@ -342,7 +340,7 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       for (const call of clusterBindGroupForSkin.mock.calls) {
         expect(call).toEqual([
           f.scene.transformBuffer,
-          f.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+          f.scene.transformByteLength,
           expect.objectContaining({
             data: expect.anything(),
             auxiliary: expect.anything(),
@@ -384,7 +382,7 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(3);
       expect(clusterBindGroupForMesh).toHaveBeenLastCalledWith(
         f.scene.transformBuffer,
-        f.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+        f.scene.transformByteLength,
       );
     } finally {
       await next?.close();

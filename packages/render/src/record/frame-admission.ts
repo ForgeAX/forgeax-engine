@@ -9,14 +9,10 @@ import { RendererOperationError } from '../errors/render';
 import { resolveDepthOfFieldFrameParams } from '../features/depth-of-field/depth-of-field-params';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import {
-  projectVisibleSurfaces,
-  type VisibleSurfaceProjection,
-} from '../raytracing/visible-surface';
+import { type VisibleSurfaceProjection, VisibleSurfaceRows } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   DispatchList,
-  ExtractedLights,
   RenderableSnapshot,
   SkyboxSnapshot,
   SkylightSnapshot,
@@ -27,6 +23,7 @@ import type {
   PersistentGpuDrivenState,
   PersistentShadowCasterProjection,
 } from '../scene/render-scene';
+import { projectedRows } from '../scene/row-projection';
 import {
   admitSsrSpatial,
   type SsrDependenciesInspection,
@@ -34,6 +31,7 @@ import {
 } from '../ssr/admission';
 import { subsurfaceTopology } from '../subsurface/demand';
 import { SubsurfaceSelection } from '../subsurface/selection';
+import type { ViewLights } from '../world/render-lights';
 import type { CubeCaptureFrameInput } from './frame';
 import {
   type RenderFrameState,
@@ -297,17 +295,17 @@ export function isFixedShadowDomain(
   captureOnly: boolean,
   nativeScene: PersistentGpuDrivenState | undefined,
   projection: PersistentShadowCasterProjection | undefined,
-  lights: ExtractedLights,
+  lights: ViewLights,
   effectiveShadowMapSize: number | undefined,
 ): boolean {
   return (
     rendererRecording &&
     !captureOnly &&
     nativeScene?.retained?.isSourceCurrent() === true &&
-    nativeScene.unbatchedSlots?.length === 0 &&
+    nativeScene.unbatchedSlots?.size === 0 &&
     projection !== undefined &&
     (projection.content.viewDraws?.length ?? 0) === 0 &&
-    (lights.cascadeCount ?? 0) > 0 &&
+    (lights.cascades?.cascadeCount ?? 0) > 0 &&
     (effectiveShadowMapSize ?? 0) > 0
   );
 }
@@ -420,20 +418,24 @@ export function admitFrameSsr(
 /** Settle the complete SH buffer before any geometry binds it. */
 export function projectFrameVisibleSurface(
   internals: RenderSystemInternals,
+  frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
   renderables: FrameList<RenderableSnapshot>,
 ): VisibleSurfaceProjection | undefined {
   if (internals.standardProfile?.visibleSurface !== true) return undefined;
-  const visibleSurface = projectVisibleSurfaces(
-    scene?.slots ?? [],
-    Math.min(1_048_576, Math.floor(internals.device.limits.maxStorageBufferBindingSize / 64)),
-  ).unwrap();
   if (scene === undefined)
     throw new RhiError({
       code: 'rhi-not-available',
       expected: 'the retained RenderScene for visible-surface projection',
       hint: 'prepare the ordinary renderer scene before enabling visible surfaces',
     });
+  frameState.visibleSurfaceRows ??= new VisibleSurfaceRows();
+  const visibleSurface = frameState.visibleSurfaceRows
+    .update(
+      projectedRows(scene),
+      Math.min(1_048_576, Math.floor(internals.device.limits.maxStorageBufferBindingSize / 64)),
+    )
+    .unwrap();
   for (const source of renderables) {
     if (
       (source.instances?.instanceCount ?? 1) * 128 >

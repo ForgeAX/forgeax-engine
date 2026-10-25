@@ -777,39 +777,6 @@ export async function writePackageArchive(root, path, options = {}) {
   await chmod(path, 0o644);
 }
 
-function withoutVolatileStoreTime(value) {
-  if (Array.isArray(value)) return value.map(withoutVolatileStoreTime);
-  if (value === null || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [
-      key,
-      key === 'checkedAt' ? 0 : withoutVolatileStoreTime(child),
-    ]),
-  );
-}
-
-function containsStoreDiff(value) {
-  if (Array.isArray(value)) return value.length > 0;
-  if (value === null || typeof value !== 'object') return true;
-  return Object.values(value).some(containsStoreDiff);
-}
-
-function withoutEmptySideEffects(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
-  const sideEffects = value.sideEffects;
-  if (sideEffects === null || typeof sideEffects !== 'object' || Array.isArray(sideEffects)) {
-    return value;
-  }
-  const retained = Object.fromEntries(
-    Object.entries(sideEffects).filter(([, diff]) => containsStoreDiff(diff)),
-  );
-  if (Object.keys(retained).length === 0) {
-    const { sideEffects: _emptySideEffects, ...withoutSideEffects } = value;
-    return withoutSideEffects;
-  }
-  return { ...value, sideEffects: retained };
-}
-
 /** Keep package integrity while allowing the consumer's selected registry. */
 export function normalizeSdkRegistryLockfile(lockfile, ownedTarballUrls) {
   for (const url of ownedTarballUrls) {
@@ -825,34 +792,10 @@ export function isPnpmSqliteStoreArtifact(path) {
 }
 
 export async function normalizePnpmStore(storeRoot, storeFormat = 'v11') {
-  const indexRoot = resolve(storeRoot, storeFormat, 'index');
-  let indexFiles;
-  try {
-    indexFiles = await filesUnder(indexRoot);
-  } catch (cause) {
-    if (
-      cause === null ||
-      typeof cause !== 'object' ||
-      !('code' in cause) ||
-      cause.code !== 'ENOENT'
-    ) {
-      throw cause;
-    }
-    // pnpm 11+ uses a SQLite index.db instead of JSON index files. Its binary
-    // page layout is owned by pnpm; do not rewrite it in place.
-    await readFile(resolve(storeRoot, storeFormat, 'index.db'));
-    // SQLite's shared-memory sidecar is a live coordination file, not store
-    // data. pnpm may leave it behind after install; it is recreated on use.
-    await rm(resolve(storeRoot, storeFormat, 'index.db-shm'), { force: true });
-    return;
-  }
-  for (const path of indexFiles) {
-    if (!path.endsWith('.json')) continue;
-    const value = stable(
-      withoutEmptySideEffects(withoutVolatileStoreTime(JSON.parse(await readFile(path, 'utf8')))),
-    );
-    await writeFile(path, `${JSON.stringify(value)}\n`);
-  }
+  // The pinned pnpm owns SQLite's binary page layout and write-ahead log.
+  await readFile(resolve(storeRoot, storeFormat, 'index.db'));
+  // Shared memory is live coordination state and is recreated on use.
+  await rm(resolve(storeRoot, storeFormat, 'index.db-shm'), { force: true });
 }
 
 /** Report the store format actually written by pnpm instead of inferring it from its major. */

@@ -20,9 +20,9 @@ import { expect, it, vi } from 'vitest';
 import { createPreparedGraphicsStore } from '../../features/prepared-graphics-store';
 import type { SkylightBindGroupResources } from '../../ibl/skylight-bind-group';
 import { createPreparedGraphicsResolver } from '../../prepare/prepared-graphics-resolver';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { worldRenderResources } from '../../publication/resource-scope';
 import {
   type PreparedMaterialBindingsScope,
@@ -520,8 +520,10 @@ it('retains the exact feature material when an independent ordinary root is reti
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, resources: accepted.resources };
   };
   const bind = (resources: ReturnType<typeof publish>['resources'], handle: number) => {

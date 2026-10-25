@@ -3,7 +3,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
-import { renderPublicationTransfers } from '../publication/contract';
+import { renderPublicationTransfers } from '../publication/record';
 import { SkinJointReferences } from '../publication/skin-joints';
 import { fixture } from './skin-publication-fixture';
 
@@ -150,19 +150,28 @@ it('closes the whole publisher after a reference commit failure instead of expos
     f.publisher.dispose();
   }
 });
-it('transfers and recycles all five protocol columns through the real source candidate lifetime', () => {
+it('transfers and recycles the one protocol record through the real source candidate lifetime', () => {
   const f = fixture();
   try {
     const candidate = f.prepare(),
-      transfers = renderPublicationTransfers(candidate.packet);
-    expect(transfers).toHaveLength(5);
-    expect(new Set(transfers).size).toBe(5);
-    const packet = structuredClone(candidate.packet, { transfer: transfers });
+      transfers = renderPublicationTransfers(candidate.message);
+    expect(transfers).toEqual([candidate.message.record]);
+    // Every change column is a view of the same record.
+    for (const column of [
+      candidate.packet.upserts,
+      candidate.packet.removed,
+      candidate.packet.transformEntities,
+      candidate.packet.retiredJoints,
+      candidate.packet.transforms,
+    ])
+      expect(column.buffer).toBe(candidate.message.record);
+    const message = structuredClone(candidate.message, { transfer: transfers });
     candidate.accept();
     for (const storage of transfers) expect(storage.byteLength).toBe(0);
-    const returned = renderPublicationTransfers(packet);
-    expect(f.publisher.recycle(packet.revision, returned.slice(0, 4)).ok).toBe(false);
-    expect(f.publisher.recycle(packet.revision, returned).ok).toBe(true);
+    const returned = renderPublicationTransfers(message);
+    expect(f.publisher.recycle(message.revision, []).ok).toBe(false);
+    expect(f.publisher.recycle(message.revision, [...returned, new ArrayBuffer(8)]).ok).toBe(false);
+    expect(f.publisher.recycle(message.revision, returned).ok).toBe(true);
     f.world.set(f.firstJoint, Transform, { pos: [17, 0, 0] }).unwrap();
     const next = f.publish();
     expect(next.transforms[12]).toBe(17);
@@ -170,21 +179,20 @@ it('transfers and recycles all five protocol columns through the real source can
     f.publisher.dispose();
   }
 });
-it('recycles each numeric column into its own backing slot without repeated allocation after baseline', () => {
+it('recycles the record slot without repeated allocation after baseline', () => {
   const f = fixture();
   try {
     f.publish();
     const allocations = f.publisher.inspect().allocations;
-    const sizes: Array<readonly number[]> = [];
+    const sizes: number[] = [];
     for (let position = 1; position <= 8; position++) {
       f.world.set(f.firstJoint, Transform, { pos: [position, 0, 0] }).unwrap();
       const packet = f.publish();
       expect(packet.transforms[12]).toBe(position);
       expect(f.publisher.inspect().allocations).toBe(allocations);
-      sizes.push(renderPublicationTransfers(packet).map((buffer) => buffer.byteLength));
+      sizes.push(required(packet.transforms.buffer.byteLength));
     }
-    for (const size of sizes) expect(size).toEqual(sizes[0]);
-    expect(required(sizes[0])[3]).toBeGreaterThan(required(required(sizes[0])[4]));
+    for (const size of sizes) expect(size).toBe(sizes[0]);
   } finally {
     f.publisher.dispose();
   }

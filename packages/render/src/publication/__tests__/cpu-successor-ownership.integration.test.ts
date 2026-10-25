@@ -9,17 +9,17 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
 import type { RenderFeature } from '../../features/types';
-import {
-  type RenderPublication,
-  renderPublicationAssetTransfers,
-  renderPublicationTransfers,
-} from '../contract';
-import { publicationDispatchGroups } from '../dispatch-groups';
+import type { RenderPublication } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import {
+  encodeRenderPublication,
+  renderPublicationAssetTransfers,
+  renderPublicationTransfers,
+} from '../record';
 
 function columns(packet: RenderPublication): string[] {
-  return renderPublicationTransfers(packet).map((buffer) =>
+  return renderPublicationTransfers(encodeRenderPublication(packet)).map((buffer) =>
     createHash('sha256').update(new Uint8Array(buffer)).digest('hex'),
   );
 }
@@ -92,15 +92,15 @@ it.each(
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
       transfer: [
-        ...renderPublicationTransfers(candidate.packet),
-        ...renderPublicationAssetTransfers(candidate.packet),
+        ...renderPublicationTransfers(candidate.message),
+        ...renderPublicationAssetTransfers(candidate.message),
       ],
     });
     candidate.accept();
     packets.push(packet);
     return packet;
   };
-  const publish = () => receiver.accept(send()).unwrap();
+  const publish = () => receiver.accept(encodeRenderPublication(send())).unwrap();
   try {
     let accepted: ReturnType<typeof publish> | undefined;
     for (let index = 0; index < 3; index++) {
@@ -125,8 +125,8 @@ it.each(
     });
     const retained = receiver.snapshot(accepted);
     const retainedMesh = retained.resources.resolveAsset(handle).unwrap();
-    const retainedDispatch = publicationDispatchGroups(retained.frame);
-    expect(retainedDispatch).toBeDefined();
+    const retainedRows = retained.scene.rows.capture();
+    expect(retainedRows.length).toBeGreaterThan(0);
     expect(submitted).toEqual(deferThird ? [1, 2] : [1, 2, 3]);
     world.update(steps / 60).unwrap();
     const successorTick = world.getResource(FixedTime).tick;
@@ -140,24 +140,26 @@ it.each(
     expect(publisher.inspect().inFlightCount).toBe(3);
     expect(receiver.acceptedRevision).toBe(deferThird ? 2 : 3);
     expect(retained.resources.resolveAsset(handle).unwrap()).toBe(retainedMesh);
-    expect(publicationDispatchGroups(retained.frame)).toBe(retainedDispatch);
+    expect(retained.scene.rows.capture()).toBe(retainedRows);
     expect(packets.map(columns)).toEqual(sealedColumns);
     expect(sealedMeshes).toEqual([1, 2, 3]);
     const [first, second] = packets;
     if (first === undefined || second === undefined) throw new Error('Missing held packets');
-    expect(publisher.recycle(2, renderPublicationTransfers(second)).ok).toBe(false);
+    expect(
+      publisher.recycle(2, renderPublicationTransfers(encodeRenderPublication(second))).ok,
+    ).toBe(false);
     expect(publisher.inspect().inFlightCount).toBe(3);
     if (deferThird) {
       const third = packets[2];
       if (third === undefined) throw new Error('Missing deferred publication');
-      const received = receiver.accept(third).unwrap();
+      const received = receiver.accept(encodeRenderPublication(third)).unwrap();
       expect(received.packet.features[0]?.data).toEqual({ tick: 3 });
       publisher.acknowledgeFeatures(3, [{ identity: feature.identity, feedback: {} }]).unwrap();
       expect(submitted).toEqual([1, 2, 3]);
     }
     // The completion owner returns the oldest storage only after its proof
     // work. This contract does not turn an early World update into retirement.
-    publisher.recycle(1, renderPublicationTransfers(first)).unwrap();
+    publisher.recycle(1, renderPublicationTransfers(encodeRenderPublication(first))).unwrap();
     const successor = publish();
     expect(successor.packet.base).toBe(3);
     expect(successor.packet.features[0]?.data).toEqual({ tick: successorTick });
@@ -167,7 +169,9 @@ it.each(
     publisher.acknowledgeFeatures(4, [{ identity: feature.identity, feedback: {} }]).unwrap();
     expect(submitted).toEqual([1, 2, 3, successorTick]);
     for (const packet of packets.slice(1))
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
     expect(publisher.inspect().inFlightCount).toBe(0);
   } finally {
     receiver.dispose();

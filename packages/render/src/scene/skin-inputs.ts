@@ -626,17 +626,25 @@ export class SkinInputs {
   private replace(space: number, key: number | undefined, row: Row | undefined): void {
     if (row !== undefined && key !== undefined) {
       const page = this.exclusiveLeaf(space, key);
+      // An exclusive leaf takes a replacement or a new key in place: bulk
+      // admission writes one descriptor word instead of copying its path.
       if (page !== undefined) {
         const at = key & 255;
         const previous = page.entries.get(at);
-        if (previous !== undefined) {
+        {
           try {
             page.entries.set(at, row);
             this.inputs.writeDescriptorWord(page.address, PAGE_WORDS, at, row.address);
           } catch (cause) {
             try {
-              page.entries.set(at, previous);
-              this.inputs.writeDescriptorWord(page.address, PAGE_WORDS, at, previous.address);
+              if (previous === undefined) page.entries.delete(at);
+              else page.entries.set(at, previous);
+              this.inputs.writeDescriptorWord(
+                page.address,
+                PAGE_WORDS,
+                at,
+                previous === undefined ? ABSENT : previous.address,
+              );
             } catch (cleanup) {
               this.state.failed = true;
               throw new AggregateError([cause, cleanup], 'Exclusive Skin row rollback failed', {
@@ -648,7 +656,7 @@ export class SkinInputs {
           row.holders++;
           const delta =
             (row.kind === 'binding' ? row.words - 3 : 0) -
-            (previous.kind === 'binding' ? previous.words - 3 : 0);
+            (previous?.kind === 'binding' ? previous.words - 3 : 0);
           if (delta !== 0) {
             let ancestor = this.current;
             while (ancestor !== undefined) {
@@ -657,7 +665,7 @@ export class SkinInputs {
               ancestor = ancestor.entries.get(keyByte(space, key, ancestor.shift));
             }
           }
-          retireRow(this.inputs, this.state, previous);
+          if (previous !== undefined) retireRow(this.inputs, this.state, previous);
           return;
         }
       }
@@ -789,6 +797,10 @@ export class SkinInputFrame {
     this.#state = state;
     this.#page = page;
     Object.freeze(this);
+  }
+  /** False once the frame's arena retired; later diagnostic readers treat its bounds as unknown. */
+  get readable(): boolean {
+    return this.#state !== undefined && this.#inputs?.live === true;
   }
   private live(): GpuInputArena {
     const inputs = this.#inputs;

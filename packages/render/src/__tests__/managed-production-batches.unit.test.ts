@@ -171,7 +171,7 @@ async function fixture(
     jointCount: 1,
     inverseBindMatrices: mat4.identity(mat4.create()),
   }));
-  skinInputs.apply(new RenderScene().slotsSnapshot(), delta);
+  skinInputs.apply(delta);
   skinInputs.joint(0, 19, mat4.identity(mat4.create()));
   const skinFrame = skinInputs.prepareFrame(projection.slotsSnapshot());
   const slots = projection.slotsSnapshot();

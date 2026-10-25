@@ -7,9 +7,9 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
@@ -52,8 +52,12 @@ it.each([
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       work += packet.upserts.length;
-      const frame = scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const frame = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return frame;
     }
     return scene.extractComposition(

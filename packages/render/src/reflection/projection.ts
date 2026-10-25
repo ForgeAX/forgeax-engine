@@ -1,5 +1,7 @@
 import type { ReflectionProbeUpdateIntent } from '../components/reflection-probe';
 import { pmremExtent } from '../ibl/pmrem';
+import type { RenderSceneSlot } from '../scene/render-scene-types';
+import { type ProjectedRows, RowProjection } from '../scene/row-projection';
 
 export const REFLECTION_PROBE_BYTES_PER_TEXEL = 8;
 export const DEFAULT_REFLECTION_PROBE_LIMITS = Object.freeze({
@@ -370,18 +372,14 @@ export function selectReflectionProbe(
   return selected ?? { kind: 'skylight' };
 }
 
-export interface ReflectionProbePrimitive {
-  readonly worldId: number;
-  readonly entityKey: number;
-  /** Main-pass renderable key; world/entity is retained as the compatibility fallback. */
-  readonly renderableKey?: string;
-  readonly center: readonly [number, number, number];
-}
+/** One scene row's selection input: the center of its culling bounds. */
+export type ReflectionProbePrimitiveCenter = readonly [number, number, number];
 
 export interface ReflectionProbeProjectionSnapshot {
   readonly revision: number;
   readonly facts: readonly ReflectionProbeFact[];
   readonly selected: ReadonlyMap<string, ReflectionProbeSelectionResult>;
+  /** Rows whose selection the last update re-derived; O(changed rows) at steady state. */
   readonly scannedPrimitives: number;
 }
 
@@ -389,33 +387,84 @@ function primitiveKey(worldId: number, entityKey: number): string {
   return `${worldId}:${entityKey}`;
 }
 
+interface SelectionPrimitive {
+  readonly key: string;
+  readonly center: ReflectionProbePrimitiveCenter;
+}
+
+/**
+ * Per-row probe selection kept current from retained row change evidence: a
+ * row edit re-selects that row, a probe edit re-selects every row once, and
+ * a steady frame visits nothing.
+ */
 export class ReflectionProbeProjection {
   private revision = 0;
   private facts: readonly ReflectionProbeFact[] = [];
-  private selected = new Map<string, ReflectionProbeSelectionResult>();
-  private signature = '';
+  private factSignature = '';
+  private readonly selected = new Map<string, ReflectionProbeSelectionResult>();
+  private readonly keys = new Map<number, string>();
   private scannedPrimitives = 0;
+  private centerOf: (slot: RenderSceneSlot) => ReflectionProbePrimitiveCenter | undefined = () =>
+    undefined;
+  private readonly primitives = new RowProjection<SelectionPrimitive>((slot) => {
+    const center = this.centerOf(slot);
+    return center === undefined
+      ? undefined
+      : { key: primitiveKey(slot.worldId, slot.entityKey), center };
+  });
 
   update(
     facts: readonly ReflectionProbeFact[],
-    primitives: readonly ReflectionProbePrimitive[],
+    rows: ProjectedRows | undefined,
+    centerOf: (slot: RenderSceneSlot) => ReflectionProbePrimitiveCenter | undefined,
   ): ReflectionProbeProjectionSnapshot {
+    this.scannedPrimitives = 0;
+    if (facts.length === 0 || rows === undefined) {
+      // No probe has no per-row demand: drop the projection; a later probe re-derives it cold.
+      if (this.facts.length > 0 || this.selected.size > 0) {
+        this.primitives.reset();
+        this.selected.clear();
+        this.keys.clear();
+        this.facts = [];
+        this.factSignature = '';
+        this.revision += 1;
+      }
+      return this.snapshot();
+    }
     const nextFacts = facts
       .slice()
       .sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey);
-    const signature = JSON.stringify({ facts: nextFacts, primitives });
-    if (signature === this.signature) return this.snapshot();
-    this.signature = signature;
+    const signature = JSON.stringify(nextFacts);
+    this.centerOf = centerOf;
+    const visits = this.primitives.visits;
+    const sync = this.primitives.sync(rows);
+    this.scannedPrimitives = this.primitives.visits - visits;
+    const factsChanged = signature !== this.factSignature;
+    const reselectAll = factsChanged || sync.cold;
     this.facts = nextFacts;
-    this.selected = new Map();
-    for (const primitive of primitives) {
-      this.selected.set(
-        primitive.renderableKey ?? primitiveKey(primitive.worldId, primitive.entityKey),
-        selectReflectionProbe(nextFacts, primitive.center),
-      );
+    this.factSignature = signature;
+    let changed = factsChanged;
+    for (const slot of sync.changed) {
+      const key = this.keys.get(slot);
+      if (key !== undefined && this.selected.delete(key)) changed = true;
+      this.keys.delete(slot);
     }
-    this.scannedPrimitives = primitives.length;
-    this.revision += 1;
+    const select = (slot: number, primitive: SelectionPrimitive) => {
+      const result = selectReflectionProbe(nextFacts, primitive.center);
+      const before = this.selected.get(primitive.key);
+      if (before === undefined || !sameSelection(before, result)) changed = true;
+      this.selected.set(primitive.key, result);
+      this.keys.set(slot, primitive.key);
+    };
+    if (reselectAll) {
+      for (const [slot, primitive] of this.primitives.entries()) select(slot, primitive);
+      this.scannedPrimitives = this.primitives.size;
+    } else
+      for (const slot of sync.changed) {
+        const primitive = this.primitives.get(slot);
+        if (primitive !== undefined) select(slot, primitive);
+      }
+    if (changed) this.revision += 1;
     return this.snapshot();
   }
 
@@ -431,4 +480,16 @@ export class ReflectionProbeProjection {
   selection(worldId: number, entityKey: number): ReflectionProbeSelectionResult {
     return this.selected.get(primitiveKey(worldId, entityKey)) ?? { kind: 'skylight' };
   }
+}
+
+function sameSelection(
+  a: ReflectionProbeSelectionResult,
+  b: ReflectionProbeSelectionResult,
+): boolean {
+  return a.kind === 'skylight'
+    ? b.kind === 'skylight'
+    : b.kind === 'probe' &&
+        a.worldId === b.worldId &&
+        a.entityKey === b.entityKey &&
+        a.normalizedDistance === b.normalizedDistance;
 }

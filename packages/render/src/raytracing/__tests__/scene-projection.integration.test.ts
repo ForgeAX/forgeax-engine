@@ -11,7 +11,7 @@ import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-s
 import { RenderScene } from '../../scene/render-scene';
 import { traceReferenceRay } from '../scene';
 import { projectRayScene } from '../scene-projection';
-import { resolveVisibleSurface } from '../visible-surface';
+import { projectVisibleSurfaces, resolveVisibleSurface } from '../visible-surface';
 
 function fixture(world = new World({ assets: new AssetRegistry() }), worldId = 0) {
   const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0, 0, 1, 0]);
@@ -82,7 +82,11 @@ it('keeps complete retained sources and joins a hit to the exact draw range and 
   update(retained, { ...source, entityKey: 32, transform: { world: farWorld } });
   update(retained, { ...source, entityKey: 33, authorVisible: false });
   // No camera/filter input exists here: even the far, offscreen contributor is retained.
-  const projected = projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 9);
+  const projected = projectRayScene(
+    retained.slotsSnapshot(),
+    [world].map(worldRenderResources),
+    projectVisibleSurfaces(retained.slotsSnapshot(), 9).unwrap(),
+  );
   expect(projected.scene.triangleCount).toBe(2);
   expect(projected.materials).toEqual([
     {
@@ -123,7 +127,11 @@ it('composes root and instance transforms and detaches the accepted snapshot acr
       archVersion: 0,
     },
   });
-  const accepted = projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 3);
+  const accepted = projectRayScene(
+    retained.slotsSnapshot(),
+    [world].map(worldRenderResources),
+    projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
+  );
   const hit = traceReferenceRay(accepted.scene, query(5));
   assert(hit);
   expect(hit.t).toBe(2);
@@ -133,7 +141,11 @@ it('composes root and instance transforms and detaches the accepted snapshot acr
   transforms[12] = 4;
   retained.apply([{ kind: 'remove', worldId: 0, entityKey: 31 }]);
   update(retained, { ...source, entityKey: 44 });
-  const next = projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 3);
+  const next = projectRayScene(
+    retained.slotsSnapshot(),
+    [world].map(worldRenderResources),
+    projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
+  );
   expect(traceReferenceRay(accepted.scene, query(5))?.t).toBe(2);
   expect(traceReferenceRay(next.scene, query(5))).toBeNull();
   expect(resolveVisibleSurface(accepted.surfaces, hit.instanceId, 0).unwrap()).toEqual(identity);
@@ -164,7 +176,7 @@ it('keeps material handles from different Worlds distinct and admits non-indexed
   const projection = projectRayScene(
     retained.slotsSnapshot(),
     [first.world, second.world].map(worldRenderResources),
-    6,
+    projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
   );
   expect(projection.scene.triangleCount).toBe(2);
   expect(projection.materials).toEqual([
@@ -185,9 +197,19 @@ it('rejects missing Worlds, bad base vertices, absent index buffers and partial 
   const { world, source } = fixture();
   const retained = new RenderScene();
   update(retained, source);
-  expect(() => projectRayScene(retained.slotsSnapshot(), [], 3)).toThrow();
   expect(() =>
-    projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 2),
+    projectRayScene(
+      retained.slotsSnapshot(),
+      [],
+      projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
+    ),
+  ).toThrow();
+  expect(() =>
+    projectRayScene(
+      retained.slotsSnapshot(),
+      [world].map(worldRenderResources),
+      projectVisibleSurfaces(retained.slotsSnapshot(), 2).unwrap(),
+    ),
   ).toThrow();
   for (const baseVertex of [-2, 1]) {
     update(retained, {
@@ -195,7 +217,11 @@ it('rejects missing Worlds, bad base vertices, absent index buffers and partial 
       gpuDrivenDraws: [{ ...firstDraw(source), baseVertex }],
     });
     expect(() =>
-      projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 3),
+      projectRayScene(
+        retained.slotsSnapshot(),
+        [world].map(worldRenderResources),
+        projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
+      ),
     ).toThrow();
   }
   const original = fixture();
@@ -214,7 +240,11 @@ it('rejects missing Worlds, bad base vertices, absent index buffers and partial 
       .unwrap(),
   });
   expect(() =>
-    projectRayScene(retained.slotsSnapshot(), [original.world].map(worldRenderResources), 3),
+    projectRayScene(
+      retained.slotsSnapshot(),
+      [original.world].map(worldRenderResources),
+      projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
+    ),
   ).toThrow();
 });
 
@@ -225,15 +255,26 @@ it('refuses an unrepresented contributor instead of turning missing geometry int
   const { gpuDrivenDraws: _draws, ...unrepresented } = source;
   update(retained, { ...unrepresented, entityKey: 32 });
   expect(() =>
-    projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 6),
+    projectRayScene(
+      retained.slotsSnapshot(),
+      [world].map(worldRenderResources),
+      projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
+    ),
   ).toThrow();
   update(retained, { ...unrepresented, entityKey: 32, gpuDrivenDraws: [] });
   expect(() =>
-    projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 6),
+    projectRayScene(
+      retained.slotsSnapshot(),
+      [world].map(worldRenderResources),
+      projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
+    ),
   ).toThrow();
   update(retained, { ...unrepresented, entityKey: 32, authorVisible: false });
   expect(
-    projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 6).scene
-      .triangleCount,
+    projectRayScene(
+      retained.slotsSnapshot(),
+      [world].map(worldRenderResources),
+      projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
+    ).scene.triangleCount,
   ).toBe(1);
 });

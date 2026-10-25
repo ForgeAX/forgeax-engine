@@ -32,20 +32,79 @@ type WorldTraversalSelection =
   | { readonly traversal: 'ray-query' }
   | { readonly traversal: 'global-sdf'; readonly fallback: WorldTraversalFallback };
 
-/** The projected scene's static triangle geometry, keyed by projection `geometryId`. */
-export function worldAccelerationGeometries(
-  region: Pick<ProbeGlobalRegion, 'sources' | 'instances'>,
-): readonly WorldAccelerationGeometry[] {
-  const geometries = new Map<number, WorldAccelerationGeometry>();
-  for (const source of region.sources) {
-    const geometryId = region.instances[source.firstInstance]?.geometryId;
-    const positions = source.mesh.attributes.position;
-    // The projection admits only static float32 triangle meshes into the field.
-    if (geometryId === undefined || !(positions instanceof Float32Array)) continue;
-    if (!geometries.has(geometryId))
-      geometries.set(geometryId, { geometryId, positions, indices: source.mesh.indices });
+/**
+ * BLAS identity of one mesh payload version: the same MeshAsset at the same
+ * asset revision shares one geometry id (and one BLAS); a new revision is a
+ * new geometry whose BLAS the old one's release does not wait for.
+ */
+export class WorldAccelerationGeometryIds {
+  readonly #ids = new WeakMap<object, Map<number, number>>();
+  #next = 0;
+
+  id(mesh: object, revision: number): number {
+    let revisions = this.#ids.get(mesh);
+    if (revisions === undefined) {
+      revisions = new Map();
+      this.#ids.set(mesh, revisions);
+    }
+    let id = revisions.get(revision);
+    if (id === undefined) {
+      id = this.#next++;
+      revisions.set(revision, id);
+    }
+    return id;
   }
-  return [...geometries.values()];
+}
+
+type AccelerationSource = Pick<
+  ProbeGlobalRegion['sources'][number],
+  'mesh' | 'assetRevision' | 'firstInstance' | 'instances'
+>;
+
+/** One field source's traced geometry, keyed by mesh payload version; `undefined` when not float32 triangles. */
+export function worldAccelerationGeometry(
+  source: Pick<AccelerationSource, 'mesh' | 'assetRevision'>,
+  ids: WorldAccelerationGeometryIds,
+): WorldAccelerationGeometry | undefined {
+  const positions = source.mesh.attributes.position;
+  // The projection admits only static float32 triangle meshes into the field.
+  if (!(positions instanceof Float32Array)) return undefined;
+  return {
+    geometryId: ids.id(source.mesh, source.assetRevision),
+    positions,
+    indices: source.mesh.indices,
+  };
+}
+
+/** The projected field's traced roster: instance rows keyed by mesh payload version. */
+export function worldAccelerationRoster(
+  region: {
+    readonly sources: readonly AccelerationSource[];
+    readonly instances: readonly WorldAccelerationInstance[];
+  },
+  ids: WorldAccelerationGeometryIds,
+): {
+  readonly instances: readonly WorldAccelerationInstance[];
+  readonly geometries: readonly WorldAccelerationGeometry[];
+} {
+  const geometries = new Map<number, WorldAccelerationGeometry>();
+  const instances: WorldAccelerationInstance[] = [];
+  for (const source of region.sources) {
+    const geometry = worldAccelerationGeometry(source, ids);
+    if (geometry !== undefined) geometries.set(geometry.geometryId, geometry);
+    const count = source.instances?.instanceCount ?? 1;
+    for (let ordinal = 0; ordinal < count; ordinal++) {
+      const instance = region.instances[source.firstInstance + ordinal];
+      if (instance === undefined) continue;
+      instances.push({
+        instanceId: instance.instanceId,
+        geometryId: geometry?.geometryId ?? -1,
+        mask: instance.mask,
+        transform: instance.transform,
+      });
+    }
+  }
+  return { instances, geometries: [...geometries.values()] };
 }
 
 const triangleCount = (geometry: WorldAccelerationGeometry) =>
@@ -69,7 +128,7 @@ export function selectWorldTraversal(
 export interface WorldAccelerationInspection {
   /** Instances the TLAS covers once every BLAS is resident. */
   readonly instances: number;
-  /** Resident-or-pending BLAS geometries, keyed by mesh identity. */
+  /** Referenced BLAS geometries (resident or pending), keyed by mesh payload version. */
   readonly geometries: number;
   /** Instances still waiting for their BLAS after the last submitted update. */
   readonly pending: number;
@@ -79,10 +138,17 @@ export interface WorldAccelerationInspection {
   readonly blasBuilt: number;
   /** Submitted TLAS builds of this generation; each roster or transform edit adds one. */
   readonly tlasBuilt: number;
-  /** Submitted build input bytes (`WorldAccelerationBuild.bytesBuilt`) of this generation. */
+  /** Submitted GPU build input bytes (`WorldAccelerationBuild.bytesBuilt`) of this generation. */
   readonly bytesBuilt: number;
+  /** Submitted `traversalInstances` rows written: changed rows only. */
+  readonly rowsWritten: number;
+  /** Submitted CPU-written bytes: changed table rows plus new BLAS inputs and face normals. */
+  readonly bytesUploaded: number;
+  /** Retained TLAS records patched (adds, moves, swap-fills); O(changed instances). */
+  readonly recordsPatched: number;
+  /** BLAS released after their last instance left. */
+  readonly blasReleased: number;
 }
-
 /** Extra capacity of an editable field's acceleration: TLAS rows and `faceNormals` rows. */
 interface WorldAccelerationHeadroom {
   /** TLAS instance capacity; at least the projected instance count. */
@@ -111,18 +177,20 @@ export interface WorldAccelerationEdit {
 }
 
 /**
- * One field generation's TLAS lane. Each geometry's BLAS is built once (by mesh
- * identity) and reused by every later edit; an edit re-opens the build pass for
- * one TLAS rebuild (plus BLAS builds of newly introduced meshes) and it settles
- * again once submitted. BLAS residency is decided at encode time, so an encoded
- * update that never reached `commit` (a failed submit) recreates the
- * acceleration once in-flight submissions complete.
+ * One field generation's TLAS lane over one incremental {@link WorldAcceleration}.
+ * Each geometry's BLAS is built once per mesh payload version, shared by its
+ * instances and released after the last one leaves; an edit patches only the
+ * changed TLAS records and table rows and re-opens the build pass for one GPU
+ * TLAS rebuild (plus BLAS builds of newly introduced meshes); it settles again
+ * once submitted. An encoded update that never reached `commit` (a failed
+ * submit) recovers through the owner's cold path: new GPU objects, every
+ * instance re-entered, the old objects retired after in-flight submissions.
  */
 export interface PreparedWorldAcceleration {
   readonly traversal: 'ray-query';
   readonly maxInstances: number;
   readonly maxTriangles: number;
-  /** The live resources; their identity changes only after a failed-submit recovery. */
+  /** The live owner; its GPU objects change only after a failed-submit recovery. */
   current(): WorldAcceleration;
   /** Recover an abandoned encode before the Graph freezes this frame's imports. */
   beginFrame(): Result<void, RayReferenceError | RhiError>;
@@ -156,49 +224,38 @@ export function prepareWorldAcceleration(
     Math.min(headroom?.instances ?? 0, caps.supported ? caps.maxTlasInstanceCount : 0),
   );
   const maxTriangles = Math.max(1, projectedTriangles + (headroom?.triangles ?? 0));
-  const roster = new Map<number, WorldAccelerationInstance>(
-    region.instances.map((instance) => [
-      instance.instanceId,
-      {
-        instanceId: instance.instanceId,
-        geometryId: instance.geometryId,
-        mask: instance.mask,
-        transform: instance.transform,
-      },
-    ]),
-  );
-  const resident = new Map(geometries.map((geometry) => [geometry.geometryId, geometry]));
-  let triangles = projectedTriangles;
-  const create = () =>
-    createWorldAcceleration(device, {
-      maxInstances,
-      maxTriangles,
-      maxBlasBuildsPerFrame: WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME,
-    });
-  const made = create();
+  const made = createWorldAcceleration(device, {
+    maxInstances,
+    maxTriangles,
+    maxBlasBuildsPerFrame: WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME,
+  });
   if (!made.ok) return made;
-  let resources = made.value;
-  // One queue completes in submission order, so the latest submission bounds every earlier one.
-  let inFlight: Promise<unknown> = Promise.resolve();
-  let pending = roster.size;
+  const world = made.value;
+  const byId = new Map(geometries.map((geometry) => [geometry.geometryId, geometry]));
+  // Cold start enters every instance through the same per-instance path as an edit.
+  for (const instance of region.instances) {
+    const geometry = byId.get(instance.geometryId);
+    const entered =
+      geometry === undefined
+        ? rayReferenceFailure(`world acceleration has no geometry ${instance.geometryId}`)
+        : world.set(instance, geometry);
+    if (!entered.ok) {
+      world.dispose();
+      return entered;
+    }
+  }
+  let pending = world.instances;
   let encoded: { build: WorldAccelerationBuild; revision: number } | undefined;
   let settled = false;
   // Bumped by every edit: a commit settles only an update encoded after the last edit.
   let revision = 0;
-  const totals = { blasBuilt: 0, tlasBuilt: 0, bytesBuilt: 0 };
-  const retireAfterFlight = (retired: WorldAcceleration) => {
-    void inFlight.then(
-      () => retired.dispose(),
-      () => retired.dispose(),
-    );
-  };
+  const totals = { blasBuilt: 0, tlasBuilt: 0, bytesBuilt: 0, rowsWritten: 0, bytesUploaded: 0 };
   const beginFrame = (): Result<void, RayReferenceError | RhiError> => {
     if (encoded === undefined) return ok(undefined);
-    const replacement = create();
-    if (!replacement.ok) return replacement;
-    retireAfterFlight(resources);
-    resources = replacement.value;
-    pending = roster.size;
+    // An encoded update never reached commit (a failed submit): rebuild every GPU object.
+    const recovered = world.recover();
+    if (!recovered.ok) return recovered;
+    pending = world.instances;
     settled = false;
     encoded = undefined;
     return ok(undefined);
@@ -207,22 +264,24 @@ export function prepareWorldAcceleration(
     traversal: 'ray-query',
     maxInstances,
     maxTriangles,
-    current: () => resources,
+    current: () => world,
     beginFrame,
     record(encoder) {
       const recovered = beginFrame();
       if (!recovered.ok) return recovered;
-      const updated = resources.update(encoder, [...resident.values()], [...roster.values()]);
+      const updated = world.update(encoder);
       if (!updated.ok) return updated;
       encoded = { build: updated.value, revision };
       return ok(undefined);
     },
     settled: () => settled,
     edit(edit) {
-      const removed = new Set(edit.removed.map((r) => r.index));
+      // Validate the whole delta first: a rejected edit leaves the roster unchanged.
+      let removed = 0;
+      for (const removal of edit.removed) if (world.has(removal.index)) removed++;
       const fresh = new Map<number, WorldAccelerationGeometry>();
       for (const { geometry } of edit.added)
-        if (!resident.has(geometry.geometryId)) fresh.set(geometry.geometryId, geometry);
+        if (!world.hasGeometry(geometry.geometryId)) fresh.set(geometry.geometryId, geometry);
       let added = 0;
       for (const geometry of fresh.values()) {
         const count = triangleCount(geometry);
@@ -233,30 +292,25 @@ export function prepareWorldAcceleration(
           );
         added += count;
       }
-      if (triangles + added > maxTriangles)
+      if (world.triangles + added > maxTriangles)
         return rayReferenceFailure('world acceleration exceeds its triangle headroom', true);
-      const size =
-        roster.size - [...removed].filter((index) => roster.has(index)).length + edit.added.length;
-      if (size > maxInstances)
+      if (world.instances - removed + edit.added.length > maxInstances)
         return rayReferenceFailure('world acceleration exceeds its instance headroom', true);
       for (const move of edit.moved) {
-        const owned = roster.get(move.index);
-        if (owned !== undefined)
-          roster.set(move.index, { ...owned, transform: Array.from(move.to) });
+        const moved = world.move(move.index, move.to);
+        if (!moved.ok) return moved;
       }
-      for (const index of removed) roster.delete(index);
-      for (const geometry of fresh.values()) resident.set(geometry.geometryId, geometry);
-      triangles += added;
-      for (const { instance } of edit.added) {
-        roster.delete(instance.instanceId);
-        roster.set(instance.instanceId, instance);
+      for (const removal of edit.removed) world.remove(removal.index);
+      for (const { instance, geometry } of edit.added) {
+        const entered = world.set(instance, geometry);
+        if (!entered.ok) return entered;
       }
       revision++;
       settled = false;
       return ok(undefined);
     },
     track(completed) {
-      inFlight = completed;
+      world.track(completed);
     },
     commit() {
       if (encoded === undefined) return;
@@ -266,15 +320,18 @@ export function prepareWorldAcceleration(
       totals.blasBuilt += build.blasBuilt;
       totals.tlasBuilt += build.tlasBuilt;
       totals.bytesBuilt += build.bytesBuilt;
+      totals.rowsWritten += build.rowsWritten;
+      totals.bytesUploaded += build.bytesUploaded;
       encoded = undefined;
     },
     inspect: () => ({
-      instances: roster.size,
-      geometries: resident.size,
+      instances: world.instances,
+      geometries: world.geometries,
       pending,
       settled,
       ...totals,
+      ...world.work,
     }),
-    dispose: () => resources.dispose(),
+    dispose: () => world.dispose(),
   });
 }

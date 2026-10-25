@@ -60,7 +60,7 @@ const update = (value: RenderableSnapshot) => ({
 });
 
 const witness = `
-#import forgeax_view::common::{sceneIndexDraw, sceneIndexLocalLoads, sceneInstances, scenePrimitives, sceneTransforms}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexLocalLoads, sceneInstances, scenePrimitives, sceneTransformPrevious, sceneTransforms}
 struct ResultRow {
   current: mat4x4<f32>,
   previous: mat4x4<f32>,
@@ -79,10 +79,12 @@ struct ResultRow {
   let root = sceneTransforms[primitive.transformIndex];
   let local = sceneTransforms[instance.transformIndex];
   let draw = sceneIndexDraw(row);
+  let frame = sceneTransforms[0u].stamp;
   // The pre-optimization formula is evaluated independently on the same GPU.
   output[id.x] = ResultRow(draw.world, draw.previousWorld,
-    root.currentWorld * local.currentWorld, root.previousWorld * local.previousWorld,
-    sceneTransforms[0u].currentWorld, sceneTransforms[0u].previousWorld,
+    root.currentWorld * local.currentWorld,
+    sceneTransformPrevious(root, frame) * sceneTransformPrevious(local, frame),
+    sceneTransforms[0u].currentWorld, sceneTransformPrevious(sceneTransforms[0u], frame),
     vec4<u32>(sceneIndexLocalLoads(), instance.transformIndex,
       draw.lightingChannels, select(0u, 1u, draw.receivesShadows)));
 }
@@ -167,7 +169,7 @@ fn sceneIndexLocalLoads() -> u32 { return sceneIndexLocalReadCount; }`
         )
         .unwrap();
     const commit = () => {
-      scene.commitTemporalFrame().unwrap();
+      scene.commitFrame().unwrap();
       projection.commitSubmission(projection.captureSubmission([ordinary, instanced]));
     };
     const probe = async (

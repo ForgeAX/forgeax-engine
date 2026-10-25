@@ -10,7 +10,6 @@ import { MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../.
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { createDynamicGeometryFrameBindings } from '../../record/dynamic-geometry-consumption';
 import type { FrameReceipt } from '../../render-contract';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
@@ -56,7 +55,7 @@ it('prepares in the accepted resource namespace without admitting the mesh or a 
     .unwrap();
   const gpu = physical.entry;
   expect(store.getMeshGpuHandles(f.input.meshHandle, prepared.resources)).toBeUndefined();
-  const accepted = f.receiver.accept(f.packet()).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
   expect(physical.commit()).toBe(true);
   expect(accepted.resources).toBe(prepared.resources);
   expect(accepted.resources.resolveAsset(f.input.meshHandle).unwrap()).toBe(prepared.mesh);
@@ -85,7 +84,7 @@ it.each([
   if (field === 'aabb') required(asset.aabb)[0] = -99;
   if (field === 'materialSlots')
     Object.assign(required(asset.materialSlots[0]), { slotName: 'altered' });
-  expect(f.receiver.accept(packet)).toMatchObject({
+  expect(f.receiver.accept(encodeRenderPublication(packet))).toMatchObject({
     ok: false,
     error: { detail: { reason: 'shape' } },
   });
@@ -177,7 +176,7 @@ it('keeps a source-committed allocation until the receiver accepts its actual Me
   expect(f.receiver.prepareMesh({ ...f.input, mesh: createBoxGeometry(2, 2, 2).unwrap() }).ok).toBe(
     false,
   );
-  const accepted = f.receiver.accept(f.packet()).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
   await transfer;
   expect(released).toHaveBeenCalledOnce();
   expect(f.store.getMeshGpuHandles(f.input.meshHandle, accepted.resources)).toBe(gpu);
@@ -218,7 +217,7 @@ it('waits for physical upload and reads only an exact current submitted frame', 
   f.finish();
   const prepared = (await pending).unwrap();
   expect(prepared.isCurrent()).toBe(true);
-  const accepted = f.receiver.accept(f.packet()).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
   const entity = required(accepted.frame.renderables.at(0)).entityKey;
   const entry = { source: required(accepted.frame.renderables.at(0)) };
   f.bindings.begin();
@@ -334,7 +333,9 @@ it('validates real Worker-cloned mesh payloads and rejects later shared-byte cha
     expect(f.receiver.prepareMesh(await roundTrip(input)).ok).toBe(false);
     expect(f.receiver.acceptedRevision).toBe(0);
     shared[offset] = before;
-    const accepted = f.receiver.accept(await roundTrip(f.packet())).unwrap();
+    const accepted = f.receiver
+      .accept(encodeRenderPublication(await roundTrip(f.packet())))
+      .unwrap();
     expect(accepted.resources.resolveAsset(f.input.meshHandle).unwrap()).toBe(prepared.mesh);
     prepared.release();
   } finally {
@@ -370,6 +371,7 @@ it('retains the handle payload identity until cancelled GPU work releases its al
 
 import { once } from 'node:events';
 import { Worker } from 'node:worker_threads';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 it.each([
   'publish',
@@ -397,7 +399,7 @@ it.each([
     conflicting.mesh.vertices[0] = (conflicting.mesh.vertices[0] ?? 0) + 1;
     expect(f.receiver.prepareMesh(conflicting, undefined, undefined, 'received').ok).toBe(false);
     if (action === 'publish') {
-      const accepted = f.receiver.accept(f.packet()).unwrap();
+      const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
       expect(accepted.resources.resolveAsset(received.meshHandle).unwrap()).toBe(received.mesh);
       await prepared.value.release(false);
       expect(f.store.getMeshGpuHandles(received.meshHandle, accepted.resources)).toBeDefined();
@@ -449,7 +451,7 @@ it('sends a prepared mesh revision once and adopts the receiver-held payload', (
     expect.objectContaining({ handle: meshHandle, revision: 1 }),
   ]);
   candidate.accept();
-  const accepted = receiver.accept(packet).unwrap();
+  const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
   expect(accepted.resources.resolveAsset(meshHandle).unwrap()).toBe(prepared.mesh);
   prepared.release();
   publisher.dispose();
@@ -499,15 +501,15 @@ it('holds a new hidden renderable until its preparing mesh crosses once', () => 
   expect(first.packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
   expect(first.packet.assets.some((row) => row.handle === visibleHandle)).toBe(true);
   first.accept();
-  receiver.accept(structuredClone(first.packet)).unwrap();
-  publisher.recycle(first.packet.revision, renderPublicationTransfers(first.packet)).unwrap();
+  receiver.accept(encodeRenderPublication(structuredClone(first.packet))).unwrap();
+  publisher.recycle(first.packet.revision, renderPublicationTransfers(first.message)).unwrap();
   // Still preparing on the next publication: still withheld.
   world.update(0).unwrap();
   const second = publisher.prepare(0).unwrap();
   expect(second.packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
   second.accept();
-  receiver.accept(structuredClone(second.packet)).unwrap();
-  publisher.recycle(second.packet.revision, renderPublicationTransfers(second.packet)).unwrap();
+  receiver.accept(encodeRenderPublication(structuredClone(second.packet))).unwrap();
+  publisher.recycle(second.packet.revision, renderPublicationTransfers(second.message)).unwrap();
   // Ready: the receiver holds the payload, so only its identity crosses.
   const prepared = receiver
     .prepareMesh({ ...identity, meshHandle, mesh: assets.read(meshHandle).unwrap(), revision: 1 })
@@ -522,7 +524,7 @@ it('holds a new hidden renderable until its preparing mesh crosses once', () => 
     expect.objectContaining({ handle: meshHandle, revision: 1 }),
   ]);
   third.accept();
-  const accepted = receiver.accept(packet).unwrap();
+  const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
   expect(accepted.resources.resolveAsset(meshHandle).unwrap()).toBe(prepared.mesh);
   prepared.release();
   publisher.dispose();
@@ -562,15 +564,15 @@ it('publishes a withheld hidden renderable normally when its preparation ends un
   const first = publisher.prepare(0).unwrap();
   expect(first.packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
   first.accept();
-  receiver.accept(structuredClone(first.packet)).unwrap();
-  publisher.recycle(first.packet.revision, renderPublicationTransfers(first.packet)).unwrap();
+  receiver.accept(encodeRenderPublication(structuredClone(first.packet))).unwrap();
+  publisher.recycle(first.packet.revision, renderPublicationTransfers(first.message)).unwrap();
   preparing.delete(meshHandle);
   world.update(0).unwrap();
   const second = publisher.prepare(0).unwrap();
   expect(second.packet.assets.some((row) => row.handle === meshHandle)).toBe(true);
   second.accept();
-  receiver.accept(structuredClone(second.packet)).unwrap();
-  publisher.recycle(second.packet.revision, renderPublicationTransfers(second.packet)).unwrap();
+  receiver.accept(encodeRenderPublication(structuredClone(second.packet))).unwrap();
+  publisher.recycle(second.packet.revision, renderPublicationTransfers(second.message)).unwrap();
   publisher.dispose();
 });
 
@@ -602,7 +604,7 @@ it('rejects a prepared mesh reference the receiver does not hold', () => {
     .unwrap();
   world.update(0).unwrap();
   const packet = structuredClone(publisher.prepare(0).unwrap().packet);
-  const rejected = receiver.accept(packet);
+  const rejected = receiver.accept(encodeRenderPublication(packet));
   assert(!rejected.ok);
   expect(rejected.error.detail.reason).toBe('revision');
   publisher.dispose();
@@ -639,9 +641,13 @@ it('keeps a released prepared payload adoptable for a queued publication', () =>
     .unwrap();
   world.update(0).unwrap();
   const packet = structuredClone(publisher.prepare(0).unwrap().packet);
-  expect(receiver.accept(packet).unwrap().resources.resolveAsset(meshHandle).unwrap()).toBe(
-    prepared.mesh,
-  );
+  expect(
+    receiver
+      .accept(encodeRenderPublication(packet))
+      .unwrap()
+      .resources.resolveAsset(meshHandle)
+      .unwrap(),
+  ).toBe(prepared.mesh);
   publisher.dispose();
 });
 
@@ -681,9 +687,13 @@ it('adopts a referenced revision after a newer revision of the same handle was p
   // The next revision's mesh-prepare is handled before the queued draw adopts revision 1.
   const next = createBoxGeometry(2, 2, 2).unwrap();
   receiver.prepareMesh({ ...identity, meshHandle, mesh: next, revision: 2 }).unwrap();
-  expect(receiver.accept(packet).unwrap().resources.resolveAsset(meshHandle).unwrap()).toBe(
-    first.mesh,
-  );
+  expect(
+    receiver
+      .accept(encodeRenderPublication(packet))
+      .unwrap()
+      .resources.resolveAsset(meshHandle)
+      .unwrap(),
+  ).toBe(first.mesh);
   publisher.dispose();
 });
 
@@ -722,8 +732,10 @@ it('keeps a source-held preparation adoptable after its asset row was retired', 
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const accepted = receiver.accept(packet);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet));
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, accepted };
   };
   // Dust2 order: the accepted row precedes a standalone residency of the same revision.

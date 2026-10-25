@@ -8,12 +8,13 @@ import {
   isTriangleTopology,
   type MaterialRenderState,
   ok,
+  RenderQueue,
   type Result,
 } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { supportsGpuShadowRenderState } from '../material-render-state';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
+import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { standardTransmissionValue } from '../transmission/projection';
 import { GPU_DRIVEN_LOD_LEVEL_CAPACITY } from './batch-layout';
@@ -68,6 +69,8 @@ export interface BatchPass {
   readonly shaderId: string;
   readonly sceneIndexProgramKey?: string;
   readonly renderState?: MaterialRenderState;
+  /** Dispatch queue; GPU-driven batches encode before the CPU list, so transparent and overlay queues stay direct. */
+  readonly queue?: number;
   readonly vertexEntry?: string;
   readonly fragmentEntry?: string;
 }
@@ -98,6 +101,20 @@ export type BatchExecution =
       readonly prepared: PreparedGpuDrivenDraw;
     };
 
+/**
+ * Standard-family and scene-index specialized programs prepare their GPU-lane
+ * pipelines asynchronously and hold the picture pending meanwhile. Other
+ * programs (opaque Unlit) were presentable on the direct lane before joining
+ * the GPU lane, so their GPU-lane pipelines keep that synchronous readiness.
+ */
+export function gpuLanePreparesAsynchronously(artifact: MaterialShaderArtifact): boolean {
+  return (
+    artifact.specializationKey !== undefined ||
+    artifact.material === SHADOW_CASTER_SHADER_ID ||
+    isCanonicalStandardPbrMaterialShader(artifact.material)
+  );
+}
+
 /** This join cannot inspect candidates, slots or a representative entity. */
 export function prepareBatchExecution(
   geometry: BatchGeometry,
@@ -117,7 +134,9 @@ export function prepareBatchExecution(
     (material.textureSources?.size ?? 0) > 0 ||
     (material.videoTextureFields?.size ?? 0) > 0 ||
     (pass.kind === 'forward' &&
-      (state?.blend !== undefined || (standardTransmissionValue(material) ?? 0) > 0))
+      ((pass.queue ?? RenderQueue.Geometry) >= RenderQueue.Transparent ||
+        state?.blend !== undefined ||
+        (standardTransmissionValue(material) ?? 0) > 0))
   )
     return direct();
 

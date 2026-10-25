@@ -1,24 +1,26 @@
 // @ts-nocheck — remaining legacy assertions are migrated separately.
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
+
 import { World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { standardPipeline as urpPipeline } from '../../../render/src/pipeline/standard-pipeline';
 import type { CameraSnapshot } from '../../../render/src/render-contract';
 import { selectSwapChainFormat } from '../../../render/src/render-system';
-import type { ExtractedLights } from '../../../render/src/render-system-extract';
+import type { ViewLights } from '../../../render/src/world/render-lights';
 
 afterEach(() => vi.restoreAllMocks());
 {
   // --- from fxaa-intermediate-texture.test.ts ---
 
-  const EMPTY_LIGHTS: ExtractedLights = {
+  const EMPTY_LIGHTS: ViewLights = {
+    cascades: undefined,
+    shadowViews: [],
     directional: undefined,
     directionalCount: 0,
     point: [],
     spot: [],
     lightSpaceMatrix: undefined,
-    shadowMapSize: undefined,
     pointShadow: [],
   };
 

@@ -68,6 +68,11 @@ bounded number of rounds, including a coalesced truncate/write notification.
 An unchanged unsupported declaration remains an error; a continuously changing
 opening fails with a source revision conflict instead of admitting stale bytes.
 
+Reopening a draft with a source-declaration failure rereads the file through its
+existing serialized refresh queue. This recovers a repaired file when a watcher
+coalesced its final write, retaining the draft identity, unsaved edits and undo
+history. Generation and preview failures keep their existing recovery owners.
+
 ## Runtime schema validation
 
 Scanner and CLI declarations select their shared identity fields from `PackIndexEntry`; cooked and runtime catalog projections preserve their own required and optional fields. Scanner executor options use `LoadScriptablePackOptions`, and offline evidence selects the portable evidence inputs while retaining its Node-owned package verification.

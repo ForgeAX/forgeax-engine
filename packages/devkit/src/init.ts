@@ -4,10 +4,6 @@ import devkitPackage from '../package.json' with { type: 'json' };
 import type { SdkManifest } from './sdk.js';
 import type { CommandResult, InitOptions, ProjectFacts } from './types.js';
 
-// Vitest 4.1 adds a Vite peer chain that triggers npm 10 Arborist's
-// `edgesOut` failure while installing the published SDK closure.
-const sdkVitestVersion = devkitPackage.dependencies.vitest;
-
 const STANDARD_SCRIPTS = {
   dev: 'forgeax dev start',
   build: 'forgeax project build',
@@ -24,7 +20,7 @@ const SDK_DEV_DEPENDENCIES = {
   '@webgpu/types': '0.1.71',
   tsx: '4.23.1',
   typescript: '6.0.3',
-  vitest: sdkVitestVersion,
+  vitest: devkitPackage.dependencies.vitest,
 } as const;
 
 function isEnginePackage(name: string): boolean {

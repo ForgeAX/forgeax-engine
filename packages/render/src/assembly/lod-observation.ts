@@ -7,7 +7,7 @@ import type {
 } from '../inspection-types';
 import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
 import type { FrameReceipt } from '../render-contract';
-import type { RenderSystem } from '../render-system';
+import type { LodOcclusionInspectionCell, RenderSystem } from '../render-system';
 
 interface LodObservationLeaseCapture {
   readonly lease: RenderReadLease;
@@ -27,7 +27,7 @@ export interface LodObservationViewCapture {
   readonly system: RenderSystem;
   readonly viewRef: object | undefined;
   readonly primary: boolean;
-  readonly inspection: LodOcclusionInspection | undefined;
+  readonly inspection: LodOcclusionInspectionCell | undefined;
 }
 
 export interface LodObservationCapture {
@@ -82,8 +82,8 @@ export async function observeLodOcclusionCapture(
     const captureFailure = currentCaptureFailure(capture, validity);
     if (captureFailure !== undefined)
       return unavailableLodObservation(captureFailure, roster(capture.views));
-    const inspection = view.system.lodOcclusionInspection;
-    if (inspection !== view.inspection)
+    const cell = view.system.lodOcclusion;
+    if (cell !== view.inspection)
       return unavailableLodObservation('lod-readback-unavailable', roster(capture.views));
     const ownerInspection = await view.system.observeLodOcclusion({
       frameId: receipt.frameId,
@@ -92,11 +92,11 @@ export async function observeLodOcclusionCapture(
     const captureFailureAfterRead = currentCaptureFailure(capture, validity);
     if (captureFailureAfterRead !== undefined)
       return unavailableLodObservation(captureFailureAfterRead, roster(capture.views));
-    const currentInspection = view.system.lodOcclusionInspection;
+    const currentCell = view.system.lodOcclusion;
     if (
-      (ownerInspection === undefined && currentInspection !== inspection) ||
+      (ownerInspection === undefined && currentCell !== cell) ||
       (ownerInspection !== undefined &&
-        (currentInspection !== ownerInspection ||
+        (currentCell?.value() !== ownerInspection ||
           !ownerInspectionMatchesCapture(view, capture, receipt, ownerInspection)))
     )
       return unavailableLodObservation('lod-readback-unavailable', roster(capture.views));
@@ -106,7 +106,7 @@ export async function observeLodOcclusionCapture(
   let unavailableReason: LodOcclusionReceiptUnavailableReason | undefined;
   for (const view of capture.views) {
     const currentInspection =
-      view.state === 'rendered' ? view.system.lodOcclusionInspection : undefined;
+      view.state === 'rendered' ? view.system.lodOcclusion?.value() : undefined;
     projected.push(projectView(view, currentInspection));
     if (view.state !== 'rendered') unavailableReason ??= 'held-view';
     if (
@@ -237,7 +237,7 @@ export function cachedLodObservationMatchesCapture(
       return false;
     if (view.state === 'held') return row.lodOcclusion === undefined;
     if (row.lodOcclusion === undefined) return observation.status === 'unavailable';
-    return view.system.lodOcclusionInspection === row.lodOcclusion;
+    return view.system.lodOcclusion?.value() === row.lodOcclusion;
   });
 }
 
@@ -283,7 +283,7 @@ function validateCapture(
     if (!capture.leases.some((lease) => lease.worldIdentity === view.attachmentId))
       return 'attachment-unavailable';
     if (view.inspection === undefined) return 'lod-readback-unavailable';
-    if (view.system.lodOcclusionInspection !== view.inspection) return 'lod-readback-unavailable';
+    if (view.system.lodOcclusion !== view.inspection) return 'lod-readback-unavailable';
     if (
       view.inspection.submit.frameId !== capture.frameId ||
       view.inspection.submit.deviceGeneration !== capture.deviceGeneration
@@ -326,7 +326,7 @@ function roster(
 ): readonly LodOcclusionReceiptViewObservation[] {
   return Object.freeze(
     captures.map((capture) =>
-      projectView(capture, capture.state === 'rendered' ? capture.inspection : undefined),
+      projectView(capture, capture.state === 'rendered' ? capture.inspection?.value() : undefined),
     ),
   );
 }

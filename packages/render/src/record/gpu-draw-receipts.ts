@@ -29,15 +29,34 @@ export interface GpuDrawSummary {
   >;
 }
 
-/** Emit requested draw observations after submission; no per-entity selection table is retained. */
+/** Emit the GPU receipts of the given rows' owned draws; CPU draws receipt themselves. */
 export function emitGpuDrivenDrawReceipts(
-  renderables: FrameList<RenderableSnapshot>,
+  rows: Iterable<RenderableSnapshot>,
   selection: GpuDrawSelection,
   onRenderableDraw: (
     entry: { readonly source: RenderableSnapshot },
     submeshIndex: number,
     receipt: RenderableDrawReceipt,
   ) => void,
+): void {
+  for (const source of rows) {
+    const draws = source.gpuDrivenDraws;
+    if (draws === undefined) continue;
+    for (let index = 0; index < draws.length; index++) {
+      const draw = draws[index];
+      if (draw !== undefined && selection.owns(source, draw, index))
+        onRenderableDraw({ source }, gpuDrivenSourceDrawItemIndex(draw, index), {
+          lane: 'gpu',
+          ready: true,
+        });
+    }
+  }
+}
+
+/** Lane counters of one submitted frame; a pure function of its rows and selection. */
+export function summarizeGpuDrivenDraws(
+  renderables: FrameList<RenderableSnapshot>,
+  selection: GpuDrawSelection,
 ): GpuDrawSummary {
   const deformationReasons = new Map<
     'skin-bounds-missing' | 'skin-address-missing' | 'resource-not-ready',
@@ -64,10 +83,6 @@ export function emitGpuDrivenDrawReceipts(
       if (draw !== undefined && selection.owns(source, draw, index)) {
         gpuDraws++;
         summary.gpuDraws++;
-        onRenderableDraw({ source }, gpuDrivenSourceDrawItemIndex(draw, index), {
-          lane: 'gpu',
-          ready: true,
-        });
         continue;
       }
       cpuDraws++;

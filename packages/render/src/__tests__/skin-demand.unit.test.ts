@@ -13,6 +13,22 @@ it('keeps visible union and late mirror separate from aligned transient Skin out
   expect(layout.counterWords).toBe(260);
 });
 
+it('sizes the demand roster by joints and keeps one reference per actual candidate', () => {
+  // A 1M-candidate task with 128 one-joint Skin bindings: only the reference
+  // column scales with candidates, never the hash or roster.
+  const visiblePrefix = 1_057_152 * 16 * 2;
+  const layout = skinDemandLayout(1_000_372, 128, visiblePrefix);
+  expect(layout.rosterCapacity).toBe(128);
+  expect(layout.hashCapacity).toBe(256);
+  expect(layout.candidateCapacity).toBe(1_048_576);
+  expect(layout.candidateBase).toBe(layout.rosterBase + layout.rosterCapacity);
+  expect(layout.paletteBase).toBeGreaterThanOrEqual(layout.candidateBase + 1_048_576);
+  expect(layout.outputBytes - visiblePrefix).toBeLessThan(1_048_576 * 16 + 64 * 1024);
+  expect(layout.outputBytes).toBeLessThan(134_217_728);
+  // Distinct keys can never exceed candidates either.
+  expect(skinDemandLayout(3, 4096).rosterCapacity).toBe(4);
+});
+
 it('writes only the supplied task constant window with integer roots and addresses', () => {
   const bytes = new Uint32Array(20).fill(0x12345678),
     layout = skinDemandLayout(3, 7);
@@ -51,7 +67,7 @@ it('rejects address overflow and mismatched extents before changing task constan
   expect(() => skinDemandLayout(0xffffffff, 1)).toThrow();
   expect(() => skinDemandLayout(1, 0xffffffff)).toThrow();
   const data = new DataView(new ArrayBuffer(48)),
-    layout = skinDemandLayout(2, 1);
+    layout = skinDemandLayout(2, 2);
   expect(() => writeSkinDemandConstants(data, 0, layout, 1, 2, 3)).toThrow();
   expect(() => writeSkinDemandConstants(data, 0, layout, -1, 2, 2)).toThrow();
   expect(() => writeSkinDemandConstants(data, 0, layout, 1, 2, 2, 0xffffffff)).toThrow();

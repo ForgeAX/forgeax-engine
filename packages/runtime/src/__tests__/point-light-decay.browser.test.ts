@@ -167,8 +167,8 @@ it.each([
         const packet =
           prepared === undefined
             ? undefined
-            : structuredClone(prepared.packet, {
-                transfer: renderPublicationTransfers(prepared.packet),
+            : structuredClone(prepared.message, {
+                transfer: renderPublicationTransfers(prepared.message),
               });
         prepared?.accept();
         try {

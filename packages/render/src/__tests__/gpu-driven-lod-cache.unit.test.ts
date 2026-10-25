@@ -14,7 +14,7 @@ import {
 } from '../gpu-driven/production-raster-prepare';
 import { GpuBuffer } from '../gpu-resource';
 import { GpuScene } from '../gpu-scene';
-import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
+import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_INDEX,
@@ -980,20 +980,25 @@ describe('GPU-driven filtered-plan cache', () => {
   });
 });
 const TRANSFORM_FLOATS = GPU_SCENE_LAYOUTS.transform.stride / 4;
-const PREVIOUS_FLOAT = TRANSFORM_FLOATS / 2;
+const PREVIOUS_FLOAT = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousIndex') / 4;
+const STAMP_FLOAT = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'stamp') / 4;
 
 /**
  * CPU mirror of the GPU Scene transform table, fed by queue writes, plus a
  * per-buffer byte ledger so a test can prove which tables a phase touched.
  */
 function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
-  const transforms = new Float32Array(scene.rowCapacity * TRANSFORM_FLOATS);
+  let transforms = new Float32Array(scene.transformByteLength / 4);
+  const transformTables = new Set<unknown>([scene.transformBuffer]);
   const bytesByBuffer = new Map<unknown, number>();
   const createBuffer = device.createBuffer.bind(device);
   const createdLabels: string[] = [];
   vi.spyOn(device, 'createBuffer').mockImplementation((descriptor) => {
     createdLabels.push(descriptor.label ?? '');
-    return createBuffer(descriptor);
+    const created = createBuffer(descriptor);
+    if (created.ok && descriptor.label === 'gpu-scene-transform-table')
+      transformTables.add(created.value);
+    return created;
   });
   const writeBuffer = device.queue.writeBuffer.bind(device.queue);
   vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data, ...rest) => {
@@ -1002,7 +1007,12 @@ function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
         ? new Uint8Array(data)
         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     bytesByBuffer.set(buffer, (bytesByBuffer.get(buffer) ?? 0) + bytes.byteLength);
-    if (buffer === scene.transformBuffer) {
+    if (transformTables.has(buffer)) {
+      if (offset + bytes.byteLength > transforms.byteLength) {
+        const grown = new Float32Array((offset + bytes.byteLength) / 4);
+        grown.set(transforms);
+        transforms = grown;
+      }
       new Uint8Array(transforms.buffer).set(bytes, offset);
     }
     return writeBuffer(buffer, offset, data, ...rest);
@@ -1017,12 +1027,19 @@ function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
     },
     /** Transform rows whose current world translation z equals `z`. */
     rowsAt(z: number) {
-      const found: Float32Array[] = [];
+      const found: number[] = [];
       for (let base = 0; base + TRANSFORM_FLOATS <= transforms.length; base += TRANSFORM_FLOATS) {
-        if (transforms[base + 14] === z)
-          found.push(transforms.subarray(base, base + TRANSFORM_FLOATS));
+        if (transforms[base + 14] === z) found.push(base / TRANSFORM_FLOATS);
       }
       return found;
+    },
+    /** The previous translation z a scene-index draw reads for `row`. */
+    previousZ(row: number) {
+      const words = new Uint32Array(transforms.buffer);
+      const base = row * TRANSFORM_FLOATS;
+      const stamped = words[base + STAMP_FLOAT] === words[STAMP_FLOAT];
+      const source = stamped ? (words[base + PREVIOUS_FLOAT] ?? row) : row;
+      return transforms[source * TRANSFORM_FLOATS + 14];
     },
   };
 }
@@ -1099,7 +1116,8 @@ describe('GPU-driven dirty scene rows', () => {
           const delta = projection.apply([updateWorld(entityIndex + 1, z, entityIndex % BATCHES)]);
           gpuScene.sync(delta, undefined, (slot) => projection.cullingWorldBoundsAt(slot)).unwrap();
           const synced = mirror.drain();
-          expect(synced.get(gpuScene.transformBuffer)).toBe(GPU_SCENE_LAYOUTS.transform.stride);
+          // The moved row and the row holding its submitted pose.
+          expect(synced.get(gpuScene.transformBuffer)).toBe(2 * GPU_SCENE_LAYOUTS.transform.stride);
           const moved = frame(temporal);
           expect(moved.prepared.topologySignature).toBe(first.prepared.topologySignature);
           expect(moved.inspection).toMatchObject({
@@ -1128,23 +1146,20 @@ describe('GPU-driven dirty scene rows', () => {
     const gpuScene = availability.scene;
     const mirror = mirrorSceneWrites(device, gpuScene);
     try {
-      gpuScene.commitTemporalFrame().unwrap();
+      gpuScene.commitFrame().unwrap();
       let previousZ = 0;
       for (const z of [-1, -2, -3]) {
         gpuScene.sync(projection.apply([updateWorld(2, z)])).unwrap();
         const row = mirror.rowsAt(z)[0];
         expect(row).toBeDefined();
         if (row === undefined) return;
-        expect(row[PREVIOUS_FLOAT + 14]).toBe(previousZ);
-        expect(row[PREVIOUS_FLOAT + 14]).not.toBe(row[14]);
-        gpuScene.commitTemporalFrame().unwrap();
+        expect(mirror.previousZ(row)).toBe(previousZ);
+        gpuScene.commitFrame().unwrap();
         previousZ = z;
       }
       // One committed frame after the stop, prev settles to current.
       gpuScene.sync(projection.apply([])).unwrap();
-      const settled = mirror
-        .rowsAt(previousZ)
-        .find((row) => row[PREVIOUS_FLOAT + 14] === previousZ);
+      const settled = mirror.rowsAt(previousZ).find((row) => mirror.previousZ(row) === previousZ);
       expect(settled).toBeDefined();
     } finally {
       availability.scene.dispose();

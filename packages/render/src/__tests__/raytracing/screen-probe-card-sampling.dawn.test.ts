@@ -77,19 +77,17 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
     try {
       const initialization = device.createCommandEncoder({}).unwrap();
       acceleration
-        .update(
-          initialization,
-          [{ geometryId: 0, positions: new Float32Array([-2, -2, 0, 2, -2, 0, 0, 2, 0]) }],
-          [
-            {
-              instanceId: 7,
-              geometryId: 0,
-              mask: 255,
-              transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            },
-          ],
+        .set(
+          {
+            instanceId: 7,
+            geometryId: 0,
+            mask: 255,
+            transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          },
+          { geometryId: 0, positions: new Float32Array([-2, -2, 0, 2, -2, 0, 0, 2, 0]) },
         )
         .unwrap();
+      acceleration.update(initialization).unwrap();
       const depth = device
         .createTexture({ size: [2, 2], format: 'depth32float', usage: 1 | 4 | 16 })
         .unwrap();
@@ -295,26 +293,22 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
     try {
       const initialization = device.createCommandEncoder({}).unwrap();
       acceleration
-        .update(
-          initialization,
-          [
-            {
-              geometryId: 0,
-              positions: new Float32Array([
-                -2, -2, 0.05, 2, -2, 0.05, 2, 2, 0.05, -2, -2, 0.05, 2, 2, 0.05, -2, 2, 0.05,
-              ]),
-            },
-          ],
-          [
-            {
-              instanceId: 7,
-              geometryId: 0,
-              mask: 255,
-              transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            },
-          ],
+        .set(
+          {
+            instanceId: 7,
+            geometryId: 0,
+            mask: 255,
+            transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          },
+          {
+            geometryId: 0,
+            positions: new Float32Array([
+              -2, -2, 0.05, 2, -2, 0.05, 2, 2, 0.05, -2, -2, 0.05, 2, 2, 0.05, -2, 2, 0.05,
+            ]),
+          },
         )
         .unwrap();
+      acceleration.update(initialization).unwrap();
       const depth = device
         .createTexture({ size: [2, 2], format: 'depth32float', usage: 21 })
         .unwrap();

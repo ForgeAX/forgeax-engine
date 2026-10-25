@@ -4,6 +4,7 @@
 import { componentId, componentSchema } from '../component';
 import { componentDefinition } from '../component-schema';
 import { Update } from '../schedule-token';
+import type { EntityRecords } from '../storage/entity-records';
 //
 // Source files (N=25):
 //   - packages/ecs/__tests__/world-alloc-managed-ref.test.ts
@@ -725,8 +726,8 @@ import { handleNumeric } from './utils/handle-numeric';
   }
 
   function recordGeneration(world: World, slot: number): number | undefined {
-    const records = (world as unknown as { records: { generation: number }[] }).records;
-    return records[slot]?.generation;
+    const records = (world as unknown as { records: EntityRecords }).records;
+    return slot < records.length ? records.generation[slot] : undefined;
   }
 
   /**
@@ -2521,14 +2522,11 @@ import { handleNumeric } from './utils/handle-numeric';
       const gen = entityGeneration(e);
 
       // Access internal records to verify the predicate
-      // biome-ignore lint/suspicious/noExplicitAny: access private members for white-box liveness test
-      const records = (world as any).records;
-      const record = records[slot];
-      expect(record).toBeDefined();
-      expect(record.generation).toBe(gen);
-      expect(record.archetypeId).toBeGreaterThanOrEqual(0);
-      // pending field must not exist (w13 will remove it; w12 is red phase)
-      expect('pending' in record).toBe(false);
+      const records = (world as unknown as { records: EntityRecords }).records;
+      expect(slot).toBeLessThan(records.length);
+      expect(records.generation[slot]).toBe(gen);
+      expect(records.archetypeId[slot]).toBeGreaterThanOrEqual(0);
+      expect(records.isLive(slot, gen)).toBe(true);
     });
   });
 }

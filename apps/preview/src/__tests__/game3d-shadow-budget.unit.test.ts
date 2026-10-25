@@ -6,6 +6,7 @@ import { Camera } from '../../../../packages/render/src/components/camera';
 import { DirectionalLight } from '../../../../packages/render/src/components/directional-light';
 import { prepareExtractContext } from '../../../../packages/render/src/render-system-extract';
 import { extractFrame } from '../../../../packages/render/src/render-system-extract-tail';
+import { fitDirectionalCascades } from '../../../../packages/render/src/world/render-lights';
 
 const { default: scenePack } = await import(
   new URL('../../../../templates/game-3d/assets/scene.pack.ts', import.meta.url).href
@@ -34,10 +35,11 @@ describe('Game 3D shadow coverage budget', () => {
       { component: Transform, data: { ...cameraTransform } },
       { component: Camera, data: { ...camera, aspect } },
     );
-    const { lights } = extractFrame(world, prepareExtractContext(world));
-    expect(lights.cascadeCount).toBe(3);
-    expect(lights.shadowMapSize).toBe(2048);
-    const splits = lights.splitPlanes;
+    const frame = extractFrame(world, prepareExtractContext(world));
+    const cascades = fitDirectionalCascades(frame.lights, { camera: frame.cameras[0] });
+    expect(cascades?.cascadeCount).toBe(3);
+    expect(cascades?.shadowMapSize).toBe(2048);
+    const splits = cascades?.splitPlanes;
     expect(splits).toBeDefined();
     // At least two near-cascade texels across a 4 cm contact detail.
     expect(splits?.[1]).toBeLessThanOrEqual(0.02);

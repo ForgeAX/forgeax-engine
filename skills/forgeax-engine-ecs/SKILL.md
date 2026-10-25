@@ -7,7 +7,7 @@ description: >-
 
 # forgeax-engine-ecs
 
-> **A World owns exactly two schedules: `Update` for variable-rate work and `FixedUpdate` for fixed-rate work.** Register with a schedule token first, then advance both schedules through `world.update(deltaSeconds)`.
+> **A World's simulation schedules are `Update` for variable-rate work and `FixedUpdate` for fixed-rate work.** Register with a schedule token first, then advance both through `world.update(deltaSeconds)`. A non-simulation domain (the renderer) declares its phases with `defineSchedule(name)` and runs them explicitly with `world.run(token)`, which never advances time.
 
 ## One-screen takeoff
 
@@ -130,6 +130,10 @@ A system belongs to the schedule selected at registration. Use `after: [FixedUpd
 
 The old single-schedule forms are deleted. Add the appropriate first argument (`Update` or `FixedUpdate`) to every registration and pass the host-measured `deltaSeconds` to each update call. The final shapes are `world.addSystem(Update, system)`, `world.addSystems(Update, set, systems)`, `world.configureSets(Update, options)`, and `world.update(deltaSeconds)`.
 
+### Domain schedules
+
+A non-simulation owner (the renderer's Render World) declares phases with `defineSchedule('Name')`, registers systems by passing that token to `addSystem`, and executes them with `world.run(token)`. Names `Update`, `FixedUpdate` and the empty string are rejected. A run orders only its own schedule, flushes its commands, never advances `Time`, and is never driven by `world.update`. Game code stays on `Update`/`FixedUpdate`.
+
 ## Time policy and resources
 
 ```ts
@@ -158,7 +162,7 @@ Use `Time.delta` for variable-rate integration and `Time.elapsed` for absolute-t
 
 ## Scope failures and Result handling
 
-Every schedule mutation and `world.update` returns `Result`. Handle errors by their closed `code` union:
+Every schedule mutation, `world.update` and `world.run(token)` returns `Result`. Handle errors by their closed `code` union:
 
 ```ts
 const result = world.addSystem(Update, fixedOnlySystem);
@@ -176,7 +180,7 @@ if (!result.ok) {
 }
 ```
 
-`'schedule-scope-mismatch'` means a target system, set, or fixed anchor belongs to the other schedule. Keep dependent systems and sets in the same scope; do not catch and ignore the failure or add a compatibility registration path.
+`'schedule-scope-mismatch'` means a target system, set, or fixed anchor belongs to the other schedule. `world.run(token)` returns the same code when the domain token (from `defineSchedule`) has no registered system in this World, so register a system on that domain token before running it. Keep dependent systems and sets in the same scope; do not catch and ignore the failure or add a compatibility registration path.
 
 ## Query model
 
@@ -245,7 +249,9 @@ Sparse tags have no fields, so they belong in `with`, `without`, `changed`, or `
 world.setArrayRange(entity, Instances, 'transforms', row * 16, matrix).unwrap();
 ```
 
-The length never changes (resize with `set`). An out-of-range window or a non-array field returns `array-range-out-of-bounds` with no mutation. Consumers read `readArrayRangesChangedSince(world, entity, component, field, since)` from `@forgeax/engine-ecs/projection`: merged element ranges after an epoch, or `'whole'` when the history cannot prove them. The renderer uses it so a moved instance row costs O(1) instead of O(N).
+The length never changes (resize with `set`). An out-of-range window or a non-array field returns `array-range-out-of-bounds` with no mutation. Consumers read `readArrayRangesChangedSince(world, entity, component, field, since)` from `@forgeax/engine-ecs/projection`: merged element ranges after an epoch, or `'whole'` when the history cannot prove them. The renderer uses it so a moved instance row costs O(1) instead of O(N). A write covering the whole field reports `'whole'` and keeps no range history.
+
+For O(changes) loops over many entities, prefer `setArrayRange` or a scalar `set` for hot writes, and use a sparse tag, not a table tag, for membership that flips every frame.
 
 ## Required components
 

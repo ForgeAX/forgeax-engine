@@ -216,8 +216,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     const packet =
       candidate === undefined
         ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
+        : structuredClone(candidate.message, {
+            transfer: renderPublicationTransfers(candidate.message),
           });
     candidate?.accept();
     try {

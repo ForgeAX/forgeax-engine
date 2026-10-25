@@ -36,7 +36,9 @@ export function cameraLensProjection(
   } else {
     mat4.perspectiveReverseZ(out, camera.fov, camera.aspect, camera.near, camera.far);
   }
-  const [x, y] = camera.projectionOffset ?? [0, 0];
+  const offset = camera.projectionOffset;
+  const x = offset?.[0] ?? 0;
+  const y = offset?.[1] ?? 0;
   // Clip translation preserves depth and works for both lens families.
   for (let column = 0; column < 16; column += 4) {
     const w = out[column + 3] ?? 0;

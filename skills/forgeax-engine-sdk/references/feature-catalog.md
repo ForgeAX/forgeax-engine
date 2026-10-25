@@ -92,7 +92,7 @@ Include only capabilities with a public owner, README/exports, and real gates. S
 | Feature | Form | Behavior and boundary | Primary owner |
 |:--|:-:|:--|:--|
 | Standard PBR | **Built-in** | Metallic/roughness PBR consumes base color, normal, metallic, roughness, emissive, occlusion, and IBL; MaterialAsset owns the parameter contract. | `shader` · `render` |
-| Unlit shading | **Built-in** | Consumes material/texture and render state without direct-light or IBL policy. | `shader` · `render` |
+| Unlit shading | **Built-in** | Consumes material/texture and render state without direct-light or IBL policy. Opaque rigid Unlit draws use the GPU-driven color and shadow lanes; skinned, blended and `Transparent`/`Overlay` queues stay direct. | `shader` · `render` |
 | Directional Light | **Built-in** | Uses direction, linear RGB, and lux intensity; supports CSM. Sun automation occurs explicitly within the Atmosphere environment chain. | `render` |
 | Point Light | **Built-in** | Uses Transform, candela, metric range, and a squared range window. Public `decay` is a finite nonnegative f32 distance exponent: default `2` is inverse-square, `0` keeps only the range window, and fractional values such as `1.4` are supported. Cube-array shadows are optional. | `render` |
 | Spot Light | **Built-in** | Uses Transform, range, inner/outer cones, and candela, with a separate spot-shadow atlas. | `render` |
@@ -209,7 +209,7 @@ Include only capabilities with a public owner, README/exports, and real gates. S
 | Animation timeline and root motion | **Opt-in** | Sorted typed method/audio/sub-animation keys publish ordered crossed-interval POD effects after pose evaluation; explicit consumers resolve durable GUIDs. AnimationRootMotion extracts loop-safe rigid deltas, locks the animated root to its reference pose, and exposes a composed accumulator. | `animation` |
 | AnimationGraph | **Built-in** | Supports clip lookup, blending, slots/nesting, and node-weight evaluation. TypeScript controls AnimationPlayer through ordinary Update systems; control code uses existing PluginAssets, with no required animation FSM. | `animation` |
 | Code-driven animation blending | **Opt-in** | Compiled 1D linear and explicit-triangle 2D BlendSpaces write sample weights into caller-owned arrays. Reusable target masks multiply per-channel influence on direct or graph playback; ordinary TypeScript Update systems own parameters and phase. | `animation` |
-| Morph/BlendShape GPU deformation | **Opt-in** | With compute+storageBuffer, `createMorphFeature` handles extract/prepare/compute/cull/re-entry for up to eight morph targets. Browser pixel acceptance is not currently claimed. | `render` |
+| Morph/BlendShape GPU deformation | **Opt-in** | A `MorphWeights` component over Mesh `morphTargets` deforms positions in the GPU-driven vertex stage from per-row weights (uploaded only on change) and per-Mesh target deltas, so morphed entities sharing a Mesh draw in one batch, shadows and skinning included, with weight-expanded bounds; direct draws use a renderer-owned per-entity deformed stream. Motion vectors follow the rigid transform only. | `render` |
 
 ### 2D, text, video, and UI
 
@@ -256,8 +256,8 @@ Include only capabilities with a public owner, README/exports, and real gates. S
 | Feature | Form | Behavior and boundary | Primary owner |
 |:--|:-:|:--|:--|
 | GPU Scene tables | **Built-in** | Automatic when StorageBuffer capability exists: derives Primitive, Instance, Transform, DrawTemplate, and Material tables from the persistent CPU Render Scene; otherwise uses the CPU lane. | `render` |
-| GPU view culling | **Built-in** | Compute kernels cull eligible rigid objects; ordinary CPU/specialized lanes handle ineligible objects. | `render` |
-| GPU draw compaction | **Built-in** | Compacts visible instances into bounded streams and writes indirect args; overflow is explicit inspection/error data. | `render` |
+| GPU view culling | **Built-in** | Compute kernels cull eligible rigid objects (Standard, opaque rigid Unlit, morph); the CPU tests only residual CPU-drawn rows, exposed as `ExtractedFrame.gpuOwned`. | `render` |
+| GPU draw compaction | **Built-in** | Compacts visible instances into bounded streams and writes indirect args; overflow is explicit inspection/error data. Buffers size by membership and requested adapter limits; a requirement beyond the bindable bound is a structured `limit-exceeded` error. | `render` |
 | GPU-driven custom Surface ABI | **Opt-in** | Cooked Standard custom Surface/full-custom programs enter the indirect lane only after publishing `vs_main`/`vs_scene_index`, reflected resources, vertex inputs, GPU Scene pages, and optional ShadowCaster ABI. Ordinary custom WGSL stays on direct/specialized lanes. | `render` · `shader` · `pack` · `assets-runtime` |
 | CPU capability fallback | **Built-in** | Missing compute/storage/indirect capability or ineligible objects use CPU/specialized recording without simulating nonexistent GPU features. | `render` |
 | Deferred membership timing | **Development** | Internal CPU/GPU timing evidence for GPU-driven membership; there is no public API to enable or read it, so it is CI-proved only. | `render` · `app` |

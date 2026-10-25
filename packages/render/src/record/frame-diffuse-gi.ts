@@ -2,10 +2,8 @@
 // placement, exact ray diffuse, irradiance field, baked field, screen probes)
 // and their shared submission fence/track/commit lifecycle.
 
-import { readMaterialContent } from '@forgeax/engine-assets-runtime/internal';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import { RhiError } from '@forgeax/engine-rhi';
-import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
 import type { RenderExtent } from '../pipeline/render-extent';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { RendererBakedField } from '../raytracing/renderer-baked-field';
@@ -13,12 +11,11 @@ import { RendererRayDiffuse } from '../raytracing/renderer-diffuse';
 import { RendererIrradianceField } from '../raytracing/renderer-irradiance-field';
 import { RendererProbePlacement } from '../raytracing/renderer-probe-placement';
 import { RendererScreenProbe } from '../raytracing/renderer-screen-probe';
-import { isNativePlacementMaterial } from '../raytracing/scene-field-projection';
 import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
-import type { ExtractedLights } from '../render-system-extract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { TemporalView } from '../temporal/view';
+import type { ViewLights } from '../world/render-lights';
 import type { RenderFrameState } from './frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from './render-context';
 
@@ -46,7 +43,7 @@ function internalRenderSize(
   };
 }
 
-function frameLightList(lights: ExtractedLights) {
+function frameLightList(lights: ViewLights) {
   return [
     ...(lights.directional === undefined ? [] : [lights.directional]),
     ...lights.point,
@@ -66,42 +63,6 @@ function requireRetainedScene(
       hint: 'prepare the ordinary deferred scene before enabling diffuse GI',
     });
   return scene;
-}
-
-function assertNativePlacementMaterials(
-  internals: RenderSystemInternals,
-  world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
-  scene: PersistentGpuDrivenState,
-  visibleSurface: VisibleSurfaceProjection,
-): void {
-  for (const slot of scene.slots) {
-    if (!visibleSurface.slotBases.has(slot.slot)) continue;
-    for (const draw of slot.snapshot.gpuDrivenDraws ?? []) {
-      if (draw.count === 0) continue;
-      const material = slot.snapshot.materials[draw.materialSlot]?.snapshot;
-      const scope = worlds[slot.worldId] ?? world;
-      const handle = material?.materialHandle ?? (0 as AssetHandle<'material'>);
-      const asset = scope.resolveAsset<MaterialAsset>(handle);
-      const projection = asset.ok
-        ? internals.assets.getMaterialProjectionForPayload(asset.value)
-        : undefined;
-      const nativeSource = projection === undefined ? readMaterialContent(scope, handle) : asset;
-      if (
-        material === undefined ||
-        !isNativePlacementMaterial(
-          material,
-          projection,
-          nativeSource.ok ? nativeSource.value : undefined,
-        )
-      )
-        throw new RhiError({
-          code: 'rhi-not-available',
-          expected: 'native lit Standard materials for every admitted placement row',
-          hint: 'publish the selected native Standard program and Surface; custom/unlit rows are not admitted',
-        });
-    }
-  }
 }
 
 function prepareProbePlacement(
@@ -126,8 +87,11 @@ function prepareProbePlacement(
       expected: 'the actual visible-surface row projection for placement',
       hint: 'prepare the ordinary rigid deferred scene',
     });
-  assertNativePlacementMaterials(internals, world, worlds, scene, visibleSurface);
   frameState.probePlacement ??= new RendererProbePlacement();
+  frameState.probePlacement.admitMaterials(
+    { internals, world, worlds, surfaces: visibleSurface.slotBases },
+    scene,
+  );
   frameState.probePlacementFrame = frameState.probePlacement.prepare({
     runtime: internals,
     seeds: placement.seeds,
@@ -146,8 +110,9 @@ function prepareRayDiffuse(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
+  visibleSurface: VisibleSurfaceProjection | undefined,
   worlds: readonly RenderResourceScope[],
-  lights: ExtractedLights,
+  lights: ViewLights,
   pipelineState: PipelineState,
   size: InternalRenderSize,
 ): FrameDiffuseGi['rayDiffuse'] {
@@ -159,10 +124,17 @@ function prepareRayDiffuse(
     return frameState.rayDiffuse?.ready;
   }
   const retained = requireRetainedScene(scene, 'a retained scene for diffuse GI');
+  if (visibleSurface === undefined)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'the frame visible-surface projection for exact diffuse GI',
+      hint: 'diffuse GI profiles enable visible surfaces; prepare the ordinary deferred scene',
+    });
   frameState.rayDiffuse ??= new RendererRayDiffuse();
   frameState.rayDiffuse.prepare({
     runtime: internals,
     scene: retained,
+    visibleSurface,
     worlds,
     lights: frameLightList(lights),
     sampler: pipelineState.defaultSampler,
@@ -182,7 +154,7 @@ function prepareIrradianceField(
   frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
   worlds: readonly RenderResourceScope[],
-  lights: ExtractedLights,
+  lights: ViewLights,
   camera: CameraSnapshot,
   size: InternalRenderSize,
   renderReadLeases: readonly RenderReadLease[] | undefined,
@@ -268,7 +240,7 @@ export function prepareFrameDiffuseGi(
   world: RenderResourceScope,
   worlds: readonly RenderResourceScope[],
   camera: CameraSnapshot,
-  lights: ExtractedLights,
+  lights: ViewLights,
   pipelineState: PipelineState,
   scene: PersistentGpuDrivenState | undefined,
   visibleSurface: VisibleSurfaceProjection | undefined,
@@ -302,6 +274,7 @@ export function prepareFrameDiffuseGi(
     internals,
     frameState,
     scene,
+    visibleSurface,
     worlds,
     lights,
     pipelineState,

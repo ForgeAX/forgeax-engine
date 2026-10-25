@@ -9,15 +9,15 @@ import {
 } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { resolveMaterialShaderArtifact } from '../assembly/material/assembly';
-import { MeshFilter, MeshRenderer } from '../components';
+import { Lines, MeshFilter, MeshRenderer, Points } from '../components';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { collectGpuDrivenMaterialArtifacts } from '../gpu-driven/material-artifacts';
 import { InstanceProjectionStore } from '../instances';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 it('retains receiver-owned inputs through native publication, scene ownership and material collection', () => {
@@ -68,13 +68,13 @@ it('retains receiver-owned inputs through native publication, scene ownership an
   try {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     const wireReceipt = packet.programs.find((row) => row.key === shaderId)?.shader.receipt;
     expect(wireReceipt).toBeDefined();
     expect(Object.isFrozen(wireReceipt?.vertexInputs)).toBe(false);
-    const received = receiver.accept(packet, assets).unwrap();
+    const received = receiver.accept(encodeRenderPublication(packet), assets).unwrap();
     const receipt = assets.shaderRegistry.findMaterialArtifact(shaderId).unwrap().receipt;
     if (receipt === undefined) throw new Error('Missing receiver-owned receipt');
     expect(Object.isFrozen(receipt.vertexInputs)).toBe(true);
@@ -144,23 +144,27 @@ it('retains receiver-owned inputs through native publication, scene ownership an
     expect(initialPrograms).toBeDefined();
     const initialOverlays = initialPrograms?.overlays;
     expect(initialOverlays).toBeDefined();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     const publishNext = () => {
       world.update(0).unwrap();
       const next = publisher.prepare(0).unwrap();
       const wire = structuredClone(next.packet, {
-        transfer: renderPublicationTransfers(next.packet),
+        transfer: renderPublicationTransfers(next.message),
       });
       next.accept();
       frame = scene.consumePublication(
         preparePublicationGeometry(
-          receiver.accept(wire, assets).unwrap(),
+          receiver.accept(encodeRenderPublication(wire), assets).unwrap(),
           assets,
           new InstanceProjectionStore(),
           resolve,
         ),
       );
-      publisher.recycle(wire.revision, renderPublicationTransfers(wire)).unwrap();
+      publisher
+        .recycle(wire.revision, renderPublicationTransfers(encodeRenderPublication(wire)))
+        .unwrap();
     };
     publishNext();
     expect(scene.shadowCasterProjection()?.materialPrograms).toBe(initialPrograms);
@@ -183,3 +187,39 @@ it('retains receiver-owned inputs through native publication, scene ownership an
     scene.dispose();
   }
 });
+
+for (const component of [Points, Lines]) {
+  it(`keeps ${component.name} with its native owner after publication geometry preparation`, () => {
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+    world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: {} },
+        { component, data: {} },
+      )
+      .unwrap();
+    const identity = { source: 'points-lines-owner', epoch: 1 };
+    const publisher = createRenderPublisher(world, assets, identity);
+    const receiver = new RenderPublicationReceiver(identity);
+    try {
+      const candidate = publisher.prepare(0).unwrap();
+      const message = structuredClone(candidate.message, {
+        transfer: renderPublicationTransfers(candidate.message),
+      });
+      candidate.accept();
+      const accepted = receiver.accept(message, assets).unwrap();
+      const prepared = preparePublicationGeometry(accepted, assets, new InstanceProjectionStore());
+      expect(prepared.frame.renderables).toHaveLength(1);
+      expect(prepared.frame.renderables.at(0)?.pointsLines).toBeDefined();
+      expect(prepared.frame.renderables.at(0)?.gpuDrivenDraws ?? []).toEqual([]);
+    } finally {
+      receiver.dispose();
+      publisher.dispose();
+    }
+  });
+}

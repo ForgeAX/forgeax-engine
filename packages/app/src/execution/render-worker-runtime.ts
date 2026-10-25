@@ -122,8 +122,8 @@ let geometryRequest:
   | undefined;
 
 function closeVideoFrames(message: DrawMessage): void {
-  for (const row of message.publication.videoFrames) row.frame.close();
-  for (const row of message.publication.canvasFrames ?? []) row.frame?.close();
+  for (const row of message.publication.side?.videoFrames ?? []) row.frame.close();
+  for (const row of message.publication.side?.canvasFrames ?? []) row.frame?.close();
 }
 
 function unavailableCaptureFrame(
@@ -958,7 +958,7 @@ async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): P
     if (target.width !== message.width) target.width = message.width;
     if (target.height !== message.height) target.height = message.height;
   }
-  await synchronizeFeatures(message.publication.features);
+  await synchronizeFeatures(message.publication.side?.features ?? []);
   if (failed || shuttingDown) return false;
   // Keep this draw in the same serial drain and retain its publication
   // credit. A real older receipt may complete during this single task turn,

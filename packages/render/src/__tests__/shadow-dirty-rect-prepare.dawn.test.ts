@@ -484,6 +484,7 @@ it.each([
   reuseAdjacentShadow,
 }) => {
   const { device, native } = await nativeDeviceFixture();
+  const createdPipelines = vi.spyOn(device, 'createRenderPipeline');
   native.pushErrorScope('validation');
   const custom = mode === 'explicit regions' ? customMaterialFixture(device) : undefined;
   const { buffer, fixture, shaderModuleFactory } = createShadowRig(device, custom);
@@ -536,6 +537,12 @@ it.each([
         shadowDirtyRegion(frame, source),
         reuseAdjacentShadow ? true : undefined,
       );
+      // Partial updates reuse the clear PSO prepared with the initial static layer.
+      expect(
+        createdPipelines.mock.calls.filter(
+          ([descriptor]) => descriptor.label === 'shadow-static-depth-clear',
+        ),
+      ).toHaveLength(1);
       // Raw calls retain every observation. The Renderer-owned path can
       // reuse adjacent accepted facts across the same 64 physical draws.
       const observations = reuseAdjacentShadow ? 1 : fixture.batches.length;

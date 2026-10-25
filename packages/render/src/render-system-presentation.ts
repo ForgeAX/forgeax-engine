@@ -1,11 +1,19 @@
 import type { AssetHandle } from '@forgeax/engine-types';
+import type { GpuDrawSelection } from './gpu-driven/draw-selection';
+import type { MaterialResource } from './material-resource';
 import type { RenderResourceScope } from './publication/resource-scope';
 import { worldEntityKey } from './record/frame-snapshot';
 import type { RenderSystemInternals } from './record/render-context';
 import type { FramePresentation, FramePresentationPendingReason } from './render-contract';
-import type { DispatchList, ExtractedLights, RenderableSnapshot } from './render-system-extract';
+import type {
+  DispatchList,
+  ExtractedFrame,
+  GpuOwnedFrame,
+  RenderableSnapshot,
+} from './render-system-extract';
 import { createMaterialResidencyObserver } from './render-system-residency';
 import type { FrameList } from './scene/frame-list';
+import type { ViewLights } from './world/render-lights';
 
 /** The existing boolean remains the readiness authority; record only its first owner. */
 export function markPipelinePreparationPending(
@@ -64,10 +72,18 @@ const displayWorksets = new WeakMap<
   }
 >();
 
+function displayAdmitted(renderable: RenderableSnapshot): boolean {
+  return (
+    renderable.authorVisible !== false &&
+    renderable.instances?.instanceCount !== 0 &&
+    renderable.spriteInstances?.instanceCount !== 0
+  );
+}
+
 /**
  * Display workset used by recording and its later submitted-picture checks.
  * It reads only the fixed dispatch and immutable snapshots, so an unchanged
- * culled frame reuses the previous workset instead of rescanning every row.
+ * frame reuses the previous workset instead of rescanning every row.
  */
 export function projectDisplayRenderables(
   renderables: FrameList<RenderableSnapshot>,
@@ -82,29 +98,46 @@ export function projectDisplayRenderables(
       displayRenderableIndices.add(entry.renderableIndex);
   }
   const value = renderables.filter(
-    (renderable, index) =>
-      displayRenderableIndices.has(index) &&
-      renderable.authorVisible !== false &&
-      renderable.instances?.instanceCount !== 0 &&
-      renderable.spriteInstances?.instanceCount !== 0,
+    (renderable, index) => displayRenderableIndices.has(index) && displayAdmitted(renderable),
   );
   displayWorksets.set(dispatch, { renderables, value });
   return value;
 }
 
+/**
+ * The display workset of a GPU-owned frame that needs CPU evidence: residual
+ * rows of the submitted selection. Rows it draws are ready by construction.
+ */
+export function projectResidualDisplayRows(
+  frame: Pick<ExtractedFrame, 'cameraVisible'>,
+  gpuOwned: GpuOwnedFrame,
+  selection: GpuDrawSelection,
+): readonly RenderableSnapshot[] {
+  return gpuOwned
+    .residual(selection)
+    .filter(
+      (row) =>
+        gpuOwned.displays(row) && displayAdmitted(row) && frame.cameraVisible?.(row) !== false,
+    );
+}
+
 /** Check material readiness once, after the display work has actually submitted. */
 export function projectFramePresentation(input: {
   readonly renderables: FrameList<RenderableSnapshot>;
+  /** Materials of GPU-executed bindings, standing for every row they draw. */
+  readonly coveredMaterials?: Iterable<readonly [worldId: number, material: MaterialResource]>;
   readonly preparedWorlds: readonly RenderResourceScope[];
   readonly internals: RenderSystemInternals;
   readonly onPending?: (reason: FramePresentationPendingReason) => void;
 }): FramePresentation {
   const observeResidency = createMaterialResidencyObserver(input.internals, false);
+  const pending = (worldId: number, material: MaterialResource): boolean => {
+    const readiness = observeResidency(input.preparedWorlds[worldId], material.snapshot).readiness;
+    return readiness === 'pending' || readiness === 'failed';
+  };
   for (const renderable of input.renderables) {
-    const materialWorld = input.preparedWorlds[renderable.worldId];
     for (const material of renderable.materials) {
-      const readiness = observeResidency(materialWorld, material.snapshot).readiness;
-      if (readiness === 'pending' || readiness === 'failed') {
+      if (pending(renderable.worldId, material)) {
         input.onPending?.({
           code: 'material-residency',
           worldId: renderable.worldId,
@@ -112,6 +145,12 @@ export function projectFramePresentation(input: {
         });
         return 'pending';
       }
+    }
+  }
+  for (const [worldId, material] of input.coveredMaterials ?? []) {
+    if (pending(worldId, material)) {
+      input.onPending?.({ code: 'material-residency', worldId });
+      return 'pending';
     }
   }
   return 'ready';
@@ -171,9 +210,12 @@ function renderableDrawGap(
   preparedWorlds: readonly RenderResourceScope[],
   internals: RenderSystemInternals,
 ): FramePresentationPendingReason | undefined {
-  const source = { worldId: renderable.worldId, entity: renderable.entityKey };
-  if (!draws.hasEntity(entityKey)) return { code: 'draw-entity-missing', ...source };
-  const renderableWorld = preparedWorlds[renderable.worldId];
+  // Runs for every displayed row of every frame: the pending reason is
+  // allocated only when a gap is actually found.
+  const worldId = renderable.worldId;
+  const entity = renderable.entityKey;
+  if (!draws.hasEntity(entityKey)) return { code: 'draw-entity-missing', worldId, entity };
+  const renderableWorld = preparedWorlds[worldId];
   const meshHandles =
     renderableWorld === undefined
       ? undefined
@@ -183,14 +225,15 @@ function renderableDrawGap(
             renderable.assetHandle as AssetHandle<'mesh'>,
             renderableWorld,
           );
-  if (meshHandles === undefined) return { code: 'mesh-residency', ...source };
+  if (meshHandles === undefined) return { code: 'mesh-residency', worldId, entity };
   const terrain = renderable.terrainSection;
   if (terrain !== undefined && !draws.hasTerrain(entityKey, terrain.index))
-    return { code: 'draw-terrain-missing', ...source, section: terrain.index };
+    return { code: 'draw-terrain-missing', worldId, entity, section: terrain.index };
   if (renderable.pointsLines !== undefined) return undefined;
-  for (const [submeshIndex] of meshHandles.submeshes.entries()) {
-    if (!draws.hasSubmesh(entityKey, submeshIndex))
-      return { code: 'draw-submesh-missing', ...source, submesh: submeshIndex };
+  const submeshCount = meshHandles.submeshes.length;
+  for (let submesh = 0; submesh < submeshCount; submesh++) {
+    if (!draws.hasSubmesh(entityKey, submesh))
+      return { code: 'draw-submesh-missing', worldId, entity, submesh };
   }
   return undefined;
 }
@@ -213,12 +256,11 @@ export function skyCubemapPending(
 }
 
 /** Allocated point-shadow layers need complete finite matrices. */
-function pointShadowPending(lights: ExtractedLights): boolean {
+function pointShadowPending(lights: ViewLights): boolean {
   return lights.pointShadow.some(
     (shadow) =>
       shadow.shadowAtlasLayer >= 0 &&
-      (shadow.shadowMatrices.length < 96 ||
-        [...shadow.shadowMatrices].some((value) => !Number.isFinite(value))),
+      (shadow.shadowMatrices.length < 96 || !shadow.shadowMatrices.every(Number.isFinite)),
   );
 }
 
@@ -226,7 +268,7 @@ function pointShadowPending(lights: ExtractedLights): boolean {
  * Atlas overflow is admitted as direct lighting without a shadow. Only
  * allocated tiles participate in shadow readiness.
  */
-function spotShadowPending(lights: ExtractedLights): boolean {
+function spotShadowPending(lights: ViewLights): boolean {
   return lights.spot.some(
     (spot) => spot.castShadow && spot.shadowAtlasTile >= 0 && spot.lightViewProj === undefined,
   );
@@ -235,7 +277,7 @@ function spotShadowPending(lights: ExtractedLights): boolean {
 /** Directional, point and spot shadow work requested by the frame must have produced results. */
 export function verifySubmittedShadows(
   candidate: FramePresentationCandidate,
-  lights: ExtractedLights,
+  lights: ViewLights,
   directionalShadowReady: boolean,
 ): void {
   if (candidate.presentation !== 'ready') return;

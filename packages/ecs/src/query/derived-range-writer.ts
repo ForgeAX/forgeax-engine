@@ -251,9 +251,10 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
       if (archetype === undefined) return false;
       const bindingIndex = bindingByTable.get(archetype.tableId);
       if (bindingIndex === undefined) return false;
-      const record = world[worldInternal].getRecords()[(entity as unknown as number) & 0x00ffffff];
-      if (record === undefined || record.archetypeId !== archetype.id) return false;
-      const row = archetype.rows[record.archetypeRow];
+      const records = world[worldInternal].getRecords();
+      const slot = (entity as unknown as number) & 0x00ffffff;
+      if (records.archetypeId[slot] !== archetype.id) return false;
+      const row = archetype.rows[records.archetypeRow[slot] as number];
       const binding = bindings[bindingIndex];
       if (binding === undefined || row === undefined || row < 0 || row >= binding.rowCapacity) {
         return false;

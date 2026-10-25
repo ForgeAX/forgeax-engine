@@ -605,14 +605,14 @@ export class SourceRenderWorker {
             frameId: frame.frameId,
             width: frame.canvasWidth,
             height: frame.canvasHeight,
-            publication: candidate.packet,
+            publication: candidate.message,
             sourceFixedStep,
             engineUpdateMs,
             engineCreditWaitMs,
           } satisfies RenderWorkerInput,
           [
-            ...renderPublicationTransfers(candidate.packet),
-            ...renderPublicationAssetTransfers(candidate.packet),
+            ...renderPublicationTransfers(candidate.message),
+            ...renderPublicationAssetTransfers(candidate.message),
           ],
         );
       } else {
@@ -624,15 +624,15 @@ export class SourceRenderWorker {
           frameId: frame.frameId,
           width: frame.canvasWidth,
           height: frame.canvasHeight,
-          publication: candidate.packet,
+          publication: candidate.message,
           sourceFixedStep,
           engineUpdateMs,
           engineCreditWaitMs,
         } satisfies RenderWorkerInput;
         candidate.observation.phase('transfer-list');
         const transfers = [
-          ...renderPublicationTransfers(candidate.packet),
-          ...renderPublicationAssetTransfers(candidate.packet),
+          ...renderPublicationTransfers(candidate.message),
+          ...renderPublicationAssetTransfers(candidate.message),
         ];
         candidate.observation.phase('send');
         Reflect.apply(postMessage, worker, [message, transfers]);

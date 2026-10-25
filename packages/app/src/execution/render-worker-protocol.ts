@@ -5,9 +5,9 @@ import type {
   MeshResidencyError,
   PublishedMeshPreparation,
   RenderInspection,
-  RenderPublication,
   RenderPublicationError,
   RenderPublicationIdentity,
+  RenderPublicationMessage,
   RenderSceneBounds,
 } from '@forgeax/engine-render';
 import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-debug';
@@ -112,7 +112,7 @@ export type RenderWorkerInput =
       readonly frameId: number;
       readonly width: number;
       readonly height: number;
-      readonly publication: RenderPublication;
+      readonly publication: RenderPublicationMessage;
       readonly sourceFixedStep: number;
       /** Engine Worker World update milliseconds for this published frame. */
       readonly engineUpdateMs?: number;

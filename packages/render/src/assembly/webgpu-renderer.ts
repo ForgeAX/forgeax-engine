@@ -33,6 +33,7 @@ import type {
 import { isStripTopology } from '@forgeax/engine-types';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
+import { InstanceProjectionStore } from '../instances';
 import {
   isOutputColorSpace,
   OUTPUT_COLOR_SPACES,
@@ -44,6 +45,7 @@ import {
 } from '../point-shadow-inspection';
 import { type PublishedRenderFrameInput, RenderPublicationError } from '../publication/contract';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
+import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { type PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
 import { encodeFrameObservationCapture } from '../record/observation-capture';
 import {
@@ -56,6 +58,7 @@ import { isFrameObservationDomain } from '../render-contract';
 import { registerRenderSourceSystems } from '../scene/source-systems';
 import { createTerrainReceiptOwner } from '../terrain/submitted.js';
 import { prepareVolumePrograms } from '../volume/programs';
+import { createRenderWorld } from '../world/render-world';
 import { createCameraViews } from './camera-views';
 import { inspectDeviceCapabilities } from './device-feature-admission';
 import {
@@ -141,6 +144,7 @@ import {
 } from '../record/gpu-pass-timing/index.js';
 import { GpuTimingCapture, type VolumeTimingObservation } from '../record/gpu-timing';
 import { declaredFragmentEntry, materialProgramSource } from '../record/standard-opaque-entry';
+import type { RecoveryPostProcessResources, RecoveryRootBundle } from '../recovery/types';
 import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
@@ -165,9 +169,6 @@ import {
   attachGpuPassTimingSession,
   createRenderSystem,
   type PipelineState,
-  type RecoveryGraphCandidate,
-  type RecoveryPostProcessResources,
-  type RecoveryRootBundle,
   type RenderSystem,
 } from '../render-system';
 import { createGpuPassTimingObservationStore, observeGpuPassTimingDisabled } from '../renderer.js';
@@ -684,10 +685,27 @@ async function makeWebGPURenderer(
     getDynamicTextureStore: () => dynamicTextureStore,
     onError: (error) => internals.errorRegistry.fire(error),
   });
+  // One Render World per Renderer: its view entities share every scene row.
+  const renderWorld = createRenderWorld();
+  // Published rows are prepared once at acceptance, for every view.
+  const publicationInstances =
+    internals.options?.publicationSource === undefined ? undefined : new InstanceProjectionStore();
   const publicationReceiver =
-    internals.options?.publicationSource === undefined
+    internals.options?.publicationSource === undefined || publicationInstances === undefined
       ? undefined
-      : new RenderPublicationReceiver(internals.options.publicationSource, renderTargetHost);
+      : new RenderPublicationReceiver(
+          internals.options.publicationSource,
+          renderTargetHost,
+          (prepared) =>
+            preparePublicationGeometry(
+              prepared,
+              renderInternals.assets,
+              publicationInstances,
+              renderInternals.device.caps.storageBuffer
+                ? renderInternals.getMaterialShaderArtifact
+                : undefined,
+            ),
+        );
   // feat-20260527-sprite-nineslice M4 / w16 (D-5): detached host-owned
   // EngineMetrics counter reaches the record stage via `RenderSystemRuntime.metrics`.
   // (`nineslice.scale-too-small`, `nineslice.tile-needs-repeat-sampler`) bump
@@ -1763,8 +1781,9 @@ async function makeWebGPURenderer(
     MaterialPipelineRequestCache<RenderPipeline>
   >();
   const pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1] = [];
-  const getMaterialShaderPipeline = (
-    ...args: Parameters<typeof buildMaterialShaderPipeline>
+  // Array form: per-draw callers pass their argument list without re-spreading.
+  const getMaterialShaderPipelineFor = (
+    args: Parameters<typeof buildMaterialShaderPipeline>,
   ): RenderPipeline | null => {
     const registry = getShader();
     const shaderId = resolveMaterialPipelineShaderId(args[0], args[6] ?? 'forward');
@@ -1803,6 +1822,9 @@ async function makeWebGPURenderer(
     if (pipeline !== null) requests.set(stored, pipeline);
     return pipeline;
   };
+  const getMaterialShaderPipeline = (
+    ...args: Parameters<typeof buildMaterialShaderPipeline>
+  ): RenderPipeline | null => getMaterialShaderPipelineFor(args);
   let activeProfile = freezeRenderProfile(
     internals.options?.standardProfile ?? DEFAULT_STANDARD_PROFILE,
   );
@@ -1819,10 +1841,10 @@ async function makeWebGPURenderer(
         : { ...options, visibleSurface: options.pass !== 'shadow' && options.pass !== 'depth' },
     );
   const pipelineEntries = new WeakMap<object, MaterialShaderPipelineEntry[]>();
-  const getMaterialShaderPipelineEntry = (
-    ...args: Parameters<typeof getMaterialShaderPipeline>
+  const getMaterialShaderPipelineEntryFor = (
+    args: Parameters<typeof buildMaterialShaderPipeline>,
   ) => {
-    const pipeline = getMaterialShaderPipeline(...args);
+    const pipeline = getMaterialShaderPipelineFor(args);
     if (pipeline === null) return null;
     const materialShaderId = args[0];
     const variantSet = args[5];
@@ -1877,19 +1899,23 @@ async function makeWebGPURenderer(
     entries.push(entry);
     return entry;
   };
+  const getMaterialShaderPipelineEntry = (...args: Parameters<typeof getMaterialShaderPipeline>) =>
+    getMaterialShaderPipelineEntryFor(args);
+  // The rest array is this call's own copy: mark it as a preparation request
+  // in place instead of copying and re-spreading it per call.
   const prepareMaterialShaderPipeline = (
     ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>
   ) => {
-    const request: Parameters<typeof buildMaterialShaderPipeline> = [...args];
+    const request = args as unknown as Parameters<typeof buildMaterialShaderPipeline>;
     request[22] = true;
-    return getMaterialShaderPipeline(...request);
+    return getMaterialShaderPipelineFor(request);
   };
   const prepareMaterialShaderPipelineEntry = (
     ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>>
   ) => {
-    const request: Parameters<typeof buildMaterialShaderPipeline> = [...args];
+    const request = args as unknown as Parameters<typeof buildMaterialShaderPipeline>;
     request[22] = true;
-    return getMaterialShaderPipelineEntry(...request);
+    return getMaterialShaderPipelineEntryFor(request);
   };
   // Post-process modules share the async shader adapter: pending compilation
   // returns null; subsequent frames consume the cached pipeline. Group 0 is
@@ -1974,6 +2000,8 @@ async function makeWebGPURenderer(
     return pipelineRes.value;
   };
   const renderInternals: RenderSystemInternals = {
+    renderWorld,
+    ...(publicationInstances === undefined ? {} : { instanceCollections: publicationInstances }),
     get canvas() {
       return internals.canvas;
     },
@@ -3031,7 +3059,7 @@ async function makeWebGPURenderer(
     inspectLodOcclusion() {
       const inspectedSystem = cameraViews.currentSystem;
       return {
-        lodOcclusion: inspectedSystem.lodOcclusionInspection,
+        lodOcclusion: inspectedSystem.lodOcclusion?.value(),
         gpuDriven: inspectedSystem.gpuDrivenInspection,
       };
     },
@@ -3165,9 +3193,9 @@ async function makeWebGPURenderer(
           ? {}
           : { motionBlur: Object.freeze(inspectedSystem.motionBlurInspection) }),
         ...dofInspection(inspectedSystem.depthOfFieldInspection),
-        ...(inspectedSystem.lodOcclusionInspection === undefined
+        ...(inspectedSystem.lodOcclusion === undefined
           ? {}
-          : { lodOcclusion: Object.freeze(inspectedSystem.lodOcclusionInspection) }),
+          : { lodOcclusion: Object.freeze(inspectedSystem.lodOcclusion.value()) }),
         ...(inspectedSystem.transmission === undefined
           ? {}
           : { transmission: inspectedSystem.transmission }),
@@ -3712,6 +3740,7 @@ async function makeWebGPURenderer(
       for (const world of attachedWorlds) dynamicGeometryHost.invalidateDynamicGeometryWorld(world);
       dynamicGeometry.dispose();
       publicationReceiver?.dispose();
+      publicationInstances?.dispose();
       for (const continuation of frameContinuations.keys()) {
         continuation.terminate({ code: 'disposed' });
       }
@@ -3904,7 +3933,6 @@ async function makeWebGPURenderer(
     candidate: RendererGeneration,
     candidatePostProcessResources: RecoveryPostProcessResources,
     recoveryRootBundle: RecoveryRootBundle,
-    recoveryGraphCandidate: RecoveryGraphCandidate | undefined,
     canvas: RhiCanvasTarget,
   ): void => {
     if (!candidate.scope.isAlive()) {
@@ -3955,12 +3983,8 @@ async function makeWebGPURenderer(
     // these caches already; a miss here is a hard recovery failure, not an
     // opportunity to hide cold work inside the first visible frame.
     renderSystem.publishRecoveryPostProcessResources(candidatePostProcessResources);
-    if (recoveryGraphCandidate !== undefined) {
-      renderSystem.publishRecoveryGraphCandidate(recoveryGraphCandidate);
-    }
     candidate.pipeline.perPassResources.commitBloomResources?.();
     recoveryRootBundle.publish();
-    recoveryGraphCandidate?.markPublished();
     // RenderSystem owns frame/feature GPU state; the generation bindings own
     // residency stores; DeviceScope owns the remaining lifecycle roots. Their
     // retirement is intentionally centralized and ordered after publication.
@@ -3994,21 +4018,8 @@ async function makeWebGPURenderer(
     setCandidateEmptyPostProcessBgl(layout) {
       candidateEmptyPostProcessBgl = layout;
     },
-    getShaderModuleAdapter,
-    getImmediateShaderModuleAdapter,
     getShader,
-    assets,
     buildPipeline,
-    getMaterialShaderPipeline,
-    getMaterialShaderPipelineEntry,
-    prepareMaterialShaderPipeline,
-    prepareMaterialShaderPipelineEntry,
-    getMaterialShaderArtifact,
-    getMaterialShaderBindingContract,
-    getParamSchema,
-    getMaterialBindGroupLayout,
-    metrics,
-    buildPostProcessPipeline,
     renderSystem,
     createRecoveryFailureLocation,
     publishAndRetireRendererGeneration,

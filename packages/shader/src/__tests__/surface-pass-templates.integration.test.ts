@@ -23,7 +23,10 @@ describe('Standard Surface pass templates', () => {
     expect(shader).toContain('#import forgeax_material::surface_v1');
     expect(shader).toContain('alphaClipThreshold');
     expect(shader).toContain('fn fs_shadow');
-    expect(shader).not.toMatch(/\bin\.position\s*=|\bin\.positionWS\s*=/);
+    // The only position write is the engine-owned scene-index morph deformation.
+    const morph = /\bin\.position\s*=\s*sceneIndexMorphPosition\(/g;
+    expect(shader.match(morph)).toHaveLength(1);
+    expect(shader.replace(morph, '')).not.toMatch(/\bin\.position\s*=|\bin\.positionWS\s*=/);
   });
 
   it('addresses Skin tasks by the actual candidate, separately from the material row', () => {

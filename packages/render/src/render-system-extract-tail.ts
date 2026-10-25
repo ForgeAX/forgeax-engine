@@ -88,10 +88,11 @@ import { renderAsset, worldRenderResources } from './publication/resource-scope'
 import { type CameraSnapshot, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
   DispatchEntry,
+  EnvironmentFrameGate,
   ExtractedFrame,
-  ExtractedLights,
   ExtractFramesOwner,
   InstancesSnapshot,
+  LightRoster,
   MaterialProgramSelection,
   MaterialSnapshot,
   MaterialSnapshotCache,
@@ -112,7 +113,6 @@ import type {
 } from './render-system-extract';
 import {
   appendMaterialDispatchEntries,
-  computeDirectionalCsm,
   createWorldInternalView,
   DEFAULT_FORWARD_PASS,
   defaultMaterialSnapshot,
@@ -131,7 +131,9 @@ import {
   tonemapParams,
 } from './render-system-extract';
 import { captureMaterialOverrides } from './scene/mesh-materials';
+import { ownPose } from './scene/pose-slab';
 import { buildShadowFrusta } from './scene/shadow-visibility';
+import { sharedAabb } from './scene/shared-aabb';
 import type { SkinBindingInput } from './scene/skin-scene-inputs';
 import { spriteUvRegion } from './sprite-region';
 import {
@@ -184,6 +186,8 @@ export function extractFrames(
       },
     ) => MaterialShaderArtifact | undefined;
     readonly instanceCollections?: InstanceProjectionStore;
+    /** Change-driven environment entries (a source's publisher owns one). */
+    readonly environmentGate?: EnvironmentFrameGate;
   } = {},
 ): ExtractedFrame {
   // w4: normalize the owner argument. A bare number is the legacy single-owner
@@ -209,6 +213,55 @@ export function extractFrames(
     succeededIndices.push(wi);
   }
   const merged = mergeRenderables(worlds, succeededFrames, succeededIndices);
+  const gate = options.environmentGate;
+  const environment =
+    gate === undefined
+      ? mergeEnvironment(worlds, owners, framesByWorld, succeededFrames, succeededIndices)
+      : gate.merge(
+          succeededIndices.map((wi) => worlds[wi] as World),
+          `${owners.cameraOwner}:${owners.resourceOwner}:${succeededIndices.join(',')}`,
+          (routedError) =>
+            mergeEnvironment(
+              worlds,
+              owners,
+              framesByWorld,
+              succeededFrames,
+              succeededIndices,
+              routedError,
+            ),
+        );
+  return {
+    ...environment,
+    renderables: merged.renderables,
+    dispatch: merged.dispatch,
+    // D-3: frustumStats — culled/total summed across worlds.
+    frustumStats: {
+      culled: succeededFrames.reduce((s, f) => s + f.frustumStats.culled, 0),
+      total: succeededFrames.reduce((s, f) => s + f.frustumStats.total, 0),
+    },
+    visibilityStats: {
+      explicitlyHidden: succeededFrames.reduce((s, f) => s + f.visibilityStats.explicitlyHidden, 0),
+    },
+    materialTextureSources: mergeMaterialTextureSources(succeededFrames),
+    visibilitySnapshots: merged.visibilitySnapshots,
+    featureVisibilitySnapshots: merged.featureVisibilitySnapshots,
+    hiddenEntityReports: merged.hiddenEntityReports,
+  };
+}
+
+/**
+ * The frame's camera, light, probe, sky, fog, decal and post-process entries:
+ * cameras from the camera owner, singleton resources from the resource owner,
+ * lights, probes and decals concatenated in World order.
+ */
+export function mergeEnvironment(
+  worlds: readonly World[],
+  owners: ExtractFramesOwner,
+  framesByWorld: ReadonlyMap<number, ExtractedFrame>,
+  succeededFrames: readonly ExtractedFrame[],
+  succeededIndices: readonly number[],
+  routedError?: () => void,
+) {
   // AC-05/06 + w4 owner split (D-3 / R-6): cameras come from the cameraOwner
   // world; skylight / skybox / postProcessParams come from the resourceOwner
   // world (holistic snapshot selection). When cameraOwner === resourceOwner
@@ -235,10 +288,7 @@ export function extractFrames(
       worldId: owners.cameraOwner,
     })) ?? [];
   const cubeCameras = cameraOwnerFrame !== undefined ? [...cameraOwnerFrame.cubeCameras] : [];
-  const lights = refitDirectionalCsm(
-    mergeLights(worlds, succeededFrames, succeededIndices),
-    cameras[0],
-  );
+  const lights = mergeLights(worlds, succeededFrames, succeededIndices, routedError);
   const volumetricFog = resourceOwnerFrame?.volumetricFog;
   const cloudLayer = resourceOwnerFrame?.cloudLayer;
   const fogFailure = resourceOwnerFrame?.fogFailure;
@@ -257,8 +307,6 @@ export function extractFrames(
       ? {}
       : { volumetricFog: { ...volumetricFog, worldId: owners.resourceOwner } }),
     ...(cloudLayer === undefined ? {} : { cloudLayer }),
-    renderables: merged.renderables,
-    dispatch: merged.dispatch,
     skylight: resourceOwnerFrame?.skylight,
     skylightCount: resourceOwnerFrame?.skylightCount ?? 0,
     lightProbes: succeededFrames.flatMap((frame, index) => {
@@ -271,19 +319,7 @@ export function extractFrames(
     ...(fogFailure === undefined ? {} : { fogFailure }),
     environment,
     environmentReady: resourceOwnerFrame !== undefined && environment !== undefined,
-    // D-3: frustumStats — culled/total summed across worlds.
-    frustumStats: {
-      culled: succeededFrames.reduce((s, f) => s + f.frustumStats.culled, 0),
-      total: succeededFrames.reduce((s, f) => s + f.frustumStats.total, 0),
-    },
-    visibilityStats: {
-      explicitlyHidden: succeededFrames.reduce((s, f) => s + f.visibilityStats.explicitlyHidden, 0),
-    },
-    materialTextureSources: mergeMaterialTextureSources(succeededFrames),
     postProcessParams: ownerPostProcessParams(cameraOwnerFrame, resourceOwnerFrame),
-    visibilitySnapshots: merged.visibilitySnapshots,
-    featureVisibilitySnapshots: merged.featureVisibilitySnapshots,
-    hiddenEntityReports: merged.hiddenEntityReports,
   };
 }
 
@@ -309,8 +345,13 @@ function extractWorldFrames(
   // per-world extraction so non-owner worlds do not scan their ECS tables for
   // a value that the merge layer will discard.
   const resourceOwnerWorld = worlds[resourceOwner];
+  // A gated extraction selects the owner's Fog inside its own retained entries.
   const resourceOwnerFog =
-    resourceOwnerWorld === undefined ? null : (selectFogFrame(resourceOwnerWorld) ?? null);
+    resourceOwnerWorld === undefined
+      ? null
+      : options.environmentGate === undefined
+        ? (selectFogFrame(resourceOwnerWorld) ?? null)
+        : undefined;
   const extractionOrder = Array.from({ length: worlds.length }, (_, wi) => wi).sort((a, b) => {
     if (a === cameraOwner) return -1;
     if (b === cameraOwner) return 1;
@@ -323,7 +364,11 @@ function extractWorldFrames(
     try {
       const prepared = prepareExtractContext(world, {
         ...worldResourceRequest(world, assets, materialSnapshotCachesByWorld, options),
-        resourceOwnerFog: wi === resourceOwner ? resourceOwnerFog : null,
+        ...(wi !== resourceOwner
+          ? { resourceOwnerFog: null }
+          : resourceOwnerFog === undefined
+            ? {}
+            : { resourceOwnerFog }),
         ...worldViewRequest(wi, owners, options, framesByWorld.get(cameraOwner)),
       });
       framesByWorld.set(wi, extractFrame(world, prepared));
@@ -361,6 +406,7 @@ function worldResourceRequest(
     ...(request.instanceCollections === undefined
       ? {}
       : { instanceCollections: request.instanceCollections }),
+    ...(request.environmentGate === undefined ? {} : { environmentGate: request.environmentGate }),
   };
 }
 
@@ -470,20 +516,21 @@ function mergeRenderables(
 
 /**
  * AC-04: point/spot/rect/pointShadow concat; the directional light and its
- * CSM carry come from the first world (in worlds[] order) that has one;
- * directionalCount sums.
+ * shadow configuration come from the first world (in worlds[] order) that has
+ * one; directionalCount sums. Each view fits the cascades against its own camera.
  */
 function mergeLights(
   worlds: readonly World[],
   frames: readonly ExtractedFrame[],
   worldIds: readonly number[],
-): ExtractedLights {
+  routedError?: () => void,
+): LightRoster {
   const point: PointLightSnapshot[] = [];
   const spot: SpotLightSnapshot[] = [];
   const rect: RectAreaDirectLightSnapshot[] = [];
   const pointShadow: PointShadowSnapshot[] = [];
   let nextIesSlice = 0;
-  let carry: ExtractedLights | undefined;
+  let carry: LightRoster | undefined;
   let directionalCount = 0;
   for (let fi = 0; fi < frames.length; fi += 1) {
     const f = frames[fi];
@@ -503,14 +550,17 @@ function mergeLights(
         const slice = nextIesSlice < IES_SLICE_CAPACITY ? nextIesSlice++ : undefined;
         iesSlices.set(handle, slice);
         const world = worlds[wId];
-        if (slice === undefined && world !== undefined) routeIesCapacity(world, wId, light, handle);
+        if (slice === undefined && world !== undefined) {
+          routeIesCapacity(world, wId, light, handle);
+          routedError?.();
+        }
       }
       const slice = iesSlices.get(handle);
       return { ...light, iesProfileSlice: slice };
     };
     for (const p of f.lights.point) point.push({ ...withIesSlice(p), worldId: wId });
     for (const s of f.lights.spot) spot.push({ ...withIesSlice(s), worldId: wId });
-    for (const r of f.lights.rect) rect.push(withIesSlice(r));
+    for (const r of f.lights.rect) rect.push({ ...withIesSlice(r), worldId: wId });
     for (const ps of f.lights.pointShadow) pointShadow.push({ ...ps, worldId: wId });
     if (carry === undefined && f.lights.directional !== undefined) carry = f.lights;
     directionalCount += f.lights.directionalCount;
@@ -521,19 +571,10 @@ function mergeLights(
     point,
     spot,
     rect,
-    lightViewProj: carry?.lightViewProj,
-    splitPlanes: carry?.splitPlanes,
-    cascadeCount: carry?.cascadeCount,
-    cascadeBlend: carry?.cascadeBlend,
-    shadowMapSize: carry?.shadowMapSize,
     depthBias: carry?.depthBias,
     normalBias: carry?.normalBias,
-    directionalShadowQuality: carry?.directionalShadowQuality,
     directionalShadowError: carry?.directionalShadowError,
     pointShadow,
-    // bug-20260710-editor-cross-world-shadow: carry the raw CSM config +
-    // direction of the first-hit directional so the merge layer can recompute
-    // matrices against the surfaced (cameraOwner) camera.
     directionalCsmConfig: carry?.directionalCsmConfig,
     directionalCsmDirection: carry?.directionalCsmDirection,
   };
@@ -558,37 +599,6 @@ function routeIesCapacity(
     }),
     { severity: Severity.Error, systemName: 'RenderSystem.extract (ies-profile)' },
   );
-}
-
-/**
- * bug-20260710-editor-cross-world-shadow: recompute directional CSM matrices
- * against the surfaced camera. In the editor super-composite the directional
- * light's world has no camera, so its per-world matrices are degenerate; the
- * merge layer is the only place both are visible. Point/spot shadows are
- * light-space only and need no fix-up. Without any surfaced camera the
- * per-world carry stays (a cameraless frame renders nothing anyway).
- */
-function refitDirectionalCsm(
-  lights: ExtractedLights,
-  camera: CameraSnapshot | undefined,
-): ExtractedLights {
-  if (lights.directionalCsmConfig === undefined || lights.directionalCsmDirection === undefined)
-    return lights;
-  const csm = computeDirectionalCsm(
-    lights.directionalCsmDirection,
-    lights.directionalCsmConfig,
-    camera,
-  );
-  if (csm === null) return lights;
-  return {
-    ...lights,
-    lightViewProj: csm.lightViewProj,
-    splitPlanes: csm.splitPlanes,
-    cascadeCount: csm.cascadeCount,
-    cascadeBlend: csm.cascadeBlend,
-    shadowMapSize: csm.shadowMapSize,
-    directionalShadowQuality: csm.directionalShadowQuality,
-  };
 }
 
 /**
@@ -663,6 +673,84 @@ export function morphSnapshotFor(
   return { weights: copied, targetCount: targets.length };
 }
 
+/**
+ * Conservative bounds of the morphed positions: the base enclosure plus, per
+ * target, the weighted per-axis delta interval. Cost is one pass over the
+ * targets, paid only when the renderable is extracted (its weights changed).
+ */
+export function morphLocalAabb(
+  base: ArrayLike<number>,
+  mesh: Pick<MeshAsset, 'morphTargets'>,
+  morph: MorphSnapshot,
+): Float32Array {
+  const bounds = new Float64Array(6);
+  for (let axis = 0; axis < 6; axis++) bounds[axis] = base[axis] as number;
+  const targets = mesh.morphTargets ?? [];
+  for (let target = 0; target < targets.length; target++) {
+    const weight = morph.weights[target] ?? 0;
+    const deltas = targets[target]?.position;
+    if (weight === 0 || deltas === undefined) continue;
+    for (let axis = 0; axis < 3; axis++) {
+      let low = 0;
+      let high = 0;
+      for (let at = axis; at < deltas.length; at += 3) {
+        const delta = (deltas[at] as number) * weight;
+        if (delta < low) low = delta;
+        else if (delta > high) high = delta;
+      }
+      bounds[axis] = (bounds[axis] as number) + low;
+      bounds[axis + 3] = (bounds[axis + 3] as number) + high;
+    }
+  }
+  // Round outward so the f32 box still encloses the f64 interval.
+  const result = new Float32Array(6);
+  for (let axis = 0; axis < 6; axis++) {
+    const value = bounds[axis] as number;
+    const rounded = Math.fround(value);
+    result[axis] =
+      axis < 3
+        ? rounded > value
+          ? nextFloat32(rounded, -1)
+          : rounded
+        : rounded < value
+          ? nextFloat32(rounded, 1)
+          : rounded;
+  }
+  return result;
+}
+
+function nextFloat32(value: number, direction: 1 | -1): number {
+  const bits = new Float32Array([value]);
+  const words = new Int32Array(bits.buffer);
+  if (value === 0) {
+    words[0] = direction > 0 ? 1 : -2147483647;
+    return bits[0] as number;
+  }
+  words[0] = (words[0] as number) + (value > 0 === direction > 0 ? 1 : -1);
+  return bits[0] as number;
+}
+
+/** One World's environment entries: what an {@link EnvironmentGate} retains between frames. */
+export type WorldEnvironmentPart = ReturnType<typeof extractEnvironmentPart>;
+
+function extractEnvironmentPart(
+  world: World,
+  context: PreparedExtractContext,
+  worldInternal: WorldInternalView,
+) {
+  const fog =
+    context.resourceOwnerFog === undefined
+      ? selectFogFrame(world)
+      : (context.resourceOwnerFog ?? undefined);
+  const fogFailure = fogState(world).failure;
+  const environment = extractWorldEnvironment(world, context, worldInternal, fog);
+  const projectedDecals = extractProjectedDecals(world, context);
+  const cameras = environment.cameras;
+  for (const [i, camera] of cameras.entries()) cameras[i] = { ...camera, projectedDecals };
+  const postProcessParams = collectPostProcessParams(world, cameras[0]);
+  return { fog, fogFailure, environment, projectedDecals, postProcessParams };
+}
+
 export function extractFrame(world: World, context: PreparedExtractContext): ExtractedFrame {
   // feat-20260708-composited-multi-world-rendering M2 / D-2: resetForFrame
   // has been lifted to extractFrames (the frame-level entry point).
@@ -670,16 +758,32 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // side effects. See plan-decisions PD2 for the reviewer ruling.
   // Environment reads are owned by the retained resource projection and are
   // established at the frame boundary; record never revisits World state.
-  const fog =
-    context.resourceOwnerFog === undefined
-      ? selectFogFrame(world)
-      : (context.resourceOwnerFog ?? undefined);
-  const fogFailure = fogState(world).failure;
   const worldInternal = createWorldInternalView(world);
-  const environment = extractWorldEnvironment(world, context, worldInternal, fog);
-  const projectedDecals = extractProjectedDecals(world, context);
+  const gate = context.environmentGate;
+  const { fog, fogFailure, environment, projectedDecals, postProcessParams } =
+    gate === undefined
+      ? extractEnvironmentPart(world, context, worldInternal)
+      : gate.read(
+          world,
+          `${context.worldId}:${context.cameraEntityKey}:${context.viewExtent?.width}x${context.viewExtent?.height}:${context.resourceOwnerFog === null}`,
+          (routedError) => {
+            const part = extractEnvironmentPart(world, context, {
+              ...worldInternal,
+              _routeError(error, ctx) {
+                routedError();
+                worldInternal._routeError(error, ctx);
+              },
+            });
+            return {
+              value: part,
+              // Volumetric fog and cloud layers carry World Time.
+              timeDependent:
+                part.environment.volumetricFog !== undefined ||
+                part.environment.cloudLayer !== undefined,
+            };
+          },
+        );
   const cameras = environment.cameras;
-  for (const [i, camera] of cameras.entries()) cameras[i] = { ...camera, projectedDecals };
   const scope = createWorldExtraction(world, context, worldInternal, environment.lights, cameras);
   if (context.renderables !== 'none') {
     extractMeshRenderers(scope);
@@ -688,7 +792,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // M3 / w26: sort dispatch entries by queue (ascending, stable sort)
   // per plan-strategy D-3.
   const dispatch = sortDispatchByQueue(scope.dispatch);
-  const postProcessParams = collectPostProcessParams(world, cameras[0]);
   return {
     projectedDecals,
     cameras,
@@ -736,7 +839,7 @@ function createWorldExtraction(
   world: World,
   context: PreparedExtractContext,
   worldInternal: WorldInternalView,
-  lights: ExtractedLights,
+  lights: LightRoster,
   cameras: readonly CameraSnapshot[],
 ) {
   const renderables: RenderableSnapshot[] = [];
@@ -764,7 +867,7 @@ function createWorldExtraction(
     renderables,
     dispatch,
     explicitlyHidden: new Set<EntityHandle>(),
-    shadowFrusta: context.cull === 'none' ? [] : buildShadowFrusta(lights),
+    shadowFrusta: context.cull === 'none' ? [] : buildShadowFrusta(lights, cameras[0]),
     frustumPlanes: context.cull === 'none' ? [] : buildCameraFrusta(cullingCameras),
     // feat-20260528-frustum-culling M3 / w11: frustum culling counters.
     frustumCulled: 0,
@@ -1513,7 +1616,7 @@ function publishRenderable(
   // zero per-snapshot compose. A stale slot (generation gone) skips the entity.
   const worldView = readPresentationWorldMatrix(scope.world, read.entity);
   if (worldView === undefined) return;
-  const transform: TransformSnapshot = { world: new Float32Array(worldView) };
+  const transform: TransformSnapshot = { world: ownPose(worldView) };
   const submeshMaterials = resolveSubmeshMaterials(scope, materials);
   // Without authored ShadowParticipation, a mesh whose every material blends
   // (transparent, additive) casts no shadow, like Three.js castShadow=false.
@@ -1559,43 +1662,23 @@ function publishRenderable(
 }
 
 /**
- * feat-20260609 M2/M5: default-material entities (handle 0) produce
- * ShadowCaster dispatch so shadow-casting stays the default behaviour; the
- * per-entity opt-out is ShadowParticipation { cast: false }. The URP literals
- * mirror what `Materials.unlit()` produces at the asset layer, because the
- * default-material handle bypasses asset registration.
+ * Default-material entities (handle 0) dispatch every Pass of the default
+ * snapshot, so shadow casting stays the default behaviour (opt out with
+ * ShadowParticipation { cast: false }) and each Pass reads the row ABI of the
+ * snapshot's own Unlit program, exactly as `Materials.unlit()` does.
  */
 function stageDefaultMaterialDispatch(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
   pending: DispatchEntry[],
 ): void {
-  const renderableIndex = scope.renderables.length;
-  pending.push({
-    entityIndex: read.entity,
-    materialHandle: 0,
-    renderableIndex,
-    passIndex: 0,
-    queue: 2000,
-    layer: read.layer,
-    ...(read.shadowChannels === undefined ? {} : { shadowChannels: read.shadowChannels }),
-    tags: { LightMode: 'ShadowCaster' },
-    renderState: undefined,
-    defines: undefined,
-    vertexEntry: 'vs_main',
-    fragmentEntry: undefined,
-    materialShaderId: 'forgeax::default-shadow-caster',
-  });
-  // Also add a Forward pass entry so the entity renders in the main scene
-  // pass (mirrors Materials.unlit default).
   appendMaterialDispatchEntries(
     pending,
-    [DEFAULT_FORWARD_PASS],
+    defaultMaterialSnapshot().passes,
     read.entity,
     0,
-    renderableIndex,
+    scope.renderables.length,
     read.layer,
-    1,
   );
 }
 
@@ -1758,9 +1841,9 @@ function resolveRenderableGeometry(
 type RenderableGeometry = NonNullable<ReturnType<typeof resolveRenderableGeometry>>;
 
 /**
- * Producer-owned finite local bounds. Morph targets can expand the authored
- * bounds, and bind-pose bounds cannot enclose arbitrary animated joint scale,
- * so those lanes stay conservatively visible (no bounds).
+ * Producer-owned finite local bounds. Morph targets expand the authored bounds
+ * by their weighted deltas. Bind-pose bounds cannot enclose arbitrary animated
+ * joint scale, so skinned rows stay conservatively visible (no bounds).
  */
 function renderableLocalAabb(
   read: MeshRendererRowRead,
@@ -1769,8 +1852,11 @@ function renderableLocalAabb(
   submeshMaterials: readonly MaterialSnapshot[],
 ): Float32Array | undefined {
   const meshAabb = read.skin !== undefined ? undefined : mesh?.aabb;
-  const authored =
-    morph === undefined && isFiniteAabb(meshAabb) ? new Float32Array(meshAabb) : undefined;
+  const authored = !isFiniteAabb(meshAabb)
+    ? undefined
+    : morph === undefined || mesh === undefined
+      ? sharedAabb(meshAabb)
+      : morphLocalAabb(meshAabb, mesh, morph);
   const displacementRadius = standardDisplacementRadius(submeshMaterials);
   const expanded = expandDisplacementBounds(authored, displacementRadius);
   return read.skin !== undefined && displacementRadius > 0 ? undefined : expanded;
@@ -2031,6 +2117,8 @@ function withGpuDrivenDraws(
   geometry: RenderableGeometry,
   skinBinding: SkinBindingInput | undefined,
 ): RenderableSnapshot {
+  // The Points/Lines owner draws these rows; the GPU Scene holds no geometry for them.
+  if (renderable.pointsLines !== undefined) return renderable;
   const { lods } = geometry;
   const getMaterialShaderArtifact = scope.context.getMaterialShaderArtifact;
   const gpuDrivenDraws = buildGpuDrivenDraws({
@@ -2055,9 +2143,7 @@ function withGpuDrivenDraws(
       systemName: `RenderSystem.extract (gpu-driven-preparation:${draw.preparationError.code})`,
     });
   }
-  return geometry.morph === undefined && gpuDrivenDraws.length > 0
-    ? { ...renderable, gpuDrivenDraws }
-    : renderable;
+  return gpuDrivenDraws.length > 0 ? { ...renderable, gpuDrivenDraws } : renderable;
 }
 
 function removeShadowCasterDispatch(pending: DispatchEntry[]): void {

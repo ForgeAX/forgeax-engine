@@ -689,12 +689,16 @@ export async function compileUnlitModules(
   seed('unlit', unlitModule);
   seed('module-forgeax::default-unlit', unlitModule);
   const unlitMaterialEntry = findMaterialShaderEntry(registry, 'forgeax::default-unlit');
-  const colored = selectBootVariant(unlitMaterialEntry, {
-    VERTEX_COLOR_AVAILABLE: true,
-    STORAGE_BUFFER_AVAILABLE: caps.storageBuffer,
-    ATMOSPHERE_AVAILABLE: caps.atmosphere,
-    COVERAGE_ONLY: false,
-  });
+  const variantOf = (vertexColor: boolean, sceneIndex: boolean) =>
+    selectBootVariant(unlitMaterialEntry, {
+      VERTEX_COLOR_AVAILABLE: vertexColor,
+      STORAGE_BUFFER_AVAILABLE: caps.storageBuffer,
+      ATMOSPHERE_AVAILABLE: caps.atmosphere,
+      COVERAGE_ONLY: false,
+      SKINNING_DISABLED: true,
+      GPU_DRIVEN_SCENE_INDEX_AVAILABLE: sceneIndex,
+    });
+  const colored = variantOf(true, false);
   if (colored !== undefined && colored.composedWgsl !== unlitEntry.wgsl) {
     const coloredModule = await compile(
       colored.composedWgsl,
@@ -704,14 +708,26 @@ export async function compileUnlitModules(
     );
     seed(`module-forgeax::default-unlit#${colored.definesKey}`, coloredModule);
   }
-  const uncolored = selectBootVariant(unlitMaterialEntry, {
-    VERTEX_COLOR_AVAILABLE: false,
-    STORAGE_BUFFER_AVAILABLE: caps.storageBuffer,
-    ATMOSPHERE_AVAILABLE: caps.atmosphere,
-    COVERAGE_ONLY: false,
-  });
+  const uncolored = variantOf(false, false);
   if (uncolored !== undefined)
     seed(`module-forgeax::default-unlit#${uncolored.definesKey}`, unlitModule);
+  // Opaque unlit rows join the GPU-driven lane on storage devices; keep their
+  // first scene-index frame off the lazy module path.
+  if (caps.storageBuffer) {
+    for (const vertexColor of [false, true]) {
+      const scene = variantOf(vertexColor, true);
+      if (scene === undefined) continue;
+      seed(
+        `module-forgeax::default-unlit#${scene.definesKey}`,
+        await compile(
+          scene.composedWgsl,
+          `unlit-scene-index${vertexColor ? '-vertex-color' : ''}`,
+          'scene-index unlit shader module compiled',
+          'inspect the GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true unlit variant and device.features',
+        ),
+      );
+    }
+  }
   return unlitModule;
 }
 

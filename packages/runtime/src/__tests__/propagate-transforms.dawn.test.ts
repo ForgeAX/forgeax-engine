@@ -199,9 +199,9 @@ describe('propagate-transforms.dawn - root-down DFS + stale ChildOf fail-fast (A
     // only the source column through the package-internal seam to preserve
     // this diagnostic regression for malformed imported/editor state.
     const archetype = world[worldInternal].getEntityArchetype(orphan);
-    const record = world[worldInternal].getRecords()[orphan & 0xffffff];
-    if (archetype === undefined || record === undefined) throw new Error('orphan row missing');
-    const tableRow = archetype.rows[record.archetypeRow];
+    const records = world[worldInternal].getRecords();
+    if (archetype === undefined) throw new Error('orphan row missing');
+    const tableRow = archetype.rows[records.archetypeRow[orphan & 0xffffff] ?? -1];
     if (tableRow === undefined) throw new Error('orphan table row missing');
     const table = world[worldInternal].getGraph().tables[archetype.tableId];
     const parentColumn = table?.storage.get(componentId(ChildOf))?.fields.get('parent');

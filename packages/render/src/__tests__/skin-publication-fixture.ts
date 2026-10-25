@@ -6,8 +6,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { MeshFilter, MeshRenderer } from '../components';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 
 export function fixture(missing = false) {
   const assets = new AssetRegistry({
@@ -65,11 +65,11 @@ export function fixture(missing = false) {
   const publish = () => {
     const candidate = prepare();
     const packet = structuredClone(candidate.packet, {
-      transfer: transfers(candidate.packet),
+      transfer: transfers(candidate.message),
     });
     candidate.accept();
     const saved = structuredClone(packet);
-    publisher.recycle(packet.revision, transfers(packet)).unwrap();
+    publisher.recycle(packet.revision, transfers(encodeRenderPublication(packet))).unwrap();
     return saved;
   };
   return {

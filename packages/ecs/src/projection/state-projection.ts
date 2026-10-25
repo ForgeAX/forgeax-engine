@@ -13,7 +13,8 @@ const ACCEPTED = 4;
 
 export class StateProjectionExpiredError extends Error {
   readonly code = 'state-projection-expired' as const;
-  readonly expected = 'an unmodified source and the latest valid projection candidate';
+  readonly expected =
+    'unchanged observed components and structure, and the latest projection candidate';
   readonly hint = 'Read and apply the current state again before accepting the candidate.';
 
   constructor() {
@@ -68,10 +69,18 @@ export function createStateProjection(
   let readToken = 0;
   let scannedRows = 0;
 
+  function inputsUnchangedSince(epoch: number): boolean {
+    // Indexed: this guard runs on every currency check and read validation.
+    const epochs = owner.getComponentMutationEpochs();
+    for (let cursor = 0; cursor < ids.length; cursor++)
+      if ((epochs[ids[cursor] as number] ?? 0) > epoch) return false;
+    for (let cursor = 0; cursor < candidateIds.length; cursor++)
+      if ((epochs[candidateIds[cursor] as number] ?? 0) > epoch) return false;
+    return true;
+  }
+
   function matches(index: number): boolean {
-    const record = owner.getRecords()[index];
-    const archetype =
-      record === undefined ? undefined : owner.getGraph().archetypes[record.archetypeId];
+    const archetype = owner.getGraph().archetypes[owner.getRecords().archetypeId[index] ?? -1];
     if (archetype === undefined) return false;
     for (let cursor = 0; cursor < candidateIds.length; cursor++)
       if (archetypeHasComponent(archetype, candidateIds[cursor] as number)) return true;
@@ -103,15 +112,15 @@ export function createStateProjection(
         world.execution.health !== 'poisoned' &&
         !owner.isDerivedWriteActive() &&
         !invalid &&
-        acceptedEpoch === owner.getMutationEpoch() &&
+        inputsUnchangedSince(acceptedEpoch) &&
         acceptedStructure === owner.getStructureEpoch()
       );
     },
     entity(index) {
-      const record = owner.getRecords()[index];
-      return record === undefined || record.archetypeId < 0
+      const records = owner.getRecords();
+      return (records.archetypeId[index] ?? -1) < 0
         ? undefined
-        : encodeEntity(index, record.generation);
+        : encodeEntity(index, records.generation[index] as number);
     },
     changed(entity, component) {
       const id = componentId(component);
@@ -140,9 +149,10 @@ export function createStateProjection(
       scannedRows = 0;
       stamped = true;
       const changedComponents: Component[] = [];
-      for (const component of components)
-        if ((owner.getComponentMutationEpochs()[componentId(component)] ?? 0) > acceptedEpoch)
-          changedComponents.push(component);
+      const mutationEpochs = owner.getComponentMutationEpochs();
+      for (let cursor = 0; cursor < components.length; cursor++)
+        if ((mutationEpochs[ids[cursor] as number] ?? 0) > acceptedEpoch)
+          changedComponents.push(components[cursor] as Component);
       let checkedIndexEntries = 0;
       if (invalid) {
         // Explicit baseline rebuild includes accepted identities that have disappeared.
@@ -156,8 +166,9 @@ export function createStateProjection(
         }
       } else {
         membershipWork = false;
-        for (const id of ids) {
-          if ((owner.getComponentMutationEpochs()[id] ?? 0) <= acceptedEpoch) continue;
+        for (let cursor = 0; cursor < ids.length; cursor++) {
+          const id = ids[cursor] as number;
+          if ((mutationEpochs[id] ?? 0) <= acceptedEpoch) continue;
           const index = owner.getComponentChangeIndex(id);
           index?.visitSince(acceptedEpoch, epoch, enqueue);
           checkedIndexEntries += index?.checkedEntries ?? 0;
@@ -176,7 +187,7 @@ export function createStateProjection(
         if (poisoned !== undefined) throw poisoned;
         if (
           token !== readToken ||
-          epoch !== owner.getMutationEpoch() ||
+          !inputsUnchangedSince(epoch) ||
           structure !== owner.getStructureEpoch()
         )
           throw new StateProjectionExpiredError();

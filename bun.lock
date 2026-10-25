@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "forgeax-engine",
@@ -5757,6 +5756,7 @@
       "dependencies": {
         "@bokuweb/zstd-wasm": "0.0.27",
         "@forgeax/engine-types": "workspace:*",
+        "@hpcc-js/wasm-zstd": "1.17.0",
         "@noble/hashes": "^2.2.0",
         "fzstd": "^0.1.1",
       },
@@ -5827,7 +5827,7 @@
       "name": "@forgeax/engine-devkit",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/cli.mjs",
+        "forgeax": "./dist/cli.mjs"
       },
       "dependencies": {
         "@fontsource-variable/noto-sans-sc": "5.3.0",
@@ -5924,7 +5924,7 @@
       "name": "@forgeax/engine",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/bin/forgeax.mjs",
+        "forgeax": "./dist/bin/forgeax.mjs"
       },
       "dependencies": {
         "@forgeax/engine-animation": "workspace:*",
@@ -6992,9 +6992,7 @@
       "name": "@forgeax/view",
       "version": "0.2.0",
       "bin": {
-        "forgeax-view": "./dist/modules/cli.mjs",
-        "forgeax-view-start": "./dist/modules/start-cli.mjs",
-      },
+        "forgeax-view": "./dist/modules/cli.mjs",        "forgeax-view-start": "./dist/modules/start-cli.mjs"      },
       "dependencies": {
         "@forgeax/engine": "workspace:*",
         "@forgeax/engine-host": "workspace:*",
@@ -7329,9 +7327,9 @@
     "@deepseek-ai/cordis@4.0.4": "patches/@deepseek-ai__cordis@4.0.4.patch",
   },
   "overrides": {
-    "body-parser": "^2.4.0",
-    "fast-uri": "^3.1.9",
     "zod": "^4.6.7",
+    "fast-uri": "^3.1.9",
+    "body-parser": "^2.4.0",
   },
   "packages": {
     "@adobe/css-tools": ["@adobe/css-tools@4.5.0", "", {}, "sha512-6OzddxPio9UiWTCemp4N8cYLV2ZN1ncRnV1cVGtve7dhPOtRkleRyx32GQCYSwDYgaHU3USMm84tNsvKzRCa1Q=="],
@@ -8239,6 +8237,8 @@
     "@hapi/topo": ["@hapi/topo@6.0.2", "", { "dependencies": { "@hapi/hoek": "^11.0.2" } }, "sha512-KR3rD5inZbGMrHmgPxsJ9dbi6zEK+C3ZwUwTa+eMwWLz7oijWUTWD2pMSNNYJAU6Qq+65NkxXjqHr/7LM2Xkqg=="],
 
     "@hono/node-server": ["@hono/node-server@1.19.17", "", { "peerDependencies": { "hono": "^4" } }, "sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ=="],
+
+    "@hpcc-js/wasm-zstd": ["@hpcc-js/wasm-zstd@1.17.0", "", {}, "sha512-Kcj7hD+WKj48iVApd4Oswk8GmAz5HWU43HYaAW1OwqyTHtgXPs76RRmekqwSwGLZk7e137syTJdzuoTiYgLV/g=="],
 
     "@joshwooding/vite-plugin-react-docgen-typescript": ["@joshwooding/vite-plugin-react-docgen-typescript@0.7.0", "", { "dependencies": { "glob": "^13.0.1", "react-docgen-typescript": "^2.2.2" }, "peerDependencies": { "typescript": ">= 4.3.x", "vite": "^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0" }, "optionalPeers": ["typescript"] }, "sha512-qvsTEwEFefhdirGOPnu9Wp6ChfIwy2dBCRuETU3uE+4cC+PFoxMSiiEhxk4lOluA34eARHA0OxqsEUYDqRMgeQ=="],
 

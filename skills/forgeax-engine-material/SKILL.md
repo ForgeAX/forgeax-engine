@@ -396,6 +396,10 @@ all scene-data channels. See the [pass table and RHI Debug regression commands](
 before interpreting masks on deferred/MRT attachments. Inspect both pipeline
 state and live/fresh-replay pixels, including the zero-bias and write-off controls.
 
+## Lane admission for Unlit and morph
+
+An opaque rigid `Materials.unlit` draw (queue below `RenderQueue.Transparent`, declared program) takes the GPU-driven color and shadow lanes like Standard; skinned, blended, `Transparent`/`Overlay` queue or program-less Unlit stays on the CPU lane and keeps its direct order. A `MorphWeights` entity over Mesh `morphTargets` deforms through a renderer-owned compute stream under any material program and owns its batch; authors add no morph variant or shader code. Read the admitted lane and reason from `renderer.inspect()` `gpuDriven` rather than inferring it (render README §GPU-driven PBR / shadow / skin navigation).
+
 ## Material and punctual default behavior
 
 Standard `roughness`, `emissiveIntensity`, and `sheenRoughness` default to 1.

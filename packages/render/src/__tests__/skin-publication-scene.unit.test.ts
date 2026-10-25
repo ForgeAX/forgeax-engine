@@ -4,6 +4,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import { expect, it, vi } from 'vitest';
 import { GpuInputArena } from '../gpu-input-arena';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication } from '../publication/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { SkinInputFrame, SkinInputs } from '../scene/skin-inputs';
@@ -25,11 +26,11 @@ it('carries sparse Worker joint columns through Persistent admission and cold re
   };
   try {
     f.world.set(f.second, Skin, { joints: [f.secondJoint] }).unwrap();
-    scene.consumePublication(receiver.accept(f.publish()).unwrap());
+    scene.consumePublication(receiver.accept(encodeRenderPublication(f.publish())).unwrap());
     expect(read(Number(f.first))).toBe(0);
     expect(read(Number(f.second))).toBe(2);
     f.world.set(f.firstJoint, Transform, { pos: [9, 0, 0] }).unwrap();
-    const delta = receiver.accept(f.publish()).unwrap();
+    const delta = receiver.accept(encodeRenderPublication(f.publish())).unwrap();
     expect(delta.operations).toHaveLength(0);
     expect(delta.skinJoints?.rows).toHaveLength(1);
     scene.consumePublication(delta);
@@ -62,12 +63,11 @@ function endpoint(missing = false) {
   const scratch = mat4.create();
   function adopt() {
     const packet = f.publish(),
-      prepared = receiver.accept(packet).unwrap();
+      prepared = receiver.accept(encodeRenderPublication(packet)).unwrap();
     resources = prepared.resources;
     scene.setSources([resources]);
-    const before = scene.slotsSnapshot(),
-      delta = scene.apply(prepared.operations);
-    skin.apply(before, delta);
+    const delta = scene.apply(prepared.operations);
+    skin.apply(delta);
     for (const change of prepared.assetChanges) {
       const value = resources.resolveAsset(change.handle);
       // Removal of a referenced Skeleton is meaningful too; this owner does not

@@ -11,9 +11,9 @@ import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/f
 import { MeshFilter, MeshRenderer } from '../../components';
 import { createFullscreenRenderFeature } from '../../features/fullscreen';
 import type { RenderFeature } from '../../features/types';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
@@ -83,7 +83,7 @@ it('acknowledges only submitted source data, rejecting stale and duplicate recei
   ]);
   const candidate = publisher.prepare(0).unwrap();
   const packet = structuredClone(candidate.packet, {
-    transfer: renderPublicationTransfers(candidate.packet),
+    transfer: renderPublicationTransfers(candidate.message),
   });
   candidate.accept();
   value = 2;
@@ -103,7 +103,7 @@ it('acknowledges only submitted source data, rejecting stale and duplicate recei
   expect(publisher.acknowledgeFeatures(1, [{ identity: feature.identity, feedback: 1 }]).ok).toBe(
     false,
   );
-  publisher.recycle(1, renderPublicationTransfers(packet)).unwrap();
+  publisher.recycle(1, renderPublicationTransfers(encodeRenderPublication(packet))).unwrap();
   const next = publisher.prepare(1).unwrap();
   next.discard();
   expect(consumed).toHaveLength(1);
@@ -132,16 +132,16 @@ it('publishes feature-only GUID resources and retires them when the producer dro
   const first = publisher.prepare(0).unwrap();
   const packet = structuredClone(first.packet);
   first.accept();
-  const accepted = receiver.accept(packet).unwrap();
+  const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
   expect(accepted.resources.lookupAsset(guid)).toEqual(
     runtimeAssets(assets).resolveAsset(loaded).unwrap(),
   );
   expect(packet.assets.filter((row) => row.guid === guid)).toHaveLength(1);
-  publisher.recycle(1, renderPublicationTransfers(packet)).unwrap();
+  publisher.recycle(1, renderPublicationTransfers(encodeRenderPublication(packet))).unwrap();
   roots = [];
   const next = publisher.prepare(1).unwrap();
   expect(next.packet.retiredAssets).toContain(accepted.resources.handleForGuid(guid));
-  receiver.accept(next.packet).unwrap();
+  receiver.accept(next.message).unwrap();
   expect(accepted.resources.lookupAsset(guid)).toBeUndefined();
   next.discard();
   publisher.dispose();
@@ -180,9 +180,9 @@ it('publishes LOD GUID dependencies and rejects a missing lower-detail asset bef
     ...candidate.packet,
     assets: candidate.packet.assets.filter((row) => row.guid !== guid),
   };
-  expect(receiver.accept(missing).ok).toBe(false);
+  expect(receiver.accept(encodeRenderPublication(missing)).ok).toBe(false);
   expect(receiver.acceptedRevision).toBe(0);
-  expect(receiver.accept(structuredClone(candidate.packet)).ok).toBe(true);
+  expect(receiver.accept(encodeRenderPublication(structuredClone(candidate.packet))).ok).toBe(true);
   candidate.discard();
   publisher.dispose();
 });
@@ -210,7 +210,7 @@ it('keeps two sealed publications and their feedback independent of later source
   const seal = () => {
     const candidate = publisher.prepare(value).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     return packet;
@@ -223,15 +223,17 @@ it('keeps two sealed publications and their feedback independent of later source
     value = 99;
     expect(second.features[0]?.data).toEqual({ value: 2 });
     expect(publisher.prepare(3).ok).toBe(false);
-    expect(publisher.recycle(2, renderPublicationTransfers(second)).ok).toBe(false);
+    expect(
+      publisher.recycle(2, renderPublicationTransfers(encodeRenderPublication(second))).ok,
+    ).toBe(false);
     publisher.acknowledgeFeatures(1, [{ identity: feature.identity, feedback: null }]).unwrap();
-    publisher.recycle(1, renderPublicationTransfers(first)).unwrap();
+    publisher.recycle(1, renderPublicationTransfers(encodeRenderPublication(first))).unwrap();
     expect(
       publisher.acknowledgeFeatures(1, [{ identity: feature.identity, feedback: null }]).ok,
     ).toBe(false);
     publisher.acknowledgeFeatures(2, [{ identity: feature.identity, feedback: null }]).unwrap();
     expect(consumed).toEqual([{ value: 1 }, { value: 2 }]);
-    publisher.recycle(2, renderPublicationTransfers(second)).unwrap();
+    publisher.recycle(2, renderPublicationTransfers(encodeRenderPublication(second))).unwrap();
     const third = seal();
     expect(third.base).toBe(2);
     expect(third.features[0]?.data).toEqual({ value: 99 });
@@ -262,10 +264,12 @@ it('publishes a late fullscreen declaration once and retains only per-frame enab
   const seal = () => {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return packet;
   };
   try {

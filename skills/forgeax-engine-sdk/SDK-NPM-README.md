@@ -81,8 +81,8 @@ an unbuilt workspace or npm-incompatible `workspace:*` dependencies.
 
 ## Requirements and links
 
-- Node.js `>=22.13.0`
-- pnpm `12.10.1` or newer in the pnpm 12 line (Corepack can activate it)
+- Node.js `22.22.3` or `24.18.0` with npm `12.2.1` for the verified SDK toolchain
+- pnpm `12.15.0` (Corepack can activate the exact SDK pin)
 - Browser with native WebGPU or the supported WebGL2 downlevel path for rendered previews
 
 For the public entry guide, see [ForgeaX Engine for AI-assisted game

@@ -23,18 +23,20 @@ import { buildGpuDrivenDraws } from '../../extract/gpu-driven';
 import { renderMaterialContext } from '../../extract/material-context';
 import { MaterialResource } from '../../material-resource';
 import { Materials } from '../../materials';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { installPublicationPrograms } from '../../publication/programs';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { worldRenderResources } from '../../publication/resource-scope';
 import {
   defaultMaterialSnapshot,
   type RenderableSnapshot,
   resolveMaterialSnapshot,
 } from '../../render-system-extract';
+import { MaterialFrame } from '../../scene/material-dispatch';
+import { MeshFrame } from '../../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../../scene/render-scene';
-import { projectSceneFields } from '../scene-field-projection';
+import { projectSceneFields, SceneFieldRows } from '../scene-field-projection';
 
 const matrix = (x = 0) => {
   const value = mat4.identity(mat4.create());
@@ -504,13 +506,13 @@ it('projects the actual transferred receiver mesh and rejects then restores runt
     f.world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
     scene.consumePublication(accepted);
-    const returned = structuredClone(renderPublicationTransfers(packet), {
-      transfer: renderPublicationTransfers(packet),
+    const returned = structuredClone(renderPublicationTransfers(encodeRenderPublication(packet)), {
+      transfer: renderPublicationTransfers(encodeRenderPublication(packet)),
     });
     publisher.recycle(packet.revision, returned).unwrap();
     return projectSceneFields(
@@ -655,10 +657,10 @@ it('keeps cooked program admission while the owned material values advance', asy
     f.world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    const received = receiver.accept(packet).unwrap();
+    const received = receiver.accept(encodeRenderPublication(packet)).unwrap();
     expect(packet.programs.length).toBeGreaterThan(0);
     installPublicationPrograms(receiverAssets, packet.programs);
     retained.consumePublication(received);
@@ -679,3 +681,69 @@ it('keeps cooked program admission while the owned material values advance', asy
     publisher.dispose();
   }
 }, 60000);
+
+it('re-admits only the D changed rows and keeps the roster revision across unrelated edits', async () => {
+  const f = await fixture();
+  const hidden = 2000;
+  f.scene.apply(
+    Array.from({ length: hidden }, (_, index) => ({
+      kind: 'update' as const,
+      worldId: 0,
+      entityKey: 1000 + index,
+      snapshot: { ...f.source, entityKey: 1000 + index, authorVisible: false },
+    })),
+  );
+  const identity = {};
+  const rows = () => ({
+    identity,
+    slots: f.scene.slotsSnapshot(),
+    materials: new MaterialFrame(undefined),
+    meshes: new MeshFrame(),
+  });
+  const worlds = [f.world].map(worldRenderResources);
+  const budget = { maxInstances: 16, maxFieldBytes: 1024 * 1024 };
+  const fields = new SceneFieldRows();
+  const cold = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  expect(cold.sources).toHaveLength(1);
+  const coldVisits = fields.visits;
+  expect(coldVisits).toBe(hidden + 1);
+  const revision = fields.revision;
+
+  // D unrelated row edits: D visits, no roster change, the same assembled projection.
+  const D = 8;
+  f.scene.apply(
+    Array.from({ length: D }, (_, index) => ({
+      kind: 'update' as const,
+      worldId: 0,
+      entityKey: 1000 + index * 37,
+      snapshot: {
+        ...f.source,
+        entityKey: 1000 + index * 37,
+        authorVisible: false,
+        transform: { world: matrix(index + 1) },
+      },
+    })),
+  );
+  const steady = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  expect(fields.visits - coldVisits).toBe(D);
+  expect(fields.revision).toBe(revision);
+  expect(steady).toBe(cold);
+
+  // Moving the field source re-admits one row and changes only its transform.
+  f.update({ ...f.source, transform: { world: matrix(5) } });
+  const moved = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  expect(fields.visits - coldVisits).toBe(D + 1);
+  expect(fields.revision).not.toBe(revision);
+  expect(moved.instances[0]?.transform[12]).toBe(5);
+  expect(moved.sources[0]?.fieldSnapshot).toBe(cold.sources[0]?.fieldSnapshot);
+
+  // Recovery clears derived state and re-admits every row to the identical roster.
+  fields.reset();
+  const recovered = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  expect(recovered.instances.map((instance) => Array.from(instance.transform))).toEqual(
+    moved.instances.map((instance) => Array.from(instance.transform)),
+  );
+  expect(recovered.sources.map(({ slot, generation }) => [slot, generation])).toEqual(
+    moved.sources.map(({ slot, generation }) => [slot, generation]),
+  );
+});

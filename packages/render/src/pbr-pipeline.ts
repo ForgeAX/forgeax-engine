@@ -1622,6 +1622,13 @@ export function buildBindGroupLayoutDescriptor(
             visibility: GPU_SHADER_STAGE_VERTEX,
             buffer: { type: meshBufType, hasDynamicOffset: false },
           },
+          {
+            // Shared GPU Scene inputs: morphed instance rows name their
+            // weights and Mesh target deltas here.
+            binding: 8,
+            visibility: GPU_SHADER_STAGE_VERTEX,
+            buffer: { type: meshBufType, hasDynamicOffset: false },
+          },
         ],
       };
     }

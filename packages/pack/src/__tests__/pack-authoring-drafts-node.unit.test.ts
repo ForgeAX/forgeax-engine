@@ -208,6 +208,34 @@ describe('source refresh after external writes', () => {
     }
   });
 
+  it('reopens a failed retained draft from repaired disk content without another watcher event', async () => {
+    const { root, source } = await setup();
+    const manager = createFileSystemPackDrafts({ gameRoot: root });
+    try {
+      const opened = (await manager.execute({
+        action: 'open',
+        sourcePath: 'scene.pack.ts',
+      })) as PackDraftSnapshot;
+      await manager.execute({ action: 'edit', draftId: opened.id, field: 'radius', value: 5 });
+      await writeFile(join(root, 'scene.pack.ts'), '');
+      expect((await manager.refreshSource('scene.pack.ts'))?.error).toBeDefined();
+      await writeFile(join(root, 'scene.pack.ts'), scaled(source));
+      // The completion of a truncate/write may be coalesced by the file watcher.
+      const reopened = (await manager.execute({
+        action: 'open',
+        sourcePath: 'scene.pack.ts',
+      })) as PackDraftSnapshot;
+      expect(reopened.id).toBe(opened.id);
+      expect(reopened.error).toBeUndefined();
+      expect(reopened.fields.map((field) => field.name)).toContain('scale');
+      expect(reopened.values.radius).toBe(5);
+      expect(reopened.unsaved).toBe(true);
+      expect(reopened.canUndo).toBe(true);
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('clears a truncated-read failure once the complete source parses', async () => {
     const { root, source } = await setup();
     const manager = createFileSystemPackDrafts({ gameRoot: root });

@@ -159,8 +159,9 @@ export class FilteredPlanContributionOwner {
           rowWindowKeys.push(key);
           const lod = group?.lod ?? row.lod;
           const levels = batchLodLevelCount({ ...(lod === undefined ? {} : { lod }) });
-          const capacity =
-            2 ** Math.ceil(Math.log2(Math.max(1, Math.ceil(partition.candidates.length / 64))));
+          // 64-entry units sized by actual membership. Growth reserves 1.5x of
+          // the outgrown window, so relocations stay amortized O(1) per member.
+          const capacity = Math.max(1, Math.ceil(partition.candidates.length / 64));
           let window = this.windows.get(key);
           if (
             window === undefined ||
@@ -169,6 +170,13 @@ export class FilteredPlanContributionOwner {
             window.levelCapacity > capacity * 4 ||
             window.levels !== levels
           ) {
+            const reserved =
+              window !== undefined &&
+              window.sourceGeneration === source.generation &&
+              window.levels === levels &&
+              window.levelCapacity < capacity
+                ? Math.max(capacity, Math.ceil(window.levelCapacity * 1.5))
+                : capacity;
             if (window !== undefined) {
               this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
               this.indirectRanges.release(window.indirectStart, window.levels);
@@ -178,8 +186,8 @@ export class FilteredPlanContributionOwner {
               id: window?.id ?? this.freeIds.pop() ?? this.nextId++,
               sourceGeneration: source.generation,
               generation: ++this.generation,
-              visibleStart: this.visibleRanges.allocate(capacity * levels),
-              levelCapacity: capacity,
+              visibleStart: this.visibleRanges.allocate(reserved * levels),
+              levelCapacity: reserved,
               indirectStart: this.indirectRanges.allocate(levels),
               levels,
             };

@@ -15,12 +15,13 @@ import { gpuPassFrameMilliseconds } from '../pipeline/dynamic-resolution';
 import type { RenderExtent } from '../pipeline/render-extent';
 import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot, VolumetricFogFrameContext } from '../render-contract';
-import type { ExtractedLights, ExtractedVolumetricFog } from '../render-system-extract';
+import type { ExtractedVolumetricFog } from '../render-system-extract';
 import type {
   PersistentGpuDrivenState,
   PersistentShadowCasterProjection,
 } from '../scene/render-scene';
 import { projectVolumeCompositeBounds } from '../volume/composite-scissor';
+import type { ViewLights } from '../world/render-lights';
 import type {
   currentDirectionalShadowPublication,
   prepareDirectionalCascadeCadence,
@@ -52,16 +53,11 @@ type CascadeCadence = ReturnType<typeof prepareDirectionalCascadeCadence>;
 
 /** Frame-owned inputs that the scene passes consume beside the shared roster. */
 export function scenePassInputs(
-  camera: CameraSnapshot,
-  gpuDriven: GpuDrivenRecordInput | undefined,
   scenePassWork: _InternalRenderPipelineContext['scenePassWork'],
   visibleSurface: VisibleSurfaceProjection | undefined,
   probePlacement: FrameDiffuseGi['probePlacement'],
 ) {
   return {
-    ...(camera.antialias === 'taa' || gpuDriven?.cameraVisible === undefined
-      ? {}
-      : { cameraVisible: gpuDriven.cameraVisible }),
     ...(scenePassWork === undefined ? {} : { scenePassWork }),
     ...(visibleSurface === undefined ? {} : { visibleSurface }),
     ...(probePlacement === undefined ? {} : { probePlacement }),
@@ -415,12 +411,12 @@ export function commitSubmittedDisplay(
 
 export function commitSubmittedShadows(
   frameState: RenderFrameState,
-  lights: ExtractedLights,
+  lights: ViewLights,
   cascadeCadence: CascadeCadence | undefined,
 ): void {
   frameState.shadowRaster.commit();
   frameState.shadowDepthLayers?._commit();
-  frameState.directionalShadowProjection = lights.lightViewProj;
+  frameState.directionalShadowProjection = lights.cascades?.lightViewProj;
   frameState.directionalCascadeCadence = cascadeCadence?.next ?? undefined;
 }
 

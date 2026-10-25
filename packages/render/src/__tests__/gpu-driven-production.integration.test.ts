@@ -52,8 +52,8 @@ import {
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { MaterialResource } from '../material-resource';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import {
   makeZeroCameraFallbackSnapshot,
   type RenderFrameState,
@@ -65,10 +65,11 @@ import type { PipelineState, RenderSystemInternals } from '../record/render-cont
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
 import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
 import { createTemporalFrameTransaction } from '../temporal/frame';
+import type { ViewLights } from '../world/render-lights';
 import {
   admitGpuFixture,
   mesh,
@@ -348,8 +349,8 @@ describe('GPU-driven production projection', () => {
         if (!completed.ok) throw completed.error;
         expect(bundles).toHaveBeenCalled();
       }
+      // A hit replays a bundle recorded by the first frame without re-recording it.
       bundles.mockClear();
-      recorded.clear();
       submit.mockClear();
       submitted.mockClear();
       acknowledged.mockClear();
@@ -497,10 +498,10 @@ describe('GPU-driven production projection', () => {
       world.update(1 / 60).unwrap();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
-      const drawn = renderer.draw({ publication: packet });
+      const drawn = renderer.draw({ publication: encodeRenderPublication(packet) });
       const prepared = prepare.mock.results.at(-1)?.value;
       expect(prepared).toMatchObject({
         ok: true,
@@ -561,16 +562,21 @@ describe('GPU-driven production projection', () => {
         expect(view.getFloat32(member.offset, true)).toBeCloseTo(value, 6);
       }
       expect(layout.numericMembers.map((field) => field.name)).not.toContain('alphaCutoff');
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       for (const geometryLane of ['direct', 'automatic'] as const) {
         world.update(1 / 60).unwrap();
         const next = publisher.prepare(world.getResource(Time).elapsed).unwrap();
         const publication = structuredClone(next.packet, {
-          transfer: renderPublicationTransfers(next.packet),
+          transfer: renderPublicationTransfers(next.message),
         });
         next.accept();
         directDraws.mockClear();
-        const drawn = renderer.draw({ publication, geometryLane });
+        const drawn = renderer.draw({
+          publication: encodeRenderPublication(publication),
+          geometryLane,
+        });
         expect(drawn.ok, JSON.stringify(errors)).toBe(true);
         if (!drawn.ok) throw drawn.error;
         const receipt = drawn.value;
@@ -585,7 +591,12 @@ describe('GPU-driven production projection', () => {
         if (geometryLane === 'direct') expect(directDraws).toHaveBeenCalled();
         expect(renderer.inspect().renderScene.projectionRecords).toBe(1);
         expect(errors).toEqual([]);
-        publisher.recycle(publication.revision, renderPublicationTransfers(publication)).unwrap();
+        publisher
+          .recycle(
+            publication.revision,
+            renderPublicationTransfers(encodeRenderPublication(publication)),
+          )
+          .unwrap();
       }
     } finally {
       prepare.mockRestore();
@@ -639,6 +650,7 @@ describe('GPU-driven production projection', () => {
     );
     const inspect = vi.spyOn(GpuDrivenProduction.prototype, 'inspect');
     const emit = vi.spyOn(gpuDrawReceipts, 'emitGpuDrivenDrawReceipts');
+    const summarize = vi.spyOn(gpuDrawReceipts, 'summarizeGpuDrivenDraws');
     const ssrInputs = vi.spyOn(mainPass, 'hasSsrSceneInputs');
     try {
       const changed = entities[371];
@@ -649,13 +661,14 @@ describe('GPU-driven production projection', () => {
         world.update(1 / 60).unwrap();
         const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
         const packet = structuredClone(candidate.packet, {
-          transfer: renderPublicationTransfers(candidate.packet),
+          transfer: renderPublicationTransfers(candidate.message),
         });
         candidate.accept();
         inspect.mockClear();
         emit.mockClear();
+        summarize.mockClear();
         ssrInputs.mockClear();
-        const submitted = renderer.draw({ publication: packet });
+        const submitted = renderer.draw({ publication: encodeRenderPublication(packet) });
         if (!submitted.ok) throw submitted.error;
         const receipt = submitted.value;
         if (receipt === undefined) throw new Error('missing publication receipt');
@@ -663,27 +676,34 @@ describe('GPU-driven production projection', () => {
         if (!completed.ok) throw completed.error;
         expect.soft(inspect, `frame ${frame} full inspection`).not.toHaveBeenCalled();
         expect(emit).toHaveBeenCalledOnce();
-        expect(emit.mock.calls[0]?.[0]).toHaveLength(744);
-        expect(emit.mock.results[0]?.value).toMatchObject({
+        // After the first GPU selection, per-row receipts visit residual rows only.
+        expect([...(emit.mock.calls[0]?.[0] ?? [])]).toHaveLength(frame === 0 ? 744 : 0);
+        expect(summarize).not.toHaveBeenCalled();
+        expect(ssrInputs).not.toHaveBeenCalled();
+        const state = renderer.inspect().renderScene;
+        expect(summarize).toHaveBeenCalledOnce();
+        expect(summarize.mock.calls[0]?.[0]).toHaveLength(744);
+        expect(summarize.mock.results[0]?.value).toMatchObject({
           gpuDraws: 744,
           gpuEntities: 744,
           cpuDraws: 0,
         });
-        expect(new Set(emit.mock.calls[0]?.[0].map((row) => row.material)).size).toBe(
+        expect(new Set(summarize.mock.calls[0]?.[0].map((row) => row.material)).size).toBe(
           frame < 3 ? 1 : 2,
         );
-        expect(ssrInputs).not.toHaveBeenCalled();
-        const state = renderer.inspect().renderScene;
         expect(state.projectionRecords).toBe(744);
         expect(state.gpuDriven.cpuFallbackDrawItems).toBe(0);
         expect(state.gpuDriven.gpuOwnedEntityCount).toBe(744);
         expect(state.gpuDriven.gpuOwnedSnapshotsMaterialized).toBe(0);
         expect(state.gpuDriven.cpuValidationScans).toBe(0);
-        publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        publisher
+          .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+          .unwrap();
       }
     } finally {
       inspect.mockRestore();
       emit.mockRestore();
+      summarize.mockRestore();
       ssrInputs.mockRestore();
       publisher.dispose();
       renderer.dispose();
@@ -1227,10 +1247,11 @@ describe('GPU-driven production projection', () => {
       colorAttachmentFormat: 'rgba8unorm',
     } as unknown as PipelineState;
     const lights = {
-      cascadeCount: undefined,
+      cascades: undefined,
       pointShadow: [],
       spot: [],
-    } as unknown as ExtractedLights;
+      shadowViews: [],
+    } as unknown as ViewLights;
     const compile = () =>
       ensureCompiledFrameGraph(
         internals,

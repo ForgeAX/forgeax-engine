@@ -64,8 +64,11 @@ export class GpuInputArena {
   get byteLength(): number {
     return this.words.byteLength;
   }
+  get live(): boolean {
+    return !this.disposed && !this.failed;
+  }
   assertLive(): void {
-    if (this.disposed || this.failed) throw invalid('a live CPU numeric arena');
+    if (!this.live) throw invalid('a live CPU numeric arena');
   }
   /** Reusable address-ordered view of the pending population. */
   private sortedPending(): Uint32Array {

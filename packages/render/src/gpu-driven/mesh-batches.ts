@@ -95,9 +95,11 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
     mesh,
     template.binding.geometry.deformation === 'skin' ? 'skinned' : 'mesh',
   );
-  const lods = mesh.lods?.map((level) => level.mesh);
+  // Morphed members deform LOD0 vertices; their batch carries no LOD chain.
+  const morph = template.binding.morph;
+  const lods = morph === undefined ? mesh.lods?.map((level) => level.mesh) : undefined;
   const lod =
-    mesh.lods === undefined
+    mesh.lods === undefined || morph !== undefined
       ? undefined
       : Object.freeze({
           coverages: Object.freeze([1, ...mesh.lods.map((level) => level.screenCoverage)]),
@@ -118,6 +120,7 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
         material: materials.materials[draw.materialSlot] ?? materials.material,
         geometry: draw.geometry,
         drawItemIndex,
+        ...(morph === undefined ? {} : { morph }),
       }),
       key: Object.freeze({
         drawItemIndex,
@@ -130,6 +133,7 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
         materialSlot: draw.materialSlot,
         topology: draw.topology,
         ...(template.key.reflected ? { reflected: true } : {}),
+        ...(morph === undefined ? {} : { morph }),
         pipelineClass: draw.pipelineClass,
         materialResourceClass: draw.materialResourceClass,
       }),
@@ -403,12 +407,17 @@ export class MeshBatchProjection {
           window.levelCapacity > required * 4 ||
           window.levels !== levels
         ) {
-          const start = this.visibleRanges.allocate(required * levels);
+          // Growth reserves 1.5x of the outgrown window: amortized O(1) relocations.
+          const reserved =
+            window.levels === levels && window.levelCapacity < required
+              ? Math.max(required, Math.ceil(window.levelCapacity * 1.5))
+              : required;
+          const start = this.visibleRanges.allocate(reserved * levels);
           let indirectStart = window.indirectStart;
           try {
             if (window.levels !== levels) indirectStart = this.indirectRanges.allocate(levels);
           } catch (cause) {
-            this.visibleRanges.release(start, required * levels);
+            this.visibleRanges.release(start, reserved * levels);
             throw cause;
           }
           this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
@@ -416,7 +425,7 @@ export class MeshBatchProjection {
             this.indirectRanges.release(window.indirectStart, window.levels);
           window.visibleStart = start;
           window.indirectStart = indirectStart;
-          window.levelCapacity = required;
+          window.levelCapacity = reserved;
           window.levels = levels;
           window.published = undefined;
           this.windowRelocations++;

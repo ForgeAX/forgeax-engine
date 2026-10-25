@@ -331,6 +331,7 @@ export function collectGpuDrivenMaterialArtifacts({
       shaderId,
       ...(sceneIndexProgramKey === undefined ? {} : { sceneIndexProgramKey }),
       ...(entry.renderState === undefined ? {} : { renderState: entry.renderState }),
+      queue: entry.queue,
       ...(entry.vertexEntry === undefined ? {} : { vertexEntry: entry.vertexEntry }),
       ...(entry.fragmentEntry === undefined ? {} : { fragmentEntry: entry.fragmentEntry }),
     };
@@ -396,6 +397,13 @@ export function collectGpuDrivenMaterialArtifacts({
           throw execution.error;
         return { route: 'direct', material: accepted.snapshot, pass, reason: execution.error };
       }
+      // A morph batch needs a vertex stage that reads the GPU Scene morph rows.
+      if (
+        binding.morph === true &&
+        execution.value.route === 'gpu' &&
+        !readsSceneMorphInputs(execution.value.artifact)
+      )
+        return { route: 'direct', material: accepted.snapshot, pass: execution.value.pass };
       return execution.value;
     };
     const reused = retainedJoin?.collected.batchExecutions.get(binding);
@@ -603,4 +611,14 @@ export function prepareHiddenGpuDrivenPipelines(input: {
     }
   }
   return ready;
+}
+
+/** Reflection fact: the selected scene-index vertex entry reads @group(3) @binding(8). */
+function readsSceneMorphInputs(artifact: MaterialShaderArtifact): boolean {
+  const entry =
+    artifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : artifact.receipt?.sceneIndexEntry;
+  const reads = artifact.program.entryPoints?.find(
+    (point) => point.stage === 'vertex' && point.name === entry,
+  );
+  return reads?.bindings.some((read) => read.group === 3 && read.binding === 8) === true;
 }

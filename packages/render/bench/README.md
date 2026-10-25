@@ -162,3 +162,25 @@ light components; the removed profile shadow flag never disabled these writers.
 The shadow control includes explicit invalidation cost and does not expose a
 second production cache switch. `FORGEAX_SCALE_PROFILE=1` retains a bounded CPU
 profile separately; overflowed captures cannot establish full-run attribution.
+
+## Engine→Render transport
+
+`transport/` measures the whole Worker path per frame: source update + publisher
+encode + `postMessage` under App's publication-slot credit (`source.mjs`), then native
+deserialize + publication decode/apply (`run.mjs --receiver scene`) or the full stub
+Renderer draw and completion (`--receiver renderer`). It reports structured-clone
+bytes, record bytes, transfer count, post time, source/receiver CPU and allocation,
+GC, credit stalls and tick→applied/completed latency. `codec.mjs` is the only
+protocol-specific file; `mechanisms.mjs` compares cloned, transferred and SAB
+transport in isolation; `profile-tree.mjs` summarizes `--profile-source` /
+`--profile-receiver` sampled heap profiles.
+
+```sh
+node packages/render/bench/transport/run.mjs --sweep 100,1000,10000,100000 --changes 0,8,1%,100%
+node packages/render/bench/transport/run.mjs --receiver renderer --count 1000 --changes 8
+node packages/render/bench/transport/mechanisms.mjs
+```
+
+Read allocation from the window counters only; reading `total_allocated_bytes` per
+message flushes allocation buffers and distorts the result. Results and the
+protocol decision live in `reports/unified-render-ecs-20261024/design.md` §10.

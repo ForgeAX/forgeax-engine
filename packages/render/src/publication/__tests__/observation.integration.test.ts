@@ -5,9 +5,9 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { afterEach, expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
-import { renderPublicationTransfers } from '../contract';
 import { SOURCE_PREPARATION_PROTOCOL, type SourcePreparationControl } from '../observation';
 import { createRenderPublisher } from '../publisher';
+import { renderPublicationTransfers } from '../record';
 
 const root = globalThis as typeof globalThis & {
   __forgeaxFramePhaseDiagnostics?: { sourcePreparation?: SourcePreparationControl };
@@ -33,7 +33,9 @@ it('observes the original partial extraction and cloned runtime mesh once withou
     world.update(0).unwrap();
     const initial = publisher.prepare(0).unwrap();
     initial.accept();
-    publisher.recycle(initial.packet.revision, renderPublicationTransfers(initial.packet)).unwrap();
+    publisher
+      .recycle(initial.packet.revision, renderPublicationTransfers(initial.message))
+      .unwrap();
     const c: SourcePreparationControl = {
       protocol: SOURCE_PREPARATION_PROTOCOL,
       enabled,

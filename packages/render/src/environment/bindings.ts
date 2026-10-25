@@ -7,39 +7,41 @@ export interface AtmosphereViews {
   readonly aerialPerspective: TextureView;
   readonly aerialTransmittance: TextureView;
 }
+const ATMOSPHERE_BINDING_SLOTS = [18, 19, 20, 21, 23] as const;
+
+/**
+ * Push the atmosphere View resources in binding order (18, 19, 20, 21, 23).
+ * Bind-group cache keys read this directly; `atmosphereBindings` derives its
+ * entries from the same projection.
+ */
+export function pushAtmosphereBindingResources(
+  out: TextureView[] | object[],
+  state: PipelineState,
+  views?: AtmosphereViews,
+): void {
+  if (state.atmosphereAvailable !== true) return;
+  const volume = state.atmosphereFallbackView;
+  if (volume === undefined) throw new Error('admitted atmosphere layout has no neutral volume');
+  (out as object[]).push(
+    views?.transmittance ?? state.defaultWhiteTextureView,
+    views?.multipleScattering ?? state.defaultWhiteTextureView,
+    views?.aerialPerspective ?? volume,
+    views?.aerialTransmittance ?? volume,
+    views?.distantSkyLight ?? state.defaultWhiteTextureView,
+  );
+}
+
 /** The material View ABI and shadow layouts share these exact entries. */
 export function atmosphereBindings(
   state: PipelineState,
   views?: AtmosphereViews,
 ): BindGroupEntry[] {
-  if (state.atmosphereAvailable !== true) return [];
-  const volume = state.atmosphereFallbackView;
-  if (volume === undefined) throw new Error('admitted atmosphere layout has no neutral volume');
-  return [
-    {
-      binding: 18,
-      resource: {
-        kind: 'textureView',
-        value: views?.transmittance ?? state.defaultWhiteTextureView,
-      },
-    },
-    {
-      binding: 19,
-      resource: {
-        kind: 'textureView',
-        value: views?.multipleScattering ?? state.defaultWhiteTextureView,
-      },
-    },
-    { binding: 20, resource: { kind: 'textureView', value: views?.aerialPerspective ?? volume } },
-    { binding: 21, resource: { kind: 'textureView', value: views?.aerialTransmittance ?? volume } },
-    {
-      binding: 23,
-      resource: {
-        kind: 'textureView',
-        value: views?.distantSkyLight ?? state.defaultWhiteTextureView,
-      },
-    },
-  ];
+  const resources: TextureView[] = [];
+  pushAtmosphereBindingResources(resources, state, views);
+  return resources.map((value, index) => ({
+    binding: ATMOSPHERE_BINDING_SLOTS[index] as number,
+    resource: { kind: 'textureView', value },
+  }));
 }
 
 export function atmosphereViewLayoutEntries(): GPUBindGroupLayoutEntry[] {

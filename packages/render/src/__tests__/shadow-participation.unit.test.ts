@@ -2,6 +2,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
@@ -17,7 +18,7 @@ function cube(
   world: World,
   assets: AssetRegistry,
   participation?: { cast: boolean; receive: boolean },
-  materials?: readonly number[],
+  materials?: readonly AssetHandle<'material'>[],
 ): void {
   world
     .spawn(
@@ -87,7 +88,7 @@ describe('ShadowParticipation extraction', () => {
                 }),
           }),
         )
-        .unwrap() as unknown as number;
+        .unwrap();
     const opaque = material();
     const alpha = material('alpha');
     const additive = material('additive');

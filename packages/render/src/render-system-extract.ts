@@ -1,3 +1,4 @@
+import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import type { FrameList } from './scene/frame-list';
 import type { DispatchList } from './scene/material-dispatch';
 import { spriteUvRegion } from './sprite-region';
@@ -131,7 +132,7 @@ import { readRenderArrayView, routeWorldError } from '@forgeax/engine-ecs/projec
 import { type Mat4, mat4, type Vec3, vec3 } from '@forgeax/engine-math';
 import { AssetGuid, type AssetGuid as AssetGuidBytes } from '@forgeax/engine-pack/guid';
 import { RhiError } from '@forgeax/engine-rhi';
-import { GlobalTransform, readPresentationWorldMatrix, Transform } from '@forgeax/engine-scene';
+import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import {
   DEFAULT_SPRITE_PARAM_SCHEMA,
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
@@ -215,6 +216,7 @@ import type {
   FogFrame,
   FogSelectionFailure,
 } from './extract/environment';
+import { readEnvironmentPose } from './extract/environment-gate';
 import type { GpuDrivenDrawSnapshot } from './extract/gpu-driven';
 import { resolveVisibility, type VisibilitySnapshot } from './extract/visibility';
 import {
@@ -467,6 +469,9 @@ export interface SpotLightSnapshot extends IesProfileSnapshot {
 /** RectArea direct-light snapshot carried by the unified slot contract. */
 export interface RectAreaDirectLightSnapshot extends IesProfileSnapshot {
   readonly kind: 'rect-area';
+  readonly entity?: EntityHandle | number;
+  /** World identity stamped by the composited extract owner. */
+  readonly worldId?: number;
   /** Validated u32 surface direct-light channels. */
   readonly lightingChannels?: number;
   readonly position: Vec3;
@@ -575,109 +580,36 @@ export type LightSnapshot =
   | RectAreaDirectLightSnapshot;
 
 /**
- * ExtractedLights — three-bucket output of the extractFrame three-query
- * union (M2 / w16 / AC-03). Plan-strategy section 3.1 EXT node:
- *   - `directional` — at most one (record-stage N>1 fail-fast lands in M3)
- *   - `point[]` — first-slice cap of 4 enforced at record stage (M3)
- *   - `spot[]`  — first-slice cap of 4 enforced at record stage (M3)
- * `directionalCount` exposes the raw count of DirectionalLight entities the
- * extract observed (so the record stage can fire `render-system-multi-light`
- * when N>1 without re-running the query). M3 / w19 will widen this with
- * pointCount / spotCount fields once the matching record-time fail-fast
- * lands; for M2 the field stays directional-only to keep AC-06 (a) intact.
+ * The light sources of a frame: what extraction and the publication receiver
+ * produce, and what the Render World light owner adopts and stamps with its
+ * atlas layers. Renderer readers never read a frame's roster; they read the
+ * owner's adopted roster through a view's {@link ViewLights}. Cascades are
+ * not a source fact: each view fits its own (see `world/render-lights.ts`).
+ *
+ * `directional` is the first directional light; `directionalCount` counts
+ * every DirectionalLight so record can warn when more than one exists.
  */
-export interface ExtractedLights {
+export interface LightRoster {
   readonly directional: DirectionalLightSnapshot | undefined;
   readonly directionalCount: number;
   readonly point: readonly PointLightSnapshot[];
   readonly spot: readonly SpotLightSnapshot[];
   readonly rect: readonly RectAreaDirectLightSnapshot[];
-  /**
-   * feat-20260613-csm-cascaded-shadow-maps M2 / w9: per-cascade light-view-
-   * projection matrices (one per cascade, length 4 pre-allocated). Each matrix
-   * is a column-major 16-float mat4 with atlas tile UV inset baked in
-   * (plan-strategy D-3). cascadeCount < 4: unused slots are zero matrices.
-   * Undefined when castShadow=false or no directional light.
-   */
-  readonly lightViewProj: readonly Float32Array[] | undefined;
-  /**
-   * feat-20260613-csm-cascaded-shadow-maps M2 / w9: view-space z depths
-   * of the PSSM split planes (length 4, Float32Array). cascadeCount < 4:
-   * unused slots are 0.0f. Undefined when castShadow=false or no directional
-   * light.
-   */
-  /** Four vec4 lanes: split, worldUnitsPerTexel, lightDepthWorldSpan, reserved. */
-  readonly splitPlanes: Float32Array | undefined;
-  /**
-   * feat-20260613-csm-cascaded-shadow-maps M2 / w9: effective cascade count
-   * from the DirectionalLight component (1..4). Undefined when castShadow=false
-   * or no directional light.
-   */
-  readonly cascadeCount: number | undefined;
-  /**
-   * feat-20260613-csm-cascaded-shadow-maps M2 / w9: cascade blend width
-   * from the DirectionalLight component (0..0.5). Undefined when castShadow=false
-   * or no directional light.
-   */
-  readonly cascadeBlend: number | undefined;
-  /**
-   * feat-20260520-directional-light-shadow-mapping M1c / w8:
-   * shadowMapSize from DirectionalLight.mapSize. Drives shadow RT
-   * lazy-allocate (idempotency: same size -> no rebuild). Undefined when
-   * castShadow=false or no directional light.
-   */
-  readonly shadowMapSize: number | undefined;
-  /**
-   * feat-20260621-merge-directionallightshadow-into-directionallight M2:
-   * depthBias from the merged DirectionalLight (constant shadow-bias floor).
-   * Populated when castShadow=true on the first-hit directional light;
-   * undefined otherwise.
-   */
+  /** Constant shadow-bias floor of a shadow-casting directional light. */
   readonly depthBias: number | undefined;
-  /**
-   * feat-20260621-merge-directionallightshadow-into-directionallight M2:
-   * normalBias from the merged DirectionalLight (slope-based shadow-bias
-   * coefficient).
-   * Populated when castShadow=true on the first-hit directional light;
-   * undefined otherwise.
-   */
+  /** Slope-based shadow-bias coefficient of a shadow-casting directional light. */
   readonly normalBias: number | undefined;
-  /** Accepted closed Directional filter projected from the first query result. */
-  readonly directionalShadowQuality: DirectionalShadowQuality | undefined;
   /** Structured author-config failure; the candidate is withheld from record. */
   readonly directionalShadowError: LightValidationError | undefined;
   /**
-   * feat-20260612-point-light-shadows-urp-hdrp M1 / T-M1-7:
-   * shadow-casting point lights (PointLight + PointLightShadow + Transform
-   * archetype join). Each entry carries the per-light 6-face VP matrices and
-   * the assigned cube_array atlas layer (0..3 in spawn order; sentinel -1 is
-   * reserved by the shader-side DirectLightSlot metadata for no-shadow point
-   * lights).
-   *
-   * Empty array when no PointLightShadow components exist (zero-cost gate per
-   * AC-09; record stage skips atlas allocation + shadow pass dispatch).
+   * Shadow-casting point lights, each with its six face matrices and the
+   * cube layer the light owner granted (-1 before adoption or without a free
+   * layer).
    */
   readonly pointShadow: readonly PointShadowSnapshot[];
-  /**
-   * bug-20260710-editor-cross-world-shadow: the RAW directional-shadow config
-   * (cascadeCount / splitLambda / cascadeBlend / mapSize / shadowDistance) of
-   * the first-hit castShadow DirectionalLight, carried unconditionally of
-   * whether this world had a camera. The {@link extractFrames} merge layer
-   * re-runs {@link computeDirectionalCsm} with this config + the surfaced
-   * camera so directional shadows work when the light and camera live in
-   * DIFFERENT worlds (editor editorWorld/sceneWorld super-composite). Undefined
-   * when castShadow=false or no directional light. The `lightViewProj` /
-   * `splitPlanes` fields above remain the *computed* per-world outputs (correct
-   * for single-world; recomputed at merge for cross-world).
-   */
+  /** Directional shadow configuration a view fits its cascades from; undefined without a shadow. */
   readonly directionalCsmConfig: DirectionalCsmConfig | undefined;
-  /**
-   * bug-20260710-editor-cross-world-shadow: the light-direction of the
-   * first-hit castShadow DirectionalLight, carried so the merge layer can
-   * rebuild the light-view matrix. Redundant with `directional.direction` but
-   * kept explicit so the CSM recompute reads a single config bundle. Undefined
-   * when castShadow=false or no directional light.
-   */
+  /** Light direction the cascades are fitted along. */
   readonly directionalCsmDirection: Vec3 | undefined;
 }
 
@@ -896,9 +828,9 @@ export interface RenderableSnapshot {
   /** Validated receiver mask, shared by every material section and instance. */
   readonly lightingChannels?: number;
   /**
-   * ECS-owned morph weights. Presence selects the Standard Pipeline CPU
-   * specialized deformation lane; the asset remains the source of target
-   * deltas and the record stage only receives this frozen POD snapshot.
+   * ECS-owned morph weights. Presence binds a renderer-owned per-entity vertex
+   * stream deformed from the asset's target deltas (GPU compute when
+   * available); a new snapshot is the only weight-change signal.
    */
   readonly morph?: MorphSnapshot;
   /** Renderer-owned previous-frame facts attached during temporal projection. */
@@ -917,8 +849,7 @@ export type RenderableReactiveReason =
   | 'geometry-revision'
   | 'material-revision'
   | 'displacement-source'
-  | 'skinning-deformation'
-  | 'morph-deformation';
+  | 'skinning-deformation';
 export interface RenderableTemporalSnapshot {
   readonly previousSource: RenderablePreviousSource;
   /** True only when current and previous geometry belong to one stable source identity. */
@@ -928,7 +859,6 @@ export interface RenderableTemporalSnapshot {
   readonly reactiveReasons: readonly RenderableReactiveReason[];
   readonly previousTransform: TransformSnapshot;
   readonly previousInstances: InstancesSnapshot | undefined;
-  readonly previousMorphWeights: Float32Array | undefined;
 }
 
 export interface MorphSnapshot {
@@ -1373,6 +1303,43 @@ export function appendMaterialDispatchEntries(
   }
 }
 
+/**
+ * Row access for an uncompacted GPU-lane frame. Every row outside
+ * `residual(selection)` is drawn by `selection`, so frame consumers visit
+ * residual rows and changes, never the whole frame.
+ */
+export interface GpuOwnedFrame {
+  /** Draw rows keeping a CPU-recorded draw under `selection`, in slot order. */
+  residual(selection: GpuDrawSelection): readonly RenderableSnapshot[];
+  /** Slot set of the same residual rows, retained from topology and selection diffs. */
+  residualSet(selection: GpuDrawSelection): import('./scene/frame-set').FrameSet;
+  /** Scene rows of the same residual set; readers of Scene facts never resolve frame rows. */
+  residualSlots(
+    selection: GpuDrawSelection,
+  ): readonly import('./scene/render-scene-types').RenderSceneSlot[];
+  /** Whether the frame's material query gives a row a display (non-ShadowCaster) Pass. */
+  displays(row: RenderableSnapshot): boolean;
+  /** One frame row by source identity, without enumerating the frame. */
+  row(worldId: number, entity: number): RenderableSnapshot | undefined;
+  /** The slot roster the frame covers. */
+  readonly slots: import('./scene/scene-slots').SceneSlotFrame;
+}
+
+/**
+ * Fixed evidence of one frame's camera admission. Between two frames of the
+ * same cull, `cameraVisible` can answer differently only for slots in either
+ * `hidden` diff or `residual` diff, and, when `frusta` differ, for slots
+ * outside `residual`, whose rows are tested on demand.
+ */
+export interface CameraAdmission {
+  /** Residual slots the camera rejects. */
+  readonly hidden: import('./scene/frame-set').FrameSet;
+  /** Slots the residual cull tests. */
+  readonly residual: import('./scene/frame-set').FrameSet;
+  /** Equal identities carry equal camera frusta. */
+  readonly frusta: object;
+}
+
 export interface ExtractedFrame {
   readonly projectedDecals?: readonly import('./decals/extract').ProjectedDecalSnapshot[];
   readonly cameras: CameraSnapshot[];
@@ -1382,7 +1349,7 @@ export interface ExtractedFrame {
   readonly cubeCameras: readonly CubeCameraSnapshot[];
   /** Reflection probe facts projected from the same World extraction. */
   readonly reflectionProbes?: readonly ReflectionProbeFact[];
-  readonly lights: ExtractedLights;
+  readonly lights: LightRoster;
   /** Resource-owner environment facts selected once at the extract boundary. */
   readonly environment: EnvironmentFrame | undefined;
   /** False when the resource-owner world failed environment/fog selection. */
@@ -1417,6 +1384,10 @@ export interface ExtractedFrame {
   readonly frustumStats: { readonly culled: number; readonly total: number };
   /** Current camera-frustum rejects kept in persistent GPU admission. */
   readonly cameraVisible?: ((source: RenderableSnapshot) => boolean) | undefined;
+  /** Fixed evidence of `cameraVisible`: what may answer differently since another frame. */
+  readonly cameraAdmission?: CameraAdmission | undefined;
+  /** Present when an uncompacted GPU-lane frame leaves GPU-owned rows unenumerated. */
+  readonly gpuOwned?: GpuOwnedFrame;
   /** Candidate entities rejected by author visibility before resource parsing. */
   readonly visibilityStats: { readonly explicitlyHidden: number };
   /** Detached material-source probe accounting for this extraction. */
@@ -2752,26 +2723,26 @@ export function buildPointShadowMatrices(lightPos: Vec3, near: number, far: numb
  * lightViewProj matrices, so the merge layer MUST recompute using the surfaced
  * camera — see {@link computeDirectionalCsm}.
  */
-export type CsmCameraData = Pick<
-  CameraSnapshot,
-  | 'world'
-  | 'fov'
-  | 'aspect'
-  | 'near'
-  | 'far'
-  | 'projection'
-  | 'orthoLeft'
-  | 'orthoRight'
-  | 'orthoBottom'
-  | 'orthoTop'
-  | 'projectionOffset'
->;
+/** The camera facts a directional cascade fit reads. */
+export const CSM_CAMERA_KEYS = [
+  'world',
+  'fov',
+  'aspect',
+  'near',
+  'far',
+  'projection',
+  'orthoLeft',
+  'orthoRight',
+  'orthoBottom',
+  'orthoTop',
+  'projectionOffset',
+] as const satisfies readonly (keyof CameraSnapshot)[];
+
+export type CsmCameraData = Pick<CameraSnapshot, (typeof CSM_CAMERA_KEYS)[number]>;
 
 /**
- * bug-20260710-editor-cross-world-shadow: the raw directional-shadow config a
- * DirectionalLight carries, threaded onto {@link ExtractedLights} so the merge
- * layer can recompute CSM matrices against the surfaced camera. Distinct from
- * the *computed* outputs (lightViewProj / splitPlanes) also on ExtractedLights.
+ * The raw directional-shadow config a DirectionalLight carries on its
+ * {@link LightRoster}; each view fits its cascades from it.
  */
 export interface DirectionalCsmConfig {
   readonly shadowMapAspect?: number;
@@ -3172,7 +3143,15 @@ export interface PreparedExtractContext {
     | undefined;
   /** Renderer-private projection of World-authored instance matrices. */
   readonly instanceCollections: InstanceProjectionStore | undefined;
+  /** Retains this World's environment entries until one of their inputs changes. */
+  readonly environmentGate?: EnvironmentFrameGate;
 }
+
+/** The change-driven environment owner of a source's extraction. */
+export type EnvironmentFrameGate = import('./extract/environment-gate').EnvironmentGate<
+  import('./render-system-extract-tail').WorldEnvironmentPart,
+  ReturnType<typeof import('./render-system-extract-tail').mergeEnvironment>
+>;
 
 const ALL_VISIBLE: VisibilitySnapshot = {
   diagnostics: [],
@@ -3242,7 +3221,7 @@ function collectCameraSnapshots(world: World): CameraSnapshot[] {
       ? undefined
       : depthOfFieldRequestFailure(depthOfFieldResult.error);
     const entity = row.entity;
-    const view = readPresentationWorldMatrix(world, entity);
+    const view = readEnvironmentPose(world, entity);
     if (view === undefined) continue;
     const worldMat = new Float32Array(view);
     const target = resolveCameraTarget(world, cam.target);
@@ -3416,7 +3395,7 @@ export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
     const camera = row.get(CubeCamera);
     const target = resolveCameraTarget(world, camera.target);
     if (target === undefined) continue;
-    const view = readPresentationWorldMatrix(world, row.entity);
+    const view = readEnvironmentPose(world, row.entity);
     if (view === undefined) continue;
     snapshots.push({
       entityKey: row.entity as number,
@@ -3439,7 +3418,7 @@ export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[]
     .unwrap();
   for (const row of query) {
     const probe = row.get(ReflectionProbe);
-    const view = readPresentationWorldMatrix(world, row.entity);
+    const view = readEnvironmentPose(world, row.entity);
     if (view === undefined) {
       continue;
     }
@@ -3629,6 +3608,7 @@ export function prepareExtractContext(
       },
     ) => MaterialShaderArtifact | undefined;
     readonly instanceCollections?: InstanceProjectionStore;
+    readonly environmentGate?: EnvironmentFrameGate;
   } = {},
 ): PreparedExtractContext {
   const renderables = options.renderables ?? 'full';
@@ -3649,6 +3629,7 @@ export function prepareExtractContext(
     visibility: renderables === 'none' ? ALL_VISIBLE : resolveVisibility(world),
     getMaterialShaderArtifact: options.getMaterialShaderArtifact,
     instanceCollections: options.instanceCollections,
+    ...(options.environmentGate === undefined ? {} : { environmentGate: options.environmentGate }),
   };
 }
 
@@ -3865,10 +3846,14 @@ export function extractVolumeSnapshot(
 /** Immutable author-independent default; extraction retains its producer identity. */
 const DEFAULT_MATERIAL_SNAPSHOT: MaterialSnapshot = Object.freeze({
   positionBounds: 'standard-input',
+  // The program every Pass selects; GPU and direct bindings resolve it alike.
+  // Its shadow Pass reads the same Unlit row the material table packs, never
+  // the Standard ABI of the default shadow caster.
+  materialShaderId: 'forgeax::default-unlit',
   passes: Object.freeze([
     {
       name: 'shadow-caster',
-      program: { module: 'forgeax::default-shadow-caster', vertexEntry: 'vs_main' },
+      program: { module: 'forgeax::default-unlit', vertexEntry: 'vs_shadow' },
       renderState: { tags: { LightMode: 'ShadowCaster' }, queue: 2000 },
     },
     DEFAULT_FORWARD_PASS,

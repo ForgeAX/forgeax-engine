@@ -1,15 +1,13 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import {
   adoptFieldEdit,
   diffFieldEdit,
   fieldEditBounds,
   fieldEditState,
-  fieldInputsUnchanged,
   fieldOutsideEmpty,
-  fieldSourceSlots,
 } from '../../raytracing/field-edit';
 import { globalSdfEditBox, packGlobalSdfEditBox } from '../../raytracing/global-sdf';
 import { mergeRuns } from '../../raytracing/irradiance-field-edit';
@@ -252,36 +250,6 @@ it('selects the probe box around an edit on every level and merges dirty tile ru
     { first: 0, end: 6 },
     { first: 8, end: 14 },
   ]);
-});
-
-describe('fieldInputsUnchanged', () => {
-  const sources = fieldSourceSlots([
-    { slot: 0, generation: 1 },
-    { slot: 2, generation: 4 },
-  ]);
-  const live = new Map<number, { generation: number }>([
-    [0, { generation: 1 }],
-    [2, { generation: 4 }],
-    [5, { generation: 1 }],
-  ]);
-  const slotAt = (slot: number) => live.get(slot);
-  const none = () => false;
-
-  it('skips the projection when only non-source slots changed and they project no source', () => {
-    expect(fieldInputsUnchanged(sources, [], slotAt, none)).toBe(true);
-    expect(fieldInputsUnchanged(sources, [5], slotAt, none)).toBe(true);
-    // A changed slot that projects a source (a new field mesh) needs the full path.
-    expect(fieldInputsUnchanged(sources, [5], slotAt, () => true)).toBe(false);
-  });
-
-  it('re-projects for source changes, removals, recreations and unproven history', () => {
-    expect(fieldInputsUnchanged(sources, [2], slotAt, none)).toBe(false);
-    expect(fieldInputsUnchanged(sources, undefined, slotAt, none)).toBe(false);
-    const removed = (slot: number) => (slot === 2 ? undefined : live.get(slot));
-    expect(fieldInputsUnchanged(sources, [], removed, none)).toBe(false);
-    const recreated = (slot: number) => (slot === 0 ? { generation: 2 } : live.get(slot));
-    expect(fieldInputsUnchanged(sources, [], recreated, none)).toBe(false);
-  });
 });
 
 it('retains material binding identity across accepted shared-root value updates', () => {

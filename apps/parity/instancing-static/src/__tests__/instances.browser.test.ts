@@ -202,7 +202,8 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
         camera: { lease },
         environment: { lease },
       };
-      let firstInspection;
+      let firstUploadBytes = 0;
+      let stableUploadBytes = 0;
       let submittedFrames = 0;
       for (let frame = 0; frame < FRAME_COUNT;) {
         expect(++submittedFrames, "bounded asynchronous preparation").toBeLessThanOrEqual(FRAME_COUNT + 120);
@@ -212,8 +213,13 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
         if (!drawn.ok) return;
         const completed = await drawn.value.completed;
         expect(completed.ok).toBe(true);
-        const current = renderer.inspect().instanceCollections[0];
-        if ((firstInspection?.uploadedBytes ?? 0) === 0 && (current?.uploadedBytes ?? 0) > 0) firstInspection = current;
+        const gpu = renderer.inspect().renderScene.gpu;
+        expect(gpu.status).toBe('resident');
+        if (gpu.status !== 'resident') throw new Error('GPU Scene residency unavailable');
+        expect(gpu.tables.instance.capacity).toBeGreaterThanOrEqual(count);
+        const uploadedBytes = renderer.inspect().renderScene.gpuDriven.sceneTableUploadBytes;
+        firstUploadBytes = Math.max(firstUploadBytes, uploadedBytes);
+        stableUploadBytes = uploadedBytes;
         if (drawn.value.presentation === 'ready') frame += 1;
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
@@ -224,9 +230,10 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
       const stableInspection = renderer
         .inspect()
         .instanceCollections[0];
-      expect(firstInspection?.uploadedBytes ?? 0).toBeGreaterThan(0);
+      expect(firstUploadBytes).toBeGreaterThan(0);
+      expect(stableUploadBytes).toBe(0);
       expect(stableInspection).toMatchObject({ count, uploadedBytes: 0 });
-      expect(stableInspection?.lane).toMatch(/storage|uniform/);
+      expect(renderer.inspect().renderScene.gpu.status).toBe('resident');
       expect(errors, `Browser RhiError/renderer errors for ${count}: ${JSON.stringify(errors)}`).toEqual([]);
 
       const image = await decodePng(await captureCanvas(canvas));
@@ -238,10 +245,9 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
           dimensions: [image.width, image.height],
           frames: FRAME_COUNT,
           backend: renderer.inspect().capabilities.backendKind,
-          firstUploadBytes: firstInspection?.uploadedBytes ?? 0,
-          stableUploadBytes: stableInspection?.uploadedBytes ?? 0,
-          lane: stableInspection?.lane,
-          residentGeneration: stableInspection?.residentGeneration,
+          firstUploadBytes,
+          stableUploadBytes,
+          lane: 'gpu-scene-storage',
           visibleSamples,
           spread,
           rhiErrorCount: errors.length,

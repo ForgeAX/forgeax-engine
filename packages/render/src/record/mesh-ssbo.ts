@@ -129,12 +129,15 @@ export function extractEntryResourceHandle(entry: {
 // with a longer chain that shares the same prefix.
 const BIND_GROUP_CHAIN_LEAF_KEY: object = {};
 
-function bindGroupChainLeaf(
+/** Variant map at the end of a handle chain; see `getOrCreateFromChain`. */
+export function bindGroupChainLeaf(
   root: WeakMap<object, unknown>,
   handles: readonly object[],
 ): Map<string, BindGroup> {
   let node = root;
-  for (const h of handles) {
+  // Indexed: a cache hit on this per-draw path allocates nothing.
+  for (let index = 0; index < handles.length; index++) {
+    const h = handles[index] as object;
     let next = node.get(h) as WeakMap<object, unknown> | undefined;
     if (next === undefined) {
       next = new WeakMap();

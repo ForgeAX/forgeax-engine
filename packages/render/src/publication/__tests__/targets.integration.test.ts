@@ -19,9 +19,9 @@ import type { RenderTargetDescriptor } from '../../targets/contracts';
 import { resolveRenderTargetMaterialSource } from '../../targets/material-source';
 import { isCanvasTextureSource } from '../../textures/canvas-texture';
 import { isExternalTextureSource } from '../../textures/external-texture';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 import { RenderPublicationTargetOwner, RenderPublicationTargetReceiver } from '../targets';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -104,8 +104,10 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const result = projection.apply(receiver.accept(packet).unwrap());
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const result = projection.apply(receiver.accept(encodeRenderPublication(packet)).unwrap());
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return result;
   };
   const initial = publish();
@@ -185,9 +187,9 @@ it('publishes every display-owned planar target once and rejects duplicate outpu
       auxiliaryCameras: [first, { ...second, target: first.target }],
     },
   };
-  const rejected = receiver.accept(duplicate);
+  const rejected = receiver.accept(encodeRenderPublication(duplicate));
   expect(rejected.ok).toBe(false);
-  const accepted = receiver.accept(packet).unwrap();
+  const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
   for (const item of authored) {
     const display = accepted.frame.cameras.find(
       (camera) => camera.entityKey === Number(item.entity),

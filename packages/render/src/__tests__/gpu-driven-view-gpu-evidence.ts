@@ -281,6 +281,66 @@ export async function runGpuDrivenInactiveBatchEvidence() {
   }
 }
 
+/**
+ * A row removed between encoding a frame and mapping its LOD readback: the
+ * decoded members still name the (slot, generation) encoded with that copy,
+ * and the current scene no longer holds that generation, so joins drop it.
+ */
+export async function runGpuDrivenLodReadbackGenerationEvidence() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const projection = new RenderScene();
+  const delta = projection.apply([
+    updateSnapshot(snapshot(1, 0)),
+    updateSnapshot(snapshot(2, 0.2)),
+  ]);
+  const available = GpuScene.create(device, 2).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  scene.sync(delta).unwrap();
+  const topology = new BatchTopology();
+  topology.apply(delta);
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  try {
+    const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+    updateGpuView(view, topology.query(topology.sourcePlan(), undefined), scene, planes).unwrap();
+    const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    view.addPasses(graph).unwrap();
+    const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    view._commitResourceReplacement();
+    const encoder = device.createCommandEncoder().unwrap();
+    compiled.execute({ encoder }).unwrap();
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    const encoded = projection.slotsSnapshot();
+    const removed = encoded.lookup(0, 1);
+    if (removed === undefined) throw new Error('Missing encoded row');
+    // The scene moves on before the readback maps; the view keeps its plan.
+    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const selection = await view.readLodSelection();
+    await compiled.retire();
+    const current = projection.slotsSnapshot();
+    return {
+      removedSlotAllocated: scene.instanceIndexForSlot(removed.slot, 0) !== undefined,
+      members: (selection?.actualMembers ?? [])
+        .map((member) => ({
+          slot: member.primitiveIndex,
+          encodedGeneration:
+            member.generation === encoded.slotAt(member.primitiveIndex)?.generation,
+          current: current.slotAt(member.primitiveIndex)?.generation === member.generation,
+        }))
+        .sort((left, right) => left.slot - right.slot),
+      removedSlot: removed.slot,
+    };
+  } finally {
+    view.dispose();
+    scene.dispose();
+  }
+}
+
 export async function runGpuDrivenViewGpuEvidence(): Promise<GpuDrivenViewGpuEvidence> {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
@@ -1064,6 +1124,10 @@ export async function runSharedGeometryCullEvidence() {
     mapped.unmap();
     await compiled.retire();
   };
+  // Measured edits must not cross an arena capacity doubling, which uploads
+  // the whole arena; reserve headroom before the first (full) upload.
+  const headroom = scene.inputs.arena.allocateDescriptor(16_384);
+  scene.inputs.arena.releaseDescriptor(headroom, 16_384);
   try {
     await draw(oldGeometry, oldMaterial);
     const wide = first.with(0, 3, {
@@ -1154,9 +1218,8 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
     };
     // Two culled submesh executions share physical instance0. The skin is
     // therefore instance1 but candidate2, with independent palette base17.
-    const before = projection.slotsSnapshot();
     const delta = projection.apply([updateSnapshot(rigid), updateSnapshot(source)]);
-    skin.apply(before, delta);
+    skin.apply(delta);
     const pose = mat4.identity(mat4.create());
     pose[12] = 7;
     skin.joint(0, 19, pose);

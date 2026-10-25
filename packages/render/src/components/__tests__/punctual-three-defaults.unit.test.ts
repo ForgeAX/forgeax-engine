@@ -3,6 +3,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { prepareExtractContext } from '../../render-system-extract';
 import { extractFrame } from '../../render-system-extract-tail';
+import { fitDirectionalCascades, renderLightsOf } from '../../world/render-lights';
+import { createRenderWorld } from '../../world/render-world';
 import { Camera, perspective } from '../camera';
 import { DirectionalLight } from '../directional-light';
 import {
@@ -50,7 +52,7 @@ describe('punctual light defaults', () => {
     expect(world.get(spot, SpotLight).unwrap().castShadow).toBe(false);
     expect(off.lights.directional).toBeDefined();
     expect(off.lights.directionalCsmConfig).toBeUndefined();
-    expect(off.lights.splitPlanes).toBeUndefined();
+    expect(fitDirectionalCascades(off.lights, { camera: off.cameras[0] })).toBeUndefined();
     expect(off.lights.spot[0]).toMatchObject({ castShadow: false, shadowAtlasTile: -1 });
     expect(off.lights.spot[0]?.lightViewProj).toBeUndefined();
     expect(off.lights.pointShadow).toHaveLength(0);
@@ -58,9 +60,11 @@ describe('punctual light defaults', () => {
     world.set(spot, SpotLight, { castShadow: true }).unwrap();
     const on = extract();
     expect(on.lights.directionalCsmConfig).toBeDefined();
-    expect(on.lights.splitPlanes).toBeDefined();
-    expect(on.lights.spot[0]).toMatchObject({ castShadow: true, shadowAtlasTile: 0 });
+    expect(fitDirectionalCascades(on.lights, { camera: on.cameras[0] })?.splitPlanes).toBeDefined();
+    // Extraction requests the shadow; the Render World assigns the light's tile.
+    expect(on.lights.spot[0]).toMatchObject({ castShadow: true, shadowAtlasTile: -1 });
     expect(on.lights.spot[0]?.lightViewProj).toBeDefined();
+    expect(renderLightsOf(createRenderWorld()).sync(on.lights).spot[0]?.shadowAtlasTile).toBe(0);
     world.set(sun, DirectionalLight, { castShadow: false }).unwrap();
     world.set(spot, SpotLight, { castShadow: false }).unwrap();
     const disabled = extract();

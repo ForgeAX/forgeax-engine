@@ -7,7 +7,10 @@ function u32(value: number): boolean {
 /** Offsets are vec4 rows in the existing view output, never Scene row addresses. */
 export interface SkinDemandLayout {
   readonly hashCapacity: number;
+  /** Distinct Skin demand keys; every key owns at least one joint. */
   readonly rosterCapacity: number;
+  /** One candidate reference per actual task candidate, independent of the roster. */
+  readonly candidateCapacity: number;
   readonly jointCapacity: number;
   readonly descriptorBase: number;
   readonly rosterBase: number;
@@ -17,7 +20,18 @@ export interface SkinDemandLayout {
   readonly counterWords: number;
 }
 
-/** Constant-time capacity derivation; no Binding/candidate enumeration. */
+function powerOfTwo(value: number): number {
+  let capacity = 1;
+  while (capacity < value) capacity *= 2;
+  return capacity;
+}
+
+/**
+ * Constant-time capacity derivation; no Binding/candidate enumeration.
+ * Only a Binding with joints claims a demand key, so the roster and hash scale
+ * with min(candidates, joints); a large rigid task keeps only its per-candidate
+ * reference column.
+ */
 export function skinDemandLayout(
   candidateCapacity: number,
   jointCapacity: number,
@@ -30,13 +44,14 @@ export function skinDemandLayout(
         expected: 'finite u32 Skin demand capacities',
         hint: 'derive capacity from the fixed input root and actual task extent',
       });
-  let rosterCapacity = 1;
-  while (rosterCapacity < candidateCapacity) rosterCapacity *= 2;
+  const candidates = powerOfTwo(candidateCapacity);
+  const rosterCapacity = powerOfTwo(Math.min(candidateCapacity, jointCapacity));
   const hashCapacity = rosterCapacity * 2;
   const descriptorBase = Math.ceil(visiblePrefixBytes / 16);
   const rosterBase = descriptorBase + hashCapacity;
+  // The kernel derives the candidate column as rosterBase + rosterCapacity.
   const candidateBase = rosterBase + rosterCapacity;
-  const paletteBase = Math.ceil((candidateBase + rosterCapacity) / 4) * 4;
+  const paletteBase = Math.ceil((candidateBase + candidates) / 4) * 4;
   const outputBytes = (paletteBase + jointCapacity * 8) * 16;
   const counterWords = 4 + hashCapacity;
   if (outputBytes > 0xffffffff || counterWords * 4 > 0xffffffff)
@@ -48,6 +63,7 @@ export function skinDemandLayout(
   return {
     hashCapacity,
     rosterCapacity,
+    candidateCapacity: candidates,
     jointCapacity,
     descriptorBase,
     rosterBase,
@@ -73,7 +89,7 @@ export function writeSkinDemandConstants(
   if (
     !Number.isSafeInteger(candidateCount) ||
     candidateCount < 0 ||
-    candidateCount > layout.rosterCapacity
+    candidateCount > layout.candidateCapacity
   )
     throw new RhiError({
       code: 'rhi-descriptor-invalid',

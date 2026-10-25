@@ -302,9 +302,11 @@ export class BatchRowAssembly {
       execution.route === 'gpu'
         ? this.materials?.logicalForGeometry(binding.worldId, binding.assetHandle, geometry)
         : undefined;
+    // Morphed rows carry their own bounds; they hold no shared geometry row.
     if (
       geometry !== undefined &&
       binding.geometry.deformation === 'rigid' &&
+      binding.morph === undefined &&
       geometryAddress === undefined
     )
       throw new GpuDrivenPreparationError('stale-generation', {

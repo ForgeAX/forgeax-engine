@@ -1,7 +1,13 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { type DynamicGeometryCandidate, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import {
+  type DynamicGeometryCandidate,
+  MeshFilter,
+  MeshRenderer,
+  renderPublicationTransfers,
+} from '@forgeax/engine-render';
+import { renderPublicationTiming } from '@forgeax/engine-render/internal';
 import { Transform } from '@forgeax/engine-scene';
 import { DEFAULT_UNLIT_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -317,18 +323,12 @@ it('publishes geometry without a global temporal reset and faults paired recover
     );
     const draw = worker.packets[0];
     if (draw === undefined) throw new Error('missing publication');
-    expect(draw.publication.temporalReset).toBe(false);
+    expect(renderPublicationTiming(draw.publication).temporalReset).toBe(false);
     world.update(1 / 60).unwrap();
     worker.emit({
       kind: 'completed',
       revision: draw.publication.revision,
-      buffers: [
-        draw.publication.upserts.buffer,
-        draw.publication.removed.buffer,
-        draw.publication.transformEntities.buffer,
-        draw.publication.transforms.buffer,
-        draw.publication.retiredJoints.buffer,
-      ],
+      buffers: renderPublicationTransfers(draw.publication),
       frame: {
         kind: 'frame-complete',
         worldIdentity: world.identity,
@@ -433,13 +433,7 @@ it.each([
     const draw = worker.packets.shift();
     if (draw === undefined) throw new Error('No publication');
     const p = draw.publication;
-    const buffers = [
-      p.upserts.buffer,
-      p.removed.buffer,
-      p.transformEntities.buffer,
-      p.transforms.buffer,
-      p.retiredJoints.buffer,
-    ];
+    const buffers = renderPublicationTransfers(p);
     worker.emit({
       kind: 'completed',
       revision: p.revision,
@@ -461,7 +455,7 @@ it.each([
     expect(worker.packets.map((packet) => packet.frameId)).toEqual(
       Array.from({ length: capacity }, (_, index) => index + 1),
     );
-    expect(worker.packets[1]?.publication.temporalReset).toBe(true);
+    expect(renderPublicationTiming(packetAt(worker, 1).publication).temporalReset).toBe(true);
     expect(() => source.publish({ ...frame, frameId: capacity + 1 }, capacity)).toThrow();
     if (duplicateReady) {
       const clearDeadline = vi.spyOn(globalThis, 'clearTimeout');
@@ -488,10 +482,10 @@ it.each([
     expect(worker.packets.map((packet) => packet.frameId)).toEqual(
       Array.from({ length: capacity }, (_, index) => index + 2),
     );
-    expect(worker.packets[1]?.publication.temporalReset).toBe(false);
+    expect(renderPublicationTiming(packetAt(worker, 1).publication).temporalReset).toBe(false);
     complete();
     source.publish({ ...frame, frameId: capacity + 2 }, capacity + 1);
-    expect(worker.packets[1]?.publication.temporalReset).toBe(false);
+    expect(renderPublicationTiming(packetAt(worker, 1).publication).temporalReset).toBe(false);
   } finally {
     await source.dispose();
   }
@@ -663,13 +657,7 @@ it.each([
   worker.emit({
     kind: 'completed',
     revision: publication.revision,
-    buffers: [
-      publication.upserts.buffer,
-      publication.removed.buffer,
-      publication.transformEntities.buffer,
-      publication.transforms.buffer,
-      publication.retiredJoints.buffer,
-    ],
+    buffers: renderPublicationTransfers(publication),
     gpuPassTiming: observation,
     frame: {
       kind: 'frame-complete',
@@ -1087,6 +1075,12 @@ const inspectedFacts = {
   frame: { frameId: 7, deviceGeneration: 0 },
   extraOwnerFacts: { preserved: true },
 };
+function packetAt(worker: CreditWorker, index: number) {
+  const packet = worker.packets[index];
+  if (packet === undefined) throw new Error(`missing publication ${index}`);
+  return packet;
+}
+
 function inspectionReply(request: Extract<RenderWorkerInput, { kind: 'inspect' }>) {
   return {
     kind: 'inspect-result',

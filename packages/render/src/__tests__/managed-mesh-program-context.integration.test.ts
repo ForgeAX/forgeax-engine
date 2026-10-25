@@ -17,9 +17,9 @@ import {
 } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { MeshFilter, MeshRenderer } from '../components';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import { PersistentRenderScene } from '../scene/render-scene';
@@ -152,7 +152,7 @@ it.each([
         const program = projection.passes[0]?.programs[0];
         if (program === undefined) throw new Error('Missing projection program');
         Object.assign(program, { specializationKey: 'missing-program' });
-        expect(receiver.accept(malformed, assets).ok).toBe(false);
+        expect(receiver.accept(encodeRenderPublication(malformed), assets).ok).toBe(false);
       }
       candidate.accept();
       extracted += packet.upserts.length;
@@ -160,14 +160,16 @@ it.each([
       publishedProjections = packet.assets.filter(
         (row) => row.materialProjection !== undefined,
       ).length;
-      const accepted = receiver.accept(packet, assets).unwrap();
+      const accepted = receiver.accept(encodeRenderPublication(packet), assets).unwrap();
       for (const patch of packet.assetPatches) {
         const payload = accepted.resources.resolveAsset<MaterialAsset>(patch.handle).unwrap();
         if (payload.kind === 'material')
           expect(assets.getMaterialProjectionForPayload(payload)).toBeDefined();
       }
       const result = scene.consumePublication(accepted);
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return result;
     }
     return scene.extractComposition(

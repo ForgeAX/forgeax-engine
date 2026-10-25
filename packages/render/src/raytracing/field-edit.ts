@@ -213,35 +213,3 @@ export function fieldEditBounds(edit: FieldEdit): FieldEditBounds[] {
     ...edit.added.map((a) => worldBounds(a.local, a.instance.transform)),
   ];
 }
-
-/** Scene slot -> generation of every projected field source. */
-export type FieldSourceSlots = ReadonlyMap<number, number>;
-
-export const fieldSourceSlots = (
-  sources: readonly Pick<SceneFieldSource, 'slot' | 'generation'>[],
-): FieldSourceSlots => new Map(sources.map((source) => [source.slot, source.generation]));
-
-/**
- * True when scene content changes touch no field input, so the full scene
- * projection can be skipped: the change set is proven (`changed` defined),
- * every source slot is live at its generation (removed slots are absent from
- * change logs), no changed slot is a source, and the changed slots alone
- * project no field source (`projectsSource`; deforming meshes never do).
- */
-export function fieldInputsUnchanged<R extends { readonly generation: number }>(
-  sources: FieldSourceSlots,
-  changed: readonly number[] | undefined,
-  slotAt: (slot: number) => R | undefined,
-  projectsSource: (records: readonly R[]) => boolean,
-): boolean {
-  if (changed === undefined) return false;
-  for (const [slot, generation] of sources)
-    if (slotAt(slot)?.generation !== generation) return false;
-  const records: R[] = [];
-  for (const slot of changed) {
-    if (sources.has(slot)) return false;
-    const record = slotAt(slot);
-    if (record !== undefined) records.push(record);
-  }
-  return records.length === 0 || !projectsSource(records);
-}

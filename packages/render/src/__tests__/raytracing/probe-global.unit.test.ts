@@ -23,6 +23,7 @@ import type { StandardIrradianceFieldGi } from '../../pipeline/standard-profile'
 import { DEFAULT_STANDARD_PROFILE } from '../../pipeline/standard-profile';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication } from '../../publication/record';
 import { worldRenderResources } from '../../publication/resource-scope';
 import * as fieldEdits from '../../raytracing/field-edit';
 import { createProbeOriginSupportRecorder } from '../../raytracing/probe-origin-support';
@@ -214,14 +215,8 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
       spot: [],
       rect: [],
       pointShadow: [],
-      lightViewProj: undefined,
-      splitPlanes: undefined,
-      cascadeCount: undefined,
-      cascadeBlend: undefined,
-      shadowMapSize: undefined,
       depthBias: undefined,
       normalBias: undefined,
-      directionalShadowQuality: undefined,
       directionalShadowError: undefined,
       directionalCsmConfig: undefined,
       directionalCsmDirection: undefined,
@@ -683,7 +678,7 @@ it('uses the receiver accepted revision as an attempt fence without rebuilding u
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    return receiver.accept(packet).unwrap();
+    return receiver.accept(encodeRenderPublication(packet)).unwrap();
   };
   try {
     const first = accept();
@@ -838,7 +833,7 @@ it('fences asset writes through the held closure without reading the source rost
       worlds: [worldRenderResources(f.world)],
       leases: [],
     };
-    expect(probeGlobalSourceReferences(source)).toEqual([retained.identity, retained.revision]);
+    expect(probeGlobalSourceReferences(source, 7)).toEqual([retained.identity, 7]);
     expect(retained.isCurrent()).toBe(true);
     const unrelated = f.assets
       .create(Materials.standard({ baseColor: [1, 1, 1, 1], roughness: 0.2 }))

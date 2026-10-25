@@ -3,7 +3,12 @@ import { createRuntimeAssetImportTransport, runtimeBinding } from 'virtual:forge
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
-import { type FrameReceipt, LightProbe, type Renderer } from '@forgeax/engine-render';
+import {
+  type FrameReceipt,
+  type FrameReceiptObservation,
+  LightProbe,
+  type Renderer,
+} from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
@@ -41,6 +46,21 @@ type SurfaceReadback = {
   bytesPerRow: number;
   format: string;
 };
+
+function armLaneObservation(renderer: Renderer, frame: number): void {
+  if ([9, 19, 29, 39, 49].includes(frame)) {
+    const armed = renderer.requestObservation?.(['final-display']);
+    if (armed === undefined) throw new Error('surface-standard: lane observation unavailable');
+    armed.unwrap();
+  }
+}
+
+function completedDisplayReadback(observation: FrameReceiptObservation): SurfaceReadback {
+  const captured = observation.observations?.find((value) => value.domain === 'final-display');
+  if (captured === undefined)
+    throw new Error('surface-standard: completed lane observation unavailable');
+  return { ...captured.metadata, pixels: new Uint8Array(captured.bytes) };
+}
 
 async function readScreenshotPixels(canvas: HTMLCanvasElement): Promise<{
   pixels: Uint8Array;
@@ -515,6 +535,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
         frameTime,
       });
       world.update(1 / 60).unwrap();
+      armLaneObservation(renderer, frame);
       const receipt = await drawReadyFrame(renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
@@ -524,14 +545,16 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       finalReceipt = receipt;
       completedFrames += 1;
       if ([9, 19, 29, 39, 49].includes(frame)) {
-        const laneObservation = await renderer.observe(receipt, { include: ['draws'] });
+        const laneObservation = await renderer.observe(receipt, {
+          include: ['draws', 'final-display'],
+        });
         expect(laneObservation.ok).toBe(true);
         if (!laneObservation.ok) throw laneObservation.error;
         const submission = renderer.inspect().renderScene.submission;
         if (submission === undefined) throw new Error('surface-standard: lane receipt unavailable');
         expect(submission.frameId).toBe(receipt.frameId);
         laneReceipts.set(frame, submission);
-        const laneReadback = await readScreenshotPixels(canvas);
+        const laneReadback = completedDisplayReadback(laneObservation.value);
         laneRois.set(
           frame,
           [SURFACE_CASES.length - 2, SURFACE_CASES.length - 1].map((index) =>

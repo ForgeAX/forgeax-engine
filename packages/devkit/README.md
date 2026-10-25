@@ -1800,8 +1800,14 @@ either kind of version change also changes the archive URL.
 An unrecorded image, CSS, public-file, WASM or independent Worker dependency makes
 export fail explicitly. Ordinary static installation remains available.
 
-Development initializes Vite's optimizer before freezing the final transformed
-closure of all browser selections, including literal lazy imports. Source-input
+Development initializes Vite's optimizer and awaits its initial native dependency
+scan before freezing the final transformed closure of all browser selections,
+including literal lazy imports. Starting the optimizer alone does not complete
+that scan; freezing early can retain obsolete optimized dependency URLs. Declared
+Runtime Pack capability subpaths join the initial scan through the executing
+client's resolver; their dependencies may be absent from App's main entry graph.
+Engine modules retain their native identity while Vite optimizes third-party
+dependencies. Source-input
 validation completes before the page can consume this accepted graph. HTTP delivery
 and export then read the same frozen bytes through failed source candidates.
 Every frozen module carries the current Host's generated-root identity in its

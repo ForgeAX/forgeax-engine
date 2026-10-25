@@ -26,13 +26,10 @@ import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type {
-  ExtractedLights,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../render-system-extract';
+import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction } from '../temporal/frame';
+import type { ViewLights } from '../world/render-lights';
 import {
   admitGpuFixture,
   preparedPbrSnapshot as preparedPbrFixture,
@@ -426,10 +423,11 @@ it.each([
     colorAttachmentFormat: 'rgba8unorm',
   } as unknown as PipelineState;
   const lights = {
-    cascadeCount: undefined,
+    cascades: undefined,
     pointShadow: [],
     spot: [],
-  } as unknown as ExtractedLights;
+    shadowViews: [],
+  } as unknown as ViewLights;
   const compile = () =>
     ensureCompiledFrameGraph(
       internals,
@@ -787,7 +785,7 @@ it.each([
       state,
       { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
       makeZeroCameraFallbackSnapshot(),
-      { cascadeCount: undefined, pointShadow: [], spot: [] } as unknown as ExtractedLights,
+      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
       1,
       1,
       undefined,
@@ -983,7 +981,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
       state,
       { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as unknown as PipelineState,
       makeZeroCameraFallbackSnapshot(),
-      { cascadeCount: undefined, pointShadow: [], spot: [] } as unknown as ExtractedLights,
+      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
       1,
       1,
       undefined,

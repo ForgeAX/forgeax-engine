@@ -3,7 +3,6 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import type { Buffer, RhiCaps, Sampler, TextureFormat, TextureView } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
 import {
   type RenderError,
   RenderFeatureCapabilityMissingError,
@@ -294,7 +293,6 @@ export interface RenderFeatureHost {
     batches: readonly RenderFeaturePreparedResourceBatch[],
   ): Result<void, RenderError>;
   recover(input: RenderFeatureRecoverInput): Result<void, RenderError>;
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown>;
   diagnostics(): readonly RenderFeatureDiagnostics[];
   /** Retain an explicitly producer-published detached inspection value. */
   setInspection(identity: string, inspection: unknown): void;
@@ -1701,20 +1699,6 @@ class FeatureHostImpl implements RenderFeatureHost {
     stats.afterPasses += after;
     stats.removedRasterPasses += before - after;
     stats.admittedPasses += admitted;
-  }
-
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown> {
-    return {
-      kind: 'feature',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('Feature candidate scope is not active.');
-        // The root carries the detached host owner itself. A scalar marker is
-        // not evidence that feature planning/preparation actually ran; the
-        // candidate graph and host own the prepared resources.
-        return this;
-      },
-      cleanup: () => undefined,
-    };
   }
 
   private publishDiagnosticsChanged(): void {

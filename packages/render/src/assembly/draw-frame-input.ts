@@ -3,6 +3,7 @@ import { RendererContractFailureError, RendererOperationError } from '../errors/
 import { motionBlurDrawOptions } from '../features/motion-blur/motion-blur-runtime';
 import type { PublishedRenderFrameInput } from '../publication/contract';
 import type { PreparedRenderPublication } from '../publication/receiver';
+import { renderPublicationTiming } from '../publication/record';
 import type { DrawOwnerOptions, RenderFrameInput } from '../render-contract';
 
 /** The three draw entry shapes: a legacy World list, a lease frame, or a publication. */
@@ -84,8 +85,7 @@ export function publicationDrawOwnerOptions(request: PublishedRenderFrameInput):
   return {
     cameraOwner: 0,
     resourceOwner: 0,
-    sampleTimeSeconds: request.publication.sampleTimeSeconds,
-    temporalReset: request.publication.temporalReset,
+    ...renderPublicationTiming(request.publication),
     ...(request.geometryObservation === true
       ? {
           geometryObservation: true as const,

@@ -707,6 +707,10 @@ level, so a caster never drops detail the main view still shows. A retained
 static shadow layer invalidates on LOD only when the clamped level becomes
 finer; `lod-changed` static misses under camera motion indicate a broken clamp.
 
+## GPU-driven residual rows and buffer limits
+
+The GPU lane culls only residual CPU-drawn rows on the CPU: `ExtractedFrame.gpuOwned` lists them, and verification, receipts and dynamic-geometry consumption visit only those rows; do not iterate all draws to find GPU-owned work. Opaque rigid Unlit and morph (a compute geometry producer, one batch per morphed entity) are GPU-lane members. Buffers size by membership and the adapter's `maxBufferSize`/`maxStorageBufferBindingSize`, which device admission requests when above defaults; a requirement beyond the bindable bound is a structured `limit-exceeded` error (1,048,576 transform rows at the 128 MiB default), never a silent CPU fallback or split binding. Pose and row ingest enter the Renderer's Render World only through its `render-sync` system; features read rows, they do not write them.
+
 ## GPU-driven occlusion (two-phase HZB)
 
 Two-phase HZB is the only main-view occlusion owner. The main camera's GPU

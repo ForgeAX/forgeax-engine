@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
 import { GpuInputArena } from '../gpu-input-arena';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication } from '../publication/record';
 import { SkinJointReferences } from '../publication/skin-joints';
 import { type SkinInputSlot, SkinInputs } from '../scene/skin-inputs';
 import { fixture } from './skin-publication-fixture';
@@ -20,7 +21,7 @@ function endpoint(missing = false) {
   const skeletons = new Map<number, SkinInputSlot>(),
     scratch = mat4.create();
   function adopt(packet = f.publish()) {
-    const prepared = receiver.accept(packet).unwrap();
+    const prepared = receiver.accept(encodeRenderPublication(packet)).unwrap();
     for (const change of prepared.assetChanges) {
       const value = prepared.resources.resolveAsset(change.handle);
       if (value.ok && value.value.kind === 'skeleton') {
@@ -86,7 +87,7 @@ it('adopts one independent shared-joint row, no consumer operation or per-joint 
         slice = vi.spyOn(Float32Array.prototype, 'slice');
       let prepared: import('../publication/receiver').PreparedRenderPublication;
       try {
-        prepared = f.receiver.accept(packet).unwrap();
+        prepared = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
         expect(slice).not.toHaveBeenCalled();
       } finally {
         slice.mockRestore();
@@ -159,8 +160,10 @@ it('rejects an unknown joint row and retries the same accepted revision without 
     const packet = f.publish(),
       identities = new Uint32Array(packet.transformEntities);
     identities[0] = 0xffffffff;
-    expect(f.receiver.accept({ ...packet, transformEntities: identities }).ok).toBe(false);
-    const prepared = f.receiver.accept(packet).unwrap();
+    expect(
+      f.receiver.accept(encodeRenderPublication({ ...packet, transformEntities: identities })).ok,
+    ).toBe(false);
+    const prepared = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     expect(prepared.skinJoints?.rows).toHaveLength(1);
     expect(prepared.operations).toEqual([]);
     f.world.set(f.first, Skin, { joints: [f.secondJoint] }).unwrap();
@@ -204,7 +207,7 @@ it('owns one immutable static Binding at admission without retaining packet alia
   const f = endpoint();
   try {
     const packet = f.publish(),
-      prepared = f.receiver.accept(packet).unwrap();
+      prepared = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const binding = packet.templates.find((row) => row.snapshot.skinBinding)?.snapshot.skinBinding;
     if (!binding) throw new Error('Missing fixture packet Binding');
     const accepted = prepared.frame.renderables.find(
@@ -223,9 +226,9 @@ it('owns one immutable static Binding at admission without retaining packet alia
     mutable.skeleton = 0;
     expect(required(accepted).joints).toEqual([Number(f.firstJoint)]);
     f.world.removeComponent(f.first, Skin).unwrap();
-    expect(f.receiver.accept(f.publish()).ok).toBe(true);
+    expect(f.receiver.accept(encodeRenderPublication(f.publish())).ok).toBe(true);
     f.world.removeComponent(f.second, Skin).unwrap();
-    const retired = f.receiver.accept(f.publish()).unwrap();
+    const retired = f.receiver.accept(encodeRenderPublication(f.publish())).unwrap();
     expect([...(retired.skinJoints?.retired ?? [])]).toEqual([Number(f.firstJoint)]);
   } finally {
     f.dispose();
@@ -292,13 +295,15 @@ it('invalidates the entire receiver and held prepared revision after a reference
         };
       });
     try {
-      expect(() => f.receiver.accept(packet)).toThrow('start a new source epoch');
+      expect(() => f.receiver.accept(encodeRenderPublication(packet))).toThrow(
+        'start a new source epoch',
+      );
     } finally {
       hook.mockRestore();
     }
     expect(before.resources.revision).toBe(-1);
     expect(f.receiver.acceptedRevision).toBe(-1);
-    expect(f.receiver.accept(packet).ok).toBe(false);
+    expect(f.receiver.accept(encodeRenderPublication(packet)).ok).toBe(false);
     expect(() => f.receiver.snapshot(before)).toThrow();
   } finally {
     f.dispose();
@@ -406,7 +411,7 @@ it('rejects stale, foreign-resource and in-flight cold snapshot inputs', () => {
         return actual.call(this, edits);
       });
     try {
-      f.receiver.accept(packet).unwrap();
+      f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     } finally {
       hook.mockRestore();
     }

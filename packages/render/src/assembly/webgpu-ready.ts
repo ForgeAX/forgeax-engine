@@ -39,6 +39,7 @@ import {
   type PipelineCache,
 } from '../pipeline-spec';
 import { createPointsLinesViewBuffer } from '../record/points-lines-view-buffer';
+import { STATIC_SHADOW_DEPTH_CLEAR_SHADER } from '../record/shadow-pass';
 import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
@@ -691,6 +692,13 @@ export async function buildReadyWebGPU(
       caps,
       entries.unlit,
     );
+    const staticClear = await compileModule(
+      STATIC_SHADOW_DEPTH_CLEAR_SHADER.code,
+      STATIC_SHADOW_DEPTH_CLEAR_SHADER.label,
+      'static shadow depth-clear shader compiles before the first shadow frame',
+      'inspect the static shadow clear program and backend compiler',
+    );
+    seedShaderModule(STATIC_SHADOW_DEPTH_CLEAR_SHADER.label, staticClear);
     await prewarmShadowCasterModules(
       registry,
       compileModule,

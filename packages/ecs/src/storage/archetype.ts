@@ -11,6 +11,8 @@ export interface Archetype {
   readonly id: ArchetypeId;
   readonly key: string;
   readonly components: ReadonlyArray<Component>;
+  /** Sorted ids parallel to `components`; membership never re-derives identity. */
+  readonly ids: Int32Array;
   readonly tableId: TableId;
   rows: Uint32Array;
   size: number;
@@ -35,6 +37,7 @@ export function createArchetype(
     id,
     key: archetypeKey(sorted.map((component) => componentId(component))),
     components: sorted,
+    ids: Int32Array.from(sorted, (component) => componentId(component)),
     tableId,
     rows: new Uint32Array(INITIAL_CAPACITY),
     size: 0,
@@ -44,20 +47,24 @@ export function createArchetype(
   };
 }
 
-/** Membership derives from the owner's already sorted component roster. */
-export function archetypeHasComponent(archetype: Archetype, id: ComponentId): boolean {
+/** Index of `id` in the owner's sorted roster, or -1. */
+export function archetypeComponentIndex(archetype: Archetype, id: ComponentId): number {
+  const ids = archetype.ids;
   let lo = 0,
-    hi = archetype.components.length;
+    hi = ids.length;
   while (lo < hi) {
     const middle = (lo + hi) >>> 1;
-    const candidate = archetype.components[middle];
-    if (candidate === undefined) return false;
-    const candidateId = componentId(candidate);
-    if (candidateId === id) return true;
+    const candidateId = ids[middle] as number;
+    if (candidateId === id) return middle;
     if (candidateId < id) lo = middle + 1;
     else hi = middle;
   }
-  return false;
+  return -1;
+}
+
+/** Membership derives from the owner's already sorted component roster. */
+export function archetypeHasComponent(archetype: Archetype, id: ComponentId): boolean {
+  return archetypeComponentIndex(archetype, id) >= 0;
 }
 
 export function appendArchetypeRow(archetype: Archetype, tableRow: number): number {

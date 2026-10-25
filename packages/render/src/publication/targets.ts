@@ -1,5 +1,6 @@
 import { createRenderTargetHost, type RenderTargetHost } from '../assembly/render-target-host';
 import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
 import type {
   RenderTarget,
   RenderTargetDescriptor,
@@ -169,12 +170,20 @@ export class RenderPublicationTargetReceiver {
       return resource;
     };
     const materialUpdates = input.materialUpdates.map(rebind);
+    // Rows without a rebound material stay the same object; only rebound rows are copied.
+    const snapshots = new Map<number, RenderableSnapshot>();
     const renderables = input.frame.renderables.map((row) => {
       const materials = row.materials.map(rebind);
+      if (materials.every((material, index) => material === row.materials[index])) return row;
       const first = row.materials.indexOf(row.material);
-      return { ...row, materials, material: materials[Math.max(0, first)] ?? row.material };
+      const rebound = {
+        ...row,
+        materials,
+        material: materials[Math.max(0, first)] ?? row.material,
+      };
+      snapshots.set(row.entityKey, rebound);
+      return rebound;
     });
-    const snapshots = new Map(renderables.map((row) => [row.entityKey, row]));
     return {
       ...input,
       materialUpdates,
@@ -188,12 +197,7 @@ export class RenderPublicationTargetReceiver {
       operations: input.operations.map((operation) => {
         if (operation.kind === 'remove' || operation.snapshot === undefined) return operation;
         const snapshot = snapshots.get(operation.entityKey);
-        if (snapshot === undefined)
-          throw new RenderPublicationError({
-            reason: 'shape',
-            subject: 'missing remapped snapshot',
-          });
-        return { ...operation, snapshot };
+        return snapshot === undefined ? operation : { ...operation, snapshot };
       }),
     };
   }

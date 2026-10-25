@@ -432,10 +432,10 @@ class VfxMeshLightingRig {
     }
     const receipt = await completeReadyFrame(async () => {
       const candidate = source.prepare(0).unwrap();
-      const packet = structuredClone(candidate.packet, {
+      const packet = structuredClone(candidate.message, {
         transfer: [
-          ...renderPublicationTransfers(candidate.packet),
-          ...renderPublicationAssetTransfers(candidate.packet),
+          ...renderPublicationTransfers(candidate.message),
+          ...renderPublicationAssetTransfers(candidate.message),
         ],
       });
       candidate.accept();
@@ -1468,10 +1468,10 @@ async function verifyQueuedPublicationTicks(
   const flights = [6, 7].map((tick) => {
     world.update(1 / 60).unwrap();
     const candidate = source.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
+    const packet = structuredClone(candidate.message, {
       transfer: [
-        ...renderPublicationTransfers(candidate.packet),
-        ...renderPublicationAssetTransfers(candidate.packet),
+        ...renderPublicationTransfers(candidate.message),
+        ...renderPublicationAssetTransfers(candidate.message),
       ],
     });
     candidate.accept();

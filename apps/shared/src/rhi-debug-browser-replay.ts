@@ -8,6 +8,7 @@ import {
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
+import { selectCaptureWorkIndex } from './capture-work-selection.mjs';
 
 export interface BrowserReplayPixels {
   readonly pixels: Uint8Array;
@@ -20,6 +21,7 @@ export interface BrowserReplayPixels {
 /** Replay one exact v7 tape on a fresh browser WebGPU device and read its work attachment. */
 export async function replayCapturedFrameInBrowser(
   bytes: Uint8Array,
+  workIndex?: number,
 ): Promise<BrowserReplayPixels> {
   const decoded = decodeTape(bytes);
   if (!decoded.ok) {
@@ -27,8 +29,8 @@ export async function replayCapturedFrameInBrowser(
   }
   const tape = decoded.value;
   const model = buildFrameModel(tape);
-  const selectedWork = model.works.at(-1);
-  if (selectedWork === undefined) {
+  const selectedWorkIndex = selectCaptureWorkIndex(model, 'pixel', workIndex);
+  if (selectedWorkIndex === undefined) {
     throw new Error('browser replay tape has no workIndex entries');
   }
 
@@ -48,10 +50,10 @@ export async function replayCapturedFrameInBrowser(
     const replay = await openReplay(tape, { device: device.value, createShaderModule });
     if (!replay.ok) throw new Error(`browser replay session open failed: ${replay.error.code}`);
     session = replay.value;
-    const inspection = await session.inspectWork(selectedWork.workIndex, ['pixels']);
+    const inspection = await session.inspectWork(selectedWorkIndex, ['pixels']);
     if (!inspection.ok) {
       throw new Error(
-        `browser replay inspectWork(${selectedWork.workIndex}) failed: ${inspection.error.code}`,
+        `browser replay inspectWork(${selectedWorkIndex}) failed: ${inspection.error.code}`,
       );
     }
     const attachment = inspection.value.attachment;

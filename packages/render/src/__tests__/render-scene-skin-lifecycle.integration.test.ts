@@ -11,10 +11,10 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
 import { InstanceProjectionStore } from '../instances';
-import { renderPublicationTransfers } from '../publication/contract';
 import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { SkinTasks } from '../record/skin-tasks';
 import type { ExtractedFrame } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
@@ -118,8 +118,7 @@ describe('PersistentRenderScene shared Skin lifecycle', () => {
     }
   });
 
-  it('retains published static membership and shared pose through replacement-device recovery', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  it('retains published static membership and shared pose through replacement-device recovery', () => {
     const f = makeSkinWorld();
     f.world.set(f.joint, Transform, { pos: [2, 0, 0] }).unwrap();
     f.world.update(0).unwrap();
@@ -132,32 +131,27 @@ describe('PersistentRenderScene shared Skin lifecycle', () => {
     const publish = () => {
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       return scene.consumePublication(
-        preparePublicationGeometry(receiver.accept(packet).unwrap(), assets, instances),
+        preparePublicationGeometry(
+          receiver.accept(encodeRenderPublication(packet)).unwrap(),
+          assets,
+          instances,
+        ),
       );
     };
     try {
       const before = publish(),
         binding = required(skinFor(before, 0, f.renderable));
       expect(position(scene, 0, f.renderable)).toBe(2);
-      const candidate = scene.prepareRecoveryGpuDrivenCandidate(device).unwrap();
-      try {
-        for (const slot of candidate.state?.slots ?? []) {
-          expect(
-            candidate.state?.slotForEntity?.(slot.snapshot.worldId, slot.snapshot.entityKey),
-          ).toBe(slot);
-          expect(slot.snapshot.skinBinding).toEqual(binding);
-        }
-        candidate.publish();
-        const next = publish();
-        expect(skinFor(next, 0, f.renderable)).toEqual(binding);
-        expect(position(scene, 0, f.renderable)).toBe(2);
-      } finally {
-        candidate.release();
-      }
+      // Recovery clears device-derived state; the next ordinary publication
+      // rebuilds it from the retained rows.
+      scene.resetGpuForRecover();
+      const next = publish();
+      expect(skinFor(next, 0, f.renderable)).toEqual(binding);
+      expect(position(scene, 0, f.renderable)).toBe(2);
     } finally {
       scene.dispose();
       instances.dispose();
@@ -212,43 +206,29 @@ describe('PersistentRenderScene shared Skin lifecycle', () => {
       oldTasks.begin(required(scene.skinRecordingFrame()));
       const prior = required(oldTasks.demand(identity));
       await oldTasks.complete();
-      const discarded = scene.prepareRecoveryGpuDrivenCandidate(replacement).unwrap();
-      if (storage)
-        expect(discarded.state?.slotAt(identity.slot)?.snapshot.skinBinding).toEqual(binding);
-      else expect(discarded.state).toBeUndefined();
-      discarded.discard();
-      discarded.publish();
-      expect(scene.compositionSlot(0, f.renderable)).toBe(identity);
-      const candidate = scene.prepareRecoveryGpuDrivenCandidate(replacement).unwrap();
       scene.resetGpuForRecover();
-      candidate.publish();
-      candidate.publish();
-      try {
-        requests.length = 0;
-        const unchanged = draw();
-        expect(requests.every((request) => request === 'none')).toBe(true);
-        expect(skinFor(unchanged, 0, f.renderable)).toEqual(binding);
-        expect(position(scene, 0, f.renderable)).toBe(3);
-        const accepted = required(scene.compositionSlot(0, f.renderable));
-        expect([accepted.slot, accepted.generation]).toEqual([identity.slot, identity.generation]);
-        const writes = vi.spyOn(replacement.queue, 'writeBuffer');
-        newTasks.begin(required(scene.skinRecordingFrame()));
-        const task = required(newTasks.demand(accepted));
-        expect(task.data).not.toBe(prior.data);
-        expect(task.auxiliary).not.toBe(prior.auxiliary);
-        expect(newTasks.paletteUploadBytes).toBe(128);
-        const upload = required(
-          writes.mock.calls.find(
-            ([buffer, offset]) =>
-              buffer === task.data && offset === (storage ? 32 : task.dataOffset),
-          ),
-        );
-        expect(new Float32Array(upload[2] as ArrayBuffer, upload[3] ?? 0, 16)[12]).toBe(3);
-        await newTasks.complete();
-        writes.mockRestore();
-      } finally {
-        candidate.release();
-      }
+      expect(scene.compositionSlot(0, f.renderable)).toBe(identity);
+      requests.length = 0;
+      const unchanged = draw();
+      expect(requests.every((request) => request === 'none')).toBe(true);
+      expect(skinFor(unchanged, 0, f.renderable)).toEqual(binding);
+      expect(position(scene, 0, f.renderable)).toBe(3);
+      const accepted = required(scene.compositionSlot(0, f.renderable));
+      expect([accepted.slot, accepted.generation]).toEqual([identity.slot, identity.generation]);
+      const writes = vi.spyOn(replacement.queue, 'writeBuffer');
+      newTasks.begin(required(scene.skinRecordingFrame()));
+      const task = required(newTasks.demand(accepted));
+      expect(task.data).not.toBe(prior.data);
+      expect(task.auxiliary).not.toBe(prior.auxiliary);
+      expect(newTasks.paletteUploadBytes).toBe(128);
+      const upload = required(
+        writes.mock.calls.find(
+          ([buffer, offset]) => buffer === task.data && offset === (storage ? 32 : task.dataOffset),
+        ),
+      );
+      expect(new Float32Array(upload[2] as ArrayBuffer, upload[3] ?? 0, 16)[12]).toBe(3);
+      await newTasks.complete();
+      writes.mockRestore();
     } finally {
       await oldTasks.dispose();
       await newTasks.dispose();

@@ -4,7 +4,7 @@ import type { EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs
 import { routeWorldError, SpawnLightInvalidBoundsError } from '@forgeax/engine-ecs/projection';
 import { type Mat4, mat4, type Vec3, vec3 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
-import { GlobalTransform, readPresentationWorldMatrix, Transform } from '@forgeax/engine-scene';
+import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import type { AssetHandle, IesProfileAsset, TextureAsset } from '@forgeax/engine-types';
 import { type ExtractedCloudLayer, extractCloudLayer } from '../cloud/extract';
 import {
@@ -19,7 +19,6 @@ import {
   Skylight,
   SpotLight,
 } from '../components';
-import { directionalShadowQualityFromF32 } from '../components/directional-shadow-filter';
 import {
   computeInvRangeSquared,
   degToCos,
@@ -48,13 +47,12 @@ import {
   prepareCookieProjection,
 } from '../prepare/extended-lighting/spot-modifiers';
 import type {
-  CsmCameraData,
   DirectionalCsmConfig,
   DirectionalLightSnapshot,
   ExtractedFrame,
-  ExtractedLights,
   IesProfileSnapshot,
   LightProbeSnapshot,
+  LightRoster,
   PointLightSnapshot,
   PointShadowSnapshot,
   PreparedExtractContext,
@@ -68,14 +66,12 @@ import {
   buildRectAreaWorldFrame,
   collectCubeCameraSnapshots,
   collectReflectionProbeFacts,
-  computeDirectionalCsm,
   type createWorldInternalView,
   extractVolumeSnapshot,
-  pssmSplit,
   Severity,
   selectCameraRoles,
 } from '../render-system-extract';
-import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
+import { readEnvironmentPose } from './environment-gate';
 
 type WorldInternalView = ReturnType<typeof createWorldInternalView>;
 type RgbTuple = readonly [number, number, number];
@@ -137,33 +133,23 @@ export function extractWorldEnvironment(
   );
   const volumetricFog = attachVolumeSpotProjector(volumetricFogSource, spotSnapshots);
 
-  // Camera data needed for frustum corner computation (first camera only;
-  // multi-camera CSM is OOS-1). Undefined in a cameraless world.
-  const csm = extractDirectionalCsm(sun, directionalShadowError, cameras[0]);
+  const directionalShadow = directionalShadowSource(sun, directionalShadowError);
   const pointShadowSnapshots = extractPointShadows(world, context.worldId, worldInternal);
   joinPointShadowLayers(points.snapshots, points.entities, pointShadowSnapshots);
   const castsShadow = sun.castShadow === true;
 
-  const lights: ExtractedLights = {
+  const lights: LightRoster = {
     directional: sun.directional,
     directionalCount: sun.directionalCount,
     point: points.snapshots,
     spot: spotSnapshots,
     rect: rectSnapshots,
-    lightViewProj: csm?.lightViewProj,
-    splitPlanes: csm?.splitPlanes,
-    cascadeCount: csm?.cascadeCount,
-    cascadeBlend: csm?.cascadeBlend,
-    shadowMapSize: csm?.shadowMapSize,
     depthBias: castsShadow ? sun.shadowFields?.depthBias : undefined,
     normalBias: castsShadow ? sun.shadowFields?.normalBias : undefined,
-    directionalShadowQuality: csm?.directionalShadowQuality,
     directionalShadowError,
     pointShadow: pointShadowSnapshots,
-    // bug-20260710-editor-cross-world-shadow: raw CSM config + light direction
-    // so the merge layer can recompute matrices against the surfaced camera.
-    directionalCsmConfig: csm?.directionalCsmConfig,
-    directionalCsmDirection: csm?.directionalCsmDirection,
+    directionalCsmConfig: directionalShadow?.directionalCsmConfig,
+    directionalCsmDirection: directionalShadow?.directionalCsmDirection,
   };
 
   // A caster may be outside the display camera while still contributing to a
@@ -236,7 +222,7 @@ function scaledLightColor(color: ArrayLike<number>, intensity: number): Vec3 {
 }
 
 function copyPresentationWorldMatrix(world: World, entity: EntityHandle): Float32Array | undefined {
-  const view = readPresentationWorldMatrix(world, entity);
+  const view = readEnvironmentPose(world, entity);
   return view === undefined ? undefined : new Float32Array(view);
 }
 
@@ -605,10 +591,6 @@ function extractSpotLights(
       optional: [Transform, GlobalTransform],
     })
     .unwrap();
-  // feat-20260625-spot-light-shadow-mapping M1 w5: tile allocation for castShadow spots.
-  // Cap = 4 (OOS-5), sentinel -1 = unassigned (plan-strategy D-4).
-  // Direction degeneration (near-zero) also skips shadow (requirements $112).
-  let spotTileNext = 0;
   for (const row of spotLightQuery) {
     const s = row.get(SpotLight);
     if (!admitLightChannels(worldInternal, s.lightingChannels, s.shadowCasterChannels)) continue;
@@ -648,7 +630,6 @@ function extractSpotLights(
       projectorProjection?.source,
     );
     let lightViewProj: Float32Array | undefined;
-    let shadowAtlasTile = -1;
 
     // A projector needs the same perspective transform even when its SpotLight
     // has no shadow atlas tile. The matrix remains a derived light fact; the
@@ -669,11 +650,6 @@ function extractSpotLights(
         s.nearPlane,
         sFarPlane,
       );
-      // D-4: allocate tile 0..3; 5th+ = -1 sentinel.
-      if (castShadow && spotTileNext < 4) {
-        shadowAtlasTile = spotTileNext;
-        spotTileNext += 1;
-      }
     }
 
     spotSnapshots.push({
@@ -706,7 +682,8 @@ function extractSpotLights(
       mapSize: s.mapSize,
       nearPlane: s.nearPlane,
       farPlane: sFarPlane,
-      shadowAtlasTile,
+      // The Render World assigns each casting spot a stable tile.
+      shadowAtlasTile: -1,
       shadowIntensity: s.shadowIntensity,
       shadowBlurSamples: s.shadowBlurSamples,
       depthBias: s.depthBias,
@@ -733,7 +710,7 @@ function rectAreaWorldFrameOf(
   height: number,
 ) {
   const worldMat = hasTransform
-    ? new Float32Array(readPresentationWorldMatrix(world, entity) ?? [])
+    ? new Float32Array(readEnvironmentPose(world, entity) ?? [])
     : undefined;
   const position = worldTranslationOf(worldMat);
   const frame = buildRectAreaWorldFrame({
@@ -828,6 +805,7 @@ function extractRectAreaLights(
         : {};
     rectSnapshots.push({
       kind: 'rect-area',
+      entity: row.entity,
       lightingChannels: light.lightingChannels,
       position,
       color: scaledLightColor(light.color, light.intensity),
@@ -910,81 +888,21 @@ function directionalCsmConfigOf(
 }
 
 /**
- * feat-20260613-csm M3 / w14 (plan-strategy §D-7): pad the up-to-4
- * splitPlanes into a fixed length-4 Float32Array (unused slots = 0) so the
- * View UBO tail keeps a stable layout regardless of the runtime cascadeCount.
- * Host-side correctness invariant: only the first cascadeCount slots are ever
- * read by the WGSL kernel.
+ * The shadow configuration and direction a view fits its cascades from,
+ * gated on castShadow (default false, first hit wins) and a valid config.
  */
-function padSplitPlanes(splitPlanes: ArrayLike<number>): Float32Array {
-  const padded = new Float32Array(16);
-  for (let i = 0; i < splitPlanes.length; i++) padded[i] = splitPlanes[i] ?? 0;
-  return padded;
-}
-
-/** Camera-free split planes: splitPlanes needs only near/far. */
-function cameralessSplitPlanes(
-  camera: CsmCameraData | undefined,
-  shadowDistance: number,
-  cascadeCount: number,
-  splitLambda: number,
-): Float32Array {
-  const splits = pssmSplit(camera?.near ?? 0.1, shadowDistance, cascadeCount, splitLambda);
-  const padded = new Float32Array(16);
-  for (let i = 0; i < splits.length; i++) padded[i * 4] = splits[i] ?? 0;
-  return padded;
-}
-
-/**
- * bug-20260710-editor-cross-world-shadow: CSM matrices are computed by the
- * shared pure {@link computeDirectionalCsm}, called here per-world with THIS
- * world's own `cameras[0]`. In a single-world app the light and camera share
- * the world, so this per-world result is final. In the editor
- * super-composite the light's world may have no camera → this yields no
- * matrices; {@link extractFrames} then RECOMPUTES at the merge layer using
- * the surfaced (cameraOwner) camera + the raw config carried on
- * ExtractedLights. The raw config + direction are surfaced unconditionally so
- * the merge layer can re-run the builder.
- *
- * feat-20260621 M2: CSM computation gated on castShadow from the merged
- * DirectionalLight. castShadow defaults to false (first-hit-wins semantics,
- * D-6 no cardinality cap).
- */
-function extractDirectionalCsm(
+function directionalShadowSource(
   sun: DirectionalExtraction,
   shadowError: LightValidationError | undefined,
-  camera: CsmCameraData | undefined,
 ) {
   const { directional, shadowFields: sf } = sun;
   if (directional === undefined || sun.castShadow !== true || shadowError !== undefined) {
     return undefined;
   }
   if (sf === undefined) return undefined;
-  const directionalCsmConfig = directionalCsmConfigOf(sf);
-  const csm = computeDirectionalCsm(directional.direction, directionalCsmConfig, camera);
-  // Cascade metadata (splitPlanes / count / blend / mapSize) is available
-  // even without a camera; the matrices need the camera. When csm is null
-  // (no camera) leave lightViewProj undefined — the merge layer recomputes.
-  // Still surface the split/count metadata so a single-world path keeps its
-  // prior fields.
-  const cascadeCount = csm?.cascadeCount ?? Math.round(sf.cascadeCount);
-  const splitPlanes =
-    csm !== null
-      ? csm.splitPlanes
-      : cameralessSplitPlanes(camera, sf.shadowDistance, cascadeCount, sf.splitLambda);
   return {
-    directionalCsmConfig,
+    directionalCsmConfig: directionalCsmConfigOf(sf),
     directionalCsmDirection: directional.direction,
-    cascadeCount,
-    cascadeBlend: csm?.cascadeBlend ?? sf.cascadeBlend,
-    shadowMapSize: sf.mapSize,
-    lightViewProj: csm === null ? undefined : csm.lightViewProj,
-    splitPlanes: padSplitPlanes(splitPlanes),
-    directionalShadowQuality: directionalShadowQualityFromF32(
-      sf.shadowFilter,
-      sf.shadowAngularRadius,
-      sf.maxPenumbraTexels,
-    ),
   };
 }
 
@@ -1036,7 +954,7 @@ function extractPointShadows(
     // `t.world?.[i]` form silently returned a single element under the
     // `never`-typed bundle path and `wRow[12]` widened to `undefined ?? 0`
     // so light positions clamped to the origin.
-    const wRow = readPresentationWorldMatrix(world, row.entity);
+    const wRow = readEnvironmentPose(world, row.entity);
     if (wRow === undefined) continue;
     const lightPos =
       ps.shadowProjection === 1
@@ -1056,11 +974,6 @@ function extractPointShadows(
       continue;
     }
     const farPlane = projection.value;
-    // The renderer, not ECS, owns the atlas budget. Preserve every request
-    // for inspection, but emit the shader sentinel for entries that cannot
-    // acquire a layer so record never calls faceView outside the atlas.
-    const layer =
-      pointShadowSnapshots.length < SHADOW_ATLAS_DEFAULT_LAYERS ? pointShadowSnapshots.length : -1;
     pointShadowSnapshots.push({
       entity: row.entity,
       worldId,
@@ -1077,7 +990,8 @@ function extractPointShadows(
       shadowBiasMode: ps.shadowBiasMode,
       shadowIntensity: ps.shadowIntensity,
       pcfKernelSize: ps.pcfKernelSize ?? 3,
-      shadowAtlasLayer: layer,
+      // The Render World assigns each request a stable cube layer.
+      shadowAtlasLayer: -1,
       shadowMatrices: packPointShadowMatrices(lightPos, ps.nearPlane, farPlane),
     });
   }
@@ -1087,9 +1001,10 @@ function extractPointShadows(
 /**
  * feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-4 (plan-strategy §D-8):
  * join pointShadow snapshots into the matching PointLightSnapshot so the
- * record stage threads `shadowAtlasLayer + shadowNear + shadowFar` through the
- * unified direct-light metadata payload. Replaces the freshly-built snapshot
- * in place; it is not exposed elsewhere this frame yet.
+ * record stage threads `shadowNear + shadowFar` through the unified
+ * direct-light metadata payload; the Render World stamps the light's stable
+ * `shadowAtlasLayer`. Replaces the freshly-built snapshot in place; it is not
+ * exposed elsewhere this frame yet.
  */
 function joinPointShadowLayers(
   pointSnapshots: PointLightSnapshot[],
@@ -1124,7 +1039,7 @@ function skylightSnapshotOf(
   entity: EntityHandle,
   s: Readonly<ShapeOf<SchemaOf<typeof Skylight>>>,
 ): SkylightSnapshot {
-  const captureWorld = readPresentationWorldMatrix(world, entity);
+  const captureWorld = readEnvironmentPose(world, entity);
   return {
     ...(captureWorld === undefined
       ? {}
@@ -1183,7 +1098,7 @@ function extractLightProbes(
       routeExtractError(worldInternal, validation.error, 'RenderSystem.extract (light-probe)');
       continue;
     }
-    const transform = readPresentationWorldMatrix(world, row.entity);
+    const transform = readEnvironmentPose(world, row.entity);
     if (transform === undefined) continue;
     lightProbes.push({
       identity: String(row.entity),
@@ -1299,7 +1214,7 @@ function environmentCandidatesOf(
       sourceKey: `atmosphere:${row.entity}`,
       atmosphere: atmosphereParametersOf(
         row.get(Atmosphere),
-        readPresentationWorldMatrix(world, row.entity),
+        readEnvironmentPose(world, row.entity),
         skylight,
       ),
     });

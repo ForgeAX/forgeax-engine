@@ -10,7 +10,7 @@ import { samplerContribution } from '../assets/asset-decoders';
 import { gpuDrivenMaterialResourceClass } from '../extract/gpu-driven';
 import { prepareBatchExecution } from '../gpu-driven/batch-execution';
 import { batchVisibleSpan } from '../gpu-driven/batch-layout';
-import { BatchSources } from '../gpu-driven/batch-members';
+import { BatchSources, type MemberCandidates } from '../gpu-driven/batch-members';
 import {
   BatchTopology,
   type GpuDrivenBatch,
@@ -504,21 +504,26 @@ describe('PBR prepared GPU-driven batch topology', () => {
       ).toHaveLength(1);
     }
   });
-  it('keeps material fallback in execution and excludes morph geometry from indirect membership', () => {
+  it('keeps material fallback in execution and batches morphed entities that share a Mesh', () => {
     const blend = snapshot(2, prepared(), {
       transparent: true,
       renderState: { blend: { color: {}, alpha: {} } },
     });
-    const morph = { ...snapshot(3, prepared()), morph: {} as never };
+    const morphed = (entity: number) => ({
+      ...snapshot(entity, prepared()),
+      morph: { weights: new Float32Array([0.5]), targetCount: 1 },
+    });
     const custom = snapshot(4, prepared(), { materialShaderId: 'game::custom-shader' });
-    const topology = topologyFor(snapshot(1, prepared()), blend, morph, custom);
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(3);
-    expect(topology.inspect().ineligible).toBe(1);
-    expect(
-      topology
-        .query(topology.sourcePlan(), undefined)
-        .batches.map((batch) => executionFor(batch).route),
-    ).toEqual(['gpu', 'direct', 'direct']);
+    const topology = topologyFor(snapshot(1, prepared()), blend, morphed(3), custom, morphed(5));
+    const plan = topology.query(topology.sourcePlan(), undefined);
+    expect(plan.candidateCount).toBe(5);
+    expect(topology.inspect().ineligible).toBe(0);
+    const morphBatches = plan.batches.filter((batch) => batch.key.morph === true);
+    // Weights are per-row GPU inputs: one batch covers every morphed member.
+    expect(morphBatches).toHaveLength(1);
+    expect(morphBatches[0]?.binding?.morph).toBe(true);
+    expect(morphBatches[0]?.candidates).toHaveLength(2);
+    expect(morphBatches[0]?.lod).toBeUndefined();
   });
   it('keeps stencil-authored material execution on the direct reference path', () => {
     const plan = execution(
@@ -1088,7 +1093,9 @@ describe('bounded tree publication reads', () => {
     expect(
       before.batches.at(0)?.candidates.map((candidate) => candidate.primitiveIndex),
     ).toHaveLength(count);
-    expect(observed.nodes).toBe(count); // Actual old publication also sees these getters.
+    // Actual old publication also sees these getters: one node per member page.
+    expect(observed.nodes).toBe(group.members.root?.size);
+    expect(observed.nodes).toBeLessThanOrEqual(Math.ceil(count / 32));
     observed.reset();
     topology.apply(
       scene.apply([{ kind: 'remove', worldId: 0, entityKey: Math.floor(count / 2) + 1 }]),
@@ -1101,7 +1108,7 @@ describe('bounded tree publication reads', () => {
     expect(reads).toBeLessThan(4096);
     expect(after.candidateCount).toBe(count - 1);
     expect(before.candidateCount).toBe(count);
-    expect(after.batches.at(0)?.candidates.at(-1)).toBe(before.batches.at(0)?.candidates.at(-1));
+    expect(after.batches.at(0)?.candidates.at(-1)).toEqual(before.batches.at(0)?.candidates.at(-1));
   });
 });
 it.each([
@@ -1184,26 +1191,23 @@ it('keeps fixed member and candidate facts across small and paged extent transit
   const first = topology.query(topology.sourcePlan(), undefined);
   const candidate = required(first.batches.at(0)?.candidates.at(0));
   const held = [{ count: 1, plan: first }];
-  let retiredTail: object | undefined;
   for (const count of [64, 65, 1, 129, 64]) {
     topology.apply(scene.apply([updateInstances(withInstances(initial, count))]));
     const plan = topology.query(topology.sourcePlan(), undefined);
     const batch = required(plan.batches.at(0));
     expect(plan.candidateCount).toBe(count);
-    expect(batch.candidates.at(0)).toBe(candidate);
+    expect(batch.candidates.at(0)).toEqual(candidate);
     expect(batch.candidates.map((value) => value.instanceOrdinal)).toEqual(
       Array.from({ length: count }, (_, ordinal) => ordinal),
     );
     expect(batch.members?.at(0)?.instanceCount).toBe(count);
-    if (count === 65) retiredTail = required(batch.candidates.at(64));
-    if (count === 129) expect(batch.candidates.at(64)).not.toBe(retiredTail);
     held.push({ count, plan });
   }
   for (const { count, plan } of held) {
     expect(plan.candidateCount).toBe(count);
     expect(plan.batches.at(0)?.candidates.length).toBe(count);
     expect(plan.batches.at(0)?.members?.at(0)?.instanceCount).toBe(count);
-    expect(plan.batches.at(0)?.candidates.at(0)).toBe(candidate);
+    expect(plan.batches.at(0)?.candidates.at(0)).toEqual(candidate);
   }
 });
 it('retains the nonzero boundary page across shrink and regrowth', () => {
@@ -1223,20 +1227,18 @@ it('retains the nonzero boundary page across shrink and regrowth', () => {
     const plan = topology.query(topology.sourcePlan(), undefined);
     const candidates = required(plan.batches.at(0)).candidates;
     expect(candidates.length).toBe(count);
-    expect(candidates.at(64)).toBe(survivor);
+    expect(candidates.at(64)).toEqual(survivor);
     expect(candidates.map((value) => value.instanceOrdinal)).toEqual(
       Array.from({ length: count }, (_, ordinal) => ordinal),
     );
-    if (count > 65) expect(candidates.at(65)).not.toBe(removed65);
-    if (count > 128) expect(candidates.at(128)).not.toBe(removed128);
     held.push({ count, plan });
   }
   for (const { count, plan } of held) {
     expect(plan.batches.at(0)?.candidates.length).toBe(count);
-    expect(plan.batches.at(0)?.candidates.at(64)).toBe(survivor);
+    expect(plan.batches.at(0)?.candidates.at(64)).toEqual(survivor);
   }
-  expect(first.batches.at(0)?.candidates.at(65)).toBe(removed65);
-  expect(first.batches.at(0)?.candidates.at(128)).toBe(removed128);
+  expect(first.batches.at(0)?.candidates.at(65)).toEqual(removed65);
+  expect(first.batches.at(0)?.candidates.at(128)).toEqual(removed128);
 });
 it('keeps an unrelated member fixed while another extent crosses zero and singleton boundaries', () => {
   const scene = new RenderScene();
@@ -1249,25 +1251,19 @@ it('keeps an unrelated member fixed while another extent crosses zero and single
   const original = required(first.batches.at(0)?.candidates.at(0));
   const anchor = required(first.batches.at(0)?.candidates.at(1));
   const held = [{ count: 1, plan: first }];
-  let current = original;
-  let wasEmpty = false;
+  const current = original;
   for (const count of [2, 1, 0, 1, 65, 1]) {
     topology.apply(scene.apply([updateInstances(withInstances(initial, count))]));
     const plan = topology.query(topology.sourcePlan(), undefined);
     const candidates = required(plan.batches.at(0)).candidates;
     expect(plan.candidateCount).toBe(count + 1);
     expect(candidates.length).toBe(count + 1);
-    expect(candidates.at(-1)).toBe(anchor);
+    expect(candidates.at(-1)).toEqual(anchor);
     if (count === 0) {
-      expect(candidates.at(0)).toBe(anchor);
-      wasEmpty = true;
+      expect(candidates.at(0)).toEqual(anchor);
     } else {
       const next = required(candidates.at(0));
-      if (wasEmpty) {
-        expect(next).not.toBe(current);
-        current = next;
-        wasEmpty = false;
-      } else expect(next).toBe(current);
+      expect(next).toEqual(current);
       expect(next.instanceOrdinal).toBe(0);
       expect(candidates.at(count - 1)?.instanceOrdinal).toBe(count - 1);
     }
@@ -1276,7 +1272,35 @@ it('keeps an unrelated member fixed while another extent crosses zero and single
   for (const { count, plan } of held) {
     const candidates = required(plan.batches.at(0)).candidates;
     expect(candidates.length).toBe(count + 1);
-    expect(candidates.at(-1)).toBe(anchor);
+    expect(candidates.at(-1)).toEqual(anchor);
   }
-  expect(first.batches.at(0)?.candidates.at(0)).toBe(original);
+  expect(first.batches.at(0)?.candidates.at(0)).toEqual(original);
+});
+
+it('shares one interned membership projection and no member object per single-instance row', () => {
+  const draw = prepared();
+  const rows = Array.from({ length: 256 }, (_, index) => snapshot(index + 1, draw));
+  const topology = topologyFor(...rows);
+  const membership = (
+    topology as unknown as {
+      membershipByPrimitive: { interned: Map<string, unknown>; get(slot: number): unknown };
+    }
+  ).membershipByPrimitive;
+  expect(membership.interned.size).toBe(1);
+  expect(membership.get(0)).toBe(membership.get(255));
+  const batch = required(execution(topology).batches.at(0));
+  const members = [...required(batch.members)];
+  const candidates = [...batch.candidates];
+  expect(members).toHaveLength(256);
+  // Members and candidates are read from numeric pages: no object per member is retained.
+  expect((batch.candidates as MemberCandidates).root?.size).toBeLessThanOrEqual(256 / 32);
+  expect(
+    candidates.every(
+      (candidate, index) =>
+        candidate.primitiveIndex === members[index]?.primitiveIndex &&
+        candidate.generation === members[index]?.generation,
+    ),
+  ).toBe(true);
+  expect(members.map((member) => member.entityKey)).toEqual(rows.map((row) => row.entityKey));
+  expect(members.every((member) => member.instanceCount === 1)).toBe(true);
 });

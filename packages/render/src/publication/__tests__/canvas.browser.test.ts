@@ -8,9 +8,9 @@ import { Camera, MeshFilter, MeshRenderer } from '../../components';
 import { Materials } from '../../materials';
 import { CanvasTexture, isCanvasTextureSource } from '../../textures/canvas-texture';
 import { renderTextureSourceKey } from '../../textures/source-token';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
@@ -53,8 +53,10 @@ it('publishes one native canvas frame for shared models, updates without ECS wri
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return accepted;
   };
   try {
@@ -81,7 +83,10 @@ it('publishes one native canvas frame for shared models, updates without ECS wri
     const malformed = structuredClone(candidate.packet);
     const rows = malformed.canvasFrames;
     if (rows?.[0] === undefined) throw new Error('Canvas publication missing');
-    expect(receiver.accept({ ...malformed, canvasFrames: [rows[0], rows[0]] }).ok).toBe(false);
+    expect(
+      receiver.accept(encodeRenderPublication({ ...malformed, canvasFrames: [rows[0], rows[0]] }))
+        .ok,
+    ).toBe(false);
     expect(receiver.acceptedRevision).toBe(2);
     for (const row of rows) row.frame?.close();
     candidate.discard();

@@ -50,7 +50,7 @@ export class CompositionSkinAdoption {
     throw cause;
   }
 
-  apply(entry: SkinCompositionEntry, before: SceneSlotFrame, delta: RenderSceneApplyResult): void {
+  apply(entry: SkinCompositionEntry, delta: RenderSceneApplyResult): void {
     try {
       if (
         entry.skin === undefined &&
@@ -65,7 +65,7 @@ export class CompositionSkinAdoption {
             : undefined;
         });
       }
-      entry.skin?.apply(before, delta);
+      entry.skin?.apply(delta);
     } catch (cause) {
       this.fail(entry, cause);
     }

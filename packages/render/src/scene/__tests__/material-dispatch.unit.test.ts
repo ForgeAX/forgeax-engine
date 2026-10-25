@@ -7,6 +7,7 @@ import { MaterialDispatch, MaterialFrame } from '../material-dispatch';
 import type { MeshFrame } from '../mesh-frame';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { type SceneSlotFrame, SceneSlots } from '../scene-slots';
+import { setSceneRow } from './scene-row-writes';
 
 const slotFrames = new WeakMap<readonly RenderSceneSlot[], SceneSlotFrame>();
 
@@ -87,10 +88,11 @@ it('visits only copied tree paths for a local change among 10000 unrelated asset
 
 it('orders complete and Direct work by source identity after slot recycling and across Worlds', () => {
   const shared = new MaterialResource(material(1));
-  const rows = [slot(9, shared), slot(2, shared), slot(7, shared)].map((row, index) => ({
-    ...row,
-    snapshot: { ...row.snapshot, worldId: index === 2 ? 1 : 0, entityKey: index === 1 ? 1 : 2 },
-  }));
+  const rows = [slot(9, shared), slot(2, shared), slot(7, shared)].map((row, index) => {
+    const worldId = index === 2 ? 1 : 0;
+    const entityKey = index === 1 ? 1 : 2;
+    return { ...row, worldId, entityKey, snapshot: { ...row.snapshot, worldId, entityKey } };
+  });
   const owner = new MaterialDispatch();
   for (const row of rows) owner.bind(row.slot, row.snapshot);
   const frame = owner.materials();
@@ -296,7 +298,7 @@ function slot(id: number, resource: MaterialResource, caster = true): RenderScen
     layer: id % 3,
     ...(caster ? {} : { shadowCaster: false as const }),
   };
-  return { slot: id, generation: 1, worldId: 0, entityKey: id, snapshot };
+  return { slot: id, generation: 1, version: 0, worldId: 0, entityKey: id, snapshot };
 }
 
 it('adopts shared Passes while retaining exact prior frames and participation', () => {
@@ -604,7 +606,7 @@ function fixedSlots(rows: readonly RenderSceneSlot[]): SceneSlotFrame {
   let frame = slotFrames.get(rows);
   if (frame === undefined) {
     const slots = new SceneSlots();
-    for (const row of rows) slots.set(row.slot, row);
+    for (const row of rows) setSceneRow(slots, row.slot, row);
     frame = slots.capture();
     slotFrames.set(rows, frame);
   }
@@ -873,4 +875,86 @@ it.each([
   expect(
     changeDriven.mock.results.filter((result) => result.value === true).length,
   ).toBeGreaterThan(700);
+});
+
+it('keeps dispatch entries only while consecutive queries read them; bindings own no entry objects', () => {
+  const resource = new MaterialResource(material(131, 2000, true));
+  const rows = Array.from({ length: 64 }, (_, id) => slot(id, resource));
+  const owner = new MaterialDispatch();
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const cold = [...owner.query(slots)];
+  expect(cold).toHaveLength(128);
+  // A consecutive reader shares the identities the previous query read.
+  const warm = [...owner.query(slots)];
+  expect(warm.every((entry, index) => entry === cold[index])).toBe(true);
+  // A query nothing read drops the generation: a cold traversal is not resident.
+  owner.query(slots);
+  owner.query(slots);
+  const later = [...owner.query(slots)];
+  expect(later).toEqual(cold);
+  expect(later.some((entry, index) => entry === cold[index])).toBe(false);
+  // Binding facts are numeric columns; no per-binding object holds entries.
+  const columns = (owner as unknown as { bindings: { groups: unknown[]; count: number } }).bindings;
+  expect(columns.count).toBe(64);
+  expect(new Set(columns.groups).size).toBe(1);
+});
+
+it('shares the caster set with members until a visible non-caster forks it, and rejoins after', () => {
+  const resource = new MaterialResource(material(132, 2000, true));
+  const owner = new MaterialDispatch();
+  const casters = (rows: readonly RenderSceneSlot[]) =>
+    [...owner.query(fixedSlots(rows))]
+      .filter((entry) => entry.tags.LightMode === 'ShadowCaster')
+      .map((entry) => entry.entityIndex);
+  const groupOf = () =>
+    (owner as unknown as { bindings: { groups: { members: unknown; ownCasters: unknown }[] } })
+      .bindings.groups[0];
+  const rows = [slot(0, resource), slot(1, resource), slot(2, resource)];
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  expect(groupOf()?.ownCasters).toBeUndefined();
+  expect(casters(rows)).toEqual([0, 1, 2]);
+  const quiet = slot(3, resource, false);
+  owner.bind(quiet.slot, quiet.snapshot);
+  const mixed = [...rows, quiet];
+  expect(casters(mixed)).toEqual([0, 1, 2]);
+  owner.remove(1);
+  const fewer = [rows[0], rows[2], quiet] as RenderSceneSlot[];
+  expect(casters(fewer)).toEqual([0, 2]);
+  owner.remove(3);
+  expect(groupOf()?.ownCasters).toBeUndefined();
+  expect(casters([rows[0], rows[2]] as RenderSceneSlot[])).toEqual([0, 2]);
+});
+
+it('bulk binding appends member pages instead of copying one roster page per member', () => {
+  const resource = new MaterialResource(material(1, 2000, true));
+  const rows = 8192;
+  // Reverse order exercises the staged sort; every second row is a non-caster.
+  const slots = Array.from({ length: rows }, (_, id) => slot(id, resource, id % 2 === 0));
+  const owner = new MaterialDispatch();
+  const Native = globalThis.Float64Array;
+  let constructed = 0;
+  class Counting extends Native {
+    constructor(...args: unknown[]) {
+      super(...(args as [number]));
+      constructed++;
+    }
+  }
+  globalThis.Float64Array = Counting as unknown as Float64ArrayConstructor;
+  try {
+    for (let index = rows - 1; index >= 0; index--) {
+      const row = slots[index] as RenderSceneSlot;
+      owner.bind(row.slot, row.snapshot);
+    }
+  } finally {
+    globalThis.Float64Array = Native;
+  }
+  const frame = query(owner, fixedSlots(slots));
+  expect(constructed).toBeLessThan(rows / 8);
+  const forward = frame.filter((entry) => entry.tags.LightMode !== 'ShadowCaster');
+  expect(forward.map((entry) => entry.entityIndex)).toEqual(slots.map((row) => row.entityKey));
+  const casters = frame.filter((entry) => entry.tags.LightMode === 'ShadowCaster');
+  expect(casters.map((entry) => entry.entityIndex)).toEqual(
+    slots.filter((row) => row.slot % 2 === 0).map((row) => row.entityKey),
+  );
 });

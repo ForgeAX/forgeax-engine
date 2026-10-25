@@ -14,7 +14,7 @@ import { GpuBuffer } from '../gpu-resource';
 import { createSkylightFallback } from '../ibl/skylight-bind-group';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
-import { directDrawRows } from '../record/direct-draws';
+import { DirectDrawPhase } from '../record/direct-draw-phase';
 import { prepareDirectionalShadowCache } from '../record/directional-shadow-cache';
 import { buildDispatchPlan } from '../record/fold-buckets';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -762,8 +762,8 @@ export async function verifyManagedShadowRecording(): Promise<void> {
         nativePlan.batches.map((batch) => [defined(batch.binding), row.mesh]),
       );
       const routeRows = (rightDirect: boolean) =>
-        directDrawRows(
-          {
+        new DirectDrawPhase().sync({
+          scene: {
             plan: {
               ...nativePlan,
               batches: nativePlan.batches.map((batch) =>
@@ -781,15 +781,19 @@ export async function verifyManagedShadowRecording(): Promise<void> {
             drawSnapshotAt: nativeScene.drawSnapshotAt,
             unbatchedSlots: nativeTopology.unbatchedSlots,
           },
-          (binding) =>
+          selection: [],
+          select: (binding) =>
             rightDirect && binding.drawItemIndex === 2 ? right.source.material.snapshot : undefined,
-          nativeMeshes,
-          [c.world],
-          'shadow',
-          () => {
+          meshes: nativeMeshes,
+          worlds: [c.world],
+          shadow: true,
+          materials: undefined,
+          prepareUnbatched: () => {
             throw new Error('no unbatched geometry');
           },
-        );
+          viewDraws: [],
+          lod: (rows) => rows,
+        }).rows;
       expect(sample(await depth(f, { ...multi, validatedOrdered: routeRows(true) }, 0))).toEqual([
         0, 0.75,
       ]);
@@ -935,9 +939,11 @@ export async function verifyManagedShadowCache(
   const reads = new ShadowMeshReads(changes);
   reads.add(changes.create());
   const lights = {
-    cascadeCount: 1,
-    lightViewProj: [new Float32Array(16)],
-    directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+    cascades: {
+      cascadeCount: 1,
+      lightViewProj: [new Float32Array(16)],
+      directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+    },
   } as const;
   const c = { ...f.context, materialFrame: defined(f.context.materialFrame) };
   const first = defined(c.validatedOrdered[0]);
@@ -966,7 +972,6 @@ export async function verifyManagedShadowCache(
           meshDraws: f.scene,
           renderables: c.validatedOrdered.map((row) => row.source),
           dispatch: [],
-          prepareDrawDispatch: () => [],
           worldBoundsOf: () => false,
         },
       );
@@ -1095,9 +1100,11 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
       [world].map(worldRenderResources),
       [lease],
       {
-        cascadeCount: 1,
-        lightViewProj: retained,
-        directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+        cascades: {
+          cascadeCount: 1,
+          lightViewProj: retained,
+          directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+        },
       } as never,
       512,
       { reads, epoch: changes.epoch, change: 'quiet' },
@@ -1113,7 +1120,6 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
         meshDraws: f.scene,
         renderables: c.validatedOrdered.map((row) => row.source),
         dispatch: [],
-        prepareDrawDispatch: () => [],
         worldBoundsOf: () => false,
       },
     );

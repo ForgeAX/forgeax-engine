@@ -35,7 +35,9 @@ import type {
   RhiCaps,
   RhiError,
   RhiRenderPassEncoder,
+  Texture,
   TextureFormat,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { Tonemap } from './components/camera';
@@ -449,16 +451,21 @@ export function importRenderPipelineSurface(
           (frame) => frame.outputTarget().view,
         );
   if (display !== undefined && !display.ok) return display;
+  let storageView: { readonly texture: Texture; readonly view: TextureView } | undefined;
   const storage = graph.importView(
     texture.value,
     { label: 'surface.storage', format: topology.surface.storageFormat },
     (frame) => {
       if (topology.surface.storageFormat === topology.surface.viewFormat)
         return frame.outputTarget().view;
-      const resolved = frame.runtime.device.createTextureView(frame.outputTarget().texture, {
+      // Re-create only when the surface hands back a different texture.
+      const target = frame.outputTarget().texture;
+      if (storageView?.texture === target) return storageView.view;
+      const resolved = frame.runtime.device.createTextureView(target, {
         format: topology.surface.storageFormat,
       });
       if (!resolved.ok) throw resolved.error;
+      storageView = { texture: target, view: resolved.value };
       return resolved.value;
     },
   );
@@ -563,8 +570,6 @@ export interface RenderPipelineSurfaceMediumPair {
 }
 /** Producer-owned Standard PBR resources resolved during graph execution. */
 export interface GpuDrivenStandardPbrFrameResources {
-  /** Current display-camera rejection for a batch containing exactly one candidate. */
-  cameraVisible?: (source: import('./render-system-extract').RenderableSnapshot) => boolean;
   /** Resource generation of the actual scene-index/indirect producer. */
   readonly resourceGeneration?: number;
   /** Called only for a batch actually being recorded; prepares its exact physical binding. */

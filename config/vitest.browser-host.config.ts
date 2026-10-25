@@ -27,6 +27,7 @@ const project = defineProject({
       '@forgeax/engine-pack > acorn',
       '@forgeax/engine-geometry > earcut',
       '@forgeax/engine-assets-runtime > @forgeax/engine-codec > fzstd',
+      '@forgeax/engine-assets-runtime > @forgeax/engine-codec > @hpcc-js/wasm-zstd',
     ],
   },
   server: {

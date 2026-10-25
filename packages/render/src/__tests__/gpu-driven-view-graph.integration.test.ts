@@ -16,9 +16,10 @@ import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction } from '../temporal/frame';
+import type { ViewLights } from '../world/render-lights';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
 
 const material = new MaterialResource({
@@ -202,10 +203,11 @@ describe('GpuDrivenView graph projection', () => {
       colorAttachmentFormat: 'rgba8unorm',
     } as unknown as PipelineState;
     const lights = {
-      cascadeCount: undefined,
+      cascades: undefined,
       pointShadow: [],
       spot: [],
-    } as unknown as ExtractedLights;
+      shadowViews: [],
+    } as unknown as ViewLights;
     const compile = (prepared?: PreparedGpuDrivenFrame) =>
       ensureCompiledFrameGraph(
         internals,
@@ -409,10 +411,11 @@ describe('GpuDrivenView graph projection', () => {
       colorAttachmentFormat: 'rgba8unorm',
     } as unknown as PipelineState;
     const lights = {
-      cascadeCount: undefined,
+      cascades: undefined,
       pointShadow: [],
       spot: [],
-    } as unknown as ExtractedLights;
+      shadowViews: [],
+    } as unknown as ViewLights;
     const compile = (prepared: PreparedGpuDrivenFrame, width = 1) =>
       ensureCompiledFrameGraph(
         internals,

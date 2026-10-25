@@ -1,11 +1,7 @@
-import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import {
-  acquireDeviceGeneration,
-  probeCandidateGraphExecution,
-  runRecoveryStep,
-} from '../assembly/recovery/recovery-attempt';
+import { acquireDeviceGeneration, runRecoveryStep } from '../assembly/recovery/recovery-attempt';
 import {
   createRecoveryContinuation,
   createRecoveryDeadline,
@@ -95,64 +91,6 @@ describe('renderer recovery lifecycle', () => {
 
     expect(result.ok).toBe(true);
     expect(phases).toEqual(['acquire-adapter', 'acquire-device']);
-  });
-
-  it('treats the null graph probe as structural-only and rejects a non-null pixel mismatch', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const nullDevice = (await adapter.requestDevice()).unwrap();
-    const texture = nullDevice
-      .createTexture({
-        label: 'recovery-probe-test.texture',
-        size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        format: 'rgba8unorm',
-        usage: 0x11,
-        viewFormats: undefined,
-        textureBindingViewDimension: undefined,
-      })
-      .unwrap();
-    const view = nullDevice.createTextureView(texture, { dimension: '2d' }).unwrap();
-    const nullProbe = await probeCandidateGraphExecution(nullDevice, {
-      texture,
-      view,
-      format: 'rgba8unorm',
-    });
-    expect(nullProbe.ok).toBe(true);
-
-    class PixellessNonNullDevice extends RhiNullDevice {
-      override get caps() {
-        return { ...super.caps, backendKind: 'webgpu' as const };
-      }
-    }
-    const nonNullDevice = new PixellessNonNullDevice(
-      new RhiNullQueue(),
-      (bookkeeper, device) => new RhiNullCommandEncoder(bookkeeper, device),
-    );
-    const nonNullTexture = nonNullDevice
-      .createTexture({
-        label: 'recovery-probe-test.non-null-texture',
-        size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        format: 'rgba8unorm',
-        usage: 0x11,
-        viewFormats: undefined,
-        textureBindingViewDimension: undefined,
-      })
-      .unwrap();
-    const nonNullView = nonNullDevice
-      .createTextureView(nonNullTexture, { dimension: '2d' })
-      .unwrap();
-    const nonNullProbe = await probeCandidateGraphExecution(nonNullDevice, {
-      texture: nonNullTexture,
-      view: nonNullView,
-      format: 'rgba8unorm',
-    });
-    expect(nonNullProbe.ok).toBe(false);
-    if (!nonNullProbe.ok) expect(nonNullProbe.error.code).toBe('webgpu-runtime-error');
   });
 
   it('invalidates late continuation and cleans the candidate exactly once', () => {

@@ -120,7 +120,8 @@ import {
   type MeshRenderData,
   type TextureRenderData,
 } from '../render-data';
-import type { DeviceScope, LifecycleResourceSpec } from './device-scope';
+import type { DeviceScope } from './device-scope';
+import { MorphGeometry } from './morph-geometry';
 
 const FACE_COUNT = 6;
 
@@ -571,6 +572,8 @@ const NO_TEXTURE_WORK = ok(undefined);
 const DERIVED_GEOMETRY = Symbol();
 
 export class GpuResidencyCache {
+  /** Per-entity morphed streams derived from resident Mesh handles. */
+  readonly morphGeometry = new MorphGeometry();
   private readonly textureDerivations = new TextureDerivations();
   private readonly pendingImageAdoptions = new ScopedGpuResources<AssetChange>();
   /** Actual consumers can request RGBA for CPU image pages; ordinary GPU uploads select device caps. */
@@ -1078,6 +1081,7 @@ export class GpuResidencyCache {
    */
   destroyAll(): void {
     this.meshChanges.assertIdle();
+    this.morphGeometry.dispose(() => {});
     this.textureDerivations.clear();
     this.pendingImageAdoptions.clear();
     this.imagePages.dispose();
@@ -1130,41 +1134,6 @@ export class GpuResidencyCache {
     this.pendingGeneratedRetirement.clear();
     this.retiredMeshes.clear();
     this.sharedMeshBuffers.clear();
-  }
-
-  /** Number of candidate-owned GPU resources currently held by this cache. */
-  recoveryResourceCount(): number {
-    let cubemapResources = 0;
-    const seen = new Set<GpuTexture>();
-    for (const entry of this.cubemapGpuHandles.values()) {
-      if (entry.texture !== null && !seen.has(entry.texture)) {
-        seen.add(entry.texture);
-        cubemapResources += 1;
-      }
-    }
-    return (
-      this.meshGpuHandles.size +
-      this.retiredMeshes.size +
-      this.textureGpuHandles.size +
-      this.retiredTextures.size +
-      this.samplerGpuHandles.size +
-      cubemapResources
-    );
-  }
-
-  /** Candidate root for the cache owner, not a scalar readiness marker. */
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown> {
-    return {
-      kind: 'texture',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('GPU residency candidate scope is not active.');
-        if (this.recoveryResourceCount() === 0) {
-          throw new Error('GPU residency candidate has no prepared resources.');
-        }
-        return this;
-      },
-      cleanup: () => undefined,
-    };
   }
 
   /**

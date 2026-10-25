@@ -27,6 +27,7 @@ function delta(overrides: Partial<RenderSceneApplyResult>): RenderSceneApplyResu
     instanceUpdatedSlots: [],
     removedSlots: [],
     recreatedSlots: [],
+    previous: new Map(),
     resynced: 0,
     ...overrides,
   };

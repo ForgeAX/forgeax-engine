@@ -1,7 +1,7 @@
 import { expect, test, vi } from 'vitest';
 import { type Component, defineComponent } from '../component';
 import type { EntityHandle } from '../entity-handle';
-import { ChangedEntityOrder } from '../query/change-order';
+import { type ChangedEntities, ChangedEntityOrder } from '../query/change-order';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
@@ -66,11 +66,15 @@ test.each([
 test('ordering scratch is lazy, fixed-size and does not retain the changed batch', () => {
   const world = new World();
   const order = new ChangedEntityOrder(world[worldInternal], false);
-  const small = Array.from({ length: 32 }, () => world.spawn().unwrap()).reverse();
+  const small = Uint32Array.from(
+    Array.from({ length: 32 }, () => world.spawn().unwrap()).reverse(),
+  ) as ChangedEntities;
   order.sort(small);
   const scratch = () => (order as unknown as { scratch?: Uint32Array }).scratch;
   expect(scratch()).toBeUndefined();
-  const large = Array.from({ length: 700 }, () => world.spawn().unwrap()).reverse();
+  const large = Uint32Array.from(
+    Array.from({ length: 700 }, () => world.spawn().unwrap()).reverse(),
+  ) as ChangedEntities;
   order.sort(large);
   const retained = scratch();
   expect(retained?.byteLength).toBe(8 * 256 * 3 * 4);

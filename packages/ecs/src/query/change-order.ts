@@ -1,6 +1,9 @@
 import { type EntityHandle, entityIndex } from '../entity-handle';
 import type { WorldInternal } from '../world-internal';
 
+/** Changed identities of one iteration, held in a query-owned typed buffer. */
+export type ChangedEntities = Uint32Array & { [index: number]: EntityHandle };
+
 const BUCKETS = 256;
 const LEVELS = 8;
 const SMALL = 32;
@@ -22,7 +25,7 @@ export class ChangedEntityOrder {
   private maxStorage = 0;
   private maxRow = 0;
 
-  sort(entities: EntityHandle[]): void {
+  sort(entities: ChangedEntities): void {
     this.records = this.owner.getRecords();
     this.archetypes = this.owner.getGraph().archetypes;
     try {
@@ -40,13 +43,14 @@ export class ChangedEntityOrder {
     }
   }
 
-  private ordered(entities: readonly EntityHandle[]): boolean {
+  private ordered(entities: ChangedEntities): boolean {
     let storage = -1,
       row = -1,
       ordered = true,
       maxStorage = 0,
       maxRow = 0;
-    for (const entity of entities) {
+    for (let at = 0; at < entities.length; at++) {
+      const entity = entities[at] as EntityHandle;
       const nextStorage = this.key(entity, false);
       const nextRow = this.key(entity, true);
       if (nextStorage < storage || (nextStorage === storage && nextRow < row)) ordered = false;
@@ -65,12 +69,13 @@ export class ChangedEntityOrder {
   }
 
   private key(entity: EntityHandle, row: boolean): number {
-    const record = (this.records as ReturnType<WorldInternal['getRecords']>)[entityIndex(entity)];
-    const archetype = this.archetypes?.[record?.archetypeId ?? -1];
+    const records = this.records as ReturnType<WorldInternal['getRecords']>;
+    const slot = entityIndex(entity);
+    const archetype = this.archetypes?.[records.archetypeId[slot] ?? -1];
     if (row)
       return this.sparse
-        ? (record?.archetypeRow ?? 0)
-        : (archetype?.rows[record?.archetypeRow ?? -1] ?? 0);
+        ? (records.archetypeRow[slot] ?? 0)
+        : (archetype?.rows[records.archetypeRow[slot] ?? -1] ?? 0);
     return this.sparse ? (archetype?.id ?? 0) : (archetype?.tableId ?? 0);
   }
 
@@ -78,7 +83,7 @@ export class ChangedEntityOrder {
     return this.key(a, false) - this.key(b, false) || this.key(a, true) - this.key(b, true);
   }
 
-  private insertion(entities: EntityHandle[], start: number, end: number): void {
+  private insertion(entities: ChangedEntities, start: number, end: number): void {
     for (let at = start + 1; at < end; at++) {
       const entity = entities[at] as EntityHandle;
       let into = at;
@@ -96,7 +101,7 @@ export class ChangedEntityOrder {
   }
 
   private partition(
-    entities: EntityHandle[],
+    entities: ChangedEntities,
     start: number,
     end: number,
     first: number,

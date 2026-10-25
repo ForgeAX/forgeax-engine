@@ -33,6 +33,7 @@ and reusable analysis, rather than another delivery state machine.
 | Full index copies for transaction rollback or abort | [Rollback maintenance](references/cpu-submission.md#scope-rollback-maintenance) |
 | Worker GC, short-lived allocation sources, heap/source attribution or retention | [GC and allocation ownership](references/gc.md) |
 | Resident Worker heap versus GC sawtooth, retained-floor attribution or small CPU effects under workload noise | [Heap floor case](references/cases/worker-heap-floor-20261023.md) |
+| Million-entity CPU scaling, Render World row ownership or Worker publication transfer | [Change-propagation bench](../../packages/render/bench/change-propagation/README.md) and [ECS steady-state bench](../../packages/ecs/bench/steady-state.mjs): keep steady allocation proportional to changes, sparse tags for flipping membership, and name constructors with the heap census |
 | Texture work, static features, shader variants or uniform-derived math | [Materials and shaders](references/materials-shaders.md) |
 | Shadow pass cost, coverage, resolution or sampling | [Shadows](references/shadows.md) |
 | Local smoke coverage, composite cost or temporal-safe screen bounds | [Local smoke footprint case](references/cases/local-smoke-footprint-20261016.md) |

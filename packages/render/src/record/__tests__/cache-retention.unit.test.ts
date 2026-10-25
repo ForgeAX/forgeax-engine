@@ -21,10 +21,6 @@ it('retains instance collections separately from material owners and retires dea
       [collection, new Map([[0, entry()]])],
       [999, new Map([[0, entry()]])],
     ]),
-    morphBuffers: new Map([
-      [entity, entry()],
-      [collection, entry()],
-    ]),
   };
   const rows = [
     { source: { worldId: 1, entityKey: 42, instances: { cacheKey: 42, collectionId: 7 } } },
@@ -41,8 +37,7 @@ it('retains instance collections separately from material owners and retires dea
   expect([...state.instancesBgPerEntity.keys()]).toEqual([entity, later]);
   expect([...state.instanceBuffers.keys()]).toEqual([entity, later, retained, collection]);
   expect([...state.instanceBufferChunks.keys()]).toEqual([collection]);
-  expect([...state.morphBuffers.keys()]).toEqual([entity]);
-  expect(destroy).toHaveBeenCalledTimes(3);
+  expect(destroy).toHaveBeenCalledTimes(2);
   expect(fire).not.toHaveBeenCalled();
   cleanPerFrameCaches(
     { errorRegistry: { fire } } as never,
@@ -50,7 +45,7 @@ it('retains instance collections separately from material owners and retires dea
     rows as never,
     new Set([retained]),
   );
-  expect(destroy).toHaveBeenCalledTimes(3);
+  expect(destroy).toHaveBeenCalledTimes(2);
 });
 
 describe('empty retained input', () => {

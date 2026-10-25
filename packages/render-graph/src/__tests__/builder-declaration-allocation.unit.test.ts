@@ -30,7 +30,9 @@ it('allocates only the public Result when admitting imported resources and their
     const passResults = creates.mock.results.filter(
       (result) => result.type === 'return' && result.value?.ok === true,
     ).length;
-    expect({ resourceResults, passResults }).toEqual({ resourceResults: 1200, passResults: 1 });
+    expect(resourceResults).toBe(1200);
+    // A void success may reuse one shared Result; it must never scale with accesses.
+    expect(passResults).toBeLessThanOrEqual(1);
   } finally {
     creates.mockRestore();
   }

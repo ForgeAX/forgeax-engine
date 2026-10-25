@@ -752,11 +752,15 @@ export {
   type RenderPublication,
   RenderPublicationError,
   type RenderPublicationIdentity,
+} from './publication/contract';
+export { createRenderPublisher, type RenderPublicationCandidate } from './publication/publisher';
+export {
+  type RenderPublicationMessage,
+  type RenderPublicationSide,
   renderPublicationAssetTransfers,
   renderPublicationBytes,
   renderPublicationTransfers,
-} from './publication/contract';
-export { createRenderPublisher, type RenderPublicationCandidate } from './publication/publisher';
+} from './publication/record';
 export { RenderPublicationTargetOwner, type RenderTargetAuthoring } from './publication/targets';
 export {
   DIFFUSE_GI_TIER_BUDGETS,

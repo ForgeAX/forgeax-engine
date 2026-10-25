@@ -8,10 +8,13 @@ import { describe, expect, it } from 'vitest';
 import { recordFrameTransaction } from '../../assembly/frame-recording';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../../components';
 import { MeshChanges, type ShadowMeshReads } from '../../device/mesh-changes';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
+import type { ExtractedFrame } from '../../render-system-extract';
 import { PersistentRenderScene } from '../../scene/render-scene';
+import { renderLightsOf } from '../../world/render-lights';
+import { createRenderWorld } from '../../world/render-world';
 import {
   currentDirectionalShadowPublication,
   prepareDirectionalCascadeCadence,
@@ -22,6 +25,15 @@ import {
 } from '../directional-shadow-cache';
 import type { RenderFrameState } from '../frame-snapshot';
 import type { RenderSystemInternals } from '../render-context';
+
+const lightOwner = renderLightsOf(createRenderWorld());
+const recordingView = {};
+/** The lights a display view of `frame` records with. */
+function viewLightsOf(frame: ExtractedFrame) {
+  return lightOwner.viewLights(recordingView, lightOwner.sync(frame.lights), {
+    camera: frame.cameras[0],
+  });
+}
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
@@ -80,18 +92,21 @@ function fixture(staggerCascades = true) {
   const receive = () => {
     const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
     return accepted;
   };
   const publish = () => {
     const accepted = receive();
     scene.consumePublication(accepted);
-    const returned = structuredClone(renderPublicationTransfers(accepted.packet), {
-      transfer: renderPublicationTransfers(accepted.packet),
-    });
+    const returned = structuredClone(
+      renderPublicationTransfers(encodeRenderPublication(accepted.packet)),
+      {
+        transfer: renderPublicationTransfers(encodeRenderPublication(accepted.packet)),
+      },
+    );
     publisher.recycle(accepted.packet.revision, returned).unwrap();
     return accepted;
   };
@@ -114,7 +129,7 @@ function fixture(staggerCascades = true) {
       state,
       [accepted.resources],
       [],
-      accepted.frame.lights,
+      viewLightsOf(accepted.frame),
       1024,
       input,
       casters,
@@ -166,7 +181,7 @@ describe('accepted publication CPU shadow authority', () => {
       const root = first.next.meshReads;
       const epoch = first.next.meshEpoch;
       const cadence = prepareDirectionalCascadeCadence(
-        accepted.frame.lights,
+        viewLightsOf(accepted.frame),
         undefined,
         first.miss,
       );
@@ -176,7 +191,7 @@ describe('accepted publication CPU shadow authority', () => {
       expect(rejected.miss).toBe('source-changed');
       expect(
         prepareDirectionalCascadeCadence(
-          accepted.frame.lights,
+          viewLightsOf(accepted.frame),
           cadence.next ?? undefined,
           rejected.miss,
         ).cascadeMiss,
@@ -210,11 +225,10 @@ describe('accepted publication CPU shadow authority', () => {
     const f = fixture();
     try {
       const first = f.publish();
-      expect(first.frame.lights.lightViewProj).toHaveLength(4);
-      expect(
-        first.frame.lights.lightViewProj?.every((matrix) => matrix.every(Number.isFinite)),
-      ).toBe(true);
-      expect(first.frame.lights.splitPlanes?.every(Number.isFinite)).toBe(true);
+      const cascades = viewLightsOf(first.frame).cascades;
+      expect(cascades?.lightViewProj).toHaveLength(4);
+      expect(cascades?.lightViewProj?.every((matrix) => matrix.every(Number.isFinite))).toBe(true);
+      expect(cascades?.splitPlanes.every(Number.isFinite)).toBe(true);
       const firstSource = requiredSource(f).source;
       const initial = f.decide(first);
       expect(initial.miss).toBe('first-publication');
@@ -244,7 +258,11 @@ describe('accepted publication CPU shadow authority', () => {
       const first = f.publish();
       const initial = f.decide(first);
       f.state.directionalShadowCache = initial.next;
-      const cadence = prepareDirectionalCascadeCadence(first.frame.lights, undefined, initial.miss);
+      const cadence = prepareDirectionalCascadeCadence(
+        viewLightsOf(first.frame),
+        undefined,
+        initial.miss,
+      );
       if (cadence.next === null) throw new Error('expected submitted cadence');
       const before = requiredSource(f).casters.content;
       f.world.set(f.entity, Transform, { pos: [1, 0, 0] }).unwrap();
@@ -256,7 +274,7 @@ describe('accepted publication CPU shadow authority', () => {
       const decision = f.decide(moved);
       expect(decision.miss).toBe('content-changed');
       expect(
-        prepareDirectionalCascadeCadence(moved.frame.lights, cadence.next, decision.miss)
+        prepareDirectionalCascadeCadence(viewLightsOf(moved.frame), cadence.next, decision.miss)
           .cascadeMiss,
       ).toEqual(['content-changed', 'content-changed', undefined]);
     } finally {
@@ -303,9 +321,11 @@ describe('accepted publication CPU shadow authority', () => {
       const next = f.receive();
       f.scene.consumePublication(next);
       const current = requiredSource(f);
-      expect(f.receiver.accept(accepted.packet).ok).toBe(false);
+      expect(f.receiver.accept(encodeRenderPublication(accepted.packet)).ok).toBe(false);
       expect(
-        f.receiver.accept({ ...next.packet, base: next.packet.revision, baseline: false }).ok,
+        f.receiver.accept(
+          encodeRenderPublication({ ...next.packet, base: next.packet.revision, baseline: false }),
+        ).ok,
       ).toBe(false);
       expect(current.source.isCurrent()).toBe(true);
       expect(source.isCurrent()).toBe(false);

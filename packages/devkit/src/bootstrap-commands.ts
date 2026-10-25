@@ -133,7 +133,7 @@ export async function doctorCommand(
       ok: false,
       error: {
         code: 'pnpm-version-unsupported',
-        expected: 'pnpm >=12.10.1 <13',
+        expected: `pnpm >=${MINIMUM_SUPPORTED_PNPM} <13`,
         hint: 'Enable the packageManager-declared pnpm version with Corepack and retry.',
         detail: { actual: pnpm },
       },

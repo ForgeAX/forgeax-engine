@@ -137,7 +137,8 @@ it.each([
   requireValue(b.draw(rb));
   expect(a.inspect().instanceCollections[0]?.count).toBe(count);
   expect(b.inspect().instanceCollections[0]?.count).toBe(count);
-  expect(b.inspect().instanceCollections[0]?.uploadedBytes).toBeGreaterThan(0);
+  const coldUploadBytes = b.inspect().instanceCollections[0]?.uploadedBytes ?? 0;
+  expect(coldUploadBytes).toBeGreaterThan(0);
   requireValue(b.draw(rb));
   expect(b.inspect().instanceCollections[0]?.uploadedBytes).toBe(0);
   const firstRevision = b.inspect().instanceCollections[0]?.revision;
@@ -158,7 +159,9 @@ it.each([
   const recovered = await b.recover();
   expect(recovered.ok, recovered.ok ? '' : JSON.stringify(recovered.error)).toBe(true);
   requireValue(b.draw(rb));
-  expect(b.inspect().instanceCollections[0]?.uploadedBytes).toBe(count === 129 ? count * 64 : 0);
+  // Recovery replays no submitted frame: the first recovered draw uploads the
+  // current collection through the ordinary cold path.
+  expect(b.inspect().instanceCollections[0]?.uploadedBytes).toBe(coldUploadBytes);
   expect(b.inspect().recoveryEvidence.submissions.lastGeneration).toBe(1);
   expect(b.inspect().frame.deviceGeneration).toBe(1);
   // The GPU-driven primary lane owns no legacy instance buffer; its published

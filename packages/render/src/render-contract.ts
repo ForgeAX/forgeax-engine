@@ -495,7 +495,7 @@ export interface SpotLightProjectorFrameContext {
   readonly texture: Texture;
   readonly view: TextureView;
   readonly sampler: Sampler;
-  /** Spot-light index in ExtractedLights.spot for the accepted texture. */
+  /** Spot-light index in the light roster for the accepted texture. */
   readonly spotIndex?: number;
   /** Unified Standard Cluster slot index (points precede spots). */
   readonly lightSlotIndex?: number;
@@ -1332,7 +1332,6 @@ export const RENDER_HDRP_BINNER_PHASE_CATALOG = [
 export const RENDER_HDRP_CLUSTER_PHASE_CATALOG = [
   'record/scene-state/hdrp-cluster/binner',
   ...RENDER_HDRP_BINNER_PHASE_CATALOG,
-  'record/scene-state/hdrp-cluster/payload-packing',
   'record/scene-state/hdrp-cluster/buffer-upload',
 ] as const;
 

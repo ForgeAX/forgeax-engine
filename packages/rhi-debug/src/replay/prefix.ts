@@ -1,9 +1,10 @@
-import type { RhiCommandEncoder, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import type { CommandBuffer, RhiCommandEncoder, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { RhiDebugError } from '../errors';
 import type { TapeIndex, TapeWorkEntry } from '../protocol/tape-index';
 import type { RhiCallEvent } from '../protocol/types';
 import { eventFailure, executeEvent, type ReplayExecutionContext } from './execute';
+import { requireResource } from './execute-support';
 
 export async function replayThroughWork(
   context: ReplayExecutionContext,
@@ -119,7 +120,14 @@ async function finalizeWorkPass(
     const uploaded = await executeEvent(context, event, eventIndex);
     if (!uploaded.ok) return uploaded;
   }
-  const submitted = context.queue.submit([finished.value]);
+  const preceding = await finishPrecedingSubmission(
+    context,
+    begin.cmdHandleId,
+    work.eventIndex,
+    submitEventIndex,
+  );
+  if (!preceding.ok) return preceding;
+  const submitted = context.queue.submit([...preceding.value, finished.value]);
   const submitEvent = context.tape.events[submitEventIndex ?? work.eventIndex] ?? begin;
   if (!submitted.ok)
     return eventFailure(
@@ -130,6 +138,65 @@ async function finalizeWorkPass(
     );
   await context.queue.onSubmittedWorkDone();
   return ok(undefined);
+}
+
+/**
+ * Command buffers listed before the selected encoder in its submit execute
+ * first on the GPU, even when they were recorded later (for example a mip
+ * generation encoder). Record their remaining commands and return them in
+ * submission order so the selected prefix observes the same GPU state.
+ */
+async function finishPrecedingSubmission(
+  context: ReplayExecutionContext,
+  cmdHandleId: string,
+  selectedEventIndex: number,
+  submitEventIndex: number | undefined,
+): Promise<Result<CommandBuffer[], RhiDebugError>> {
+  const submit = submitEventIndex === undefined ? undefined : context.tape.events[submitEventIndex];
+  if (submit?.kind !== 'submit') return ok([]);
+  const position = submit.cmdHandleIds.indexOf(cmdHandleId);
+  if (position <= 0) return ok([]);
+  const encoders = new Set(submit.cmdHandleIds.slice(0, position));
+  const passes = new Set<string>();
+  for (let index = 0; index < (submitEventIndex as number); index++) {
+    const event = context.tape.events[index];
+    if (
+      (event?.kind === 'beginRenderPass' || event?.kind === 'beginComputePass') &&
+      encoders.has(event.cmdHandleId)
+    )
+      passes.add(event.passHandleId);
+  }
+  for (let index = selectedEventIndex + 1; index < (submitEventIndex as number); index++) {
+    const event = context.tape.events[index];
+    if (event === undefined) continue;
+    // Objects those commands reference may be created after the selected work.
+    const handleId = (event as { readonly handleId?: unknown }).handleId;
+    const creates =
+      (event.kind.startsWith('create') || event.kind === 'getBindGroupLayout') &&
+      event.kind !== 'createCommandEncoder' &&
+      typeof handleId === 'string' &&
+      context.table.get(handleId) === undefined;
+    const owner =
+      'cmdHandleId' in event
+        ? encoders.has(event.cmdHandleId)
+        : 'passHandleId' in event && passes.has(event.passHandleId);
+    if (!owner && !creates) continue;
+    const result = await executeEvent(context, event, index);
+    if (!result.ok) return result;
+  }
+  const buffers: CommandBuffer[] = [];
+  for (const id of submit.cmdHandleIds.slice(0, position)) {
+    const buffer = requireResource(
+      context,
+      id,
+      'command-buffer',
+      submitEventIndex as number,
+      'submit',
+    );
+    if (!buffer.ok) return buffer;
+    buffers.push(buffer.value);
+  }
+  return ok(buffers);
 }
 
 export function closeReplayPass(

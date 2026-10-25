@@ -10,6 +10,7 @@ import {
   MeshFilter,
   MeshRenderer,
 } from '@forgeax/engine-render';
+import { encodeRenderPublication } from '@forgeax/engine-render/internal';
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
@@ -176,7 +177,7 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
               ),
             });
       writes.length = 0;
-      const receipt = required(renderer.draw({ publication: packet }));
+      const receipt = required(renderer.draw({ publication: encodeRenderPublication(packet) }));
       required(await receipt.completed);
       expect(receipt.presentation).toBe('ready');
       const channels = renderer

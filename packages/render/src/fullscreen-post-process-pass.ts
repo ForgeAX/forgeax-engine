@@ -26,6 +26,7 @@ import type {
 import { GPU_SHADER_STAGE_FRAGMENT } from './gpu-stage';
 import type { BglKind } from './pipeline-spec';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from './pipeline-spec';
+import { bindGroupChainLeaf } from './record/mesh-ssbo';
 import { GenerationalWeakMap } from './scene/generational-weak-map';
 
 // Default fullscreen-post spec stub. The dispatcher's 'fullscreen-post' arm
@@ -597,6 +598,13 @@ function createFullscreenPostProcessPass(
  * `'fullscreen-post-with-scene-depth'` BGL. Both must be supplied together
  * (or both omitted for existing color-only consumers — AC-03 zero-regression).
  */
+// Fullscreen bind groups are immutable in their resources: one per exact
+// layout/resource chain, instead of a native bind group per pass per frame.
+const fullscreenBindGroups = new WeakMap<object, unknown>();
+const fullscreenChainKeys: object[] = [];
+const ABSENT_BINDING: object = {};
+const BUFFER_BINDINGS: object = {};
+
 export function createFullscreenBindGroup(
   device: RhiDevice,
   bgl: BindGroupLayout,
@@ -608,6 +616,25 @@ export function createFullscreenBindGroup(
   additionalViews: readonly { readonly binding: number; readonly view: TextureView }[] = [],
   additionalBuffers: readonly { readonly binding: number; readonly buffer: Buffer }[] = [],
 ): BindGroup | null {
+  const depthBound = depthTexView && depthSampler;
+  const keys = fullscreenChainKeys;
+  keys.length = 0;
+  keys.push(
+    bgl,
+    inputView,
+    sampler ?? ABSENT_BINDING,
+    paramsBuffer ?? ABSENT_BINDING,
+    depthBound ? depthTexView : ABSENT_BINDING,
+    depthBound ? depthSampler : ABSENT_BINDING,
+  );
+  for (let index = 0; index < additionalViews.length; index++)
+    keys.push((additionalViews[index] as { readonly view: TextureView }).view);
+  keys.push(BUFFER_BINDINGS);
+  for (let index = 0; index < additionalBuffers.length; index++)
+    keys.push((additionalBuffers[index] as { readonly buffer: Buffer }).buffer);
+  const leaf = bindGroupChainLeaf(fullscreenBindGroups, keys);
+  const cached = leaf.get('fullscreen');
+  if (cached !== undefined) return cached;
   const entries: { binding: number; resource: { kind: string; value: unknown } }[] = [
     { binding: 0, resource: { kind: 'textureView', value: inputView } },
   ];
@@ -644,5 +671,6 @@ export function createFullscreenBindGroup(
     entries: entries as never,
   });
   if (!res.ok) return null;
+  leaf.set('fullscreen', res.value);
   return res.value;
 }

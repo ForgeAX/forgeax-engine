@@ -7,12 +7,15 @@ const Pose = defineComponent('BorrowedPose', { value: 'array<f32, 3>' });
 const Tag = defineComponent('BorrowedPoseTag', {});
 
 describe('internal borrowed inline array views', () => {
-  it('reuses the byte window while public reads keep independent wrappers', () => {
+  it('aliases the same byte window without retaining a per-row wrapper', () => {
     const world = new World();
     const entity = world.spawn({ component: Pose, data: { value: [1, 2, 3] } }).unwrap();
-    const read = () => world[worldInternal].getArrayView(entity, Pose, 'value');
+    const read = () => world[worldInternal].getArrayView(entity, Pose, 'value') as Float32Array;
     const initial = read();
-    expect(read()).toBe(initial);
+    const again = read();
+    expect(again).not.toBe(initial);
+    expect(again.buffer).toBe(initial.buffer);
+    expect(again.byteOffset).toBe(initial.byteOffset);
     world.set(entity, Pose, { value: [4, 5, 6] }).unwrap();
     expect(Array.from(read() ?? [])).toEqual([4, 5, 6]);
     expect(world.get(entity, Pose).unwrap().value).not.toBe(world.get(entity, Pose).unwrap().value);

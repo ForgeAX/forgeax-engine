@@ -21,11 +21,11 @@ import { writeViewUbo } from '../../../render/src/record/view-ubo';
 import type { CameraSnapshot } from '../../../render/src/render-contract';
 import type {
   DirectionalLightSnapshot,
-  ExtractedLights,
   PointLightSnapshot,
   SkylightSnapshot,
   SpotLightSnapshot,
 } from '../../../render/src/render-system-extract';
+import type { ViewLights } from '../../../render/src/world/render-lights';
 
 function identityCamera(): CameraSnapshot {
   return {
@@ -53,20 +53,17 @@ function identityCamera(): CameraSnapshot {
   };
 }
 
-const emptyLights: ExtractedLights = {
+const emptyLights: ViewLights = {
+  cascades: undefined,
+  shadowViews: [],
   directional: undefined,
   directionalCount: 0,
   point: [],
   spot: [],
   directionalShadowError: undefined,
-  lightViewProj: undefined,
-  splitPlanes: undefined,
-  cascadeCount: undefined,
-  cascadeBlend: undefined,
   depthBias: undefined,
   normalBias: undefined,
-  directionalShadowQuality: undefined,
-} as unknown as ExtractedLights;
+} as unknown as ViewLights;
 
 /** Capture the single writeViewUbo payload as a Float32Array. */
 function captureViewUbo(light: DirectionalLightSnapshot): { payload: Float32Array } {
@@ -149,7 +146,6 @@ describe('w7 -- light GPU pack byte-neutral (AC-11)', () => {
       cosInner: 0.95,
       cosOuter: 0.8,
       castShadow: false,
-      lightViewProj: undefined,
       mapSize: 2048,
       nearPlane: 0.1,
       farPlane: 50,

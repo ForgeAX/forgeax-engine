@@ -1,7 +1,6 @@
 import type { RenderSceneResyncReason } from '../inspection-types';
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { MaterialResource } from '../material-resource';
-import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { MeshFrame } from './mesh-frame';
 
@@ -30,9 +29,9 @@ export interface RenderSceneRecord extends RenderSceneIdentity {
 }
 
 export interface RenderSceneSlot extends RenderSceneRecord {
+  /** Changes with every write of this row; equal versions read equal facts. */
+  readonly version: number;
   readonly snapshot: RenderableSnapshot;
-  /** Optional detached projection carried with the retained render slot. */
-  readonly pointsLines?: PointsLinesRetainedSnapshot;
 }
 
 export interface RenderSceneApplyResult {
@@ -51,8 +50,14 @@ export interface RenderSceneApplyResult {
   readonly contentUpdatedSlots: readonly RenderSceneSlot[];
   /** Retained snapshots with changed instance payloads; root transforms may change too. */
   readonly instanceUpdatedSlots: readonly RenderSceneSlot[];
-  readonly removedSlots: readonly RenderSceneRecord[];
+  /** Pre-apply records of the removed rows. */
+  readonly removedSlots: readonly RenderSceneSlot[];
   readonly recreatedSlots: readonly RenderSceneSlot[];
+  /**
+   * Pre-apply record of every updated or recreated row, keyed by its post-apply
+   * record. Consumers read prior facts from the delta, never from a captured frame.
+   */
+  readonly previous: ReadonlyMap<RenderSceneSlot, RenderSceneSlot>;
   readonly resynced: number;
 }
 

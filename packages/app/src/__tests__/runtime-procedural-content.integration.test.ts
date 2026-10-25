@@ -91,16 +91,16 @@ it('creates, binds, edits and retires code-created assets across the Worker publ
     time += 1 / 60;
     const prepared = publisher.prepare(time).unwrap();
     // Structured clone is the Worker transport; no source object reaches the Renderer.
-    const packet = structuredClone(prepared.packet, {
-      transfer: renderPublicationTransfers(prepared.packet),
+    const sent = structuredClone(prepared.packet);
+    const message = structuredClone(prepared.message, {
+      transfer: renderPublicationTransfers(prepared.message),
     });
-    const sent = structuredClone(packet);
     prepared.accept();
-    const draw = renderer.draw({ publication: packet });
+    const draw = renderer.draw({ publication: message });
     if (!draw.ok) throw draw.error;
     const completed = await draw.value.completed;
     if (!completed.ok) throw completed.error;
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher.recycle(sent.revision, renderPublicationTransfers(message)).unwrap();
     return sent;
   };
   const rows = (packet: RenderPublication, handle: number) =>

@@ -1,21 +1,20 @@
 import { meshGeometryDraws } from '../gpu-driven/mesh-batches';
 import type { RenderableSnapshot } from '../render-system-extract';
-import {
-  GenerationalWeakMap,
-  identityOrdinal,
-  versionedGet,
-  versionedSet,
-} from './generational-weak-map';
-import type { MeshFrame } from './mesh-frame';
+import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
 
-// Pose-only source replacements are new snapshots every frame. One generational
-// table names the Mesh version by ordinal, so neither a dead source nor an
-// obsolete Mesh version stays resident until a full collection.
-const draws = new GenerationalWeakMap<
-  RenderableSnapshot,
-  readonly { readonly version: number; readonly value: RenderableSnapshot }[]
->();
+// Pose-only source replacements share one weak instance table per Mesh version.
+// Two generations: a projection stays shared while consecutive frames read it,
+// and a cold complete read never stays resident beside every source row.
+type DrawTables = WeakMap<MeshGeometry, WeakMap<RenderableSnapshot, RenderableSnapshot>>;
+let draws: DrawTables = new WeakMap();
+let previousDraws: DrawTables = new WeakMap();
+
+/** Start a new read generation; projections the last generation read stay shared. */
+export function rotateMeshDraws(): void {
+  previousDraws = draws;
+  draws = new WeakMap();
+}
 
 /**
  * The effective draw materials only, without a draw snapshot. Pose-only
@@ -41,15 +40,22 @@ export function meshDrawSnapshot(
   const mesh = meshes.get(source.worldId, source.assetHandle);
   if (mesh === undefined || source.terrain !== undefined || source.materialOverrides === undefined)
     return source;
-  const meshOrdinal = identityOrdinal(mesh);
-  const cached = versionedGet(draws, source, meshOrdinal);
-  if (cached !== undefined) return cached.value;
+  let instances = draws.get(mesh);
+  if (instances === undefined) {
+    instances = new WeakMap();
+    draws.set(mesh, instances);
+  }
+  const cached = instances.get(source) ?? previousDraws.get(mesh)?.get(source);
+  if (cached !== undefined) {
+    instances.set(source, cached);
+    return cached;
+  }
   const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
   const materials = effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
   const result: RenderableSnapshot = {
     ...current,
     ...materials,
-    ...(source.morph === undefined && source.gpuDrivenDraws !== undefined
+    ...(source.gpuDrivenDraws !== undefined
       ? {
           gpuDrivenDraws: meshGeometryDraws(
             mesh,
@@ -58,10 +64,17 @@ export function meshDrawSnapshot(
           ),
         }
       : {}),
-    ...(mesh.bounds === undefined ? {} : { localAabb: mesh.bounds }),
+    // Morphed rows keep their weight-expanded producer bounds.
+    ...(source.morph !== undefined
+      ? source.localAabb === undefined
+        ? {}
+        : { localAabb: source.localAabb }
+      : mesh.bounds === undefined
+        ? {}
+        : { localAabb: mesh.bounds }),
     ...(mesh.lods === undefined ? {} : { lods: mesh.lods }),
     ...(mesh.lodHysteresis === undefined ? {} : { lodHysteresis: mesh.lodHysteresis }),
   };
-  versionedSet(draws, source, { version: meshOrdinal, value: result });
+  instances.set(source, result);
   return result;
 }

@@ -12,10 +12,10 @@ import { loadMaterialFixture } from '../../../../assets-runtime/src/__tests__/fi
 import { MeshFilter, MeshRenderer } from '../../components';
 import { renderMaterialContext } from '../../extract/material-context';
 import { packMaterialProgramRow } from '../../material-row';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { installPublicationPrograms } from '../../publication/programs';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import { createSubmittedRayPathTracer } from '../../raytracing/path-tracer';
 import { PersistentRenderScene } from '../../scene/render-scene';
@@ -100,11 +100,11 @@ export async function verifyPublishedRayMaterial(
       const start = performance.now();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       installPublicationPrograms(received, packet.programs);
-      const accepted = receiver.accept(packet, received).unwrap();
+      const accepted = receiver.accept(encodeRenderPublication(packet), received).unwrap();
       const frame = scene.consumePublication(accepted);
       const resource = frame.renderables.at(0)?.material;
       const snapshot =
@@ -214,7 +214,7 @@ export async function verifyPublishedRayMaterial(
       } finally {
         tracer.dispose();
       }
-      const transfers = renderPublicationTransfers(packet);
+      const transfers = renderPublicationTransfers(encodeRenderPublication(packet));
       publisher
         .recycle(packet.revision, structuredClone(transfers, { transfer: transfers }))
         .unwrap();
@@ -229,12 +229,12 @@ export async function verifyPublishedRayMaterial(
               assets.update(handle, { values: { emissiveIntensity: 8 } }).unwrap();
               const next = publisher.prepare(world.getResource(Time).elapsed).unwrap();
               const nextPacket = structuredClone(next.packet, {
-                transfer: renderPublicationTransfers(next.packet),
+                transfer: renderPublicationTransfers(next.message),
               });
               next.accept();
               installPublicationPrograms(received, nextPacket.programs);
-              receiver.accept(nextPacket).unwrap();
-              const transfers = renderPublicationTransfers(nextPacket);
+              receiver.accept(encodeRenderPublication(nextPacket)).unwrap();
+              const transfers = renderPublicationTransfers(encodeRenderPublication(nextPacket));
               publisher
                 .recycle(nextPacket.revision, structuredClone(transfers, { transfer: transfers }))
                 .unwrap();

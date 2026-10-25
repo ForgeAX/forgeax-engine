@@ -20,11 +20,8 @@ import { worldRenderResources } from '../../publication/resource-scope';
 import { prepareDirectionalShadowCache } from '../../record/directional-shadow-cache';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
-import {
-  defaultMaterialSnapshot,
-  type ExtractedLights,
-  type MaterialSnapshot,
-} from '../../render-system-extract';
+import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-system-extract';
+import type { ViewLights } from '../../world/render-lights';
 import { MaterialFrame } from '../material-dispatch';
 import {
   ShadowMaterialContent,
@@ -155,10 +152,12 @@ it('checks actual shadow material content before accepting an unchanged World pr
     directionalShadowCache: null,
   } as unknown as RenderFrameState;
   const lights = {
-    cascadeCount: 1,
-    lightViewProj: [new Float32Array(16)],
-    directionalShadowQuality: { kind: 'pcf', kernel: 3 },
-  } as unknown as ExtractedLights;
+    cascades: {
+      cascadeCount: 1,
+      lightViewProj: [new Float32Array(16)],
+      directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+    },
+  } as unknown as ViewLights;
   const material = new MaterialResource(alpha),
     owner = {};
   const changes = new MeshChanges();
@@ -177,7 +176,6 @@ it('checks actual shadow material content before accepting an unchanged World pr
     },
     renderables: [],
     dispatch: [],
-    prepareDrawDispatch: () => [],
     worldBoundsOf: () => false,
   });
   const decide = () =>

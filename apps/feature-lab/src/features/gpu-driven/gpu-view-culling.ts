@@ -6,7 +6,7 @@ export default defineFeature({
   catalog: 'GPU view culling',
   kind: 'probe',
   summary:
-    'A compute kernel frustum-culls eligible rigid objects for the main view. Twenty cubes sit in front of the camera and six magenta cubes behind it.',
+    'A compute kernel frustum-culls eligible rigid objects (Standard, opaque rigid Unlit, morph) for the main view. Twenty cubes sit in front of the camera and six magenta cubes behind it.',
   expect:
     "All checks pass: the main view runs on lane 'gpu' with reason 'none', the frame schedules the gpu-driven frustum-compact pass, and frustum stats cull at least the six hidden cubes while all 20 visible cubes stay on screen.",
   async setup({ app, world, frames }) {

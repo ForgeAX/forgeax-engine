@@ -1,29 +1,31 @@
 // @ts-nocheck — remaining legacy assertions are migrated separately.
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
+
 import { World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { standardPipeline as urpPipeline } from '../../../render/src/pipeline/standard-pipeline';
 import { emptyFrameRecordingOutputs } from '../../../render/src/record/frame-snapshot';
 import type { CameraSnapshot } from '../../../render/src/render-contract';
-import type { ExtractedLights } from '../../../render/src/render-system-extract';
+import type { ViewLights } from '../../../render/src/world/render-lights';
 
 afterEach(() => vi.restoreAllMocks());
 {
   // --- from tonemap-pipeline-split.test.ts ---
 
-  // feat-20260519-light-casters-point-spot-pbr: ExtractedLights three-bucket
+  // feat-20260519-light-casters-point-spot-pbr: LightRoster three-bucket
   // shape (replaces the legacy `LightSnapshot[]` shape pre-merge). Tonemap
   // routing tests do not exercise the lighting path, so the empty bucket
   // (no directional + zero point/spot) is the valid neutral fixture.
-  const EMPTY_LIGHTS: ExtractedLights = {
+  const EMPTY_LIGHTS: ViewLights = {
+    cascades: undefined,
+    shadowViews: [],
     directional: undefined,
     directionalCount: 0,
     point: [],
     spot: [],
     rect: [],
     lightSpaceMatrix: undefined,
-    shadowMapSize: undefined,
     pointShadow: [],
   };
 

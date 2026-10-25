@@ -21,14 +21,11 @@ import { writeAtmosphereUniform } from '../environment/uniform';
 import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
 import type { CameraSnapshot } from '../render-contract';
-import type {
-  DirectionalLightSnapshot,
-  ExtractedLights,
-  SpotLightSnapshot,
-} from '../render-system-extract';
+import type { DirectionalLightSnapshot, SpotLightSnapshot } from '../render-system-extract';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import type { TemporalView as LegacyTemporalView } from '../temporal/temporal-view';
 import type { TemporalView } from '../temporal/view';
+import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
 export const VIEW_UNIFORM_BYTES = 1280;
@@ -213,7 +210,7 @@ export function writeViewUbo(
   viewUniformBuffer: Buffer,
   camera: CameraSnapshot,
   light: DirectionalLightSnapshot,
-  lights: ExtractedLights,
+  lights: ViewLights,
   spotShadowSnapshots: readonly SpotLightSnapshot[],
   temporalOrOffset?: TemporalView | LegacyTemporalView | number,
   projectorSpotIndex?: number,
@@ -350,12 +347,15 @@ function writeCameraAndSunLanes(
 /** lightViewProj[0] at [28..43], inverseViewProj at [44..59], lightViewProj[1..3] at [60..107]. */
 function writeCascadeProjectionLanes(
   viewPayload: Float32Array,
-  lights: ExtractedLights,
+  lights: ViewLights,
   mainProjection: Mat4,
 ): void {
   // lightViewProj[0] at [28..43] (replaces lightSpaceMatrix).
-  if (lights.lightViewProj !== undefined && lights.lightViewProj[0] !== undefined) {
-    for (let i = 0; i < 16; i++) viewPayload[28 + i] = lights.lightViewProj[0][i] ?? 0;
+  if (
+    lights.cascades?.lightViewProj !== undefined &&
+    lights.cascades?.lightViewProj[0] !== undefined
+  ) {
+    for (let i = 0; i < 16; i++) viewPayload[28 + i] = lights.cascades?.lightViewProj[0][i] ?? 0;
   }
   // inverseViewProj at [44..59] — unchanged position.
   // Host pre-computes mat4.invert so the skybox fragment shader avoids
@@ -363,10 +363,10 @@ function writeCascadeProjectionLanes(
   const inverseViewProj = mat4.create();
   mat4.invert(inverseViewProj, mainProjection);
   for (let i = 0; i < 16; i++) viewPayload[44 + i] = inverseViewProj[i] ?? 0;
-  if (lights.lightViewProj === undefined) return;
+  if (lights.cascades?.lightViewProj === undefined) return;
   for (let c = 1; c <= 3; c++) {
     const base = 60 + (c - 1) * 16;
-    const lvp = lights.lightViewProj[c];
+    const lvp = lights.cascades?.lightViewProj[c];
     if (lvp !== undefined) {
       for (let i = 0; i < 16; i++) viewPayload[base + i] = lvp[i] ?? 0;
     }
@@ -445,14 +445,14 @@ function writeCloudShadowLanes(
 /** splitPlanes [108..123], cascade count/blend [124..125], bias [126..127], filter [128..131]. */
 function writeDirectionalShadowLanes(
   viewPayload: Float32Array,
-  lights: ExtractedLights,
+  lights: ViewLights,
   light: DirectionalLightSnapshot,
 ): void {
   // splitPlanes at [108..123] (four vec4 lanes: split/world texel/depth span/reserved).
-  if (lights.splitPlanes !== undefined) {
+  if (lights.cascades?.splitPlanes !== undefined) {
     for (let s = 0; s < 4; s++) {
       for (let lane = 0; lane < 4; lane++) {
-        viewPayload[108 + s * 4 + lane] = lights.splitPlanes[s * 4 + lane] ?? 0;
+        viewPayload[108 + s * 4 + lane] = lights.cascades?.splitPlanes[s * 4 + lane] ?? 0;
       }
     }
   }
@@ -462,15 +462,15 @@ function writeDirectionalShadowLanes(
   viewPayload[119] = (lights.directionalCsmConfig?.shadowRadius ?? 1) - 1;
   viewPayload[123] = lights.directionalCsmConfig?.shadowMapAspect ?? 1;
   // cascadeCount / cascadeBlend at [124..125].
-  viewPayload[124] = lights.cascadeCount ?? 0;
-  viewPayload[125] = lights.cascadeBlend ?? 0;
+  viewPayload[124] = lights.cascades?.cascadeCount ?? 0;
+  viewPayload[125] = lights.cascades?.cascadeBlend ?? 0;
   // M1 directional shadow carrier: bias remains at [126]/[127], while the
   // accepted quality union occupies the existing four-float tail [128..131].
   // Point and Spot pcfKernelSize stay in their own snapshot paths and never
   // enter this Directional View projection.
   viewPayload[126] = lights.depthBias ?? 0.00001;
   viewPayload[127] = lights.normalBias ?? 0.05;
-  const filterCarrier = directionalShadowFilterCarrier(lights.directionalShadowQuality);
+  const filterCarrier = directionalShadowFilterCarrier(lights.cascades?.directionalShadowQuality);
   viewPayload[128] = filterCarrier[0] ?? 0;
   viewPayload[129] = filterCarrier[1] ?? 0;
   viewPayload[130] = filterCarrier[2] ?? 0;
@@ -537,7 +537,7 @@ function uploadPointShadowFaceViews(
   queue: RhiQueue,
   viewUniformBuffer: Buffer,
   viewPayload: Float32Array,
-  lights: ExtractedLights,
+  lights: ViewLights,
 ): void {
   for (const snapshot of lights.pointShadow ?? []) {
     if (snapshot.shadowAtlasLayer < 0 || snapshot.shadowAtlasLayer >= SHADOW_ATLAS_DEFAULT_LAYERS)

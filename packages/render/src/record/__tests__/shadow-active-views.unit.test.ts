@@ -57,7 +57,7 @@ describe('directional shadow graph demand', () => {
       },
     };
     const internals = { device: { limits: { maxTextureDimension2D: 2048 }, caps: {} } };
-    expect(resolveShadowMapSize(internals as never, lights as never)).toBe(64);
+    expect(resolveShadowMapSize(internals as never, { cascades: lights } as never)).toBe(64);
     expect(trace).toEqual(['count', 'size']);
     expect(count).toBe(4);
     // Raw record callers do not supply the Renderer-private scalar proof.

@@ -401,8 +401,7 @@ export class RenderScene {
       return previous.value;
     const memo = this.temporalBySlot;
     // The unavailable roster is live; only a fixed frame without it retains rows.
-    const Projection = unavailable === undefined ? RetainedFrameProjection : FrameProjection;
-    const value = new Projection(current, (record) => {
+    const project = (record: RenderSceneSlot): RenderableSnapshot => {
       // Pending source rows are retained for retry but have no accepted material.
       // Keep them hidden before consuming temporal facts from the accepted root.
       if (unavailable?.has(record.slot)) return { ...record.snapshot, authorVisible: false };
@@ -414,7 +413,17 @@ export class RenderScene {
         materials,
         memo,
       );
-    });
+    };
+    // The temporal row keeps its draw projection's LOD levels, so the Scene's
+    // maintained facts hold; sparse rows yield the same temporal projection.
+    const value =
+      unavailable === undefined
+        ? new RetainedFrameProjection(
+            current,
+            project,
+            this.rows.rowFacts(current, meshes, project),
+          )
+        : new FrameProjection(current, project);
     this.temporalMaterialized = {
       current,
       history,

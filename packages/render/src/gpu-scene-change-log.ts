@@ -308,6 +308,43 @@ export class GpuSceneChangeLog {
   }
 
   /**
+   * Whether every box {@link changedSince} would report misses the caller:
+   * the same answer as testing its merged boxes, without merging them. Boxes
+   * are filtered by `ignored`, judged by `misses` and only then by the
+   * `observed` membership, so a box outside the caller costs no membership
+   * lookup. A change without a proven box, a resync or a revision older than
+   * the history never misses.
+   */
+  changedBoundsMiss(
+    since: number,
+    current: number,
+    misses: (boxes: Float32Array, offset: number) => boolean,
+    ignored?: ReadonlySet<number>,
+    observed?: { has(slot: number): boolean },
+  ): boolean {
+    if (since === current) return true;
+    const first = this.entriesAfter(since);
+    if (first === undefined) return false;
+    for (let index = first; index < this.entries.length; index += 1) {
+      const entry = this.entries[index] as ChangeEntry;
+      if (entry.whole) return false;
+      const unbounded = entry.unboundedSlots;
+      for (let at = 0; at < unbounded.length; at += 1) {
+        const slot = unbounded[at] as number;
+        if (ignored?.has(slot) !== true && (observed === undefined || observed.has(slot)))
+          return false;
+      }
+      const boxSlots = entry.boxSlots;
+      for (let box = 0; box < boxSlots.length; box += 1) {
+        const slot = boxSlots[box] as number;
+        if (ignored?.has(slot) === true || misses(entry.boxes, box * 6)) continue;
+        if (observed === undefined || observed.has(slot)) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Slots created, changed or removed after `since`, or `undefined` when the retained
    * history cannot prove the set.
    */

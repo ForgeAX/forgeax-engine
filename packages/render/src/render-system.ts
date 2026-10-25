@@ -3359,12 +3359,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       const observeResidency = createMaterialResidencyObserver(internals);
       return (lastMeshMaterialBindingRenderables ?? []).map((renderable) => {
         const materialWorld = lastMeshMaterialBindingWorlds[renderable.worldId];
-        const snapshotOf = (material: import('./material-resource').MaterialResource) => {
-          const snapshot = lastMeshMaterialBindingMaterials?.get(material)?.snapshot;
-          if (snapshot === undefined)
-            throw new Error('Inspected draw has no accepted material version');
-          return snapshot;
-        };
+        // Scene-owned draws read the version accepted by the shadow/Scene frame.
+        // Generated view draws (terrain sections, glyphs, tilemaps, generated
+        // meshes) capture their material at their producer, outside that
+        // frame, from the resource's current snapshot; inspect the same one.
+        const snapshotOf = (material: import('./material-resource').MaterialResource) =>
+          lastMeshMaterialBindingMaterials?.get(material)?.snapshot ?? material.snapshot;
         return projectMeshMaterialBindingObservation({
           worldId: renderable.worldId,
           ...(materialWorld === undefined ? {} : { worldIdentity: materialWorld.identity }),

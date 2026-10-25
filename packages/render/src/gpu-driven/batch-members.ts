@@ -251,6 +251,21 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
     const base = lowerBound(page, slot);
     return base < page.length && page[base] === slot ? { page, base } : undefined;
   }
+  /** Whether `slot` holds a weighted member, without materializing it. */
+  drawsSlot(slot: number): boolean {
+    if (this.#root === undefined) return false;
+    const page = pageNode(this.#root, slot).value;
+    const base = lowerBound(page, slot);
+    return base < page.length && page[base] === slot && (page[base + COUNT] as number) > 0;
+  }
+  /** Add every weighted member's slot to `out`, read from the page columns. */
+  addDrawnSlots(out: Set<number>): void {
+    for (const node of nodes(this.#root)) {
+      const page = node.value;
+      for (let base = 0; base < page.length; base += STRIDE)
+        if ((page[base + COUNT] as number) > 0) out.add(page[base] as number);
+    }
+  }
   get(slot: number): GpuDrivenBatchMember | undefined {
     const found = this.#find(slot);
     return found === undefined ? undefined : memberOf(found.page, found.base);

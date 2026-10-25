@@ -261,7 +261,7 @@ The plugin builds a `reverseDeps: Map<moduleId, Set<rootEntryId>>` during `trans
 
 - plan-strategy §S-5 / §S-7 / §S-9 — `feat-20260508-shader-pipeline-mvp/plan-strategy.md`
 - M2/M3/M4 decisions — `feat-20260512-naga-oil-composition-hmr/plan-decisions.md` — D-04 / D-05 / D-07 / D-08 / D-11 / D-12 (moduleId convention + error taxonomy + anonymous-entry placeholder + offset passthrough)
-- charter proposition 3 (machine-readable > prose) + AC-15 (no `err.message.match()`) — [AI-first contract](../../AGENTS.md#design-axiom--compression--intelligence)
+- charter proposition 3 (machine-readable > prose) + AC-15 (no `err.message.match()`) — [AI-first contract](../engine/AGENT-REFERENCE.md#design-axiom--compression--intelligence)
 - AGENTS.md §Error model — family-level `ShaderErrorCode` + `ShaderErrorDetail` row (T-22 anchored).
 
 ## Program compilation lifetime

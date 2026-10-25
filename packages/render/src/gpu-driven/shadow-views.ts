@@ -473,6 +473,17 @@ function invalidateRecord(record: ShadowViewRecord, reason: ShadowViewInvalidati
 const boxScratch = new Float32Array(6);
 
 /** No box touches the frustum; an unproven box set touches everything. */
+// The retained frustum `boxMissesView` judges; set right before each synchronous query.
+let missedPlanes: Float32Array = new Float32Array(0);
+/** One logged box (six floats at `offset`) lies outside `missedPlanes`. */
+function boxMissesView(boxes: Float32Array, offset: number): boolean {
+  for (let i = 0; i < 6; i += 1) boxScratch[i] = boxes[offset + i] as number;
+  return !frustum.intersectsBox(
+    missedPlanes as unknown as frustum.Frustum,
+    boxScratch as unknown as box3.Box3Like,
+  );
+}
+
 function boundsMissView(
   planes: Float32Array,
   bounds: ReturnType<GpuScene['changedBoundsSince']>,
@@ -1503,15 +1514,17 @@ export class ShadowViewStatePool {
       previous.contentRevision = current;
       return true;
     }
-    const changed = input.scene.changedBoundsSince(
+    missedPlanes = previous.planes;
+    const missed = input.scene.changedBoundsMiss(
       previous.contentRevision,
+      boxMissesView,
       input.ignoredChangeSlots,
       // A removed dynamic caster is absent from the current ignored set but
       // never wrote this static depth. New static members are checked below
       // through changedPrimitives and their old/new bounds.
       input.identity.layer === 'static' ? this.drawnSlots(previous.plan) : undefined,
     );
-    if (!boundsMissView(previous.planes, changed)) return false;
+    if (!missed) return false;
     previous.contentRevision = current;
     return true;
   }

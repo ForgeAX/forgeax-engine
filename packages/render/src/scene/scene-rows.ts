@@ -610,7 +610,12 @@ export class SceneRows {
   }
 
   /** Facts the rows maintain while writing, so frame consumers need not walk them. */
-  rowFacts(current: SceneSlotFrame, meshes: MeshFrame): RetainedRowFacts<RenderableSnapshot> {
+  rowFacts(
+    current: SceneSlotFrame,
+    meshes: MeshFrame,
+    project: (record: RenderSceneSlot) => RenderableSnapshot = (record) =>
+      meshDrawSnapshot(record.snapshot, meshes),
+  ): RetainedRowFacts<RenderableSnapshot> {
     const lodCandidateCount = this.slots.lodCandidateCount;
     const indexes = {
       terrain: this.slots.indexedSlots('terrain'),
@@ -621,7 +626,7 @@ export class SceneRows {
       *sparseRows(kind) {
         for (const slot of indexes[kind]) {
           const record = current.slotAt(slot);
-          if (record !== undefined) yield meshDrawSnapshot(record.snapshot, meshes);
+          if (record !== undefined) yield project(record);
         }
       },
     };

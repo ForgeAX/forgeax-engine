@@ -30,6 +30,7 @@ import {
 import {
   createScriptablePackSourceSnapshot,
   loadScriptablePack,
+  SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
 } from '@forgeax/engine-pack/source-node';
 import {
   Camera,
@@ -178,7 +179,7 @@ export function createWorkspacePackAuthoring(options: {
       const definition = (
         await loadScriptablePack(absolute, {
           sourceSnapshot: snapshot,
-          buildTimeoutMs: 120_000,
+          buildTimeoutMs: SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
           signal,
         })
       ).unwrap();

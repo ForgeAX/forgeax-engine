@@ -364,6 +364,8 @@ export interface RenderPipelineTopology {
   readonly transmissionDemand?: TransmissionDemand | undefined;
   /** Whether the extracted frame contains a single-layer medium Surface. */
   readonly singleLayerMedium?: boolean | undefined;
+  /** An opaque material sets `renderState.fog: false`; the forward lane draws it after fog. */
+  readonly unfoggedOpaque?: true | undefined;
   /**
    * Resolved weighted blended OIT shape. Present only when the view resolves
    * to `weighted-blended` and at least one transparent draw is eligible;

@@ -44,6 +44,7 @@ import { getOpaqueResourceIdentity } from './record/frame-snapshot';
 import type { MaterialSnapshot } from './render-system-extract';
 import { type AcceptedMaterial, MaterialFrame } from './scene/material-dispatch';
 import { MeshFrame, type MeshGeometry, type MeshMorphDeltas } from './scene/mesh-frame';
+import { effectiveMeshMaterials, meshMaterialGeometry } from './scene/mesh-materials';
 import type { RenderSceneApplyResult, RenderSceneSlot } from './scene/render-scene-types';
 import { StableRangeAllocator } from './stable-range-allocator';
 import { materialDisplacementRadius } from './standard-displacement-bounds';
@@ -1354,7 +1355,7 @@ export class GpuScene {
     primitive.setUint32(offset(PRIMITIVE, 'transformIndex'), allocation.transformStart, true);
     primitive.setUint32(
       offset(PRIMITIVE, 'materialIndex'),
-      allocation.materialRanges[0]?.version.descriptor ?? 0,
+      this.rowMaterialSlot(record, allocation.materialRanges[0]),
       true,
     );
     primitive.setUint32(offset(PRIMITIVE, 'instanceStart'), allocation.instanceStart, true);
@@ -1441,6 +1442,25 @@ export class GpuScene {
     if (temporalFlags !== 0) this.stampTransform(allocation.transformStart, writes);
 
     this.writeMaterialSlot(record, writes, materialRows, resetPrevious);
+  }
+
+  /**
+   * The logical material slot of the row's first effective material. Shared
+   * frame materials are acquired before slots are written, so the slot is
+   * resident whenever the row's binding is.
+   */
+  private rowMaterialSlot(record: RenderSceneSlot, range: MaterialAllocation | undefined): number {
+    if (range !== undefined) return range.logicalSlot;
+    const source = record.snapshot;
+    const mesh =
+      source.assetHandle === undefined
+        ? undefined
+        : this.meshes.get(record.worldId, source.assetHandle);
+    const material =
+      mesh === undefined
+        ? source.material
+        : effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source)).material;
+    return this.sharedMaterials.get(material)?.logicalSlot ?? 0xffffffff;
   }
 
   /** Compare against the resident CPU bytes; pending upload rows survive failure. */

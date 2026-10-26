@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../../../temporal/scene-data';
 import { createSceneDataCatalog } from '../../../temporal/scene-data-catalog';
-import { freezeRenderFeaturePlan } from '../../plan';
+import { validateRenderFeaturePlan } from '../../plan';
 import { MOTION_BLUR_COMPUTE_WGSL, planMotionBlur } from '../motion-blur-feature';
 import { DEFAULT_MOTION_BLUR_PARAMS } from '../motion-blur-params';
 
@@ -32,17 +32,17 @@ describe('Motion Blur feature plan', () => {
     });
     expect(planned.ok).toBe(true);
     if (!planned.ok) return;
-    const frozen = freezeRenderFeaturePlan('forgeax.motion-blur', planned.value, [
+    const valid = validateRenderFeaturePlan('forgeax.motion-blur', planned.value, [
       { name: 'motion-input', kind: 'color', format: 'rgba16float', sampleCount: 1 },
       { name: 'motion-output', kind: 'color', format: 'rgba16float', sampleCount: 1 },
     ]);
-    expect(frozen.ok).toBe(true);
-    if (!frozen.ok) return;
-    const bindings = frozen.value.resources.find(
+    expect(valid.ok).toBe(true);
+    if (!valid.ok) return;
+    const bindings = planned.value.resources.find(
       (resource) => resource.kind === 'graphics-bindings',
     );
     expect(bindings?.kind).toBe('graphics-bindings');
-    const program = frozen.value.resources.find(
+    const program = planned.value.resources.find(
       (resource) => resource.kind === 'fullscreen-program',
     );
     expect(program?.kind).toBe('fullscreen-program');
@@ -54,8 +54,8 @@ describe('Motion Blur feature plan', () => {
       expect(bindings.values).not.toHaveProperty('depth');
       expect(bindings.logicalTargets).toEqual({ input: 'motion-input' });
     }
-    expect(frozen.value.passes).toHaveLength(1);
-    const pass = frozen.value.passes[0];
+    expect(planned.value.passes).toHaveLength(1);
+    const pass = planned.value.passes[0];
     expect(pass?.kind).toBe('raster');
     if (pass?.kind !== 'raster') return;
     expect(pass.draws[0]?.vertexLayout).toBe('none');
@@ -107,14 +107,14 @@ describe('Motion Blur feature plan', () => {
     );
     expect(planned.ok).toBe(true);
     if (!planned.ok) return;
-    const frozen = freezeRenderFeaturePlan('forgeax.motion-blur', planned.value, targets);
-    expect(frozen.ok).toBe(true);
-    if (!frozen.ok) return;
+    const valid = validateRenderFeaturePlan('forgeax.motion-blur', planned.value, targets);
+    expect(valid.ok).toBe(true);
+    if (!valid.ok) return;
 
-    const computeProgram = frozen.value.resources.find(
+    const computeProgram = planned.value.resources.find(
       (resource) => resource.kind === 'compute-program',
     );
-    const tileSummary = frozen.value.resources.find(
+    const tileSummary = planned.value.resources.find(
       (resource) => resource.kind === 'buffer' && resource.name === 'motion-blur-tile-summary',
     );
     expect(computeProgram?.kind).toBe('compute-program');
@@ -123,16 +123,16 @@ describe('Motion Blur feature plan', () => {
       size: Math.ceil(1920 / 16) * Math.ceil(1080 / 16) * 32,
       usage: ['storage'],
     });
-    expect(frozen.value.passes.map((pass) => pass.name)).toEqual([
+    expect(planned.value.passes.map((pass) => pass.name)).toEqual([
       'motion-blur-tile-summary',
       'motion-blur',
     ]);
-    expect(frozen.value.passes).toHaveLength(2);
-    expect(frozen.value.passes[0]).toMatchObject({
+    expect(planned.value.passes).toHaveLength(2);
+    expect(planned.value.passes[0]).toMatchObject({
       kind: 'compute',
       dispatches: [{ entryPoint: 'tile_summary', workgroups: [120, 68, 1] }],
     });
-    expect(frozen.value.passes[1]).toMatchObject({
+    expect(planned.value.passes[1]).toMatchObject({
       kind: 'compute',
       dispatches: [{ entryPoint: 'reconstruct', workgroups: [240, 135, 1] }],
     });

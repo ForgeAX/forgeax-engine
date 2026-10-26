@@ -291,15 +291,30 @@ export async function verifyMultiCamera(
         })),
       ).toEqual(heldCaptureViews);
       if (face === 0 || face === 6) {
-        const targetPass = required(targetPasses.at(-1));
+        // Select the monitor's write by its single-layer target; the cube face and
+        // the monitor share one submission, so recording order is not an identity.
+        const model = buildFrameModel(tape);
+        const descriptor = (id: string | null | undefined) =>
+          model.resources.find((entry) => entry.resourceId === id)?.descriptor as
+            | {
+                readonly sourceHandleId?: string;
+                readonly desc?: { readonly size?: { readonly depthOrArrayLayers?: number } };
+              }
+            | undefined;
+        const monitorPasses = targetPasses.filter(
+          (event) =>
+            event.kind === 'beginRenderPass' &&
+            descriptor(descriptor(event.colorAttachmentViewHandleIds[0])?.sourceHandleId)?.desc
+              ?.size?.depthOrArrayLayers === 1,
+        );
+        expect(monitorPasses).toHaveLength(1);
+        const targetPass = required(monitorPasses[0]);
         const start = tape.events.indexOf(targetPass);
         const end = tape.events.findIndex(
           (event, index) => index > start && event.kind === 'endRenderPass',
         );
         const work = required(
-          buildFrameModel(tape)
-            .works.filter((work) => work.eventIndex > start && work.eventIndex < end)
-            .at(-1),
+          model.works.filter((work) => work.eventIndex > start && work.eventIndex < end).at(-1),
         );
         const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
         const device = (

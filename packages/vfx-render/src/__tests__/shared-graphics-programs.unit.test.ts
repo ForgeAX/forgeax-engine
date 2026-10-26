@@ -1,8 +1,11 @@
 import type { RenderFeatureWork } from '@forgeax/engine-render';
 import { describe, expect, it, vi } from 'vitest';
+import { graphicsProgramDescriptor } from '../feature/plan-memos';
 import {
+  internVfxRenderState,
   ownVfxGraphicsProgram,
   shareVfxGraphicsPrograms,
+  vfxGraphicsProgramKey,
 } from '../feature/shared-graphics-programs';
 
 type Program = Extract<RenderFeatureWork['resources'][number], { kind: 'graphics-program' }>;
@@ -292,5 +295,110 @@ describe('owned VFX graphics program keys', () => {
     if (second?.kind !== 'graphics-program') throw new Error('Missing second program');
     work.resources[2] = { ...second, program: owned(state) };
     expect(programs(shareVfxGraphicsPrograms(work))).toHaveLength(1);
+  });
+});
+
+/** Exact canonical text: key order, undefined members, -0 and NaN stay distinct. */
+function canonical(value: unknown): string {
+  if (value === undefined) return 'u';
+  if (typeof value === 'number') return Object.is(value, -0) ? 'n-0' : `n${String(value)}`;
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  return `{${Object.keys(value)
+    .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
+    .join(',')}}`;
+}
+
+function deeplyFrozen(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return true;
+  return Object.isFrozen(value) && Object.values(value).every(deeplyFrozen);
+}
+
+describe('interned VFX render states', () => {
+  const pool = [undefined, 0, -0, 1, Number.NaN, 0.5, 'none', 'back', true, false] as const;
+  const randomValue = (next: () => number, depth: number): unknown => {
+    const roll = next();
+    if (depth < 2 && roll < 0.2)
+      return Array.from({ length: Math.floor(next() * 3) }, () => randomValue(next, depth + 1));
+    if (depth < 2 && roll < 0.45) return randomState(next, depth + 1);
+    return pool[Math.floor(next() * pool.length)];
+  };
+  const randomState = (next: () => number, depth = 0): Record<string, unknown> => {
+    const keys = ['blend', 'cullMode', 'depthCompare', 'depthWriteEnabled', 'queue'];
+    const state: Record<string, unknown> = {};
+    for (const key of keys.sort(() => next() - 0.5))
+      if (next() < 0.7) state[key] = randomValue(next, depth);
+    return state;
+  };
+  const facts = (renderState: object | undefined) => ({
+    shader: 'fixture::particles',
+    preparePipelines: undefined,
+    vertexLayout: 'billboard-material-instance' as const,
+    particleInputLanes: undefined,
+    colorFormat: 'rgba16float' as const,
+    depthFormat: 'depth32float' as const,
+    sampleCount: 1,
+    topology: 'triangle-list' as const,
+    indexFormat: undefined,
+    renderState: renderState as never,
+  });
+
+  it('matches the cold descriptor path exactly for random Worker-cloned states', () => {
+    let seed = 0x9e3779b9;
+    const next = () => {
+      seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0;
+      return seed / 4294967296;
+    };
+    const states = Array.from({ length: 24 }, () => randomState(next));
+    const interned = new Map<string, object>();
+    let previous: ReturnType<typeof graphicsProgramDescriptor> | undefined;
+    let previousText: string | undefined;
+    let reused = 0;
+    for (let frame = 0; frame < 400; frame++) {
+      const source = states[Math.floor(next() * states.length)] as Record<string, unknown>;
+      // Every frame receives a new object, as after a Worker structured clone.
+      const received = structuredClone(source);
+      const state = internVfxRenderState(received);
+      const text = canonical(source);
+      expect(canonical(state)).toBe(text);
+      expect(deeplyFrozen(state)).toBe(true);
+      expect(Object.isFrozen(received)).toBe(false);
+      const known = interned.get(text);
+      if (known === undefined) interned.set(text, state);
+      else expect(state).toBe(known);
+      const cold = graphicsProgramDescriptor(undefined, facts(structuredClone(source)));
+      const warm = graphicsProgramDescriptor(previous, facts(state));
+      expect(canonical(warm)).toBe(canonical(cold));
+      expect(vfxGraphicsProgramKey(warm)).toBe(vfxGraphicsProgramKey(cold));
+      if (previousText === text) {
+        expect(warm).toBe(previous);
+        reused += 1;
+      } else expect(warm).not.toBe(previous);
+      previous = warm;
+      previousText = text;
+    }
+    expect(reused).toBeGreaterThan(0);
+    // Distinct exact contents never share one interned state.
+    expect(new Set(interned.values()).size).toBe(interned.size);
+  });
+
+  it('follows a mutated source and leaves non-plain states unchanged', () => {
+    const source: { depthWriteEnabled: boolean; cullMode?: string } = { depthWriteEnabled: false };
+    const first = internVfxRenderState(source);
+    source.depthWriteEnabled = true;
+    const second = internVfxRenderState(source);
+    expect(second).not.toBe(first);
+    expect(second).toEqual({ depthWriteEnabled: true });
+    source.cullMode = undefined;
+    expect(canonical(internVfxRenderState(source))).toBe(canonical(source));
+    const accessor = Object.defineProperty({}, 'depthWriteEnabled', {
+      get: () => true,
+      enumerable: true,
+    });
+    expect(internVfxRenderState(accessor)).toBe(accessor);
+    const bare = Object.assign(Object.create(null) as object, { depthWriteEnabled: false });
+    expect(internVfxRenderState(bare)).toBe(bare);
+    const frozen = Object.freeze({ depthWriteEnabled: false });
+    expect(internVfxRenderState(frozen)).toBe(frozen);
   });
 });

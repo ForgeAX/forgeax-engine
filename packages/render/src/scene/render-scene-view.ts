@@ -118,6 +118,11 @@ export class RenderScene {
     return this.meshes;
   }
 
+  /** Read the shared rows' current Mesh frame after the owner adopted geometry. */
+  observeMeshes(): void {
+    this.meshes = this.rows.meshFrame();
+  }
+
   /** Direct asset evidence changes one shared geometry row, without visiting its instances. */
   adoptMesh(worldId: number, handle: number, mesh: MeshAsset | undefined): boolean {
     const adopted = this.ownsRows
@@ -185,6 +190,8 @@ export class RenderScene {
     if (!this.ownsRows) throw new Error('A view over shared rows observes its owner’s deltas');
     let scans = operations.length;
     for (const span of spans) scans += span.entities.length;
+    // One read generation per row write; every view of the write shares it.
+    rotateMeshDraws();
     const delta = this.rows.apply(operations, spans);
     this.observe(delta, scans);
     return delta;
@@ -195,7 +202,6 @@ export class RenderScene {
    * addresses and memos follow, and the view pins the rows it now matches.
    */
   observe(delta: RenderSceneApplyResult, scans = 0): void {
-    rotateMeshDraws();
     const changed = delta.created + delta.updated + delta.removed + delta.recreated > 0;
     this.renderableScans = scans;
     if (changed || scans > 0) this.deltaFrames += 1;
@@ -255,6 +261,11 @@ export class RenderScene {
     this.invalidateSnapshots();
   }
 
+  /** The owner remapped the shared rows' World indices; the next observed delta re-pins them. */
+  observeRemap(): void {
+    this.invalidateSnapshots();
+  }
+
   /** Reconcile the current identity set while retaining slots for survivors. */
   reset(snapshots: FrameList<RenderableSnapshot>, countAsRebuild = true): void {
     // A full reconciliation is a temporal cut.  Survivors may keep their
@@ -293,7 +304,7 @@ export class RenderScene {
    * Identity of the submitted history temporal draw snapshots read; it
    * changes with every committed submission. Undefined while untracked.
    */
-  temporalDrawInputs(): object | undefined {
+  temporalDrawInputs(): SubmittedHistory | undefined {
     return this.temporalTracking ? this.history : undefined;
   }
 
@@ -461,7 +472,7 @@ export class RenderScene {
     if (capture.revision !== this.revision) {
       throw new RangeError('render scene changed while its temporal submission was active');
     }
-    this.history = SubmittedHistory.submitted(capture.visible);
+    this.history = SubmittedHistory.submitted(capture.visible, this.history);
   }
 
   /** O(1) current record by stable slot index; bound so frame state can publish it. */

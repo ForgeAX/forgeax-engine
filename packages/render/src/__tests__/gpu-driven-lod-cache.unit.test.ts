@@ -8,10 +8,7 @@ import type { MeshGpuHandles } from '../device/gpu-residency';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
-import {
-  type PreparedProductionPlan,
-  prepareBatchRows,
-} from '../gpu-driven/production-raster-prepare';
+import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
 import { GpuBuffer } from '../gpu-resource';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
@@ -225,15 +222,6 @@ describe('GPU-driven filtered-plan cache', () => {
     const slots = f.projection.slotsSnapshot();
     const bytes = observeGpuInputBytes(f.device);
     const classes = bindings ? new Map([[`0:${member.entityKey}`, 'probe:0']]) : undefined;
-    const cachedLodCount = () =>
-      (
-        f.production as unknown as {
-          preparations: { forward: { cached: { value: PreparedProductionPlan } } };
-        }
-      ).preparations.forward.cached.value.lodPlan.groups.reduce(
-        (sum, group) => sum + group.candidateCount,
-        0,
-      );
     const prepare = (z: number) => {
       const input = admitGpuFixture({
         ...f.pbrInputs,
@@ -255,12 +243,10 @@ describe('GPU-driven filtered-plan cache', () => {
       expect(prepare(5)).toBe(2);
       expect(bytes.members()).toHaveLength(2);
       expect(prepare(50)).toBe(2);
-      expect(cachedLodCount()).toBe(2);
       // The mutable batch itself remains identical through raw -> canonical A
       // -> canonical B. Only captured row/root facts can qualify reuse.
       Object.assign(mutableBatch, { candidates: batch.candidates, members: batch.members });
       expect(prepare(5)).toBe(1);
-      expect(cachedLodCount()).toBe(1);
       const original = slots.at(0)?.snapshot;
       if (original === undefined) throw Error('expected source snapshot');
       const transforms = new Float32Array(32);
@@ -288,7 +274,6 @@ describe('GPU-driven filtered-plan cache', () => {
         members: nextBatch.members,
       });
       expect(prepare(5)).toBe(2);
-      expect(cachedLodCount()).toBe(2);
       expect(prepare(5)).toBe(2);
       expect(f.production.inspect().preparedBatchBuilds).toBe(0);
       Object.assign(mutableBatch, { candidates, members });
@@ -300,7 +285,6 @@ describe('GPU-driven filtered-plan cache', () => {
       members[0] = member;
       expect(prepare(5)).toBe(1);
       expect(bytes.members()).toHaveLength(1);
-      expect(cachedLodCount()).toBe(1);
     } finally {
       bytes.close();
       f.production.dispose();
@@ -788,6 +772,53 @@ describe('GPU-driven filtered-plan cache', () => {
     }
   });
 
+  it.each([
+    16, 1024,
+  ])('does not read GPU-owned LOD rows on camera-only motion (N=%s)', async (count) => {
+    const f = await fixture(true, count);
+    const slots = f.projection.slotsSnapshot();
+    const meshes = new Map(slots.map((slot) => [slot.slot, f.gpuMesh] as const));
+    let reads = 0;
+    const scene = {
+      scene: f.availability.scene,
+      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      slots,
+      slotAt: (slot: number) => {
+        reads += 1;
+        return f.projection.slotAt(slot);
+      },
+    };
+    const prepare = (z: number) => {
+      const frame = f.production
+        .prepare(
+          admitGpuFixture({
+            ...f.pbrInputs,
+            scene,
+            camera: { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, z) },
+            meshBySlot: meshes,
+            viewBindGroupLayout: f.viewLayout,
+          }),
+        )
+        .unwrap();
+      expect(frame).toBeDefined();
+      frame?._commitResourceReplacement();
+    };
+    try {
+      prepare(5);
+      reads = 0;
+      prepare(50);
+      expect(reads).toBe(0);
+      expect(f.production.inspect()).toMatchObject({
+        filteredPlanBuilds: 0,
+        sharedInputUploadBytes: 0,
+        batchUploadBytes: 0,
+      });
+    } finally {
+      f.production.dispose();
+      f.availability.scene.dispose();
+    }
+  });
+
   it('keeps the filtered plan stable across LOD thresholds because the GPU selects the level', async () => {
     const fixtureValue = await fixture(true);
     const { availability, production, projection, topology, gpuMesh, viewLayout, pbrInputs } =
@@ -827,7 +858,6 @@ describe('GPU-driven filtered-plan cache', () => {
       filteredPlanBuilds: 1,
       planRebuildBatches: scene.plan.batches.length,
       planRebuildCandidates: 0,
-      lodSelectionChanges: 0,
     });
     expect(production.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
     expect(phases).toContain('record/gpu-driven-prepare/filter/main-plan');
@@ -838,7 +868,6 @@ describe('GPU-driven filtered-plan cache', () => {
       preparedBatchBuilds: 0,
       planRebuildBatches: 0,
       planRebuildCandidates: 0,
-      lodSelectionChanges: 0,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
       batchCount: 1,
@@ -847,15 +876,15 @@ describe('GPU-driven filtered-plan cache', () => {
     expect(phases).not.toContain('record/gpu-driven-prepare/filter/main-plan');
 
     // Crossing a LOD threshold is GPU-selected: no plan rebuild, no candidate
-    // or height upload. The CPU mirror still counts the selection change.
+    // or height upload, and no CPU walk of the LOD candidates.
     expect(prepareAt(50)).toBeDefined();
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
       planRebuildBatches: 0,
-      lodSelectionChanges: 2,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
     });
+    expect(phases.some((phase) => phase.includes('/lod'))).toBe(false);
 
     production.dispose();
     availability.scene.dispose();

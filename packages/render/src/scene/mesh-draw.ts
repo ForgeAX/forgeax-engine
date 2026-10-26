@@ -45,13 +45,15 @@ export function meshDrawSnapshot(
     instances = new WeakMap();
     draws.set(mesh, instances);
   }
+  const materials = effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
   const cached = instances.get(source) ?? previousDraws.get(mesh)?.get(source);
-  if (cached !== undefined) {
+  // A Pass query can replace resolved material identities without replacing the
+  // Mesh or the instance. Only reuse a draw from the same admitted binding.
+  if (cached?.materials === materials.materials) {
     instances.set(source, cached);
     return cached;
   }
   const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
-  const materials = effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
   const result: RenderableSnapshot = {
     ...current,
     ...materials,

@@ -1,12 +1,13 @@
 import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
-import { GradientSky } from '../components/gradient-sky';
+import { GradientSky, GradientSkyPresets } from '../components/gradient-sky';
 import { selectEnvironment } from '../environment/frame';
 import {
   GRADIENT_SKY_PARAMS_BYTES,
   GRADIENT_SKY_SUN_DISC_GAIN,
   gradientSkyClearColor,
   gradientSkyIn,
+  gradientSkySunBlooms,
   packGradientSkyParams,
 } from '../environment/gradient-sky';
 import type { FogCandidate, GradientSkyFrame } from '../extract/environment';
@@ -17,6 +18,8 @@ const sky = (overrides: Partial<GradientSkyFrame> = {}): GradientSkyFrame => ({
   zenith: [0.1, 0.3, 0.8],
   horizon: [0.7, 0.8, 0.9],
   ground: [0.3, 0.3, 0.28],
+  mid: [0, 0, 0],
+  midHeight: 0,
   exponent: 0.6,
   sunSize: 0.04,
   sunGlow: 0.5,
@@ -84,6 +87,8 @@ describe('GradientSky', () => {
     ['a zero exponent', { skies: [sky({ exponent: 0 })] }, 'GradientSky.exponent'],
     ['an oversized sun', { skies: [sky({ sunSize: 1 })] }, 'GradientSky.sunSize'],
     ['a fog blend above 1', { skies: [sky({ fogBlend: 2 })] }, 'GradientSky.fogBlend'],
+    ['a mid stop at the zenith', { skies: [sky({ midHeight: 1 })] }, 'GradientSky.midHeight'],
+    ['a negative mid channel', { skies: [sky({ mid: [0, 0, -1] })] }, 'GradientSky.mid[2]'],
   ] as const)('rejects %s and names the field', (_, input, field) => {
     const result = selectEnvironment({ environments: [], fogs: [], suns: [], ...input });
     expect(result.ok).toBe(false);
@@ -117,6 +122,47 @@ describe('GradientSky', () => {
     expect([...values.subarray(20, 24)]).toEqual([1, 0.5, 0.25, 0.5]);
     expect([...values.subarray(24, 27)]).toEqual([0.6, 0.65, 0.7].map(Math.fround));
     expect([...values.subarray(28, 32)]).toEqual([1.1, 4, 4, 0].map(Math.fround));
+    // Without a middle stop the lane is zero, which the shader reads as the two-stop law.
+    expect([...values.subarray(32, 36)]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('packs the optional middle stop and its elevation into the mid lane', () => {
+    const values = packGradientSkyParams(
+      sky({ mid: [0.6, 0.2, 0.3], midHeight: 0.25 }),
+      sun,
+      undefined,
+      output,
+      'display',
+    );
+    expect([...values.subarray(32, 36)]).toEqual([0.6, 0.2, 0.3, 0.25].map(Math.fround));
+  });
+
+  it('defaults to no middle stop and ships valid daylight, dusk, night and overcast presets', () => {
+    const world = new World();
+    const plain = world.spawn({ component: GradientSky, data: {} }).unwrap();
+    expect(world.get(plain, GradientSky).unwrap().midHeight).toBe(0);
+    for (const [name, preset] of Object.entries(GradientSkyPresets)) {
+      const entity = world.spawn({ component: GradientSky, data: preset }).unwrap();
+      const value = world.get(entity, GradientSky).unwrap();
+      const frame = sky({
+        zenith: [...value.zenith] as unknown as GradientSkyFrame['zenith'],
+        horizon: [...value.horizon] as unknown as GradientSkyFrame['horizon'],
+        ground: [...value.ground] as unknown as GradientSkyFrame['ground'],
+        mid: [...value.mid] as unknown as GradientSkyFrame['mid'],
+        midHeight: value.midHeight,
+        exponent: value.exponent,
+        sunSize: value.sunSize,
+        sunGlow: value.sunGlow,
+      });
+      const selected = selectEnvironment({ environments: [], fogs: [], suns: [], skies: [frame] });
+      expect(selected.ok, name).toBe(true);
+    }
+    // Dusk is three stops: orange horizon, rose middle, violet (blue > red) zenith.
+    const dusk = GradientSkyPresets.dusk;
+    expect(dusk.midHeight).toBeGreaterThan(0);
+    expect(dusk.horizon[0]).toBeGreaterThan(dusk.horizon[2] * 5);
+    expect(dusk.zenith[2]).toBeGreaterThan(dusk.zenith[0]);
+    expect(dusk.zenith[0]).toBeGreaterThan(dusk.zenith[1]);
   });
 
   it('gives the scene-referred disc radiance from the light intensity', () => {
@@ -151,5 +197,17 @@ describe('GradientSky', () => {
     expect(gradientSkyIn(sky(), 'scene')).toBe(false);
     expect(gradientSkyIn(sky({ toneMapped: true }), 'scene')).toBe(true);
     expect(gradientSkyIn(undefined, 'display')).toBe(false);
+  });
+
+  it('adds the display sun to the bloomed HDR scene only when bloom is admitted', () => {
+    const bloom = { bloom: 'on', bloomIntensity: 0.3 } as const;
+    expect(gradientSkySunBlooms(sky(), sun, bloom)).toBe(true);
+    expect(gradientSkySunBlooms(sky(), sun, { ...bloom, bloom: 'off' })).toBe(false);
+    expect(gradientSkySunBlooms(sky(), sun, { ...bloom, bloomIntensity: 0 })).toBe(false);
+    expect(gradientSkySunBlooms(sky({ sunSize: 0 }), sun, bloom)).toBe(false);
+    expect(gradientSkySunBlooms(sky(), undefined, bloom)).toBe(false);
+    expect(gradientSkySunBlooms(sky(), { ...sun, intensity: 0 }, bloom)).toBe(false);
+    // A toneMapped sky already draws its disc in the scene.
+    expect(gradientSkySunBlooms(sky({ toneMapped: true }), sun, bloom)).toBe(false);
   });
 });

@@ -5,6 +5,16 @@ description: ForgeaX render pipelines, post-processing, and typed RenderGraph ow
 
 # forgeax-engine-render-pipeline
 
+For live native compilation detail, read `renderer.inspect().pipelineLibrary.pending`
+or `execution.inspectRenderer({fields:['pipelineLibrary']})` in a Worker host.
+Rows contain the complete recorded recipe, semantic SHA-256 identity, shader
+digests, native request origin, stage and elapsed time. `preload` distinguishes
+exact startup/background membership, absence and unresolved indexing; runtime
+origin alone does not mean a missed recipe. `unidentified` names the
+coverage gap. The frame reason is only its first producer blocker. Preparation
+barriers must not acquire an unwritten canvas texture. A pending receipt does
+not establish that gameplay rendering continues.
+
 ## Quick contract
 
 Covers making a game scene visible; stop here unless a task needs a section below.
@@ -17,7 +27,7 @@ Import components from `@forgeax/engine/render` and `Transform` from
 | Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | At most one: the first is used and others are dropped with a `render-system-multi-light` warning; no `Transform` needed. `Atmosphere` needs exactly one |
 | Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
 | Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
-| Sky | `GradientSky { zenith, horizon, ground }` (display-referred like Three `scene.background`; disc toward the `DirectionalLight`, `sunSize` radians; `Fog` covers its horizon by `fogBlend`; `toneMapped: true` for HDR) | One per World; replaces `clearColor`; conflicts with `Atmosphere` / `SkyboxBackground`. [Contract](../../packages/render/README.md#gradient-sky-background) |
+| Sky | `GradientSky { zenith, horizon, ground }` or `GradientSkyPresets.dusk` etc. (display-referred like Three `scene.background`; optional third stop `mid` at elevation sine `midHeight`; `exponent` < 0.3 squeezes the horizon colour to a line; disc toward the `DirectionalLight`, `sunSize` radians, blooms with camera bloom like its reflection; `Fog` covers its horizon by `fogBlend`; `toneMapped: true` for HDR) | One per World; replaces `clearColor`; conflicts with `Atmosphere` / `SkyboxBackground`. [Contract](../../packages/render/README.md#gradient-sky-background) |
 | Mesh | `Transform` + `MeshFilter { assetHandle }` + `MeshRenderer { materials: [handle] }` | Handles come from `assets.load(guid, 'mesh' \| 'material')` |
 
 - Materials: build in a Pack with `Materials.standard({ baseColor, roughness, metallic,
@@ -25,7 +35,7 @@ Import components from `@forgeax/engine/render` and `Transform` from
   numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
 - Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC` with
   `exposure` about 1.1 for games (`TONEMAP_AGX` is the desaturated base curve, only for a
-  muted grade; presets in the SDK gameplay cookbook §0). `antialias`
+  muted grade; presets in the SDK effects/lighting.md). `antialias`
   (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
   are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
 - Shadows: set `castShadow: true` on the light, then choose
@@ -701,11 +711,10 @@ level with the view readback (`lodSelection` histogram, per-level segments) or
 an RHI Debug capture of the per-level `drawIndexedIndirect` commands, not by
 adding a CPU selection path. `indirectDrawCount` counts per-level commands.
 
-Shadow views rank LOD against their own light view-projection, clamped to at
-most `SHADOW_LOD_MAX_COARSER` levels coarser than the main camera's finest
-level, so a caster never drops detail the main view still shows. A retained
-static shadow layer invalidates on LOD only when the clamped level becomes
-finer; `lod-changed` static misses under camera motion indicate a broken clamp.
+Shadow views rank LOD against their own light view-projection, never coarser
+than `SHADOW_LOD_COARSEST` (LOD1), so a caster never drops to a proxy that no
+longer matches its lit silhouette. The cap depends on no camera: main-camera
+motion never invalidates a retained shadow layer and runs no CPU LOD walk.
 
 ## GPU-driven residual rows and buffer limits
 

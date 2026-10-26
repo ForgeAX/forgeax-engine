@@ -819,6 +819,7 @@ async function waitForServerReady() {
     if (body !== undefined) {
       if (response.ok) {
         decodeCatalogWire(JSON.parse(body)).unwrap();
+        console.log(`[templates] catalog-ready-ms=${Date.now() - startedAt}`);
         return;
       }
       if (response.status !== 503) {

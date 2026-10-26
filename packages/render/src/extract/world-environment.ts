@@ -1147,6 +1147,8 @@ function extractGradientSkies(world: World): GradientSkyFrame[] {
       zenith: rgbTuple(sky.zenith),
       horizon: rgbTuple(sky.horizon),
       ground: rgbTuple(sky.ground),
+      mid: rgbTuple(sky.mid),
+      midHeight: sky.midHeight,
       exponent: sky.exponent,
       sunSize: sky.sunSize,
       sunGlow: sky.sunGlow,

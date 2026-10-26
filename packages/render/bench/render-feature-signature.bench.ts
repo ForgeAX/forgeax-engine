@@ -2,7 +2,7 @@ import { ok } from '@forgeax/engine-types';
 import { bench, describe } from 'vitest';
 import { createRenderFeatureHost } from '../src/features/host';
 import {
-  freezeRenderFeaturePlan,
+  validateRenderFeaturePlan,
   type RenderFeatureWorkPlan,
   renderFeaturePlanSignatureEvidenceMatches,
 } from '../src/features/plan';
@@ -75,9 +75,10 @@ function plan(revision: number, change: 'uploads' | 'topology' | 'shader'): Rend
       ],
     });
   }
-  const result = freezeRenderFeaturePlan('signature-bench', { resources, passes });
+  const plan = { resources, passes };
+  const result = validateRenderFeaturePlan('signature-bench', plan);
   if (!result.ok) throw new Error(JSON.stringify(result.error));
-  return result.value;
+  return plan;
 }
 
 function admission(change: 'uploads' | 'topology' | 'shader'): () => void {

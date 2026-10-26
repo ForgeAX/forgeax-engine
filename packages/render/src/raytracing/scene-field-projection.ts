@@ -34,10 +34,15 @@ import { effectiveMeshMaterials, meshMaterialGeometry } from '../scene/mesh-mate
 import type { RenderSceneRecord, RenderSceneSlot } from '../scene/render-scene-types';
 import { type ProjectedRows, type ReadAsset, RowProjection } from '../scene/row-projection';
 import { standardDisplacementRadius } from '../standard-displacement-bounds';
+import type { FieldEditInput } from './field-edit';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 import type { SdfMeshInstance } from './sdf-query';
 
 type AttachedField = NonNullable<MeshAsset['distanceField']>;
+interface FieldQualification {
+  readonly revision: number;
+  readonly result: Result<never, RayReferenceError> | undefined;
+}
 type MaterialFacts = Pick<
   MaterialSnapshot,
   | 'materialShaderId'
@@ -215,8 +220,8 @@ function sameFieldEntry(before: FieldRowEntry, after: FieldRowEntry): boolean {
 
 /**
  * The retained field roster kept current from row change evidence. A row
- * edit re-admits only that row; the roster, bounded by the field budget, is
- * re-assembled only when an admitted entry changed. Rows the field does not
+ * edit re-admits only that row; complete assembly serves cold consumers, while
+ * changes() assembles only pending sources until their edit is accepted. Rows the field does not
  * admit cost nothing at steady state. A cold or {@link reset} projection
  * admits every row once through the same path.
  */
@@ -227,15 +232,21 @@ export class SceneFieldRows {
     return context === undefined ? undefined : this.#admit(slot, rows, context, read);
   }, sameFieldEntry);
   /** Per-asset qualification is shared by every row that references the asset. */
-  #geometry = new WeakMap<MeshAsset, Result<never, RayReferenceError> | undefined>();
-  #fields = new WeakMap<AttachedField, Result<never, RayReferenceError> | undefined>();
+  #geometry = new WeakMap<MeshAsset, FieldQualification>();
+  #fields = new WeakMap<AttachedField, FieldQualification>();
   /** Detached field snapshots, cloned once per field version rather than per projection. */
   #snapshots = new Map<
     AttachedField,
-    { readonly revision: number; readonly value: AttachedField }
+    { count: number; bytes: number; revision?: number; value?: AttachedField }
   >();
   #projection: Result<SceneFieldProjection, RayReferenceError> | undefined;
   #assembled = -1;
+  /** Unacknowledged source addresses, not another copy of the complete roster. */
+  readonly #pending = new Map<string, Pick<RenderSceneRecord, 'worldId' | 'slot'>>();
+  #instanceCount = 0;
+  #fieldBytes = 0;
+  #failures = 0;
+  #cold = true;
 
   /** Scene rows admitted since construction. */
   get visits(): number {
@@ -255,6 +266,11 @@ export class SceneFieldRows {
     this.#snapshots.clear();
     this.#projection = undefined;
     this.#assembled = -1;
+    this.#pending.clear();
+    this.#instanceCount = 0;
+    this.#fieldBytes = 0;
+    this.#failures = 0;
+    this.#cold = true;
   }
 
   update(
@@ -263,6 +279,59 @@ export class SceneFieldRows {
     budget: FieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<SceneFieldProjection, RayReferenceError> {
+    const synced = this.#sync(rows, worlds, budget, assets);
+    if (!synced.ok) return synced;
+    if (this.#projection === undefined || this.#assembled !== this.#rows.revision) {
+      this.#projection = this.#assemble(budget);
+      this.#assembled = this.#rows.revision;
+    }
+    return this.#projection;
+  }
+
+  /** Current changed sources only; deferred edits retain their addresses until accepted. */
+  changes(
+    rows: ProjectedRows,
+    worlds: readonly RenderResourceScope[],
+    budget: FieldBudget,
+    assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
+  ): Result<FieldEditInput, RayReferenceError> {
+    const synced = this.#sync(rows, worlds, budget, assets);
+    if (!synced.ok) return synced;
+    // Invalid inputs retain the cold path's exact ordered errors and budget precedence.
+    if (
+      this.#cold ||
+      this.#failures > 0 ||
+      this.#instanceCount > budget.maxInstances ||
+      this.#fieldBytes > budget.maxFieldBytes
+    )
+      return this.#assemble(budget);
+    const projection: { sources: SceneFieldSource[]; instances: SdfMeshInstance[] } = {
+      sources: [],
+      instances: [],
+    };
+    const geometries = new Map<MeshAsset, number>();
+    const changedSources = [...this.#pending.values()];
+    for (const source of changedSources) {
+      const entry = this.#rows.get(source.slot);
+      if (entry?.kind === 'field' && entry.record.worldId === source.worldId)
+        this.#append(entry, projection, geometries);
+    }
+    return ok({ ...projection, changedSources });
+  }
+
+  /** Only an actually applied edit (or completed cold build) consumes change evidence. */
+  acceptChanges(revision: number): void {
+    if (revision !== this.revision) return;
+    this.#pending.clear();
+    this.#cold = false;
+  }
+
+  #sync(
+    rows: ProjectedRows,
+    worlds: readonly RenderResourceScope[],
+    budget: FieldBudget,
+    assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
+  ): Result<void, RayReferenceError> {
     const admittedBudget = validateSceneFieldBudget(budget);
     if (!admittedBudget.ok) return admittedBudget;
     const before = this.#context;
@@ -276,12 +345,91 @@ export class SceneFieldRows {
     )
       this.reset();
     this.#context = { worlds, budget, assets };
-    this.#rows.sync(rows);
-    if (this.#projection === undefined || this.#assembled !== this.#rows.revision) {
-      this.#projection = this.#assemble(budget);
-      this.#assembled = this.#rows.revision;
+    const changed = this.#rows.sync(rows);
+    for (let i = 0; i < changed.changed.length; i++) {
+      const beforeEntry = changed.before[i],
+        afterEntry = changed.after[i];
+      this.#charge(afterEntry, 1);
+      this.#charge(beforeEntry, -1);
+      for (const entry of [beforeEntry, afterEntry]) {
+        const source =
+          entry?.kind === 'field'
+            ? entry.record
+            : entry?.kind === 'deforming'
+              ? entry.source
+              : undefined;
+        if (source !== undefined) this.#pending.set(`${source.worldId}:${source.slot}`, source);
+      }
     }
-    return this.#projection;
+    return ok(undefined);
+  }
+
+  #charge(entry: FieldRowEntry | undefined, direction: number): void {
+    if (entry?.kind === 'failure') this.#failures += direction;
+    if (entry?.kind !== 'field') return;
+    this.#instanceCount += direction * entry.transforms.length;
+    const field = entry.field;
+    let refs = this.#snapshots.get(field);
+    if (refs === undefined) {
+      refs = { count: 0, bytes: field.bricks.byteLength + field.values.byteLength };
+      this.#snapshots.set(field, refs);
+      this.#fieldBytes += refs.bytes;
+    }
+    if (direction > 0) {
+      const bytes = field.bricks.byteLength + field.values.byteLength;
+      this.#fieldBytes += bytes - refs.bytes;
+      refs.bytes = bytes;
+    }
+    refs.count += direction;
+    if (refs.count === 0) {
+      this.#snapshots.delete(field);
+      this.#fieldBytes -= refs.bytes;
+    }
+  }
+
+  #snapshot(entry: FieldRow): AttachedField {
+    const snapshot = this.#snapshots.get(entry.field);
+    if (snapshot === undefined) throw new Error('field snapshot lost its admitted owner');
+    if (snapshot.revision !== entry.assetRevision || snapshot.value === undefined) {
+      snapshot.revision = entry.assetRevision;
+      snapshot.value = structuredClone(entry.field);
+    }
+    return snapshot.value;
+  }
+
+  #append(
+    entry: FieldRow,
+    projection: { instances: SdfMeshInstance[]; sources: SceneFieldSource[] },
+    geometries: Map<MeshAsset, number>,
+    snapshot = this.#snapshot(entry),
+  ): void {
+    let geometryId = geometries.get(entry.mesh);
+    if (geometryId === undefined) {
+      geometryId = geometries.size;
+      geometries.set(entry.mesh, geometryId);
+    }
+    const { instances, sources } = projection;
+    const firstInstance = instances.length;
+    for (const transform of entry.transforms)
+      instances.push({
+        instanceId: instances.length,
+        geometryId,
+        mask: 255,
+        transform,
+        field: snapshot,
+      });
+    sources.push({
+      ...entry.record,
+      scope: entry.scope,
+      assetHandle: entry.assetHandle,
+      assetRevision: entry.assetRevision,
+      mesh: entry.mesh,
+      field: entry.field,
+      fieldSnapshot: snapshot,
+      firstInstance,
+      instances: entry.instances,
+      materials: entry.materials,
+    });
   }
 
   /** O(admitted rows): unique geometry, field snapshots and owner indices in slot order. */
@@ -291,7 +439,7 @@ export class SceneFieldRows {
     const sources: SceneFieldSource[] = [];
     const deforming: SceneFieldDeformingSource[] = [];
     const geometries = new Map<MeshAsset, number>();
-    const snapshots = new Map<AttachedField, { revision: number; value: AttachedField }>();
+    const snapshots = new Map<AttachedField, AttachedField>();
     let fieldBytes = 0;
     for (const [, entry] of entries) {
       if (entry.kind === 'deforming') {
@@ -317,44 +465,14 @@ export class SceneFieldRows {
           );
         fieldBytes += bytes;
         if (entry.kind === 'field') {
-          const retained = this.#snapshots.get(field);
-          snapshot =
-            retained?.revision === entry.assetRevision
-              ? retained
-              : { revision: entry.assetRevision, value: structuredClone(field) };
+          snapshot = this.#snapshot(entry);
           snapshots.set(field, snapshot);
         }
       }
       if (entry.kind === 'failure') return entry.result;
       if (snapshot === undefined) continue;
-      let geometryId = geometries.get(entry.mesh);
-      if (geometryId === undefined) {
-        geometryId = geometries.size;
-        geometries.set(entry.mesh, geometryId);
-      }
-      const firstInstance = instances.length;
-      for (const transform of entry.transforms)
-        instances.push({
-          instanceId: instances.length,
-          geometryId,
-          mask: 255,
-          transform,
-          field: snapshot.value,
-        });
-      sources.push({
-        ...entry.record,
-        scope: entry.scope,
-        assetHandle: entry.assetHandle,
-        assetRevision: entry.assetRevision,
-        mesh: entry.mesh,
-        field: entry.field,
-        fieldSnapshot: snapshot.value,
-        firstInstance,
-        instances: entry.instances,
-        materials: entry.materials,
-      });
+      this.#append(entry, { instances, sources }, geometries, snapshot);
     }
-    this.#snapshots = snapshots;
     return ok({ instances, sources, deforming });
   }
 
@@ -434,9 +552,9 @@ export class SceneFieldRows {
         ),
         { count },
       );
-    const geometry = this.#qualifyGeometry(mesh, field);
+    const geometry = this.#qualifyGeometry(mesh, field, assetRevision);
     if (geometry !== undefined) return fail(FieldStage.Geometry, geometry, { count });
-    const qualified = this.#qualifyField(field);
+    const qualified = this.#qualifyField(field, assetRevision);
     if (qualified !== undefined) return fail(FieldStage.Field, qualified, { count });
     const shared = rows.meshes.get(slot.worldId, source.assetHandle);
     const bindings =
@@ -466,20 +584,22 @@ export class SceneFieldRows {
     };
   }
 
-  #qualifyGeometry(mesh: MeshAsset, field: AttachedField) {
-    if (this.#geometry.has(mesh)) return this.#geometry.get(mesh);
+  #qualifyGeometry(mesh: MeshAsset, field: AttachedField, revision: number) {
+    const cached = this.#geometry.get(mesh);
+    if (cached?.revision === revision) return cached.result;
     const validSource = meshDistanceFieldSource(mesh, {
       sectionSidedness: field.sectionSidedness,
     });
     const result = validSource.ok
       ? undefined
       : rayReferenceFailure(validSource.error.detail.reason);
-    this.#geometry.set(mesh, result);
+    this.#geometry.set(mesh, { revision, result });
     return result;
   }
 
-  #qualifyField(field: AttachedField) {
-    if (this.#fields.has(field)) return this.#fields.get(field);
+  #qualifyField(field: AttachedField, revision: number) {
+    const cached = this.#fields.get(field);
+    if (cached?.revision === revision) return cached.result;
     let result: Result<never, RayReferenceError> | undefined;
     if (!hasAdmittedFieldArtifact(field))
       result = rayReferenceFailure(
@@ -489,7 +609,7 @@ export class SceneFieldRows {
       const valid = validateMeshDistanceField(field);
       if (!valid.ok) result = rayReferenceFailure(valid.error.detail.reason);
     }
-    this.#fields.set(field, result);
+    this.#fields.set(field, { revision, result });
     return result;
   }
 }

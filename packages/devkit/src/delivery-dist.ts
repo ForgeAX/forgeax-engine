@@ -12,9 +12,9 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { compressZstd } from '@forgeax/engine-codec/encode';
+import { type AssetBundleResult, catalogRows, planAssetBundles } from './delivery-bundles.js';
+import { prepareDocuments, readDeliveryDocument } from './delivery-documents.js';
 import { type DistArtifact, type DistManifest, verifyDist } from './dist.js';
-import { catalogRows, type PlayerBundleResult, planPlayerBundles } from './player-bundles.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
 import type { CommandResult } from './types.js';
 
@@ -70,7 +70,9 @@ const AUTHORING_ROW_FIELDS = [
 /** Generated pipeline libraries carry one bundler-hashed JSON file per build. */
 const PIPELINE_LIBRARY = /(^|\/)pipeline-library[^/]*\.json$/;
 
-export interface PlayerDistOptions {
+export interface DistPreparationOptions {
+  /** Builds keep diagnostic evidence and prepare their derived directory in place. */
+  readonly distribution?: 'build' | 'player';
   /** Keep preparation on the final player's filesystem for an atomic rename. */
   readonly outputParent?: string;
   /**
@@ -83,16 +85,17 @@ export interface PlayerDistOptions {
   readonly compressEntries?: boolean;
 }
 
-/** Prepare delivery bytes without changing the verified build's diagnostic evidence. */
-export async function preparePlayerDist(
+/** One asset transport for diagnostic builds and independently retained Players. */
+export async function prepareDist(
   sourceRoot: string,
   manifest: DistManifest,
-  options: PlayerDistOptions = {},
+  options: DistPreparationOptions = {},
 ): Promise<{
   readonly root: string;
   readonly manifest: DistManifest;
-  readonly bundles: PlayerBundleResult['report'];
+  readonly bundles: AssetBundleResult['report'];
 }> {
+  const build = options.distribution === 'build';
   const base = new URL(manifest.base, 'https://forgeax.package/');
   const catalogUrl = new URL(manifest.runtime.packIndexUrl, base);
   const paths = new Map(
@@ -100,9 +103,9 @@ export async function preparePlayerDist(
   );
   const receipts = new Set<string>();
   let changed = false;
-  const source = await readFile(resolve(sourceRoot, manifest.runtime.packIndexUrl), 'utf8');
+  const source = await readDeliveryDocument(resolve(sourceRoot, manifest.runtime.packIndexUrl));
   const parsed: unknown = JSON.parse(source, (key, value: unknown) => {
-    if ((key === 'cookReceiptUrl' || key === 'receiptUrl') && typeof value === 'string') {
+    if (!build && (key === 'cookReceiptUrl' || key === 'receiptUrl') && typeof value === 'string') {
       const path = paths.get(new URL(value, catalogUrl).href);
       if (key === 'cookReceiptUrl' || path?.endsWith('.receipt.json')) {
         if (path !== undefined) receipts.add(path);
@@ -112,7 +115,7 @@ export async function preparePlayerDist(
     }
     return value;
   });
-  for (const row of catalogRows(parsed))
+  for (const row of build ? [] : catalogRows(parsed))
     for (const field of AUTHORING_ROW_FIELDS)
       if (field in row) {
         delete row[field];
@@ -126,7 +129,10 @@ export async function preparePlayerDist(
     : {};
   const candidates = new Map(
     manifest.artifacts
-      .filter((artifact) => !receipts.has(artifact.path) && artifact.path !== PLAYER_DELIVERY_FILE)
+      .filter(
+        (artifact) =>
+          build || (!receipts.has(artifact.path) && artifact.path !== PLAYER_DELIVERY_FILE),
+      )
       .map((artifact): [string, DistArtifact] => [
         artifact.path,
         artifact.path === manifest.runtime.packIndexUrl
@@ -140,9 +146,9 @@ export async function preparePlayerDist(
   );
   const outputParent = options.outputParent ?? tmpdir();
   await mkdir(outputParent, { recursive: true });
-  const root = await mkdtemp(resolve(outputParent, 'forgeax-player-dist-'));
+  const root = build ? sourceRoot : await mkdtemp(resolve(outputParent, 'forgeax-player-dist-'));
   try {
-    const bundled = await planPlayerBundles({
+    const bundled = await planAssetBundles({
       sourceRoot,
       outputRoot: root,
       artifacts: candidates,
@@ -153,7 +159,7 @@ export async function preparePlayerDist(
       compressEntries: options.compressEntries ?? true,
     });
     const written = new Map(bundled.written.map((artifact) => [artifact.path, artifact]));
-    const copied = [...candidates.values()].filter(
+    const copied = (build ? [] : [...candidates.values()]).filter(
       (artifact) => !bundled.removed.has(artifact.path) && !written.has(artifact.path),
     );
     const directories = new Set(copied.map((artifact) => dirname(resolve(root, artifact.path))));
@@ -179,7 +185,10 @@ export async function preparePlayerDist(
         .map((artifact) => written.get(artifact.path) ?? artifact),
       ...[...written.values()].filter((artifact) => !candidates.has(artifact.path)),
     ];
-    if (options.compressDocuments !== false) {
+    if (build) {
+      for (const path of bundled.removed) await rm(resolve(root, path));
+    }
+    {
       const documents = new Set([
         manifest.runtime.packIndexUrl,
         manifest.runtime.shaderManifestUrl,
@@ -189,10 +198,11 @@ export async function preparePlayerDist(
           const path = paths.get(new URL(row.packageUrl, catalogUrl).href);
           if (path !== undefined) documents.add(path);
         }
-      artifacts = await compressPlayerDocuments(
+      artifacts = await prepareDocuments(
         root,
         artifacts,
         (path) => documents.has(path) || PIPELINE_LIBRARY.test(path),
+        options.compressDocuments !== false,
       );
     }
     const playerManifest: DistManifest = { ...manifest, artifacts };
@@ -202,29 +212,7 @@ export async function preparePlayerDist(
     );
     return { root, manifest: playerManifest, bundles: bundled.report };
   } catch (cause) {
-    await rm(root, { recursive: true, force: true });
+    if (!build) await rm(root, { recursive: true, force: true });
     throw cause;
   }
-}
-
-async function compressPlayerDocuments(
-  root: string,
-  artifacts: readonly DistArtifact[],
-  selected: (path: string) => boolean,
-): Promise<DistArtifact[]> {
-  return Promise.all(
-    artifacts.map(async (artifact) => {
-      if (!selected(artifact.path)) return artifact;
-      const path = resolve(root, artifact.path);
-      const compressed = await compressZstd(await readFile(path));
-      if (!compressed.ok)
-        throw new Error(`${artifact.path}: zstd compression failed: ${compressed.error.code}`);
-      await writeFile(path, compressed.value);
-      return {
-        ...artifact,
-        bytes: compressed.value.byteLength,
-        sha256: createHash('sha256').update(compressed.value).digest('hex'),
-      };
-    }),
-  );
 }

@@ -61,3 +61,20 @@ export function createSdkVerifierProcess(packageManager, runtime = {}) {
     },
   };
 }
+
+/** Read through the installed candidate's public exports, never the verifier checkout. */
+export async function readSdkProjectDocument(execFileAsync, project, path, kind = 'json') {
+  if (kind !== 'json' && kind !== 'catalog') throw new Error(`sdk-project-document-kind:${kind}`);
+  const catalogRead = await execFileAsync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      "import { readFile } from 'node:fs/promises'; import { decodeDocumentText } from '@forgeax/engine/codec'; import { decodeCatalogWire } from '@forgeax/engine/pack'; const text = await decodeDocumentText(await readFile(process.argv[1])); if (!text.ok) throw new Error(text.error.code); const value = JSON.parse(text.value); console.log(JSON.stringify(process.argv[2] === 'catalog' ? decodeCatalogWire(value).unwrap() : value));",
+      path,
+      kind,
+    ],
+    { cwd: project },
+  );
+  return JSON.parse(catalogRead.stdout);
+}

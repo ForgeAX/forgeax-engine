@@ -30,7 +30,9 @@ function fixture(run) {
         packageManager,
       }),
     );
-    writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages: []\n');
+    // The caller supplies pnpm. This offline package-lifecycle fixture must not
+    // resolve the package manager itself from a fresh host's empty cache.
+    writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages: []\npmOnFail: ignore\n');
     const env = { ...process.env, PATH: dirname(process.execPath), CI: 'true' };
     delete env.FORGEAX_DAWN_NATIVE_SOURCE_DIR;
     delete env.FORGEAX_DAWN_NATIVE_BUILD_DIR;

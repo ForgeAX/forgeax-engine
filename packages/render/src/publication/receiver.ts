@@ -43,6 +43,7 @@ import {
 } from './contract';
 import { publicationDependencies, publicationFrameDependencies } from './dependencies';
 import { copyPublishedMesh, ownReceivedPublishedMesh, samePublishedMesh } from './mesh';
+import { isPackedRowsMesh, packedRowsMeshError } from './packed-rows-mesh';
 import {
   installPublicationPrograms,
   PublicationMaterialProjectionAdmission,
@@ -104,6 +105,18 @@ function rejectPublication(
   subject: string,
 ): Result<never, RenderPublicationError> {
   return err(new RenderPublicationError({ reason, subject }));
+}
+
+/** Handle/revision/payload shape, including an explicit packed-rows Mesh POD. */
+function preparedMeshShapeError(input: PublishedMeshPreparation): string | undefined {
+  if (
+    !Number.isSafeInteger(input.meshHandle) ||
+    input.mesh?.kind !== 'mesh' ||
+    !Number.isSafeInteger(input.revision) ||
+    input.revision < 1
+  )
+    return 'prepared mesh handle/payload';
+  return isPackedRowsMesh(input.mesh) ? packedRowsMeshError(input.mesh) : undefined;
 }
 
 /** Frame-shaped numeric columns, lists and metadata. */
@@ -883,13 +896,8 @@ export class RenderPublicationReceiver {
       return rejectPublication('disposed', 'receiver retired or failed; start a new source epoch');
     if (input.source !== this.identity.source || input.epoch !== this.identity.epoch)
       return rejectPublication('identity', 'prepared mesh source/epoch');
-    if (
-      !Number.isSafeInteger(input.meshHandle) ||
-      input.mesh?.kind !== 'mesh' ||
-      !Number.isSafeInteger(input.revision) ||
-      input.revision < 1
-    )
-      return rejectPublication('shape', 'prepared mesh handle/payload');
+    const invalid = preparedMeshShapeError(input);
+    if (invalid !== undefined) return rejectPublication('shape', invalid);
     const prior = this.preparedMeshes.get(input.meshHandle);
     const accepted = this.assets.get(input.meshHandle);
     if (input.revision < Math.max(prior?.revision ?? 0, accepted?.revision ?? 0))

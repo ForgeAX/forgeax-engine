@@ -81,7 +81,7 @@ fn skybox_fs(in : FullscreenOutput) -> @location(0) vec4<f32> {
 // the display entry runs after output encoding and fills only the transparent
 // coverage the scene left (blend one-minus-dst-alpha, one), as a CSS page
 // colour behind the canvas would, so the authored colour is the shown colour.
-// 128-byte layout mirrored by GRADIENT_SKY_PARAMS_BYTES (gradient-sky-pass.ts).
+// 144-byte layout mirrored by GRADIENT_SKY_PARAMS_BYTES (environment/gradient-sky.ts).
 struct GradientSkyParams {
   zenith   : vec4<f32>, // rgb, w = exponent
   horizon  : vec4<f32>, // rgb, w = fogBlend (elevation sine; 0 never fogs the sky)
@@ -91,6 +91,7 @@ struct GradientSkyParams {
   glow     : vec4<f32>, // rgb glow chroma, w = glow strength
   fogColor : vec4<f32>, // rgb scene-linear Fog colour
   output   : vec4<f32>, // exposure, whitePoint, tone mode, output gamut
+  mid      : vec4<f32>, // rgb middle stop, w = its elevation sine (0 = two stops)
 };
 
 @group(0) @binding(4) var<uniform> gradientSky : GradientSkyParams;
@@ -102,11 +103,20 @@ fn gradientSkyRay(uv : vec2<f32>) -> vec3<f32> {
 }
 
 // Three.js gradient dome: mix(horizon, zenith, pow(max(h, 0), exponent)); the
-// same law mirrored below the horizon toward the ground colour.
+// same law mirrored below the horizon toward the ground colour. A middle stop
+// (mid.w > 0) splits the upper span into horizon -> mid -> zenith, each segment
+// with the same exponent over its own span.
 fn gradientSkyBase(h : f32) -> vec3<f32> {
-  let t = pow(min(abs(h), 1.0), gradientSky.zenith.w);
-  let toward = select(gradientSky.ground.rgb, gradientSky.zenith.rgb, h >= 0.0);
-  return mix(gradientSky.horizon.rgb, toward, t);
+  let e = gradientSky.zenith.w;
+  let m = gradientSky.mid.w;
+  if (h < 0.0 || m <= 0.0) {
+    let toward = select(gradientSky.ground.rgb, gradientSky.zenith.rgb, h >= 0.0);
+    return mix(gradientSky.horizon.rgb, toward, pow(min(abs(h), 1.0), e));
+  }
+  if (h < m) {
+    return mix(gradientSky.horizon.rgb, gradientSky.mid.rgb, pow(h / m, e));
+  }
+  return mix(gradientSky.mid.rgb, gradientSky.zenith.rgb, pow(min((h - m) / (1.0 - m), 1.0), e));
 }
 
 fn gradientSkyColor(dir : vec3<f32>, fog : vec3<f32>) -> vec3<f32> {
@@ -134,6 +144,18 @@ fn gradientSkyColor(dir : vec3<f32>, fog : vec3<f32>) -> vec3<f32> {
 fn gradient_sky_fs(in : FullscreenOutput) -> @location(0) vec4<f32> {
   let dir = gradientSkyRay(in.uv);
   return vec4<f32>(gradientSkyColor(dir, gradientSky.fogColor.rgb), 1.0);
+}
+
+// A display sky's sun disc as HDR radiance, added to the scene under camera
+// bloom so the disc blooms like its specular reflection. Alpha stays 0, so the
+// display sky still fills this coverage and shows the bloomed disc over itself.
+@fragment
+fn gradient_sky_sun_fs(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let dir = gradientSkyRay(in.uv);
+  let radius = gradientSky.sun.w;
+  let angle = acos(clamp(dot(dir, gradientSky.sun.xyz), -1.0, 1.0));
+  let disc = (1.0 - smoothstep(radius * 0.85, radius, angle)) * smoothstep(-0.002, 0.002, dir.y);
+  return vec4<f32>(gradientSky.disc.rgb * disc, 0.0);
 }
 
 @fragment

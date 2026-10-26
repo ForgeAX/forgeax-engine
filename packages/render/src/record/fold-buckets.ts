@@ -19,6 +19,7 @@ import {
 } from '../systems/transparent-sort-config';
 import { captureDispatchOverlays, type DispatchOverlays } from './dispatch-overlays';
 import {
+  getOpaqueResourceIdentity,
   instanceCollectionCacheKey,
   type RenderFrameState,
   type ValidatedRenderable,
@@ -42,6 +43,39 @@ import {
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from './render-context';
+
+function unacceptedGeometryMaterial(
+  input: RenderableSnapshot,
+  r: RenderableSnapshot,
+  materials: MaterialFrame | undefined,
+  meshes: MeshFrame | undefined,
+): RhiError {
+  return new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'geometry preparation uses a material from the captured MaterialFrame',
+    hint: 'inspect detail.error.detail to identify the source binding and accepted frame; retain preparation materials until every visible or hidden preparation owner retires',
+    detail: {
+      error: {
+        code: 'geometry-material-not-accepted',
+        message: 'Geometry preparation has no accepted material',
+        detail: {
+          worldId: r.worldId,
+          entityKey: r.entityKey,
+          meshHandle: r.assetHandle,
+          materialHandle: r.material.snapshot.materialHandle,
+          materialIdentity: getOpaqueResourceIdentity(r.material),
+          sourceMaterialIdentity: getOpaqueResourceIdentity(input.material),
+          materialFrameIdentity:
+            materials === undefined ? undefined : getOpaqueResourceIdentity(materials),
+          meshFrameIdentity: meshes === undefined ? undefined : getOpaqueResourceIdentity(meshes),
+          sourceMaterialAccepted: materials?.get(input.material) !== undefined,
+          authorVisible: r.authorVisible !== false,
+          pipelinePreparation: r.pipelinePreparation !== undefined,
+        },
+      },
+    },
+  });
+}
 
 /**
  * A frame-local material table. Repeated snapshot objects share one UBO slot;
@@ -240,7 +274,7 @@ export function validateRenderables(
     }
     const material =
       materials === undefined ? r.material.snapshot : materials.get(r.material)?.snapshot;
-    if (material === undefined) throw new Error('Geometry preparation has no accepted material');
+    if (material === undefined) throw unacceptedGeometryMaterial(input, r, materials, meshes);
     let effectiveMeshHandles = materialGeometry(meshHandles, material, () =>
       internals.gpuStore.ensureNineSliceGeometry().unwrap(),
     );

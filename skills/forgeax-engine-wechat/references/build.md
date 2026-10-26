@@ -29,7 +29,7 @@ retain their complete initialization protocols. Main-package code must not call
 
 WeChat uses DevKit's existing Player Asset Bundle producer before applying Brotli.
 It passes `compressEntries: false` and `compressDocuments: false` to
-`preparePlayerDist`: artifact entries retain identity encoding inside the normal
+`prepareDist`: artifact entries retain identity encoding inside the normal
 `FXBUNDL1` container, and the native transport compresses the whole Bundle.
 Cross-entry shader text can then share Brotli's dictionary. Entry digests,
 GUIDs, byte ranges and Bundle verification retain their existing runtime owners.

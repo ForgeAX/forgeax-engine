@@ -59,7 +59,7 @@ export function encodeEventInputs(
 }
 
 /**
- * Pack the fixed-tick inputs and GPU-produced events into one typed storage
+ * Pack the tick inputs and GPU-produced events into one typed storage
  * resource. The managed event kernel uses the reflected input capacity as the
  * split point; this keeps channel/sub-emitter semantics while leaving one
  * storage binding available for Custom-enabled emitters.

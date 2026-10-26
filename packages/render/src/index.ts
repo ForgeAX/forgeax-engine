@@ -296,7 +296,11 @@ export {
   validateDynamicResolutionParameters,
 } from './components/dynamic-resolution.js';
 export { Fog, type FogMode, FogModeValue } from './components/fog.js';
-export { GradientSky } from './components/gradient-sky.js';
+export {
+  GradientSky,
+  type GradientSkyPreset,
+  GradientSkyPresets,
+} from './components/gradient-sky.js';
 export { Instances, type InstancesData } from './components/instances.js';
 export { Layer } from './components/layer.js';
 export {

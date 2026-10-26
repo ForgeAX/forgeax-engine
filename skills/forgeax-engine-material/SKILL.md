@@ -408,7 +408,12 @@ still needs its static switch. Explicit zero intensity remains zero.
 Emissive is scene-linear and passes through exposure and the tone curve: under
 ACES, large emissive surfaces above about 1.5 clip toward white and lose hue;
 use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources
-([SDK cookbook 4](../forgeax-engine-sdk/references/gameplay-cookbook.md#4-point-light-and-emissive-at-runtime)).
+([SDK runtime-light-emissive](../forgeax-engine-sdk/references/effects/runtime-light-emissive.md)).
+Glow meshes (beams, light pillars) add light: emission-only Surface (`return surfaceEmissionOnly(input, color, opacity)` from `forgeax_material::surface_v1`: the template still lights an additive Surface, the helper zeroes sun Fresnel glare and sky reflection), `one / one`
+colour blend, `zero / one` alpha, peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
+height on an open tapered mesh ([SDK beam-pillar](../forgeax-engine-sdk/references/effects/beam-pillar.md)).
+
+A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, `GradientSky` reflection, fog; render README "Sea sun and sky").
 
 Point and spot lights default to no distance cutoff. Use an explicit finite
 `range` to bound cluster membership and shading cost in many-light scenes.

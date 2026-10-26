@@ -298,20 +298,10 @@ export async function loadProjectCookers(
     const precompute =
       pipelineLibrary === undefined && backgroundPipelineLibrary === undefined
         ? undefined
-        : (await import('./pipeline-library.js')).precomputePipelineLibrary;
+        : (await import('./pipeline-library.js')).precomputePipelineLibraries;
     return {
       appOptions:
-        precompute === undefined
-          ? started.appOptions
-          : {
-              ...started.appOptions,
-              ...(pipelineLibrary === undefined
-                ? {}
-                : { pipelineLibrary: await precompute(pipelineLibrary) }),
-              ...(backgroundPipelineLibrary === undefined
-                ? {}
-                : { backgroundPipelineLibrary: await precompute(backgroundPipelineLibrary) }),
-            },
+        precompute === undefined ? started.appOptions : await precompute(started.appOptions),
       delivery: started.delivery,
       cookers: [...builtins, ...remote],
       importers,

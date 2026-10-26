@@ -37,6 +37,19 @@ interface EffectiveMeshMaterials {
   readonly materials: readonly MaterialResource[];
   readonly materialBindingSources: readonly MeshMaterialBindingSource[];
 }
+
+function sameBinding(
+  previous: EffectiveMeshMaterials | undefined,
+  materials: readonly MaterialResource[],
+  sources: readonly MeshMaterialBindingSource[],
+): previous is EffectiveMeshMaterials {
+  return (
+    previous !== undefined &&
+    previous.materials.length === materials.length &&
+    materials.every((material, index) => material === previous.materials[index]) &&
+    sources.every((source, index) => source === previous.materialBindingSources[index])
+  );
+}
 export type MeshMaterialGeometry = MaterialCookRasterContext['geometry'];
 export type MeshMaterialResolver = (
   worldId: number,
@@ -114,8 +127,8 @@ function meshMaterials(
     contexts = new Map();
     versions.set(overrides, contexts);
   }
-  const cached = resolve === undefined ? contexts.get(geometry) : undefined;
-  if (cached !== undefined) return cached;
+  const cached = contexts.get(geometry);
+  if (resolve === undefined && cached !== undefined) return cached;
   const materials: MaterialResource[] = [];
   const materialBindingSources: MeshMaterialBindingSource[] = [];
   for (let index = 0; index < mesh.materialSlots.length; index++) {
@@ -143,6 +156,9 @@ function meshMaterials(
           : 'mesh-default',
     );
   }
+  // Membership-only queries still resolve the current source, but an unchanged
+  // binding must retain the draw/GPU projection identity shared by its instances.
+  if (sameBinding(cached, materials, materialBindingSources)) return cached;
   const result = Object.freeze({
     material: materials[0] ?? defaultMeshMaterial,
     materials: Object.freeze(materials),

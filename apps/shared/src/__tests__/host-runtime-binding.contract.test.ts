@@ -49,3 +49,22 @@ describe('host createApp runtime binding contract', () => {
     ).toBeGreaterThan(createAppEnd(source));
   });
 });
+
+// `vite` serve under NODE_ENV=production leaves import.meta.env.DEV false while
+// HMR is active. The shared catalog helpers own that decision (they also
+// consult import.meta.hot), so a host that pre-gates the binding or transport
+// on DEV drops the scoped catalog transport and fails scene load with
+// asset-package-invalid ('publication generation').
+describe('hello-skin dev-binding ownership', () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, '../../../hello/skin/src/main.ts'),
+    'utf8',
+  );
+  it('does not pre-gate the binding or import transport on import.meta.env.DEV', () => {
+    expect(source).not.toMatch(/import\.meta\.env\.DEV/);
+  });
+  it('carries the binding into createApp and the bundler transport', () => {
+    expect(source).toContain('assetRuntimeBinding: runtimeBinding');
+    expect(source).toContain('importTransport: createRuntimeAssetImportTransport(runtimeBinding)');
+  });
+});

@@ -6284,6 +6284,7 @@
       "name": "@forgeax/engine-pack",
       "version": "0.0.0",
       "dependencies": {
+        "@forgeax/engine-codec": "workspace:*",
         "@forgeax/engine-tool-runtime": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
         "@noble/hashes": "^2.2.0",

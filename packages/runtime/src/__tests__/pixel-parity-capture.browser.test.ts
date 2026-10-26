@@ -1,3 +1,4 @@
+import { PointLight } from '@forgeax/engine-render';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import type { RendererHostAssembly } from '../renderer-host';
@@ -29,8 +30,9 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
   delete window.__captureRight;
   const disposalFailures: unknown[] = [];
   try {
-    await import('../../../../apps/parity/urp-vs-hdrp/src/main');
-    await expect.poll(() => typeof window.__captureRight, { timeout: 30_000 }).toBe('function');
+    const { bootstrapReady } = await import('../../../../apps/parity/urp-vs-hdrp/src/main');
+    // The fixture completes its initial submissions before capture or disposal.
+    const fixture = await bootstrapReady;
     const captureLeft = window.__captureLeft;
     const captureRight = window.__captureRight;
     if (captureLeft === undefined || captureRight === undefined)
@@ -47,12 +49,29 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
         0,
       );
       expect(lit).toBeGreaterThan(10_000);
+      expect(
+        pixels.filter((value, index) => index % 4 === 3 && value === 255).length,
+      ).toBeGreaterThan(10_000);
     }
     const maximum = a.reduce(
       (delta, value, index) => Math.max(delta, Math.abs(value - (b[index] ?? NaN))),
       0,
     );
     expect(maximum / 255).toBeLessThanOrEqual(0.001);
+    // Equal empty pictures are not lighting parity. Change real light data,
+    // require different completed pixels, then restore the original picture.
+    const { world, lights } = fixture.clustered;
+    const intensities = lights.map((light) => ({
+      light,
+      intensity: world.get(light, PointLight).unwrap().intensity,
+    }));
+    for (const light of lights) world.set(light, PointLight, { intensity: 0 }).unwrap();
+    const unlit = await captureRight();
+    expect(unlit.some((value, index) => value !== b[index])).toBe(true);
+    for (const { light, intensity } of intensities)
+      world.set(light, PointLight, { intensity }).unwrap();
+    const restored = await captureRight();
+    expect(restored).toEqual(b);
   } finally {
     const disposed = await Promise.allSettled(
       hosts.map(async (host) => {

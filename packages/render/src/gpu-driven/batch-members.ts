@@ -774,5 +774,7 @@ function captureLeafBinding(raw: GpuDrivenBatchBinding): GpuDrivenBatchBinding {
     geometry: captureBatchGeometry(binding.geometry),
     ...(binding.lods === undefined ? {} : { lods: Object.freeze([...binding.lods]) }),
     ...(binding.morph === undefined ? {} : { morph: binding.morph }),
+    // The group is the batch's live ownership identity, shared rather than copied.
+    ...(binding.rowGroup === undefined ? {} : { rowGroup: binding.rowGroup }),
   });
 }

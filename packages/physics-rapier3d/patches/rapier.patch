@@ -7271,3 +7271,486 @@ diff --git a/src/dynamics/ccd/ccd_solver.rs b/src/dynamics/ccd/ccd_solver.rs
              .partition(|h| !is_bullet(&bodies[*h]));
  
          let mut all_results = Vec::new();
+diff --git a/crates/rapier3d/tests/collider_mass_cache.rs b/crates/rapier3d/tests/collider_mass_cache.rs
+new file mode 100644
+index 0000000..1cada1e
+--- /dev/null
++++ b/crates/rapier3d/tests/collider_mass_cache.rs
+@@ -0,0 +1,283 @@
++//! The collider mass-properties cache filled on density assignment must be
++//! invisible: after any sequence of density, enable, shape and shared-geometry
++//! edits, explicit and step-driven body recomputes are bit-identical to a
++//! twin whose colliders were built directly with the final state (no cache).
++
++use rapier3d::geometry::SharedShape;
++use rapier3d::math::{Pose, Vector};
++use rapier3d::prelude::*;
++
++struct Lcg(u64);
++
++impl Lcg {
++    fn next(&mut self) -> u32 {
++        self.0 = self
++            .0
++            .wrapping_mul(6364136223846793005)
++            .wrapping_add(1442695040888963407);
++        (self.0 >> 33) as u32
++    }
++    fn unit(&mut self) -> f32 {
++        self.next() as f32 / (1u64 << 31) as f32
++    }
++    fn range(&mut self, lo: f32, hi: f32) -> f32 {
++        lo + (hi - lo) * self.unit()
++    }
++    fn pick(&mut self, n: usize) -> usize {
++        self.next() as usize % n
++    }
++}
++
++fn random_piece(rng: &mut Lcg) -> SharedShape {
++    match rng.pick(3) {
++        0 => SharedShape::cuboid(
++            rng.range(0.05, 1.0),
++            rng.range(0.05, 1.0),
++            rng.range(0.05, 1.0),
++        ),
++        1 => SharedShape::ball(rng.range(0.05, 0.8)),
++        _ => loop {
++            let count = 6 + rng.pick(10);
++            let points: Vec<Vector> = (0..count)
++                .map(|_| {
++                    Vector::new(
++                        rng.range(-1.0, 1.0),
++                        rng.range(-1.0, 1.0),
++                        rng.range(-1.0, 1.0),
++                    )
++                })
++                .collect();
++            if let Some(shape) = SharedShape::convex_hull(&points) {
++                break shape;
++            }
++        },
++    }
++}
++
++fn random_pose(rng: &mut Lcg) -> Pose {
++    Pose::new(
++        Vector::new(
++            rng.range(-2.0, 2.0),
++            rng.range(-2.0, 2.0),
++            rng.range(-2.0, 2.0),
++        ),
++        Vector::new(
++            rng.range(-1.5, 1.5),
++            rng.range(-1.5, 1.5),
++            rng.range(-1.5, 1.5),
++        ),
++    )
++}
++
++fn random_shape(rng: &mut Lcg) -> SharedShape {
++    if rng.pick(2) == 0 {
++        random_piece(rng)
++    } else {
++        let parts = (0..1 + rng.pick(6))
++            .map(|_| (random_pose(rng), random_piece(rng)))
++            .collect();
++        SharedShape::compound(parts)
++    }
++}
++
++fn random_density(rng: &mut Lcg) -> f32 {
++    [0.0, 1.0, 0.5, 2.7, rng.range(0.01, 10.0)][rng.pick(5)]
++}
++
++#[derive(Clone)]
++struct Final {
++    shape: SharedShape,
++    pose: Pose,
++    density: f32,
++    enabled: bool,
++    shared: Option<usize>,
++}
++
++fn world() -> PhysicsWorld {
++    let mut world = PhysicsWorld::new();
++    world.gravity = Vector::ZERO;
++    world
++}
++
++fn mass_state(world: &PhysicsWorld, body: RigidBodyHandle) -> String {
++    format!("{:?}", world.bodies[body].mass_properties())
++}
++
++fn run_case(seed: u64) {
++    let mut rng = Lcg(seed);
++    let pool: Vec<SharedShape> = (0..3).map(|_| random_shape(&mut rng)).collect();
++    let additional = if rng.pick(3) == 0 {
++        rng.range(0.1, 5.0)
++    } else {
++        0.0
++    };
++
++    let mut cached = world();
++    let shared: Vec<_> = pool
++        .iter()
++        .map(|shape| cached.colliders.shared_geometry.insert(shape.clone()))
++        .collect();
++    let body = cached.bodies.insert(
++        RigidBodyBuilder::dynamic()
++            .translation(Vector::new(rng.range(-5.0, 5.0), 3.0, rng.range(-5.0, 5.0)))
++            .rotation(Vector::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), 0.3))
++            .additional_mass(additional),
++    );
++    let mut finals = Vec::new();
++    let mut handles = Vec::new();
++    let insert = |rng: &mut Lcg, cached: &mut PhysicsWorld| {
++        let entry = Final {
++            shape: random_shape(rng),
++            pose: random_pose(rng),
++            // Authored colliders are inserted with their final density.
++            density: if rng.pick(2) == 0 {
++                0.0
++            } else {
++                random_density(rng)
++            },
++            enabled: rng.pick(4) != 0,
++            shared: None,
++        };
++        let collider = ColliderBuilder::new(entry.shape.clone())
++            .position(entry.pose)
++            .density(entry.density)
++            .enabled(entry.enabled);
++        let handle = cached
++            .colliders
++            .insert_with_parent(collider, body, &mut cached.bodies);
++        (handle, entry)
++    };
++    for _ in 0..1 + rng.pick(12) {
++        let (handle, entry) = insert(&mut rng, &mut cached);
++        handles.push(handle);
++        finals.push(entry);
++    }
++
++    for _ in 0..40 {
++        let i = rng.pick(handles.len());
++        match rng.pick(14) {
++            10 => {
++                // Unchanged assignment, possibly right after an in-place edit.
++                cached.colliders[handles[i]].set_density(finals[i].density);
++            }
++            11 => {
++                // In-place owned shape edit (the voxel-edit path) without a
++                // density change.
++                if finals[i].shared.is_none() {
++                    if let Some(ball) = cached.colliders[handles[i]]
++                        .shape_mut()
++                        .and_then(|shape| shape.as_ball_mut())
++                    {
++                        ball.radius = rng.range(0.05, 0.8);
++                        finals[i].shape = SharedShape::ball(ball.radius);
++                    }
++                }
++            }
++            12 => {
++                let (handle, entry) = insert(&mut rng, &mut cached);
++                handles.push(handle);
++                finals.push(entry);
++            }
++            13 => {
++                let co = &cached.colliders[handles[i]];
++                if finals[i].shared.is_none() {
++                    // A clone of an inserted collider carries its cache.
++                    let copy = co.clone();
++                    let entry = finals[i].clone();
++                    let handle =
++                        cached
++                            .colliders
++                            .insert_with_parent(copy, body, &mut cached.bodies);
++                    handles.push(handle);
++                    finals.push(entry);
++                }
++            }
++            0..=4 => {
++                finals[i].density = random_density(&mut rng);
++                cached.colliders[handles[i]].set_density(finals[i].density);
++            }
++            5 => {
++                finals[i].enabled = !finals[i].enabled;
++                cached.colliders[handles[i]].set_enabled(finals[i].enabled);
++            }
++            6 => {
++                finals[i].shape = random_shape(&mut rng);
++                finals[i].shared = None;
++                assert!(
++                    cached
++                        .colliders
++                        .set_shape(handles[i], finals[i].shape.clone())
++                );
++            }
++            7 => {
++                let g = rng.pick(pool.len());
++                finals[i].shared = Some(g);
++                assert!(
++                    cached
++                        .colliders
++                        .bind_shared_geometry(handles[i], shared[g], Vector::ONE)
++                );
++            }
++            8 => {
++                let rb = &mut cached.bodies[body];
++                rb.recompute_mass_properties_from_colliders(&cached.colliders);
++            }
++            _ => cached.step(),
++        }
++    }
++
++    let mut direct = world();
++    let direct_shared: Vec<_> = pool
++        .iter()
++        .map(|shape| direct.colliders.shared_geometry.insert(shape.clone()))
++        .collect();
++    let twin = direct.bodies.insert(
++        RigidBodyBuilder::dynamic()
++            .pose(*cached.bodies[body].position())
++            .additional_mass(additional),
++    );
++    for entry in &finals {
++        let collider = ColliderBuilder::new(entry.shape.clone())
++            .position(entry.pose)
++            .density(entry.density)
++            .enabled(entry.enabled);
++        let handle = direct
++            .colliders
++            .insert_with_parent(collider, twin, &mut direct.bodies);
++        if let Some(g) = entry.shared {
++            assert!(
++                direct
++                    .colliders
++                    .bind_shared_geometry(handle, direct_shared[g], Vector::ONE)
++            );
++        }
++    }
++
++    cached.bodies[body].recompute_mass_properties_from_colliders(&cached.colliders);
++    direct.bodies[twin].recompute_mass_properties_from_colliders(&direct.colliders);
++    assert_eq!(
++        mass_state(&cached, body),
++        mass_state(&direct, twin),
++        "explicit recompute diverged for seed {seed}"
++    );
++
++    // Step-driven recompute: dirty every collider so the step re-evaluates them.
++    for (i, handle) in handles.iter().enumerate() {
++        cached.colliders[*handle].set_density(finals[i].density + 1.0);
++        cached.colliders[*handle].set_density(finals[i].density);
++    }
++    cached.step();
++    direct.step();
++    assert_eq!(
++        mass_state(&cached, body),
++        mass_state(&direct, twin),
++        "step recompute diverged for seed {seed}"
++    );
++}
++
++#[test]
++fn cached_collider_mass_matches_direct_evaluation() {
++    for seed in 0..400 {
++        run_case(seed);
++    }
++}
+diff --git a/src/dynamics/rigid_body.rs b/src/dynamics/rigid_body.rs
+index 868167a..07cffcb 100644
+--- a/src/dynamics/rigid_body.rs
++++ b/src/dynamics/rigid_body.rs
+@@ -769,7 +769,7 @@ impl RigidBody {
+         co_pos: &mut ColliderPosition,
+         co_shape: &ColliderShape,
+         co_mprops: &ColliderMassProps,
+-    ) {
++    ) -> MassProperties {
+         self.colliders.attach_collider(
+             self.body_type,
+             &mut self.changes,
+diff --git a/src/dynamics/rigid_body_components.rs b/src/dynamics/rigid_body_components.rs
+index 78eb4ff..7d1112b 100644
+--- a/src/dynamics/rigid_body_components.rs
++++ b/src/dynamics/rigid_body_components.rs
+@@ -438,8 +438,12 @@ impl RigidBodyMassProps {
+                 if co.is_enabled() {
+                     if let Some(co_parent) = co.parent {
+                         let to_add = co
+-                            .mprops
+-                            .mass_properties(colliders.resolved_shape(*handle).unwrap().as_ref())
++                            .cached_mass_properties()
++                            .unwrap_or_else(|| {
++                                co.mprops.mass_properties(
++                                    colliders.resolved_shape(*handle).unwrap().as_ref(),
++                                )
++                            })
+                             .transform_by(&co_parent.pos_wrt_parent);
+                         self.local_mprops += to_add;
+                     }
+@@ -1218,7 +1222,7 @@ impl RigidBodyColliders {
+         co_parent: &ColliderParent,
+         co_shape: &ColliderShape,
+         co_mprops: &ColliderMassProps,
+-    ) {
++    ) -> MassProperties {
+         rb_changes.set(RigidBodyChanges::COLLIDERS, true);
+ 
+         co_pos.0 = rb_pos.position * co_parent.pos_wrt_parent;
+@@ -1229,12 +1233,13 @@ impl RigidBodyColliders {
+             rb_ccd.ccd_thickness = rb_ccd.ccd_thickness.min(co_shape.ccd_thickness());
+         }
+ 
+-        let mass_properties = co_mprops
+-            .mass_properties(&**co_shape)
+-            .transform_by(&co_parent.pos_wrt_parent);
++        let local_mass_properties = co_mprops.mass_properties(&**co_shape);
++        let mass_properties = local_mass_properties.transform_by(&co_parent.pos_wrt_parent);
+         self.0.push(co_handle);
+         rb_mprops.local_mprops += mass_properties;
+         rb_mprops.update_world_mass_properties(rb_type, &rb_pos.position);
++        // The collider-local `mass_properties(shape)`, reusable as its mass cache.
++        local_mass_properties
+     }
+ 
+     /// Update the positions of all the colliders attached to this rigid-body.
+diff --git a/src/geometry/collider.rs b/src/geometry/collider.rs
+index 17831ee..d5cf3c1 100644
+--- a/src/geometry/collider.rs
++++ b/src/geometry/collider.rs
+@@ -61,9 +61,41 @@ pub struct Collider {
+     contact_force_event_threshold: Real,
+     /// User-defined data associated to this collider.
+     pub user_data: u128,
++    /// `mprops.mass_properties(shape)` for the owned shape, filled by body
++    /// attachment and by mass-property assignments. Every write of `shape` or
++    /// `mprops` resets it, so a cached value is the exact (bit-identical)
++    /// result the uncached evaluation would return.
++    #[cfg_attr(feature = "serde-serialize", serde(skip))]
++    mass_cache: Option<MassProperties>,
+ }
+ 
+ impl Collider {
++    /// The local mass properties of this collider's owned shape, served from
++    /// the density-assignment cache when valid. `None` means the caller must
++    /// evaluate them from the resolved (possibly shared) shape.
++    #[inline]
++    pub(crate) fn cached_mass_properties(&self) -> Option<MassProperties> {
++        if self.shape.is_some() {
++            self.mass_cache
++        } else {
++            None
++        }
++    }
++
++    #[inline]
++    pub(crate) fn invalidate_mass_cache(&mut self) {
++        self.mass_cache = None;
++    }
++
++    /// Store `mprops.mass_properties(shape)` already evaluated for the current
++    /// owned shape and mass properties (e.g. by body attachment).
++    #[inline]
++    pub(crate) fn fill_mass_cache(&mut self, local: MassProperties) {
++        if self.shape.is_some() {
++            self.mass_cache = Some(local);
++        }
++    }
++
+     pub(crate) fn reset_internal_references(&mut self) {
+         self.changes = ColliderChanges::all();
+     }
+@@ -130,6 +162,7 @@ impl Collider {
+             contact_force_event_threshold,
+             user_data,
+             contact_skin,
++            mass_cache: _mass_cache, // `resolved_shape` may differ from `other`'s shape.
+         } = other;
+ 
+         if self.parent.is_none() {
+@@ -139,6 +172,7 @@ impl Collider {
+         self.coll_type = *coll_type;
+         self.shape = Some(resolved_shape);
+         self.mprops = mprops.clone();
++        self.invalidate_mass_cache();
+         self.material = *material;
+         self.contact_force_event_threshold = *contact_force_event_threshold;
+         self.user_data = *user_data;
+@@ -505,6 +539,19 @@ impl Collider {
+         if mprops != self.mprops {
+             self.changes |= ColliderChanges::LOCAL_MASS_PROPERTIES;
+             self.mprops = mprops;
++            // Evaluate once here; the explicit body recompute and the next
++            // step's change-driven recompute then reuse the identical value.
++            self.mass_cache = self
++                .shape
++                .as_ref()
++                .map(|shape| self.mprops.mass_properties(shape.as_ref()));
++        } else if self.mass_cache.is_none() {
++            // An unchanged assignment after a shape edit: callers assign before
++            // recomputing, so evaluate once here instead of in every recompute.
++            self.mass_cache = self
++                .shape
++                .as_ref()
++                .map(|shape| self.mprops.mass_properties(shape.as_ref()));
+         }
+     }
+ 
+@@ -525,12 +572,14 @@ impl Collider {
+     /// shape that you can modify.
+     pub fn shape_mut(&mut self) -> Option<&mut dyn Shape> {
+         self.changes.insert(ColliderChanges::SHAPE);
++        self.invalidate_mass_cache();
+         self.shape.as_mut().map(|shape| shape.make_mut())
+     }
+ 
+     /// Sets the shape of this collider.
+     pub fn set_shape(&mut self, shape: SharedShape) {
+         self.changes.insert(ColliderChanges::SHAPE);
++        self.invalidate_mass_cache();
+         self.shape = Some(shape);
+     }
+ 
+@@ -1453,6 +1502,7 @@ impl ColliderBuilder {
+             contact_force_event_threshold: self.contact_force_event_threshold,
+             contact_skin: self.contact_skin,
+             user_data: self.user_data,
++            mass_cache: None,
+         }
+     }
+ }
+diff --git a/src/geometry/collider_set.rs b/src/geometry/collider_set.rs
+index 48bbae9..3880da6 100644
+--- a/src/geometry/collider_set.rs
++++ b/src/geometry/collider_set.rs
+@@ -101,6 +101,7 @@ impl ColliderSet {
+             .insert(handle.0, Some((geometry, scale)));
+         let collider = self.get_mut(handle).unwrap();
+         collider.shape = None;
++        collider.invalidate_mass_cache();
+         collider.changes.insert(ColliderChanges::SHAPE);
+         self.refresh_shared_geometry_pose(handle);
+         true
+@@ -415,7 +416,7 @@ impl ColliderSet {
+         //       the set yet.
+         self.modified_colliders.push_unchecked(handle, coll);
+ 
+-        parent.add_collider_internal(
++        let local_mass_properties = parent.add_collider_internal(
+             handle,
+             coll.parent.as_mut().unwrap(),
+             &mut coll.pos,
+@@ -424,6 +425,9 @@ impl ColliderSet {
+                 .expect("insert an owned Collider or bind through ColliderSet"),
+             &coll.mprops,
+         );
++        // Attachment just evaluated `mprops.mass_properties(shape)` for this
++        // owned shape; keep it so later body recomputes do not integrate again.
++        coll.fill_mass_cache(local_mass_properties);
+         handle
+     }
+ 

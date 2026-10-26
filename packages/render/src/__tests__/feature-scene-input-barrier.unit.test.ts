@@ -100,9 +100,8 @@ it.each([
       },
       captures: {
         snapshots: [],
-        auxiliary: [],
         exclusive: false,
-        accept: (_cube, _auxiliary, scene) => {
+        accept: (_cube, scene) => {
           work = scene;
         },
       },

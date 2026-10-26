@@ -45,6 +45,8 @@ export type PreparedResolverCaches = {
   readonly preparedGroup0Pipelines: WeakSet<object>;
   readonly preparedViewOnlyPipelines: WeakSet<object>;
   readonly preparedRenderMaterialPipelines: WeakSet<object>;
+  /** Live material rows of every resolver, including frames still in flight. */
+  readonly materialBindings: PreparedMaterialBindingsScope;
 };
 
 export function createPreparedResolverCaches(): PreparedResolverCaches {
@@ -54,6 +56,7 @@ export function createPreparedResolverCaches(): PreparedResolverCaches {
     preparedGroup0Pipelines: new WeakSet(),
     preparedViewOnlyPipelines: new WeakSet(),
     preparedRenderMaterialPipelines: new WeakSet(),
+    materialBindings: [],
   };
 }
 
@@ -73,7 +76,12 @@ interface PreparedMaterialBindingRow {
   references: number;
 }
 
-/** One resolver's outstanding material leases; never retained across frames. */
+/**
+ * Outstanding material leases. A row lives only while a lease holds it, so a
+ * shared scope lets the next frame borrow a prior frame's still-retained
+ * bind group and UBO when every resolved value and resource is identical;
+ * the buffer is written once at creation and never rewritten.
+ */
 export type PreparedMaterialBindingsScope = PreparedMaterialBindingRow[];
 
 function samePayload(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {

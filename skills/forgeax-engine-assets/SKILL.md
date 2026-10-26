@@ -23,7 +23,20 @@ Choose the owner by when the content is known, not by how it is computed:
 - Factories and `meshFromInterleaved` emit the vec4 `tangent` Standard materials need;
   `createMeshBuilder` input needs `tangent: computeTangentVec4(...)`.
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
-- Compiled recipes: [procedural props and runtime meshes](../forgeax-engine-sdk/references/gameplay-cookbook.md#procedural-props-built-at-pack-time).
+- Compiled recipes: [procedural props and runtime meshes](../forgeax-engine-sdk/references/effects/procedural-props.md).
+
+## Collected pipeline recipes
+
+Pass collected version-1 recipes through the build root's `pipelineLibrary` and
+`backgroundPipelineLibrary`. DevKit owns compute entry projection and exact
+content deduplication during cooking, including already-projected input. It keeps
+first occurrence order, reindexes dependencies and retains original-source aliases;
+startup overlap is removed only from the background output. Startup-owned
+dependencies unused by the remaining recipes and aliases are also omitted, with
+indices rewritten; unrelated unused rows remain. Do not add a
+parallel game-side identity/cache owner or discard distinct state variants by label.
+This is machine-independent preparation; final native compilation still belongs
+to the target device. See the [collection contract](../../packages/devkit/README.md#collect-and-prepare-gameplay-pipelines).
 
 ## View Pack parameters
 

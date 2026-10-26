@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   cloneOwnedRenderFeaturePlanSignatureSnapshot,
   cloneRenderFeaturePlanSignatureSnapshot,
-  freezeRenderFeaturePlan,
   type RenderFeatureWorkPlan,
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureSnapshotEquals,
+  validateRenderFeaturePlan,
 } from '../features/plan';
 import { ownRenderFeatureProgramData } from '../features/prepared-gpu-work';
 
@@ -20,7 +20,7 @@ it('retains owned static buffer evidence without confusing normalized and nested
   const first = cloneRenderFeaturePlanSignatureSnapshot(plan);
   expect(cloneRenderFeaturePlanSignatureSnapshot(plan).resources[0]).toBe(first.resources[0]);
   expect(renderFeaturePlanSignatureSnapshotEquals(plan, first)).toBe(true);
-  expect(freezeRenderFeaturePlan('owned', plan).unwrap().resources[0]).toBe(buffer);
+  expect(validateRenderFeaturePlan('owned', plan).ok).toBe(true);
   expect(renderFeaturePlanSignature(plan)).toBe(
     renderFeaturePlanSignature({
       ...plan,
@@ -43,16 +43,14 @@ it('retains owned static buffer evidence without confusing normalized and nested
   if (nestedBuffer?.kind !== 'object') throw new Error('Missing nested buffer snapshot');
   expect(nestedBuffer.keys).not.toContain('data');
   const invalid = { resources: [ownRenderFeatureProgramData({ ...buffer, name: '' })], passes: [] };
-  expect(freezeRenderFeaturePlan('invalid', invalid).ok).toBe(false);
+  expect(validateRenderFeaturePlan('invalid', invalid).ok).toBe(false);
   const bytes = new Uint32Array([1]);
   const uploaded = { ...buffer, data: bytes };
   const uploadPlan: RenderFeatureWorkPlan = { resources: [uploaded], passes: [] };
   const uploadSnapshot = cloneRenderFeaturePlanSignatureSnapshot(uploadPlan);
   bytes[0] = 2;
   expect(renderFeaturePlanSignatureSnapshotEquals(uploadPlan, uploadSnapshot)).toBe(true);
-  const captured = freezeRenderFeaturePlan('upload', uploadPlan).unwrap().resources[0];
-  expect(captured).not.toBe(uploaded);
-  expect(captured?.kind === 'buffer' && captured.data).toBe(bytes);
+  expect(validateRenderFeaturePlan('upload', uploadPlan).ok).toBe(true);
 });
 
 it.each([
@@ -436,9 +434,7 @@ it('excludes range uploads from topology while retaining binding ranges and capt
     expect(renderFeaturePlanSignature(current)).toBe(renderFeaturePlanSignature(initial));
     expect(renderFeaturePlanSignatureSnapshotEquals(current, snapshot)).toBe(true);
   }
-  const captured = freezeRenderFeaturePlan('arena', initial).unwrap().resources[0];
-  expect(captured?.kind === 'buffer' && captured.uploads?.[0]?.offset).toBe(256);
-  expect(captured?.kind === 'buffer' && captured.uploads?.[0]?.data).toBe(data);
+  expect(validateRenderFeaturePlan('arena', initial).ok).toBe(true);
   const binding = (offset: number): RenderFeatureWorkPlan => ({
     resources: [
       {

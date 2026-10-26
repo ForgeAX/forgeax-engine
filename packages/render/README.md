@@ -53,6 +53,20 @@ PSOs; making an entity visible updates its ordinary batch membership.
 | `FrameReceipt.presentation === 'pending'` | At least one requested pipeline is still being prepared |
 | `FrameReceipt.presentation === 'ready'` | The current frame's required pipeline requests and existing presentation checks succeeded |
 
+A preparation barrier leaves the canvas surface untouched and does not publish
+a partially rendered scene or update shadow/temporal history. The receipt stays
+`pending`; this is not evidence that gameplay rendering continues.
+
+For a specific pending variant, inspect `pipelineLibrary.pending` through the
+existing Renderer inspection (or `execution.inspectRenderer` across Workers).
+It exposes every recorded live native request with semantic identity, shader
+digests, entry points, attachment/vertex formats, specialization constants and
+complete recipe state. `preload` distinguishes a missing exact recipe from an
+in-progress library index or an entry already declared for startup/background
+warmup. The frame's `presentationPendingReason` remains the first
+producer blocker, not a complete compilation roster. Hidden preparation retains
+its admitted materials until its final preparation membership retires.
+
 When the backend exposes `RhiDevice.createRenderPipelineAsync`, explicit
 preparation waits for native pipeline compilation completion. WebGPU forwards
 `GPUDevice.createRenderPipelineAsync`; a pending or failed result never becomes
@@ -720,6 +734,26 @@ materials without expanding per-entity validation rows. Actual Direct graph
 passes, shadow draws and explicit hidden pipeline preparation retain their own
 validated geometry. TAA Direct preparation retains jitter-visible edge geometry.
 
+Canonical Standard and default Unlit rows with the same pipeline, resource bindings,
+material schema and route share a row-material batch. Each candidate reads numeric
+parameters through its own GPU Scene material slot; the batch binds one held
+material for its common pipeline and texture facts. Removing that material's last
+row selects another held binding without changing the batch identity. Dynamic
+texture/video sources and incompatible bindings keep their existing partitions.
+
+| Accepted edit | Retained work |
+|:--|:--|
+| Numeric material values | Update the material row; no member reclassification |
+| A material changes batch class | Reclassify only that material's rows; a sole-material group may re-key in place |
+| A row swaps compatible materials | Keep its batch and update held membership |
+| Visibility intent or membership changes | Capture only the World's changed entities into a persistent intent root; prior captures remain immutable |
+
+Asset identity admission remains owned by AssetRegistry. Its default `maxAssets`
+is 65,536; a 100,000-unique-material workload therefore requires an explicitly
+configured larger registry budget before it can measure rendering cost. A budget
+rejection remains `asset-budget-exceeded`; batching does not merge asset identities,
+truncate the scene, or silently increase that limit.
+
 Transmission and single-layer-medium topology demand belongs to the fixed
 shared Material frame. Binding changes adjust group cardinality; a material
 adoption adjusts its contribution once without enumerating users. Retained
@@ -796,11 +830,9 @@ moved entity costs only its dirty GpuScene rows. Surface frame inputs are keyed
 by the same scene instance row.
 `planRebuildBatches` and `planRebuildCandidates` count the submission-plan
 shared batches and candidate records re-derived in the last frame. Material and
-mesh preparation leaves `planRebuildCandidates` at zero, including Pass changes. `lodSelectionChanges` counts LOD candidates whose
-selected raster levels changed since the previous frame over the same prepared
-plan; a plan rebuild resets that baseline and reports zero. It is a CPU mirror
-of the GPU choice kept for telemetry and shadow-cache invalidation; near a
-threshold its f64 height can disagree with the GPU f32 height for one frame.
+mesh preparation leaves `planRebuildCandidates` at zero, including Pass changes.
+LOD selection of GPU-lane rows exists only inside the per-view GPU cull; a
+camera move performs no CPU walk of LOD candidates.
 `indirectDrawCount` counts indirect commands, one per LOD level of each
 admitted batch. The existing
 `sceneTableUploadBytes`, `candidateUploadBytes`,
@@ -885,6 +917,17 @@ Fog composites depth-correctly with translucency (the Unreal
    Opaque draws and frames without Fog bind the unfogged composition, so the
    same program is never fogged twice. `translucentViewOffset(composition)` is
    the byte offset of each copy inside the View buffer.
+
+`renderState: { fog: false }` (Three `Material.fog = false`) skips fog per
+material. Blended draws bind the unfogged composition. Opaque forward draws with
+the flag leave `main` and record in a `main-unfogged` scene pass right after
+`analytic-fog`, loading and depth-testing the fogged depth, so in front they
+replace fogged pixels and behind they fail the depth test. The pass exists only
+in frames that hold such a material and active fog, so default frames are
+unchanged. Costs and limits: one extra render pass in those frames; fog:false
+forward draws take the direct (CPU) route instead of GPU-driven batches (their
+shadow casters stay batched); a `CloudLayer` composite, which draws before fog,
+keeps them in `main` and fogged; deferred opaque always fogs.
 
 Custom WGSL blended materials import `translucent_fog` and apply it to their
 final color the same way; an opaque custom material needs nothing. Each
@@ -1556,7 +1599,7 @@ parameter names are fields on `material`, not free uniforms or string lookups:
 
 fn evaluate_surface(input: SingleLayerMediumSurfaceInput) -> SingleLayerMediumSurfaceData {
   return SingleLayerMediumSurfaceData(
-    normalize(input.vertexNormalWS),
+    normalize(input.geometricNormalWS),
     0.16,
     material.coverage,
     0.0,
@@ -1593,6 +1636,17 @@ record values and World time keep the current revision so stable frames reuse
 the retained validation and consumption projection.
 Range order is irrelevant: Render joins each range to the admitted candidate by
 `member` and rejects missing, duplicate, or non-admitted identities.
+
+#### Sea sun and sky
+
+A Surface only defines material properties; it receives no sun, sky or camera data
+(`SurfaceInput` has no `light`). Sun glint, sky reflection and fog belong to the material
+model. The stock `model: 'single-layer-medium'` water adds the main `DirectionalLight`
+glint (Three.js `Water` specular, widened by the wave-normal footprint), reflects a
+`GradientSky` along the reflection direction when one is present (else the Skylight
+cubemap), and fogs its own light. The sky law rides the View atmosphere lanes
+(`gradientSkyColor` in `forgeax_view::common`), which are unused while no Atmosphere is
+active, so the View layout does not change.
 
 #### Visible surface observation
 
@@ -2453,25 +2507,23 @@ Shadow views stay cached under ordinary motion:
 - A retained view re-rasters only when a caster whose drawn content, view
   membership, or selected LOD level changed touches the retained frustum, judged
   by every world bound the caster occupied since the view last rastered. Any
-  other change (an out-of-view move, add, remove, class flip, or LOD change)
-  adopts the new plan and stays a hit. A caster without a conservative bound
+  other change (an out-of-view move, add, remove, or class flip) adopts the
+  new plan and stays a hit. A caster without a conservative bound
   misses every view; a mesh content change uses its affected caster bounds.
 - An unchanged source sync still flushes committed temporal primitive flags.
   It uses the retained projection's bounds and instance-row resolvers, so this
   metadata upload proves an empty caster-change set and preserves static classes.
   Real source changes and resync retain their normal shadow invalidation.
-- LOD reselection invalidates a view only when a caster's selected level
-  changes, not when its cross-fade moves.
 - A light view with a matrix selects caster LOD by the caster's footprint in
-  that light projection (`lodViewCameraFromMatrix`), never more than
-  `SHADOW_LOD_MAX_COARSER` (1) level coarser than the main camera selects for
-  the same caster, so a wide cascade cannot drop a caster to a proxy that no
-  longer matches its lit silhouette. The GPU cull applies the bound through a
-  second, clamp-flagged `LodViewConstants` row; the CPU mirror
-  (`shadowLodProjectionState`) only drives invalidation. A static layer keeps
-  retained levels finer than it now selects and re-rasters only casters whose
-  retained level became too coarse, so an oscillating main-camera LOD settles
-  instead of missing the layer every frame.
+  that light projection (`lodViewCameraFromMatrix`), never coarser than
+  `SHADOW_LOD_COARSEST` (LOD1), so a wide cascade cannot drop a caster to a
+  proxy that no longer matches its lit silhouette. The GPU cull applies the cap
+  through the view's clamp-flagged `LodViewConstants` row. The selection
+  depends on caster pose, mesh and light matrix only, so main-camera motion
+  never invalidates a retained layer and needs no CPU LOD mirror. LOD1 is a
+  conservative cap: for every main level it is no coarser than the former
+  `mainLevel + 1` bound. Far casters can therefore use finer geometry than
+  before; record their GPU work separately from the removed CPU projection.
 - Caster classification consumes the scene's object-change journal and direct slot
   lookup; asset-only revisions do not enumerate objects. Initial attachment and
   explicit history loss rebuild the roster. Each settling caster owns one
@@ -2513,7 +2565,7 @@ Shadow views stay cached under ordinary motion:
   joint edits broadcast nothing to other views. A change to
   camera clipping with `clipShadows` invalidates every view. The static
   layer doubles shadow depth memory for directional, spot, and point maps.
-- A static-layer miss caused only by changed content, membership or LOD, with
+- A static-layer miss caused only by changed content or membership, with
   an unchanged light matrix, target and graph, re-rasters only the dirty
   regions: every box the changed casters occupied since the retained revision
   projects through the light matrix into at most four merged rects, and each is
@@ -5356,20 +5408,31 @@ rebuild implementation. Missing producer evidence causes conservative source
 extraction into the same retained projection. World reordering and catalog
 reconciliation preserve surviving slots and their submitted temporal history.
 
-The Renderer owns one Render World, an ordinary `@forgeax/engine-ecs` World
-that never advances simulation time. Each publication receiver or local
-simulation World is an ingest owner with a Render World-unique source id; its
-rows carry `RenderSource`, `RenderPose` and `GpuRow` components. Spawn, despawn
-and pose-column writes enter only as queued batches committed by the
-`render-sync` system inside the explicit `RenderApply` schedule, so later
-prepare steps observe changes through ordinary ECS change evidence. Views share
-these rows and keep only view-private state (suppression, visibility, history);
-a pose edit costs O(changed rows) for every view. Scene rows are numeric pages
-over interned contents with persistent hash-trie identity lookup. The
-publisher shrinks a column's storage once demand falls below 1/8 of a capacity
-above 64 KiB, so a steady delta crosses the Worker with change-sized buffers.
+The Renderer owns one `SceneComposition`: local World extraction, publication
+adoption, source rows, topology, material dispatch, Skin inputs and GPU Scene
+preparation run once per Renderer frame or accepted publication. `SceneSlots`
+is the unique row owner, with numeric pages over interned contents and a persistent
+identity lookup; there is no write-only ECS row mirror. Each view holds a
+`PersistentRenderScene` over those shared rows and retains its own camera admission,
+residual roster, draw addresses, Skin recordings and successfully submitted history.
+A view-specific pipeline change retires only that view's derived state. Held views
+observe source changes without advancing their picture history; a new or lapsed
+view catches up from the shared rows.
+
+Live view asset consumers subscribe to the shared adoption owner for the view's
+lifetime, so same-handle texture edits invalidate a sleeping view's private GI state
+without waiting for it to catch up through row advances. Retirement unregisters the
+consumer; reset and recovery preserve the live subscription. Changes have no replay
+history, and consumer failures remain observable after sibling consumers are notified.
+GPU completion still controls physical retirement. One accepted submission advances the shared GPU stamp once, independently
+of how many views recorded it.
+
+The ordinary `@forgeax/engine-ecs` Render World manages retained views, lights and
+shadow views; its explicit `RenderPrepare` schedule never advances simulation time.
+The publisher shrinks a column's storage once demand falls below 1/8 of a capacity
+above 64 KiB, so steady deltas cross the Worker with change-sized buffers.
 View transparency, Forward selection and OIT eligibility classify per Pass of
-the material query and skip opaque Pass work unvisited. The
+the shared material query and skip opaque Pass work unvisited. The
 [change-propagation bench](bench/change-propagation/README.md) is the scale
 falsifier (1M entities).
 
@@ -5505,6 +5568,21 @@ A static or orbiting camera over unchanged meshes should hit the visibility
 projection and temporal snapshots; a persistently missing cache names the input
 that keeps changing. Only transparent entries are sorted; opaque dispatch order is
 never touched.
+
+The retained direct phase qualifies camera-only DISTANCE motion against the
+adjacent pairs of its existing sorted order. Their distance differences are
+affine along each camera axis. Inside the qualified interval, later motion on
+that same axis reuses the order and output without reading rows or evaluating
+sort values. All values, including edited rows, keep one common reference eye
+until that interval is left; switching axes, order crossings, invalid numeric
+inputs and general multi-axis motion use the ordinary exact repair. Qualification
+reads the sorted adjacent constraints once after their facts change; the
+internal `DirectDrawPhase.work.orderConstraints` counter keeps that O(T) work
+visible alongside `evaluated`. This reduces repeated maintenance for coherent
+motion; it does not establish an O(changes) bound for arbitrary moving-camera
+transparency. Global sorting across different geometry/pipeline bindings and
+actual residual draw recording remain on the CPU path.
+
 GPU and renderer contract errors arrive through the single `renderer.subscribe`
 event stream (`event.kind === 'error'`); the renderer does not expose a second
 error listener registry.
@@ -6255,10 +6333,16 @@ presents opaque, where a transparent clear shows black.
 
 ### Gradient sky background
 
-`GradientSky { zenith, horizon, ground, exponent, sunSize, sunGlow, fogBlend, toneMapped }`
+`GradientSky { zenith, horizon, ground, mid, midHeight, exponent, sunSize, sunGlow, fogBlend, toneMapped }`
 is a procedural background with no geometry to build. Above the horizon the colour is
 `mix(horizon, zenith, pow(h, exponent))` for the view ray's elevation sine `h`; below it,
-`mix(horizon, ground, pow(-h, exponent))`. The selected `DirectionalLight` places a disc
+`mix(horizon, ground, pow(-h, exponent))`. With `midHeight > 0` (default 0) the upper span
+has a third stop: `mix(horizon, mid, pow(h / midHeight, exponent))` up to `midHeight`, then
+`mix(mid, zenith, pow((h - midHeight) / (1 - midHeight), exponent))`. Two complementary
+stops (orange and violet) pass through grey mauve; a middle stop keeps the hue saturated.
+`exponent` below about 0.3 collapses the horizon colour into a thin line (0.13 is 59 %
+zenith 1 degree up). `GradientSkyPresets` exports tuned `daylight`, `dusk` (three stops,
+orange -> rose -> violet), `night` and `overcast` spawn data. The selected `DirectionalLight` places a disc
 of angular radius `sunSize` toward `-direction` with an exponential `sunGlow` halo in the
 light's hue; `sunSize: 0` or no light draws no disc. With an active `Fog`, the sky and
 glow blend to the Fog colour at the Fog's `maxOpacity` at and below the horizon, fading
@@ -6275,7 +6359,11 @@ A GradientSky replaces `Camera.clearColor`: the scene target clears transparent.
   light hue mixed half-way to white. The fogged horizon uses the Fog colour mapped
   through the camera's exposure and tone curve, which is how fogged geometry shows. The
   sky is outside the HDR scene, so bloom, SSR, planar reflection and transmission do not
-  see it.
+  see it. The one exception is the sun disc under camera bloom: the `skybox` pass also adds
+  the disc as scene radiance (light hue times `intensity * 4`, as a `toneMapped` sky draws
+  it) with transparent alpha, so bloom spreads it exactly like the disc's specular
+  reflection on water and the display sky shows that glow over itself. Without bloom
+  nothing is added and the disc stays as authored.
 - `toneMapped: true` is scene-referred radiance drawn by the `skybox` pass into the HDR
   scene before geometry, so exposure, the tone curve and bloom apply and screen-space
   consumers see it. The disc radiance is the light hue times `intensity * 4`, so a 3 lux
@@ -6284,7 +6372,7 @@ A GradientSky replaces `Camera.clearColor`: the scene target clears transparent.
 At most one GradientSky contributes. A second one, one beside `Atmosphere` or a
 `SkyboxBackground` (each draws the background), or an out-of-range field rejects the
 frame selection with `environment-selection-invalid` naming the field
-(`GradientSky.exponent` in [0.001, 64], `sunSize` in [0, 0.5] radians, `sunGlow` in
+(`GradientSky.exponent` in [0.001, 64], `midHeight` in [0, 0.95], `sunSize` in [0, 0.5] radians, `sunGlow` in
 [0, 16], `fogBlend` in [0, 1], colour channels finite and >= 0). The sky does not light
 the scene; match `Skylight.color` / `groundColor` to it. Reflection probes and cube
 captures do not render it.
@@ -7402,6 +7490,20 @@ retains the allocation and Mesh identity until actual packet acceptance.
 `release(true)` upgrades a pending transfer to cancellation; receiver retirement
 does the same, so shutdown never depends on a future source publication.
 
+A prepare input may set `renderAttributes: 'packed-rows'`. For a static
+raster-only triangle mesh (only float32 visual channels; no skin, morph, LODs,
+surface cards or distance field), the Render realm then receives only the packed
+interleaved `vertices`, `indices`, `aabb` and an empty layout key per channel,
+marked `renderAttributeStorage: 'packed-rows'`. The layout, stride and digest
+are unchanged, and the packed rows are still retained for re-upload after eviction.
+The World MeshAsset keeps every channel, so picking, patches and recovery are
+unaffected. Candidate `meshBytes` charges only the bytes held. Cold Render
+readers (transport projection, probe cards, mesh particles) rebuild the exact
+channels from the rows on first use. A patch that writes a channel without its
+`vertices` rows fails loudly. The receiver validates the marker form explicitly.
+Managed asset admission still requires complete channels and never accepts this
+form. Ineligible meshes silently keep full channels.
+
 `Renderer.prepareDynamicGeometry` and `prepareDynamicGeometryCandidates` retain
 synchronous mesh-buffer preparation. A caller that also needs raster readiness
 awaits `prepareDynamicGeometryPipelines(candidates, { signal })` on those same
@@ -8294,6 +8396,16 @@ Model/material assets are shared with the display cameras.
 > `requestObservation(['final-display'])` reads the completed composite. Linear HDR/LDR
 > are per-view domains and are inspected through their RHI Debug work items.
 
+A camera with `Camera.target` and no `CameraView` is a capture view: a `RenderView`
+entity (`capture: true`) with its own recorder, culling, phases and GPU-driven
+indirect draws over the shared prepared scene. Its capture camera drops display-only
+stages (temporal, post-processing, lens, outline, projected decals) and writes the
+raw linear scene into the target; layers, clipping planes, shadows and atmosphere
+are retained. Capture views encode before display views in the same submission, and
+the target is promoted only after that submission is accepted. Removing the camera
+or its target retires the view. Materials sampling a RenderTarget stay on the
+direct lane so a capture never samples its own write.
+
 Planar reflection keeps a separate physical reflection texture, projection and
 completion receipt for each display view, including held views. Cube captures
 use one Renderer scheduler per logical target; view order, cadence and removal
@@ -8546,8 +8658,25 @@ install Renderer GI or introduce a second submission.
 RenderScene slots and their World/resource scopes. Draw ranges, base vertices,
 instance transforms and the matching surface-row identities stay together;
 material handles are scoped by World. Offscreen contributors remain present,
-and absent geometry is rejected instead of becoming a miss. The existing reference bounds apply. The ordinary Renderer prepares this complete
-snapshot on accepted content changes; incremental BVH/GPU updates remain future work.
+and absent geometry is rejected instead of becoming a miss. The existing reference bounds apply.
+The ordinary Renderer retains this CPU projection through `RaySceneProjection`.
+The existing `RowProjection` change evidence selects dirty rows; unchanged layouts
+and primitive identities patch only those world-space triangle/attribute rows and
+refit their BVH leaves and ancestors. Every candidate row is validated before any
+accepted buffer changes. Membership, primitive-count, material-snapshot or surface
+address changes retain the complete cold builder; a failed projection discards
+derived cursors so the next preparation recovers from source.
+
+> [!NOTE]
+> Stable-shape edits retain transport buffers, pipelines and current texture
+> leases, upload changed triangle/attribute rows and refitted nodes, and publish a
+> new frame generation. Stale graph commits are fenced; diffuse and reflection
+> histories restart at the new content. Changed device/profile/light inputs,
+> stale texture leases and cold projection changes keep the complete preparation
+> path. Shared Mesh-local BVHs, an instance-level top structure and local
+> membership/material changes remain work. Repeated motion can also reduce the
+> quality of the fixed SAH topology. These CPU refits and bounded uploads are not
+> evidence of native/GPU acceleration-structure updates.
 
 `raytracing/scene-field-projection.projectSceneFields` is a separate CPU-only
 projection of those complete slots into whole-Mesh SDF instances. It preserves
@@ -8838,13 +8967,26 @@ clipmapped radiance-cache probes.
 
 #### Dynamic content
 
-A scene content revision does not rebuild the field. When none of the changed scene
-slots is a field source (same slot generations) and none projects a new source, the
-field skips re-projection entirely (`edits.skippedProjections`); light, camera,
-skinned/morph and non-field changes cost no CPU projection. Otherwise the field
-re-projects the retained sources and diffs them against the rows it owns (identity =
-World, entity, slot, slot generation and instance generation; content = scope, mesh,
-distance field and material payload/projection identities):
+A scene content revision does not rebuild the field. `SceneFieldRows` re-admits only
+rows named by retained slot, Mesh, Material and asset evidence. Changed admitted
+sources assemble a delta; `diffFieldEdit` compares only those sources against owned
+rows, and adoption updates their exact identities without enumerating clean rows.
+Identity is World, entity, slot, slot generation and instance generation; geometry
+content is scope, mesh handle and asset revision, while material bindings retain
+the accepted material resource/handle facts. Shared material values stay in their
+existing root owner.
+
+A source remains pending until its edit actually applies: asynchronous Card
+preparation cannot discard an earlier move, removal or replacement. Slot reuse
+removes the old identities and adds the new generation. Instance totals and unique
+field-byte charges update from the same before/after receipt, and detached field
+snapshots remain shared per asset version. Unchanged sources neither assemble nor
+rebuild the adopted instance index. The SDF exterior proof counts adopted bounds
+outside the region and updates only edited rows after its initial cold check.
+Cold construction, recovery, unavailable row history and invalid/over-budget input
+retain a complete projection; the original ordered validation failures still apply.
+The explicit 1024-instance budget bounds admission, independently of incremental
+maintenance. `edits.skippedProjections` reports revisions with no admitted change.
 
 | Delta | Field response |
 |:--|:--|

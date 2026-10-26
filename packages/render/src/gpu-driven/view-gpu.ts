@@ -77,7 +77,7 @@ import {
   type PreparedRasterCounters,
   PreparedRasterPass,
 } from './prepared-raster-bundle';
-import { admittedRasterBatchCount, SHADOW_LOD_MAX_COARSER } from './production-raster-lod';
+import { admittedRasterBatchCount, SHADOW_LOD_COARSEST } from './production-raster-lod';
 import { suppressionPatchOf } from './production-raster-prepare';
 import {
   GpuResourceAllocationLedger,
@@ -96,8 +96,7 @@ const BATCH_HEADER_STRIDE = 52;
 export const GPU_DRIVEN_BATCH_STRIDE = BATCH_HEADER_STRIDE + LOD_ROW_CAPACITY * LOD_ROW_STRIDE;
 const BATCH_STRIDE = GPU_DRIVEN_BATCH_STRIDE;
 const LOD_CONSTANTS_OFFSET = 128;
-const LOD_CLAMP_CONSTANTS_OFFSET = LOD_CONSTANTS_OFFSET + LOD_VIEW_CONSTANTS_BYTES;
-const OCCLUSION_CONSTANTS_OFFSET = LOD_CLAMP_CONSTANTS_OFFSET + LOD_VIEW_CONSTANTS_BYTES;
+const OCCLUSION_CONSTANTS_OFFSET = LOD_CONSTANTS_OFFSET + LOD_VIEW_CONSTANTS_BYTES;
 // viewProjection mat4 + camera range + the per-frame history words below.
 const OCCLUSION_STATE_OFFSET = OCCLUSION_CONSTANTS_OFFSET + 64 + 16;
 const OCCLUSION_STATE_BYTES = 32;
@@ -270,9 +269,8 @@ struct ViewConstants {
   suppressionBase: u32,
   resourceRoot: u32,
   capsuleDirectional: u32,
+  // A shadow view sets lod.clamp: its casters never raster coarser than SHADOW_LOD_COARSEST.
   lod: LodViewConstants,
-  // Reference camera a shadow view stays within SHADOW_LOD_MAX_COARSER levels of.
-  lodClamp: LodViewConstants,
   occlusion: OcclusionConstants,
   shadowCamera: ShadowCameraCull,
   skin: SkinDemandConstants,
@@ -308,15 +306,30 @@ fn batchWord(batchIndex: u32, word: u32) -> u32 {
 
 // Four radix256 reads resolve one logical resource. Pages contain descriptor
 // numbers only; preparation must lease every resource a task can reach.
-fn resourceDescriptor(batchIndex: u32, word: u32) -> u32 {
-  let slot = batchWord(batchIndex, word);
-  if ((batchWord(batchIndex, 6u) & 0x10000u) == 0u) { return slot; }
+fn logicalResource(slot: u32) -> u32 {
   var page = view.resourceRoot;
   for (var shift = 24i; shift >= 0i; shift -= 8i) {
     if (page == 0xffffffffu) { return 0xffffffffu; }
     page = sceneInputs[page + ((slot >> u32(shift)) & 255u)];
   }
   return page;
+}
+
+fn resourceDescriptor(batchIndex: u32, word: u32) -> u32 {
+  let slot = batchWord(batchIndex, word);
+  if ((batchWord(batchIndex, 6u) & 0x10000u) == 0u) { return slot; }
+  return logicalResource(slot);
+}
+
+// Row-material batches read each member's material through its primitive's
+// logical material slot; a slot the captured resource root does not reach
+// keeps the batch binding's material.
+fn candidateMaterialDescriptor(batchIndex: u32, materialSlot: u32) -> u32 {
+  if ((batchWord(batchIndex, 6u) & 0x20000u) != 0u && materialSlot != 0xffffffffu) {
+    let descriptor = logicalResource(materialSlot);
+    if (descriptor != 0xffffffffu) { return descriptor; }
+  }
+  return resourceDescriptor(batchIndex, 10u);
 }
 
 // Work stays dense across submesh executions; membership remains shared. The
@@ -393,7 +406,7 @@ fn candidatePrimitive(candidate: CandidateRecord, candidateIndex: u32) -> Primit
         sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.max + 1}u],
         sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.max + 2}u]));
     }
-    let materialAddress = resourceDescriptor(candidate.batchIndex, 10u);
+    let materialAddress = candidateMaterialDescriptor(candidate.batchIndex, primitive.materialIndex);
     var radius = 0.0;
     if (materialAddress != 0u) { radius = bitcast<f32>(sceneInputs[materialAddress + ${GPU_MATERIAL_DESCRIPTOR.radius}u]); }
     primitive.flags = (primitive.flags & ~2u) | (geometryFlags & 2u);
@@ -586,25 +599,8 @@ fn candidateLod(
   let rows = batchLods(candidate.batchIndex, lodCount);
   let crossfade = batchWord(candidate.batchIndex, 9u) != 0u;
   var height = primitiveHeight(primitive, rootWorld);
-  if (view.lodClamp.clamp != 0u && (primitive.flags & 2u) != 0u) {
-    let reference = lodFinestLevel(
-      projectedHeight(
-        primitive.localBoundsMin.xyz,
-        primitive.localBoundsMax.xyz,
-        rootWorld,
-        view.lodClamp,
-      ),
-      crossfade,
-      rows,
-      lodCount,
-    );
-    let floor = lodClampHeight(
-      reference,
-      ${SHADOW_LOD_MAX_COARSER}u,
-      rows,
-      lodCount,
-    );
-    if (height >= 0.0) { height = max(height, floor); }
+  if (view.lod.clamp != 0u && height >= 0.0) {
+    height = max(height, lodCoarsestHeight(${SHADOW_LOD_COARSEST}u, rows, lodCount));
   }
   if (crossfade) {
     return lodCrossfade(height, rows, lodCount);
@@ -637,7 +633,10 @@ fn appendCandidate(
   // z = the view candidate row for every deformation,
   // w = bitcast LOD crossfade. Submeshes share an instance row, so per-draw
   // tables (Surface frame rows) key by the candidate row.
-  let materialAddress = resourceDescriptor(candidate.batchIndex, 10u);
+  let materialAddress = candidateMaterialDescriptor(
+    candidate.batchIndex,
+    primitives[candidate.primitiveIndex].materialIndex,
+  );
   var materialIndex = 0u;
   if (materialAddress != 0u) { materialIndex = sceneInputs[materialAddress + ${GPU_MATERIAL_DESCRIPTOR.payload}u]; }
   let item = vec4<u32>(
@@ -1435,6 +1434,16 @@ function retainedRow(
   return undefined;
 }
 
+/** Raster batch ABI flags; material rows may be selected by each candidate. */
+function rasterBatchFlags(batch: GpuDrivenBatch, lodCount: number): number {
+  return (
+    (batch.key.drawKind === 'indexed' ? 1 : 0) |
+    (lodCount << 1) |
+    (batch.logicalResources === true ? 0x10000 : 0) |
+    (batch.key.rowMaterial === true ? 0x20000 : 0)
+  );
+}
+
 /** Task headers retain logical member roots; physical roots are leased on each read. */
 function encodedViewTopology(
   plan: SubmissionPlan,
@@ -1509,13 +1518,7 @@ function encodedViewTopology(
     batches.setUint32(offset + 12, batch.key.first, true);
     batches.setInt32(offset + 16, batch.key.baseVertex, true);
     batches.setUint32(offset + 20, batch.indirectOffset / INDIRECT_COMMAND_BYTES, true);
-    batches.setUint32(
-      offset + 24,
-      (batch.key.drawKind === 'indexed' ? 1 : 0) |
-        (lodCount << 1) |
-        (batch.logicalResources === true ? 0x10000 : 0),
-      true,
-    );
+    batches.setUint32(offset + 24, rasterBatchFlags(batch, lodCount), true);
     batches.setUint32(offset + 28, candidateIndex, true);
     batches.setUint32(offset + 32, batchLevelStride(batch), true);
     batches.setUint32(offset + 36, batch.lod?.crossfade === true ? 1 : 0, true);
@@ -1892,7 +1895,7 @@ export class GpuDrivenView {
     lodCamera?: LodViewCamera,
     minCasterDiameter = 0,
     suppressedPrimitives?: Uint32Array,
-    lodClampCamera?: LodViewCamera,
+    lodShadow = false,
     occlusionCamera?: GpuDrivenOcclusionCamera,
     visibleSurfaceRows?: Uint32Array,
     shadowCameraCull?: GpuDrivenShadowCameraCull,
@@ -1953,7 +1956,7 @@ export class GpuDrivenView {
         sharedInput.value.resourceRoot,
         capsuleDirectional,
       );
-      this.writeLodConstants(lodCamera, lodClampCamera);
+      this.writeLodConstants(lodCamera, lodShadow);
       this.writeOcclusionConstants(occlusionCamera);
       const cameraCull = this.writeShadowCameraCullConstants(shadowCameraCull);
       if (!cameraCull.ok) return cameraCull;
@@ -2221,15 +2224,9 @@ export class GpuDrivenView {
    * Without a LOD camera the zero height scale reports an invalid height,
    * so every chain resolves to its root.
    */
-  private writeLodConstants(
-    lodCamera: LodViewCamera | undefined,
-    lodClampCamera: LodViewCamera | undefined,
-  ): void {
+  private writeLodConstants(lodCamera: LodViewCamera | undefined, shadow: boolean): void {
     if (lodCamera !== undefined) {
-      writeLodViewConstants(this.viewData, LOD_CONSTANTS_OFFSET, lodCamera);
-    }
-    if (lodClampCamera !== undefined) {
-      writeLodViewConstants(this.viewData, LOD_CLAMP_CONSTANTS_OFFSET, lodClampCamera, true);
+      writeLodViewConstants(this.viewData, LOD_CONSTANTS_OFFSET, lodCamera, shadow);
     }
   }
 

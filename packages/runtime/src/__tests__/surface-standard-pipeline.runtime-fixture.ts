@@ -829,7 +829,7 @@ type SurfaceAppLifecycleInput = {
   readonly vfxHost: VfxRuntimeHost;
   readonly hostLossSignals: readonly SurfaceHostLossSignal[];
   readonly pauseWaitMilliseconds?: number;
-  /** Exercise replacement-device recovery while a fixed-tick continuation is pending. */
+  /** Exercise replacement-device recovery while a VFX tick continuation is pending. */
   readonly queueVfxContinuationDuringLoss?: boolean;
   /** Node/Dawn has no live host rAF; Browser must leave this omitted. */
   readonly hostFrameScheduler?: 'timer';
@@ -1720,9 +1720,9 @@ class SurfaceAppLifecycleDrive {
       { eventId: 701, position: SURFACE_APP_IMPACT_POSITIONS[0] },
     );
     // Update accepts the impact and publishes the ParticleEffectPlayer play
-    // edge after this frame's FixedUpdate phase. A second App-owned frame is
-    // therefore the first frame where the formal VFX intent and GPU splash
-    // can be observed together.
+    // edge; its order against this frame's VFX update is unspecified. A second
+    // App-owned frame is therefore the first frame where the formal VFX intent
+    // and GPU splash are guaranteed to be observed together.
     const eventReceiptIndex = run.receipts.length;
     app.stepFrame(1 / 60).unwrap();
     await run.waitForReceipts(eventReceiptIndex + 1);

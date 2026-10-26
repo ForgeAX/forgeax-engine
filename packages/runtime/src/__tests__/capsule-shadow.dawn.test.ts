@@ -90,6 +90,7 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
   try {
     const evidence = await verifyCapsuleShadow(host.value.renderer, host.value.assets, {
       recorder,
+      staticShadowCache: false,
       capture(tape, variant) {
         tapes.set(variant, tape);
         writeFileSync(`${directory}/deferred-${variant}.rhitape`, tape.bytes);

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { runCliFbx } from '@forgeax/engine-fbx/cli-fbx';
 import { bakeFont } from '@forgeax/engine-font/cli-font';
 import { runCliGltf } from '@forgeax/engine-gltf/cli-gltf';
@@ -322,13 +323,18 @@ function packIndexFailure(
   });
 }
 
+async function decodeCatalogDocument(bytes: Uint8Array) {
+  const text = await decodeDocumentText(bytes);
+  return text.ok ? decodeCatalogWire(JSON.parse(text.value)) : text;
+}
+
 async function readPackIndexMaterialized(
   root: string,
 ): Promise<CommandResult<PackIndexProjection>> {
   const indexPath = resolve(root, 'dist', 'pack-index.json');
-  let raw: string;
+  let raw: Uint8Array;
   try {
-    raw = await readFile(indexPath, 'utf8');
+    raw = await readFile(indexPath);
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
       return { ok: true, value: { materialized: [], knownGuids: [] } };
@@ -340,7 +346,7 @@ async function readPackIndexMaterialized(
   }
   let parsed: unknown;
   try {
-    const decoded = decodeCatalogWire(JSON.parse(raw));
+    const decoded = await decodeCatalogDocument(raw);
     if (!decoded.ok) {
       return packIndexFailure(root, 'asset-index-invalid', {
         indexPath,

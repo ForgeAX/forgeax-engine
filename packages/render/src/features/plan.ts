@@ -1390,11 +1390,13 @@ export function deriveRenderFeaturePassAccess(
   return Object.freeze(accesses);
 }
 
-export function freezeRenderFeaturePlan(
+/** Check names, references and logical targets without copying the plan. */
+export function validateRenderFeaturePlan(
   identity: string,
   plan: RenderFeatureWorkPlan,
   logicalTargets: readonly RenderFeatureLogicalTarget[] = [],
-): Result<RenderFeatureWorkPlan, RenderError> {
+): Result<void, RenderError> {
+  if (plan.resources.length === 0 && plan.passes.length === 0) return ok(undefined);
   const resources = new Map<string, RenderFeatureResourceDeclaration>();
   const targets = new Set(['swapchain', ...logicalTargets.map((target) => target.name)]);
   for (const resource of plan.resources) {
@@ -1412,16 +1414,7 @@ export function freezeRenderFeaturePlan(
     passes.add(pass.name);
     if (!validPlanPass(pass, resources, targets)) return err(stageFailure(identity));
   }
-
-  const frozen = Object.freeze({
-    resources: Object.freeze(
-      plan.resources.map((resource) =>
-        isOwnedStaticBuffer(resource) ? resource : Object.freeze({ ...resource }),
-      ),
-    ),
-    passes: Object.freeze(plan.passes.map((pass) => Object.freeze({ ...pass }))),
-  });
-  return ok(frozen);
+  return ok(undefined);
 }
 
 /** Is this resource uniquely named and are its camera and logical target well-formed? */

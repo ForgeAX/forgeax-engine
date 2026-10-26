@@ -2,6 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import {
+  BLOOM_ENABLED,
   Camera,
   DirectionalLight,
   Fog,
@@ -39,6 +40,8 @@ const SKY = {
   sunGlow: 0.4,
   fogBlend: 0.4,
 };
+// A three-stop dusk: orange -> rose -> violet, the middle stop 0.3 up.
+const THREE_STOP = { mid: [0.7, 0.2, 0.35] as Rgb, midHeight: 0.3 };
 const SUN_PIXEL = [48, 14] as const;
 const LIGHT_COLOR: Rgb = [1, 0.8, 0.6];
 const FOG_COLOR: Rgb = [0.4, 0.45, 0.5];
@@ -58,14 +61,29 @@ const smoothstep = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
-function expectedSky(dir: Rgb, disc: Rgb, fog: { color: Rgb; opacity: number } | undefined): Rgb {
-  const h = dir[1];
-  const sun = rayAt(...SUN_PIXEL);
-  let color = mix(
+function skyBase(h: number, stops: typeof THREE_STOP | undefined): Rgb {
+  if (stops !== undefined && h >= 0) {
+    const m = stops.midHeight;
+    return h < m
+      ? mix(SKY.horizon, stops.mid, (h / m) ** SKY.exponent)
+      : mix(stops.mid, SKY.zenith, ((h - m) / (1 - m)) ** SKY.exponent);
+  }
+  return mix(
     SKY.horizon,
     h >= 0 ? SKY.zenith : SKY.ground,
     Math.min(Math.abs(h), 1) ** SKY.exponent,
   );
+}
+
+function expectedSky(
+  dir: Rgb,
+  disc: Rgb,
+  fog: { color: Rgb; opacity: number } | undefined,
+  stops?: typeof THREE_STOP,
+): Rgb {
+  const h = dir[1];
+  const sun = rayAt(...SUN_PIXEL);
+  let color = skyBase(h, stops);
   const angle = Math.acos(Math.min(1, dir[0] * sun[0] + dir[1] * sun[1] + dir[2] * sun[2]));
   const hue = LIGHT_COLOR.map((v) => v / Math.max(...LIGHT_COLOR)) as unknown as Rgb;
   color = mix(color, hue, Math.min(SKY.sunGlow * Math.exp(-angle / (SKY.sunSize * 8)), 1));
@@ -92,6 +110,10 @@ interface Scenario {
   readonly toneMapped: boolean;
   readonly tonemap: number;
   readonly fog: boolean;
+  readonly stops?: typeof THREE_STOP;
+  /** Camera bloom; the readback domain defaults to the sky's own. */
+  readonly bloom?: boolean;
+  readonly domain?: 'linear-hdr' | 'final-display';
 }
 
 async function renderSky(scenario: Scenario) {
@@ -129,6 +151,9 @@ async function renderSky(scenario: Scenario) {
           ...perspective({ fov: FOV, aspect: 1, near: 0.1, far: 100 }),
           tonemap: scenario.tonemap,
           exposure: 1.6,
+          ...(scenario.bloom
+            ? { bloom: BLOOM_ENABLED, bloomThreshold: 1, bloomIntensity: 0.8 }
+            : {}),
           // Replaced by the sky; an opaque clear must not hide a display sky.
           clearColor: [1, 0, 1, 1],
         },
@@ -137,7 +162,10 @@ async function renderSky(scenario: Scenario) {
     .unwrap();
   world
     .spawn(
-      { component: GradientSky, data: { ...SKY, toneMapped: scenario.toneMapped } },
+      {
+        component: GradientSky,
+        data: { ...SKY, ...scenario.stops, toneMapped: scenario.toneMapped },
+      },
       {
         component: DirectionalLight,
         data: { direction: sun.map((v) => -v), color: LIGHT_COLOR, intensity: 2 },
@@ -152,7 +180,7 @@ async function renderSky(scenario: Scenario) {
       })
       .unwrap();
   const lease = value(renderer.attach(world));
-  const domain = scenario.toneMapped ? 'linear-hdr' : 'final-display';
+  const domain = scenario.domain ?? (scenario.toneMapped ? 'linear-hdr' : 'final-display');
   try {
     const profile = renderer.setProfile({
       ...renderer.inspect().profile,
@@ -179,16 +207,17 @@ async function renderSky(scenario: Scenario) {
     const bgra = metadata.format.startsWith('bgra');
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (domain === 'final-display') await saveEvidence(scenario, bytes, metadata.bytesPerRow, bgra);
-    return (px: number, py: number): Rgb => {
+    // RGB plus alpha: HDR channels, or encoded 0-255 display bytes.
+    return (px: number, py: number): readonly [number, number, number, number] => {
       if (domain === 'linear-hdr') {
         const offset = py * metadata.bytesPerRow + px * 8;
-        return [0, 1, 2].map((c) =>
+        return [0, 1, 2, 3].map((c) =>
           halfFloat.f16ToF32(view.getUint16(offset + c * 2, true)),
-        ) as unknown as Rgb;
+        ) as unknown as readonly [number, number, number, number];
       }
       const offset = py * metadata.bytesPerRow + px * 4;
-      const [a = 0, g = 0, b = 0] = bytes.subarray(offset, offset + 3);
-      return bgra ? [b, g, a] : [a, g, b];
+      const [a = 0, g = 0, b = 0, alpha = 0] = bytes.subarray(offset, offset + 4);
+      return bgra ? [b, g, a, alpha] : [a, g, b, alpha];
     };
   } finally {
     stop();
@@ -213,7 +242,7 @@ async function saveEvidence(scenario: Scenario, bytes: Uint8Array, stride: numbe
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = SIZE;
   canvas.getContext('2d')?.putImageData(new ImageData(rgba, SIZE, SIZE), 0, 0);
-  const name = `${scenario.renderPath}-${scenario.fog ? 'fog' : 'clear'}`;
+  const name = `${scenario.renderPath}-${scenario.fog ? 'fog' : 'clear'}${scenario.stops ? '-three-stop' : ''}`;
   const png = canvas.toDataURL('image/png').split(',')[1] ?? '';
   await commands.writeFile(`artifacts/gradient-sky/${name}.png`, png, 'base64');
 }
@@ -305,4 +334,58 @@ it('renders the toneMapped sky as HDR scene radiance with an intensity-scaled su
       expect(actual[c] ?? 0, `${px},${py}[${c}]`).toBeCloseTo(expected[c] ?? 0, 1);
   }
   expect(pixel(...SUN_PIXEL)[0]).toBeGreaterThan(7);
+});
+
+it('blends horizon -> mid -> zenith when the middle stop is set', {
+  timeout: 180_000,
+}, async () => {
+  const pixel = await renderSky({
+    renderPath: 'forward',
+    toneMapped: false,
+    tonemap: TONEMAP_ACES_FILMIC,
+    fog: false,
+    stops: THREE_STOP,
+  });
+  const hue = LIGHT_COLOR.map((v) => (v / Math.max(...LIGHT_COLOR) + 1) / 2) as unknown as Rgb;
+  for (const [px, py] of [...SAMPLES, [32, 24], [32, 18], [32, 10]] as const) {
+    const expected = expectedSky(rayAt(px, py), hue, undefined, THREE_STOP).map(encode);
+    const actual = pixel(px, py);
+    for (let c = 0; c < 3; c++)
+      expect(Math.abs((actual[c] ?? 0) - (expected[c] ?? 0)), `${px},${py}[${c}]`).toBeLessThan(
+        2.5,
+      );
+  }
+  // Near the middle stop the sky is the rose mid colour, not the two-stop mauve blend.
+  const near = rayAt(32, 18);
+  const twoStop = expectedSky(near, hue, undefined).map(encode);
+  expect(Math.abs((pixel(32, 18)[1] ?? 0) - (twoStop[1] ?? 0))).toBeGreaterThan(10);
+});
+
+it('adds a blooming display sun disc to the HDR scene and shows its glow over the sky', {
+  timeout: 180_000,
+}, async () => {
+  const base = {
+    renderPath: 'forward',
+    toneMapped: false,
+    tonemap: TONEMAP_ACES_FILMIC,
+    fog: false,
+  } as const;
+  // The HDR scene holds the disc as scene radiance (hue * intensity * 4) with
+  // transparent alpha, so bloom spreads it and the display sky still fills it.
+  const hdr = await renderSky({ ...base, bloom: true, domain: 'linear-hdr' });
+  const [r, , , alpha] = hdr(...SUN_PIXEL);
+  expect(r).toBeGreaterThan(4);
+  expect(alpha).toBe(0);
+  // Without bloom the HDR background holds nothing: the display sky stays as authored.
+  const plain = await renderSky({ ...base, domain: 'linear-hdr' });
+  expect(plain(...SUN_PIXEL)[0]).toBe(0);
+  // Displayed: a pixel just outside the disc is brighter with bloom (the halo).
+  const lit = await renderSky({ ...base, bloom: true });
+  const unlit = await renderSky(base);
+  const halo = [SUN_PIXEL[0] - 4, SUN_PIXEL[1] + 3] as const;
+  const sum = (p: readonly number[]) => (p[0] ?? 0) + (p[1] ?? 0) + (p[2] ?? 0);
+  expect(sum(lit(...halo))).toBeGreaterThan(sum(unlit(...halo)) + 20);
+  // The glow falls off with distance from the disc, like the bloom of its reflection.
+  const gain = (px: number, py: number) => sum(lit(px, py)) - sum(unlit(px, py));
+  expect(gain(...halo)).toBeGreaterThan(2 * gain(10, 20));
 });

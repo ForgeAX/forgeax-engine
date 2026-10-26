@@ -3,7 +3,7 @@ import {
   createFullscreenRenderFeature,
   fullscreenRenderFeatureDeclaration,
 } from '../features/fullscreen';
-import { freezeRenderFeaturePlan } from '../features/plan';
+import { validateRenderFeaturePlan } from '../features/plan';
 import {
   postProcessShaderEntrySignature,
   postProcessShaderModuleLabel,
@@ -100,7 +100,7 @@ describe('fullscreen RenderFeature plan', () => {
     const plannedWork = planned.value.work[0];
     if (plannedWork === undefined) throw new Error('planned work missing');
     expect(
-      freezeRenderFeaturePlan(feature.identity, plannedWork, [
+      validateRenderFeaturePlan(feature.identity, plannedWork, [
         { name: 'scene-color', kind: 'color', format: 'rgba16float', sampleCount: 1 },
       ]).ok,
     ).toBe(true);

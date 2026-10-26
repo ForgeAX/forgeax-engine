@@ -321,7 +321,10 @@ export function createPreparedGraphicsResolver(
         ),
       );
     }
-    const fogComposition = translucentFogComposition(descriptor.renderState?.blend);
+    const fogComposition =
+      descriptor.renderState?.fog === false
+        ? undefined
+        : translucentFogComposition(descriptor.renderState?.blend);
     const resource: PreparedGraphicsResolvedResource = {
       kind: 'pipeline',
       reference,

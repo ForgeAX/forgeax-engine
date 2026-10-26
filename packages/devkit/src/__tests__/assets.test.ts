@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { compressZstd } from '@forgeax/engine-codec/encode';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { describe, expect, it } from 'vitest';
 import {
@@ -258,7 +259,10 @@ describe('asset commands', () => {
     }
   });
 
-  it('projects current Pack outputs from the generated index into read commands', async () => {
+  it.each([
+    false,
+    true,
+  ])('projects current Pack outputs from the generated index into read commands (compressed=%s)', async (compressed) => {
     const root = await scriptablePackFixture(1);
     const packageId = '01900000-0000-7000-8000-000000000144';
     const parsedPackageId = PackageId.parse(packageId);
@@ -301,6 +305,25 @@ describe('asset commands', () => {
       },
       '/',
     );
+
+    if (compressed) {
+      const path = resolve(root, 'dist/pack-index.json');
+      const encoded = await compressZstd(await readFile(path));
+      if (!encoded.ok) throw encoded.error;
+      await writeFile(path, encoded.value);
+      await writeDistManifest(
+        {
+          root,
+          id: 'pack-game',
+          name: 'Pack Game',
+          roots: {},
+          assetRoots: ['assets'],
+          assetLibraries: [],
+          packageJson: {},
+        },
+        '/',
+      );
+    }
 
     const listed = await assetListCommand({ root });
     expect(listed).toMatchObject({

@@ -38,7 +38,6 @@ import {
 } from './native-resource-admission';
 import {
   cloneOwnedRenderFeaturePlanSignatureSnapshot,
-  freezeRenderFeaturePlan,
   isRenderFeatureSceneResource,
   type RenderFeatureLogicalTarget,
   type RenderFeaturePassDeclaration,
@@ -47,12 +46,14 @@ import {
   type RenderFeaturePlannedFrame,
   type RenderFeaturePlanSignatureMetrics,
   type RenderFeaturePlanSignatureSnapshot,
+  type RenderFeaturePlanView,
   type RenderFeatureResourceDeclaration,
   type RenderFeatureSceneResource,
   type RenderFeatureWork,
   type RenderFeatureWorkPlan,
   rememberRenderFeaturePlanSignature,
   renderFeaturePlanSignature,
+  validateRenderFeaturePlan,
 } from './plan';
 import type {
   RenderFeatureGpuBufferRef,
@@ -294,26 +295,14 @@ export interface RenderFeatureHost {
   ): Result<void, RenderError>;
   recover(input: RenderFeatureRecoverInput): Result<void, RenderError>;
   diagnostics(): readonly RenderFeatureDiagnostics[];
-  /** Retain an explicitly producer-published detached inspection value. */
-  setInspection(identity: string, inspection: unknown): void;
   /** Subscribe to lifecycle projection changes; unchanged active frames are silent. */
   subscribeDiagnostics(listener: () => void): () => void;
   /** Detached signature and prepared-resource accounting for diagnostics. */
-  readonly inspection?: () => RenderFeatureHostInspection;
-  beginDepthBatchInspection?(frameNumber: number | undefined, generation: number): void;
-  recordDepthBatchInspection?(before: number, after: number, admitted: number): void;
+  inspection(): RenderFeatureHostInspection;
   /** Host-owned signature entry point so accounting remains per feature. */
-  readonly recordPlanSignature?: (
-    identity: string,
-    plan: RenderFeatureWorkPlan,
-    scope?: string,
-  ) => string;
-  readonly recordNativeExecutionSignature?: (
-    identity: string,
-    execution: RenderFeaturePlanExecution,
-    scope: string,
-  ) => string;
-  retainPlanScopes?(identity: string, scopes: readonly string[]): void;
+  recordPlanSignature(identity: string, plan: RenderFeatureWorkPlan, scope?: string): string;
+  /** Extract, plan and prepare each installed Feature once for the complete Renderer frame. */
+  runFrame(inputs: readonly RenderFeatureFrameInput[]): RenderFeatureFrameBatch;
   dispose(): Result<void, RenderError>;
 }
 
@@ -347,6 +336,9 @@ export function settlePreparedGraphicsCompletion(
   );
 }
 
+type SignatureInspection = RenderFeatureHostInspection['signatures'][number];
+
+/** Everything one installed Feature owns across frames; uninstall drops it whole. */
 interface FeatureSlot {
   readonly feature: RenderFeature<unknown>;
   order: number;
@@ -355,6 +347,38 @@ interface FeatureSlot {
   status: RenderFeatureStatus;
   latestError: RenderFeatureErrorDescriptor | undefined;
   latestInspection?: unknown;
+  /** Detached structural evidence of each work scope's last raw plan. */
+  readonly planSignatures: Map<
+    string,
+    { readonly signature: string; readonly snapshot: RenderFeaturePlanSignatureSnapshot }
+  >;
+  /** Last native execution topology of each work scope. */
+  readonly nativeSignatures: Map<
+    string,
+    { readonly execution: RenderFeaturePlanExecution; readonly signature: string }
+  >;
+  signatureInspection: SignatureInspection | undefined;
+  /** Scene-data catalog of each view for the current prepared generation. */
+  readonly sceneData: Map<string, SceneDataCatalog>;
+}
+
+function now(): number {
+  return typeof performance === 'undefined' ? Date.now() : performance.now();
+}
+
+function createFeatureSlot(feature: RenderFeature<unknown>, order: number): FeatureSlot {
+  return {
+    feature,
+    order,
+    preparedResourceBatches: new Set(),
+    preparedStore: createPreparedGraphicsStore(),
+    status: 'active',
+    latestError: undefined,
+    planSignatures: new Map(),
+    nativeSignatures: new Map(),
+    signatureInspection: undefined,
+    sceneData: new Map(),
+  };
 }
 
 function freezeError(error: RenderFeatureErrorDescriptor): RenderFeatureErrorDescriptor {
@@ -718,7 +742,7 @@ type ResourceOfKind<Kind extends RenderFeatureResourceDeclaration['kind']> = Ext
 function preparePlanResources(
   slot: FeatureSlot,
   plan: RenderFeatureWorkPlan,
-  graphics: RenderFeatureGraphicsPrepare,
+  transaction: PreparedGraphicsTransaction,
   gpu: RenderFeatureGpuPrepareSession | undefined,
   targetsForResource: (name: string) => readonly RenderFeatureTargetHandle[],
   sceneResources: RenderFeatureFrameInput['sceneResources'],
@@ -728,16 +752,22 @@ function preparePlanResources(
     readonly admission?: PreparedPlanResources;
   },
 ): Result<PreparedPlanResources, RenderError> {
+  if (native === undefined && plan.resources.length === 0) return ok(EMPTY_PREPARED_RESOURCES);
+  const graphics = createPreparedGraphicsPrepare(
+    transaction,
+    native === undefined ? undefined : true,
+  );
   const maps = createPreparedResourceMaps(
     native?.admission ?? native?.shared,
     native?.admission === undefined ? undefined : native.shared,
     native?.admission !== undefined,
   );
   const ownerName = (name: string): string => native?.keys.get(name) ?? name;
-  const buckets = native === undefined ? undefined : bucketResourcesByKind(plan.resources);
+  const buckets = bucketResourcesByKind(plan.resources);
   const byKind = <Kind extends RenderFeatureResourceDeclaration['kind']>(
     kind: Kind,
-  ): ResourceOfKind<Kind>[] => planResourcesOfKind(plan.resources, buckets, kind);
+  ): readonly ResourceOfKind<Kind>[] =>
+    (buckets.get(kind) ?? NO_RESOURCES) as readonly ResourceOfKind<Kind>[];
 
   if (gpu === undefined && planRequiresGpuSession(plan)) return err(planFailure(slot));
   // Lanes run in dependency order: bindings and geometry read the programs,
@@ -805,15 +835,9 @@ function bucketResourcesByKind(
   return buckets;
 }
 
-function planResourcesOfKind<Kind extends RenderFeatureResourceDeclaration['kind']>(
-  resources: readonly RenderFeatureResourceDeclaration[],
-  buckets: ReadonlyMap<string, RenderFeatureResourceDeclaration[]> | undefined,
-  kind: Kind,
-): ResourceOfKind<Kind>[] {
-  return buckets === undefined
-    ? resources.filter((resource): resource is ResourceOfKind<Kind> => resource.kind === kind)
-    : ((buckets.get(kind) ?? []) as ResourceOfKind<Kind>[]);
-}
+const NO_RESOURCES: readonly RenderFeatureResourceDeclaration[] = Object.freeze([]);
+const NO_TARGET_INPUTS: ReadonlyMap<string, readonly RenderFeatureTargetHandle[]> = new Map();
+const EMPTY_PREPARED_RESOURCES: PreparedPlanResources = createPreparedResourceMaps();
 
 /** Does any declaration need the GPU work session rather than graphics preparation alone? */
 function planRequiresGpuSession(plan: RenderFeatureWorkPlan): boolean {
@@ -868,12 +892,9 @@ function prepareBuffers(
   maps: PreparedResourceMaps,
 ): RenderError | undefined {
   for (const resource of resources) {
-    const prepared = gpu?.prepareBuffer(ownerName(resource.name), {
-      size: resource.size,
-      usage: resource.usage,
-      ...(resource.data === undefined ? {} : { data: resource.data }),
-      ...(resource.uploads === undefined ? {} : { uploads: resource.uploads }),
-    });
+    // The declaration is the descriptor: size, usage, data and uploads are read
+    // in place, so a steady plan allocates no per-buffer descriptor.
+    const prepared = gpu?.prepareBuffer(ownerName(resource.name), resource);
     if (prepared === undefined) return planFailure(slot);
     if (!prepared.ok) return prepared.error;
     maps.buffers.set(resource.name, prepared.value);
@@ -1506,21 +1527,6 @@ class FeatureHostImpl implements RenderFeatureHost {
   private generation = 0;
   private lastRecoveryFrame: number | undefined;
   private readonly diagnosticsListeners = new Set<() => void>();
-  private readonly signatureByFeature = new Map<
-    string,
-    RenderFeatureHostInspection['signatures'][number]
-  >();
-  private readonly signatureCacheByFeature = new Map<
-    string,
-    Map<
-      string,
-      { readonly signature: string; readonly snapshot: RenderFeaturePlanSignatureSnapshot }
-    >
-  >();
-  private readonly nativeExecutionSignatures = new Map<
-    string,
-    Map<string, { readonly execution: RenderFeaturePlanExecution; readonly signature: string }>
-  >();
 
   /** Monotonic compact identity for a changed feature-plan snapshot. */
   private signatureRevision = 0;
@@ -1549,36 +1555,48 @@ class FeatureHostImpl implements RenderFeatureHost {
     return this.slots.map((slot) => slot.feature);
   }
 
-  retainPlanScopes(identity: string, scopes: readonly string[]): void {
-    for (const cache of [
-      this.signatureCacheByFeature.get(identity),
-      this.nativeExecutionSignatures.get(identity),
-    ])
-      if (cache !== undefined)
-        for (const scope of cache.keys()) if (!scopes.includes(scope)) cache.delete(scope);
+  runFrame(inputs: readonly RenderFeatureFrameInput[]): RenderFeatureFrameBatch {
+    const input = inputs[0];
+    if (input === undefined) throw new Error('a Feature frame requires its complete view roster');
+    this.beginDepthBatchInspection(
+      input.featureReadOnlyDepthBatchDiagnostic === true ? input.frameNumber : undefined,
+      input.generation ?? 0,
+    );
+    const batch = new FeatureFrameBatchBuilder(this, inputs, input);
+    for (const slot of this.slots) {
+      if (!featureRunsThisFrame(slot, input.caps)) continue;
+      const transaction = this.beginPreparedFrame(
+        slot.feature.identity,
+        input.generation ?? this.generation,
+      );
+      if (transaction === undefined) continue;
+      new FeatureFramePreparation(batch, slot, transaction).run();
+    }
+    return batch.finish();
   }
 
-  recordNativeExecutionSignature(
-    identity: string,
+  /** Drop signature evidence of scopes the slot's current frame no longer declares. */
+  retainPlanScopes(slot: FeatureSlot, scopes: readonly string[]): void {
+    retainScopes(slot.planSignatures, scopes);
+    retainScopes(slot.nativeSignatures, scopes);
+  }
+
+  nativeExecutionSignature(
+    slot: FeatureSlot,
     execution: RenderFeaturePlanExecution,
     scope: string,
   ): string {
-    const now = (): number => (typeof performance === 'undefined' ? Date.now() : performance.now());
     const started = now();
-    let cache = this.nativeExecutionSignatures.get(identity);
-    if (cache === undefined) {
-      cache = new Map();
-      this.nativeExecutionSignatures.set(identity, cache);
-    }
+    const cache = slot.nativeSignatures;
     const previous = cache.get(scope);
     const hit =
       previous !== undefined &&
       sameRenderFeatureNativeExecutionTopology(previous.execution, execution);
     const signature = hit ? previous.signature : `native-revision-${++this.signatureRevision}`;
     if (!hit) cache.set(scope, { execution, signature });
-    const prior = this.signatureByFeature.get(identity);
-    this.signatureByFeature.set(identity, {
-      featureIdentity: identity,
+    const prior = slot.signatureInspection;
+    slot.signatureInspection = {
+      featureIdentity: slot.feature.identity,
       calls: prior?.calls ?? 0,
       typedArrayBytes: prior?.typedArrayBytes ?? 0,
       outputChars: prior?.outputChars ?? 0,
@@ -1586,53 +1604,48 @@ class FeatureHostImpl implements RenderFeatureHost {
       cpuMs: (prior?.cpuMs ?? 0) + now() - started,
       cacheHits: (prior?.cacheHits ?? 0) + (hit ? 1 : 0),
       cacheMisses: (prior?.cacheMisses ?? 0) + (hit ? 0 : 1),
-    });
+    };
     return signature;
   }
 
   recordPlanSignature(identity: string, plan: RenderFeatureWorkPlan, scope = 'frame'): string {
-    const now = (): number => (typeof performance === 'undefined' ? Date.now() : performance.now());
+    const slot = findSlot(this.slots, identity);
+    return slot === undefined
+      ? renderFeaturePlanSignature(plan)
+      : this.planSignature(slot, plan, scope);
+  }
+
+  planSignature(slot: FeatureSlot, plan: RenderFeatureWorkPlan, scope: string): string {
     const started = now();
-    let cache = this.signatureCacheByFeature.get(identity);
-    if (cache === undefined) {
-      cache = new Map();
-      this.signatureCacheByFeature.set(identity, cache);
-    }
+    const cache = slot.planSignatures;
     const previous = cache.get(scope);
+    const prior = slot.signatureInspection;
     // Snapshot capture already compares every declaration and returns the prior
     // root when unchanged. A separate whole-plan comparison would revisit the
     // unchanged prefix whenever a later VFX resource or pass changes.
     const snapshot = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan, previous?.snapshot);
     if (previous !== undefined && snapshot === previous.snapshot) {
-      const elapsed = now() - started;
-      const priorInspection = this.signatureByFeature.get(identity);
-      this.signatureByFeature.set(identity, {
-        featureIdentity: identity,
-        ...(priorInspection?.nativeCalls === undefined
-          ? {}
-          : { nativeCalls: priorInspection.nativeCalls }),
-        calls: priorInspection?.calls ?? 0,
-        typedArrayBytes: priorInspection?.typedArrayBytes ?? 0,
-        outputChars: priorInspection?.outputChars ?? 0,
-        cpuMs: (priorInspection?.cpuMs ?? 0) + elapsed,
-        cacheHits: (priorInspection?.cacheHits ?? 0) + 1,
-        cacheMisses: priorInspection?.cacheMisses ?? 0,
-      });
+      slot.signatureInspection = {
+        featureIdentity: slot.feature.identity,
+        ...(prior?.nativeCalls === undefined ? {} : { nativeCalls: prior.nativeCalls }),
+        calls: prior?.calls ?? 0,
+        typedArrayBytes: prior?.typedArrayBytes ?? 0,
+        outputChars: prior?.outputChars ?? 0,
+        cpuMs: (prior?.cpuMs ?? 0) + now() - started,
+        cacheHits: (prior?.cacheHits ?? 0) + 1,
+        cacheMisses: prior?.cacheMisses ?? 0,
+      };
       // The graph validator receives a fresh plan object every frame. Reuse
       // is safe only because it will perform the same exact structural check
       // against this detached snapshot.
       rememberRenderFeaturePlanSignature(plan, previous.signature, previous.snapshot);
       return previous.signature;
     }
-    // A changed plan usually mutates a small VFX membership/pass leaf.  Keep
-    // the previous detached evidence as a sharing source so unchanged
-    // resource/program subtrees remain immutable and allocation-free; the
-    // candidate snapshot is still a fresh root and is revalidated by graph
-    // admission exactly as before.
-    // Keep one canonical spelling for the initial diagnostic/API observation.
-    // Subsequent changes only need a compact monotonic identity: the detached
-    // snapshot remains the exact structural proof and avoids rebuilding
-    // megabytes of text for every VFX plan revision.
+    // A changed plan usually mutates a small VFX membership/pass leaf. Keep the
+    // previous detached evidence as a sharing source so unchanged subtrees stay
+    // immutable; the candidate snapshot is still a fresh root and is revalidated
+    // by graph admission. Only the initial observation spells the canonical
+    // signature; later changes take a compact monotonic identity.
     const metrics: RenderFeaturePlanSignatureMetrics = {
       calls: 0,
       typedArrayBytes: 0,
@@ -1644,20 +1657,16 @@ class FeatureHostImpl implements RenderFeatureHost {
         : `revision-${++this.signatureRevision}`;
     cache.set(scope, { signature, snapshot });
     rememberRenderFeaturePlanSignature(plan, signature, snapshot);
-    const elapsed = now() - started;
-    const priorInspection = this.signatureByFeature.get(identity);
-    this.signatureByFeature.set(identity, {
-      featureIdentity: identity,
-      ...(priorInspection?.nativeCalls === undefined
-        ? {}
-        : { nativeCalls: priorInspection.nativeCalls }),
-      calls: (priorInspection?.calls ?? 0) + metrics.calls,
-      typedArrayBytes: (priorInspection?.typedArrayBytes ?? 0) + metrics.typedArrayBytes,
-      outputChars: (priorInspection?.outputChars ?? 0) + metrics.outputChars,
-      cpuMs: (priorInspection?.cpuMs ?? 0) + elapsed,
-      cacheHits: priorInspection?.cacheHits ?? 0,
-      cacheMisses: (priorInspection?.cacheMisses ?? 0) + 1,
-    });
+    slot.signatureInspection = {
+      featureIdentity: slot.feature.identity,
+      ...(prior?.nativeCalls === undefined ? {} : { nativeCalls: prior.nativeCalls }),
+      calls: (prior?.calls ?? 0) + metrics.calls,
+      typedArrayBytes: (prior?.typedArrayBytes ?? 0) + metrics.typedArrayBytes,
+      outputChars: (prior?.outputChars ?? 0) + metrics.outputChars,
+      cpuMs: (prior?.cpuMs ?? 0) + now() - started,
+      cacheHits: prior?.cacheHits ?? 0,
+      cacheMisses: (prior?.cacheMisses ?? 0) + 1,
+    };
     return signature;
   }
 
@@ -1667,9 +1676,13 @@ class FeatureHostImpl implements RenderFeatureHost {
         ? {}
         : { featureReadOnlyDepthBatchDiagnostic: Object.freeze({ ...this.depthBatchInspection }) }),
       signatures: Object.freeze(
-        [...this.signatureByFeature.values()]
-          .sort((left, right) => left.featureIdentity.localeCompare(right.featureIdentity))
-          .map((entry) => Object.freeze({ ...entry })),
+        this.slots
+          .flatMap((slot) =>
+            slot.signatureInspection === undefined
+              ? []
+              : [Object.freeze({ ...slot.signatureInspection })],
+          )
+          .sort((left, right) => left.featureIdentity.localeCompare(right.featureIdentity)),
       ),
       prepared: Object.freeze({ ...this.preparedInspection }),
     });
@@ -1722,14 +1735,7 @@ class FeatureHostImpl implements RenderFeatureHost {
       if (existing?.feature === feature) return ok(undefined);
       return err(registrationConflict(feature.identity, this.slots.length, existingOrder));
     }
-    this.slots.push({
-      feature,
-      order: this.slots.length,
-      preparedResourceBatches: new Set(),
-      preparedStore: createPreparedGraphicsStore(),
-      status: 'active',
-      latestError: undefined,
-    });
+    this.slots.push(createFeatureSlot(feature, this.slots.length));
     this.publishDiagnosticsChanged();
     return ok(undefined);
   }
@@ -1748,9 +1754,6 @@ class FeatureHostImpl implements RenderFeatureHost {
     }
     slot.status = 'disposed';
     this.slots.splice(index, 1);
-    this.signatureByFeature.delete(feature.identity);
-    this.signatureCacheByFeature.delete(feature.identity);
-    this.nativeExecutionSignatures.delete(feature.identity);
     for (const [order, remaining] of this.slots.entries()) remaining.order = order;
     this.publishDiagnosticsChanged();
     return firstError === undefined ? ok(undefined) : err(firstError);
@@ -1902,13 +1905,6 @@ class FeatureHostImpl implements RenderFeatureHost {
     return Object.freeze(this.slots.map(freezeDiagnostics));
   }
 
-  /** Retain only an explicitly producer-published detached inspection value. */
-  setInspection(identity: string, inspection: unknown): void {
-    const slot = findSlot(this.slots, identity);
-    if (slot === undefined || slot.status === 'disposed') return;
-    slot.latestInspection = inspection;
-  }
-
   subscribeDiagnostics(listener: () => void): () => void {
     this.diagnosticsListeners.add(listener);
     return () => this.diagnosticsListeners.delete(listener);
@@ -1941,49 +1937,19 @@ export interface RenderFeatureFrameBatch {
   readonly onAborted: () => void;
 }
 
-/** Extract, plan and prepare each Feature once for the complete Renderer frame. */
-export function runRenderFeatureFrame(
-  host: RenderFeatureHost,
-  inputs: readonly RenderFeatureFrameInput[],
-): RenderFeatureFrameBatch {
-  const input = inputs[0];
-  if (input === undefined) throw new Error('a Feature frame requires its complete view roster');
-  host.beginDepthBatchInspection?.(
-    input.featureReadOnlyDepthBatchDiagnostic === true ? input.frameNumber : undefined,
-    input.generation ?? 0,
-  );
-  const batch = new FeatureFrameBatchBuilder(host, inputs, input);
-  const diagnostics = host.diagnostics();
-  for (const [order, feature] of host.features.entries()) {
-    if (!featureRunsThisFrame(diagnostics[order], feature, input.caps)) continue;
-    const transaction = host.beginPreparedFrame(
-      feature.identity,
-      input.generation ?? host.preparedGeneration,
-    );
-    if (transaction === undefined) continue;
-    new FeatureFramePreparation(batch, feature, order, transaction).run();
-  }
-  return batch.finish();
+function retainScopes(cache: Map<string, unknown>, scopes: readonly string[]): void {
+  if (cache.size > 0)
+    for (const scope of cache.keys()) if (!scopes.includes(scope)) cache.delete(scope);
 }
 
 /** Disposed slots never run; disabled slots retry only once a missing capability appears. */
-function featureRunsThisFrame(
-  diagnostic: RenderFeatureDiagnostics | undefined,
-  feature: RenderFeature<unknown>,
-  caps: Readonly<RhiCaps>,
-): boolean {
-  if (diagnostic?.status === 'disposed') return false;
+function featureRunsThisFrame(slot: FeatureSlot, caps: Readonly<RhiCaps>): boolean {
+  if (slot.status === 'disposed') return false;
   return !(
-    diagnostic?.status === 'disabled' &&
-    (diagnostic.latestError?.code !== 'render-feature-capability-missing' ||
-      missingCapability(feature, caps) === undefined)
+    slot.status === 'disabled' &&
+    (slot.latestError?.code !== 'render-feature-capability-missing' ||
+      missingCapability(slot.feature, caps) === undefined)
   );
-}
-
-interface FeatureFrameCallbacks {
-  readonly commitResources: () => void;
-  readonly submit: () => void;
-  readonly abort: () => void;
 }
 
 interface FeatureWorkProjection {
@@ -2000,17 +1966,23 @@ class FeatureFrameBatchBuilder {
   readonly errors: RenderError[] = [];
   readonly preparedResourceBatches: RenderFeaturePreparedResourceBatch[] = [];
   readonly submittedWorks = new Set<RenderFeaturePlannedFrame>();
-  readonly callbacks: FeatureFrameCallbacks[] = [];
+  /** Features that reached the submission barrier, in installation order. */
+  readonly prepared: FeatureFramePreparation[] = [];
   readonly results = new Map<string, RenderFeatureFrameResult>();
   readonly postProcessIdentities = new Set<string>();
   readonly featureHiddenEntityReports: RenderFeatureHiddenEntityReport[] = [];
   readonly shared: RenderFeatureFrameResult;
+  /** Extraction view projections and material context shared by every Feature this frame. */
+  readonly extractViews: readonly ReturnType<typeof extractView>[];
+  readonly materialContext: ReturnType<typeof renderMaterialContext>;
+  /** Feature-independent part of each view's plan context. */
+  readonly planViews: readonly Omit<RenderFeaturePlanView, 'sceneData'>[];
   private readonly heldResourcePrefixes: readonly string[];
   private preparationPendingFeatureIdentity: string | undefined;
   private preparationPendingReason: FramePresentationPendingReason | undefined;
 
   constructor(
-    readonly host: RenderFeatureHost,
+    readonly host: FeatureHostImpl,
     readonly inputs: readonly RenderFeatureFrameInput[],
     readonly input: RenderFeatureFrameInput,
   ) {
@@ -2023,9 +1995,24 @@ class FeatureFrameBatchBuilder {
         ...(view.hiddenEntityReports ?? []),
       );
     }
+    this.extractViews = Object.freeze(inputs.map(extractView));
+    this.materialContext = renderMaterialContext(input.caps, input.limits);
+    this.planViews = inputs.map((view) =>
+      Object.freeze({
+        identity: view.identity,
+        render: view.render,
+        frame: Object.freeze({ frameNumber: input.frameNumber, ...view.frameSize }),
+        ...(view.selectedView === undefined ? {} : { selectedView: view.selectedView }),
+        targets: logicalTargets(view.targets ?? []),
+      }),
+    );
     this.heldResourcePrefixes = inputs
       .filter((view) => !view.render)
       .map((view) => `${JSON.stringify([featureScopeKey({ view: view.identity })]).slice(0, -1)},`);
+  }
+
+  viewLogicalTargets(view: RenderFeatureFrameInput): readonly RenderFeatureLogicalTarget[] {
+    return (this.planViews[this.inputs.indexOf(view)] as (typeof this.planViews)[number]).targets;
   }
 
   readonly belongsToHeldView = (name: string): boolean => {
@@ -2094,7 +2081,7 @@ class FeatureFrameBatchBuilder {
   finish(): RenderFeatureFrameBatch {
     this.shareFrameFullscreenEffects();
     this.publishFrameSummaries();
-    const callbacks = this.callbacks;
+    const prepared = this.prepared;
     let closed = false;
     return {
       frame: this.shared,
@@ -2107,21 +2094,21 @@ class FeatureFrameBatchBuilder {
       ),
       preparedResourceBatches: this.preparedResourceBatches,
       commitPreparedResources: () => {
-        if (closed) return;
-        drainFeatureFinalizers(callbacks.map((callback) => callback.commitResources));
+        if (!closed) drainEach(prepared, (feature) => feature.commitResources());
       },
       onSubmitted: () => {
         if (closed) return;
         closed = true;
-        drainFeatureFinalizers([
-          ...callbacks.map((callback) => callback.commitResources),
-          ...callbacks.map((callback) => callback.submit),
-        ]);
+        drainEach(
+          prepared,
+          (feature) => feature.commitResources(),
+          (feature) => feature.submit(),
+        );
       },
       onAborted: () => {
         if (closed) return;
         closed = true;
-        drainFeatureFinalizers(callbacks.map((callback) => callback.abort));
+        drainEach(prepared, (feature) => feature.abort());
       },
     };
   }
@@ -2158,9 +2145,9 @@ class FeatureFrameBatchBuilder {
 
 /** One Feature's extract → plan → prepare → project pass within a frame batch. */
 class FeatureFramePreparation {
+  private readonly feature: RenderFeature<unknown>;
   private readonly identity: string;
   private readonly input: RenderFeatureFrameInput;
-  private readonly slot: FeatureSlot;
   private readonly gpu: RenderFeatureGpuPrepareSession | undefined;
   private readonly reports: RenderFeatureHiddenEntityReport[] = [];
   private readonly resolvers: PreparedGraphicsResolver[] = [];
@@ -2178,23 +2165,19 @@ class FeatureFramePreparation {
   private admittedResources: ReturnType<typeof createNativeResourceAdmission> | undefined;
   private sharedPrepared: PreparedPlanResources | undefined;
   private scopeResources: ReturnType<typeof createPreparedResourceScopes> | undefined;
+  /** The admitted plan; assigned before this preparation joins the submission barrier. */
+  private plan!: RenderFeaturePlan;
+  private resourcesCommitted = false;
 
   constructor(
     private readonly batch: FeatureFrameBatchBuilder,
-    private readonly feature: RenderFeature<unknown>,
-    private readonly order: number,
+    private readonly slot: FeatureSlot,
     private readonly transaction: PreparedGraphicsTransaction,
   ) {
+    const feature = slot.feature;
+    this.feature = feature;
     this.identity = feature.identity;
     this.input = batch.input;
-    this.slot = {
-      feature,
-      order,
-      preparedResourceBatches: new Set(),
-      preparedStore: createPreparedGraphicsStore(),
-      status: 'active',
-      latestError: undefined,
-    };
     this.gpu = this.input.gpuWork?.beginFeature(
       this.identity,
       this.input.generation ?? 0,
@@ -2264,8 +2247,8 @@ class FeatureFramePreparation {
       owner: input.owner,
       frameNumber: input.frameNumber,
       caps: input.caps,
-      ...renderMaterialContext(input.caps, input.limits),
-      views: this.batch.inputs.map(extractView),
+      ...this.batch.materialContext,
+      views: this.batch.extractViews,
       ...(input.visibilitySnapshots === undefined
         ? {}
         : { visibilitySnapshots: input.visibilitySnapshots }),
@@ -2273,24 +2256,35 @@ class FeatureFramePreparation {
     });
   }
 
-  private planViews() {
-    const input = this.input;
+  private planViews(): RenderFeaturePlanContext['views'] {
+    const inputs = this.batch.inputs;
+    const views = this.batch.planViews;
+    const planned: RenderFeaturePlanView[] = [];
+    for (let index = 0; index < views.length; index++) {
+      const view = views[index] as (typeof views)[number];
+      planned.push({
+        ...view,
+        sceneData: (inputs[index] as RenderFeatureFrameInput).sceneData ?? this.sceneData(view),
+      });
+    }
+    return planned;
+  }
+
+  /** The view's catalog is fixed for one prepared generation; recreate it only after a cut. */
+  private sceneData(view: { readonly identity: string }): SceneDataCatalog {
     const generation = this.transaction.generation;
-    return this.batch.inputs.map((view) => ({
-      identity: view.identity,
-      render: view.render,
-      frame: { frameNumber: input.frameNumber, ...view.frameSize },
-      ...(view.selectedView === undefined ? {} : { selectedView: view.selectedView }),
-      targets: logicalTargets(view.targets ?? []),
-      sceneData:
-        view.sceneData ??
-        createSceneDataCatalog({
-          featureIdentity: this.identity,
-          generation,
-          planIdentity: `${this.identity}:${view.identity}:${generation}`,
-          rgba16floatRenderable: input.caps.rgba16floatRenderable === true,
-        }),
-    }));
+    const cache = this.slot.sceneData;
+    const cached = cache.get(view.identity);
+    if (cached?.generation === generation) return cached;
+    if (cache.size >= this.batch.inputs.length) cache.clear();
+    const created = createSceneDataCatalog({
+      featureIdentity: this.identity,
+      generation,
+      planIdentity: `${this.identity}:${view.identity}:${generation}`,
+      rgba16floatRenderable: this.input.caps.rgba16floatRenderable === true,
+    });
+    cache.set(view.identity, created);
+    return created;
   }
 
   private abortResources(): void {
@@ -2361,7 +2355,7 @@ class FeatureFramePreparation {
   private publishInspection(): void {
     const source = this.source;
     if (typeof source === 'object' && source !== null && 'inspection' in source)
-      this.batch.host.setInspection(this.identity, (source as { inspection?: unknown }).inspection);
+      this.slot.latestInspection = (source as { inspection?: unknown }).inspection;
   }
 
   private declarePlan(
@@ -2384,7 +2378,7 @@ class FeatureFramePreparation {
             }),
           caps: input.caps,
           ...(input.limits === undefined ? {} : { limits: input.limits }),
-          ...renderMaterialContext(input.caps, input.limits),
+          ...this.batch.materialContext,
           frame: { frameNumber: input.frameNumber },
           generation: this.transaction.generation,
           createNativePlan: () => this.createNativePlan(views),
@@ -2413,7 +2407,7 @@ class FeatureFramePreparation {
               preparePlanResources(
                 this.slot,
                 { resources, passes: [] },
-                createPreparedGraphicsPrepare(this.transaction, true),
+                this.transaction,
                 gpu,
                 () => [],
                 this.input.sceneResources,
@@ -2492,8 +2486,8 @@ class FeatureFramePreparation {
       this.nativeWork === undefined
         ? resolveFeatureWorkResources(declaredWork)
         : resolveNativeFeatureWorkResources(this.nativeWork);
-    this.batch.host.retainPlanScopes?.(
-      this.identity,
+    this.batch.host.retainPlanScopes(
+      this.slot,
       workResources.map((row) => featureScopeKey(row.work.scope)),
     );
     const targetInputs = this.validateWorkTargets(workResources);
@@ -2503,42 +2497,46 @@ class FeatureFramePreparation {
         ? preparePlanResources(
             this.slot,
             { resources: workResources.flatMap((row) => row.resources), passes: [] },
-            createPreparedGraphicsPrepare(this.transaction),
+            this.transaction,
             this.gpu,
             (name) => targetInputs.get(name) ?? [],
             this.input.sceneResources,
           )
         : undefined;
     if (prepared !== undefined && !prepared.ok) throw prepared.error;
-    for (const row of workResources) this.projectWorkRow(plan, row, targetInputs, prepared?.value);
+    for (const row of workResources) this.projectWorkRow(plan, row, prepared?.value);
     this.retainFrameResources();
     this.admitRequiredPostProcesses();
     this.publishProjections();
     this.batch.featureHiddenEntityReports.push(...this.reports);
-    this.batch.callbacks.push(this.frameCallbacks(plan));
+    this.plan = plan;
+    this.batch.prepared.push(this);
     this.batch.host.setStatus(this.identity, 'active');
   }
 
-  /** Validate each work row's scope and map every resource name to its view targets. */
+  /**
+   * Validate each work row's scope and map every raw resource name to its view
+   * targets. A native row prepares only its own scoped names, which all read
+   * that row's view targets, so native rows validate scopes without a map.
+   */
   private validateWorkTargets(
     workResources: readonly FeatureWorkResources[],
-  ): Map<string, readonly RenderFeatureTargetHandle[]> {
+  ): ReadonlyMap<string, readonly RenderFeatureTargetHandle[]> {
+    if (workResources.length === 0) return NO_TARGET_INPUTS;
+    if (this.nativeWork !== undefined) {
+      for (const row of workResources) this.workView(row.work);
+      return NO_TARGET_INPUTS;
+    }
     const targetInputs = new Map<string, readonly RenderFeatureTargetHandle[]>();
     for (const row of workResources) {
       const view = this.workView(row.work);
-      if (this.nativeWork === undefined) {
-        const frozen = freezeRenderFeaturePlan(
-          this.identity,
-          row.closure,
-          logicalTargets(view?.targets ?? []),
-        );
-        if (!frozen.ok) throw frozen.error;
-      }
-      for (const resource of row.resources) {
-        const name = row.native ? row.keys.get(resource.name) : resource.name;
-        if (name === undefined) throw new Error('Missing native resource namespace');
-        targetInputs.set(name, view?.targets ?? []);
-      }
+      const valid = validateRenderFeaturePlan(
+        this.identity,
+        row.closure,
+        view === undefined ? [] : this.batch.viewLogicalTargets(view),
+      );
+      if (!valid.ok) throw valid.error;
+      for (const resource of row.resources) targetInputs.set(resource.name, view?.targets ?? []);
     }
     return targetInputs;
   }
@@ -2564,7 +2562,11 @@ class FeatureFramePreparation {
     if (missing === undefined || !workResources.some((row) => hasActivePlan(row.closure)))
       return false;
     if (this.requiresPreparation) this.batch.markPreparationPending(this.identity, 'capability');
-    const failure = new RenderFeatureCapabilityMissingError(this.identity, this.order, missing);
+    const failure = new RenderFeatureCapabilityMissingError(
+      this.identity,
+      this.slot.order,
+      missing,
+    );
     this.batch.errors.push(failure);
     this.cleanupPreparation([() => this.abortResources(), () => this.abortProducerFrame()], 'plan');
     this.batch.host.setStatus(this.identity, 'disabled', errorDescriptor(failure));
@@ -2574,7 +2576,6 @@ class FeatureFramePreparation {
   private projectWorkRow(
     plan: RenderFeaturePlan,
     row: FeatureWorkResources,
-    targetInputs: ReadonlyMap<string, readonly RenderFeatureTargetHandle[]>,
     rawPrepared: PreparedPlanResources | undefined,
   ): void {
     const scope = row.work.scope;
@@ -2585,10 +2586,10 @@ class FeatureFramePreparation {
     const result = this.batch.results.get(featureScopeKey(scope));
     if (result === undefined) throw new Error('unregistered Feature work scope');
     const effects = fullscreenProgramEffects(row.closure, this.identity);
-    const scoped = this.scopedResources(row, targetInputs, rawPrepared);
+    const scoped = this.scopedResources(row, viewInput?.targets ?? [], rawPrepared);
     const resolver = (viewInput ?? this.input).createPreparedGraphicsResolver?.({
       featureIdentity: this.identity,
-      order: this.order,
+      order: this.slot.order,
       generation: this.transaction.generation,
       ...(this.feature.shaderModuleMode === undefined
         ? {}
@@ -2623,7 +2624,7 @@ class FeatureFramePreparation {
     );
     if (!projected.ok) throw projected.error;
     if (batchesDepth)
-      this.batch.host.recordDepthBatchInspection?.(
+      this.batch.host.recordDepthBatchInspection(
         row.closure.passes.length,
         projectionPlan.passes.length,
         projected.value.passes.length,
@@ -2648,7 +2649,7 @@ class FeatureFramePreparation {
   /** Native rows prepare their own namespace; raw rows share one scoped copy of the plan. */
   private scopedResources(
     row: FeatureWorkResources,
-    targetInputs: ReadonlyMap<string, readonly RenderFeatureTargetHandle[]>,
+    rowTargets: readonly RenderFeatureTargetHandle[],
     rawPrepared: PreparedPlanResources | undefined,
   ): PreparedPlanResources {
     const scope = row.work.scope;
@@ -2661,9 +2662,9 @@ class FeatureFramePreparation {
     const localPrepared = preparePlanResources(
       this.slot,
       { resources: row.resources, passes: [] },
-      createPreparedGraphicsPrepare(this.transaction, true),
+      this.transaction,
       this.gpu,
-      (name) => targetInputs.get(name) ?? [],
+      () => rowTargets,
       this.input.sceneResources,
       {
         keys: row.keys,
@@ -2730,7 +2731,7 @@ class FeatureFramePreparation {
     if (row.work.scope === 'frame' && projected.passes.length !== row.work.passes.length)
       throw new RenderFeaturePreparationFailedError(
         this.identity,
-        this.order,
+        this.slot.order,
         'frame',
         'pipeline',
         'shared-work',
@@ -2752,13 +2753,8 @@ class FeatureFramePreparation {
       scope: row.work.scope,
       generation: this.transaction.generation,
       signature: row.native
-        ? (host.recordNativeExecutionSignature?.(
-            this.identity,
-            { ...projected, scope: scopeKey },
-            scopeKey,
-          ) ?? renderFeaturePlanSignature(projectionPlan))
-        : (host.recordPlanSignature?.(this.identity, row.closure, scopeKey) ??
-          renderFeaturePlanSignature(row.closure)),
+        ? host.nativeExecutionSignature(this.slot, { ...projected, scope: scopeKey }, scopeKey)
+        : host.planSignature(this.slot, row.closure, scopeKey),
       plan: projectionPlan,
       ...(feature.placement === undefined ? {} : { placement: feature.placement }),
       ...(feature.viewGraph === undefined ? {} : { viewGraph: feature.viewGraph }),
@@ -2771,14 +2767,16 @@ class FeatureFramePreparation {
     projected: RenderFeaturePlanExecution,
     resolver: PreparedGraphicsResolver | undefined,
   ): boolean {
-    const gpu = this.gpu;
+    const changed = this.gpu?.changedResourceNames;
     return (
       projected.passes.length !== projectionPlan.passes.length ||
       (resolver?.requiresGraphRebuild ?? (resolver?.leases.length ?? 0) > 0) ||
-      row.closure.resources.some((resource) => {
-        const name = row.keys.get(resource.name);
-        return name !== undefined && gpu?.changedResourceNames.has(name);
-      })
+      (changed !== undefined &&
+        changed.size > 0 &&
+        row.closure.resources.some((resource) => {
+          const name = row.keys.get(resource.name);
+          return name !== undefined && changed.has(name);
+        }))
     );
   }
 
@@ -2795,6 +2793,7 @@ class FeatureFramePreparation {
       )
         this.gpu?.resolveBuffer(descriptor.buffer);
     }
+    if (this.resolvers.length === 0) return;
     const leases = [...new Set(this.resolvers.flatMap((resolver) => resolver.leases))];
     const retained = this.batch.host.retainPreparedGraphics(this.identity, leases);
     if (!retained.ok) throw retained.error;
@@ -2803,6 +2802,7 @@ class FeatureFramePreparation {
 
   // Prewarm declarations do not admit inactive or rejected fullscreen work.
   private admitRequiredPostProcesses(): void {
+    if (this.projections.length === 0) return;
     for (const postProcess of this.feature.requiredFullscreenPostProcesses ?? []) {
       if (this.projections.some(({ effects }) => effects.has(postProcess.identity)))
         this.batch.postProcessIdentities.add(postProcess.identity);
@@ -2826,32 +2826,31 @@ class FeatureFramePreparation {
     }
   }
 
-  private frameCallbacks(plan: RenderFeaturePlan): FeatureFrameCallbacks {
-    let resourcesCommitted = false;
-    return {
-      commitResources: () => {
-        if (resourcesCommitted) return;
-        const committed = this.transaction.commit();
-        if (!committed.ok) throw committed.error;
-        const retired = this.gpu?.commitFrame() ?? [];
-        resourcesCommitted = true;
-        if (retired.length > 0) {
-          const retained = this.batch.host.retainPreparedGraphics(this.identity, retired);
-          if (!retained.ok) throw retained.error;
-          this.batch.preparedResourceBatches.push(retained.value);
-        }
-      },
-      abort: () => {
-        drainFeatureFinalizers([() => this.abortResources(), () => this.abortProducerFrame()]);
-      },
-      submit: () => this.submit(plan),
-    };
+  /** Seal this frame's prepared resources once; queue-retired leases wait for completion. */
+  commitResources(): void {
+    if (this.resourcesCommitted) return;
+    const committed = this.transaction.commit();
+    if (!committed.ok) throw committed.error;
+    const retired = this.gpu?.commitFrame() ?? [];
+    this.resourcesCommitted = true;
+    if (retired.length > 0) {
+      const retained = this.batch.host.retainPreparedGraphics(this.identity, retired);
+      if (!retained.ok) throw retained.error;
+      this.batch.preparedResourceBatches.push(retained.value);
+    }
   }
 
-  private submit(plan: RenderFeaturePlan): void {
+  /** Discard this frame's resources and producer frame data. */
+  abort(): void {
+    drainFeatureFinalizers([() => this.abortResources(), () => this.abortProducerFrame()]);
+  }
+
+  /** Producer consumption for the works the submitted graph actually recorded. */
+  submit(): void {
+    const plan = this.plan;
     const accepted = this.projections.filter((row) => this.batch.submittedWorks.has(row.planned));
     if (accepted.length === 0) {
-      drainFeatureFinalizers([() => this.abortResources(), () => this.abortProducerFrame()]);
+      this.abort();
       return;
     }
     drainFeatureFinalizers([
@@ -2878,7 +2877,7 @@ class FeatureFramePreparation {
 }
 
 function extractView(view: RenderFeatureFrameInput) {
-  return {
+  return Object.freeze({
     identity: view.identity,
     render: view.render,
     ...(view.selectedCamera === undefined ? {} : { selectedCamera: view.selectedCamera }),
@@ -2886,7 +2885,7 @@ function extractView(view: RenderFeatureFrameInput) {
     ...(view.frame === undefined ? {} : { frame: view.frame }),
     ...(view.frameSize === undefined ? {} : { frameSize: view.frameSize }),
     ...(view.motionBlur === undefined ? {} : { motionBlur: view.motionBlur }),
-  };
+  });
 }
 
 /** Does any declared program ask for pipeline compilation before it is ready? */
@@ -2973,16 +2972,22 @@ function submittedPasses(projected: RenderFeaturePlanExecution) {
 }
 
 /** Producer failures cannot strand sibling transactions or suppress accepted source receipts. */
-function drainFeatureFinalizers(actions: readonly (() => void)[]): void {
+/** Run each action on every item (one action at a time), then throw all failures together. */
+function drainEach<T>(items: readonly T[], ...actions: ((item: T) => void)[]): void {
   const failures: unknown[] = [];
-  for (const action of actions) {
-    try {
-      action();
-    } catch (cause) {
-      failures.push(cause);
+  for (const action of actions)
+    for (const item of items) {
+      try {
+        action(item);
+      } catch (cause) {
+        failures.push(cause);
+      }
     }
-  }
   if (failures.length > 0) throw new AggregateError(failures, 'Feature frame finalization failed');
+}
+
+function drainFeatureFinalizers(actions: readonly (() => void)[]): void {
+  drainEach(actions, (action) => action());
 }
 
 function mergeHiddenEntityReports(
@@ -3020,13 +3025,5 @@ export function createRenderFeatureHost(
     identities.set(feature.identity, order);
   }
 
-  const slots: FeatureSlot[] = features.map((feature, order) => ({
-    feature,
-    order,
-    preparedResourceBatches: new Set(),
-    preparedStore: createPreparedGraphicsStore(),
-    status: 'active',
-    latestError: undefined,
-  }));
-  return ok(new FeatureHostImpl(slots));
+  return ok(new FeatureHostImpl(features.map(createFeatureSlot)));
 }

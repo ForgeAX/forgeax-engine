@@ -186,6 +186,7 @@ function executeCaptureFrame(
     capture.work.sceneInput !== true,
     elapsedSeconds,
     capture.viewport,
+    capture.frameState.environmentFrame?.sky,
   );
   const groups = buildPerFrameBindGroups(
     capture.runtime,

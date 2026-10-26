@@ -1,5 +1,5 @@
 export { AssetClosure } from './internal/asset-closure';
-export { assetDataBytes } from './internal/asset-data';
+export { assetDataBytes, copyAssetData } from './internal/asset-data';
 export type {
   AssetChange,
   AssetRange,

@@ -494,10 +494,15 @@ function addForwardTranslucentStages(
   environment: GraphEnvironment | undefined,
   receiver: StandardForwardReceiverInputs,
   medium: ForwardMediumInputs,
+  unfoggedOpaque: TypedScenePassOptions | undefined,
 ): Result<void, RenderPipelineBuildError> {
   const graph = context.graph;
   const fogged = addOpaqueFogPasses(graph, { topology, color: scene.resolved, depth: scene.depth });
   if (!fogged.ok) return fogged;
+  if (unfoggedOpaque !== undefined) {
+    const unfogged = addTypedScenePass(graph, unfoggedOpaque);
+    if (!unfogged.ok) return unfogged;
+  }
   const transmission = standardTransmissionRoute(topology, scene.color.sampleCount);
   const template = { environment, ...receiver };
   if (transmission.sorted) {
@@ -661,6 +666,25 @@ function declareForwardCloudTargets(
   return ok({ scene: cloudScene.value, shadow: cloudShadow.value });
 }
 
+/**
+ * Three `Material.fog = false` for opaque draws. Opaque fog is one fullscreen
+ * depth pass with no per-pixel material fact, so fog:false opaque draws leave
+ * `main` and record directly after that pass, depth-tested against the fogged
+ * scene: in front they overwrite fogged pixels; behind they lose the depth test.
+ * Built only when the frame has such a material and analytic fog; a CloudLayer
+ * composite (drawn before fog) keeps them in `main`, fogged.
+ */
+function forwardUnfoggedOpaqueOptions(
+  topology: RenderPipelineTopology,
+  mainOptions: TypedScenePassOptions,
+  cloudScene: RenderPipelineTarget | undefined,
+): TypedScenePassOptions | undefined {
+  if (topology.unfoggedOpaque !== true || topology.analyticFog !== true) return undefined;
+  if (cloudScene !== undefined) return undefined;
+  const { gpuDriven: _gpu, gpuDrivenFilter: _filter, ...direct } = mainOptions;
+  return { ...direct, name: 'main-unfogged', depthLoadOp: 'load', recordMode: 'opaque-unfogged' };
+}
+
 function forwardMainPassOptions(
   scene: ForwardSceneTargets,
   environment: GraphEnvironment | undefined,
@@ -749,13 +773,22 @@ export function buildStandardForwardLane(
     clusterReads:
       clusterBuffers.value === null ? [] : standardClusterReadAccesses(clusterBuffers.value),
   });
-  const mainOptions = forwardMainPassOptions(
+  const allOpaqueOptions = forwardMainPassOptions(
     scene.value,
     atmosphere.value,
     receiver,
     reflectionFallback.value,
     gpuDriven.value,
   );
+  const unfoggedOpaque = forwardUnfoggedOpaqueOptions(
+    topology,
+    allOpaqueOptions,
+    cloud.value.scene,
+  );
+  const mainOptions: TypedScenePassOptions =
+    unfoggedOpaque === undefined
+      ? allOpaqueOptions
+      : { ...allOpaqueOptions, recordMode: 'opaque-fogged' };
   const opaquePair = addForwardOpaqueStage(
     context,
     topology,
@@ -790,6 +823,7 @@ export function buildStandardForwardLane(
       targetCaptures: targetCaptures?.value,
       gpuDriven: gpuDriven.value,
     },
+    unfoggedOpaque,
   );
   if (!translucent.ok) return translucent;
   // The local froxel volume composites after every translucent writer (see

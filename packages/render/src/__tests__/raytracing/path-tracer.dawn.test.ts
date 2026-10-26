@@ -86,3 +86,8 @@ it('separates the diffuse receiver from the full BSDF under an open-sky white fu
   const { verifyPathReceiver } = await import('./path-receiver.fixture');
   await verifyPathReceiver(await prepareRayPathFixture());
 }, 120000);
+
+it('matches cold ray transport after refitting and uploading only changed scene rows', async () => {
+  const { verifyRaySceneRefit } = await import('./scene-refit.gpu-fixture');
+  await verifyRaySceneRefit(await prepareRayPathFixture());
+}, 120000);

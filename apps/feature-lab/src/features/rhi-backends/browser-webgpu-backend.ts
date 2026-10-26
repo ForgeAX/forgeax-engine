@@ -22,6 +22,10 @@ export default defineFeature({
         if (gpu === undefined) return checks.items;
         const { device } = gpu;
         checks.equal('standalone device caps.backendKind', device.caps.backendKind, 'webgpu');
+        const pending = device.pipelineLibrary?.inspect().pending;
+        checks.ok('native compilation inspection is available', pending !== undefined);
+        checks.equal('new device has no unidentified compilations', pending?.unidentified, 0);
+        checks.equal('new device has no pending pipelines', pending?.pipelines.length, 0);
 
         const src = device.createBuffer({
           size: 16,

@@ -2,8 +2,9 @@ import { type AssetVersion, runtimeAssets } from '@forgeax/engine-assets-runtime
 import {
   Disabled,
   type EntityHandle,
-  FixedTime,
   FixedUpdate,
+  Time,
+  Update,
   type World,
 } from '@forgeax/engine-ecs';
 import { createStateProjection } from '@forgeax/engine-ecs/projection';
@@ -74,12 +75,15 @@ export interface VfxGpuTickIntent {
   readonly effect: VfxGpuEffectAsset;
   readonly programFingerprint: string;
   readonly reset: boolean;
-  readonly fixedDelta: number;
+  /** Simulated seconds of this dispatch: the Update frame delta times the player's timeScale. */
+  readonly delta: number;
   /** First dispatch delta in this play cycle, including zero-time admission. */
-  readonly initialFixedDelta: number;
+  readonly initialDelta: number;
+  /** Simulated seconds of this play cycle through this dispatch. */
+  readonly elapsed: number;
   /** Effect-relative dispatch, including initialization. Resets on replay and restart-on-visible. */
   readonly phaseTick: number;
-  /** World-global FixedTime tick retained for renderer ring selection and correlation. */
+  /** Runtime update count when the intent was queued, retained for renderer correlation. */
   readonly tick: number;
   readonly seed: number;
   readonly playCycle: number;
@@ -147,7 +151,7 @@ export interface VfxGpuPlayerInspectSnapshot {
   readonly assetGuid: string;
   readonly programFingerprint: string;
   readonly seed: number;
-  readonly fixedDelta: number;
+  readonly delta: number;
   readonly playing: boolean;
   readonly values: {
     readonly layoutFingerprint: string;
@@ -210,7 +214,7 @@ interface PlayerState {
   playCycles: number[];
   cameraVisible: boolean[];
   phaseTicks: number[];
-  initialFixedDeltas: number[];
+  initialDeltas: number[];
   hasCommitted: boolean;
   pendingResets: boolean[];
 }
@@ -237,7 +241,7 @@ function createPlayerState(
   version: AssetVersion<VfxGpuEffectAsset>,
   contentRevision: number,
   playCycle: number,
-  fixedDelta: number,
+  delta: number,
 ): PlayerState {
   const asset = version.value;
   return {
@@ -256,7 +260,7 @@ function createPlayerState(
     playCycles: asset.program.emitters.map(() => playCycle),
     cameraVisible: asset.program.emitters.map(() => true),
     phaseTicks: asset.program.emitters.map(() => 0),
-    initialFixedDeltas: asset.program.emitters.map(() => fixedDelta * input.timeScale),
+    initialDeltas: asset.program.emitters.map(() => delta * input.timeScale),
     hasCommitted: false,
     pendingResets: asset.program.emitters.map(() => false),
   };
@@ -332,6 +336,7 @@ export class VfxGpuRuntime {
   readonly #replayRequests = new Set<EntityHandle>();
   readonly #replayInputs = new Map<EntityHandle, VfxReplayInput<VfxValueMap>>();
   #sequence = 0;
+  #updates = 0;
   #renderGeneration = 0;
 
   constructor(options: VfxGpuRuntimeOptions = {}) {
@@ -411,8 +416,8 @@ export class VfxGpuRuntime {
    * World membership also retires removed players before rendering their last
    * committed state or pending work; removal is not a simulation-clock event.
    * New players prepare their authored time-zero state here so a render-only
-   * frame does not need a fabricated FixedUpdate. Existing players keep their
-   * patch and replay commits on the fixed boundary.
+   * frame does not need a fabricated update. Existing players keep their
+   * patch and replay commits on the update boundary.
    */
   forEachEmitterSource(world: World, visitor: (source: VfxGpuEmitterSource) => void): void {
     this.#refreshPlayers(world, true);
@@ -435,8 +440,8 @@ export class VfxGpuRuntime {
   }
 
   /**
-   * Return the last submitted fixed-tick state for one emitter.  Renderers
-   * retain this projection between fixed ticks; simulation intents are a
+   * Return the last submitted tick state for one emitter.  Renderers
+   * retain this projection between ticks; simulation intents are a
    * queue, while a drawable emitter remains live until the player is reset.
    */
   lastCommittedEmitter(player: EntityHandle, emitterId: string): VfxGpuTickIntent | undefined {
@@ -444,7 +449,7 @@ export class VfxGpuRuntime {
   }
 
   /**
-   * Rebuild the deterministic fixed-tick inputs needed to rehydrate one
+   * Rebuild the deterministic tick inputs needed to rehydrate one
    * retained emitter on a replacement GPU device. This is a renderer-only
    * projection: it does not enqueue work, advance World time, allocate a new
    * play cycle, or publish channel/event counters.
@@ -492,7 +497,7 @@ export class VfxGpuRuntime {
       assetGuid: state.asset.guid,
       programFingerprint: state.asset.program.fingerprint,
       seed: lastIntent?.seed ?? state.seed,
-      fixedDelta: lastIntent?.fixedDelta ?? 0,
+      delta: lastIntent?.delta ?? 0,
       playing: state.playing,
       values: Object.freeze({
         layoutFingerprint,
@@ -705,7 +710,7 @@ export class VfxGpuRuntime {
   /**
    * Drop every generation-owned VFX runtime value after device recovery.
    * Authored ParticleEffectPlayer state remains the restart source on the next
-   * FixedUpdate; no queued intent or stale instance crosses the boundary.
+   * update; no queued intent or stale instance crosses the boundary.
    */
   recover(): void {
     this.#renderGeneration += 1;
@@ -800,31 +805,38 @@ export class VfxGpuRuntime {
       this.#changedControls.add(index);
       if (input.playing) this.#playing.add(input);
       if (renderOnly && !this.#players.has(entity))
-        this.#preparePlayer(world, world.getResource(FixedTime).tick, 0, input, true);
+        this.#preparePlayer(world, this.#updates, 0, input, true);
       const state = this.#players.get(entity);
-      // Parking is resource intent; ordinary changes keep their FixedUpdate boundary.
+      // Parking is resource intent; ordinary changes keep their update boundary.
       if (state !== undefined && input.preparePipelines && !input.playing) state.playing = false;
     }
     changes.accept();
   }
 
-  advance(world: World, tick: number, fixedDelta: number): void {
+  /**
+   * Advance every player by one Update frame. `delta` is the World frame
+   * delta (`Time.delta`, already bounded by `TimePolicy.maxDeltaSeconds`);
+   * each simulating emitter queues one intent carrying exactly that interval.
+   */
+  advance(world: World, delta: number): void {
+    this.#updates += 1;
+    const tick = this.#updates;
     this.#refreshPlayers(world, false);
     // Only changed paused controls and explicit replay requests need work.
     for (const player of this.#replayRequests) this.#changedControls.add(unpackSlot(player));
     for (const index of this.#changedControls) {
       const input = this.#controls.get(index);
       if (input !== undefined && !input.playing)
-        this.#preparePlayer(world, tick, fixedDelta, input, false);
+        this.#preparePlayer(world, tick, delta, input, false);
     }
     this.#changedControls.clear();
-    for (const input of this.#playing) this.#preparePlayer(world, tick, fixedDelta, input, false);
+    for (const input of this.#playing) this.#preparePlayer(world, tick, delta, input, false);
   }
 
   #preparePlayer(
     world: World,
     tick: number,
-    fixedDelta: number,
+    delta: number,
     input: VfxGpuPlayerInput,
     initializing: boolean,
   ): void {
@@ -869,11 +881,11 @@ export class VfxGpuRuntime {
             version,
             contentRevision.value,
             (previous?.playCycle ?? -1) + 1,
-            fixedDelta,
+            delta,
           )
         : previous;
     this.#players.set(input.player, state);
-    // Replay is a one-FixedUpdate request, not a second persistent play-state
+    // Replay is a one-update request, not a second persistent play-state
     // authority. Inspection always returns the authored player state after
     // the requested reset intent has been emitted.
     state.playing = input.playing;
@@ -885,7 +897,7 @@ export class VfxGpuRuntime {
     if (instance === undefined) return;
     const committed = this.#commitInstance(input, tick, instance, state, restart);
     if (committed === undefined) return;
-    this.#queueEmitterTicks(world, input, tick, fixedDelta, state, restart, committed);
+    this.#queueEmitterTicks(world, input, tick, delta, state, restart, committed);
   }
 
   /**
@@ -966,7 +978,7 @@ export class VfxGpuRuntime {
       if (state.hasCommitted) {
         this.#report({
           code: 'vfx-intent-queue-overflow',
-          expected: `at most ${this.#maxQueuedTicks} unconsumed fixed ticks`,
+          expected: `at most ${this.#maxQueuedTicks} unconsumed simulation ticks`,
           hint: 'recover or restart the renderer; VFX does not silently discard simulation ticks',
           detail: { player, maxQueuedTicks: this.#maxQueuedTicks },
         });
@@ -1012,7 +1024,7 @@ export class VfxGpuRuntime {
     this.#report({
       code: 'vfx-instance-commit-failed',
       expected: 'the current typed instance values to pack into the reflected GPU block',
-      hint: 'repair the instance patch and retry at the next FixedUpdate',
+      hint: 'repair the instance patch and retry at the next update',
       detail: { player: input.player },
     });
     return undefined;
@@ -1022,13 +1034,13 @@ export class VfxGpuRuntime {
     world: World,
     input: VfxGpuPlayerInput,
     tick: number,
-    fixedDelta: number,
+    frameDelta: number,
     state: PlayerState,
     restart: boolean,
     committed: VfxInstanceCommit<VfxValueMap>,
   ): void {
     const asset = state.asset;
-    const delta = fixedDelta * input.timeScale;
+    const delta = frameDelta * input.timeScale;
     for (const [index, emitter] of asset.program.emitters.entries()) {
       const reset = this.#emitterTickReset(input.player, state, index, emitter, restart);
       if (reset === undefined) continue;
@@ -1055,7 +1067,7 @@ export class VfxGpuRuntime {
       );
       const channelInputs = emitterChannelInputs(emitter, eventSources, committed.channelInputs);
       const phaseTick = state.phaseTicks[index] ?? 0;
-      if (reset) state.initialFixedDeltas[index] = delta;
+      if (reset) state.initialDeltas[index] = delta;
       const fields = this.#captureFields(world, state, emitter);
       const intent: VfxGpuTickIntent = Object.freeze({
         ...(fields === undefined ? {} : { forceFields: fields.input }),
@@ -1065,8 +1077,9 @@ export class VfxGpuRuntime {
         effect: asset,
         programFingerprint: asset.program.fingerprint,
         reset,
-        fixedDelta: delta,
-        initialFixedDelta: state.initialFixedDeltas[index] ?? delta,
+        delta,
+        initialDelta: state.initialDeltas[index] ?? delta,
+        elapsed: previousElapsed + delta,
         phaseTick,
         tick,
         seed: input.seed,
@@ -1237,39 +1250,49 @@ export function vfxGpuRuntimePlugin(options: VfxGpuRuntimeOptions = {}): Plugin 
       }, 'vfx/runtime-resource');
       ctx.effect(() => {
         world
-          .addSystem(FixedUpdate, {
+          .addSystem(Update, {
             name: 'vfx-gpu-runtime',
             queries: [],
-            fn: (world) => {
-              const fixed = world.getResource(FixedTime);
-              runtime.advance(world, fixed.tick, fixed.delta);
-            },
+            // Players that this frame's simulation spawns or moves advance in the same frame.
+            after: [FixedUpdate],
+            fn: (world) => runtime.advance(world, world.getResource(Time).delta),
           })
           .unwrap();
-        return () => world.removeSystem(FixedUpdate, 'vfx-gpu-runtime');
+        return () => world.removeSystem(Update, 'vfx-gpu-runtime');
       }, 'vfx/tick-system');
     },
   };
 }
 
-/** Reconstruct GPU inputs from submitted POD without owning World time or event queues. */
+/**
+ * Reconstruct GPU inputs from submitted POD without owning World time or event
+ * queues. Frame deltas vary, so recovery quantizes: it replays the same number
+ * of dispatches over the same cycle time, keeping the exact initial delta and
+ * splitting the rest of `elapsed` evenly. Dispatch count, cycle time, spawn
+ * total and particle ids match the live cycle; motion integrates over the even
+ * steps rather than the recorded frame partition.
+ */
 export function buildVfxRecoveryIntents<T extends Omit<VfxGpuTickIntent, 'effect' | 'forceFields'>>(
   latest: T | undefined,
 ): readonly T[] {
   if (latest === undefined) return [];
   const intents: T[] = [];
+  const step =
+    latest.phaseTick === 0 ? 0 : (latest.elapsed - latest.initialDelta) / latest.phaseTick;
   let elapsed = 0;
   let remainder = 0;
   let firstParticleId = 0;
   for (let phaseTick = 0; phaseTick <= latest.phaseTick; phaseTick += 1) {
-    const fixedDelta = phaseTick === 0 ? latest.initialFixedDelta : latest.fixedDelta;
-    const next = elapsed + fixedDelta;
+    const delta = phaseTick === 0 ? latest.initialDelta : step;
+    // The last dispatch ends exactly at the recorded cycle time.
+    const next = phaseTick === latest.phaseTick ? latest.elapsed : elapsed + delta;
     const scheduled = spawnCount(latest.emitter, elapsed, next, phaseTick === 0, remainder);
     intents.push(
       Object.freeze({
         ...latest,
         reset: phaseTick === 0,
-        fixedDelta,
+        delta,
+        elapsed: next,
         phaseTick,
         tick: latest.tick - latest.phaseTick + phaseTick,
         spawnCount: scheduled.count,

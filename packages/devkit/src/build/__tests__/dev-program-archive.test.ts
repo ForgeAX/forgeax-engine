@@ -43,7 +43,12 @@ it('freezes plugin bytes after the initial native dependency scan completes', as
       resolve(root, 'scan.js'),
       "import value from 'delayed-dependency'; console.log(value);",
     );
-    await writeFile(resolve(root, 'entry.js'), 'export default 42;');
+    // Consume the scanned dependency so capture waits for its optimized bytes
+    // before server.close() and temporary-directory cleanup.
+    await writeFile(
+      resolve(root, 'entry.js'),
+      "import value from 'delayed-dependency'; export default value;",
+    );
     server = await createServer({
       root,
       configFile: false,

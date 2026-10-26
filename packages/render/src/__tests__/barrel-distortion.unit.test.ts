@@ -7,7 +7,7 @@ import {
   BARREL_DISTORTION_WGSL,
   createBarrelDistortionRenderFeature,
 } from '../features/barrel-distortion';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import { resolveStandardRenderFeatureTargets } from '../features/targets';
 import {
   attachBarrelDistortionCameraFrame,
@@ -73,19 +73,21 @@ describe('bounded barrel distortion mapping', () => {
       setActiveCamera(world, entity);
       const selected = extractCameraSnapshots(world)[0];
       expect(selected?.entityKey).toBe(entity);
-      const result = runRenderFeatureFrame(host, [
-        {
-          identity: 'main',
-          render: true,
-          worlds: [world],
-          owner: 0,
-          frameNumber,
-          generation: frameNumber,
-          ...(selected === undefined ? {} : { selectedCamera: selected }),
-          targets,
-          caps: { rgba16floatRenderable: true } as never,
-        },
-      ]).views.get('main');
+      const result = host
+        .runFrame([
+          {
+            identity: 'main',
+            render: true,
+            worlds: [world],
+            owner: 0,
+            frameNumber,
+            generation: frameNumber,
+            ...(selected === undefined ? {} : { selectedCamera: selected }),
+            targets,
+            caps: { rgba16floatRenderable: true } as never,
+          },
+        ])
+        .views.get('main');
       if (result === undefined) throw new Error('main view missing');
       return result;
     };
@@ -112,16 +114,18 @@ describe('bounded barrel distortion mapping', () => {
 
   it('keeps an unconfigured camera at feature zero work', () => {
     const host = createRenderFeatureHost([createBarrelDistortionRenderFeature()]).unwrap();
-    const frame = runRenderFeatureFrame(host, [
-      {
-        identity: 'main',
-        render: true,
-        worlds: [new World()],
-        owner: 0,
-        frameNumber: 1,
-        caps: { rgba16floatRenderable: true } as never,
-      },
-    ]).views.get('main');
+    const frame = host
+      .runFrame([
+        {
+          identity: 'main',
+          render: true,
+          worlds: [new World()],
+          owner: 0,
+          frameNumber: 1,
+          caps: { rgba16floatRenderable: true } as never,
+        },
+      ])
+      .views.get('main');
     if (frame === undefined) throw new Error('main view missing');
 
     expect(frame.errors).toEqual([]);

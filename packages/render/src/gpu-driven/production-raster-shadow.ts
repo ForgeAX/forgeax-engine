@@ -15,22 +15,17 @@ import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { BatchPass } from './batch-execution';
 import { batchLevelStride, batchLodLevelCount } from './batch-layout';
 import type { GpuDrivenBatch, GpuDrivenBatchBinding, SubmissionPlan } from './batch-topology';
-import type { LodViewCamera } from './lod-projection.wgsl';
 import type { BatchExecutions } from './material-artifacts';
 import { PreparedRasterBundleCache } from './prepared-raster-bundle';
 import type { GpuDrivenShadowBatchProjection, ShadowViewRequest } from './production-raster';
-import {
-  type LodProjectionState,
-  lodViewCameraFromMatrix,
-  shadowLodProjectionState,
-} from './production-raster-lod';
+import { lodViewCameraFromMatrix } from './production-raster-lod';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import { type FilteredProductionPlan, sameMaterialArtifact } from './production-raster-prepare';
 import { type ShadowArtifactObservations, shadowMaterialKey } from './production-raster-support';
 import { ShadowSlotSelection } from './shadow-caster-classes';
 import { filteredRows, type ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap } from './shadow-projection-publication';
-import type { ShadowViewStatePool, ShadowViewUpdateInput } from './shadow-views';
+import type { ShadowViewStatePool } from './shadow-views';
 import type { GpuDrivenOcclusionCamera } from './view-gpu';
 
 export type ShadowBatchProjections = ReadonlyMap<number, GpuDrivenShadowBatchProjection>;
@@ -68,8 +63,6 @@ export interface ShadowProjectionPass {
   readonly projectionSource: FilteredProductionPlan['projectionSource'];
   readonly shadowScene: PersistentGpuDrivenState['scene'];
   readonly inputReads: import('../gpu-scene-inputs').GpuInputReadFrame;
-  readonly lod: LodProjectionState;
-  readonly lodPrepared: Parameters<typeof shadowLodProjectionState>[0];
   readonly camera: CameraSnapshot;
   readonly capsuleShadowDirectional: boolean;
   readonly directMaterials: import('../scene/material-dispatch').MaterialFrame | undefined;
@@ -79,12 +72,6 @@ export interface ShadowProjectionPass {
   readonly meshBinding: BindGroup;
   readonly visibleBindingIdentity: object;
   readonly skinVisibleBindingIdentity: object | undefined;
-  /**
-   * A light view ranks casters by their footprint in its own projection,
-   * bounded by the main camera; views sharing a matrix (static and dynamic
-   * layers) share one projection.
-   */
-  readonly lodByMatrix: Map<string, Partial<ShadowViewUpdateInput>>;
   cullCamera: GpuDrivenOcclusionCamera | undefined;
   preparedByBatch: ReadonlyMap<number, FilteredProductionPlan['batches'][number]> | undefined;
   /** Projections published by this call, keyed by view identity. */
@@ -179,43 +166,12 @@ export function restrictShadowCasterChannels(
   return { ...requested, candidatePrimitiveIndices: new ShadowSlotSelection(slots, allowed) };
 }
 
-/** A view without a matrix follows the main camera's LOD projection. */
-export function shadowViewLod(
-  pass: ShadowProjectionPass,
-  matrix: Float32Array | undefined,
-): Partial<ShadowViewUpdateInput> {
-  const { lod } = pass;
-  const lodCamera: LodViewCamera = pass.camera;
-  if (lod.projectedHeights === undefined) return { lodCamera };
-  if (matrix === undefined) {
-    return {
-      lodCamera,
-      lodProjectedHeights: lod.projectedHeights,
-      lodSelection: lod.selectionFingerprint,
-    };
-  }
-  const key = matrix.join(',');
-  const cached = pass.lodByMatrix.get(key);
-  if (cached !== undefined) return cached;
-  const projection = shadowLodProjectionState(
-    pass.lodPrepared,
-    matrix,
-    lod,
-    pass.scene.slotAt,
-    pass.profilePhase,
-  );
-  const entry: Partial<ShadowViewUpdateInput> = {
-    lodCamera: lodViewCameraFromMatrix(matrix),
-    lodClampCamera: lodCamera,
-    ...(projection.projectedHeights === undefined
-      ? {}
-      : {
-          lodProjectedHeights: projection.projectedHeights,
-          lodSelection: projection.selectionFingerprint,
-        }),
-  };
-  pass.lodByMatrix.set(key, entry);
-  return entry;
+/**
+ * A light view ranks casters by their footprint in its own projection; a view
+ * without a matrix follows the main camera.
+ */
+export function shadowViewLod(pass: ShadowProjectionPass, matrix: Float32Array | undefined) {
+  return { lodCamera: matrix === undefined ? pass.camera : lodViewCameraFromMatrix(matrix) };
 }
 
 export function preparedShadowRows(

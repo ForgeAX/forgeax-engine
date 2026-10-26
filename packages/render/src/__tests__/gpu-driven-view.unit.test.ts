@@ -34,7 +34,11 @@ const materials = new Map([['plain', material]]);
 function snapshot(entityKey: number, x: number, resourceClass = 'plain'): RenderableSnapshot {
   let binding = materials.get(resourceClass);
   if (binding === undefined) {
-    binding = new MaterialResource({ ...material.snapshot });
+    // A distinct resource class binds distinct textures; equal facts share a batch.
+    binding = new MaterialResource({
+      ...material.snapshot,
+      textureHandles: new Map([['baseColorTexture', 100 + materials.size]]) as never,
+    });
     materials.set(resourceClass, binding);
   }
   const world = mat4.identity(mat4.create());

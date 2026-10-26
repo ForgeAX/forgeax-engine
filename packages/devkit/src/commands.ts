@@ -4,13 +4,13 @@ import { basename, dirname, resolve } from 'node:path';
 import { startVitest } from 'vitest/node';
 import { createZip } from './archive.js';
 import type { PluginSourceInventory } from './build/plugin-assets.js';
+import { prepareDist, retainPlayerDist } from './delivery-dist.js';
 import { readDeliverySource } from './delivery-identity.js';
 import { verifyDist } from './dist.js';
 import { engineStatusCommand } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { buildProject, startDevProjectWithHost, startPreviewProjectWithHost } from './host.js';
 import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from './package-documents.js';
-import { preparePlayerDist, retainPlayerDist } from './player-dist.js';
 import { commandError, readProjectFacts } from './project.js';
 import {
   bundleSingleHtmlEntry,
@@ -162,7 +162,7 @@ export async function packageCommand(
   const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
   let playerRoot: string | undefined;
   try {
-    const player = await preparePlayerDist(distRoot, verified.value, {
+    const player = await prepareDist(distRoot, verified.value, {
       compressDocuments: format === 'web-zip' && options.compress !== false,
       ...(format === 'web-zip'
         ? { outputParent: resolve(facts.value.root, '.forgeax/player') }

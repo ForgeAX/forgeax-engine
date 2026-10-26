@@ -22,7 +22,7 @@ import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { GpuDrivenStandardPbrFrameResources, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { type SkinSceneFrame, SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames, type SkinSceneFrame, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   admitGpuFixture,
   mesh,
@@ -116,13 +116,14 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
     jointCount: 1,
     inverseBindMatrices: mat4.identity(mat4.create()),
   }));
+  const skinFrames = new SkinFrames(skinInputs);
   let skinFrame: SkinSceneFrame | undefined;
   const publish = (rows: readonly RenderableSnapshot[]) => {
-    skinInputs.discardFrame();
+    skinFrames.discardFrame();
     const delta = scene.apply(rows.map(updateSnapshot));
     skinInputs.apply(delta);
     skinInputs.joint(0, 19, mat4.identity(mat4.create()));
-    skinFrame = skinInputs.prepareFrame(scene.slotsSnapshot());
+    skinFrame = skinFrames.prepareFrame(scene.slotsSnapshot());
     available.scene.sync(delta).unwrap();
     topology.apply(delta);
   };

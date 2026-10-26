@@ -1,7 +1,7 @@
 import { type ComputePipeline, err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 
@@ -141,7 +141,7 @@ it('holds presentation pending for declared compute preparation until backend co
   };
   const host = createRenderFeatureHost([feature]).unwrap();
   const frame = () =>
-    runRenderFeatureFrame(host, [
+    host.runFrame([
       {
         worlds: [],
         owner: 0,

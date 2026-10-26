@@ -6,11 +6,11 @@ import type { VfxGpuTickIntent } from '@forgeax/engine-vfx';
 import { describe, expect, it } from 'vitest';
 import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
 import {
-  freezeVfxPlan as freezeRenderFeaturePlan,
   gpuParticleRenderFeature,
   planPasses,
   planResources,
   singleViewContext,
+  freezeVfxPlan as validateRenderFeaturePlan,
 } from './vfx-frame-fixture';
 
 const stagePlanPath = resolve(import.meta.dirname, '../feature/stage-plan.ts');
@@ -72,8 +72,9 @@ describe('VFX managed stage execution seam', () => {
       },
       programFingerprint: 'spark-program',
       reset: true,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
+      delta: 1 / 60,
+      initialDelta: 1 / 60,
+      elapsed: 1 / 60,
       phaseTick: 0,
       tick: 0,
       seed: 1,
@@ -133,7 +134,7 @@ describe('VFX managed stage execution seam', () => {
     expect(planned.ok).toBe(true);
     if (!planned.ok) return;
     expect(
-      freezeRenderFeaturePlan(feature.identity, planned.value, [
+      validateRenderFeaturePlan(feature.identity, planned.value, [
         { name: 'scene-color', kind: 'color', format: 'rgba16float', sampleCount: 1 },
         { name: 'scene-depth', kind: 'depth', format: 'depth24plus', sampleCount: 1 },
       ]).ok,

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const specialize = vi.hoisted(() => vi.fn());
 vi.mock('@forgeax/engine-naga', () => ({ specializeComputeEntries: specialize }));
 
-import { precomputePipelineLibrary } from '../pipeline-library.js';
+import { precomputePipelineLibraries, precomputePipelineLibrary } from '../pipeline-library.js';
 
 type PipelineLibraryManifest = Parameters<typeof precomputePipelineLibrary>[0];
 
@@ -33,7 +33,7 @@ describe('build-time compute entry projection', () => {
       { module: 0, entryPoint: 'scan', specializedModule: 2 },
       { module: 1, entryPoint: 'scan', specializedModule: 2 },
     ]);
-    expect(result.computePipelines).toBe(original.computePipelines);
+    expect(result.computePipelines).toEqual([original.computePipelines[0]]);
     expect(original).toEqual(before);
     expect(await precomputePipelineLibrary(result)).toBe(result);
   });
@@ -59,5 +59,32 @@ describe('build-time compute entry projection', () => {
     const result = await precomputePipelineLibrary(original);
     expect(result.shaders).toEqual(original.shaders);
     expect(result).toBe(original);
+  });
+  it('omits exact startup overlap while preserving distinct background recipes', async () => {
+    const original = { ...manifest(), computeEntryModules: [] };
+    const variant = {
+      layout: 'auto' as const,
+      compute: { module: 0, entryPoint: 'scan', constants: { count: 8 } },
+    };
+    const result = await precomputePipelineLibraries({
+      pipelineLibrary: original,
+      backgroundPipelineLibrary: {
+        ...original,
+        computePipelines: [...original.computePipelines, variant],
+      },
+    });
+    expect(result.pipelineLibrary?.computePipelines).toHaveLength(2);
+    expect(result.backgroundPipelineLibrary?.computePipelines).toEqual([variant]);
+    expect(result.backgroundPipelineLibrary?.shaders).toEqual([original.shaders[0]]);
+  });
+  it('normalizes duplicate recipes even when entry projections were already supplied', async () => {
+    const original = manifest();
+    const result = await precomputePipelineLibrary({
+      ...original,
+      shaders: [{ code: 'effect A' }, { code: 'effect A' }],
+      computeEntryModules: [],
+    });
+    expect(result.shaders).toHaveLength(1);
+    expect(result.computePipelines).toHaveLength(1);
   });
 });

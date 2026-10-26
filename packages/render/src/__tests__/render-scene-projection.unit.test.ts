@@ -327,6 +327,7 @@ describe('RenderScene canonical owner', () => {
       renderables: [],
       dispatch: [],
       hiddenEntityReports: [],
+      lights: emptyLights(),
     } as unknown as ExtractedFrame;
     try {
       scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, () => frame, [
@@ -1380,6 +1381,7 @@ describe('RenderScene', () => {
         },
       ],
       hiddenEntityReports: [],
+      lights: emptyLights(),
     } as unknown as ExtractedFrame;
 
     const projected = scene.extractComposition(
@@ -1480,7 +1482,13 @@ describe('projected bounds query', () => {
       localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
     };
     const frame = (renderables: RenderableSnapshot[]) =>
-      ({ cameras: [], renderables, dispatch: [] }) as unknown as ExtractedFrame;
+      ({
+        cameras: [],
+        renderables,
+        dispatch: [],
+        hiddenEntityReports: [],
+        lights: emptyLights(),
+      }) as unknown as ExtractedFrame;
     expect(scene.bounds(worldA, 7)).toBeUndefined();
     scene.extractComposition([worldA, worldB], { cameraOwner: 0, resourceOwner: 0 }, assets, () =>
       frame([a, b]),

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { RenderFeaturePlannedFrame } from '../../features/plan';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../../gpu-texture-usage';
 import { createAutoExposureGraphPlan } from '../../pipeline/standard-output/auto-exposure/graph';
-import { createTemporalFrameTransaction } from '../../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
 import { getTextureIdentity, validateGraphTargetCaptureReadback } from '../frame-snapshot';
 import {
   executeCompiledFrameGraph,
@@ -41,6 +41,7 @@ function executeCapture(overrides: CaptureOverrides = {}) {
   };
   const frameState = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: {
       graph,
       topologyKey: 'synthetic-capture',

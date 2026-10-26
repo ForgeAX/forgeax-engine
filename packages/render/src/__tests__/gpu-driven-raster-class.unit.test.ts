@@ -28,7 +28,7 @@ import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
 import {
   admitGpuFixture,
@@ -340,7 +340,12 @@ it.each([
   const apply = (changed: boolean) => {
     const delta = projection.apply([
       updateSnapshot(row(changed, firstMaterial)),
-      updateSnapshot({ ...row(true, secondMaterial), entityKey: 2 }),
+      // A different binding source keeps the second row out of the edited row's batch.
+      updateSnapshot({
+        ...row(true, secondMaterial),
+        entityKey: 2,
+        materialBindingSources: ['mesh-default'],
+      }),
     ]);
     availability.scene.sync(delta).unwrap();
     topology.apply(delta);
@@ -408,6 +413,7 @@ it.each([
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
@@ -770,6 +776,7 @@ it.each([
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
@@ -965,6 +972,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),

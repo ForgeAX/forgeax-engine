@@ -147,6 +147,35 @@ describe('feature GPU frame transactions', () => {
     expect(destroyed).toHaveBeenCalledTimes(3);
   });
 
+  it('keeps an owned buffer across fresh, reordered usage lists and replaces it on any declared change', async () => {
+    const { session, owner, device } = await fixture();
+    const created = vi.spyOn(device, 'createBuffer');
+    const first = session
+      .prepareBuffer('storage', { size: 12, usage: ['storage', 'copy-src'] })
+      .unwrap();
+    release(session);
+    session.beginFrame();
+    expect(
+      session.prepareBuffer('storage', { size: 12, usage: ['copy-src', 'storage'] }).unwrap(),
+    ).toBe(first);
+    expect([...session.changedResourceNames]).toEqual([]);
+    expect(created).toHaveBeenCalledTimes(1);
+    release(session);
+    session.beginFrame();
+    // Same aligned allocation, different declared size: still a new buffer.
+    const resized = session
+      .prepareBuffer('storage', { size: 16, usage: ['storage', 'copy-src'] })
+      .unwrap();
+    expect(resized).not.toBe(first);
+    release(session);
+    session.beginFrame();
+    const reused = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();
+    expect(reused).not.toBe(resized);
+    expect(created).toHaveBeenCalledTimes(3);
+    release(session);
+    owner.dispose().unwrap();
+  });
+
   it('replaces owned sizes without destroying the prior submission before its completion lease', async () => {
     const { session, owner, destroyed } = await fixture();
     const old = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();

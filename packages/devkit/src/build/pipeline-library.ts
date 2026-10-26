@@ -1,5 +1,6 @@
 import { specializeComputeEntries } from '@forgeax/engine-naga';
 import type { DevKitAppOptions } from '../plugin-build.js';
+import { normalizePipelineLibrary } from './pipeline-library-normalize.js';
 
 type PipelineLibraryManifest = NonNullable<DevKitAppOptions['pipelineLibrary']>;
 
@@ -7,7 +8,7 @@ type PipelineLibraryManifest = NonNullable<DevKitAppOptions['pipelineLibrary']>;
 export async function precomputePipelineLibrary(
   manifest: PipelineLibraryManifest,
 ): Promise<PipelineLibraryManifest> {
-  if (manifest.computeEntryModules !== undefined) return manifest;
+  if (manifest.computeEntryModules !== undefined) return normalizePipelineLibrary(manifest);
   const entries = new Map<number, Set<string>>();
   for (const { compute } of manifest.computePipelines) {
     // An omitted entry selects a device-defined sole entry. Preserve that path.
@@ -48,7 +49,29 @@ export async function precomputePipelineLibrary(
     }
     computeEntryModules.push({ module, entryPoint, specializedModule });
   }
-  return computeEntryModules.length === 0
-    ? manifest
-    : { ...manifest, shaders, computeEntryModules };
+  return normalizePipelineLibrary(
+    computeEntryModules.length === 0 ? manifest : { ...manifest, shaders, computeEntryModules },
+  );
+}
+
+/** Startup completes before background submission; omit only identical work. */
+export async function precomputePipelineLibraries(
+  options: DevKitAppOptions,
+): Promise<DevKitAppOptions> {
+  const pipelineLibrary =
+    options.pipelineLibrary === undefined
+      ? undefined
+      : await precomputePipelineLibrary(options.pipelineLibrary);
+  const backgroundPipelineLibrary =
+    options.backgroundPipelineLibrary === undefined
+      ? undefined
+      : normalizePipelineLibrary(
+          await precomputePipelineLibrary(options.backgroundPipelineLibrary),
+          pipelineLibrary,
+        );
+  return {
+    ...options,
+    ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
+    ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
+  };
 }

@@ -548,7 +548,7 @@ export class RendererIrradianceField {
     if (!retained.isSourceCurrent()) return false;
     // Only changed scene rows are re-admitted; an unchanged roster skips the edit diff.
     const visits = this.#fieldRows.visits;
-    const projected = this.#fieldRows.update(
+    const projected = this.#fieldRows.changes(
       retained,
       input.worlds,
       input.profile.field.region,
@@ -562,13 +562,14 @@ export class RendererIrradianceField {
       this.#skippedProjections++;
       return true;
     }
-    const edit = diffFieldEdit(field.editState, projected.value.sources, projected.value.instances);
+    const edit = diffFieldEdit(field.editState, projected.value);
     const applied = field.edit(edit);
     if (applied === 'rebuild') return false;
     if (applied === 'applied') {
       field.revision = revision;
       field.retained = retained;
       field.fieldRevision = this.#fieldRows.revision;
+      this.#fieldRows.acceptChanges(field.fieldRevision);
     }
     return true;
   }
@@ -805,6 +806,7 @@ export class RendererIrradianceField {
         priorityProbes: 0,
       };
       const editState = fieldEditState(region.sources, region.instances);
+      this.#fieldRows.acceptChanges(region.fieldRevision);
       const residency =
         capture.residency === undefined
           ? undefined

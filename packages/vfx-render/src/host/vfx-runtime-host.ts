@@ -376,7 +376,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
             controlFailure(
               'vfx-host-control-instance-rejected',
               'the live typed VFX instance to accept this control input',
-              'run one fixed tick or repair the reflected instance contract before retrying',
+              'run one update or repair the reflected instance contract before retrying',
               {
                 requestedGeneration,
                 currentGeneration: requestedGeneration,
@@ -493,7 +493,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
         return err(
           failure(
             'vfx-host-world-attach-failed',
-            'the World FixedUpdate VFX intent producer to install',
+            'the World Update VFX intent producer to install',
             'repair the reported World registration conflict and retry',
             cause,
           ),
@@ -517,7 +517,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
         return err(
           failure(
             'vfx-host-world-detach-failed',
-            'the VFX FixedUpdate producer to detach exactly once',
+            'the VFX Update producer to detach exactly once',
             'inspect the World schedule and retry detachWorld',
             cause,
           ),

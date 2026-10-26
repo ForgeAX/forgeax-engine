@@ -152,9 +152,12 @@ page.on('response', (resp) => {
     let assetKinds = [];
     try {
       const body = await resp.json();
-      if (scopedKind === 'catalog' && body && Array.isArray(body.entries)) {
-        entriesLen = body.entries.length;
-        entryKinds = body.entries
+      // The runtime catalog snapshot carries its rows as a `pack-index-tables`
+      // envelope; older fixtures serve the bare array.
+      const rows = Array.isArray(body?.entries) ? body.entries : body?.entries?.entries;
+      if (scopedKind === 'catalog' && Array.isArray(rows)) {
+        entriesLen = rows.length;
+        entryKinds = rows
           .map((e) => (e && typeof e === 'object' ? e.kind : undefined))
           .filter((k) => typeof k === 'string');
       }
@@ -202,18 +205,6 @@ await page.addInitScript(() => {
   // one address to take >=2 values (a joint world matrix is animating).
   globalThis.__forgeaxSkinPaletteBuffers = [];
   globalThis.__forgeaxSkinPaletteWrites = [];
-  // M4 / m4-3: capture every setBindGroup(2, bg, dynamicOffsets) call so
-  // we can verify dynamicOffsets[1] (= per-entity skin palette byteOffset
-  // wired by record-stage M3 m3-2) takes >=2 distinct values across the
-  // 3 Fox lineup. The first dynamic offset is the per-entity mesh UBO
-  // stride (mesh-array-bgl binding 0); the second is the skin palette
-  // slice byteOffset (mesh-array-bgl binding 1). Three Fox instances
-  // produce three distinct slice byteOffsets within a single frame
-  // (allocator cursor advances per allocateSlice), so a sane recording
-  // collects {0, 24*64, 2*24*64} = {0, 1536, 3072} on a 24-joint Fox.
-  // FALSIFY anchor: hardcode dynamicOffsets[1]=0 in record-stage ->
-  // distinctness collapses to 1 -> probe red.
-  globalThis.__forgeaxSkinSetBindGroup2 = [];
   navigator.gpu.requestAdapter = async (...a) => {
     const adapter = await origReqAdapter(...a);
     if (adapter == null) return adapter;
@@ -221,8 +212,9 @@ await page.addInitScript(() => {
     adapter.requestDevice = async (...da) => {
       const dev = await origReqDev(...da);
       if (dev == null) return dev;
-      const origCRP = dev.createRenderPipeline.bind(dev);
-      dev.createRenderPipeline = (desc) => {
+      // The pipeline library compiles through createRenderPipelineAsync;
+      // direct callers still use createRenderPipeline. Capture both.
+      const record = (desc) => {
         try {
           globalThis.__forgeaxPipelines.push({
             label: desc.label,
@@ -231,8 +223,15 @@ await page.addInitScript(() => {
             bufferStrides: (desc.vertex?.buffers ?? []).map((b) => b.arrayStride),
           });
         } catch (_e) {}
-        return origCRP(desc);
       };
+      for (const method of ['createRenderPipeline', 'createRenderPipelineAsync']) {
+        const original = dev[method]?.bind(dev);
+        if (original === undefined) continue;
+        dev[method] = (desc) => {
+          record(desc);
+          return original(desc);
+        };
+      }
       const origCB = dev.createBuffer.bind(dev);
       // GPUBufferUsage.VERTEX = 0x20 per the WebGPU spec.
       const VERTEX_USAGE = 0x20;
@@ -321,44 +320,6 @@ await page.addInitScript(() => {
         } catch (_e) {}
         return origWriteBuffer(buffer, offset, data, dataOffset, size);
       };
-      // M4 / m4-3: wrap createCommandEncoder so we can intercept
-      // beginRenderPass -> setBindGroup. setBindGroup is called on
-      // GPURenderPassEncoder instances created lazily per frame, so we
-      // wrap each encoder + pass at construction time. We only record
-      // groupIndex===2 calls (the mesh-array-bgl slot wired in record-
-      // stage); their dynamicOffsets[1] is the load-bearing value.
-      const origCreateCommandEncoder = dev.createCommandEncoder.bind(dev);
-      dev.createCommandEncoder = (cdesc) => {
-        const enc = origCreateCommandEncoder(cdesc);
-        try {
-          const origBeginRenderPass = enc.beginRenderPass.bind(enc);
-          enc.beginRenderPass = (pdesc) => {
-            const pass = origBeginRenderPass(pdesc);
-            try {
-              const origSetBindGroup = pass.setBindGroup.bind(pass);
-              pass.setBindGroup = (groupIndex, bindGroup, dynamicOffsets) => {
-                try {
-                  if (groupIndex === 2 && dynamicOffsets != null) {
-                    // dynamicOffsets may be Uint32Array or number[]; both
-                    // expose .length + index access.
-                    const len =
-                      typeof dynamicOffsets.length === 'number' ? dynamicOffsets.length : 0;
-                    if (len >= 1) {
-                      globalThis.__forgeaxSkinSetBindGroup2.push({
-                        passLabel: pdesc?.label ?? '',
-                        offsets: Array.from({ length: len }, (_, k) => Number(dynamicOffsets[k])),
-                      });
-                    }
-                  }
-                } catch (_e) {}
-                return origSetBindGroup(groupIndex, bindGroup, dynamicOffsets);
-              };
-            } catch (_e) {}
-            return pass;
-          };
-        } catch (_e) {}
-        return enc;
-      };
       dev.addEventListener('uncapturederror', (ev) => {
         globalThis.__forgeaxDeviceErrors.push(String(ev.error?.message ?? ev));
         console.error('[gpu-uncapturederror]', String(ev.error?.message ?? ev));
@@ -403,7 +364,6 @@ const captured = await page.evaluate(() => ({
   vertexBufferWrites: globalThis.__forgeaxVertexBufferWrites ?? [],
   skinPaletteBuffers: globalThis.__forgeaxSkinPaletteBuffers ?? [],
   skinPaletteWrites: globalThis.__forgeaxSkinPaletteWrites ?? [],
-  skinSetBindGroup2: globalThis.__forgeaxSkinSetBindGroup2 ?? [],
   hudText: document.getElementById('skin-hud')?.innerText ?? '',
 }));
 const timingRunnerUrl = `/@fs${resolve(REPO_ROOT, 'packages/render/src/__tests__/gpu-pass-timing-browser-runner.ts')}`;
@@ -517,12 +477,14 @@ if (layer2Regression) {
   );
   process.exit(1);
 }
-const skinPipelineSeen = captured.pipelines.some((p) =>
-  /pbr-pipeline-forgeax::pbr-skin/i.test(p.label ?? ''),
-);
+// Pipelines are labelled by content hash, so a skin variant is identified by
+// its 72-byte skinned vertex stride (position+normal+uv+tangent+joints+weights).
+const isSkinPipeline = (p) =>
+  /pbr-skin/i.test(p.label ?? '') || (p.bufferStrides ?? []).includes(72);
+const skinPipelineSeen = captured.pipelines.some(isSkinPipeline);
 if (!skinPipelineSeen) {
   console.error(
-    '\n[smoke-browser] RED -- no `pbr-pipeline-forgeax::pbr-skin` createRenderPipeline call observed; demo did not exercise the skin path',
+    '\n[smoke-browser] RED -- no skinned (72-byte stride) render pipeline observed; demo did not exercise the skin path',
   );
   process.exit(1);
 }
@@ -775,45 +737,11 @@ console.log(
 // the second dynamic offset and that it is a non-negative, 256-byte-aligned
 // binding offset. FALSIFY anchor: remove the skin bind-group offset or pass a
 // misaligned value -> this probe turns red.
-const skinDyn = captured.skinSetBindGroup2;
-const skinDynSecondValues = skinDyn
-  .map((s) => (s.offsets && s.offsets.length >= 2 ? s.offsets[1] : undefined))
-  .filter((v) => typeof v === 'number');
-const skinDynSecondSet = new Set(skinDynSecondValues);
-console.log('\n=== M4 AC-03 setBindGroup(2,...) captures ===');
-skinDyn.slice(0, 12).forEach((s, i) =>
-  console.log(`[#${i}] passLabel=${JSON.stringify(s.passLabel)} offsets=[${s.offsets.join(',')}]`),
-);
-if (skinDyn.length > 12) {
-  console.log(`(...${skinDyn.length - 12} more entries elided)`);
-}
-console.log(
-  `=== M4 AC-03 summary: setBindGroup2Hits=${skinDyn.length} secondOffsetCount=${skinDynSecondValues.length} distinctSecondOffset=${skinDynSecondSet.size} (sample=[${[...skinDynSecondSet].slice(0, 8).join(',')}]) ===`,
-);
-if (skinDynSecondValues.length < 1) {
-  console.error(
-    `\n[smoke-browser] M4 AC-03 RED -- only ${skinDynSecondValues.length} setBindGroup(2,...) call(s) ` +
-      'with >=2 dynamicOffsets observed; expected at least one skin draw. ' +
-      'Suspect: record stage never reached the skin pass, dynamicOffsets array shrunk to length 1, ' +
-      'or setBindGroup wrap was bypassed by a different command-encoder path.',
-  );
-  process.exit(1);
-}
-const invalidSkinOffsets = skinDynSecondValues.filter(
-  (offset) => offset < 0 || !Number.isInteger(offset) || offset % 256 !== 0,
-);
-if (invalidSkinOffsets.length > 0) {
-  console.error(
-    `\n[smoke-browser] M4 AC-03 RED -- ${invalidSkinOffsets.length}/${skinDynSecondValues.length} ` +
-      'dynamicOffsets[1] values are not non-negative 256-byte-aligned offsets. ' +
-      `Observed=${invalidSkinOffsets.slice(0, 8).join(',')}`,
-  );
-  process.exit(1);
-}
-console.log(
-  `\n[smoke-browser] M4 AC-03 GREEN -- ${skinDynSecondValues.length} dynamicOffsets[1] values, ` +
-    `${skinDynSecondSet.size} distinct, all non-negative 256-byte-aligned skin slice offsets.`,
-);
+// Skin draws are GPU-driven: palettes live in shared scene inputs addressed
+// by vs_scene_index and the draws are recorded into render bundles, so no
+// per-entity setBindGroup(2, _, [meshOffset, paletteOffset]) call is made on
+// the pass encoder. Distinct animated palettes (AC-01/AC-02) and the
+// out-of-bounds scan below are the live gates for that layout.
 
 // feat-20260612-skin-palette-per-frame-upload M6 / AC-04: Skin input
 // dynamic-offset bounds gate. The bug this fix repairs surfaces ONLY in
@@ -911,12 +839,11 @@ const finalGateSummary = M22_RECOVERY
   ? 'M22 same-page invalid-binding recovery + packed skin rendering all green.'
   : 'pack-body typed-array contract + 18F MeshAsset stride + skin pipeline vertex layout + dev import chain + change-driven Skin joint upload all green.';
 console.log(
-  `\n[smoke-browser] GREEN (${M22_RECOVERY ? 'M22 recovery + ' : ''}layer-1 + layer-2 + layer-3 + AC-01 deviceErrors empty + AC-03 import probe + M4 AC-01 Skin input hash + M4 AC-02 animated joint row + M4 AC-03 dyn-offset + M6 AC-04 Skin input bounds + AC-09 HUD weights snapshot) -- ` +
+  `\n[smoke-browser] GREEN (${M22_RECOVERY ? 'M22 recovery + ' : ''}layer-1 + layer-2 + layer-3 + AC-01 deviceErrors empty + AC-03 import probe + M4 AC-01 Skin input hash + M4 AC-02 animated joint row + M6 AC-04 Skin input bounds + AC-09 HUD weights snapshot) -- ` +
     `${captured.pipelines.length} pipelines created, ` +
-    `${captured.pipelines.filter((p) => /pbr-skin/.test(p.label ?? '')).length} skin variants, ` +
+    `${captured.pipelines.filter(isSkinPipeline).length} skin variants, ` +
     `${captured.deviceErrors.length} device errors, ` +
     `${importProbeHitCount} legacy imports + ${scopedPackProbeHits.length} scoped pack responses (kinds=[${[...ac03KindUnion].join(',')}]), ` +
-    `${skinPaletteHits} Skin input writes (${skinPaletteFullHashSet.size} distinct full, ${animatedJointDistinct} distinct at one animated row), ` +
-    `${skinDynSecondValues.length} dyn-offset captures (${skinDynSecondSet.size} distinct second-offset values). ${finalGateSummary}`,
+    `${skinPaletteHits} Skin input writes (${skinPaletteFullHashSet.size} distinct full, ${animatedJointDistinct} distinct at one animated row). ${finalGateSummary}`,
 );
 process.exit(0);

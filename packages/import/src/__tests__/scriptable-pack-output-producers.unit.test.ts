@@ -111,6 +111,27 @@ describe('ScriptablePack standard output producers', () => {
     expect(result.value.artifacts.body?.bytes.byteLength).toBeGreaterThan(28);
   });
 
+  it('names the stale vertices / attribute mismatch instead of [object Object]', async () => {
+    const box = createBoxGeometry(1, 1, 1).unwrap();
+    const count = (box.attributes.position as Float32Array).length / 3;
+    // Colour set on attributes only: the interleaved vertices were never repacked.
+    const mesh: MeshAsset = {
+      ...box,
+      attributes: { ...box.attributes, color: new Float32Array(count * 4).fill(1) },
+    };
+    const result = await meshAssetOutputProducer.produce({
+      guid: '019ffa97-3000-7000-8000-000000000011',
+      sourceKey: 'mesh/terrain',
+      asset: mesh,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const message = JSON.stringify(result.error.detail);
+    expect(message).not.toContain('[object Object]');
+    expect(message).toContain('mesh/terrain');
+    expect(message).toContain('withVertexColors');
+  });
+
   it.each([
     'baseColorTexture',
     'metallicTexture',

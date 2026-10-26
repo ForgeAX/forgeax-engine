@@ -65,6 +65,14 @@ describe('surface_v1 ABI', () => {
     expect(surfaceSource).not.toMatch(/clearcoat|anisotropy|sheen|iridescence|specular/);
   });
 
+  it('hands a Surface no sun, sky or camera: lighting belongs to the material model', () => {
+    expect(surfaceSource).not.toMatch(/SurfaceLight|surfaceSun|surfaceSky|surfaceCameraDistance/);
+    expect(surfaceSource).not.toMatch(/\blight\s*:/);
+    const common = readFileSync(fileURLToPath(new URL('../common.wgsl', import.meta.url)), 'utf8');
+    expect(common).not.toContain('surfaceLightLanes');
+    expect(common).toContain('fn gradientSkyColor(');
+  });
+
   it('keeps authored Surface entry points free of stage and resource ownership', () => {
     const authoredSource = `
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}

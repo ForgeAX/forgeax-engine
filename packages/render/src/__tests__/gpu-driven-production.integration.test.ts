@@ -68,7 +68,7 @@ import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
 import {
   admitGpuFixture,
@@ -397,6 +397,143 @@ describe('GPU-driven production projection', () => {
       execute.mockRestore();
       bundles.mockRestore();
       submit.mockRestore();
+      renderer.dispose();
+    }
+  });
+
+  it('never replays a retained raster run that names a visible window from before a ProbeBlend buffer replacement', async () => {
+    const renderer = await constructRenderer(
+      {
+        width: 16,
+        height: 16,
+        getContext: () => null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      } as unknown as HTMLCanvasElement,
+      { rhi },
+      { shaderManifestUrl: manifestDataUrl(`/* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`, true) },
+    );
+    // Visible-window bind groups the material adapter hands out, and the ones a
+    // ProbeBlend replacement has since reset.
+    const windows = new Set<BindGroup>();
+    const stale = new Set<BindGroup>();
+    const createWindow = MaterialAbiRasterAdapter.prototype.visibleWindowBindGroupForBuffer;
+    const windowSpy = vi
+      .spyOn(MaterialAbiRasterAdapter.prototype, 'visibleWindowBindGroupForBuffer')
+      .mockImplementation(function (this: MaterialAbiRasterAdapter, ...args) {
+        const group = createWindow.apply(this, args);
+        if (group.ok) windows.add(group.value);
+        return group;
+      });
+    let replacement: Buffer | undefined;
+    const ensureProbe = MaterialAbiRasterAdapter.prototype.ensureProbeBlendRecordBuffer;
+    const probeSpy = vi
+      .spyOn(MaterialAbiRasterAdapter.prototype, 'ensureProbeBlendRecordBuffer')
+      .mockImplementation(function (this: MaterialAbiRasterAdapter, buffer) {
+        return ensureProbe.call(this, replacement ?? buffer);
+      });
+    // Bind groups each recorded bundle names.
+    const named = new WeakMap<object, readonly unknown[]>();
+    const createBundle = RhiNullDevice.prototype.createRenderBundleEncoder;
+    const bundleSpy = vi
+      .spyOn(RhiNullDevice.prototype, 'createRenderBundleEncoder')
+      .mockImplementation(function (this: RhiNullDevice, desc) {
+        const created = createBundle.call(this, desc);
+        if (!created.ok) return created;
+        const encoder = created.value;
+        const groups: unknown[] = [];
+        const setBindGroup = encoder.setBindGroup.bind(encoder);
+        const finish = encoder.finish.bind(encoder);
+        return ok(
+          Object.assign(encoder, {
+            setBindGroup: (...args: Parameters<typeof encoder.setBindGroup>) => {
+              groups.push(args[1]);
+              return setBindGroup(...args);
+            },
+            finish: () => {
+              const bundle = finish();
+              if (bundle.ok) named.set(bundle.value as object, groups);
+              return bundle;
+            },
+          }),
+        );
+      });
+    const executed: object[] = [];
+    const executeOriginal = RhiNullRenderPassEncoder.prototype.executeBundles;
+    const execute = vi
+      .spyOn(RhiNullRenderPassEncoder.prototype, 'executeBundles')
+      .mockImplementation(function (this: RhiNullRenderPassEncoder, handles) {
+        const values = [...handles];
+        executed.push(...(values as object[]));
+        return executeOriginal.call(this, values);
+      });
+    const windowsOf = (bundles: readonly object[]) =>
+      bundles.flatMap((bundle) =>
+        (named.get(bundle) ?? []).filter((group) => windows.has(group as BindGroup)),
+      );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      const assets = renderer.assetRegistry;
+      const world = new World({ assets });
+      const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+      const attached = renderer.attach(world);
+      if (!attached.ok) throw attached.error;
+      const lease = attached.value;
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 5] } },
+          { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
+        )
+        .unwrap();
+      world
+        .spawn(
+          { component: Transform, data: {} },
+          { component: MeshFilter, data: { assetHandle: cube } },
+          {
+            component: MeshRenderer,
+            data: {
+              materials: [assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap()],
+            },
+          },
+        )
+        .unwrap();
+      world.update(1 / 60).unwrap();
+      const input = { leases: [lease], camera: { lease }, environment: { lease } };
+      const frame = async () => {
+        executed.length = 0;
+        const drawn = renderer.draw(input);
+        if (!drawn.ok) throw drawn.error;
+        const receipt = drawn.value;
+        if (receipt === undefined) throw new Error('missing submission receipt');
+        const completed = await receipt.completed;
+        if (!completed.ok) throw completed.error;
+        return [...executed];
+      };
+      await frame();
+      const hits = () => renderer.inspect().renderScene.gpuDriven.preparedBundleHits ?? 0;
+      const hitsBefore = hits();
+      const replayed = await frame();
+      // The unchanged second frame replays a retained run that names a visible window.
+      expect(hits()).toBeGreaterThan(hitsBefore);
+      expect(windowsOf(replayed).length).toBeGreaterThan(0);
+      // The Renderer's ProbeBlend buffer is replaced: the adapter resets every
+      // visible-window bind group while the live raster owners persist.
+      for (const group of windows) stale.add(group);
+      replacement = renderer.device
+        .createBuffer({ size: 4096, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST })
+        .unwrap();
+      const rebound = await frame();
+      const windowsAfter = windowsOf(rebound);
+      expect(windowsAfter.length).toBeGreaterThan(0);
+      expect(windowsAfter.filter((group) => stale.has(group as BindGroup))).toEqual([]);
+      // The rebuilt run is retained again under the new window identity.
+      const settled = await frame();
+      expect(windowsOf(settled).filter((group) => stale.has(group as BindGroup))).toEqual([]);
+    } finally {
+      execute.mockRestore();
+      bundleSpy.mockRestore();
+      probeSpy.mockRestore();
+      windowSpy.mockRestore();
       renderer.dispose();
     }
   });
@@ -1231,6 +1368,7 @@ describe('GPU-driven production projection', () => {
     };
     const state = {
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+      temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
       compiledFrameGraphGeneration: 0,
       retiredCompiledFrameGraphs: new Set(),
@@ -1755,7 +1893,7 @@ describe('GPU-driven production projection', () => {
     availability.scene.dispose();
   });
 
-  it('preserves distinct materials when texture masks converge and reuses their PSO', async () => {
+  it('batches materials whose texture masks converge and reuses their PSO', async () => {
     const device = (
       await (await rhi.requestAdapter()).unwrap().requestDevice()
     ).unwrap() as RhiNullDevice;
@@ -1825,7 +1963,8 @@ describe('GPU-driven production projection', () => {
       topology.rebuild(projection.slotsSnapshot());
       const changed = prepare();
       expect(changed?.topologySignature).not.toBe(first?.topologySignature);
-      expect(production.inspect().batchCount).toBe(2);
+      // Converged materials share one batch; each row keeps its own material row.
+      expect(production.inspect().batchCount).toBe(1);
       if (changed === undefined) throw new Error('expected changed GPU frame');
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const gpu = changed.project(graph, 'rgba8unorm', 1).unwrap();

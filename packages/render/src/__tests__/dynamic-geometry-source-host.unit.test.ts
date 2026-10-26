@@ -3,7 +3,7 @@ import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runt
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
-import { err, type MaterialAsset, ok } from '@forgeax/engine-types';
+import { err, type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import {
   createDynamicGeometrySourceHost,
@@ -13,6 +13,11 @@ import { MeshFilter, MeshRenderer } from '../components';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import { createDynamicGeometryLifecycle, DynamicGeometryError } from '../dynamic-geometry';
 import { Materials } from '../materials';
+import {
+  attributeChannelBytes,
+  isPackedRowsMesh,
+  meshAttributeChannels,
+} from '../publication/packed-rows-mesh';
 
 function fixture(
   maxConcurrentPreparations = 1,
@@ -378,6 +383,67 @@ it.each([
   expect(received).toEqual(expected);
   f.host.acceptDynamicGeometry(candidate, { world: f.world, fixedStep: 0 }).unwrap();
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.meshHandle);
+  f.detach();
+});
+
+it('sends an opted-in raster mesh as packed rows and charges only the bytes it holds', async () => {
+  const full = fixture();
+  const fullCandidate = full.host.prepareDynamicGeometry(full.input);
+  const fullBytes = full.lifecycle.inspect().meshBytes;
+  await Promise.resolve();
+  full.ready();
+  (await fullCandidate).unwrap();
+  full.detach();
+
+  const f = fixture();
+  const authorPositions = f.input.mesh.attributes.position;
+  let sent: { mesh: MeshAsset; transfers: readonly Transferable[] } | undefined;
+  f.prepare.mockImplementationOnce(async (input, options) => {
+    sent = { mesh: input.mesh, transfers: options?.transfers ?? [] };
+    return ok({ isCurrent: () => true, release: () => undefined });
+  });
+  const candidate = (
+    await f.host.prepareDynamicGeometry({ ...f.input, renderAttributes: 'packed-rows' })
+  ).unwrap();
+  if (sent === undefined) throw new Error('preparation was not sent');
+  expect(isPackedRowsMesh(sent.mesh)).toBe(true);
+  expect(attributeChannelBytes(sent.mesh)).toBe(0);
+  expect(sent.transfers).toContain(sent.mesh.vertices.buffer);
+  expect(meshAttributeChannels(sent.mesh)).toEqual(f.input.mesh.attributes);
+  // The World mesh keeps every channel for picking, patches and recovery.
+  const world = runtimeAssets(f.world.assets).read<MeshAsset>(f.meshHandle).unwrap();
+  expect(world.attributes.position?.byteLength).toBe(authorPositions?.byteLength);
+  expect(isPackedRowsMesh(world)).toBe(false);
+  expect(f.lifecycle.inspect().meshBytes).toBe(fullBytes - attributeChannelBytes(f.input.mesh));
+  f.host.acceptDynamicGeometry(candidate, { world: f.world, fixedStep: 0 }).unwrap();
+  f.detach();
+});
+
+it('keeps full channels for an ineligible mesh even when packed rows are requested', async () => {
+  const f = fixture();
+  const lines = runtimeAssetRegistry(f.world.assets)
+    .create({
+      ...f.input.mesh,
+      submeshes: f.input.mesh.submeshes.map((submesh) => ({
+        ...submesh,
+        topology: 'line-list' as const,
+      })),
+    })
+    .unwrap();
+  let sent: MeshAsset | undefined;
+  f.prepare.mockImplementationOnce(async (input) => {
+    sent = input.mesh;
+    return ok({ isCurrent: () => true, release: () => undefined });
+  });
+  (
+    await f.host.prepareDynamicGeometry({
+      ...f.input,
+      meshHandle: lines,
+      renderAttributes: 'packed-rows',
+    })
+  ).unwrap();
+  expect(sent === undefined ? undefined : isPackedRowsMesh(sent)).toBe(false);
+  expect(sent?.attributes.position?.byteLength).toBeGreaterThan(0);
   f.detach();
 });
 

@@ -29,8 +29,8 @@ function camera(entityKey: number, view: Partial<NonNullable<CameraSnapshot['vie
 function fixture() {
   const world = createRenderWorld();
   const views = new RenderViews(world);
-  const sync = (cameras: readonly CameraSnapshot[]) =>
-    views.sync({ cameras, attachment: () => 'world-a' });
+  const sync = (cameras: readonly CameraSnapshot[], captures: readonly CameraSnapshot[] = []) =>
+    views.sync({ cameras, captures, attachment: () => 'world-a' });
   const spies = {
     spawn: vi.spyOn(world, 'spawn'),
     despawn: vi.spyOn(world, 'despawn'),
@@ -148,5 +148,26 @@ describe('RenderViews', () => {
     expect(() => sync([{ view: camera(1).view } as CameraSnapshot])).toThrow(/entityKey/);
     expect(spies.spawn).not.toHaveBeenCalled();
     expect(views.size).toBe(0);
+  });
+
+  it('declares an auxiliary target camera as a capture view recorded before displays', () => {
+    const { world, views, sync, spies, reset } = fixture();
+    const target = { kind: 'render-target' } as unknown as RenderTarget;
+    const capture = { entityKey: 4, historyVersion: 1, target } as unknown as CameraSnapshot;
+    sync([camera(7, { order: -5 })], [capture]);
+    expect([views.displayCount, views.captureCount, views.enabledCount]).toEqual([1, 1, 1]);
+    const rows = views.ordered.map((entity) => world.get(entity, RenderView).unwrap());
+    expect(rows.map((row) => [row.capture, row.camera])).toEqual([
+      [true, 4],
+      [false, 7],
+    ]);
+    expect(views.target(rows[0] as { target: number })).toBe(target);
+    reset();
+    sync([camera(7, { order: -5 })], [capture]);
+    expect(spies.spawn).not.toHaveBeenCalled();
+    expect(spies.set).not.toHaveBeenCalled();
+    sync([camera(7, { order: -5 })]);
+    expect(spies.despawn).toHaveBeenCalledTimes(1);
+    expect([views.displayCount, views.captureCount]).toEqual([1, 0]);
   });
 });

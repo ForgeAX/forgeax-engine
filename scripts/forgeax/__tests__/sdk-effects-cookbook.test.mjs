@@ -2,6 +2,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -15,17 +16,33 @@ import { expect, test } from 'vitest';
 
 const root = resolve(import.meta.dirname, '../../..');
 const template = join(root, 'templates/empty');
-const cookbook = readFileSync(
-  join(root, 'skills/forgeax-engine-sdk/references/gameplay-cookbook.md'),
-  'utf8',
-);
+const references = join(root, 'skills/forgeax-engine-sdk/references');
+const topicDir = join(references, 'effects');
+const topicFiles = readdirSync(topicDir)
+  .filter((name) => name.endsWith('.md'))
+  .sort();
+// The index, every topic file and the pack/gameplay pages that wire them; code samples are
+// compiled together as one scene.
+const cookbook = [
+  readFileSync(join(references, 'effects-cookbook.md'), 'utf8'),
+  ...topicFiles.map((name) => readFileSync(join(topicDir, name), 'utf8')),
+  readFileSync(join(references, 'content-pack.md'), 'utf8'),
+  readFileSync(join(references, 'gameplay-tools.md'), 'utf8'),
+].join('\n');
 const files = new Map(
   [...cookbook.matchAll(/^```\w+ file=(\S+)\n([\s\S]*?)^```$/gm)].map(
     ([, file = '', source = '']) => [file, source],
   ),
 );
 
-test('the gameplay cookbook compiles as one game inside the empty template', () => {
+test('the cookbook index stays small and links every topic file', () => {
+  const index = readFileSync(join(references, 'effects-cookbook.md'), 'utf8');
+  expect(Buffer.byteLength(index)).toBeLessThanOrEqual(3 * 1024);
+  expect(index).toContain('Open ONLY the topic file you need');
+  for (const name of topicFiles) expect(index, name).toContain(`\`${name}\``);
+});
+
+test('the effects cookbook compiles as one scene inside the empty template', () => {
   expect([...files.keys()].filter((file) => file.endsWith('.ts')).length).toBeGreaterThan(0);
   const project = mkdtempSync(join(tmpdir(), 'forgeax-cookbook-'));
   try {
@@ -79,7 +96,13 @@ const PARTICLE_DRIVER = `
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { World } from '@forgeax/engine/ecs';
 import { Materials, MeshFilter } from '@forgeax/engine/render';
-import { installParticles, PARTICLES } from './particles.mjs';
+import { installParticles } from './particles.mjs';
+import { fire, smoke } from './particles-fire-smoke.mjs';
+import { magic, bubbles, dust } from './particles-magic-dust.mjs';
+import { rain, snow } from './particles-rain-snow.mjs';
+import { sparks } from './particles-sparks.mjs';
+
+const PARTICLES = { rain, snow, sparks, bubbles, dust, fire, smoke, magic };
 
 /** Step every preset through a real World and AssetRegistry; report what the renderer would read. */
 export function run() {
@@ -126,11 +149,20 @@ test('the particle recipe moves every preset through real assets and World updat
   try {
     symlinkSync(join(template, 'node_modules'), join(project, 'node_modules'), 'dir');
     writeFileSync(join(project, 'package.json'), '{ "type": "module" }');
-    const source = files.get('assets/play/particles.ts') ?? '';
-    const { outputText } = ts.transpileModule(source, {
-      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-    });
-    writeFileSync(join(project, 'particles.mjs'), outputText);
+    const presetFiles = [...files.keys()].filter((file) =>
+      /assets\/play\/particles(-[\w-]+)?\.ts$/.test(file),
+    );
+    expect(presetFiles).toContain('assets/play/particles.ts');
+    for (const file of presetFiles) {
+      const name = file.replace('assets/play/', '').replace(/\.ts$/, '.mjs');
+      const { outputText } = ts.transpileModule(files.get(file) ?? '', {
+        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+      });
+      writeFileSync(
+        join(project, name),
+        outputText.replace(/\.\/(particles[\w-]*)\.ts/g, './$1.mjs'),
+      );
+    }
     writeFileSync(join(project, 'driver.mjs'), PARTICLE_DRIVER);
     const { run } = await import(join(project, 'driver.mjs'));
     const report = run();
@@ -144,3 +176,19 @@ test('the particle recipe moves every preset through real assets and World updat
     rmSync(project, { recursive: true, force: true });
   }
 }, 120_000);
+
+// A Standard Surface keeps Engine lighting. An additive glow mesh that returns its vertex normal and
+// full occlusion still adds the sun's Fresnel glare and the sky reflection, so a pillar with zero
+// emission rendered solid white against a backlit dusk sky. Glow Surfaces must disable that lighting
+// (normal = view direction, occlusion = 0) and must not read the Three.js-oriented uv0.y.
+test.each([
+  'assets/play/pillar.surface.wgsl',
+  'assets/play/beam.surface.wgsl',
+])('%s is emission-only and does not catch scene lighting', (file) => {
+  const source = files.get(file) ?? '';
+  expect(source).not.toBe('');
+  // The shared helper is the emission-only contract: black base, normal = view, occlusion 0.
+  expect(source).toMatch(/return surfaceEmissionOnly\(input, [^;]*\);/);
+  expect(source).not.toMatch(/return SurfaceData\(/);
+  expect(source).not.toMatch(/uv0\.y/); // createCylinderGeometry has V=0 at the top
+});

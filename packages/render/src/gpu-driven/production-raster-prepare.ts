@@ -26,11 +26,7 @@ import type {
 import { GpuDrawSelection } from './draw-selection';
 import { fixedTaskPlan } from './fixed-task-plan';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
-import {
-  lodCoverageMayFade,
-  lodCrossfadeCapable,
-  prepareLodProjectionPlan,
-} from './production-raster-lod';
+import { lodCoverageMayFade, lodCrossfadeCapable } from './production-raster-lod';
 import type { PreparedAssemblyInputs } from './retained-batch-inputs';
 
 export interface PreparedBatch {
@@ -234,9 +230,8 @@ export function assemblePreparedPlan(
   source: SubmissionPlan,
   batchRows: readonly PreparedBatchRows[],
   worldKeys: readonly number[] | undefined,
-  lodPlan = prepareLodProjectionPlan(source),
 ) {
-  return { source, worldKeys, batchRows: Object.freeze([...batchRows]), lodPlan };
+  return { source, worldKeys, batchRows: Object.freeze([...batchRows]) };
 }
 
 export type PreparedProductionPlan = ReturnType<typeof assemblePreparedPlan>;

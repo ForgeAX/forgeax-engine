@@ -48,17 +48,26 @@ fn applyAlphaHash(alpha : f32, position : vec3<f32>, enabled : f32) {
 
 // Coverage is resolved before hashing and before an opaque output forces alpha
 // to one. The strict cutoff is shared by color, depth and shadow writers.
-fn alphaCoverage(alpha : f32, cutoff : f32, smoothing : f32) -> f32 {
+// alphaCoverageValue never discards: a Surface returns it with
+// alphaCoverageClipThreshold so the entry point discards once, outside the
+// nested Surface call. Dawn/Metal writes a zero color for a fragment discarded
+// inside that callee, which erased the clipped pixel instead of keeping it.
+fn alphaCoverageValue(alpha : f32, cutoff : f32, smoothing : f32) -> f32 {
   let width = fwidth(alpha);
-  var coverage = alpha;
-  if (cutoff > 0.0) {
-    if (smoothing > 0.5) {
-      // Constant alpha has no transition. Avoid smoothstep's undefined equal
-      // edges while preserving the strict alpha-test boundary.
-      coverage = smoothstep(cutoff, cutoff + max(width, 1e-7), alpha);
-      if (coverage <= 0.0) { discard; }
-    } else if (alpha <= cutoff) { discard; }
-  }
+  // Constant alpha has no transition. Avoid smoothstep's undefined equal
+  // edges while preserving the strict alpha-test boundary.
+  let smoothed = smoothstep(cutoff, cutoff + max(width, 1e-7), alpha);
+  return select(alpha, smoothed, cutoff > 0.0 && smoothing > 0.5);
+}
+
+// Hard clip rejects `alpha <= cutoff`; smoothed coverage rejects exactly zero.
+fn alphaCoverageClipThreshold(cutoff : f32, smoothing : f32) -> f32 {
+  return select(0.0, select(cutoff, 1e-37, smoothing > 0.5), cutoff > 0.0);
+}
+
+fn alphaCoverage(alpha : f32, cutoff : f32, smoothing : f32) -> f32 {
+  let coverage = alphaCoverageValue(alpha, cutoff, smoothing);
+  if (cutoff > 0.0 && select(alpha <= cutoff, coverage <= 0.0, smoothing > 0.5)) { discard; }
   return coverage;
 }
 

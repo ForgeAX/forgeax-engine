@@ -9,7 +9,6 @@ import {
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameBatch,
   type RenderFeaturePlanExecution,
-  runRenderFeatureFrame,
 } from '../features/host';
 import type { RenderFeaturePlannedFrame, RenderFeatureWork } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
@@ -184,7 +183,7 @@ async function fixture() {
   function prepare(next: number, nextEpoch: number) {
     count = next;
     epoch = nextEpoch;
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       {
         identity: 'main',
         render: true,

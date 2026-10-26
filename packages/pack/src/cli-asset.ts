@@ -15,6 +15,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import * as zlib from 'node:zlib';
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import type {
   ArtifactDescriptor,
   AssetEvidence,
@@ -613,7 +614,9 @@ function absolutePath(path: string, cwd: string): string {
 
 async function readJson(path: string, ctx: AssetCtx): Promise<unknown | undefined> {
   try {
-    return JSON.parse(await readFile(path, 'utf8')) as unknown;
+    const text = await decodeDocumentText(await readFile(path));
+    if (!text.ok) throw new Error(`document decode failed: ${text.error.code}`);
+    return JSON.parse(text.value) as unknown;
   } catch (e) {
     emitAssetCliError(ctx, {
       code: 'asset-evidence-input-invalid',

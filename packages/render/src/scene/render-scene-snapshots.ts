@@ -164,23 +164,71 @@ export type TemporalCache = GenerationalWeakMap<RenderSceneSlot, TemporalMemo>;
  * O(changed rows); a submission starts a fresh history, so an earlier one
  * stays exact for the frame lists that captured it.
  */
+/** Submissions a temporal draw reader may lag and still diff instead of re-reading. */
+const HISTORY_LINK_DEPTH = 4;
+
 export class SubmittedHistory {
   private readonly changed = new Map<number, RenderSceneSlot | undefined>();
+  /** The history this submission replaced; linked only across roster submissions. */
+  private predecessor: SubmittedHistory | undefined;
 
   /** No submitted frame since the last temporal cut: every row is new. */
   static cut(): SubmittedHistory {
     return new SubmittedHistory(true);
   }
 
-  /** `visible` maps slot to its submitted visible generation; absent: every submitted row was visible. */
-  static submitted(visible?: ReadonlyMap<number, number>): SubmittedHistory {
-    return new SubmittedHistory(false, visible);
+  /**
+   * `visible` maps slot to its submitted visible generation; absent: every
+   * submitted row was visible. `previous` is the history this submission
+   * replaces; with no visible map on either side, the two link.
+   */
+  static submitted(
+    visible?: ReadonlyMap<number, number>,
+    previous?: SubmittedHistory,
+  ): SubmittedHistory {
+    const next = new SubmittedHistory(false, visible);
+    // A cut records no rows, so nothing submitted under it can be diffed.
+    if (
+      visible === undefined &&
+      previous !== undefined &&
+      !previous.isCut &&
+      previous.visible === undefined
+    ) {
+      next.predecessor = previous;
+      // A bounded chain: a reader further behind relinks by a full re-read.
+      let tail = previous;
+      for (let depth = 1; depth < HISTORY_LINK_DEPTH && tail.predecessor !== undefined; depth++)
+        tail = tail.predecessor;
+      tail.predecessor = undefined;
+    }
+    return next;
   }
 
   private constructor(
     readonly isCut: boolean,
     private readonly visible?: ReadonlyMap<number, number>,
   ) {}
+
+  /**
+   * Visit every slot whose submitted record or visibility can differ between
+   * `before` and this history, both read against Scene frames whose own row
+   * diff the caller visits. Each replaced history holds exactly the rows
+   * written between its submission and the next, so their union names every
+   * slot whose submitted record moved. False when `before` is not linked.
+   */
+  changesSince(before: SubmittedHistory, visit: (slot: number) => void): boolean {
+    if (before === this) return true;
+    const chain: SubmittedHistory[] = [];
+    let cursor: SubmittedHistory | undefined = this;
+    while (cursor !== undefined && cursor !== before) {
+      chain.push(cursor);
+      cursor = cursor.predecessor;
+    }
+    if (cursor !== before) return false;
+    for (const history of [before, ...chain])
+      for (const slot of history.changed.keys()) visit(slot);
+    return true;
+  }
 
   /** Keep the first pre-change record of `slot` since the submitted frame. */
   record(slot: number, before: RenderSceneSlot | undefined): void {

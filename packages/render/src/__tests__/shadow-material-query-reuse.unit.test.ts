@@ -296,6 +296,42 @@ it.each([
   }
 });
 
+it('rebuilds opaque shadow bundles after scene material table growth and reuses stable frames', async () => {
+  const f = await fixture();
+  const replacement = f.device.createBuffer({ size: 8192, usage: 8 | 64 | 128 | 256 }).unwrap();
+  try {
+    f.batches.length = 2;
+    Object.assign(f.context.pipelineState, {
+      defaultNormalTextureView: f.fallback.brdfLutView,
+      fallbackTextureView: f.fallback.brdfLutView,
+    });
+    const shadowArtifact = { ...f.artifact, material: 'forgeax::default-shadow-caster' };
+    for (const [id, projection] of f.projections)
+      f.projections.set(id, { ...projection, shadowArtifact });
+    f.run();
+    const first = f.draws[0]?.group;
+    expect(f.binding(first, 46)).toMatchObject({ kind: 'buffer', value: { buffer: f.buffer } });
+    f.run();
+    expect(f.bundleRecording).toHaveBeenCalledTimes(2);
+    expect(f.draws[2]?.group).toBe(first);
+
+    Object.assign(f.context, {
+      gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: replacement },
+    });
+    f.run();
+    const next = f.draws[4]?.group;
+    expect(next).not.toBe(first);
+    expect(f.binding(next, 46)).toMatchObject({ kind: 'buffer', value: { buffer: replacement } });
+    expect(f.bundleRecording).toHaveBeenCalledTimes(4);
+    f.run();
+    expect(f.draws[6]?.group).toBe(next);
+    expect(f.bundleRecording).toHaveBeenCalledTimes(4);
+  } finally {
+    f.device.destroyBuffer(replacement).unwrap();
+    f.dispose();
+  }
+});
+
 it('queries the layout again on the next invocation and preserves replacement errors and retry', async () => {
   const f = await fixture();
   try {

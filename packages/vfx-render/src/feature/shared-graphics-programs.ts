@@ -53,6 +53,78 @@ function deepFrozenPlainData(value: object): boolean {
   return true;
 }
 
+/** Exact structural equality of two plain-data values: same keys, order and values. */
+function samePlainData(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object')
+    return false;
+  if (Object.getPrototypeOf(left) !== Object.getPrototypeOf(right)) return false;
+  const leftKeys = Reflect.ownKeys(left);
+  const rightKeys = Reflect.ownKeys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (let index = 0; index < leftKeys.length; index++) {
+    const key = leftKeys[index] as string | symbol;
+    if (key !== rightKeys[index]) return false;
+    const leftProperty = Object.getOwnPropertyDescriptor(left, key);
+    const rightProperty = Object.getOwnPropertyDescriptor(right, key);
+    if (
+      leftProperty === undefined ||
+      rightProperty === undefined ||
+      !('value' in leftProperty) ||
+      !('value' in rightProperty) ||
+      leftProperty.enumerable !== rightProperty.enumerable ||
+      !samePlainData(leftProperty.value, rightProperty.value)
+    )
+      return false;
+  }
+  return true;
+}
+
+function deepFreeze<T extends object>(value: T): T {
+  for (const property of Object.values(value))
+    if (property !== null && typeof property === 'object') deepFreeze(property);
+  return Object.freeze(value);
+}
+
+/** Interned immutable copies by JSON bucket; exact equality decides within a bucket. */
+const internedStates = new Map<string, object[]>();
+/** Last interned copy per source object, revalidated by content on every use. */
+const internedSources = new WeakMap<object, object>();
+const INTERNED_STATE_LIMIT = 256;
+
+/**
+ * One deep-frozen render state per exact content. A material publication that
+ * crosses a Worker arrives as a new object every frame; its content-identical
+ * state then keeps one identity, so a steady view reuses its graphics program
+ * descriptor and sharing key instead of rebuilding both every frame. A source
+ * is always compared by content, never trusted by identity alone, so a changed
+ * state always yields its own copy. Non-plain states are returned unchanged.
+ */
+export function internVfxRenderState<T extends object>(state: T): T {
+  if (frozenStates.has(state)) return state;
+  const prior = internedSources.get(state);
+  if (prior !== undefined && samePlainData(prior, state)) return prior as T;
+  if (deepFrozenPlainData(state) || !plainData(state)) return state;
+  const key = JSON.stringify(state);
+  let bucket = internedStates.get(key);
+  let interned = bucket?.find((candidate) => samePlainData(candidate, state));
+  if (interned === undefined) {
+    const copy = structuredClone(state);
+    // Only a lossless copy may stand in for the source.
+    if (!samePlainData(copy, state)) return state;
+    interned = deepFreeze(copy);
+    deepFrozenPlainData(interned);
+    if (bucket === undefined) {
+      if (internedStates.size >= INTERNED_STATE_LIMIT) internedStates.clear();
+      bucket = [];
+      internedStates.set(key, bucket);
+    }
+    bucket.push(interned);
+  }
+  internedSources.set(state, interned);
+  return interned as T;
+}
+
 function programKey(program: Descriptor, state: string | undefined): string {
   return JSON.stringify([
     program.shader,

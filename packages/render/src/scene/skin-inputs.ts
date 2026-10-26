@@ -1157,6 +1157,18 @@ export class SkinInputFrame {
     validateMatrixOutputs(matrix, inverse);
     disjoint(out, matrix);
     disjoint(out, inverse);
+    this.compose(inputs, slot, count, out, matrix, inverse);
+    return true;
+  }
+  /** Compose a palette whose complete pose the caller already proved available. */
+  private compose(
+    inputs: GpuInputArena,
+    slot: number,
+    count: number,
+    out: Float32Array,
+    matrix: Mat4,
+    inverse: Mat4,
+  ): void {
     // The complete-pose check precedes all output writes, including joints not used by this mesh.
     const binding = find(this.#page, BINDINGS, slot) as Row;
     const skeleton = find(this.#page, SKELETONS, inputs.readWord(binding.address + 2)) as Row;
@@ -1176,7 +1188,6 @@ export class SkinInputFrame {
         out[index * 16 + lane] = value;
       }
     }
-    return true;
   }
   /** Actual Direct/uniform demand. Flags match GPU task descriptors: 0 absent,
    * 1 current with seeded history, 3 current with compatible previous pose.
@@ -1193,6 +1204,7 @@ export class SkinInputFrame {
     /** The previous frame's palette for this slot, already composed from its exact inputs. */
     previousPalette?: Float32Array,
   ): 0 | 1 | 3 {
+    const inputs = this.live();
     const count = this.jointCount(slot);
     if (count === undefined || !this.available(slot)) return 0;
     if (currentOut.length < count * 16 || previousOut.length < count * 16)
@@ -1203,13 +1215,14 @@ export class SkinInputFrame {
     disjoint(currentOut, inverse);
     disjoint(previousOut, matrix);
     disjoint(previousOut, inverse);
-    const compatible = previous !== undefined && this.historyCompatible(previous, slot);
+    // The current pose was proved available above; only the previous frame is checked again.
+    const compatible = previous !== undefined && this.#historyCompatible(inputs, previous, slot);
     // Finite source matrices can still overflow when composed. Like GPU
     // resolution, an overflowing current pose omits only this draw and an
     // overflowing previous pose seeds all history; lifecycle/admission errors
     // remain terminal rather than being mistaken for an unavailable pose.
     try {
-      this.palette(slot, currentOut, matrix, inverse);
+      this.compose(inputs, slot, count, currentOut, matrix, inverse);
     } catch (cause) {
       if (!composedOverflow(cause)) throw cause;
       return 0;
@@ -1224,7 +1237,9 @@ export class SkinInputFrame {
     }
     if (compatible) {
       try {
-        if (previous.palette(slot, previousOut, matrix, inverse)) return 3;
+        // A compatible previous frame is live and its pose is available with the same count.
+        previous.compose(previous.live(), slot, count, previousOut, matrix, inverse);
+        return 3;
       } catch (cause) {
         if (!composedOverflow(cause)) throw cause;
       }
@@ -1243,10 +1258,13 @@ export class SkinInputFrame {
 
   historyCompatible(previous: SkinInputFrame, slot: number): boolean {
     const inputs = this.live();
-    previous.live();
     u32(slot);
-    if (this.#state !== previous.#state || !this.available(slot) || !previous.available(slot))
-      return false;
+    return this.available(slot) && this.#historyCompatible(inputs, previous, slot);
+  }
+  /** History compatibility once the current pose is known to be available. */
+  #historyCompatible(inputs: GpuInputArena, previous: SkinInputFrame, slot: number): boolean {
+    previous.live();
+    if (this.#state !== previous.#state || !previous.available(slot)) return false;
     const binding = find(this.#page, BINDINGS, slot);
     const prior = find(previous.#page, BINDINGS, slot);
     if (binding === undefined || binding !== prior) return false;

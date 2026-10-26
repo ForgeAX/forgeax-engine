@@ -321,7 +321,7 @@ describe('Worker ExecutionApp terminal stop', () => {
     }
   });
 
-  it('resupplies the Host pipeline library when replacing a lost Render Worker', async () => {
+  it('resupplies both Host pipeline libraries when replacing a lost Render Worker', async () => {
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     const offscreen = {} as OffscreenCanvas;
     const replacement = {
@@ -340,9 +340,14 @@ describe('Worker ExecutionApp terminal stop', () => {
       renderPipelines: [],
       computePipelines: [],
     };
+    const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: '// background' }] };
     const result = await createWorkerExecutionApp({
       canvas,
-      appOptions: { execution: { bootstrap: 'https://example.test/game.js' }, pipelineLibrary },
+      appOptions: {
+        execution: { bootstrap: 'https://example.test/game.js' },
+        pipelineLibrary,
+        backgroundPipelineLibrary,
+      },
       capabilities,
       selection: workerSelection({ render: true, kernels: false }),
     });
@@ -355,7 +360,13 @@ describe('Worker ExecutionApp terminal stop', () => {
         detail: 'replacement fixture',
       });
       expect(probes.sessionPost).toHaveBeenCalledWith(
-        { kind: 'render-replace', epoch: 2, canvas: offscreen, pipelineLibrary },
+        {
+          kind: 'render-replace',
+          epoch: 2,
+          canvas: offscreen,
+          pipelineLibrary,
+          backgroundPipelineLibrary,
+        },
         [offscreen],
       );
     } finally {

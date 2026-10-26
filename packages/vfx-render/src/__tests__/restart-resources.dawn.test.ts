@@ -17,8 +17,8 @@ import { expect, it } from 'vitest';
 import type { RenderFeatureExecutionFrame } from '../../../render/src/features/frame-execution';
 import type { RenderFeaturePlanExecutionPass } from '../../../render/src/features/host';
 import {
-  freezeRenderFeaturePlan,
   renderFeaturePlanSignature,
+  validateRenderFeaturePlan,
 } from '../../../render/src/features/plan';
 import {
   createRenderFeatureGpuWorkOwner,
@@ -132,8 +132,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     emitter: required(references.get(program)),
     programFingerprint: required(references.get(program)).fingerprint,
     reset: phaseTick === 0,
-    fixedDelta: 1 / 60,
-    initialFixedDelta: 1 / 60,
+    delta: 1 / 60,
+    initialDelta: 1 / 60,
+    elapsed: (phaseTick + 1) / 60,
     phaseTick,
     tick: phaseTick,
     seed,
@@ -230,7 +231,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       )
       .unwrap();
     const work = required(plan.work.find((work) => work.scope === 'frame'));
-    freezeRenderFeaturePlan(current.identity, work, []).unwrap();
+    validateRenderFeaturePlan(current.identity, work, []).unwrap();
     const session = gpu.beginFeature(current.identity, generation);
     const programs = new Map<string, RenderFeatureGpuProgramRef>();
     const buffers = new Map<

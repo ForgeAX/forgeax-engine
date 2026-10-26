@@ -13,7 +13,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../../../render/src/features/host';
+import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
 import type { RenderFeatureWork } from '../../../render/src/features/types';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
@@ -130,7 +130,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     current = options.camera ?? current;
     world.update(1 / 60).unwrap();
     resolved.length = 0;
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       {
         identity: 'main',
         render: true,

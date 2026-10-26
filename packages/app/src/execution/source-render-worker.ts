@@ -910,9 +910,10 @@ export class SourceRenderWorker {
     epoch: number,
     canvas: OffscreenCanvas,
     pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'],
+    backgroundPipelineLibrary?: ExecutionInitMessage['backgroundPipelineLibrary'],
   ): Promise<void> {
     if (epoch !== this.epoch || this.worker !== undefined || this.disposed) return;
-    await this.start(canvas, pipelineLibrary);
+    await this.start(canvas, pipelineLibrary, backgroundPipelineLibrary);
   }
   private clear(): void {
     this.startupPipelineLibrary = undefined;

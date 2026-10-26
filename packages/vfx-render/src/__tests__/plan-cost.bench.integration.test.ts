@@ -14,7 +14,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../../../render/src/features/host';
+import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 
@@ -30,7 +30,7 @@ const frames = Number(process.env.VFX_PLAN_BENCH_FRAMES ?? 300);
 // VFX_PLAN_BENCH_SHAPE=collapse mirrors a game debris effect: three local-space
 // burst emitters (two sorted alpha billboards and one mesh renderer).
 const shape = process.env.VFX_PLAN_BENCH_SHAPE ?? 'mixed';
-// VFX_PLAN_BENCH_LIFE=<fixed ticks> retires and respawns each player on a
+// VFX_PLAN_BENCH_LIFE=<ticks> retires and respawns each player on a
 // staggered cycle (remove, then add the component one tick later).
 const life = Number(process.env.VFX_PLAN_BENCH_LIFE ?? 0);
 const geometry: MeshAsset = Object.freeze({
@@ -270,10 +270,10 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
         if (session !== undefined && frameNumber >= Math.floor(frames / 3)) heapFrames += 2;
         churn(frameNumber);
         world.update(1 / 60).unwrap();
-        // Render cadence above the fixed tick keeps a mix of queued and retained frames.
+        // Render-only frames between ticks keep a mix of queued and retained frames.
         for (const _repeat of [0, 1]) {
           const frameStart = performance.now();
-          const batch = runRenderFeatureFrame(host, [
+          const batch = host.runFrame([
             {
               identity: 'main',
               render: true,

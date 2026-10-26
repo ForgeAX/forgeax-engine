@@ -33,6 +33,7 @@ export class RetainedPassEncode {
   readonly #next = new Map<object, RetainedRasterBlock>();
   readonly #materials = new Map<number, MaterialOwner | undefined>();
   readonly #classes = new Map<object, ClassOwner | undefined>();
+  readonly #physical: unknown[] = [];
   constructor(
     private readonly previous: ReadonlyMap<object, RetainedRasterBlock> | undefined,
     private readonly resolveMaterial: (slot: number) => MaterialOwner | undefined,
@@ -52,9 +53,13 @@ export class RetainedPassEncode {
       return undefined;
     for (let index = start; index < end; index++)
       if (block.lives[index - start] !== lives[index]) return undefined;
-    const physical: unknown[] = [];
+    // One scratch list per encode: a replayed run allocates nothing.
+    const physical = this.#physical;
+    physical.length = 0;
     for (let index = start; index < end; index++) physicalOf(lives[index] as object, physical);
-    if (!sameList(block.physical, physical)) return undefined;
+    const same = sameList(block.physical, physical);
+    physical.length = 0;
+    if (!same) return undefined;
     for (const [slot, expected] of block.materials) {
       let actual = this.#materials.get(slot);
       if (!this.#materials.has(slot)) {

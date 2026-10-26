@@ -330,10 +330,18 @@ try {
   const materialState = () => workspace.invoke('preview.material.get', materialAddress);
   const openingCamera = await workspace.getCamera(materialAddress);
   const initialMaterial = await materialState();
-  for (const mesh of ['sphere', 'cylinder', 'plane', 'cube']) {
+  const selectMaterialMesh = async mesh => {
     await page.getByTestId(`material-mesh-${mesh}`).click();
-    await page.waitForFunction(mesh => document.querySelector(`[data-testid="material-mesh-${mesh}"]`)?.getAttribute('aria-pressed') === 'true', mesh);
-    assert.equal((await materialState()).mesh, mesh);
+    await page.waitForFunction(mesh => {
+      const button = document.querySelector(`[data-testid="material-mesh-${mesh}"]`);
+      return button?.getAttribute('aria-pressed') === 'true' && !button.disabled;
+    }, mesh);
+  };
+  for (const mesh of ['sphere', 'cylinder', 'plane', 'cube']) {
+    await selectMaterialMesh(mesh);
+    const state = await materialState();
+    assert.equal(state.mesh, mesh);
+    assert.deepEqual(state.rotation, initialMaterial.rotation);
     const image = await workspace.capture(materialAddress);
     assert(image.png?.startsWith('data:image/png;base64,'));
     await writeFile(join(output, `material-${mesh}.png`), Buffer.from(image.png.split(',')[1], 'base64'));
@@ -349,11 +357,14 @@ try {
   };
   await drag('left', 60, 25);
   await wait(async () => JSON.stringify((await materialState()).rotation) !== JSON.stringify(initialMaterial.rotation), 'material rotation');
+  // A primitive transaction settles the View input owner before sampling its
+  // final accepted rotation; the first changed read can precede the last call.
+  await selectMaterialMesh('sphere');
   const rotated = await materialState();
   assert.notDeepEqual(rotated.rotation, initialMaterial.rotation);
   assert.deepEqual((await workspace.getCamera(materialAddress)).camera, openingCamera.camera);
   await drag('right', 0, 35);
-  await page.getByTestId('material-mesh-plane').click();
+  await selectMaterialMesh('plane');
   assert.deepEqual((await materialState()).rotation, rotated.rotation);
   const zoomedMaterialCamera = await workspace.getCamera(materialAddress);
   assert.notDeepEqual(zoomedMaterialCamera.camera.transform.pos, openingCamera.camera.transform.pos);
@@ -362,7 +373,7 @@ try {
   await page.mouse.wheel(0, -120);
   await wait(async () => JSON.stringify((await workspace.getCamera(materialAddress)).camera.transform.pos) !== JSON.stringify(zoomedMaterialCamera.camera.transform.pos), 'material wheel dolly');
   await drag('middle', 35, 15);
-  await page.getByTestId('material-mesh-cube').click();
+  await selectMaterialMesh('cube');
   assert.notDeepEqual((await workspace.getCamera(materialAddress)).camera.pivot, openingCamera.camera.pivot);
   await page.getByTestId('material-restore-view').click();
   await page.waitForFunction(() => document.querySelector('[data-testid="material-restore-view"]')?.disabled === false);

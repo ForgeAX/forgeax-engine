@@ -6,6 +6,7 @@ import type {
   RhiRayQueryUnsupportedReason,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import { meshAttributeChannels } from '../publication/packed-rows-mesh';
 import type { ProbeGlobalRegion } from './renderer-probe-global';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 import {
@@ -66,7 +67,7 @@ export function worldAccelerationGeometry(
   source: Pick<AccelerationSource, 'mesh' | 'assetRevision'>,
   ids: WorldAccelerationGeometryIds,
 ): WorldAccelerationGeometry | undefined {
-  const positions = source.mesh.attributes.position;
+  const positions = meshAttributeChannels(source.mesh).position;
   // The projection admits only static float32 triangle meshes into the field.
   if (!(positions instanceof Float32Array)) return undefined;
   return {

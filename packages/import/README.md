@@ -416,6 +416,11 @@ and other domain fields. Interleaved vertices are a derived projection, checked
 byte-for-byte before publication, and do not require a duplicate content hash.
 Actual encoded artifacts retain independent byte-integrity SHA-256 digests.
 
+Direct Pack JSON cooks consecutive assets in batches of at most four when their
+native cookers declare `concurrency: 'parallel'`. Undeclared cookers run alone.
+Every admitted batch drains before validation returns its first authored error.
+GUID checks, fingerprints and reference closure retain the existing finalizer.
+
 When the host supplies `buildCacheRoot`, the ScriptablePack worklist checks a
 Pack-product DDC entry before evaluating `build()`. Its key includes the current
 source closure, package/parameter identity, output

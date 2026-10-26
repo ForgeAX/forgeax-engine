@@ -27,7 +27,7 @@ import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   type SurfaceSubmissionCandidate,
   SurfaceSubmissionObservationOwner,
@@ -1183,6 +1183,7 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
     jointCount: 1,
     inverseBindMatrices: mat4.identity(mat4.create()),
   }));
+  const skinFrames = new SkinFrames(skin);
   const topology = new BatchTopology();
   const view = GpuDrivenView.create({
     device,
@@ -1223,7 +1224,7 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
     const pose = mat4.identity(mat4.create());
     pose[12] = 7;
     skin.joint(0, 19, pose);
-    const frame = skin.prepareFrame(projection.slotsSnapshot());
+    const frame = skinFrames.prepareFrame(projection.slotsSnapshot());
     if (frame === undefined) throw new Error('Skin visible fixed input unavailable');
     // Numeric GPU allocation order deliberately differs from true Scene slots.
     scene.sync({ ...delta, createdSlots: [...delta.createdSlots].reverse() }).unwrap();

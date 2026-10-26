@@ -552,3 +552,38 @@ it('records native shader and pipeline creation on the load timeline, once per n
     ['async fog', 'async', 'render'],
   ]);
 });
+
+it('warms recipes in manifest position order across the render and compute tables', async () => {
+  const a = await fixture();
+  for (let i = 0; i < 3; i++) a.device.createRenderPipeline(a.descriptor(`render ${i}`)).unwrap();
+  for (let i = 0; i < 2; i++)
+    a.device
+      .createComputePipeline({
+        layout: 'auto',
+        compute: { module: a.module(`compute ${i}`), entryPoint: 'cs' },
+      })
+      .unwrap();
+  const archive = a.device.pipelineLibrary.export().unwrap();
+  for (const background of [false, true]) {
+    const b = await fixture();
+    const order: string[] = [];
+    b.render.mockImplementation(async (d) => {
+      order.push(`render ${(d.vertex.module as unknown as { label?: string }).label ?? ''}`);
+      return {} as GPURenderPipeline;
+    });
+    b.compute.mockImplementation(async (d) => {
+      order.push(`compute ${(d.compute.module as unknown as { label?: string }).label ?? ''}`);
+      return {} as GPUComputePipeline;
+    });
+    expect(
+      (await b.device.pipelineLibrary.prepare(archive, { background, concurrency: 1 })).ok,
+    ).toBe(true);
+    expect(order.map((entry) => entry.split(' ')[0])).toEqual([
+      'render',
+      'compute',
+      'render',
+      'compute',
+      'render',
+    ]);
+  }
+});

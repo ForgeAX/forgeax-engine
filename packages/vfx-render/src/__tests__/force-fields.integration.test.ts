@@ -311,7 +311,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
         },
       })
       .unwrap();
-    world.update(3 / 60).unwrap();
+    // Three updates before one render queue three ticks per player.
+    for (let frame = 0; frame < 3; frame += 1) world.update(1 / 60).unwrap();
     const catchUp = frame(1, true);
     const shared = catchUp.plan.work.find((work) => work.scope === 'frame');
     expect(

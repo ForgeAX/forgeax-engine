@@ -13,7 +13,7 @@ import { Camera } from '../components/camera';
 import { CameraView, cameraViewExtent } from '../components/camera-view';
 import { PlanarReflection } from '../components/planar-reflection';
 import { ProjectedDecalInvalidError } from '../decals/component';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature } from '../features/types';
 import { renderComponentsPlugin } from '../plugin';
 import {
@@ -144,7 +144,7 @@ describe('one feature host for the complete view roster', () => {
     const f = producer(),
       host = createRenderFeatureHost([f.feature]).unwrap();
     try {
-      const batch = runRenderFeatureFrame(host, inputs());
+      const batch = host.runFrame(inputs());
       expect(f.extract).toHaveBeenCalledTimes(1);
       expect(f.plan).toHaveBeenCalledWith(
         ['left', 'right'],
@@ -169,13 +169,13 @@ describe('one feature host for the complete view roster', () => {
     const f = producer(),
       host = createRenderFeatureHost([f.feature]).unwrap();
     try {
-      const rejected = runRenderFeatureFrame(host, inputs());
+      const rejected = host.runFrame(inputs());
       rejected.views.get('left')?.onSubmitted();
       rejected.onAborted();
       rejected.onSubmitted();
       expect(f.aborted).toHaveBeenCalledTimes(1);
       expect(f.acknowledged).not.toHaveBeenCalled();
-      const retry = runRenderFeatureFrame(host, inputs().reverse());
+      const retry = host.runFrame(inputs().reverse());
       retry.frame.onSubmitted();
       for (const view of retry.views.values()) view.onSubmitted();
       retry.onSubmitted();
@@ -190,8 +190,7 @@ describe('one feature host for the complete view roster', () => {
       host = createRenderFeatureHost([f.feature]).unwrap();
     const acknowledge = vi.fn();
     try {
-      const batch = runRenderFeatureFrame(
-        host,
+      const batch = host.runFrame(
         inputs().map((input) => ({
           ...input,
           publishedFeatures: [{ identity: f.feature.identity, data: ['left', 'right'] }],

@@ -17,6 +17,11 @@ export type PipelineLibraryCompute = Omit<GPUComputePipelineDescriptor, 'layout'
   readonly compute: PipelineLibraryStage;
 };
 
+/**
+ * Preparation compiles recipes in manifest position order across both tables
+ * (render 0, compute 0, render 1, ...): a producer places the recipes it needs
+ * first at the front of each table.
+ */
 export interface PipelineLibraryManifest {
   readonly version: 1;
   readonly backend: 'webgpu';
@@ -48,6 +53,28 @@ export interface PipelineLibraryInspection {
   readonly unrecordable: number;
   readonly overflow: number;
   readonly sourceBytes: number;
+  /** Current scheduled/native compilations, not a coverage verdict or completed history. */
+  readonly pending?: {
+    /** Requests whose opaque dependencies or capacity prevented recipe recording. */
+    readonly unidentified: number;
+    readonly pipelines: readonly {
+      /** Label-independent SHA-256 of shader sources, layouts and complete recipe state. */
+      readonly identity: string;
+      readonly kind: 'render' | 'compute';
+      readonly origin: 'runtime' | 'startup-warmup' | 'background-warmup';
+      /** Exact recipe membership in the libraries supplied to this device. */
+      readonly preload: 'startup' | 'background' | 'both' | 'absent' | 'indexing';
+      readonly stage: 'queued' | 'compiling';
+      readonly elapsedMs: number;
+      readonly recipe: PipelineLibraryRender | PipelineLibraryCompute;
+      readonly shaders: readonly {
+        readonly module: number;
+        readonly label: string | null;
+        readonly sourceDigest: string;
+      }[];
+      readonly bindGroupLayouts: readonly GPUBindGroupLayoutDescriptor[] | 'auto';
+    }[];
+  };
   readonly warmup: {
     readonly requested: number;
     readonly completed: number;

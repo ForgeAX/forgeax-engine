@@ -115,6 +115,8 @@ class RowBounds {
 interface PendingIdentity {
   readonly worldId: number;
   readonly entityKey: number;
+  /** The live row address this identity resolved to before the batch. */
+  readonly slot: number | undefined;
   readonly initial: RenderSceneSlot | undefined;
   /** Content-bearing snapshot; its own pose is superseded by `pose` when set. */
   current: RenderableSnapshot | undefined;
@@ -187,6 +189,8 @@ export class SceneRows {
     | { matrix: ReturnType<typeof mat4.create>; inverse: ReturnType<typeof mat4.create> }
     | undefined;
   private revisionValue = 0;
+  /** Commit-local pending identities by live slot; emptied when each commit ends. */
+  private readonly pendingBySlot: (PendingIdentity | undefined)[] = [];
 
   constructor(private sources: readonly RenderResourceScope[] = []) {}
 
@@ -340,22 +344,33 @@ export class SceneRows {
     preparedOperations: readonly RenderSceneOperation[],
     spans: readonly WorldTransformSpan[],
   ): RenderSceneApplyResult {
+    // Live identities resolve through their dense slot address; only identities
+    // without a row (new in this batch) need a keyed map.
+    const pendingBySlot = this.pendingBySlot;
     const pendingByWorld = new Map<number, Map<number, PendingIdentity>>();
     const pendingOrder: PendingIdentity[] = [];
-    let ignoredLateUpdates = 0;
 
     const pendingFor = (worldId: number, entityKey: number): PendingIdentity => {
-      let entities = pendingByWorld.get(worldId);
-      if (entities === undefined) {
-        entities = new Map<number, PendingIdentity>();
-        pendingByWorld.set(worldId, entities);
+      const slot = this.slots.slotOf(worldId, entityKey);
+      let pending: PendingIdentity | undefined;
+      let entities: Map<number, PendingIdentity> | undefined;
+      if (slot !== undefined) {
+        pending = pendingBySlot[slot];
+        if (pending !== undefined) return pending;
+      } else {
+        entities = pendingByWorld.get(worldId);
+        if (entities === undefined) {
+          entities = new Map<number, PendingIdentity>();
+          pendingByWorld.set(worldId, entities);
+        }
+        pending = entities.get(entityKey);
+        if (pending !== undefined) return pending;
       }
-      let pending = entities.get(entityKey);
-      if (pending !== undefined) return pending;
-      const initial = this.lookup(worldId, entityKey);
+      const initial = slot === undefined ? undefined : this.slots.get(slot);
       pending = {
         worldId,
         entityKey,
+        slot,
         initial,
         current: initial?.snapshot,
         pose: undefined,
@@ -365,10 +380,26 @@ export class SceneRows {
         instanceChanged: false,
         transformChanged: false,
       };
-      entities.set(entityKey, pending);
+      if (slot !== undefined) pendingBySlot[slot] = pending;
+      else entities?.set(entityKey, pending);
       pendingOrder.push(pending);
       return pending;
     };
+    try {
+      return this.commitPending(preparedOperations, spans, pendingFor, pendingOrder);
+    } finally {
+      for (const pending of pendingOrder)
+        if (pending.slot !== undefined) pendingBySlot[pending.slot] = undefined;
+    }
+  }
+
+  private commitPending(
+    preparedOperations: readonly RenderSceneOperation[],
+    spans: readonly WorldTransformSpan[],
+    pendingFor: (worldId: number, entityKey: number) => PendingIdentity,
+    pendingOrder: readonly PendingIdentity[],
+  ): RenderSceneApplyResult {
+    let ignoredLateUpdates = 0;
 
     const updateWorld = (pending: PendingIdentity, source: ArrayLike<number>, offset: number) => {
       const current = pending.current;

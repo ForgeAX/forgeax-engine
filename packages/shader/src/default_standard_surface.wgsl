@@ -13,7 +13,7 @@
 #endif
 #ifdef ALPHA_CLIPPING_AVAILABLE
 #ifndef SURFACE_COVERAGE_DEFERRED
-#import forgeax_material::alpha_hash::{alphaCoverage}
+#import forgeax_material::alpha_hash::{alphaCoverageValue, alphaCoverageClipThreshold}
 #endif
 #endif
 
@@ -325,7 +325,14 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
   let coverage = sampledAlpha;
   alphaClipThreshold = materialValue.alphaCutoff;
 #else
-  let coverage = alphaCoverage(sampledAlpha, materialValue.alphaCutoff,
+  let coverage = alphaCoverageValue(sampledAlpha, materialValue.alphaCutoff,
+#ifdef ALPHA_TO_COVERAGE_AVAILABLE
+    materialValue.alphaToCoverage,
+#else
+    0.0,
+#endif
+  );
+  alphaClipThreshold = alphaCoverageClipThreshold(materialValue.alphaCutoff,
 #ifdef ALPHA_TO_COVERAGE_AVAILABLE
     materialValue.alphaToCoverage,
 #else

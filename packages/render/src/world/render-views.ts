@@ -13,10 +13,13 @@ export const ViewEyeValue = Object.freeze({ mono: 0, left: 1, right: 2 } as cons
 export const ViewChannelsValue = Object.freeze({ all: 0, red: 1, cyan: 2 } as const);
 
 /**
- * A composed display view in the Render World: one CameraView, or one stereo
- * eye of it, with its authored (eye-derived) rectangle, cadence and target.
+ * A view in the Render World: one CameraView, or one stereo eye of it, with
+ * its authored (eye-derived) rectangle, cadence and target; or a capture view
+ * (`capture`), an auxiliary Camera that writes its RenderTarget as a raw
+ * linear scene capture and is never composited.
  */
 export const RenderView = defineComponent('RenderView', {
+  capture: 'bool',
   camera: 'u32',
   eye: { type: 'enum', default: ViewEyeValue.mono, labels: ViewEyeValue },
   viewport: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 1, 1]) },
@@ -38,6 +41,7 @@ export const RenderView = defineComponent('RenderView', {
 export const ViewRecorder = defineComponent('ViewRecorder', { state: 'unique<ViewRecorder>' });
 
 type ViewFacts = {
+  capture: boolean;
   camera: number;
   eye: number;
   viewport: Float32Array;
@@ -53,6 +57,15 @@ type ViewFacts = {
 
 const NO_TARGET = toShared<'RenderTarget'>(0);
 
+/** A capture view covers its whole target every frame. */
+const CAPTURE_VIEW = Object.freeze({
+  viewport: new Float32Array([0, 0, 1, 1]),
+  order: 0,
+  resolutionScale: 1,
+  updateInterval: 1,
+  enabled: true,
+});
+
 interface DeclaredView {
   readonly entity: EntityHandle;
   /** Last sync that declared this view; older entries are despawned. */
@@ -61,6 +74,8 @@ interface DeclaredView {
 
 export interface RenderViewSource {
   readonly cameras: readonly CameraSnapshot[];
+  /** Auxiliary RenderTarget cameras (non-planar); each becomes one capture view. */
+  readonly captures: readonly CameraSnapshot[];
   attachment(camera: CameraSnapshot): string | undefined;
 }
 
@@ -99,21 +114,27 @@ function sameFacts(current: Readonly<ViewFacts>, next: ViewFacts): boolean {
 
 /**
  * Source-driven view entities. The `render-views` RenderPrepare system turns
- * the frame's camera snapshots into one entity per CameraView or stereo eye:
- * a new declaration spawns, a vanished one despawns, a changed one is
- * rewritten, and a steady frame writes nothing.
+ * the frame's camera snapshots into one entity per CameraView or stereo eye
+ * and one per auxiliary RenderTarget camera: a new declaration spawns, a
+ * vanished one despawns, a changed one is rewritten, and a steady frame
+ * writes nothing.
  */
 export class RenderViews {
-  /** Declared view entities in composition order (order, camera, eye). */
+  /** Declared view entities: capture views first, then (order, camera, eye). */
   readonly ordered: EntityHandle[] = [];
-  /** Enabled declared views after the last sync. */
+  /** Enabled declared display (non-capture) views after the last sync. */
   enabledCount = 0;
-  /** Ingest identity translation: `camera * 3 + eye` to its view entity. */
+  /** Declared display (non-capture) views after the last sync. */
+  displayCount = 0;
+  /** Declared capture views after the last sync. */
+  captureCount = 0;
+  /** Ingest identity translation: `camera * 3 + eye` (capture: `-1 - camera`) to its entity. */
   private readonly declared = new Map<number, DeclaredView>();
   private pending: RenderViewSource | undefined;
   private syncs = 0;
   private orderDirty = false;
   private readonly facts: ViewFacts = {
+    capture: false,
     camera: 0,
     eye: 0,
     viewport: new Float32Array(4),
@@ -157,6 +178,8 @@ export class RenderViews {
     this.declared.clear();
     this.ordered.length = 0;
     this.enabledCount = 0;
+    this.displayCount = 0;
+    this.captureCount = 0;
   }
 
   /** The target a view records into; undefined for a display view. */
@@ -174,13 +197,18 @@ export class RenderViews {
       if (camera.view === undefined) continue;
       const attachment = source.attachment(camera) ?? '';
       if (camera.stereo === undefined) {
-        this.write(camera, ViewEyeValue.mono, attachment, frame);
+        this.write(camera, ViewEyeValue.mono, attachment, frame, false);
         declaredNow += 1;
       } else {
-        this.write(camera, ViewEyeValue.left, attachment, frame);
-        this.write(camera, ViewEyeValue.right, attachment, frame);
+        this.write(camera, ViewEyeValue.left, attachment, frame, false);
+        this.write(camera, ViewEyeValue.right, attachment, frame, false);
         declaredNow += 2;
       }
+    }
+    for (const camera of source.captures) {
+      if (camera.entityKey === undefined || camera.target === undefined) continue;
+      this.write(camera, ViewEyeValue.mono, source.attachment(camera) ?? '', frame, true);
+      declaredNow += 1;
     }
     if (declaredNow !== this.declared.size) {
       for (const [key, view] of this.declared) {
@@ -193,13 +221,20 @@ export class RenderViews {
     if (this.orderDirty) this.reorder();
   }
 
-  private write(camera: CameraSnapshot, eye: number, attachment: string, frame: number): void {
+  private write(
+    camera: CameraSnapshot,
+    eye: number,
+    attachment: string,
+    frame: number,
+    capture: boolean,
+  ): void {
     const world = this.world;
-    const authored = camera.view as NonNullable<CameraSnapshot['view']>;
     const facts = this.facts;
+    facts.capture = capture;
     facts.camera = camera.entityKey as number;
     facts.eye = eye;
-    if (camera.stereo === undefined) facts.viewport.set(authored.viewport);
+    const authored = capture ? CAPTURE_VIEW : (camera.view as NonNullable<CameraSnapshot['view']>);
+    if (camera.stereo === undefined || capture) facts.viewport.set(authored.viewport);
     else
       stereoEyeViewport(
         authored.viewport,
@@ -211,10 +246,10 @@ export class RenderViews {
     facts.resolutionScale = authored.resolutionScale;
     facts.updateInterval = authored.updateInterval;
     facts.enabled = authored.enabled;
-    facts.channels = eyeChannels(camera, eye);
+    facts.channels = capture ? ViewChannelsValue.all : eyeChannels(camera, eye);
     facts.viewGeneration = camera.historyVersion ?? 0;
     facts.attachment = attachment;
-    const key = facts.camera * 3 + eye;
+    const key = capture ? -1 - facts.camera : facts.camera * 3 + eye;
     const declared = this.declared.get(key);
     if (declared === undefined) {
       facts.target = this.acquireTarget(camera.target);
@@ -252,16 +287,27 @@ export class RenderViews {
     const ordered = this.ordered;
     ordered.length = 0;
     let enabled = 0;
+    let captures = 0;
     for (const view of this.declared.values()) {
       ordered.push(view.entity);
-      if (world.get(view.entity, RenderView).unwrap().enabled) enabled += 1;
+      const facts = world.get(view.entity, RenderView).unwrap();
+      if (facts.capture) captures += 1;
+      else if (facts.enabled) enabled += 1;
     }
+    // Capture views record first: displays sample the targets they write.
     ordered.sort((left, right) => {
       const a = world.get(left, RenderView).unwrap();
       const b = world.get(right, RenderView).unwrap();
-      return a.order - b.order || a.camera - b.camera || a.eye - b.eye;
+      return (
+        Number(b.capture) - Number(a.capture) ||
+        a.order - b.order ||
+        a.camera - b.camera ||
+        a.eye - b.eye
+      );
     });
     this.enabledCount = enabled;
+    this.captureCount = captures;
+    this.displayCount = ordered.length - captures;
     this.orderDirty = false;
   }
 }

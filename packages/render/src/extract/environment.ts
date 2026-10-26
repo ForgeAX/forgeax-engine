@@ -93,6 +93,10 @@ export interface GradientSkyFrame {
   readonly zenith: readonly [number, number, number];
   readonly horizon: readonly [number, number, number];
   readonly ground: readonly [number, number, number];
+  /** Middle stop, used when `midHeight > 0`. */
+  readonly mid: readonly [number, number, number];
+  /** Elevation sine of the middle stop; 0 keeps the two-stop law. */
+  readonly midHeight: number;
   readonly exponent: number;
   readonly sunSize: number;
   readonly sunGlow: number;
@@ -225,9 +229,14 @@ function validateFogLaw(candidate: FogCandidate): FogParameterIssue | undefined 
   return undefined;
 }
 
-const SKY_COLOR_FIELDS = ['zenith', 'horizon', 'ground'] as const;
+const SKY_COLOR_FIELDS = ['zenith', 'horizon', 'ground', 'mid'] as const;
 const SKY_SCALAR_RANGES = {
   exponent: { min: 1e-3, max: 64, expected: 'a finite number in [0.001, 64]' },
+  midHeight: {
+    min: 0,
+    max: 0.95,
+    expected: 'a finite elevation sine in [0, 0.95] (0 = no mid stop)',
+  },
   sunSize: { min: 0, max: 0.5, expected: 'a finite angular radius in [0, 0.5] radians' },
   sunGlow: { min: 0, max: 16, expected: 'a finite number in [0, 16]' },
   fogBlend: { min: 0, max: 1, expected: 'a finite elevation sine in [0, 1]' },

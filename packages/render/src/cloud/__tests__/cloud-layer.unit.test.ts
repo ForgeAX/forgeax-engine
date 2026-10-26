@@ -2,7 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { CloudLayer, CloudQualityValue } from '../../components/cloud-layer';
 import { DirectionalLight } from '../../components/directional-light';
-import { freezeRenderFeaturePlan } from '../../features/plan';
+import { validateRenderFeaturePlan } from '../../features/plan';
 import { createSceneDataCatalog } from '../../temporal/scene-data-catalog';
 import {
   buildCloudDensityCache,
@@ -175,63 +175,60 @@ describe('CloudLayer authoring and deterministic field', () => {
     });
     expect(planned.ok).toBe(true);
     if (!planned.ok) throw planned.error;
-    const frozen = freezeRenderFeaturePlan(
-      CLOUD_LAYER_FEATURE_IDENTITY,
+    const frozen = {
+      resources: planned.value.work.flatMap((work) => work.resources),
+      passes: planned.value.work.flatMap((work) => work.passes),
+    };
+    const valid = validateRenderFeaturePlan(CLOUD_LAYER_FEATURE_IDENTITY, frozen, [
+      { name: 'motion-input', kind: 'color', format: 'rgba16float', sampleCount: 1 },
+      { name: 'motion-output', kind: 'color', format: 'rgba16float', sampleCount: 1 },
+      { name: 'depth', kind: 'depth', format: 'depth24plus-stencil8', sampleCount: 1 },
+      { name: 'cloud-shadow', kind: 'color', format: 'rgba16float', sampleCount: 1 },
       {
-        resources: planned.value.work.flatMap((work) => work.resources),
-        passes: planned.value.work.flatMap((work) => work.passes),
+        name: 'cloud-history-radiance-previous',
+        kind: 'color',
+        format: 'rgba16float',
+        sampleCount: 1,
       },
-      [
-        { name: 'motion-input', kind: 'color', format: 'rgba16float', sampleCount: 1 },
-        { name: 'motion-output', kind: 'color', format: 'rgba16float', sampleCount: 1 },
-        { name: 'depth', kind: 'depth', format: 'depth24plus-stencil8', sampleCount: 1 },
-        { name: 'cloud-shadow', kind: 'color', format: 'rgba16float', sampleCount: 1 },
-        {
-          name: 'cloud-history-radiance-previous',
-          kind: 'color',
-          format: 'rgba16float',
-          sampleCount: 1,
-        },
-        {
-          name: 'cloud-history-radiance-current',
-          kind: 'color',
-          format: 'rgba16float',
-          sampleCount: 1,
-        },
-        {
-          name: 'cloud-history-transmittance-previous',
-          kind: 'color',
-          format: 'rgba16float',
-          sampleCount: 1,
-        },
-        {
-          name: 'cloud-history-transmittance-current',
-          kind: 'color',
-          format: 'rgba16float',
-          sampleCount: 1,
-        },
-        {
-          name: 'cloud-history-depth-previous',
-          kind: 'color',
-          format: 'rgba16float',
-          sampleCount: 1,
-        },
-        {
-          name: 'cloud-history-depth-current',
-          kind: 'color',
-          format: 'rgba16float',
-          sampleCount: 1,
-        },
-      ],
-    );
-    expect(frozen.ok).toBe(true);
-    if (!frozen.ok) throw frozen.error;
+      {
+        name: 'cloud-history-radiance-current',
+        kind: 'color',
+        format: 'rgba16float',
+        sampleCount: 1,
+      },
+      {
+        name: 'cloud-history-transmittance-previous',
+        kind: 'color',
+        format: 'rgba16float',
+        sampleCount: 1,
+      },
+      {
+        name: 'cloud-history-transmittance-current',
+        kind: 'color',
+        format: 'rgba16float',
+        sampleCount: 1,
+      },
+      {
+        name: 'cloud-history-depth-previous',
+        kind: 'color',
+        format: 'rgba16float',
+        sampleCount: 1,
+      },
+      {
+        name: 'cloud-history-depth-current',
+        kind: 'color',
+        format: 'rgba16float',
+        sampleCount: 1,
+      },
+    ]);
+    expect(valid.ok).toBe(true);
+    if (!valid.ok) throw valid.error;
     expect(feature.placement).toBe('scene');
     expect(feature.shaderModuleMode).toBe('immediate');
-    expect(frozen.value.passes.map((pass) => pass.name)).toContain('cloud-layer-transport');
-    expect(frozen.value.passes.map((pass) => pass.name)).toContain('cloud-layer-resolve');
-    expect(frozen.value.passes.map((pass) => pass.name)).toContain('cloud-layer-shadow');
-    const shadowPass = frozen.value.passes.find(
+    expect(frozen.passes.map((pass) => pass.name)).toContain('cloud-layer-transport');
+    expect(frozen.passes.map((pass) => pass.name)).toContain('cloud-layer-resolve');
+    expect(frozen.passes.map((pass) => pass.name)).toContain('cloud-layer-shadow');
+    const shadowPass = frozen.passes.find(
       (pass) => pass.kind === 'raster' && pass.name === 'cloud-layer-shadow',
     );
     expect(shadowPass?.kind).toBe('raster');
@@ -241,9 +238,7 @@ describe('CloudLayer authoring and deterministic field', () => {
       // of the graph reads avoids an artificial read-before-main dependency.
       expect(shadowPass.sampledTargets).not.toContain('depth');
     }
-    const fullscreen = frozen.value.resources.find(
-      (resource) => resource.kind === 'fullscreen-program',
-    );
+    const fullscreen = frozen.resources.find((resource) => resource.kind === 'fullscreen-program');
     expect(fullscreen?.kind).toBe('fullscreen-program');
     if (fullscreen?.kind === 'fullscreen-program') {
       expect(fullscreen.reads).toEqual([
@@ -257,7 +252,7 @@ describe('CloudLayer authoring and deterministic field', () => {
       expect(fullscreen.storageBindings).toEqual([8]);
       expect(fullscreen.usesView).toBe(true);
     }
-    const shadowFullscreen = frozen.value.resources.find(
+    const shadowFullscreen = frozen.resources.find(
       (resource) =>
         resource.kind === 'fullscreen-program' && resource.name === 'cloud-layer-shadow',
     );
@@ -265,7 +260,7 @@ describe('CloudLayer authoring and deterministic field', () => {
     if (shadowFullscreen?.kind === 'fullscreen-program') {
       expect(shadowFullscreen.params?.byteSize).toBe(176);
     }
-    const transportFullscreen = frozen.value.resources.find(
+    const transportFullscreen = frozen.resources.find(
       (resource) =>
         resource.kind === 'fullscreen-program' && resource.name === 'cloud-layer-transport',
     );
@@ -280,7 +275,7 @@ describe('CloudLayer authoring and deterministic field', () => {
         { key: 'depth', sampleType: 'depth' },
       ]);
     }
-    const resolveFullscreen = frozen.value.resources.find(
+    const resolveFullscreen = frozen.resources.find(
       (resource) =>
         resource.kind === 'fullscreen-program' && resource.name === 'cloud-layer-resolve',
     );
@@ -297,7 +292,7 @@ describe('CloudLayer authoring and deterministic field', () => {
         { key: 'depth', sampleType: 'depth' },
       ]);
     }
-    const transportPass = frozen.value.passes.find(
+    const transportPass = frozen.passes.find(
       (pass) => pass.kind === 'raster' && pass.name === 'cloud-layer-transport',
     );
     expect(transportPass?.kind).toBe('raster');

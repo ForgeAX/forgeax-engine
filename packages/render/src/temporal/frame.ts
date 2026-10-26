@@ -1,6 +1,7 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { TemporalFrameSubmitError } from '../errors/render';
 import type { RenderFrameState } from '../record/frame-snapshot';
+import type { TemporalView } from './view';
 
 export type TemporalResetReason =
   | 'none'
@@ -52,6 +53,8 @@ export interface TemporalFrameTransaction {
   stage(input: TemporalFrameInput): void;
   commit(submit: TemporalSubmitResult): Result<TemporalFrame, TemporalFrameSubmitError>;
   snapshot(): TemporalFrame;
+  /** The last frame a submission accepted, or undefined before the first and after a reset. */
+  accepted(): TemporalFrame | undefined;
   inspect(): TemporalFrameTransactionInspection;
   /** Drop accepted/staged history after a producer or device generation cut. */
   reset(reason?: Extract<TemporalResetReason, 'signature-change' | 'device-recovery'>): void;
@@ -141,6 +144,9 @@ export function createTemporalFrameTransaction(options: {
         throw new Error('TemporalFrame snapshot is unavailable before commit');
       return copyFrame(accepted);
     },
+    accepted() {
+      return accepted;
+    },
     inspect() {
       return {
         accepted: accepted !== undefined,
@@ -167,8 +173,57 @@ export function resetTemporalHistory(
   reason: Extract<TemporalResetReason, 'signature-change' | 'device-recovery'>,
 ): void {
   frameState.temporalFrameTransaction.reset(reason);
-  frameState.temporalFrame = undefined;
-  frameState.lastSuccessfulTemporalView = undefined;
-  frameState.successfulTemporalFrameIndex = 0;
-  frameState.pendingTemporalCommit = { kind: 'none' };
+  frameState.temporalView.reset();
+}
+
+/** What a submitted frame promotes into the camera's temporal view history. */
+export type TemporalCommitOutcome =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'off'; readonly view: TemporalView }
+  | { readonly kind: 'taa'; readonly view: TemporalView };
+
+const NO_TEMPORAL_COMMIT: TemporalCommitOutcome = Object.freeze({ kind: 'none' });
+
+/**
+ * The display camera's submit-gated TemporalView history. A frame stages one
+ * outcome; only a submitted frame promotes it, and a `none` outcome leaves
+ * the accepted view untouched.
+ */
+export class TemporalViewHistory {
+  private acceptedOutcome: TemporalCommitOutcome = NO_TEMPORAL_COMMIT;
+  private staged: TemporalCommitOutcome = NO_TEMPORAL_COMMIT;
+
+  /** Last submitted view; candidate frames never overwrite it. */
+  get accepted(): TemporalView | undefined {
+    return this.acceptedOutcome.kind === 'none' ? undefined : this.acceptedOutcome.view;
+  }
+
+  /** Submitted TAA frames in the accepted run; an `off` frame or reset restarts it. */
+  get frameIndex(): number {
+    return this.acceptedOutcome.kind === 'taa'
+      ? this.acceptedOutcome.view.temporalFrameIndex + 1
+      : 0;
+  }
+
+  stage(outcome: TemporalCommitOutcome): void {
+    this.staged = outcome;
+  }
+
+  /** The frame carries no temporal candidate (no camera, environment or device scope). */
+  discard(): void {
+    this.staged = NO_TEMPORAL_COMMIT;
+  }
+
+  /** Promote the staged outcome after queue.submit; returns what was promoted. */
+  commit(): TemporalCommitOutcome['kind'] {
+    const staged = this.staged;
+    this.staged = NO_TEMPORAL_COMMIT;
+    if (staged.kind !== 'none') this.acceptedOutcome = staged;
+    return staged.kind;
+  }
+
+  reset(): void {
+    this.acceptedOutcome = NO_TEMPORAL_COMMIT;
+    this.staged = NO_TEMPORAL_COMMIT;
+  }
 }

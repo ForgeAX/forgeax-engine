@@ -6,6 +6,7 @@ import type {
   RenderFeatureMaterialShaderBindingContract,
   RenderFeaturePlanContext,
 } from '@forgeax/engine-render';
+import { meshAttributeChannels } from '@forgeax/engine-render/internal';
 import {
   err,
   type MaterialAsset,
@@ -24,6 +25,7 @@ import {
   PARTICLE_MESH_DEFAULTS,
   PARTICLE_MESH_GEOMETRY,
 } from '../../../render/src/features/particle-mesh-layout';
+import { internVfxRenderState } from './shared-graphics-programs.js';
 
 type ParticleRendererKind = ParticleRendererSourceV3['kind'];
 type ParticleTopologyKind = ParticleTopologyRendererSourceV3['kind'];
@@ -426,14 +428,15 @@ export function prepareParticleMaterialInputs(
  * function state; leaving the state undefined makes transparent billboard
  * corners overwrite the scene with their zero RGB (the visible black-box
  * failure). An authored particle pass remains authoritative and bypasses
- * these defaults.
+ * these defaults. It is interned by exact content: a Worker-cloned state is a
+ * new object every frame, but one content keeps one program descriptor.
  */
 export function particleRendererRenderState(
   kind: ParticleRendererKind,
   blend: ParticleBlendMode,
   authored: MaterialRenderState | undefined,
 ): MaterialRenderState | undefined {
-  if (authored !== undefined) return authored;
+  if (authored !== undefined) return internVfxRenderState(authored);
   if (kind === 'mesh') return undefined;
   const mode = kind === 'billboard' ? (blend ?? 'alpha') : 'alpha';
   if (mode === 'opaque-cutout') return PARTICLE_CUTOUT_STATE;
@@ -502,14 +505,16 @@ function floatAttribute(value: ArrayBuffer | Float32Array | Uint16Array | undefi
 }
 
 export function particleMeshVertices(mesh: MeshAsset): Float32Array {
-  const positions = floatAttribute(mesh.attributes.position);
+  // Packed-rows Render copies rebuild their channels exactly from the rows.
+  const channels = meshAttributeChannels(mesh);
+  const positions = floatAttribute(channels.position);
   if (positions.length % 3 !== 0) return new Float32Array();
   const vertexCount = positions.length / 3;
   const stride = PARTICLE_MESH_GEOMETRY.arrayStride / Float32Array.BYTES_PER_ELEMENT;
   const result = new Float32Array(vertexCount * stride);
   for (const attribute of PARTICLE_MESH_GEOMETRY.attributes) {
     const key = attribute.key as keyof typeof PARTICLE_MESH_DEFAULTS;
-    const source = floatAttribute(mesh.attributes[key]);
+    const source = floatAttribute(channels[key]);
     const width = attribute.byteLength / Float32Array.BYTES_PER_ELEMENT;
     if (source.length !== 0 && source.length !== vertexCount * width) return new Float32Array();
     // Direct element copies: no per-vertex views on the per-frame emitter path.

@@ -402,6 +402,9 @@ export function commitSubmittedDisplay(
   frameState.frameOutputs.sceneSubmitted = true;
   for (const capture of attempt.captureFrames)
     internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
+  // A capture view's graph wrote its target in this accepted submission.
+  for (const work of internals.captureView?.state.work ?? [])
+    internals.markRenderTargetSubmitted?.(work.target, work.physical);
   attempt.captureCompletion = attempt.completion;
   resolution.commit(renderExtent, () =>
     typeof rasterRows === 'function' ? rasterRows() : (rasterRows ?? renderableCount),

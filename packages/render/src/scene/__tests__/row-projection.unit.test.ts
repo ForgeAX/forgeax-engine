@@ -72,6 +72,8 @@ describe('RowProjection', () => {
       Array.from({ length: D }, (_, index) => index * 97),
     );
     expect(projection.visits - N).toBe(D);
+    expect(frame.before).toEqual(Array(D).fill(0));
+    expect(frame.after).toEqual(frame.changed.map((slot) => projection.get(slot)));
     expect(projection.get(97)).toBe(2);
     expect(projection.size).toBe(N);
   });

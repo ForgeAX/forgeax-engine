@@ -13,10 +13,10 @@ it.each([
   const output = device.createBuffer({ size: 32, usage: 132 }).unwrap(),
     readback = device.createBuffer({ size: 32, usage: 9 }).unwrap();
   try {
-    await f.skin.submitFrame(f.frame, Promise.resolve(), true);
+    await f.frames.submitFrame(f.frame, Promise.resolve(), true);
     f.matrix[12] = 5;
     f.skin.joint(0, 19, f.matrix);
-    const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+    const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (!frame) throw new Error('Missing current fixed root');
     tasks.begin(frame);
     const first = tasks.demand(f.first),
@@ -102,9 +102,9 @@ fn sampleTask()->vec4<f32>{return vec4<f32>(current.joints[0][3].x,previous[0][3
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     const completed = device.queue.onSubmittedWorkDone();
     tasks.trackSubmittedWork(completed);
-    const released = f.skin.trackSubmittedWork(frame, completed);
+    const released = f.frames.trackSubmittedWork(frame, completed);
     const cleanup = tasks.complete();
-    await f.skin.submitFrame(frame, completed, true);
+    await f.frames.submitFrame(frame, completed, true);
     await released;
     await cleanup;
     const mapped = (await readback.mapAsync(1)).unwrap();

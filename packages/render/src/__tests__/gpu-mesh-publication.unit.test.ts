@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { MeshBatchProjection } from '../gpu-driven/mesh-batches';
 import { MaterialResource } from '../material-resource';
+import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { captureMaterialOverrides, prepareMeshMaterialBindings } from '../scene/mesh-materials';
 import { RenderScene } from '../scene/render-scene';
@@ -13,7 +14,11 @@ it.each([
 ])('publishes %i shared Mesh groups without executing a resource join', (count) => {
   const original = receiptRow().source;
   const rows = Array.from({ length: count }, (_, index) => {
-    const material = new MaterialResource(original.material.snapshot);
+    // Distinct bound textures keep one Mesh group per material.
+    const material = new MaterialResource({
+      ...original.material.snapshot,
+      textureHandles: new Map([['baseColorTexture', 1000 + index]]) as never,
+    });
     return {
       ...original,
       entityKey: index + 1,
@@ -112,4 +117,74 @@ it('captures a canonical override table without retaining a caller-mutable array
   expect(Object.isFrozen(captured)).toBe(true);
   overrides.length = 0;
   expect(captured).toEqual([original.material]);
+});
+
+it.each([
+  false,
+  true,
+])('refreshes admitted execution materials when added membership is GPU eligible=%s', (eligible) => {
+  const original = receiptRow().source;
+  const first = new MaterialResource({ ...original.material.snapshot, materialHandle: 105 });
+  let resolved = first;
+  const dispatch = new MaterialDispatch(() => resolved);
+  const scene = new RenderScene();
+  const snapshot = {
+    ...original,
+    material: first,
+    materials: [first],
+    materialOverrides: captureMaterialOverrides([]),
+  };
+  scene.reset([snapshot]);
+  const firstSlot = scene.slotsSnapshot().at(0);
+  if (firstSlot === undefined) throw new Error('missing first slot');
+  dispatch.bind(firstSlot.slot, firstSlot.snapshot);
+  const mesh = createPrimitiveMesh('cube').unwrap();
+  const meshes = new MeshFrame().with(original.worldId, original.assetHandle as number, {
+    ...mesh,
+    materialSlots: [{ slotName: 'surface', defaultMaterial: 105 as never }],
+  });
+  dispatch.prepare(meshes);
+  dispatch.query(scene.slotsSnapshot(), meshes);
+  const previousMaterials = dispatch.materials();
+  const topology = new BatchTopology();
+  topology.rebuild(scene.slotsSnapshot());
+  const source = topology.sourcePlan();
+  const windows = new MeshBatchProjection();
+  const previous = windows.query(source, meshes, previousMaterials);
+  expect(previous.batches.at(0)?.binding?.material).toBe(first);
+
+  resolved = new MaterialResource({ ...first.snapshot, roughness: 0.8 });
+  const { gpuDrivenDraws, ...next } = snapshot;
+  const delta = scene.apply([
+    {
+      kind: 'update',
+      worldId: original.worldId,
+      entityKey: original.entityKey + 1,
+      snapshot: {
+        ...next,
+        entityKey: original.entityKey + 1,
+        ...(eligible ? { gpuDrivenDraws } : {}),
+      },
+    },
+  ]);
+  for (const slot of delta.createdSlots) dispatch.bind(slot.slot, slot.snapshot);
+  dispatch.query(scene.slotsSnapshot(), meshes);
+  topology.apply(delta);
+  const changed = topology.sourcePlan();
+  if (!eligible) expect(changed.batches).toBe(source.batches);
+  const materials = dispatch.materials();
+  expect(materials.get(first)).toBeUndefined();
+  const current = windows.query(changed, meshes, materials);
+  const actual = current.batches.at(0)?.binding?.material;
+  expect(actual).toBe(resolved);
+  if (actual === undefined) throw new Error('missing execution material');
+  expect(materials.get(actual)).toBeDefined();
+  expect(previous.batches.at(0)?.binding?.material).toBe(first);
+  expect(previousMaterials.get(first)).toBeDefined();
+  expect(windows.query(changed, meshes, materials)).toBe(current);
+  const reads = vi.spyOn(meshes, 'get');
+  resolved.adopt({ ...resolved.snapshot, roughness: 0.9 });
+  dispatch.adopt(resolved);
+  expect(windows.query(changed, meshes, dispatch.materials())).toBe(current);
+  expect(reads).not.toHaveBeenCalled();
 });

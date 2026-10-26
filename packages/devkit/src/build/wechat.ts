@@ -16,10 +16,10 @@ import { promisify } from 'node:util';
 import { brotliCompress, constants } from 'node:zlib';
 import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
+import { prepareDist } from '../delivery-dist.js';
 import { collectDistArtifacts } from '../dist.js';
 import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
-import { preparePlayerDist } from '../player-dist.js';
 import type { DevKitAppOptions } from '../plugin-build.js';
 import type { BuildOptions, ProjectFacts } from '../types.js';
 import { type PluginSourceInventory, pluginAssetClosure } from './plugin-assets.js';
@@ -207,7 +207,7 @@ export async function writeWechatProject(
   await mkdir(outDir, { recursive: true });
   const entries = await readdir(outDir);
   const payload = resolve(outDir, 'payload');
-  const player = await preparePlayerDist(
+  const player = await prepareDist(
     outDir,
     {
       schemaVersion: '1.0.0',

@@ -41,12 +41,6 @@ import type { PointShadowInspection } from '../point-shadow-inspection';
 import type { SsrSpatialAdmission } from '../ssr/admission';
 import type { SsrHistoryOwner } from '../ssr/history';
 import type { TemporalGpuState } from '../temporal/gpu';
-import type { TemporalView } from '../temporal/view';
-
-export type TemporalCommitOutcome =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'off'; readonly view: TemporalView }
-  | { readonly kind: 'taa'; readonly view: TemporalView };
 
 /** CPU transaction metadata staged beside the renderer-owned GPU candidate. */
 export interface PendingAutoExposureState {
@@ -151,7 +145,7 @@ import type {
 } from '../render-system-extract';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { ShadowAtlas } from '../shadow-atlas';
-import type { TemporalFrame, TemporalFrameTransaction } from '../temporal/frame';
+import type { TemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { VolumetricFogInspection } from '../volume/inspection';
 import type { VolumeTemporalSignature } from '../volume/temporal';
 import type { DirectionalCascadeCadenceState } from './directional-cascade-cadence';
@@ -557,10 +551,6 @@ export interface RenderFrameState {
   ssrLastHistoryVersion?: number | undefined;
   /** Monotonic compiled-graph identity used by diagnostic readbacks. */
   graphGeneration: number;
-  /** Number of successfully submitted TAA frames; failed attempts do not advance it. */
-  successfulTemporalFrameIndex?: number;
-  /** The renderer-owned accepted-submit temporal fact consumed by consumers. */
-  temporalFrame?: TemporalFrame | undefined;
   /** The sole transaction that advances temporal history after queue.submit. */
   readonly temporalFrameTransaction: TemporalFrameTransaction;
   graphTargetCapture?: GraphTargetCaptureRequest | undefined;
@@ -666,9 +656,8 @@ export interface RenderFrameState {
   cloudHistoryActive?: boolean;
   /** Candidate CloudLayer history ownership, promoted only after submit. */
   pendingCloudHistoryActive?: boolean;
-  /** Last successful projection; candidate frames never overwrite it. */
-  lastSuccessfulTemporalView: TemporalView | undefined;
-  pendingTemporalCommit: TemporalCommitOutcome;
+  /** The display camera's submit-gated TemporalView history. */
+  readonly temporalView: TemporalViewHistory;
   /** Staged environment generation is promoted only after queue.submit succeeds. */
   environmentGeneration: EnvironmentGeneration | undefined;
   environmentFrame?: import('../environment/frame').SelectedEnvironmentFrame | undefined;

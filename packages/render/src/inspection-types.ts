@@ -550,11 +550,6 @@ export interface GpuDrivenProductionInspection {
   readonly preparedAssemblyHits: number;
   /** Submission-plan candidates re-derived for the last frame; zero on a prepared-plan cache hit. */
   readonly planRebuildCandidates: number;
-  /**
-   * LOD candidates whose selected raster levels changed since the previous
-   * frame over the same prepared plan; a plan rebuild resets the baseline.
-   */
-  readonly lodSelectionChanges: number;
   /** Existing shadow casters that switched between the static and dynamic layer this frame. */
   readonly shadowCasterFlips: number;
   /** Classification attempts and population before per-view caster selection. */
@@ -729,8 +724,6 @@ export type ShadowViewInvalidationReason =
   | 'membership-changed'
   /** The light view-projection or culling planes changed. */
   | 'view-changed'
-  /** The LOD projected heights for this view changed. */
-  | 'lod-changed'
   /**
    * The retained layer omits casters the main camera saw no receivers of, so
    * it re-rasters without that cull before it may serve later frames.

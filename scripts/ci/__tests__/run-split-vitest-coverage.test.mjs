@@ -637,18 +637,22 @@ test('repository scan files have one exclusive coverage owner and remain in the 
   assert.equal(scanRuns, 2);
 });
 
-test('cold Standard raster and ray compilation has one exclusive instrumented owner', () => {
-  const file =
-    'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts';
+test('cold Standard compilation and worker parity each have one exclusive instrumented owner', () => {
+  const files = [
+    'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+    'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
+  ];
   const groups = coverageGroups(
     ['@forgeax/engine-shader-compiler', '@forgeax/engine-naga', 'unit'],
     8,
   );
-  const owners = groups.filter((group) => group.files.includes(file));
-  assert.equal(owners.length, 1);
-  assert.ok(isExclusiveCoverageGroup(owners[0]));
-  assert.deepEqual(owners[0].projects, ['@forgeax/engine-shader-compiler']);
-  assert.ok(
-    groups.filter((group) => group !== owners[0]).every((group) => group.excludes.includes(file)),
-  );
+  for (const file of files) {
+    const owners = groups.filter((group) => group.files.includes(file));
+    assert.equal(owners.length, 1, file);
+    assert.ok(isExclusiveCoverageGroup(owners[0]));
+    assert.deepEqual(owners[0].projects, ['@forgeax/engine-shader-compiler']);
+    assert.ok(
+      groups.filter((group) => group !== owners[0]).every((group) => group.excludes.includes(file)),
+    );
+  }
 });

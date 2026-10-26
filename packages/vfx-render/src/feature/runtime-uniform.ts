@@ -13,7 +13,7 @@ export const RUNTIME_BYTES = 76 * 4;
 type ParticleRenderer = ParticleRendererSourceV3;
 type RuntimeIntent = Pick<
   VfxGpuTickIntent,
-  'fixedDelta' | 'phaseTick' | 'seed' | 'playCycle' | 'emitter' | 'spawnCount' | 'firstParticleId'
+  'delta' | 'phaseTick' | 'seed' | 'playCycle' | 'emitter' | 'spawnCount' | 'firstParticleId'
 >;
 
 function finite(value: unknown, fallback: number): number {
@@ -73,7 +73,7 @@ export function runtimeData(
   const data = target ?? createRuntimeStorage();
   const { floats, words } = data;
   if (target !== undefined) data.bytes.fill(0);
-  floats[0] = projection ? 0 : intent.fixedDelta;
+  floats[0] = projection ? 0 : intent.delta;
   words[1] = intent.phaseTick;
   words[2] = intent.seed;
   words[3] = intent.playCycle;

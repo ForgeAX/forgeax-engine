@@ -133,6 +133,18 @@ See the historical Edge investigation.
 
 **Unit/coverage entry**:
 
+Cold Standard compiler and Node Worker publication parity use the existing
+exclusive coverage file-set owner. If a compiler subprocess exhausts its budget
+beside instrumented Render, retain its original failure and verify the complete
+exclusive owner with unchanged time limits, Worker recovery, byte equality and
+coverage. Do not enlarge deadlines or remove either compilation route.
+
+For MSAA pair navigation stuck at network idle, distinguish page loading from
+the capture owner. Bootstrap uses DOM parsing plus the real capture hook under
+one 30-second total budget; actual completed-ready OFF/ON capture keeps its
+separate original deadline and all pixel/tape falsifiers. Preserve the failed
+navigation log and validate through the real paired capture owner.
+
 Historically the retained Vitest unit step skipped main pushes, where coverage+typecheck already covered it. Performance guards read unit output for PRs and coverage output for main. Browser/Dawn jobs still ran on both paths.
 
 **Shared Playwright cache**:

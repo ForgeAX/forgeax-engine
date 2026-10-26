@@ -17,6 +17,9 @@ describe('material raster state', () => {
     expect(supportsGpuShadowRenderState({ cullMode: 'none', frontFace: 'cw', depthBias: 2 })).toBe(
       true,
     );
+    // Fog is forward-only state, so fog:false casters stay in GPU shadow batches.
+    expect(supportsGpuShadowRenderState({ fog: false })).toBe(true);
+    expect(supportsGpuShadowRenderState({ fog: false, cullMode: 'none' })).toBe(true);
     for (const state of [
       { depthWriteEnabled: false },
       { colorWriteMask: 0 },

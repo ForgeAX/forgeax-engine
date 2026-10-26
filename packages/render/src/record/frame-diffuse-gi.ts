@@ -261,7 +261,8 @@ export function prepareFrameDiffuseGi(
     renderReadLeases,
   );
   const probePlacement = frameState.probePlacementFrame;
-  if (captureOnly) {
+  // A capture view writes raw scene output and consumes no GI field.
+  if (captureOnly || internals.captureView !== undefined) {
     return {
       rayDiffuse: undefined,
       irradianceField: undefined,

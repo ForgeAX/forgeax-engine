@@ -2332,6 +2332,11 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (record.input.bodyType !== undefined)
       body.setBodyType(rapierBodyTypeFromString(this.rapierModule, record.input.bodyType), true);
     this.enableCandidateColliders(record);
+    // Disable superseded shapes before the mass refresh. They carry no mass
+    // after admission, but Rapier still integrates every enabled collider's
+    // mass properties, which dominates retiring many voxel bodies at once.
+    if (old !== undefined && record.retainedGeometry === undefined)
+      this.retireReplacedDerivedShapes(record, old);
     if (record.input.motion?.rotation !== undefined) {
       const [x, y, z, w] = record.input.motion.rotation;
       body.setRotation({ x, y, z, w }, true);
@@ -2355,8 +2360,6 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     // Retire joints against this committed revision only. Other queued
     // endpoints may still fail and retain their previous joints.
     if (this.derivedConstraints.size > 0) this.retireSupersededConstraints(record);
-    if (old !== undefined && record.retainedGeometry === undefined)
-      this.retireReplacedDerivedShapes(record, old);
     this.adoptStagedConstraints(record, undo.stagedConstraints);
     return {
       entity: record.input.entity,

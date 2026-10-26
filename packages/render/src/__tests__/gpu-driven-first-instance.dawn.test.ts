@@ -20,8 +20,9 @@ import {
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_STORAGE,
 } from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import { buildBindGroupLayoutDescriptor } from '../pbr-pipeline';
-import type { RenderableSnapshot } from '../render-system-extract';
+import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { snapshot, standardPbrInputs, updateSnapshot } from './gpu-driven-production-fixture';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
@@ -83,8 +84,15 @@ function member(entityKey: number, asset: number, x: number): RenderableSnapshot
   world[14] = -10;
   const draw = source.gpuDrivenDraws?.[0];
   if (draw === undefined) throw new Error('missing first-instance fixture draw');
+  // A distinct texture binding per member keeps each material root in its own batch.
+  const material = new MaterialResource({
+    ...source.material.snapshot,
+    textureHandles: new Map([['baseColorTexture', entityKey]]),
+  } as unknown as MaterialSnapshot);
   return {
     ...source,
+    material,
+    materials: [material],
     transform: { world },
     lods: [{ mesh: '00000000-0000-7000-8000-000000000001' as never, screenCoverage: 0.5 }],
     gpuDrivenDraws: [

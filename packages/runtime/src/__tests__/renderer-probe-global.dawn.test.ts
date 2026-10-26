@@ -688,14 +688,15 @@ it.each([
     expect(renderer.inspect().probePlacement?.submittedFrames).toBe((previous ?? 0) + 1);
     seeds = seeds.map((seed) => ({ ...seed, generation: 2 }));
     renderValue(renderer.setProfile(enabled()));
-    // An explicit profile install invalidates the retained scene. Prepare its
-    // replacement before capturing the first reset candidate and composition.
+    // An explicit profile install resets only the view pipeline; the shared scene
+    // composition and its composed Global region survive, so the reset candidate
+    // records a fresh placement chain without recomposing.
     await draw();
     await expect
       .poll(() => renderer.inspect().probePlacement?.global, { timeout: 10000 })
       .toBeDefined();
-    await capture('reset', true);
-    expect(renderer.inspect().probePlacement?.global?.compositionBuilds).toBe(2);
+    await capture('reset', false);
+    expect(renderer.inspect().probePlacement?.global?.compositionBuilds).toBe(1);
     renderValue(renderer.setProfile(profile));
     await draw();
     expect(renderer.inspect().probePlacement).toBeUndefined();

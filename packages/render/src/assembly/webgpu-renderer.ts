@@ -488,6 +488,7 @@ async function makeWebGPURenderer(
         },
         true,
       );
+      startBackgroundPipelineLibrary();
       return result;
     }
     if (result.error.code === 'recover-not-needed' && !disposed) {
@@ -1082,12 +1083,16 @@ async function makeWebGPURenderer(
     });
   };
   let backgroundPipelineLibraryState: RenderInspection['backgroundPipelineLibraryState'];
-  // Started once after first readiness and never awaited. Device recovery does
-  // not replay it: the recovered device compiles those pipelines on first use.
+  let backgroundPipelineLibraryRun = 0;
+  // Started after first readiness and again on each recovered device, never
+  // awaited. A replaced device starts with an empty library, so the same
+  // manifest is replayed on the same background lane; only the latest run
+  // publishes its state.
   const startBackgroundPipelineLibrary = (): void => {
     const manifest = internals.options?.backgroundPipelineLibrary;
     if (manifest === undefined || internals.device.pipelineLibrary === undefined) return;
     const device = internals.device;
+    const run = ++backgroundPipelineLibraryRun;
     backgroundPipelineLibraryState = 'running';
     void prepareBackgroundPipelineLibrary(
       device,
@@ -1095,6 +1100,7 @@ async function makeWebGPURenderer(
       getShader,
       () => !disposed && internals.device === device,
       (cause) => {
+        if (run !== backgroundPipelineLibraryRun) return;
         backgroundPipelineLibraryState = 'failed';
         console.warn(
           '[forgeax/render] background pipeline library preparation failed; affected pipelines compile on first use',
@@ -1102,7 +1108,7 @@ async function makeWebGPURenderer(
         );
       },
     ).then(() => {
-      if (backgroundPipelineLibraryState === 'running')
+      if (run === backgroundPipelineLibraryRun && backgroundPipelineLibraryState === 'running')
         backgroundPipelineLibraryState =
           !disposed && internals.device === device ? 'done' : 'failed';
     });
@@ -2773,7 +2779,7 @@ async function makeWebGPURenderer(
     if (uiOnlyFrame) return Object.freeze({ code: 'ui-only' as const });
     return cameraViews.active
       ? cameraViews.presentationPendingReason
-      : renderSystem.presentationPendingReason;
+      : (renderSystem.presentationPendingReason ?? cameraViews.presentationPendingReason);
   };
   /** Publish the receipt of a submitted frame with its completion and observations. */
   const issueFrameReceipt = (

@@ -107,7 +107,7 @@ function temporalResolveFrame(
       bloomSmoothWidth: 0.01,
       bloomRadius: 0,
       clearColor: [0, 0, 0, 1],
-      temporal: frameState.lastSuccessfulTemporalView,
+      temporal: frameState.temporalView.accepted,
     },
     postProcessParams: new Map(),
     msaaActive: false,
@@ -274,6 +274,7 @@ function executeReplayCapture(
   };
   const frameState = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: {
       graph,
       topologyKey: 'synthetic-capture',
@@ -1244,7 +1245,7 @@ describe('renderer successful-submit transaction', () => {
       temporalGpuState: undefined,
       activeTemporalGpuState: undefined,
       retiringTemporalGpuStates: new Set(),
-      pendingTemporalCommit: { kind: 'none' },
+      temporalView: new TemporalViewHistory(),
       environmentGeneration: undefined,
       environmentLifecycle: undefined,
     } as unknown as RenderFrameState;
@@ -1310,7 +1311,7 @@ describe('renderer successful-submit transaction', () => {
       temporalGpuState: undefined,
       activeTemporalGpuState: undefined,
       retiringTemporalGpuStates: new Set(),
-      pendingTemporalCommit: {
+      temporalView: acceptedTemporalView(lastSuccessfulTemporalView, {
         kind: 'taa',
         view: createTemporalView({
           antialias: 'taa',
@@ -1320,18 +1321,15 @@ describe('renderer successful-submit transaction', () => {
           historyValid: true,
           sampleTimeSeconds: 1.016,
         }),
-      },
+      }),
       environmentGeneration,
       environmentLifecycle,
-      successfulTemporalFrameIndex: 7,
-      lastSuccessfulTemporalView,
     } as unknown as RenderFrameState;
     const active = getTemporalGpuState(frameState, device, scope, 4, 4);
     getTemporalBindGroupResources(active);
     getTemporalParamsBuffer(active);
     stageTemporalGpuSubmit(active);
     expect(commitTemporalGpuSubmit(active)).toBe(true);
-    frameState.lastSuccessfulTemporalView = lastSuccessfulTemporalView;
     frameState.activeTemporalGpuState = active;
     frameState.temporalGpuState = undefined;
     const candidate = getTemporalGpuState(frameState, device, scope, 8, 8);
@@ -1392,7 +1390,7 @@ describe('renderer successful-submit transaction', () => {
     expect(frameState.temporalGpuState).toBeUndefined();
     expect(candidate.childScope.resourceDelta()).toBe(0);
     expect(candidate.childScope.state).toBe('retired');
-    expect(frameState.successfulTemporalFrameIndex).toBe(7);
+    expect(frameState.temporalView.frameIndex).toBe(7);
     expect(active.childScope.state).toBe('active');
 
     writeBuffer.mockRestore();
@@ -1402,12 +1400,12 @@ describe('renderer successful-submit transaction', () => {
     expect(publishEnvironment).not.toHaveBeenCalled();
     expect(active.valid).toBe(true);
     expect(active.readIndex).toBe(1);
-    expect(frameState.lastSuccessfulTemporalView).toBe(lastSuccessfulTemporalView);
-    expect(frameState.lastSuccessfulTemporalView.sampleTimeSeconds).toBe(1);
+    expect(frameState.temporalView.accepted).toBe(lastSuccessfulTemporalView);
+    expect(frameState.temporalView.accepted?.sampleTimeSeconds).toBe(1);
     expect(environmentLifecycle.inspect().activeSignature).toBe(activeEnvironment.signature);
     expect(environmentLifecycle.inspect().lkgSignature).toBe(activeEnvironment.signature);
     frameState.environmentGeneration = environmentLifecycle.ensure(environmentFrame).unwrap();
-    frameState.pendingTemporalCommit = {
+    frameState.temporalView.stage({
       kind: 'taa',
       view: createTemporalView({
         antialias: 'taa',
@@ -1417,7 +1415,7 @@ describe('renderer successful-submit transaction', () => {
         historyValid: true,
         sampleTimeSeconds: 1.016,
       }),
-    };
+    });
     const retryFrame = temporalResolveFrame(device, scope, frameState, {});
     const retried = executeCompiledFrameGraph(
       { device, errorRegistry: errors } as never,
@@ -1431,8 +1429,8 @@ describe('renderer successful-submit transaction', () => {
     expect(submits).toHaveBeenCalledTimes(1);
     expect(gpuCommitAfterSubmit).toEqual([1]);
     expect(frameState.activeTemporalGpuState).not.toBe(active);
-    expect(frameState.successfulTemporalFrameIndex).toBe(8);
-    expect(frameState.lastSuccessfulTemporalView?.sampleTimeSeconds).toBe(1.016);
+    expect(frameState.temporalView.frameIndex).toBe(8);
+    expect(frameState.temporalView.accepted?.sampleTimeSeconds).toBe(1.016);
     expect(frameState.temporalGpuState).toBeUndefined();
     expect(frameState.retiringTemporalGpuStates.size).toBe(1);
     expect(publishEnvironment).toHaveBeenCalledTimes(1);
@@ -1445,7 +1443,24 @@ describe('renderer successful-submit transaction', () => {
 
 import { executeAutoExposureFrameTransaction } from '../assembly/renderer-frame-transaction';
 import { createAutoExposureState } from '../pipeline/standard-output/auto-exposure/state';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import {
+  createTemporalFrameTransaction,
+  type TemporalCommitOutcome,
+  TemporalViewHistory,
+} from '../temporal/frame';
+import type { TemporalView } from '../temporal/view';
+
+/** A history whose accepted TAA view is `accepted`, with `pending` staged. */
+function acceptedTemporalView(
+  accepted: TemporalView,
+  pending: TemporalCommitOutcome,
+): TemporalViewHistory {
+  const history = new TemporalViewHistory();
+  history.stage({ kind: 'taa', view: accepted });
+  history.commit();
+  history.stage(pending);
+  return history;
+}
 
 describe('renderer frame transaction ownership', () => {
   it('does not publish a LUT generation when submit fails', () => {
@@ -1532,6 +1547,7 @@ it('reuses a retained TAA binding while preserving uploads, pipeline checks and 
     temporalGpuState: undefined,
     activeTemporalGpuState: undefined,
     retiringTemporalGpuStates: new Set(),
+    temporalView: new TemporalViewHistory(),
   } as unknown as RenderFrameState;
   const graph = await buildTemporalResolveGraph(device);
   const groups = vi.spyOn(device, 'createBindGroup');

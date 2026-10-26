@@ -216,6 +216,7 @@ export interface ExecutionRenderReplaceMessage {
   readonly epoch: number;
   readonly canvas: OffscreenCanvas;
   readonly pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'];
+  readonly backgroundPipelineLibrary?: ExecutionInitMessage['backgroundPipelineLibrary'];
 }
 
 export interface ExecutionRebuiltMessage {

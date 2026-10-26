@@ -1225,12 +1225,12 @@ export async function verifyMixedSkinPassRecording(): Promise<void> {
       .unwrap();
     const left = defined(f.context.validatedOrdered[0]);
     const demand = () => tasks.demand(shared.first);
-    shared.skin.discardFrame();
+    shared.frames.discardFrame();
     shared.matrix[12] = 0.5;
     shared.skin.joint(0, 19, shared.matrix);
     for (const missing of [false, true]) {
       if (missing) shared.skin.joint(0, 19, undefined);
-      const frame = defined(shared.skin.prepareFrame(shared.scene.slotsSnapshot()));
+      const frame = defined(shared.frames.prepareFrame(shared.scene.slotsSnapshot()));
       tasks.begin(frame);
       for (const reverse of [false, true]) {
         const passes = [
@@ -1307,7 +1307,7 @@ export async function verifyMixedSkinPassRecording(): Promise<void> {
         }
       }
       await tasks.complete();
-      shared.skin.discardFrame();
+      shared.frames.discardFrame();
     }
     expect(await f.native.popErrorScope()).toBeNull();
   } finally {

@@ -301,7 +301,7 @@ export class CardResidency {
   }
 
   #writeRows(row: number, run: IndexRun, valid: number): void {
-    const entry = this.#capture.entries.find((e) => e.instanceId === row);
+    const entry = this.#capture.entry(row);
     if (entry === undefined) return;
     const bytes = new Uint8Array((run.end - run.first) * CARD_PROJECTION_BYTES);
     const view = new DataView(bytes.buffer);

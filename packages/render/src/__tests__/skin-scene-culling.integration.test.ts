@@ -19,7 +19,7 @@ import {
   RenderScene,
 } from '../scene/render-scene';
 import { SkinInputs } from '../scene/skin-inputs';
-import { SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import { StableRangeAllocator } from '../stable-range-allocator';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -73,12 +73,12 @@ function fixture() {
   }));
   skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: source }]));
   skin.joint(0, 19, matrix());
-  return { arena, scene, skin, source, mesh };
+  return { arena, scene, skin, frames: new SkinFrames(skin), source, mesh };
 }
 
 it('uses the fixed pose and shared Mesh for actual light culling without a per-Skin AABB', () => {
-  const { arena, scene, skin, source } = fixture();
-  const frame = required(skin.prepareFrame(scene.slotsSnapshot())),
+  const { arena, scene, skin, frames, source } = fixture();
+  const frame = required(frames.prepareFrame(scene.slotsSnapshot())),
     slot = required(frame.slots.lookup(0, 17));
   const out = box3.create(),
     matrixRead = vi.spyOn(SkinInputs.prototype, 'bind');
@@ -102,8 +102,8 @@ it('uses the fixed pose and shared Mesh for actual light culling without a per-S
     for (let view = 0; view < 4; view++)
       expect(shadowViewContains(source, planes, bounds)).toBe(true);
     expect(matrixRead).not.toHaveBeenCalled();
-    skin.discardFrame();
-    const next = required(skin.prepareFrame(scene.slotsSnapshot()));
+    frames.discardFrame();
+    const next = required(frames.prepareFrame(scene.slotsSnapshot()));
     const nextBounds = (row: RenderableSnapshot, destination: box3.Box3) => {
       const selected = next.slots.lookup(row.worldId, row.entityKey);
       return (
@@ -120,8 +120,8 @@ it('uses the fixed pose and shared Mesh for actual light culling without a per-S
 });
 
 it('never substitutes bind pose for missing current input, a foreign Scene slot, or unknown geometry', () => {
-  const { arena, scene, skin, source, mesh } = fixture();
-  const frame = required(skin.prepareFrame(scene.slotsSnapshot())),
+  const { arena, scene, skin, frames, source, mesh } = fixture();
+  const frame = required(frames.prepareFrame(scene.slotsSnapshot())),
     slot = required(frame.slots.lookup(0, 17)),
     out = box3.create();
   try {
@@ -158,7 +158,7 @@ it('never substitutes bind pose for missing current input, a foreign Scene slot,
 });
 
 it('never grants a custom vertex program the stock Skin position enclosure from its input layout', () => {
-  const { arena, scene, skin, source } = fixture();
+  const { arena, scene, skin, frames, source } = fixture();
   const custom = MaterialResource.from({
     ...source.material.snapshot,
     positionBounds: undefined,
@@ -174,7 +174,7 @@ it('never grants a custom vertex program the stock Skin position enclosure from 
       },
     ]),
   );
-  const fixed = required(skin.prepareFrame(scene.slotsSnapshot())),
+  const fixed = required(frames.prepareFrame(scene.slotsSnapshot())),
     slot = required(fixed.slots.lookup(0, 17)),
     out = box3.create();
   try {

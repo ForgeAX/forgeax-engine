@@ -265,6 +265,8 @@ function recordModeIndex(mode: MainPassRecordMode): number {
   if (mode === 'transmission') return 2;
   if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual') return 3;
   if (mode === 'translucent' || mode === 'translucent-before-transmission') return 5;
+  if (mode === 'opaque-fogged') return 6;
+  if (mode === 'opaque-unfogged') return 7;
   return 4;
 }
 

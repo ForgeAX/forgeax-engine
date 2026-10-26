@@ -4,6 +4,7 @@ import {
   submitFrameRecordings,
 } from '../assembly/frame-recording';
 import type { RendererFrameTransactionSteps } from '../assembly/renderer-frame-transaction';
+import { isCaptureViewPipeline } from '../capture/capture-view';
 import { projectedDecalTopology } from '../decals/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import { recordAtmosphereCaptureBackground } from '../environment/capture';
@@ -1785,6 +1786,7 @@ function topologyOf(
   terrainReceivers: readonly TerrainShadowReceiver[] = [],
   subsurface?: RenderPipelineTopology['subsurface'],
   stockRecording = false,
+  unfoggedOpaque = false,
 ): Result<RenderPipelineTopology, RhiError> {
   const directional = directionalTopologyOf(internals, lights, shadowMapSize, terrainReceivers);
   if (!directional.ok) return directional;
@@ -1844,6 +1846,7 @@ function topologyOf(
     ...((surfaceMediumActive ?? gpuDriven?.surfaceSubmission !== undefined)
       ? { singleLayerMedium: true }
       : {}),
+    ...(!clearOnly && analyticFog && unfoggedOpaque ? { unfoggedOpaque: true } : {}),
     ...(transparency === undefined ? {} : { transparency }),
   });
 }
@@ -2595,6 +2598,7 @@ export function ensureCompiledFrameGraph(
   terrainReceivers: readonly TerrainShadowReceiver[] = [],
   subsurface?: RenderPipelineTopology['subsurface'],
   rendererRecording = false,
+  unfoggedOpaque = false,
 ): CompiledRenderGraph<RenderPipelineFrame> | null {
   frameState.barrelDistortionGraphResolution = 'retained';
   const featureMetrics = mutableFeatureGraphInspection(internals);
@@ -2673,6 +2677,7 @@ export function ensureCompiledFrameGraph(
     terrainReceivers,
     subsurface,
     stockRecording,
+    unfoggedOpaque,
   );
   if (!topologyResult.ok) {
     featureMetrics.buildFailures += 1;
@@ -2819,7 +2824,10 @@ export function ensureCompiledFrameGraph(
             projectGpuDrivenShadow: (identity, cameraPyramid) => {
               // Capture demand from the stock builder's actual projection calls,
               // rather than re-reading a possibly retained request/topology key.
-              if (activePipeline === standardPipeline && identity.kind === 'directional') {
+              if (
+                (activePipeline === standardPipeline || isCaptureViewPipeline(activePipeline)) &&
+                identity.kind === 'directional'
+              ) {
                 directionalShadowViewCount = Math.max(
                   directionalShadowViewCount ?? 0,
                   identity.index + 1,
@@ -3743,9 +3751,7 @@ export function* recordCompiledFrameGraph(
       }
       if (frameState.temporalFrameTransaction.inspect().staged) {
         const temporal = frameState.temporalFrameTransaction.commit({ accepted: true });
-        if (temporal.ok) {
-          frameState.temporalFrame = temporal.value;
-        } else {
+        if (!temporal.ok) {
           internals.errorRegistry.fire(
             new RhiError({
               code: 'webgpu-runtime-error',
@@ -3776,27 +3782,17 @@ export function* recordCompiledFrameGraph(
         onReplaced: () => internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve'),
         onRetireFailure: onTemporalRetireFailure,
       });
-      const stagedTemporalCommit = frameState.pendingTemporalCommit ?? { kind: 'none' as const };
       const stagedCloudHistoryActive = frameState.pendingCloudHistoryActive;
       if (stagedCloudHistoryActive !== undefined) {
         frameState.cloudHistoryActive = stagedCloudHistoryActive;
         delete frameState.pendingCloudHistoryActive;
       }
-      if (stagedTemporalCommit.kind !== 'none') {
-        frameState.lastSuccessfulTemporalView = stagedTemporalCommit.view;
-      }
-      if (stagedTemporalCommit.kind === 'taa') {
-        frameState.successfulTemporalFrameIndex = stagedTemporalCommit.view.temporalFrameIndex + 1;
-      } else if (stagedTemporalCommit.kind === 'off') {
-        frameState.successfulTemporalFrameIndex = 0;
-      }
-      if (stagedTemporalCommit.kind === 'off' && frameState.cloudHistoryActive !== true) {
+      if (frameState.temporalView.commit() === 'off' && frameState.cloudHistoryActive !== true) {
         internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve');
         // Retire frame-sized resources, not the device-owned prewarmed
         // shader. The next TAA frame must not start an async cold compile.
         retireActiveTemporalGpuState(frameState, internals.device.queue, onTemporalRetireFailure);
       }
-      frameState.pendingTemporalCommit = { kind: 'none' };
       if (frameState.environmentGeneration !== undefined) {
         frameState.environmentLifecycle?.publish(frameState.environmentGeneration);
         frameState.environmentGeneration = undefined;
@@ -3821,7 +3817,7 @@ export function* recordCompiledFrameGraph(
       }
       abortStagedTemporalGpuState(frameState);
       delete frameState.pendingCloudHistoryActive;
-      frameState.pendingTemporalCommit = { kind: 'none' };
+      frameState.temporalView.discard();
       if (frameState.environmentGeneration !== undefined) {
         frameState.environmentLifecycle?.discard(frameState.environmentGeneration);
         frameState.environmentGeneration = undefined;

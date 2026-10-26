@@ -26,6 +26,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import { renderTime } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
+import type { TemporalCommitOutcome } from '../temporal/frame';
 import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
 import { createTemporalView, resolveTemporalReset, type TemporalView } from '../temporal/view';
 import {
@@ -127,7 +128,7 @@ function temporalCandidateFor(
     antialias: camera.antialias,
     width: Math.max(1, targetW),
     height: Math.max(1, targetH),
-    frameIndex: frameState.successfulTemporalFrameIndex ?? 0,
+    frameIndex: frameState.temporalView.frameIndex,
     viewIdentity: `camera:${camera.entityKey ?? 0}`,
     environmentSignature,
     fogSignature,
@@ -176,7 +177,7 @@ function pendingTemporalCommitFor(
   cameraCount: number,
   environmentReady: boolean,
   view: TemporalView,
-): RenderFrameState['pendingTemporalCommit'] {
+): TemporalCommitOutcome {
   if (cameraCount === 0 || !environmentReady || internals.deviceScope === undefined)
     return { kind: 'none' };
   return view.mode === 'taa' ? { kind: 'taa', view } : { kind: 'off', view };
@@ -198,7 +199,7 @@ export function resolveFrameTemporal(
   environmentReady: boolean,
   temporalReset: boolean,
 ) {
-  const previous = frameState.lastSuccessfulTemporalView;
+  const previous = frameState.temporalView.accepted;
   const motionBlurDemand = motionBlurDemandFor(camera);
   const temporalDemand = standardSceneTemporalDemand(camera, visibleSurfaceActive);
   const deltaSeconds =
@@ -252,11 +253,8 @@ export function resolveFrameTemporal(
     resetReason,
     ...reusedTemporalHistory(reusable),
   });
-  frameState.pendingTemporalCommit = pendingTemporalCommitFor(
-    internals,
-    cameraCount,
-    environmentReady,
-    view,
+  frameState.temporalView.stage(
+    pendingTemporalCommitFor(internals, cameraCount, environmentReady, view),
   );
   return {
     view,

@@ -56,8 +56,25 @@ function producerError(input: AssetOutputInput, reason: unknown): ImportError {
     code: 'import-internal-error',
     expected: `ScriptablePack ${input.asset.kind} output ${input.sourceKey} to satisfy its domain producer contract`,
     hint: 'fix the generated Asset payload and rebuild the ScriptablePack',
-    detail: { reason: reason instanceof Error ? reason.message : String(reason) },
+    detail: { reason: describeProducerFailure(reason) },
   });
+}
+
+const MESH_BIN_FIX_HINT =
+  'MeshAsset.vertices must match MeshAsset.attributes; after changing attributes (for example colour) rebuild vertices with withVertexColors(mesh, colors) or packInterleavedVertexAttributes';
+
+/** Structured producer errors are plain objects: never let them print as [object Object]. */
+function describeProducerFailure(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (reason !== null && typeof reason === 'object' && 'code' in reason) {
+    const fields = reason as Record<string, unknown>;
+    const parts = ['sourceKey', 'expected', 'actual', 'recovery'].flatMap((key) =>
+      typeof fields[key] === 'string' ? [`${key}: ${fields[key]}`] : [],
+    );
+    const hint = fields.code === 'mesh-bin-payload-invalid' ? `; ${MESH_BIN_FIX_HINT}` : '';
+    return `${String(fields.code)} (${parts.join('; ')})${hint}`;
+  }
+  return String(reason);
 }
 
 function formatGuid(value: AssetGuidType | string): string {

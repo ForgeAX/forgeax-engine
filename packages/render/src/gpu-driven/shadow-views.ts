@@ -40,7 +40,6 @@ import {
   type ShadowLayerWork,
   sameShadowCandidates,
 } from './shadow-layer-projection';
-import { sameShadowLodLevels, shadowLodLevels } from './shadow-lod-selections';
 import {
   type GpuDrivenCullingObservation,
   type GpuDrivenLodSubmitIdentity,
@@ -78,22 +77,12 @@ export interface ShadowViewUpdateInput {
     | readonly number[]
     | ReadonlySet<number>
     | ShadowSlotSelection;
-  /** Main camera whose projection selects LOD levels inside the GPU cull. */
+  /**
+   * Camera whose projection selects LOD levels inside the GPU cull: the light
+   * camera of `matrix` (casters capped at `SHADOW_LOD_COARSEST`), else the
+   * main camera.
+   */
   readonly lodCamera?: LodViewCamera;
-  /** CPU mirror of the main-camera heights; only drives `lod-changed` invalidation. */
-  readonly lodProjectedHeights?: ReadonlyMap<number, number>;
-  /**
-   * Discrete LOD levels the heights select. Retained depth is re-rastered
-   * only when a level changes; continuous height motion inside a level would
-   * only move the cross-fade dither and does not invalidate the view.
-   */
-  readonly lodSelection?: string;
-  /**
-   * Reference camera the view's selection stays within
-   * `SHADOW_LOD_MAX_COARSER` levels of. A clamped static layer keeps finer
-   * retained levels and re-rasters only casters now too coarse for it.
-   */
-  readonly lodClampCamera?: LodViewCamera;
   /**
    * Slots whose changes this view never draws, e.g. dynamic casters for a
    * static layer. Their boxes do not invalidate the view.
@@ -211,8 +200,6 @@ interface ShadowViewRecord {
   candidates: ShadowCandidates | undefined;
   /** Fixed-source caster subsets this view's next selection patches. */
   projection: ShadowLayerProjection | undefined;
-  lodSelection: string | undefined;
-  lodProjectedHeights: ReadonlyMap<number, number> | undefined;
   generation: number;
   cache: ShadowViewCacheState;
   invalidationReason: ShadowViewInvalidationReason | undefined;
@@ -809,36 +796,6 @@ function sameCandidateRows(
   return true;
 }
 
-/**
- * Primitives whose retained LOD levels no longer serve the next selection.
- * With `keepFiner` a retained level finer than the next one still serves it,
- * so only a caster now drawn finer than retained is stale.
- */
-function changedLodPrimitives(
-  previous: ShadowViewRecord,
-  plan: SubmissionPlan,
-  heights: ReadonlyMap<number, number> | undefined,
-  keepFiner: boolean,
-  out: Set<number>,
-): void {
-  const before = shadowLodLevels(previous.plan, previous.lodProjectedHeights);
-  const after = shadowLodLevels(plan, heights);
-  for (const [primitive, level] of after) {
-    const retained = before.get(primitive);
-    if (sameShadowLodLevels(retained, level)) continue;
-    if (keepFiner && retained !== undefined && level.finest >= retained.finest) {
-      continue;
-    }
-    out.add(primitive);
-  }
-  for (const primitive of before.keys()) if (!after.has(primitive)) out.add(primitive);
-}
-
-/** A clamped static layer keeps retained levels finer than it now selects. */
-function keepsFinerLod(input: ShadowViewUpdateInput): boolean {
-  return input.identity.layer === 'static' && input.lodClampCamera !== undefined;
-}
-
 /** Most regions one partial static redraw clears and re-rasters. */
 const MAX_DIRTY_RECTS = 4;
 /** Above this share of the layer a full redraw is cheaper than scissored regions. */
@@ -971,7 +928,7 @@ function partialStaticRects(
 ): readonly ShadowDirtyRect[] | undefined {
   if (
     input.identity.layer !== 'static' ||
-    (reason !== 'content-changed' && reason !== 'membership-changed' && reason !== 'lod-changed') ||
+    (reason !== 'content-changed' && reason !== 'membership-changed') ||
     previous.invalidated ||
     !previous.published ||
     previous.matrix === undefined ||
@@ -995,9 +952,6 @@ function partialStaticRects(
   if (changedContent === 'unbounded') return undefined;
   const changed = new Set<number>();
   changedPrimitives(previous.plan, plan, changed, previous.preparation);
-  if (previous.lodSelection !== input.lodSelection) {
-    changedLodPrimitives(previous, plan, input.lodProjectedHeights, keepsFinerLod(input), changed);
-  }
   const changedDraws = scene.slotBoundsSince(retainedRevision, changed);
   if (changedDraws === 'unbounded') return undefined;
   return shadowDirtyRects(input.matrix, [changedContent, changedDraws]);
@@ -1369,7 +1323,7 @@ export class ShadowViewStatePool {
       input.lodCamera,
       minCasterDiameter,
       undefined,
-      input.lodClampCamera,
+      input.matrix !== undefined,
       undefined,
       undefined,
       cameraCull,
@@ -1397,8 +1351,6 @@ export class ShadowViewStatePool {
       candidateSource: input.candidatePrimitiveIndices,
       candidates,
       projection: selection.projection,
-      lodSelection: input.lodSelection,
-      lodProjectedHeights: input.lodProjectedHeights,
       generation,
       cache: 'invalidated',
       invalidationReason,
@@ -1530,8 +1482,8 @@ export class ShadowViewStatePool {
   }
 
   /**
-   * A retained view re-rasters only when a primitive whose drawn content or
-   * discrete LOD level differs between the retained plan and the next plan
+   * A retained view re-rasters only when a primitive whose drawn content
+   * differs between the retained plan and the next plan
    * touches the retained frustum, judged by every box the primitive occupied
    * since the retained revision. Otherwise the record adopts the next plan so
    * later compute and recording stay consistent with the scene, and stays a hit.
@@ -1544,22 +1496,8 @@ export class ShadowViewStatePool {
     sameSource: boolean,
     sameRestriction: boolean,
   ): ShadowViewInvalidationReason | undefined {
-    const sameLod = previous.lodSelection === input.lodSelection;
-    if (sameSource && sameLod) return undefined;
+    if (sameSource) return undefined;
     const scene = input.scene;
-    if (!sameLod) {
-      const lodChanged = new Set<number>();
-      changedLodPrimitives(
-        previous,
-        plan,
-        input.lodProjectedHeights,
-        keepsFinerLod(input),
-        lodChanged,
-      );
-      if (!boundsMissView(previous.planes, scene.slotBoundsSince(retainedRevision, lodChanged))) {
-        return 'lod-changed';
-      }
-    }
     let adopted = previous.plan;
     if (plan !== previous.plan) {
       const changed = new Set<number>();
@@ -1573,7 +1511,7 @@ export class ShadowViewStatePool {
       adopted =
         changed.size === 0 && sameSubmissionLayout(previous.plan, plan) ? previous.plan : plan;
     }
-    if (adopted === previous.plan && sameLod) return undefined;
+    if (adopted === previous.plan) return undefined;
     const resourceGeneration = previous.view.computeResourceGeneration;
     const updated = previous.view.update(
       adopted,
@@ -1583,7 +1521,7 @@ export class ShadowViewStatePool {
       input.lodCamera,
       previous.minCasterDiameter,
       undefined,
-      input.lodClampCamera,
+      input.matrix !== undefined,
       undefined,
       undefined,
       undefined,
@@ -1595,9 +1533,6 @@ export class ShadowViewStatePool {
     }
     previous.sourcePlan = input.sourcePlan;
     previous.plan = adopted;
-    // Kept finer levels stay the retained reference until a re-raster.
-    if (!keepsFinerLod(input)) previous.lodProjectedHeights = input.lodProjectedHeights;
-    previous.lodSelection = input.lodSelection;
     return undefined;
   }
 
@@ -1623,7 +1558,7 @@ export class ShadowViewStatePool {
           input.lodCamera,
           record.minCasterDiameter,
           undefined,
-          input.lodClampCamera,
+          input.matrix !== undefined,
           undefined,
           undefined,
           undefined,

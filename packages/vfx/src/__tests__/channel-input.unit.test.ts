@@ -25,7 +25,7 @@ function input(sequence: number, strength: number): VfxChannelInput {
 }
 
 describe('VFX channel input', () => {
-  it('commits typed inputs once at the fixed-tick boundary in sequence order', () => {
+  it('commits typed inputs once at the tick boundary in sequence order', () => {
     const effect = instance();
 
     expect(effect.submit(input(2, 0.4)).ok).toBe(true);

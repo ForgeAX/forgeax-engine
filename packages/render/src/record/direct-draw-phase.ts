@@ -120,8 +120,12 @@ export interface DirectDrawPhaseWork {
   cold: number;
   /** Syncs that rebuilt the ordered output. */
   emitted: number;
+  /** Rebuilt rows whose bin placements were proven unchanged and kept. */
+  retained: number;
   /** Sort values evaluated. */
   evaluated: number;
+  /** Adjacent distance-order constraints read to qualify a camera interval. */
+  orderConstraints: number;
 }
 
 type MutableRow = { -readonly [K in keyof ValidatedRenderable]: ValidatedRenderable[K] };
@@ -165,6 +169,10 @@ interface Member {
   meshKey: number | undefined;
   lod: boolean;
   items: readonly DrawItem[];
+  /** The projected row, material frame and Pass selector the current items were placed from. */
+  placed: MutableRow | undefined;
+  placedMaterials: MaterialFrame | undefined;
+  placedSelector: PassSelector | undefined;
   emitted: number;
 }
 
@@ -191,6 +199,50 @@ function sortedEntry(entry: DispatchEntry, all: boolean): boolean {
 
 function sameTokens(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length && left.every((token, index) => token === right[index]);
+}
+
+function sameIndices(
+  left: readonly number[] | undefined,
+  right: readonly number[] | undefined,
+): boolean {
+  return left === right || (left !== undefined && right !== undefined && sameTokens(left, right));
+}
+
+/** Whether `place` reads the same entries and bins from both rows. */
+function samePlacedFacts(before: MutableRow, after: MutableRow): boolean {
+  const a = before.source;
+  const b = after.source;
+  return (
+    before.mesh === after.mesh &&
+    sameIndices(before.submeshIndices, after.submeshIndices) &&
+    a.material === b.material &&
+    sameTokens(a.materials, b.materials) &&
+    a.worldId === b.worldId &&
+    a.entityKey === b.entityKey &&
+    (a.layer ?? 0) === (b.layer ?? 0) &&
+    (a.shadowCaster === false) === (b.shadowCaster === false)
+  );
+}
+
+/** Whether `read` would index the same materials, Mesh and LOD membership. */
+function sameReads(before: RenderableSnapshot, after: RenderableSnapshot): boolean {
+  return (
+    before.material === after.material &&
+    sameTokens(before.materials, after.materials) &&
+    before.worldId === after.worldId &&
+    before.assetHandle === after.assetHandle &&
+    (before.lods?.length ?? 0) > 0 === (after.lods?.length ?? 0) > 0
+  );
+}
+
+/** Equal arithmetic terms remain a distance tie under motion on a shared axis. */
+function equalDistanceTerms(left: Float32Array, right: Float32Array, eye: Float64Array): boolean {
+  for (let axis = 0; axis < 3; axis++) {
+    const a = (left[12 + axis] ?? 0) - (eye[axis] ?? 0);
+    const b = (right[12 + axis] ?? 0) - (eye[axis] ?? 0);
+    if (a * a !== b * b) return false;
+  }
+  return true;
 }
 
 /**
@@ -240,6 +292,11 @@ export class DirectDrawPhase {
   private sortItems: (DrawItem | undefined)[] = [];
   private sortInputs: DirectDrawSort | undefined;
   private sortBins = -1;
+  /** Every retained distance value is evaluated at this same eye. */
+  private readonly sortEye = new Float64Array([Number.NaN, Number.NaN, Number.NaN]);
+  /** Per-axis camera displacement interval preserving the retained order. */
+  private readonly sortRange = new Float64Array(6);
+  private rangeChanged = -1;
   /** Sorted entries the phase cannot address take the engine sort. */
   private unaddressable = 0;
   private emittedRevision = -1;
@@ -252,7 +309,9 @@ export class DirectDrawPhase {
     batches: 0,
     cold: 0,
     emitted: 0,
+    retained: 0,
     evaluated: 0,
+    orderConstraints: 0,
   };
 
   /** Whether a selected batch draws material-derived instead of resident geometry. */
@@ -272,6 +331,7 @@ export class DirectDrawPhase {
     const dirty = new Set<Member>(this.pending);
     const previousSort = this.sortInputs;
     this.sortInputs = input.sort;
+    if (previousSort === undefined) this.adoptSortEye();
     const lodCamera = input.lodCamera ?? [];
     const lodMoved = !sameTokens(lodCamera, this.lodCamera);
     this.lodCamera = lodCamera;
@@ -610,6 +670,9 @@ export class DirectDrawPhase {
         meshKey: undefined,
         lod: false,
         items: [],
+        placed: undefined,
+        placedMaterials: undefined,
+        placedSelector: undefined,
         emitted: -1,
       };
       this.members.set(key, member);
@@ -642,14 +705,14 @@ export class DirectDrawPhase {
         continue;
       }
       this.work.rebuilt += 1;
-      this.unread(member);
+      const previous = member.row;
       this.pending.delete(member);
       this.morphed.delete(member);
       member.row = undefined;
       live.push(member);
       const source = this.candidate(member, input);
+      this.reread(member, previous?.source, source);
       if (source === undefined) continue;
-      this.read(member, source);
       if (member.contributions.size > 0) {
         member.row = this.batchedRow(member, source, input);
         if (member.row !== undefined) built.push(member);
@@ -681,8 +744,32 @@ export class DirectDrawPhase {
       for (const member of owners) if (!prepared.has(member)) this.pending.add(member);
     }
     this.project(input, built);
+    this.requeue(input, live);
+  }
+
+  /** Reverse indices of the new source; a moved row reading the same materials and Mesh keeps them. */
+  private reread(
+    member: Member,
+    previous: RenderableSnapshot | undefined,
+    source: RenderableSnapshot | undefined,
+  ): void {
+    if (source !== undefined && previous !== undefined && sameReads(previous, source)) return;
+    this.unread(member);
+    if (source !== undefined) this.read(member, source);
+  }
+
+  /** Place live members again, keeping the placements of rows that only moved. */
+  private requeue(input: DirectDrawInput, live: readonly Member[]): void {
     const queued: (readonly [number, readonly BinPlacement<DrawItem>[]])[] = [];
-    for (const member of live) queued.push([member.key, this.place(member, input)]);
+    for (const member of live) {
+      if (this.keepsPlacement(member, input)) {
+        // Same bins and entries; only the row (transform, temporal record) moved.
+        this.leaveSort(member);
+        this.work.retained += 1;
+        continue;
+      }
+      queued.push([member.key, this.place(member, input)]);
+    }
     // Bulk changes (cold start, selection flips) sort each touched bin once.
     if (queued.length > BULK_QUEUE) this.bins.queueMany(queued);
     else for (const [key, placements] of queued) this.bins.queue(key, placements);
@@ -862,10 +949,41 @@ export class DirectDrawPhase {
     member.lod = false;
   }
 
+  /**
+   * Whether `place` would rebuild the member's current items: the rebuilt row
+   * keeps every fact `place` reads from the row it was placed with (bins,
+   * Pass entries, entity rank), against the same material frame and selector.
+   */
+  private keepsPlacement(member: Member, input: DirectDrawInput): boolean {
+    const before = member.placed;
+    const after = member.row === undefined ? undefined : member.drawn;
+    if (before === undefined || after === undefined || member.items.length === 0) return false;
+    const entries = input.entries;
+    const materials = input.materials;
+    if (entries === undefined || materials === undefined) return this.keepsRowBin(member);
+    return (
+      member.placedMaterials === materials &&
+      member.placedSelector === entries.selector &&
+      samePlacedFacts(before, after)
+    );
+  }
+
+  /** A rows-only consumer's single item stays in the bin `place` would choose. */
+  private keepsRowBin(member: Member): boolean {
+    const first = member.contributions.keys().next();
+    const key =
+      first.done !== true ? first.value : member.slot === undefined ? VIEW_BIN : UNBATCHED_BIN;
+    const item = member.items[0] as DrawItem;
+    return member.items.length === 1 && item.entry === undefined && item.bin === key;
+  }
+
   /** The member's current placements; queueing them dequeues its previous ones first. */
   private place(member: Member, input: DirectDrawInput): readonly BinPlacement<DrawItem>[] {
     this.leaveSort(member);
     const row = member.row === undefined ? undefined : member.drawn;
+    member.placed = row;
+    member.placedMaterials = input.materials;
+    member.placedSelector = input.entries?.selector;
     if (row === undefined) {
       member.drawn = undefined;
       member.items = [];
@@ -973,6 +1091,14 @@ export class DirectDrawPhase {
       inputs.mode === TRANSPARENT_SORT_MODE_LAYER_YZ
         ? this.materials?.get(source.material)?.snapshot
         : undefined;
+    if (inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE) {
+      if (inputs.camera === undefined) return 0;
+      const world = source.transform.world;
+      const dx = (world[12] ?? 0) - (this.sortEye[0] ?? 0);
+      const dy = (world[13] ?? 0) - (this.sortEye[1] ?? 0);
+      const dz = (world[14] ?? 0) - (this.sortEye[2] ?? 0);
+      return -(dx * dx + dy * dy + dz * dz);
+    }
     return transparentSortValue(
       source.transform.world,
       pivot,
@@ -994,25 +1120,36 @@ export class DirectDrawPhase {
       // Which entries sort changed: enter every member again.
       this.resetSort();
       for (const member of this.members.values()) this.enterSort(member);
-    } else {
-      const eye = inputs.camera?.position;
-      const before = previous.camera?.position;
-      const moved =
-        inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE &&
-        (eye?.[0] !== before?.[0] || eye?.[1] !== before?.[1] || eye?.[2] !== before?.[2]);
-      if (moved || previous.mode !== inputs.mode || !Object.is(previous.yzAlpha, inputs.yzAlpha)) {
-        this.sort.invalidate();
-        for (const item of this.sortItems)
-          if (item !== undefined)
-            this.sort.update(
-              item.sortId,
-              this.sort.layerOf(item.sortId),
-              this.sortValue(item.owner, inputs),
-              this.sort.materialOf(item.sortId),
-              this.sort.tieOf(item.sortId),
-            );
-      }
     }
+    this.syncSortTies();
+    this.sort.commit();
+    const eye = inputs.camera?.position;
+    const moved =
+      inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE &&
+      (eye === undefined
+        ? this.sortEye.some(Number.isFinite)
+        : eye[0] !== this.sortEye[0] || eye[1] !== this.sortEye[1] || eye[2] !== this.sortEye[2]);
+    const formula =
+      previous !== undefined &&
+      (previous.mode !== inputs.mode || !Object.is(previous.yzAlpha, inputs.yzAlpha));
+    if (formula || (moved && !this.retainsDistanceOrder())) {
+      this.adoptSortEye();
+      this.sort.invalidate();
+      for (const item of this.sortItems)
+        if (item !== undefined)
+          this.sort.update(
+            item.sortId,
+            this.sort.layerOf(item.sortId),
+            this.sortValue(item.owner, inputs),
+            this.sort.materialOf(item.sortId),
+            this.sort.tieOf(item.sortId),
+          );
+      this.sort.commit();
+      this.rangeChanged = -1;
+    }
+  }
+
+  private syncSortTies(): void {
     // Ties keep dispatch order among equal facts: the bin ordinal of (queue, Pass).
     if (this.sortBins !== this.bins.binRevision) {
       this.sortBins = this.bins.binRevision;
@@ -1029,7 +1166,77 @@ export class DirectDrawPhase {
             );
         }
     }
-    this.sort.commit();
+  }
+
+  private adoptSortEye(): void {
+    const eye = this.sortInputs?.camera?.position;
+    for (let axis = 0; axis < 3; axis++) this.sortEye[axis] = eye?.[axis] ?? Number.NaN;
+    this.rangeChanged = -1;
+  }
+
+  /**
+   * Distance differences are affine in the camera position. Adjacent pairs
+   * therefore define a safe interval along each axis in which their order
+   * cannot change. Retain the values at one common eye, including new/edited
+   * rows, until the camera leaves that interval. General 3D moves still repair
+   * the sorted phase; no scene or geometry is omitted.
+   */
+  private retainsDistanceOrder(): boolean {
+    const eye = this.sortInputs?.camera?.position;
+    if (eye === undefined || this.unaddressable > 0 || !this.sort.ordered) return false;
+    let moving = -1;
+    for (let axis = 0; axis < 3; axis++) {
+      if (!Number.isFinite(eye[axis]) || !Number.isFinite(this.sortEye[axis])) return false;
+      if (eye[axis] !== this.sortEye[axis]) {
+        if (moving >= 0) return false;
+        moving = axis;
+      }
+    }
+    if (moving < 0) return true;
+    if (this.rangeChanged !== this.sort.work.changed) this.qualifyDistanceRange();
+    const displacement = (eye[moving] ?? 0) - (this.sortEye[moving] ?? 0);
+    return (
+      displacement > (this.sortRange[moving] ?? 0) &&
+      displacement < (this.sortRange[3 + moving] ?? 0)
+    );
+  }
+
+  private qualifyDistanceRange(): void {
+    this.rangeChanged = this.sort.work.changed;
+    this.sortRange.fill(Number.NEGATIVE_INFINITY, 0, 3);
+    this.sortRange.fill(Number.POSITIVE_INFINITY, 3);
+    for (let position = 1; position < this.sort.length; position++) {
+      this.work.orderConstraints += 1;
+      const before = this.sort.at(position - 1);
+      const after = this.sort.at(position);
+      const left = this.sortItems[before]?.owner.drawn?.source.transform.world;
+      const right = this.sortItems[after]?.owner.drawn?.source.transform.world;
+      if (left === undefined || right === undefined) {
+        this.sortRange.fill(0);
+        return;
+      }
+      const a = this.sort.valueOf(before);
+      const b = this.sort.valueOf(after);
+      // Stay clear of cancellation around a distance tie. A tied pair can
+      // remain unbounded only when every squared coordinate term is equal.
+      const margin = Math.max(0, b - a - Number.EPSILON * 8 * (Math.abs(a) + Math.abs(b) + 1));
+      const equalTerms = margin === 0 && equalDistanceTerms(left, right, this.sortEye);
+      for (let axis = 0; axis < 3; axis++) {
+        const slope = 2 * ((right[12 + axis] ?? 0) - (left[12 + axis] ?? 0));
+        if (
+          !Number.isFinite(margin) ||
+          !Number.isFinite(slope) ||
+          (slope === 0 && margin === 0 && !equalTerms)
+        ) {
+          this.sortRange[axis] = 0;
+          this.sortRange[3 + axis] = 0;
+        } else if (slope > 0) {
+          this.sortRange[axis] = Math.max(this.sortRange[axis] ?? 0, -margin / slope);
+        } else if (slope < 0) {
+          this.sortRange[3 + axis] = Math.min(this.sortRange[3 + axis] ?? 0, -margin / slope);
+        }
+      }
+    }
   }
 
   private resetSort(): void {
@@ -1037,6 +1244,7 @@ export class DirectDrawPhase {
     this.sort = new SortedPhase(this.sort.order);
     this.sortItems = [];
     this.sortBins = -1;
+    this.rangeChanged = -1;
     this.unaddressable = 0;
     this.emittedSort = -1;
   }

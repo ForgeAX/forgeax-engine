@@ -93,6 +93,7 @@ import {
   verifyWechatPackageBudget,
   writeWechatProject,
 } from './build/wechat.js';
+import { PLAYER_DELIVERY_FILE, prepareDist } from './delivery-dist.js';
 import { verifyDist, writeDistManifest } from './dist.js';
 import {
   enginePackageRuntimeIdentity,
@@ -116,7 +117,6 @@ import {
   validateHostBinding,
 } from './host-binding.js';
 import { LIVE_BRIDGE_OWNER_PARAM } from './live-bridge-url.js';
-import { PLAYER_DELIVERY_FILE } from './player-dist.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
@@ -2113,7 +2113,7 @@ if (query.has('forgeax-tool-replay')) {
           indirectDigest,
           authoredBounds: bounds.aabb,
           seed: player.seed,
-          fixedDelta: player.fixedDelta,
+          delta: player.delta,
           timelineFrames: previewRecipe.frames,
           dispatches: renderObservation.dispatches,
           indirectDraws: renderObservation.indirectDraws,
@@ -2251,7 +2251,11 @@ export async function buildProject(
       options.materialProfile,
     );
     if (options.target === 'wechat') await verifyWechatPackageBudget(outDir);
-    return { ok: true, value: manifest };
+    const prepared =
+      manifest.target === 'browser'
+        ? await prepareDist(outDir, manifest, { distribution: 'build' })
+        : { manifest };
+    return { ok: true, value: prepared.manifest };
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'game-build-failed') };
   } finally {

@@ -134,6 +134,7 @@ function inspect(
     readonly antialias?: 'fxaa' | 'taa';
     readonly depthOfField?: boolean;
     readonly extent?: RenderExtent;
+    readonly unfoggedOpaque?: true;
   } = {},
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -154,7 +155,11 @@ function inspect(
       projectGpuDriven: () => ok(undefined),
       contributeFeatures: () => ok(undefined),
     },
-    { ...topology('on', options), analyticFog: fog },
+    {
+      ...topology('on', options),
+      analyticFog: fog,
+      ...(options.unfoggedOpaque === undefined ? {} : { unfoggedOpaque: true }),
+    },
   );
   if (!built.ok) throw built.error;
   const compiled = graph.compile({ device, surfaceSize: { width: 640, height: 360 } });
@@ -183,6 +188,22 @@ describe('analytic distance and height fog graph', () => {
       { resource: 'scene-color', usage: 'color-attachment' },
     ]);
     expect(info.resources.some((r) => r.label === 'analytic-fog-color')).toBe(false);
+  });
+
+  it('adds no unfogged opaque pass unless a fog:false opaque material is present', () => {
+    const names = inspect(true).passes.map((p) => p.name);
+    expect(names).not.toContain('main-unfogged');
+  });
+
+  it('draws fog:false opaque materials after the opaque fog pass (Three Material.fog)', () => {
+    const info = inspect(true, { unfoggedOpaque: true });
+    const names = info.passes.map((p) => p.name);
+    const unfogged = names.indexOf('main-unfogged');
+    expect(unfogged).toBeGreaterThan(names.indexOf('analytic-fog'));
+    expect(unfogged).toBeLessThan(names.indexOf('transparent'));
+    expect(inspect(false, { unfoggedOpaque: true }).passes.map((p) => p.name)).not.toContain(
+      'main-unfogged',
+    );
   });
 
   it('keeps fog on the internal lattice before TAA and DoF', () => {

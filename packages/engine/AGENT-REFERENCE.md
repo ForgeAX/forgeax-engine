@@ -278,6 +278,17 @@ package contracts in the same change.
 | `interaction` | Realm-neutral transform gizmo consumes propagated Scene transforms and Picking camera rays; it owns constrained drag snapshots, local/world conversion, snapping and cancellation. Its retained presentation uses ordinary Geometry/Render meshes. DOM pointer capture, selection and undo remain in the host UI; World/App/Renderer own no manipulation mode. |
 | `picking` | Runtime-downstream free queries share camera-to-ray core logic and scale precision from entity AABB to current-pose triangles, vertex and tile cell without putting interaction policy in rendering. Exact triangle and vertex queries share current Morph-then-Skin vertices and bounds; live weights and current joints plus inverse binds are consumed per query without GPU readback or retained pose authority. |
 
+Renderer-wide source extraction, publication adoption, topology, material queries and
+GPU Scene preparation belong to one `SceneComposition`. Each view retains only its
+camera-dependent projection, Skin recordings and successful-submit history. A view
+pipeline reset must not invalidate shared composition; GPU completion still fences
+physical retirement. The ECS `RenderPrepare` schedule currently owns retained views,
+lights and shadow views. Feature preparation and recording, temporal promotion and
+completion remain with their native owners; no callback wrapper establishes full
+Apply/Prepare/Record/Commit/Retire ECS migration. Any later migration must move the
+actual facts and readers together and remove the replaced authority.
+See `packages/render/README.md` for the retained scene and per-view contract.
+
 Asynchronous rigid-mesh preparation retains the existing candidate, mesh lease
 and fixed-step admission owner. Renderer derives its pipeline preparation from
 the candidate's actual material/layout and the current view's scene passes;

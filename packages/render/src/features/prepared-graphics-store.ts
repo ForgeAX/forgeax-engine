@@ -467,6 +467,8 @@ function matchesNativeRequestContent(
   }
 }
 
+const NO_ITEMS: readonly PreparedGraphicsItem[] = Object.freeze([]);
+
 class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
   private aborted = false;
   private committed = false;
@@ -594,6 +596,8 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
   }
 
   retainResources(matches: (name: string) => boolean): void {
+    const committed = this.committedSlot?.items;
+    if (committed === undefined || committed.size === 0) return;
     const retain = (item: PreparedGraphicsItem): void => {
       const key = itemKey(item.kind, item.name);
       if (this.touchedCommitted.has(key)) return;
@@ -603,12 +607,11 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
         if (pipeline !== undefined) retain(pipeline);
       }
     };
-    for (const item of this.committedSlot?.items.values() ?? []) {
-      if (matches(item.name)) retain(item);
-    }
+    for (const item of committed.values()) if (matches(item.name)) retain(item);
   }
 
   committedItems(): readonly PreparedGraphicsItem[] {
+    if (this.touchedCommitted.size === 0) return NO_ITEMS;
     return Object.freeze(
       [...this.touchedCommitted].flatMap((key) => {
         const item = this.committedSlot?.items.get(key);

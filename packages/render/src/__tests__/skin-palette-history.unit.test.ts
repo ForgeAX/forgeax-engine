@@ -9,7 +9,10 @@ it('takes the previous pose from the palette composed for the same held inputs',
   const f = skinTaskFixture(2),
     tasks = new SkinTasks(device, true);
   const upload = vi.spyOn(device.queue, 'writeBuffer');
-  const compose = vi.spyOn(SkinInputFrame.prototype, 'palette');
+  const compose = vi.spyOn(
+    SkinInputFrame.prototype as unknown as { compose: () => void },
+    'compose',
+  );
   // Storage task layout: 32 header bytes, then current and previous palettes.
   const palettes = () =>
     upload.mock.calls
@@ -20,11 +23,11 @@ it('takes the previous pose from the palette composed for the same held inputs',
     expect(tasks.demand(f.first)).toBeDefined();
     const [firstCurrent] = palettes();
     await tasks.complete();
-    await f.skin.submitFrame(f.frame, Promise.resolve(), true);
+    await f.frames.submitFrame(f.frame, Promise.resolve(), true);
 
     f.matrix[12] = 9;
     for (const joint of [19, 20]) f.skin.joint(0, joint, f.matrix);
-    const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+    const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (frame === undefined) throw new Error('Missing next Skin frame');
     upload.mockClear();
     compose.mockClear();
@@ -36,7 +39,7 @@ it('takes the previous pose from the palette composed for the same held inputs',
     expect(previous).toEqual(firstCurrent);
     expect(current).not.toEqual(firstCurrent);
     await tasks.complete();
-    await f.skin.submitFrame(frame, Promise.resolve(), true);
+    await f.frames.submitFrame(frame, Promise.resolve(), true);
   } finally {
     compose.mockRestore();
     await tasks.dispose();

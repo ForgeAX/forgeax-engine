@@ -8,7 +8,8 @@ import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, buildBatchAlignedSubmission } from '../gpu-driven/batch-topology';
-import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
+import { LOD_VIEW_CONSTANTS_BYTES, writeLodViewConstants } from '../gpu-driven/lod-projection.wgsl';
+import { lodViewCameraFromMatrix } from '../gpu-driven/production-raster-lod';
 import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import {
   type ShadowViewIdentity,
@@ -149,11 +150,6 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
     sourcePlan: topology.query(topology.sourcePlan(), undefined),
     scene: scene.scene,
     planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
-    lodProjectedHeights: new Map([
-      [0, 0.5],
-      [1, 0.5],
-    ]),
-    lodSelection: 'near/near',
     ...extra,
   } as const;
   updateShadowView(pool, input).unwrap();
@@ -949,7 +945,6 @@ describe('GPU-driven shadow view owner contract', () => {
       const payloadOnly = updateShadowView(pool, {
         ...input,
         planes: movedPlanes,
-        lodProjectedHeights: new Map([[0, 0.25]]),
       }).unwrap();
       expect(payloadOnly.cache).toBe('invalidated');
       expect(payloadOnly.plan).toBe(first.plan);
@@ -1165,96 +1160,30 @@ describe('GPU-driven shadow view owner contract', () => {
     scene.dispose();
   });
 
-  it('re-rasters only for LOD level changes of casters inside the retained frustum', async () => {
-    const { pool, input, identity, dispose } = await lodShadowFixture();
-
-    // Heights within one level move only the cross-fade.
-    const nearer = new Map([
-      [0, 0.45],
-      [1, 0.45],
-    ]);
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: nearer,
-        lodSelection: 'near/near*',
-      }).unwrap().cache,
-    ).toBe('hit');
-    // The out-of-view caster drops a level: its shadow texels are outside this view.
-    const farOutside = new Map([
-      [0, 0.45],
-      [1, 0.05],
-    ]);
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: farOutside,
-        lodSelection: 'near/far',
-      }).unwrap().cache,
-    ).toBe('hit');
-    // The in-view caster drops a level: the retained raster is stale.
-    const farInside = new Map([
-      [0, 0.05],
-      [1, 0.05],
-    ]);
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: farInside,
-        lodSelection: 'far/far',
-      }).unwrap().cache,
-    ).toBe('invalidated');
-    expect(pool.invalidationReason(identity)).toBe('lod-changed');
-    dispose();
-  });
-
-  it('keeps finer retained levels of a clamped static layer', async () => {
-    const clamp = {
-      position: new Float32Array(3),
-      projection: 'orthographic',
-      fov: 0,
-      orthoTop: 1,
-      orthoBottom: -1,
-    } as unknown as LodViewCamera;
-    const { pool, input, dispose } = await lodShadowFixture({ lodClampCamera: clamp });
-    const heights = (value: number) =>
-      new Map([
-        [0, value],
-        [1, value],
-      ]);
-    // The reference camera coarsens: the finer retained raster still serves.
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: heights(0.05),
-        lodSelection: 'far/far',
-      }).unwrap().cache,
-    ).toBe('hit');
-    // Returning to the retained levels stays a hit.
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: heights(0.5),
-        lodSelection: 'near/near',
-      }).unwrap().cache,
-    ).toBe('hit');
-    dispose();
-
-    // Built coarse, a finer selection is too fine for the retained raster.
-    const coarse = await lodShadowFixture({
-      lodClampCamera: clamp,
-      lodProjectedHeights: heights(0.05),
-      lodSelection: 'far/far',
-    });
-    expect(
-      updateShadowView(coarse.pool, {
-        ...coarse.input,
-        lodProjectedHeights: heights(0.5),
-        lodSelection: 'near/near',
-      }).unwrap().cache,
-    ).toBe('invalidated');
-    expect(coarse.pool.invalidationReason(coarse.identity)).toBe('lod-changed');
-    coarse.dispose();
+  it.each([
+    true,
+    false,
+  ])('writes the shadow LOD cap flag only for a light-matrix view (matrix: %s)', async (lightView) => {
+    const matrix = new Float32Array(
+      mat4.orthographic(mat4.create(), -400, 400, -400, 400, 0.1, 100),
+    );
+    const lodCamera = lodViewCameraFromMatrix(matrix);
+    const f = await lodShadowFixture(lightView ? { matrix, lodCamera } : { lodCamera });
+    try {
+      const { view } = updateShadowView(f.pool, f.input).unwrap();
+      const uploaded = (view as unknown as { viewUpload: Uint8Array }).viewUpload;
+      const row = (clamp: boolean) => {
+        const bytes = new Uint8Array(LOD_VIEW_CONSTANTS_BYTES);
+        writeLodViewConstants(new DataView(bytes.buffer), 0, lodCamera, clamp);
+        return Buffer.from(bytes);
+      };
+      // The light-matrix view is the only producer of the clamp flag; no
+      // main-camera height or level reaches its constants.
+      expect(Buffer.from(uploaded).indexOf(row(lightView))).toBeGreaterThanOrEqual(0);
+      expect(Buffer.from(uploaded).indexOf(row(!lightView))).toBe(-1);
+    } finally {
+      f.dispose();
+    }
   });
 
   it('keeps a static layer cached across out-of-view flips and every spawn', async () => {

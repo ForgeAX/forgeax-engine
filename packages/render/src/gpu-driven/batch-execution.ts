@@ -115,6 +115,22 @@ export function gpuLanePreparesAsynchronously(artifact: MaterialShaderArtifact):
   );
 }
 
+function needsDirectRoute(material: MaterialSnapshot, pass: BatchPass): boolean {
+  const state = pass.renderState;
+  if (state?.stencil !== undefined) return true;
+  if (pass.kind === 'shadow' && !supportsGpuShadowRenderState(state)) return true;
+  if ((material.textureSources?.size ?? 0) > 0) return true;
+  if ((material.videoTextureFields?.size ?? 0) > 0) return true;
+  if (pass.kind !== 'forward') return false;
+  // fog:false opaque draws record after the opaque fog pass, on the direct route only.
+  return (
+    (pass.queue ?? RenderQueue.Geometry) >= RenderQueue.Transparent ||
+    state?.blend !== undefined ||
+    state?.fog === false ||
+    (standardTransmissionValue(material) ?? 0) > 0
+  );
+}
+
 /** This join cannot inspect candidates, slots or a representative entity. */
 export function prepareBatchExecution(
   geometry: BatchGeometry,
@@ -127,18 +143,7 @@ export function prepareBatchExecution(
     return ok({ route: 'none' });
   const direct = (): Result<BatchExecution, GpuDrivenPreparationError> =>
     ok({ route: 'direct', material, pass });
-  const state = pass.renderState;
-  if (
-    state?.stencil !== undefined ||
-    (pass.kind === 'shadow' && !supportsGpuShadowRenderState(state)) ||
-    (material.textureSources?.size ?? 0) > 0 ||
-    (material.videoTextureFields?.size ?? 0) > 0 ||
-    (pass.kind === 'forward' &&
-      ((pass.queue ?? RenderQueue.Geometry) >= RenderQueue.Transparent ||
-        state?.blend !== undefined ||
-        (standardTransmissionValue(material) ?? 0) > 0))
-  )
-    return direct();
+  if (needsDirectRoute(material, pass)) return direct();
 
   const required =
     pass.sceneIndexProgramKey !== undefined || isCanonicalStandardPbrMaterialShader(pass.shaderId);

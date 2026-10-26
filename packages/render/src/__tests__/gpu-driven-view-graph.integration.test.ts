@@ -18,7 +18,7 @@ import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/t
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
 
@@ -189,6 +189,7 @@ describe('GpuDrivenView graph projection', () => {
     };
     const frameState = {
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+      temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
       retiredCompiledFrameGraphs: new Set(),
       activePipeline,
@@ -396,6 +397,7 @@ describe('GpuDrivenView graph projection', () => {
     };
     const frameState = {
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+      temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
       compiledFrameGraphGeneration: 0,
       retiredCompiledFrameGraphs: new Set(),

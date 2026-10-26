@@ -362,16 +362,21 @@ it('sorts each requested camera before folding its CPU draws', () => {
     camera: () => camera(20),
   });
   const folding = vi.fn((_dispatch: import('../../render-system-extract').DispatchList) => []);
+  // The Pass edit changed the shared material's batch class: its rows moved batches.
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+  const mesh = f.meshes.values().next().value;
+  assert(mesh);
+  const meshes = new Map(plan.batches.map((batch) => [batch.binding ?? assert.fail(), mesh]));
   const work = prepareScenePasses([display, capture], {
     scene: {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: new FrameSet(),
     },
     materials: f.dispatch.materials(),
     gpu: f.gpu,
-    meshes: f.meshes,
+    meshes,
     worlds: f.worlds,
     prepareUnbatched: () => [],
     viewDraws: [],

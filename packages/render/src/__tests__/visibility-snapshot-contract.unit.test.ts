@@ -1,6 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { ChildOf } from '@forgeax/engine-scene';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { resolveVisibility } from '../extract/visibility';
 
@@ -105,4 +105,45 @@ it('observes removal, inheritance changes and equal-count membership after unrel
   const changed = resolveVisibility(world);
   expect(changed.get(visible)).toBeUndefined();
   expect(changed.get(child)?.effective).toBe('hidden');
+});
+
+it.each([1000, 100000])('keeps visibility capture proportional to 8 flips at N=%i', (count) => {
+  const world = new World();
+  const entities = Array.from({ length: count }, () =>
+    world.spawn({ component: Visibility, data: {} }).unwrap(),
+  );
+  let visitedRows = 0;
+  const query = world.query.bind(world);
+  const queries = vi.spyOn(world, 'query').mockImplementation((options) => {
+    const result = query(options);
+    if (result.ok && options.read?.includes(Visibility)) {
+      const spans = result.value.spans.bind(result.value);
+      vi.spyOn(result.value, 'spans').mockImplementation(() => {
+        const result = spans();
+        if (result.ok) for (const span of result.value) visitedRows += span.length;
+        return result;
+      });
+    }
+    return result;
+  });
+  const baseline = resolveVisibility(world);
+  expect(baseline.hasAnyHiddenIntent).toBe(false);
+  visitedRows = 0;
+  const flipped = entities.slice(100, 108);
+  for (const entity of flipped)
+    world.set(entity, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
+  const hidden = resolveVisibility(world);
+  // No full read-query scan is allowed before a cache return. The changed
+  // entities' values and snapshot isolation are checked below.
+  expect(visitedRows).toBeLessThanOrEqual(flipped.length);
+  queries.mockRestore();
+  expect(hidden.hasAnyHiddenIntent).toBe(true);
+  for (const entity of flipped) expect(hidden.effective(entity)).toBe('hidden');
+  expect(hidden.effective(entities[0] as (typeof entities)[number])).toBe('visible');
+  expect(baseline.get(flipped[0] as (typeof flipped)[number])?.intent).toBe('inherited');
+  for (const entity of flipped) world.despawn(entity).unwrap();
+  const despawned = resolveVisibility(world);
+  expect(despawned.hasAnyHiddenIntent).toBe(false);
+  expect(despawned.get(flipped[0] as (typeof flipped)[number])).toBeUndefined();
+  expect(hidden.effective(flipped[0] as (typeof flipped)[number])).toBe('hidden');
 });

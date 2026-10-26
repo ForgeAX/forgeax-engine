@@ -2,15 +2,16 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, posix, resolve } from 'node:path';
 import { compressZstd } from '@forgeax/engine-codec/encode';
-import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
+import { encodeAssetBundle, readAssetBundleTable } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
+import { readDeliveryDocument } from './delivery-documents.js';
 import type { DistArtifact } from './dist.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
 
 /** Automatic Bundles stop splitting at this size; one Pack is never split. */
 export const AUTO_BUNDLE_TARGET_BYTES = 8 * 1024 * 1024;
 
-export interface PlayerBundleInput {
+export interface AssetBundleInput {
   readonly sourceRoot: string;
   readonly outputRoot: string;
   /** Player artifacts after receipt removal, keyed by dist-relative path. */
@@ -25,7 +26,7 @@ export interface PlayerBundleInput {
   readonly compressEntries?: boolean;
 }
 
-export interface PlayerBundleResult {
+export interface AssetBundleResult {
   /** Bundled originals that the player package omits. */
   readonly removed: ReadonlySet<string>;
   /** Rewritten Pack documents and new Bundle files, already written to outputRoot. */
@@ -34,6 +35,7 @@ export interface PlayerBundleResult {
     readonly bundles: number;
     readonly entries: number;
     readonly storedBytes: number;
+    /** Declared decoded entry bytes; stored length when no decoded length is declared. */
     readonly sourceBytes: number;
   };
 }
@@ -44,6 +46,7 @@ interface Entry {
   readonly paths: Set<string>;
   readonly identity: string;
   readonly bytes: number;
+  readonly decodedBytes: number;
   readonly owners: Set<string>;
 }
 
@@ -122,8 +125,7 @@ async function compressBundleEntry(bytes: Uint8Array, enabled: boolean) {
 }
 
 /** Group each Pack's non-stream artifacts into Bundles; shared bytes are stored once. */
-export async function planPlayerBundles(input: PlayerBundleInput): Promise<PlayerBundleResult> {
-  const target = input.targetBytes ?? AUTO_BUNDLE_TARGET_BYTES;
+export async function planAssetBundles(input: AssetBundleInput): Promise<AssetBundleResult> {
   const sources = new Map<string, string>();
   for (const row of catalogRows(input.catalog)) {
     if (typeof row.packageUrl !== 'string' || typeof row.sourcePath !== 'string') continue;
@@ -132,17 +134,55 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
   }
   const packs = [...sources.keys()].filter((path) => input.artifacts.has(path)).sort();
 
+  const { entries, retained, existing } = await collectEntries(input, packs);
+  const groups = groupEntries(input, sources, packs, entries);
+  const windows = new Map<string, Window>();
+  const written: DistArtifact[] = [];
+  const report = await existingBundleReport(input, existing);
+  for (const group of [...groups.keys()].sort()) {
+    const output = await writeBundle(input, groups.get(group) ?? []);
+    written.push(output.artifact);
+    for (const [identity, window] of output.windows) windows.set(identity, window);
+    report.storedBytes += output.artifact.bytes;
+    report.sourceBytes += output.sourceBytes;
+  }
+  written.push(...(await rewritePacks(input, packs, windows)));
+  return {
+    removed: new Set(
+      [...entries.values()]
+        .flatMap((entry) => [...entry.paths])
+        .filter((path) => !retained.has(path)),
+    ),
+    written,
+    report: {
+      ...report,
+      bundles: groups.size + existing.size,
+      entries: entries.size + report.entries,
+    },
+  };
+}
+
+async function collectEntries(input: AssetBundleInput, packs: readonly string[]) {
   const entries = new Map<string, Entry>();
   // Streaming and unverified descriptors keep their files, even when bytes are shared.
   const retained = new Set<string>();
+  const existing = new Map<string, Map<string, number>>();
   for (const pack of packs) {
-    const document = JSON.parse(await readFile(resolve(input.sourceRoot, pack), 'utf8'));
+    const document = JSON.parse(await readDeliveryDocument(resolve(input.sourceRoot, pack)));
     for (const [, , descriptor] of descriptors(document)) {
       const path = input.pathOf(descriptor.path, pack);
       const artifact = path === undefined ? undefined : input.artifacts.get(path);
       if (path === undefined || artifact === undefined) continue;
       if (!bundleable(descriptor)) {
         retained.add(path);
+        const range = descriptor.byteRange;
+        if (range !== undefined && path.startsWith('assets/bundles/')) {
+          if (range.bundleDigest !== `sha256:${artifact.sha256}`)
+            throw new Error(`${pack}: Bundle digest does not match ${path}`);
+          const windows = existing.get(path) ?? new Map<string, number>();
+          windows.set(`${range.offset}:${range.length}`, descriptor.byteLength ?? range.length);
+          existing.set(path, windows);
+        }
         continue;
       }
       const identity = `${artifact.sha256}:${descriptor.contentEncoding ?? 'identity'}`;
@@ -151,6 +191,7 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
         paths: new Set<string>(),
         identity,
         bytes: artifact.bytes,
+        decodedBytes: descriptor.byteLength ?? artifact.bytes,
         owners: new Set<string>(),
       };
       entry.paths.add(path);
@@ -159,6 +200,14 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
     }
   }
 
+  return { entries, retained, existing };
+}
+
+function namedGroups(
+  input: AssetBundleInput,
+  sources: ReadonlyMap<string, string>,
+  packs: readonly string[],
+) {
   const named = new Map<string, string>();
   for (const pack of packs) {
     const source = sources.get(pack) ?? '';
@@ -176,6 +225,17 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
       if (![...sources.values()].some((source) => source.startsWith(prefix)))
         throw new Error(`Bundle ${name} prefix ${prefix} matches no published Pack`);
 
+  return named;
+}
+
+function groupEntries(
+  input: AssetBundleInput,
+  sources: ReadonlyMap<string, string>,
+  packs: readonly string[],
+  entries: ReadonlyMap<string, Entry>,
+) {
+  const named = namedGroups(input, sources, packs);
+  const target = input.targetBytes ?? AUTO_BUNDLE_TARGET_BYTES;
   const exclusive = new Map<string, number>();
   for (const entry of entries.values()) {
     const [owner] = entry.owners;
@@ -208,56 +268,84 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
   ))
     if (members.length > 0) groups.set(`shared-${prefix}`, members);
 
-  const windows = new Map<string, Window>();
-  const written: DistArtifact[] = [];
-  let storedBytes = 0;
-  let sourceBytes = 0;
-  for (const group of [...groups.keys()].sort()) {
-    const members = (groups.get(group) ?? []).sort((a, b) => a.identity.localeCompare(b.identity));
-    const stored: Uint8Array[] = [];
-    const encodings: ('identity' | 'zstd')[] = [];
-    for (const entry of members) {
-      const bytes = new Uint8Array(await readFile(resolve(input.sourceRoot, entry.path)));
-      sourceBytes += bytes.byteLength;
-      const identity = entry.identity.endsWith(':identity');
-      const compressed = identity
-        ? await compressBundleEntry(bytes, input.compressEntries !== false)
-        : undefined;
-      if (compressed?.ok === true && compressed.value.byteLength < bytes.byteLength * 0.9) {
-        stored.push(compressed.value);
-        encodings.push('zstd');
-      } else {
-        stored.push(bytes);
-        encodings.push(identity ? 'identity' : 'zstd');
-      }
-    }
-    const bundle = encodeAssetBundle(stored);
-    const digest = sha256(bundle.bytes);
-    const bundlePath = `assets/bundles/${digest}.bin`;
-    await mkdir(dirname(resolve(input.outputRoot, bundlePath)), { recursive: true });
-    await writeFile(resolve(input.outputRoot, bundlePath), bundle.bytes);
-    storedBytes += bundle.bytes.byteLength;
-    written.push({
-      path: bundlePath,
-      mediaType: 'application/octet-stream',
-      bytes: bundle.bytes.byteLength,
-      sha256: digest,
-    });
-    members.forEach((entry, index) => {
-      const window = bundle.windows[index];
-      const contentEncoding = encodings[index];
-      if (window === undefined || contentEncoding === undefined) return;
-      windows.set(entry.identity, {
-        bundlePath,
-        ...window,
-        bundleDigest: `sha256:${digest}`,
-        contentEncoding,
-      });
-    });
-  }
+  return groups;
+}
 
+async function existingBundleReport(
+  input: AssetBundleInput,
+  existing: ReadonlyMap<string, ReadonlyMap<string, number>>,
+) {
+  let storedBytes = 0,
+    sourceBytes = 0,
+    entries = 0;
+  for (const [path, windows] of existing) {
+    const bytes = await readFile(resolve(input.sourceRoot, path));
+    const table = readAssetBundleTable(bytes);
+    if (!table.ok) throw new Error(`${path}: invalid Bundle: ${table.error}`);
+    const available = new Set(table.value.map((window) => `${window.offset}:${window.length}`));
+    for (const window of windows.keys())
+      if (!available.has(window)) throw new Error(`${path}: descriptor is not a Bundle entry`);
+    storedBytes += bytes.byteLength;
+    entries += windows.size;
+    sourceBytes += [...windows.values()].reduce((sum, length) => sum + length, 0);
+  }
+  return { storedBytes, sourceBytes, entries };
+}
+
+async function writeBundle(input: AssetBundleInput, entries: readonly Entry[]) {
+  let sourceBytes = 0;
+  const windows = new Map<string, Window>();
+  const members = [...entries].sort((a, b) => a.identity.localeCompare(b.identity));
+  const stored: Uint8Array[] = [];
+  const encodings: ('identity' | 'zstd')[] = [];
+  for (const entry of members) {
+    const bytes = new Uint8Array(await readFile(resolve(input.sourceRoot, entry.path)));
+    sourceBytes += entry.decodedBytes;
+    const identity = entry.identity.endsWith(':identity');
+    const compressed = identity
+      ? await compressBundleEntry(bytes, input.compressEntries !== false)
+      : undefined;
+    if (compressed?.ok === true && compressed.value.byteLength < bytes.byteLength * 0.9) {
+      stored.push(compressed.value);
+      encodings.push('zstd');
+    } else {
+      stored.push(bytes);
+      encodings.push(identity ? 'identity' : 'zstd');
+    }
+  }
+  const bundle = encodeAssetBundle(stored);
+  const digest = sha256(bundle.bytes);
+  const bundlePath = `assets/bundles/${digest}.bin`;
+  await mkdir(dirname(resolve(input.outputRoot, bundlePath)), { recursive: true });
+  await writeFile(resolve(input.outputRoot, bundlePath), bundle.bytes);
+  const artifact: DistArtifact = {
+    path: bundlePath,
+    mediaType: 'application/octet-stream',
+    bytes: bundle.bytes.byteLength,
+    sha256: digest,
+  };
+  members.forEach((entry, index) => {
+    const window = bundle.windows[index];
+    const contentEncoding = encodings[index];
+    if (window === undefined || contentEncoding === undefined) return;
+    windows.set(entry.identity, {
+      bundlePath,
+      ...window,
+      bundleDigest: `sha256:${digest}`,
+      contentEncoding,
+    });
+  });
+  return { artifact, windows, sourceBytes };
+}
+
+async function rewritePacks(
+  input: AssetBundleInput,
+  packs: readonly string[],
+  windows: ReadonlyMap<string, Window>,
+) {
+  const written: DistArtifact[] = [];
   for (const pack of packs) {
-    const document = JSON.parse(await readFile(resolve(input.sourceRoot, pack), 'utf8'));
+    const document = JSON.parse(await readDeliveryDocument(resolve(input.sourceRoot, pack)));
     let changed = false;
     for (const [table, key, descriptor] of descriptors(document)) {
       const path = input.pathOf(descriptor.path, pack);
@@ -286,13 +374,5 @@ export async function planPlayerBundles(input: PlayerBundleInput): Promise<Playe
       written.push({ ...original, bytes: bytes.byteLength, sha256: sha256(bytes) });
   }
 
-  return {
-    removed: new Set(
-      [...entries.values()]
-        .flatMap((entry) => [...entry.paths])
-        .filter((path) => !retained.has(path)),
-    ),
-    written,
-    report: { bundles: groups.size, entries: entries.size, storedBytes, sourceBytes },
-  };
+  return written;
 }

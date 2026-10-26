@@ -1,5 +1,6 @@
 import {
   type AssetRevisionGuard,
+  copyAssetData,
   runtimeAssetSource,
   runtimeAssets,
 } from '@forgeax/engine-assets-runtime/internal';
@@ -30,6 +31,7 @@ import {
   sameCandidateCredential,
 } from '../dynamic-geometry';
 import type { MeshPipelinePreparation } from '../publication/contract';
+import { packedRowsEligible, trimToPackedRows } from '../publication/packed-rows-mesh';
 import { type RenderResourceScope, worldRenderResources } from '../publication/resource-scope';
 import type {
   CandidatePipelineInput,
@@ -234,6 +236,25 @@ function hasMaterialIdentity(
 function resolveMeshAsset(world: World, meshHandle: AssetHandle<'mesh'>): MeshAsset | undefined {
   const resolved = runtimeAssets(world.assets).resolveAsset<MeshAsset>(meshHandle);
   return resolved.ok && resolved.value.kind === 'mesh' ? resolved.value : undefined;
+}
+
+/**
+ * Owned Render copy of the World mesh. Opt-in packed-rows copies an eligible
+ * static raster mesh without its canonical channels; the World mesh stays full.
+ * Throws like `read()` when the handle is not readable.
+ */
+function readPreparationMesh(
+  world: World,
+  meshHandle: AssetHandle<'mesh'>,
+  renderAttributes: DynamicGeometryPrepareInput['renderAttributes'],
+): MeshAsset {
+  const assets = runtimeAssets(world.assets);
+  if (renderAttributes === 'packed-rows') {
+    const borrowed = assets.resolveAsset<MeshAsset>(meshHandle).unwrap();
+    if (borrowed.kind === 'mesh' && packedRowsEligible(borrowed))
+      return trimToPackedRows(borrowed, copyAssetData);
+  }
+  return assets.read<MeshAsset>(meshHandle).unwrap();
 }
 
 function captureInput(
@@ -1501,7 +1522,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       assetRevision = captured.value;
       let mesh: MeshAsset;
       try {
-        mesh = runtimeAssets(world.assets).read<MeshAsset>(meshHandle).unwrap();
+        mesh = readPreparationMesh(world, meshHandle, request.renderAttributes);
       } catch (cause) {
         const cancelled =
           candidate === undefined ? lifecycle.cancel(prepared.value) : ok(undefined);

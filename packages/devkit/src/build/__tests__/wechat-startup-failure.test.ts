@@ -11,7 +11,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createRenderFeatureHost,
   type RenderFeatureFrameInput,
-  runRenderFeatureFrame,
 } from '../../../../render/src/features/host.js';
 import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '../../../../vfx/src/index.js';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
@@ -327,7 +326,7 @@ describe('native Host startup failure ownership', () => {
         .unwrap();
       expect(extracted.worlds[0].camera).toBe(selectedView);
       const featureHost = createRenderFeatureHost([first.feature]).unwrap();
-      const empty = runRenderFeatureFrame(featureHost, [
+      const empty = featureHost.runFrame([
         {
           identity: 'main',
           render: true,

@@ -9,6 +9,7 @@ import {
   validateMaterialValues,
 } from '@forgeax/engine-types';
 import { RenderPublicationError } from './contract';
+import { forgetMeshAttributeChannels, isPackedRowsMesh } from './packed-rows-mesh';
 
 export interface PublishedAssetPatch {
   readonly handle: number;
@@ -257,6 +258,40 @@ function binaryRangeLayoutValid(
   );
 }
 
+function publishedRange(
+  range: PublishedAssetPatch['ranges'][number],
+  rowBytes: number,
+  stride: number,
+): AssetRange {
+  return {
+    path: [...range.path],
+    byteOffset: range.byteOffset,
+    byteLength: range.byteLength,
+    ...(range.rowBytes === undefined ? {} : { rowBytes }),
+    ...(range.byteStride === undefined ? {} : { byteStride: stride }),
+  };
+}
+
+/**
+ * A packed-rows mesh carries its channels only in `vertices`. Runtime mesh
+ * writes always pair an `attributes.<key>` range with the matching `vertices`
+ * range, so the channel range is redundant there; a patch that changes a
+ * channel without its rows cannot be represented and fails loudly.
+ */
+function packedRowsPatch(current: MeshAsset | TextureAsset, patch: PublishedAssetPatch): boolean {
+  if (current.kind !== 'mesh' || !isPackedRowsMesh(current)) return false;
+  const channels = patch.ranges.some((range) => range.path?.[0] === 'attributes');
+  const rows = patch.ranges.some(
+    (range) => range.path?.length === 1 && range.path[0] === 'vertices',
+  );
+  if (channels && !rows)
+    throw new RenderPublicationError({
+      reason: 'shape',
+      subject: 'attribute range without its vertex rows on a packed-rows mesh',
+    });
+  return true;
+}
+
 function prepareBinaryPatch(
   current: MeshAsset | TextureAsset,
   patch: PublishedAssetPatch,
@@ -295,12 +330,19 @@ function prepareBinaryPatch(
     rowBytes: number;
     stride: number;
   }[] = [];
+  const packedRows = packedRowsPatch(current, patch);
   for (const range of patch.ranges) {
     if (!binaryRangePathValid(current.kind, range, touched)) return failBinaryPatch();
     const rowBytes = range.rowBytes ?? range.byteLength;
     const stride = range.byteStride ?? rowBytes;
     const rows = (range.byteLength - rowBytes) / stride + 1;
     if (!binaryRangeLayoutValid(range, rowBytes, stride, rows)) return failBinaryPatch();
+    if (packedRows && range.path[0] === 'attributes') {
+      if (!Object.hasOwn((current as MeshAsset).attributes, range.path[1] as string))
+        return failBinaryPatch();
+      ranges.push(publishedRange(range, rowBytes, stride));
+      continue;
+    }
     // A fixed preparation owns the old buffers; ordinary receiver reads borrow until adoption.
     if (retained) {
       const key = range.path[0] as string;
@@ -312,13 +354,7 @@ function prepareBinaryPatch(
     const target = binary(next, range.path);
     if (range.byteOffset + range.byteLength > target.byteLength) return failBinaryPatch();
     writes.push({ target, bytes: range.bytes.slice(), offset: range.byteOffset, rowBytes, stride });
-    ranges.push({
-      path: [...range.path],
-      byteOffset: range.byteOffset,
-      byteLength: range.byteLength,
-      ...(range.rowBytes === undefined ? {} : { rowBytes }),
-      ...(range.byteStride === undefined ? {} : { byteStride: stride }),
-    });
+    ranges.push(publishedRange(range, rowBytes, stride));
   }
   return {
     value: next as unknown as Asset,
@@ -332,6 +368,8 @@ function prepareBinaryPatch(
     commit: () => {
       for (const { target, bytes, offset, rowBytes, stride } of writes)
         writeStridedRows(target, bytes, offset, rowBytes, stride);
+      // In-place row writes invalidate channels rebuilt from the prior value.
+      if (packedRows) forgetMeshAttributeChannels(current as MeshAsset);
     },
   };
 }

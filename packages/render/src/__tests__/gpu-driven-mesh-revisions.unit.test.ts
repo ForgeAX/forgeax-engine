@@ -32,7 +32,7 @@ import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   admitGpuFixture,
   snapshot as gpuSnapshot,
@@ -1089,6 +1089,7 @@ describe('selected GPU material graph dependencies', () => {
       jointCount: 1,
       inverseBindMatrices: mat4.identity(mat4.create()),
     }));
+    const skinFrames = new SkinFrames(skinInputs);
     try {
       const main = defined(f.input.materialArtifact);
       const receipt = createStandardPbrArtifactReceipt(true);
@@ -1123,7 +1124,7 @@ describe('selected GPU material graph dependencies', () => {
       ]);
       skinInputs.apply(delta);
       skinInputs.joint(0, 19, mat4.identity(mat4.create()));
-      Object.assign(f.input.scene, { skin: skinInputs.prepareFrame(f.projection.slotsSnapshot()) });
+      Object.assign(f.input.scene, { skin: skinFrames.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
       f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);

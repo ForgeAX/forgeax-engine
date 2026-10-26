@@ -136,7 +136,7 @@ export {
   type VertexLayoutProjectionAttribute,
   type VertexLayoutProjectionMaskError,
 } from './vertex-attribute-layout';
-export { withVertexColor } from './vertex-color';
+export { type WithVertexColorsOptions, withVertexColor, withVertexColors } from './vertex-color';
 export {
   buildVisibilityDistanceField,
   visibilityDistanceFieldSourceDigest,

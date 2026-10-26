@@ -5,7 +5,6 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
-import { projectCaptureScene } from '../capture/scene-projection';
 import { Camera, MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../components';
 import { Materials } from '../materials';
 import { createRenderPublisher } from '../publication/publisher';
@@ -171,8 +170,11 @@ it('keeps independent camera selections and the full capture source range', () =
     assert(projection);
     expect(right.renderables).toHaveLength(16);
     expect(projection.content.subsurface.admitted).toBe(16);
-    const capture = projectCaptureScene(projection, right.renderables, right.dispatch);
-    expect(capture.renderables).toHaveLength(32);
+    // Captures draw every author-visible retained row, not the display's selection.
+    let authorVisible = 0;
+    for (const [, row] of projection.renderables.entries())
+      if (row.authorVisible !== false) authorVisible++;
+    expect(authorVisible).toBe(32);
     expect(() => subsurfaceDemand(projection.content.subsurface.authorVisible)).toThrow(
       'at most 16',
     );

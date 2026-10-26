@@ -93,13 +93,15 @@ const isolatedCoverageFileSets = [
     weight: 25,
   },
   {
-    // Literal5daf instrumented cold Standard/ray program suite crossed30s
-    // in a shared child. Preserve the full file and its original deadlines.
+    // Cold Standard/ray compilation crossed30s in a shared child. Run
+    // 40383076780 also exhausted worker parity's 45s subprocess budget beside
+    // Render coverage. Keep both complete files and their original deadlines.
     project: '@forgeax/engine-shader-compiler',
     files: [
       'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
     ],
-    weight: 20,
+    weight: 35,
   },
   {
     // Repository scans keep their existing deadlines without competing with

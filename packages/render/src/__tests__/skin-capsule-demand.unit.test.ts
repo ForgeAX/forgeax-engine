@@ -22,7 +22,7 @@ it('poses only actual capsule demand and reuses task storage across absent/empty
     expect(tasks.capsules(f.first)).toBe(ready);
     const storage = ready.capsules.buffer;
     await tasks.complete();
-    await f.skin.submitFrame(f.frame, Promise.resolve(), true);
+    await f.frames.submitFrame(f.frame, Promise.resolve(), true);
     for (const [definition, status] of [
       [undefined, 'no-shadow-capsules'],
       [{ joints: new Uint16Array(), shapes: new Float32Array() }, 'no-shadow-capsules'],
@@ -36,7 +36,7 @@ it('poses only actual capsule demand and reuses task storage across absent/empty
       });
       f.matrix[12] = 7;
       f.skin.joint(0, 19, f.matrix);
-      const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+      const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
       if (frame === undefined) throw new Error('Missing fixed capsule frame');
       tasks.begin(frame);
       const result = tasks.capsules(f.first);
@@ -46,7 +46,7 @@ it('poses only actual capsule demand and reuses task storage across absent/empty
         expect(result.capsules[0]).toBe(7);
       }
       await tasks.complete();
-      await f.skin.submitFrame(frame, Promise.resolve(), false);
+      await f.frames.submitFrame(frame, Promise.resolve(), false);
     }
     expect(allocate).not.toHaveBeenCalled();
     expect(upload).not.toHaveBeenCalled();
@@ -65,7 +65,7 @@ it('poses capsule endpoints through jointWorld times inverseBind and scales the 
   const f = skinTaskFixture(2, capsules),
     tasks = new SkinTasks(device, true);
   try {
-    f.skin.discardFrame();
+    f.frames.discardFrame();
     const inverse = new Float32Array(32);
     inverse.set(mat4.identity(mat4.create()));
     const second = mat4.identity(mat4.create());
@@ -83,7 +83,7 @@ it('poses capsule endpoints through jointWorld times inverseBind and scales the 
     world[10] = 2;
     world[12] = 3;
     f.skin.joint(0, 20, world);
-    const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+    const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (frame === undefined) throw new Error('Missing actual capsule pose frame');
     tasks.begin(frame);
     const result = tasks.capsules(f.first);
@@ -105,7 +105,7 @@ it('omits an overflowing composed pose from capsule and draw demand without fail
   const f = skinTaskFixture(1, capsules),
     tasks = new SkinTasks(device, true);
   try {
-    f.skin.discardFrame();
+    f.frames.discardFrame();
     const inverse = mat4.identity(mat4.create());
     inverse[0] = 3e38;
     f.skin.skeletonChanged(0, 7, {
@@ -117,7 +117,7 @@ it('omits an overflowing composed pose from capsule and draw demand without fail
     const world = mat4.identity(mat4.create());
     world[0] = 3e38;
     f.skin.joint(0, 19, world);
-    const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+    const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (frame === undefined) throw new Error('Missing actual overflow frame');
     tasks.begin(frame);
     expect(tasks.capsules(f.first)).toEqual({ status: 'pose-unavailable' });
@@ -135,7 +135,7 @@ it('keeps the Scene healthy when a shared Skeleton becomes malformed and omits o
   const f = skinTaskFixture(1),
     tasks = new SkinTasks(device, true);
   try {
-    f.skin.discardFrame();
+    f.frames.discardFrame();
     for (const malformed of [
       { jointCount: 0, inverseBindMatrices: new Float32Array(0) },
       { jointCount: 1, inverseBindMatrices: new Float32Array(16).fill(1e39) },
@@ -146,19 +146,19 @@ it('keeps the Scene healthy when a shared Skeleton becomes malformed and omits o
       },
     ]) {
       f.skin.skeletonChanged(0, 7, { kind: 'skeleton', ...malformed });
-      const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+      const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
       if (frame === undefined) throw new Error('Missing healthy Skin frame');
       tasks.begin(frame);
       expect(tasks.demand(f.first)).toBeUndefined();
       await tasks.complete();
-      f.skin.discardFrame();
+      f.frames.discardFrame();
     }
     f.skin.skeletonChanged(0, 7, {
       kind: 'skeleton',
       jointCount: 1,
       inverseBindMatrices: mat4.identity(mat4.create()),
     });
-    const restored = f.skin.prepareFrame(f.scene.slotsSnapshot());
+    const restored = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (restored === undefined) throw new Error('Missing restored Skin frame');
     tasks.begin(restored);
     expect(tasks.demand(f.first)).toBeDefined();

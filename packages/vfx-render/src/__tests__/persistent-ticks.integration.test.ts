@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
+import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import {
   buildVfxRecoveryIntents,
@@ -20,10 +20,10 @@ import {
 import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature.js';
 import {
-  freezeVfxPlan as freezeRenderFeaturePlan,
   planPasses,
   planResources,
   singleViewContext,
+  freezeVfxPlan as validateRenderFeaturePlan,
 } from './vfx-frame-fixture';
 
 function activeUpdates(plan: Parameters<typeof planPasses>[0]) {
@@ -144,7 +144,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         }),
       )
       .unwrap();
-    expect(freezeRenderFeaturePlan(feature.identity, plan, targets).ok).toBe(true);
+    expect(validateRenderFeaturePlan(feature.identity, plan, targets).ok).toBe(true);
     for (const work of plan.work) {
       const scope = work.scope === 'frame' ? 'frame' : work.scope.view;
       const previous = signatureSnapshots.get(scope);
@@ -392,18 +392,16 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         data: { effect: initialHandle, playing: true, seed: 1, timeScale: 1 },
       })
       .unwrap();
-    const fixedTick = world.getResource(FixedTime).tick;
     world.update(0).unwrap();
     const initialFrame = frame([world], 3);
     expect(initialFrame.extracted.worlds[0]?.intents).toHaveLength(1);
     expect(initialFrame.extracted.worlds[0]?.intents[0]).toMatchObject({
       player: initialPlayer,
       reset: true,
-      fixedDelta: 0,
+      delta: 0,
       spawnCount: 1,
       phaseTick: 0,
     });
-    expect(world.getResource(FixedTime).tick).toBe(fixedTick);
     expect(activeUpdates(initialFrame.plan)).toHaveLength(1);
     // The still-queued tick is republished as a payload-free reference to the
     // receiver's cached copy; it still plans the same update.
@@ -421,7 +419,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     expect(runtime.snapshot()).toHaveLength(2);
     expect(runtime.snapshot()[1]).toMatchObject({
       reset: false,
-      fixedDelta: 1 / 60,
+      delta: 1 / 60,
       spawnCount: 0,
       phaseTick: 1,
     });

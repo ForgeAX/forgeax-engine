@@ -106,9 +106,9 @@ it('omits missing current pose instead of producing a valid task descriptor', as
     f = skinTaskFixture(),
     tasks = new SkinTasks(device, true);
   try {
-    f.skin.discardFrame();
+    f.frames.discardFrame();
     f.skin.joint(0, 19, undefined);
-    const frame = f.skin.prepareFrame(f.scene.slotsSnapshot());
+    const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (!frame) throw new Error('Missing fixed root');
     const first = frame.slots.lookup(0, 17);
     if (!first) throw new Error('Missing source slot');

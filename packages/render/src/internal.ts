@@ -38,6 +38,12 @@ export {
 } from './prepare/extended-lighting/state';
 export type { MeshPipelinePreparation } from './publication/contract';
 export { captureMeshPipelinePreparation } from './publication/mesh-pipeline-preparation';
+export {
+  isPackedRowsMesh,
+  meshAttributeChannels,
+  type PackedRowsMesh,
+  packedRowsEligible,
+} from './publication/packed-rows-mesh';
 export { RenderPublicationReceiver } from './publication/receiver';
 export {
   decodeRenderPublication,

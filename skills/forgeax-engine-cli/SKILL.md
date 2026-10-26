@@ -474,11 +474,13 @@ It excludes SDK source, node_modules, authored source, and remote debugging serv
 | Build Web release | forgeax project package --format web-zip | release/*-web.zip and SHA-256; JSON reports `files` and `bundles`. |
 | Share with players | Upload ZIP to HTTPS static/HTML-game hosting | Players open the URL, not index.html directly. |
 
-Both package formats ship Pack artifacts in Asset Bundles: one Pack never splits across
+Browser `project build` and both package formats share Pack artifact preparation in Asset Bundles: one Pack never splits across
 Bundles, bytes shared by several Bundles are stored once, and streaming artifacts keep their
 files. Group Packs that load together with the build root's
 `ctx.devkitDelivery = { bundles: { <name>: ['<source path prefix>/'] } }`; unmatched Packs
-fall into automatic Bundles of at most 8 MiB. See the DevKit README section
+fall into automatic Bundles of at most 8 MiB. Build `dist/` preserves diagnostic Catalog fields and
+cook receipts; packaging omits them and reuses existing encoded Bundle entries. Catalog, Pack,
+shader and pipeline documents use the same Codec reader; do not parse delivered files as plain JSON. See the DevKit README section
 "Player Asset Bundles".
 
 > [!CAUTION]

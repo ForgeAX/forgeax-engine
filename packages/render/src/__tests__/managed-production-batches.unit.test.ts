@@ -24,7 +24,7 @@ import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extr
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import { observeCandidateReads } from './gpu-driven-candidate-read-observer';
 import { mesh, standardPbrInputs } from './gpu-driven-production-fixture';
 
@@ -109,7 +109,12 @@ async function fixture(
     ],
   };
   const material = new MaterialResource(transparent ? blended : opaque);
-  const secondMaterial = new MaterialResource({ ...opaque, materialHandle: 8 });
+  // A distinct texture binding keeps the second material in its own batch.
+  const secondMaterial = new MaterialResource({
+    ...opaque,
+    materialHandle: 8,
+    textureHandles: new Map([['baseColorTexture', 8]]),
+  } as unknown as MaterialSnapshot);
   const draw = {
     kind: 'indexed' as const,
     first: 0,
@@ -171,14 +176,16 @@ async function fixture(
     jointCount: 1,
     inverseBindMatrices: mat4.identity(mat4.create()),
   }));
+  const skinFrames = new SkinFrames(skinInputs);
   skinInputs.apply(delta);
   skinInputs.joint(0, 19, mat4.identity(mat4.create()));
-  const skinFrame = skinInputs.prepareFrame(projection.slotsSnapshot());
+  const skinFrame = skinFrames.prepareFrame(projection.slotsSnapshot());
   const slots = projection.slotsSnapshot();
   const topology = new BatchTopology();
   topology.rebuild(slots);
   const dispatch = new MaterialDispatch();
   for (const slot of slots) dispatch.bind(slot.slot, slot.snapshot);
+  topology.adoptMaterials(dispatch.materials(), projection.slotAt);
   const programs = new GpuDrivenMaterialProgramProjection();
   const gpuMesh = mesh(device);
   const work = { memberReads: 0, candidateReads: 0, sharedMeshReads: 0, slotReads: 0 };
@@ -269,6 +276,7 @@ async function fixture(
   const adopt = (snapshot: MaterialSnapshot) => {
     material.adopt(snapshot);
     dispatch.adopt(material);
+    topology.adoptMaterials(dispatch.materials(), projection.slotAt);
     scene.sync({ ...projection.apply([]), materialUpdates: [material] }).unwrap();
   };
   const dispose = () => {

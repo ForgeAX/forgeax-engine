@@ -52,3 +52,11 @@ fn surfaceGeometryNormal(dx : vec3<f32>, dy : vec3<f32>, fallback : vec3<f32>) -
   if (!(lengthSquared > 0.0)) { return fallback; }
   return geometric * inverseSqrt(lengthSquared);
 }
+
+/// Emission-only Surface for additive or translucent glow (Three: MeshBasicMaterial /
+/// unlit ShaderMaterial). Black base colour, normal = view direction (no grazing Fresnel,
+/// no backlit sun) and zero occlusion (no sky/IBL reflection), so the Standard BRDF adds
+/// nothing but `emissive`. `opacity` is the blend alpha (0 for a pure `one`/`one` additive).
+fn surfaceEmissionOnly(input : SurfaceInput, emissive : vec3<f32>, opacity : f32) -> SurfaceData {
+  return SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0);
+}

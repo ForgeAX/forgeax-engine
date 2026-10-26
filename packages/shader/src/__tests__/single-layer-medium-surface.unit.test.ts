@@ -36,7 +36,9 @@ describe('single-layer medium shader model', () => {
     expect(template).not.toContain('sceneMaterials[input.materialIndex].payload[0].w');
     expect(template).not.toContain('materialAlpha');
     expect(template).toContain('surfaceFrameInputs[index].words');
-    expect(template).toContain('let result = foamColor * (1.0 - fresnel) + reflection * fresnel;');
+    expect(template).toContain(
+      'let shaded = foamColor * (1.0 - fresnel) + reflection * fresnel + glint;',
+    );
     expect(template).toContain('surface.roughness');
     expect(template).toContain('surface.phaseG');
     expect(template).toContain('textureLoad(surfaceRawDepthTexture');
@@ -86,8 +88,10 @@ describe('single-layer medium shader model', () => {
     expect(abi).not.toContain('customDataStart');
   });
 
-  it('fails closed when graph-paired raw depth is unavailable', () => {
+  it('treats graph-paired raw depth as available for every medium row', () => {
     const template = source('single-layer-medium.wgsl');
+    // An unwritten frame row (no dynamicInput page) must not discard the water.
+    expect(template).not.toMatch(/words\[11\]/);
     expect(template).toContain('if (surface.coverage <= 0.0 || frame.backgroundAvailable == 0u)');
     expect(template).toContain(
       'return vec4<f32>(0.0, 0.0, 0.0, clamp(surface.coverage, 0.0, 1.0));',
@@ -104,5 +108,35 @@ describe('single-layer medium shader model', () => {
     expect(standard).toContain('struct SurfaceData');
     expect(standard).toContain('alphaClipThreshold');
     expect(standard).not.toContain('SingleLayerMediumSurfaceData');
+  });
+});
+
+describe('single-layer medium sun, sky and fog', () => {
+  const template = source('single-layer-medium.wgsl');
+  const common = source('common.wgsl');
+
+  it('adds a footprint-aware sun glint from the main DirectionalLight', () => {
+    expect(template).toContain('fn mediumSunGlint(');
+    expect(template).toContain('fwidth(orientedNormal)');
+    expect(template).toContain('* fresnel * view.lightColor * directionalShadow * (1.0 - foam)');
+    expect(template).toContain('reflect(-lightDirection, normal)');
+    expect(template).toContain('footprintVariance');
+  });
+
+  it('mirrors GradientSky along the reflection direction, falling back to the Skylight', () => {
+    expect(common).toContain('fn gradientSkyColor(v: View, dir: vec3<f32>) -> vec3<f32>');
+    expect(common).toContain('fn viewHasGradientSky(v: View) -> bool');
+    expect(template).toContain('return gradientSkyColor(view, reflectedDirection);');
+    expect(template.indexOf('viewHasGradientSky(view)')).toBeLessThan(
+      template.indexOf('samplePmrem('),
+    );
+  });
+
+  it('fogs the water surface at its own depth and keeps the already fogged backdrop', () => {
+    expect(template).toContain('#import forgeax_view::fog::{view_fog}');
+    expect(template).toContain('let fog = view_fog(view, input.positionWS);');
+    expect(template).toContain(
+      'let result = (shaded - carried) * fog.transmittance + carried + waterOpacity * fog.inscatter;',
+    );
   });
 });

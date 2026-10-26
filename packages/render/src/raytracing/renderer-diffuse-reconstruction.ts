@@ -90,6 +90,10 @@ export function prepareRendererDiffuseReconstruction(
       );
       device.queue.writeBuffer(config, 0, new Uint8Array(bytes)).unwrap();
     },
+    reset() {
+      accepted = undefined;
+      pending = undefined;
+    },
     commit() {
       if (pending !== undefined) {
         accepted = pending;

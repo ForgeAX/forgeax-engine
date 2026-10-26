@@ -1,14 +1,14 @@
 # ForgeaX Game Project Guide
 
-AI-first TypeScript game on `@forgeax/engine`. This file holds hard rules and routing;
-open a reference only when its task applies. Never read whole large `SKILL.md` files up
-front; stop after their short start section unless the task needs more.
+AI-first TypeScript game on `@forgeax/engine`. Hard rules and routing here;
+open a reference only when its task applies. Never read whole large `SKILL.md` files;
+stop after their short start section unless the task needs more.
 
 ## Start here
 
 1. Imports and signatures: `skills/forgeax-engine-sdk/references/api-index.md` before searching `node_modules`.
-2. Gameplay in an `empty` project: copy from
-   `skills/forgeax-engine-sdk/references/gameplay-cookbook.md`.
+2. Effects in an `empty` project: `skills/forgeax-engine-sdk/references/effects-cookbook.md`
+   indexes topics; open ONLY one.
 3. Commands: the Quick contract atop [`forgeax-engine-cli`](skills/forgeax-engine-cli/SKILL.md);
    exact inputs come from `pnpm exec forgeax help <path> --json`, never guesses.
 4. Pick the route in [Run, test, build, and release](#run-test-build-and-release), then edit.

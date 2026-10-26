@@ -155,8 +155,15 @@ interface MaterialDemandCounts {
   readonly rough: number;
   readonly backs: number;
   readonly medium: number;
+  readonly unfogged: number;
 }
-const EMPTY_DEMAND: MaterialDemandCounts = { transmission: 0, rough: 0, backs: 0, medium: 0 };
+const EMPTY_DEMAND: MaterialDemandCounts = {
+  transmission: 0,
+  rough: 0,
+  backs: 0,
+  medium: 0,
+  unfogged: 0,
+};
 
 function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCounts {
   if (material === undefined) return EMPTY_DEMAND;
@@ -171,6 +178,10 @@ function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCou
         ? material.bindings
         : 0,
     medium: isMediumMaterial(snapshot) ? material.bindings : 0,
+    unfogged:
+      snapshot.renderState?.fog === false && matchesRecordMode(snapshot, 'opaque-unfogged')
+        ? material.bindings
+        : 0,
   };
 }
 
@@ -186,6 +197,7 @@ function replaceDemand(
     rough: counts.rough - old.rough + current.rough,
     medium: counts.medium - old.medium + current.medium,
     backs: counts.backs - old.backs + current.backs,
+    unfogged: counts.unfogged - old.unfogged + current.unfogged,
   };
 }
 
@@ -232,6 +244,10 @@ export class MaterialFrame {
   }
   get hasMedium(): boolean {
     return this.counts.medium > 0;
+  }
+  /** An opaque material opts out of scene fog (`renderState.fog: false`). */
+  get hasUnfoggedOpaque(): boolean {
+    return this.counts.unfogged > 0;
   }
   /** Capture a newly generated view material at its producer, preserving this frame's root. */
   with(material: MaterialResource, bindings?: number, snapshot = material.snapshot): MaterialFrame {
@@ -517,17 +533,42 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
   }
   /** Pass-level work without visiting members; a pass fact classifies all of its entries. */
   *passWork(): Generator<DispatchPassWork> {
-    for (const { value: work } of nodes(this.root)) {
-      const dispatch = this;
-      yield {
-        pass: work.pass,
-        resource: work.resource,
-        count: work.groups.count,
-        *entries() {
-          for (const binding of workBindings(work)) yield dispatch.entry(work.pass, binding);
-        },
-      };
-    }
+    for (const { value: work } of nodes(this.root)) yield this.passWorkOf(work);
+  }
+  get lineage(): object {
+    return this.dispatchEntries;
+  }
+  private passWorkOf(work: Work): DispatchPassWork {
+    const dispatch = this;
+    return {
+      pass: work.pass,
+      resource: work.resource,
+      count: work.groups.count,
+      *entries() {
+        for (const binding of workBindings(work)) yield dispatch.entry(work.pass, binding);
+      },
+    };
+  }
+  /**
+   * Pass work that differs from `previous` of the same dispatch owner, keyed by
+   * its stable work identity; false when `previous` is unrelated. Shared
+   * subtrees are not visited.
+   */
+  passWorkChangesSince(
+    previous: DispatchList,
+    visit: (id: string, after: DispatchPassWork | undefined) => void,
+  ): boolean {
+    if (!(previous instanceof FrameDispatch) || previous.dispatchEntries !== this.dispatchEntries)
+      return false;
+    changes(previous.root, this.root, (_before, after, key, queue) =>
+      visit(`${queue}:${key}`, after === undefined ? undefined : this.passWorkOf(after)),
+    );
+    return true;
+  }
+  /** Every Pass work with the identity `passWorkChangesSince` reports. */
+  *identifiedPassWork(): Generator<readonly [id: string, work: DispatchPassWork]> {
+    for (const { value, key, queue } of nodes(this.root))
+      yield [`${queue}:${key}`, this.passWorkOf(value)];
   }
   at(index: number): DispatchEntry | undefined {
     index = Math.trunc(index) || 0;
@@ -555,11 +596,18 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
  * Pass-level work of a material query result, with the slot roster its entry
  * addresses rank into; `undefined` for any other (already flat) list.
  */
-export function dispatchPassWork(
-  list: DispatchList,
-): { readonly slots: number; readonly work: Iterable<DispatchPassWork> } | undefined {
+export function dispatchPassWork(list: DispatchList):
+  | {
+      readonly slots: number;
+      readonly work: Iterable<DispatchPassWork>;
+      readonly dispatch: DispatchList &
+        Pick<FrameDispatch, 'passWorkChangesSince' | 'identifiedPassWork'>;
+      /** The dispatch owner; its successive frames diff against each other. */
+      readonly lineage: object;
+    }
+  | undefined {
   return list instanceof FrameDispatch
-    ? { slots: list.slots.length, work: list.passWork() }
+    ? { slots: list.slots.length, work: list.passWork(), dispatch: list, lineage: list.lineage }
     : undefined;
 }
 

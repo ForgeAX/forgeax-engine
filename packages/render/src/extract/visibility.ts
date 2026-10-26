@@ -1,10 +1,5 @@
-import {
-  ENTITY_NULL_RAW,
-  Entity,
-  type EntityHandle,
-  type Query,
-  type World,
-} from '@forgeax/engine-ecs';
+import { ENTITY_NULL_RAW, Entity, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
   ChildOf,
@@ -18,6 +13,12 @@ import {
   VisibilityStateValue,
   visibilityStateFromU32,
 } from '../components/visibility';
+import { type IdentityMap, IdentityMapEditor } from '../scene/identity-map';
+
+const intentOf = (intents: IdentityMap, entity: EntityHandle): VisibilityState | undefined => {
+  const raw = intents.get(0, entity);
+  return raw === undefined ? undefined : visibilityStateFromU32(raw);
+};
 
 export type VisibilitySource = 'default' | 'self' | 'parent';
 
@@ -46,15 +47,29 @@ interface ResolutionState {
 }
 
 interface CapturedVisibility {
-  readonly intents: ReadonlyMap<EntityHandle, VisibilityState>;
+  /** Valid author intents by entity handle; an immutable root per capture. */
+  readonly intents: IdentityMap;
+  /** Entities carrying Visibility, including corrupted states. */
   readonly intentCount: number;
   readonly hasAnyHiddenIntent: boolean;
 }
 
+const ABSENT = -1;
+
+/**
+ * Author intents kept current from the World's own Visibility write and
+ * structural evidence: a frame visits the entities whose intent changed, never
+ * the Visibility population. Each capture seals an immutable intent root, so
+ * earlier snapshots stay valid.
+ */
 interface VisibilityProjection {
-  readonly rows: Query;
-  readonly changes: Query;
-  structure: number;
+  readonly source: StateProjection;
+  readonly intents: IdentityMapEditor;
+  /** Raw stored state (or ABSENT) and entity handle of each tracked entity index. */
+  readonly states: number[];
+  readonly handles: (EntityHandle | undefined)[];
+  count: number;
+  hidden: number;
   captured: CapturedVisibility | undefined;
 }
 
@@ -64,56 +79,55 @@ function captureVisibility(world: World): CapturedVisibility {
   let projection = projections.get(world);
   if (projection === undefined) {
     projection = {
-      rows: world.query({ read: [Visibility] }).unwrap(),
-      changes: world.query({ changed: [Visibility] }).unwrap(),
-      structure: -1,
+      source: createStateProjection(world, [Visibility]),
+      intents: new IdentityMapEditor(),
+      states: [],
+      handles: [],
+      count: 0,
+      hidden: 0,
       captured: undefined,
     };
     projections.set(world, projection);
   }
-  let changed = false;
-  for (const span of projection.changes.spans().unwrap()) changed ||= span.length > 0;
-  const structure = world.getStructureEpoch();
-  const previous = projection.captured;
-  if (previous !== undefined && !changed && projection.structure === structure) return previous;
-  const spans = projection.rows.spans().unwrap();
-  let count = 0;
-  let validCount = 0;
-  let same = previous !== undefined;
-  for (const span of spans) {
-    const states = span.get(Visibility).state;
-    count += span.length;
-    for (let index = 0; index < span.length; index++) {
-      const entity = span.entities[index] as EntityHandle;
-      const intent = visibilityStateFromU32(states[index] ?? 0);
-      if (intent !== undefined) validCount++;
-      if (previous?.intents.get(entity) !== intent) same = false;
+  const batch = projection.source.read();
+  if (batch.indices.length === 0 && projection.captured !== undefined) {
+    batch.accept();
+    return projection.captured;
+  }
+  const read = world[worldRead];
+  const { intents, states, handles } = projection;
+  for (const index of batch.indices) {
+    const entity = projection.source.entity(index);
+    const raw =
+      entity !== undefined && world.hasComponent(entity, Visibility)
+        ? ((read.getFieldValue(entity, Visibility, 'state') as number | undefined) ?? 0)
+        : ABSENT;
+    const before = states[index] ?? ABSENT;
+    const previousHandle = handles[index];
+    if (before !== ABSENT) {
+      projection.count--;
+      if (before === VisibilityStateValue.hidden) projection.hidden--;
     }
-  }
-  // FX structural migrations do not usually change visibility. Verify the
-  // current scalar facts before retaining the detached intent publication.
-  if (
-    same &&
-    previous !== undefined &&
-    count === previous.intentCount &&
-    validCount === previous.intents.size
-  ) {
-    projection.structure = structure;
-    return previous;
-  }
-  const intents = new Map<EntityHandle, VisibilityState>();
-  let hasAnyHiddenIntent = false;
-  for (const span of spans) {
-    const states = span.get(Visibility).state;
-    for (let index = 0; index < span.length; index++) {
-      const rawState = states[index] ?? 0;
-      const intent = visibilityStateFromU32(rawState);
-      if (intent !== undefined) intents.set(span.entities[index] as EntityHandle, intent);
-      hasAnyHiddenIntent ||= rawState === VisibilityStateValue.hidden;
+    if (previousHandle !== undefined && (raw === ABSENT || previousHandle !== entity))
+      intents.delete(0, previousHandle);
+    if (raw === ABSENT || entity === undefined) {
+      states[index] = ABSENT;
+      handles[index] = undefined;
+      continue;
     }
+    projection.count++;
+    if (raw === VisibilityStateValue.hidden) projection.hidden++;
+    states[index] = raw;
+    handles[index] = entity;
+    if (visibilityStateFromU32(raw) === undefined) intents.delete(0, entity);
+    else intents.set(0, entity, raw);
   }
-  projection.structure = structure;
-  projection.captured = { intents, intentCount: count, hasAnyHiddenIntent };
+  batch.accept();
+  projection.captured = {
+    intents: intents.capture(),
+    intentCount: projection.count,
+    hasAnyHiddenIntent: projection.hidden > 0,
+  };
   return projection.captured;
 }
 
@@ -166,7 +180,7 @@ export function resolveVisibility(
         return undefined;
       }
 
-      const intent = intents.get(entity) ?? 'inherited';
+      const intent = intentOf(intents, entity) ?? 'inherited';
       resolving.add(entity);
 
       let result: ResolutionState;
@@ -208,7 +222,7 @@ export function resolveVisibility(
     hasAnyHiddenIntent,
     get(entity: EntityHandle): VisibilityResolution | undefined {
       ensureResolver();
-      return intents.has(entity) ? resolveEntity?.(entity) : undefined;
+      return intents.has(0, entity) ? resolveEntity?.(entity) : undefined;
     },
     effective(entity: EntityHandle): 'hidden' | 'visible' {
       // Inheritance can only hide below an explicitly hidden entity.

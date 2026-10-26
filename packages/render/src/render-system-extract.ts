@@ -1874,26 +1874,9 @@ export function pipelineRenderState(
     stencilReadMask,
     stencilWriteMask,
     frontFace,
+    fog,
   } = renderState ?? {};
-  if (
-    outputs === undefined &&
-    cullMode === undefined &&
-    depthCompare === undefined &&
-    depthWriteEnabled === undefined &&
-    colorWriteMask === undefined &&
-    depthBias === undefined &&
-    depthBiasSlopeScale === undefined &&
-    depthBiasClamp === undefined &&
-    blend === undefined &&
-    alphaToCoverageEnabled === undefined &&
-    stencil === undefined &&
-    stencilReadMask === undefined &&
-    stencilWriteMask === undefined &&
-    frontFace === undefined
-  ) {
-    return undefined;
-  }
-  return {
+  const projected: MaterialRenderState = {
     ...(outputs !== undefined && { outputs }),
     ...(cullMode !== undefined && { cullMode }),
     ...(depthCompare !== undefined && { depthCompare }),
@@ -1908,7 +1891,9 @@ export function pipelineRenderState(
     ...(stencilReadMask !== undefined && { stencilReadMask }),
     ...(stencilWriteMask !== undefined && { stencilWriteMask }),
     ...(frontFace !== undefined && { frontFace }),
+    ...(fog !== undefined && { fog }),
   };
+  return Object.keys(projected).length === 0 ? undefined : projected;
 }
 
 export function resolveRuntimeAssetReference<K extends string>(
@@ -3466,14 +3451,18 @@ export function cameraForView(
   return extent.eye === undefined ? physical : stereoEyeCamera(physical, extent.eye);
 }
 
-/** Rebuild view-dependent planar captures from authoring facts and the selected display camera. */
+/**
+ * Rebuild view-dependent planar captures from authoring facts and the selected
+ * display camera. Non-planar auxiliary cameras are capture views, recorded by
+ * their own view entity, never by a display recording.
+ */
 export function projectAuxiliaryCamerasForView(
   display: CameraSnapshot | undefined,
   auxiliary: readonly CameraSnapshot[],
 ): readonly CameraSnapshot[] {
   return auxiliary.flatMap((camera) => {
     const planar = camera.planarReflection;
-    if (planar === undefined) return [camera];
+    if (planar === undefined) return [];
     if (display === undefined || camera.entityKey !== display.entityKey) return [];
     const reflected = buildPlanarReflectionView({
       world: display.world,

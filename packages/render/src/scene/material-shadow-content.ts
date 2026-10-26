@@ -173,12 +173,20 @@ interface ShadowMaterialState {
   readonly resources: readonly unknown[];
 }
 
-/** Captured while preparing shared shadow work; contains no instance or reverse-consumer index. */
+/**
+ * Captured while preparing shared shadow work; contains no instance or
+ * reverse-consumer index. Row-material batches bind one material per class
+ * while each member casts with its own row, so GPU content also witnesses the
+ * accepted material frame: any shadow-read edit of a member invalidates it in
+ * O(changed materials).
+ */
 export class ShadowMaterialContent {
   private readonly entries = new Map<
     MaterialResource,
     Map<RenderResourceScope, ShadowMaterialState>
   >();
+
+  constructor(private readonly materials?: MaterialFrame) {}
 
   add(
     resource: MaterialResource,
@@ -226,6 +234,11 @@ export class ShadowMaterialContent {
   same(previous: ShadowMaterialContent | undefined): boolean {
     if (previous === this) return true;
     if (previous === undefined || previous.entries.size !== this.entries.size) return false;
+    if (
+      (previous.materials === undefined) !== (this.materials === undefined) ||
+      !sameShadowMaterialFrames(previous.materials, this.materials)
+    )
+      return false;
     // Runs for every shadow cache probe each frame: key iteration plus lookup
     // and indexed resource loops allocate no entry tuples or callbacks.
     for (const material of this.entries.keys()) {

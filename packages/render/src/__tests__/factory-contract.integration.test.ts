@@ -464,6 +464,103 @@ describe('factory contract', () => {
     }
   });
 
+  it('replays the background library on the recovered device', async () => {
+    const inspection: PipelineLibraryInspection = {
+      state: 'active',
+      shaders: 0,
+      renderPipelines: 0,
+      computePipelines: 0,
+      shaderHits: 0,
+      pipelineHits: 0,
+      synchronousCreations: 0,
+      asynchronousCreations: 0,
+      compilationCompleted: 0,
+      compilationPending: 0,
+      failures: 0,
+      unrecordable: 0,
+      overflow: 0,
+      sourceBytes: 0,
+      warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+      backgroundWarmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0, state: 'idle' },
+    };
+    const empty: PipelineLibraryManifest = {
+      version: 1,
+      backend: 'webgpu',
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const background: PipelineLibraryManifest = {
+      ...empty,
+      shaders: [{ code: '// background' }],
+    };
+    const library = () => {
+      const prepare = vi.fn(async (_manifest: PipelineLibraryManifest) => ok(inspection));
+      return {
+        prepare,
+        inspect: () => inspection,
+        export: () => ok(empty),
+      } satisfies PipelineLibrary;
+    };
+    const adapter = new RhiNullAdapter();
+    const lost = deferred<{ readonly reason: 'unknown'; readonly message: string }>();
+    const firstLibrary = library(),
+      replacementLibrary = library();
+    const first = Object.assign((await adapter.requestDevice()).unwrap(), {
+      pipelineLibrary: firstLibrary,
+    });
+    const replacement = Object.assign((await adapter.requestDevice()).unwrap(), {
+      pipelineLibrary: replacementLibrary,
+    });
+    const proxy = new Proxy(first, {
+      get(target, property) {
+        if (property === 'lost') return lost.promise;
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    let devices = 0;
+    const recoverableRhi = {
+      ...rhi,
+      requestAdapter: async () =>
+        ok({
+          features: adapter.features,
+          limits: adapter.limits,
+          requestDevice: async () => ok(++devices === 1 ? proxy : replacement),
+        }),
+    } as never;
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { rhi: recoverableRhi, pipelineLibrary: empty, backgroundPipelineLibrary: background },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
+    );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect(firstLibrary.prepare).toHaveBeenLastCalledWith(background, { background: true });
+      await vi.waitFor(() =>
+        expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
+      );
+      lost.reject({ reason: 'unknown', message: 'forced device loss' });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(renderer.health().reason).toBe('device-lost');
+      expect((await renderer.recover()).ok).toBe(true);
+      // The replacement device starts with an empty library: the same manifest
+      // runs again on its background lane instead of compiling on first use.
+      expect(replacementLibrary.prepare.mock.calls[0]?.[0]).toBe(empty);
+      expect(replacementLibrary.prepare).toHaveBeenLastCalledWith(background, {
+        background: true,
+      });
+      await vi.waitFor(() =>
+        expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
+      );
+    } finally {
+      await renderer.dispose();
+    }
+  });
+
   it('does not publish renderer initialization before boot queue work settles', async () => {
     const fence = deferred<undefined>();
     const onSubmittedWorkDone = vi

@@ -136,7 +136,8 @@ async function createFixture(
       )
       .unwrap().program.fingerprint,
     reset: true,
-    fixedDelta: 1 / 60,
+    delta: 1 / 60,
+    elapsed: 1 / 60,
     phaseTick: 0,
     tick: 0,
     seed: 1,

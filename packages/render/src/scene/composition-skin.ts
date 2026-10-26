@@ -6,7 +6,7 @@ import type { GpuInputArena } from '../gpu-input-arena';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSceneApplyResult } from './render-scene-types';
 import type { SceneSlotFrame } from './scene-slots';
-import { type SkinSceneFrame, SkinSceneInputs } from './skin-scene-inputs';
+import { SkinSceneInputs } from './skin-scene-inputs';
 
 /** The composition facts Skin adoption reads; the Scene owns the entry. */
 export interface SkinCompositionEntry {
@@ -129,15 +129,6 @@ export class CompositionSkinAdoption {
       const first = skin.firstJoints(worldId);
       if (first === undefined) continue;
       for (const entity of first) this.joint(entry, worldId, entity);
-    }
-  }
-
-  prepareFrame(entry: SkinCompositionEntry): SkinSceneFrame | undefined {
-    try {
-      entry.skin?.discardFrame();
-      return entry.skin?.prepareFrame(entry.projection.slotsSnapshot());
-    } catch (cause) {
-      this.fail(entry, cause);
     }
   }
 

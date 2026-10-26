@@ -662,7 +662,10 @@ test('Preview readiness waits for its Catalog and preserves terminal producer er
     ],
     { timeout: 5000, encoding: 'utf8' },
   );
-  assert.equal(output.trim(), 'catalog readiness and failure passed');
+  assert.match(
+    output.trim(),
+    /^\[templates\] catalog-ready-ms=\d+\ncatalog readiness and failure passed$/,
+  );
 });
 
 test('Preview waits for a slow Catalog freshness barrier without restarting requests', () => {
@@ -704,7 +707,7 @@ test('Preview waits for a slow Catalog freshness barrier without restarting requ
     ],
     { timeout: 8000, encoding: 'utf8' },
   );
-  assert.equal(output.trim(), 'slow catalog passed');
+  assert.match(output.trim(), /^\[templates\] catalog-ready-ms=\d+\nslow catalog passed$/);
 });
 
 test('Preview reports success only after browser and owned server cleanup', () => {

@@ -27,7 +27,7 @@ import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
 import { buildCacheEntries } from './sdk-template-cache.mjs';
-import { createSdkVerifierProcess } from './verify-sdk-process.mjs';
+import { createSdkVerifierProcess, readSdkProjectDocument } from './verify-sdk-process.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
 let sourcePackageManager;
@@ -707,19 +707,8 @@ if (selected('project')) {
 
   // Resolve the public import from the installed candidate project, rather than
   // the verifier checkout (the package has an ESM-only public entry).
-  async function readProjectCatalog(path) {
-    const catalogRead = await execFileAsync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '--eval',
-        "import { readFile } from 'node:fs/promises'; import { decodeCatalogWire } from '@forgeax/engine/pack'; console.log(JSON.stringify(decodeCatalogWire(JSON.parse(await readFile(process.argv[1], 'utf8'))).unwrap()));",
-        path,
-      ],
-      { cwd: project },
-    );
-    return JSON.parse(catalogRead.stdout);
-  }
+  const readProjectCatalog = (path) =>
+    readSdkProjectDocument(execFileAsync, project, path, 'catalog');
   const builtCatalog = await readProjectCatalog(resolve(project, 'dist/pack-index.json'));
   const defaultSceneEntry = Array.isArray(builtCatalog)
     ? builtCatalog.find((entry) => entry.guid === defaultSceneGuid)
@@ -731,11 +720,10 @@ if (selected('project')) {
   ) {
     throw new Error('sdk-scriptable-pack-build-closure');
   }
-  const defaultScenePackage = JSON.parse(
-    await readFile(
-      resolve(project, 'dist', defaultSceneEntry.packageUrl.replace(/^\/+/, '')),
-      'utf8',
-    ),
+  const defaultScenePackage = await readSdkProjectDocument(
+    execFileAsync,
+    project,
+    resolve(project, 'dist', defaultSceneEntry.packageUrl.replace(/^\/+/, '')),
   );
   if (
     !Array.isArray(defaultScenePackage.assets) ||

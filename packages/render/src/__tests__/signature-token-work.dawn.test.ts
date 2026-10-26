@@ -1,6 +1,7 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
+import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createRenderFeatureHost } from '../features/host';
 import {
@@ -32,7 +33,9 @@ it('keeps Native outputs and private Host signatures exact through shared, retir
       createShaderModule: (descriptor) => createShaderModuleImmediate(device, descriptor),
     }),
   });
-  const host = createRenderFeatureHost([]).unwrap();
+  const host = createRenderFeatureHost([
+    { identity: 'token-native', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+  ]).unwrap();
   const session = owner.beginFeature('token-native', 0);
   const readback = device.createBuffer({ size: 16, usage: 1 | 8 }).unwrap();
   let previous: RenderFeaturePlanSignatureSnapshot | undefined;

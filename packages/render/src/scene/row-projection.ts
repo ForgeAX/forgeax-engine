@@ -39,11 +39,14 @@ export function projectedRows(
 export type ReadAsset = (scope: RenderResourceScope, handle: number) => void;
 
 /** What the last {@link RowProjection.sync} changed; `changed` lists slots in no order. */
-export interface RowProjectionSync {
+export interface RowProjectionSync<T = unknown> {
   /** Every slot whose entry entered, left or was re-projected. */
   readonly changed: readonly number[];
   /** The current row of each `changed` slot (`undefined` once it left), parallel to `changed`. */
   readonly records: readonly (RenderSceneSlot | undefined)[];
+  /** Accepted projected entries before and after each changed slot. */
+  readonly before: readonly (T | undefined)[];
+  readonly after: readonly (T | undefined)[];
   /** No retained evidence linked the rows to the previous sync: every slot was visited. */
   readonly cold: boolean;
 }
@@ -140,9 +143,11 @@ class RowLinks {
   }
 }
 
-const NOTHING: RowProjectionSync = Object.freeze({
+const NOTHING: RowProjectionSync<never> = Object.freeze({
   changed: Object.freeze([]),
   records: Object.freeze([]),
+  before: Object.freeze([]),
+  after: Object.freeze([]),
   cold: false,
 });
 
@@ -238,7 +243,7 @@ export class RowProjection<T> {
     this.#revision++;
   }
 
-  sync(rows: ProjectedRows): RowProjectionSync {
+  sync(rows: ProjectedRows): RowProjectionSync<T> {
     const previous = this.#rows;
     this.#rows = rows;
     if (
@@ -257,6 +262,8 @@ export class RowProjection<T> {
       this.#collectChanges(previous, rows, dirty);
     const changed: number[] = [];
     const records: (RenderSceneSlot | undefined)[] = [];
+    const before: (T | undefined)[] = [],
+      after: (T | undefined)[] = [];
     if (!linked) {
       // Cold: one ordered pass over every current row, then retire rows that left.
       const epoch = ++this.#epoch;
@@ -264,22 +271,23 @@ export class RowProjection<T> {
         const slot = record.slot;
         this.#reserve(slot);
         this.#seen[slot] = epoch;
-        this.#visit(slot, record, rows, changed, records);
+        this.#visit(slot, record, rows, changed, records, before, after);
       }
       const values = this.#values;
       for (let slot = 0; slot < values.length; slot++)
         if (values[slot] !== undefined && this.#seen[slot] !== epoch)
-          this.#visit(slot, undefined, rows, changed, records);
+          this.#visit(slot, undefined, rows, changed, records, before, after);
     } else {
       const slots = rows.slots;
       const slotAt =
         slots instanceof SceneSlotFrame
           ? slots.slotAt
           : (slot: number) => slots.find((record) => record.slot === slot);
-      for (const slot of dirty) this.#visit(slot, slotAt(slot), rows, changed, records);
+      for (const slot of dirty)
+        this.#visit(slot, slotAt(slot), rows, changed, records, before, after);
     }
     if (changed.length > 0) this.#revision++;
-    return { changed, records, cold: !linked };
+    return { changed, records, before, after, cold: !linked };
   }
 
   #visit(
@@ -288,6 +296,8 @@ export class RowProjection<T> {
     rows: ProjectedRows,
     changed: number[],
     records: (RenderSceneSlot | undefined)[],
+    beforeValues: (T | undefined)[],
+    afterValues: (T | undefined)[],
   ): void {
     this.#visits++;
     const before = this.#values[slot];
@@ -312,6 +322,8 @@ export class RowProjection<T> {
     }
     changed.push(slot);
     records.push(record);
+    beforeValues.push(before);
+    afterValues.push(value);
   }
 
   #reserve(slot: number): void {

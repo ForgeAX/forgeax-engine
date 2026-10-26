@@ -55,6 +55,28 @@ function ggxAlbedoAtNormalIncidence(f0: number, roughness: number): number {
   return sum / steps;
 }
 
+type FrameModel = ReturnType<typeof buildFrameModel>;
+type FrameWork = FrameModel['works'][number];
+
+/** Scene-color writers before the composite: the deferred lighting work and the last one. */
+function sceneProducers(model: FrameModel, composite: FrameWork, sceneHandle: number) {
+  const writers = model.works.filter(
+    (work) =>
+      work.workIndex < composite.workIndex &&
+      work.attachments?.colorViewHandleIds?.includes(sceneHandle),
+  );
+  const lighting = writers.find((work) =>
+    work.pipeline.shaders.some(
+      (shader) =>
+        shader.stage === 'fragment' &&
+        shader.entryPoint?.startsWith('fs_standard_deferred') === true,
+    ),
+  );
+  const beforeComposite = writers.at(-1);
+  assert(lighting && beforeComposite && beforeComposite !== lighting);
+  return { lighting, beforeComposite };
+}
+
 /** Ordinary Renderer, real cooked materials, production passes only. */
 export async function verifyRendererReflections(
   fixture: RayPublicationSet,
@@ -373,9 +395,22 @@ export async function verifyRendererReflections(
         },
       };
     };
+    // Scene-color producers before the composite: deferred direct lighting, then the
+    // diffuse-GI composite. With reflections the latter also adds the inter-microfacet
+    // (multi-scattering) GI term d * multi, which is nonzero wherever the DFG lookup
+    // reports missing GGX energy and a 1 spp GI path found radiance (host-dependent:
+    // a few grazing pixels on Apple Metal, none on the Linux CI runner).
+    const { lighting, beforeComposite } = sceneProducers(model, composite, sceneHandle);
     const exact = await replayOf(tape);
     let fallbackCenter: Rgb;
+    let preComposite: Uint8Array;
     try {
+      // Reflections leave direct lighting untouched.
+      const lit = (await exact.replay.readResourceAtWork(sceneHandle, lighting.workIndex)).unwrap();
+      expect(lit.bytes).toEqual(direct.bytes);
+      preComposite = (
+        await exact.replay.readResourceAtWork(sceneHandle, beforeComposite.workIndex)
+      ).unwrap().bytes;
       const inspected = (
         await exact.replay.inspectWork(composite.workIndex, ['pipeline', 'bindings', 'pixels'])
       ).unwrap();
@@ -412,7 +447,8 @@ export async function verifyRendererReflections(
       const without = (
         await falsifier.replay.readResourceAtWork(sceneHandle, last.workIndex)
       ).unwrap();
-      expect(without.bytes).toEqual(direct.bytes);
+      // Omitting the composite leaves exactly the scene its producers wrote.
+      expect(without.bytes).toEqual(preComposite);
       expect(without.bytes).not.toEqual(captured.bytes);
     } finally {
       await falsifier.dispose();

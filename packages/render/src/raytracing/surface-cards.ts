@@ -122,6 +122,8 @@ export interface SurfaceCapture {
     readonly captureKey: string;
     readonly projections: readonly SurfaceCardProjection[];
   }[];
+  /** Direct lookup through this capture's live instance owner. */
+  entry(instanceId: number): SurfaceCapture['entries'][number] | undefined;
   readonly views: Readonly<Record<(typeof CARD_TEXTURES)[number], TextureView>>;
   readonly bufferReads: readonly {
     readonly buffer: Buffer;
@@ -372,18 +374,19 @@ export async function prepareSurfaceCapture(
   const bufferReads: { buffer: Buffer; size: number; usage: 'uniform-read' | 'storage-read' }[] =
     [];
   const textureReads: TextureView[] = [];
-  const ownedBuffers: Buffer[] = [],
-    ownedTextures: Texture[] = [];
+  const bufferPositions = new Map<Buffer, number>();
+  const ownedTextures: Texture[] = [];
   // Buffers of removed instances: `retired` until a completion is tracked, then in flight.
   const retired: Buffer[] = [];
   const retiring = new Set<Buffer[]>();
   let revision = 0;
   const dispose = () => {
-    for (const b of ownedBuffers) device.destroyBuffer(b);
+    for (const read of bufferReads) device.destroyBuffer(read.buffer);
     for (const b of retired) device.destroyBuffer(b);
     for (const group of retiring) for (const b of group) device.destroyBuffer(b);
     for (const t of ownedTextures) device.destroyTexture(t);
-    ownedBuffers.length = 0;
+    bufferReads.length = 0;
+    bufferPositions.clear();
     retired.length = 0;
     retiring.clear();
     ownedTextures.length = 0;
@@ -391,18 +394,19 @@ export async function prepareSurfaceCapture(
   /** Drops buffers from every read list and the byte total; destruction waits for `track`. */
   const retire = (buffers: readonly Buffer[]) => {
     if (buffers.length === 0) return;
-    const set = new Set(buffers);
-    for (let i = bufferReads.length - 1; i >= 0; i--) {
-      const read = bufferReads[i];
-      if (read === undefined || !set.has(read.buffer)) continue;
-      allocatedBytes -= read.size;
-      bufferReads.splice(i, 1);
+    for (const buffer of buffers) {
+      const position = bufferPositions.get(buffer);
+      if (position === undefined) continue;
+      const read = bufferReads[position];
+      if (read !== undefined) allocatedBytes -= read.size;
+      const last = bufferReads.pop();
+      if (last !== undefined && position < bufferReads.length) {
+        bufferReads[position] = last;
+        bufferPositions.set(last.buffer, position);
+      }
+      bufferPositions.delete(buffer);
+      retired.push(buffer);
     }
-    for (let i = ownedBuffers.length - 1; i >= 0; i--) {
-      const owned = ownedBuffers[i];
-      if (owned !== undefined && set.has(owned)) ownedBuffers.splice(i, 1);
-    }
-    retired.push(...buffers);
     revision++;
   };
   const fail = <E>(r: Result<never, E>) => {
@@ -422,7 +426,7 @@ export async function prepareSurfaceCapture(
       usage: (uniform ? 64 : 128) | 12,
     });
     if (!b.ok) return b;
-    ownedBuffers.push(b.value);
+    bufferPositions.set(b.value, bufferReads.length);
     bufferReads.push({
       buffer: b.value,
       size: bytes.byteLength,
@@ -622,6 +626,7 @@ export async function prepareSurfaceCapture(
     number,
     {
       instance: SurfaceCaptureSource['instance'];
+      entryIndex: number;
       layout: MeshCardLayout;
       firstTile: number;
       projections: Buffer[];
@@ -714,9 +719,9 @@ export async function prepareSurfaceCapture(
     source: SurfaceCaptureSource,
     firstTile: number,
   ): Result<void, RayReferenceError | RayMaterialError | RhiError> => {
-    const mark = ownedBuffers.length;
+    const mark = bufferReads.length;
     const installed = installAt(source, firstTile, mark);
-    if (!installed.ok) retire(ownedBuffers.slice(mark));
+    if (!installed.ok) retire(bufferReads.slice(mark).map((read) => read.buffer));
     else revision++;
     return installed;
   };
@@ -816,7 +821,7 @@ export async function prepareSurfaceCapture(
           material.resolveTexture,
         );
         if (!bindings.ok) return bindings;
-        ownedBuffers.push(bindings.value.uniform);
+        bufferPositions.set(bindings.value.uniform, bufferReads.length);
         bufferReads.push({
           buffer: bindings.value.uniform,
           size: bindings.value.bytes,
@@ -927,11 +932,13 @@ export async function prepareSurfaceCapture(
     }
     editable.set(instance.instanceId, {
       instance,
+      entryIndex: entries.length,
       layout: cardLayout,
       firstTile,
       projections: projectionBuffers,
-      buffers: ownedBuffers
+      buffers: bufferReads
         .slice(mark)
+        .map((read) => read.buffer)
         .filter((buffer) => ![...installedMaterials].some((root) => root.uniform === buffer)),
       draws: installed,
       materials: installedMaterials,
@@ -974,8 +981,13 @@ export async function prepareSurfaceCapture(
       }
     }
     editable.delete(instanceId);
-    const entry = entries.findIndex((e) => e.instanceId === instanceId);
-    if (entry >= 0) entries.splice(entry, 1);
+    if (record === undefined) return;
+    const last = entries.pop();
+    if (last !== undefined && record.entryIndex < entries.length) {
+      entries[record.entryIndex] = last;
+      const moved = editable.get(last.instanceId);
+      if (moved !== undefined) moved.entryIndex = record.entryIndex;
+    }
   };
   for (const source of sources) {
     // Residency stops at the first source past a ceiling; the rest stream in later.
@@ -1170,6 +1182,10 @@ export async function prepareSurfaceCapture(
     },
     ...(residency === undefined ? {} : { residency }),
     has: (instanceId) => editable.has(instanceId),
+    entry(instanceId) {
+      const record = editable.get(instanceId);
+      return record === undefined ? undefined : entries[record.entryIndex];
+    },
     track(completed) {
       if (retired.length === 0) return;
       const group = retired.splice(0);
@@ -1245,13 +1261,23 @@ export async function prepareSurfaceCapture(
         return rayReferenceFailure('Card rematerialization must keep the instance geometry');
       const valid = editableSource(source);
       if (!valid.ok) return valid;
-      const position = entries.findIndex((e) => e.instanceId === instanceId);
+      const position = record.entryIndex;
       detach(instanceId);
       const installed = install(source, record.firstTile);
       if (!installed.ok) return installed;
-      // Entries stay in their original order; only the material draws changed.
-      const entry = entries.pop();
-      if (entry !== undefined) entries.splice(position, 0, entry);
+      // Rematerialization keeps the old position after dense swap-removal/install.
+      const replacement = editable.get(instanceId);
+      const displaced = entries[position];
+      if (replacement !== undefined && displaced !== undefined) {
+        const entry = entries[replacement.entryIndex];
+        const moved = editable.get(displaced.instanceId);
+        if (entry !== undefined && moved !== undefined) {
+          entries[replacement.entryIndex] = displaced;
+          moved.entryIndex = replacement.entryIndex;
+          entries[position] = entry;
+          replacement.entryIndex = position;
+        }
+      }
       return ok({ first: record.firstTile, count: record.layout.cards.length });
     },
     retransform(instanceId, transform) {
@@ -1301,7 +1327,7 @@ export async function prepareSurfaceCapture(
         }
       }
       record.instance = instance;
-      const index = entries.findIndex((e) => e.instanceId === instanceId);
+      const index = record.entryIndex;
       const previous = entries[index];
       const geometryKey = rayGeometryKey(instance, record.layout.meshDigest);
       entries[index] = {

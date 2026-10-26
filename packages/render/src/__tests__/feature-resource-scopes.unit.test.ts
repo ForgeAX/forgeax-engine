@@ -5,7 +5,6 @@ import {
   createRenderFeatureHost,
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameBatch,
-  runRenderFeatureFrame,
 } from '../features/host';
 import type { RenderFeatureWork } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
@@ -99,8 +98,7 @@ describe('prepared feature resource scopes', () => {
     });
     let batch: RenderFeatureFrameBatch | undefined;
     try {
-      batch = runRenderFeatureFrame(
-        f.host,
+      batch = f.host.runFrame(
         Array.from({ length: 8 }, (_, index) => ({
           ...f.common,
           identity: `view-${index}`,
@@ -144,7 +142,7 @@ describe('prepared feature resource scopes', () => {
     const f = await fixture(() => work);
     const allocations = vi.spyOn(f.device, 'createBuffer');
     const callbackOrder: string[] = [];
-    const batch = runRenderFeatureFrame(f.host, [
+    const batch = f.host.runFrame([
       {
         ...f.common,
         identity: 'view-0',
@@ -191,8 +189,7 @@ describe('prepared feature resource scopes', () => {
     const destroyed = vi.spyOn(f.device, 'destroyBuffer');
     let callbacks = 0;
     const failure = new Error('Resolver creation failed');
-    const failed = runRenderFeatureFrame(
-      f.host,
+    const failed = f.host.runFrame(
       ['view-0', 'view-1'].map((identity) => ({
         ...f.common,
         identity,
@@ -221,8 +218,7 @@ describe('prepared feature resource scopes', () => {
       expect(allocations).toHaveBeenCalledTimes(5);
       expect(destroyed).toHaveBeenCalledTimes(5);
       failed.onAborted();
-      const retried = runRenderFeatureFrame(
-        f.host,
+      const retried = f.host.runFrame(
         ['view-0', 'view-1'].map((identity) => ({
           ...f.common,
           identity,

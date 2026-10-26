@@ -233,9 +233,9 @@ export interface ExtractedWorld {
   /** Current paused preparation owns the player, including obsolete queued emitter IDs. */
   readonly preparationPlayers?: readonly EntityHandle[];
   /**
-   * Last submitted emitter state kept drawable between fixed ticks.  The
-   * queue above is simulation work only; renderHz is allowed to exceed
-   * fixedHz, and a live emitter must keep its projection/raster lease warm.
+   * Last submitted emitter state kept drawable between ticks.  The queue
+   * above is simulation work only; a paused, culled or deferred emitter has
+   * no tick this frame and must keep its projection/raster lease warm.
    */
   readonly retained: readonly RetainedEmitter[];
 }
@@ -373,7 +373,7 @@ function resolveFields(
 ): Result<PreparedVfxForceFields, VfxForceFieldError> | undefined {
   if (emitter.forceFields === undefined) return undefined;
   if (input === undefined)
-    return vfxForceFieldFailure('vfx-field-asset-missing', 'forceFields', 'fixed tick inputs');
+    return vfxForceFieldFailure('vfx-field-asset-missing', 'forceFields', 'tick inputs');
   if (!input.ok) return input;
   const textures: {
     handle: number;
@@ -486,7 +486,7 @@ export function gpuParticleRenderFeature(
     readonly stagePlan: VfxValidatedStagePlan;
     /** Camera projection is optional for `simulationWhenCulled: continue`. */
     readonly visible: boolean;
-    /** Retained state has no fixed-tick simulation/history work this frame. */
+    /** Retained state has no tick simulation/history work this frame. */
     readonly retained: boolean;
   }
   interface EmitterStream {
@@ -1714,7 +1714,7 @@ export function gpuParticleRenderFeature(
     const first = group.intents[0]?.intent;
     return first !== undefined && !first.reset && first.playCycle === retained.playCycle;
   };
-  // The fixed-tick queue is intentionally empty on most render frames.
+  // A paused, culled or deferred emitter has no queued tick this frame.
   // Keep the last submitted emitter state as a render-only group so its
   // persistent particle/history buffers, projection and raster passes stay
   // alive until the player is reset. A queued intent admitted above owns
@@ -1775,7 +1775,7 @@ export function gpuParticleRenderFeature(
     }
     return undefined;
   };
-  // Paused preparation is resource intent, never a fabricated fixed tick.
+  // Paused preparation is resource intent, never a fabricated tick.
   // It also parks a previously played emitter without retaining its last visible particles.
   const addPreparationGroups = (plan: FramePlan, entry: ExtractedWorld): void => {
     const keys = keysOf(plan, entry);
@@ -2545,7 +2545,7 @@ export function gpuParticleRenderFeature(
       ),
     );
   };
-  // Trail history is part of the fixed-step simulation state.  It must
+  // Trail history is part of the per-tick simulation state.  It must
   // be written immediately after each tick, before the next tick can
   // mutate particles; projecting history once after the whole batch
   // would overwrite only the latest ring slot.
@@ -2629,12 +2629,12 @@ export function gpuParticleRenderFeature(
     }
     return undefined;
   };
-  // Each fixed tick gets only its own immutable runtime/event input and
+  // Each tick gets only its own immutable runtime/event input and
   // bindings.  The particle/counter/scratch/event/history resources are
   // shared, so dispatch order advances one emitter state rather than
   // simulating independent q-0/q-1 copies.
   // Tick occupancy is frame data. Retain the largest admitted batch's
-  // slots so alternating fixed/render cadence does not rebuild the graph.
+  // slots so a catch-up or recovery batch does not rebuild the graph.
   const planTickPasses = (
     plan: FramePlan,
     gp: GroupPlan,

@@ -119,3 +119,52 @@ it('classifies a query per Pass, reading only transparent members at any scene s
   }
   expect(visits).toEqual([8, 8]);
 });
+
+it('revisits only changed Pass work of a sorted view across frames of unique materials', () => {
+  const count = 2000;
+  const resources = Array.from(
+    { length: count },
+    (_, i) => new MaterialResource(material(i + 1, i === 0)),
+  );
+  const owner = new MaterialDispatch();
+  const slots = new SceneSlots();
+  for (const [id, resource] of resources.entries()) {
+    const snapshot: RenderableSnapshot = {
+      worldId: 0,
+      entityKey: id,
+      assetHandle: 1,
+      material: resource,
+      materials: [resource],
+      materialBindingSources: ['renderer-override'],
+      transform: { world: new Float32Array(16) },
+    };
+    owner.bind(id, snapshot);
+    setSceneRow(slots, id, { slot: id, generation: 1, worldId: 0, entityKey: id, snapshot });
+  }
+  const frame = slots.capture();
+  const resolve = () => {
+    const dispatch = owner.query(frame);
+    const materialFrame = owner.materials();
+    const get = vi.spyOn(materialFrame, 'get');
+    get.mockClear();
+    const renderables = { length: count } as unknown as FrameList<RenderableSnapshot>;
+    const sortedDrawCount = resolveTransparencyView({
+      requested: 'sorted',
+      rgba16floatRenderable: true,
+      renderables,
+      materialFrame,
+      dispatch,
+    }).inspection.sortedDrawCount;
+    return { sortedDrawCount, reads: get.mock.calls.length };
+  };
+  expect(resolve()).toEqual({ sortedDrawCount: 1, reads: count });
+  expect(resolve()).toEqual({ sortedDrawCount: 1, reads: 0 });
+  // Edits that keep the Pass roster revisit only the edited material's work.
+  const edited = resources[7] as MaterialResource;
+  edited.adopt({ ...edited.snapshot, roughness: 0.9 });
+  owner.adopt(edited);
+  expect(resolve()).toEqual({ sortedDrawCount: 1, reads: 1 });
+  edited.adopt({ ...edited.snapshot, transparent: true });
+  owner.adopt(edited);
+  expect(resolve()).toEqual({ sortedDrawCount: 2, reads: 1 });
+});

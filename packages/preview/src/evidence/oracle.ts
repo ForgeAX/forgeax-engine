@@ -179,7 +179,7 @@ export interface VfxOracleInput {
     readonly contactSheetDigest?: string;
     readonly authoredBounds?: readonly [number, number, number, number, number, number];
     readonly seed?: number;
-    readonly fixedDelta?: number;
+    readonly delta?: number;
     readonly timelineFrames?: number;
   };
   readonly observed: VfxOracleInput['requested'] & {

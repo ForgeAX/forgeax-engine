@@ -539,7 +539,7 @@ inventory, cooked assets and shader variants. The output opens directly as a
 mini-game project in WeChat Developer Tools. Its main package loads one `payload`
 subpackage; that package owns all CommonJS chunks and losslessly Brotli-compressed
 resources. It reuses Player Asset Bundles with identity-encoded entries and plain
-documents (`preparePlayerDist` options `compressEntries: false` and
+documents (`prepareDist` options `compressEntries: false` and
 `compressDocuments: false`), then applies Brotli across each whole file. The Host
 uses `WXWebAssembly` and package filesystem decompression, and
 the build rejects an actual deployment larger than 4 MiB main / 20 MiB total.
@@ -1063,12 +1063,14 @@ unsupported.
 
 #### Player Asset Bundles
 
-Both package formats and WeChat replace per-artifact files with Asset Bundles. A Pack is the
+Browser `project build`, both package formats and WeChat share one Asset Bundle preparation pipeline. A Pack is the
 smallest delivery unit: all of its verified, non-streaming artifacts land in exactly one
 Bundle, and a Bundle carries one or more complete Packs. Bytes used by Packs in different
 Bundles are stored once in a shared Bundle. Streaming artifacts (`delivery: 'stream'`)
-keep their own files and URLs. Browser build `dist/` keeps one file per artifact;
-WeChat emits Bundles directly into its native payload.
+keep their own files and URLs. Browser build `dist/` retains the diagnostic Catalog fields,
+cook receipts and delivery declaration; Player packaging omits them and reuses the verified
+Bundle bytes and windows without recompressing their entries. The source-development
+server keeps its per-artifact transport. WeChat emits Bundles into its native payload.
 
 | Rule | Behavior |
 |:--|:--|
@@ -1087,18 +1089,23 @@ shared view of equal content (material programs shared by many materials). Once 
 live, a later read requests only that entry with HTTP `Range`; a host that answers with the
 whole file repopulates the Bundle. Resident Bundles share a 256 MiB budget and are evicted
 least recently used first. The package JSON reports the file
-count and `bundles: { bundles, entries, storedBytes, sourceBytes }`.
+count and `bundles: { bundles, entries, storedBytes, sourceBytes }`. `sourceBytes` sums
+declared decoded entry lengths (stored length when absent), so preparing an already
+encoded build preserves the same statistics.
 
-#### Compressed player documents
+#### Compressed delivery documents
 
-The Web ZIP stores the Catalog, shader manifest, pipeline library and every Pack document
+Browser build `dist/` and the Web ZIP store the Catalog, shader manifest, pipeline library and every Pack document
 as one zstd frame under its unchanged file name and URL, so any static host serves them
 small without content negotiation. The runtime recognizes the zstd magic bytes where it
 reads these documents from a platform `Response` (Catalog and Pack reads, the
 `ShaderRegistry` manifest fetch, the generated host's pipeline library) and decodes
 them before parsing; plain JSON reads unchanged, and a custom `PackageFetcher` keeps
 owning its transport encoding. `forgeax-dist.json` records the stored bytes and hashes.
-`--compress=false` keeps plain JSON; `single-html` always keeps plain JSON.
+`--compress=false` restores plain JSON in the Player; `single-html` always uses plain JSON.
+The shared Codec document reader also serves offline asset inspection, so `asset list`,
+`lookup` and `verify` retain diagnostic evidence on compressed builds. A build failure
+leaves derived output unverified and must be repaired through the producer and rebuilt.
 
 | Web ZIP path | Owner | Purpose |
 |:--|:--|:--|
@@ -2565,6 +2572,21 @@ fetch, a load failure only logs a warning, and the renderer compiles it after re
 without blocking startup; observe `pipelineLibrary.backgroundWarmup`. See the
 [WebGPU library contract](../rhi-webgpu/README.md#device-pipeline-library) for invalidation,
 device compatibility, memory limits and driver-cache constraints.
+
+During cooking, DevKit canonicalizes exact recipe identities even when the input
+already contains `computeEntryModules`: shader source, sorted binding layouts,
+expanded pipeline layouts, entries, constants and all explicit render state.
+Top-level diagnostic labels do not split identity; first occurrence order and
+labels are retained. Dependency indices are rewritten and original-source compute
+entry aliases remain available for later ordinary requests. Distinct variants and
+unique dependency rows are retained, including rows no retained recipe references,
+except dependencies owned by the completed startup library that the remaining
+background recipes and source-entry aliases no longer reference. Those dependencies
+are omitted from the background output and every remaining index is rewritten.
+After startup normalization, exact startup recipes are omitted from the background
+output; their aliases and dependencies remain available. This removes duplicate
+submission work, not gameplay coverage or map/settings combinations. The format
+stays version 1. Driver compilation still runs on the target device.
 
 The carrier provider consumes Tool Runtime’s `CarrierExecutionRequest` and
 `CarrierStateMachine` directly. `createCarrierProviderService` adds the actual

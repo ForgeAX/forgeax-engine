@@ -8,7 +8,6 @@ import {
   createRenderFeatureHost,
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameInput,
-  runRenderFeatureFrame,
 } from '../features/host';
 import { createRenderFeatureTarget } from '../features/targets';
 import type { RenderFeature } from '../features/types';
@@ -127,7 +126,7 @@ async function fixture(permission = true, diagnostic: boolean | 'absent' = true)
       }),
   });
   const run = (frameNumber: number, generation = 0) => {
-    const batch = runRenderFeatureFrame(host, [input(frameNumber, generation)]);
+    const batch = host.runFrame([input(frameNumber, generation)]);
     expect(batch.frame.errors).toEqual([]);
     const view = required([...batch.views.values()][0]);
     expect(view.errors).toEqual([]);

@@ -97,12 +97,6 @@ export class SkinSceneInputs {
   private readonly sources = new Map<number, Source>();
   private failed = false;
   private disposed = false;
-  private pending: SkinSceneFrame | undefined;
-  /** Reserved before submission: post-submit transfer must not allocate a root. */
-  private pendingHistory: SkinInputFrame | undefined;
-  /** Physical reads transfer before any post-submit observer can retire the Scene. */
-  private pendingRelease: Promise<void> | undefined;
-  private submitted: SkinInputFrame | undefined;
   constructor(
     arena: GpuInputArena,
     private resolve: ((worldId: number, handle: number) => SkeletonAsset | undefined) | undefined,
@@ -111,6 +105,10 @@ export class SkinSceneInputs {
   }
   private healthy(): void {
     if (this.disposed || this.failed) throw invalid('a live healthy shared Skin Scene');
+  }
+  /** No source binds a Skin; a view without submitted history then records none. */
+  get empty(): boolean {
+    return this.sources.size === 0;
   }
   private source(worldId: number): Source {
     let source = this.sources.get(worldId);
@@ -330,13 +328,35 @@ export class SkinSceneInputs {
     this.healthy();
     return this.inputs.capture();
   }
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.resolve = undefined;
+    this.sources.clear();
+    this.inputs.dispose();
+  }
+}
+
+/**
+ * One view's recording lifecycle over a shared {@link SkinSceneInputs}: its
+ * pending recording and its own submitted history. Views submit at their own
+ * cadence, so history never belongs to the shared inputs.
+ */
+export class SkinFrames {
+  private pending: SkinSceneFrame | undefined;
+  /** Reserved before submission: post-submit transfer must not allocate a root. */
+  private pendingHistory: SkinInputFrame | undefined;
+  /** Physical reads transfer before any post-submit observer can retire the Scene. */
+  private pendingRelease: Promise<void> | undefined;
+  private submitted: SkinInputFrame | undefined;
+  constructor(readonly inputs: SkinSceneInputs) {}
+
   /** Capture once before visibility/recording, independently of TAA demand.
    * Preparing or abandoning a newer frame never advances submitted history.
    */
   prepareFrame(slots: SceneSlotFrame): SkinSceneFrame | undefined {
-    this.healthy();
     if (this.pending !== undefined) throw invalid('submit or discard the current Skin recording');
-    if (this.sources.size === 0 && this.submitted === undefined) return undefined;
+    if (this.inputs.empty && this.submitted === undefined) return undefined;
     const current = this.inputs.capture();
     let previous: SkinInputFrame | undefined;
     let history: SkinInputFrame | undefined;
@@ -361,7 +381,6 @@ export class SkinSceneInputs {
 
   /** Borrow the pair for the active recording; never a publication field. */
   recordingFrame(): SkinSceneFrame | undefined {
-    this.healthy();
     return this.pending;
   }
 
@@ -441,27 +460,5 @@ export class SkinSceneInputs {
     this.submitted = undefined;
     this.pendingRelease = undefined;
     releaseRoots(pending?.current, pending?.previous, history, submitted);
-  }
-
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.resolve = undefined;
-    this.sources.clear();
-    let failure: unknown;
-    try {
-      this.resetHistory();
-    } catch (cause) {
-      failure = cause;
-    }
-    try {
-      this.inputs.dispose();
-    } catch (cause) {
-      if (failure === undefined) throw cause;
-      throw new AggregateError([failure, cause], 'Skin Scene retirement failed', {
-        cause: failure,
-      });
-    }
-    if (failure !== undefined) throw failure;
   }
 }

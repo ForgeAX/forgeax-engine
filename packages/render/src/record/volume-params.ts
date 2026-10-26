@@ -162,10 +162,7 @@ function prepareVolumetricFogMember(
   // The temporal shader reads this lane after the record stage resolves the
   // accepted graph/slot. It is overwritten on the next queue-visible frame;
   // the first candidate deliberately starts with history disabled.
-  params[31] =
-    frameState.temporalFrame !== undefined && frameState.temporalFrame.resetReason === 'none'
-      ? 1
-      : 0;
+  params[31] = frameState.temporalFrameTransaction.accepted()?.resetReason === 'none' ? 1 : 0;
   // RenderResourceScope elapsed time is the sole authored-medium clock.
   params[32] = fog.worldTimeSeconds ?? 0;
   return {

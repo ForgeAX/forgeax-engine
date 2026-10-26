@@ -931,7 +931,7 @@ it.each([
     const second = f.seal();
     const advanced = f.plan(second);
     expect(bindings(advanced)[0]).toBe(layout);
-    // Logical layouts are retained; the exact current fixed-tick upload is not.
+    // Logical layouts are retained; the exact current tick upload is not.
     expect(runtimeBytes(advanced)).not.toEqual(runtimeBytes(initial));
     const recovered = f.plan(second, 1);
     expect(bindings(recovered)[0]).toEqual(layout);

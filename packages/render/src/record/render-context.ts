@@ -519,6 +519,16 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
         readonly eye?: import('../components/stereo-camera').StereoEye;
       }
     | undefined;
+  /**
+   * A capture view's recording: its auxiliary Camera and the live target
+   * write its capture graph imports. Absent for display recordings.
+   */
+  readonly captureView?:
+    | {
+        readonly camera: number;
+        readonly state: import('./target-capture-graph').CubeCaptureGraphState;
+      }
+    | undefined;
   /** Build identity injected by the host's build-tool adapter. */
   readonly build?: string | undefined;
   /** Host identity binding for the renderer-owned SSR dependency seam. */
@@ -554,6 +564,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
       ) => RhiRenderPipeline | null)
     | undefined;
   rendererFrameNumber?: number | undefined;
+  /** The Renderer's one scene composition, shared by every system and CameraView. */
+  sceneComposition?: import('../scene/scene-composition').SceneComposition | undefined;
   /** Renderer-owned diffuse GI budget split shared by every CameraView's field. */
   giBudget?: import('../raytracing/diffuse-gi-budget').DiffuseGiBudget | undefined;
   rendererCaptureOwner?: import('../capture/renderer-captures').RendererCaptureOwner | undefined;

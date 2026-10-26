@@ -1,6 +1,7 @@
 import type { FrameSet } from './frame-set';
 import type { MeshFrame } from './mesh-frame';
 import type { ProbeBlendBufferProjection } from './probe-blend';
+import type { SubmittedHistory } from './render-scene-snapshots';
 import type { SceneSlotFrame } from './scene-slots';
 
 /**
@@ -14,7 +15,7 @@ export interface DrawEvidence {
   readonly unavailable: FrameSet;
   readonly probe: ProbeBlendBufferProjection;
   /** Submitted history of temporal snapshots; undefined while untracked. */
-  readonly temporal: object | undefined;
+  readonly temporal: SubmittedHistory | undefined;
 }
 
 export interface DrawChangeVisitor {
@@ -38,7 +39,13 @@ export function drawChangesSince(
 ): boolean {
   if (before === undefined || after === undefined) return false;
   if (before === after) return true;
-  if (before.temporal !== after.temporal) return false;
+  const temporal = after.temporal;
+  if (before.temporal !== temporal) {
+    // A later submission links to the history it replaced: only rows written
+    // since the earlier capture can change their submitted record.
+    if (before.temporal === undefined || temporal === undefined) return false;
+    if (!temporal.changesSince(before.temporal, visit.row)) return false;
+  }
   const probe = after.probe;
   if (before.probe !== probe) {
     if (

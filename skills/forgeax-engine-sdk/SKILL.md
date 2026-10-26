@@ -15,8 +15,8 @@ Reach a first correct edit with this short path, not by reading large skills up 
 
 1. Signatures and import paths: `references/api-index.md` before
    searching `node_modules` READMEs or `.d.ts` files.
-2. Recipes for an `empty` project (character, camera, physics boxes, lights, VFX burst, particles,
-   HUD, playthrough state): copy from `references/gameplay-cookbook.md`.
+2. Effect recipes for an `empty` project: `references/effects-cookbook.md` (~2 KB index: water -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
+   `runtime-light-emissive`, rain/snow/fire/sparks -> `particles-*`). Open ONLY the file you need.
 3. Commands: the **Quick contract** at the top of
    [`forgeax-engine-cli`](../forgeax-engine-cli/SKILL.md); camera, lights and post
    effects: the Quick contract of
@@ -25,10 +25,8 @@ Reach a first correct edit with this short path, not by reading large skills up 
    relevant section. Project layout, assets and setup live in the
    [game project guide](references/game-project-guide.md); acceptance, release and
    blocked checks in the [game delivery guide](references/game-delivery.md).
-5. A Three.js effect (fog, bloom, lines, instancing, reflections, canvas textures, solids):
-   look up its native equivalent and the known gaps in
-   [`references/three-equivalents.md`](references/three-equivalents.md) before
-   simplifying it or building it from boxes.
+5. A Three.js effect: look up its native equivalent and gaps in
+   [`references/three-equivalents.md`](references/three-equivalents.md) before simplifying it.
 
 Large skills (`forgeax-engine-cli`, `forgeax-engine-render-pipeline`,
 `forgeax-engine-debug`, `forgeax-engine-material`, `forgeax-engine-app`) are references:
@@ -47,9 +45,9 @@ again before delivery, open the PNG and answer each question in one sentence; fi
 1. Brightness: does the frame read as the brief's time of day (daylight bright, night dark
    with lit pools), with no blown-out white or crushed black areas?
 2. Saturation: are colours as vivid as the brief implies? A pale or grey frame usually
-   means fog over the subject, a cool `Skylight` fill or AgX (cookbook 0).
+   means fog over the subject, a cool `Skylight` fill or AgX.
 3. Contrast: does the subject stand out from its background? A flat slab or empty void
-   behind it needs a `GradientSky` (cookbook 0 presets), `SkyboxBackground` or set dressing.
+   behind it needs a `GradientSky`, `SkyboxBackground` or set dressing.
 4. Mood: do palette and lighting match the brief's words (warm, eerie, neon, cosy)?
 5. Framing: does the subject fill about half the frame, with nothing clipping the near
    plane or blocking the camera, and the HUD off the subject?
@@ -86,7 +84,7 @@ Defer: <available capabilities not needed now>
 | Scene, imported files, code-first packs, GUID loading | `forgeax-engine-assets`; discover operations through `forgeax-engine-cli` | `asset verify`, build catalog, runtime load by GUID |
 | PBR, textures, custom WGSL | `forgeax-engine-material`, then `forgeax-engine-shader` | Shader check, material readiness, browser pixels |
 | Lighting, shadows, sky, fog, AA, post effects, custom passes | `forgeax-engine-render-pipeline` | Requested pipeline active and real GPU/browser evidence |
-| Particles: rain, snow, sparks, dust, fire (`Points` + cookbook 12); GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Path choice; cooked effect, runtime playback, browser pixels |
+| Particles: rain, snow, sparks, dust, fire (`Points`, effects/particles-core.md); GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Path choice; cooked effect, runtime playback, browser pixels |
 | Bodies, colliders, character motion | `forgeax-engine-physics` | Fixed-step/collision test plus playable behavior |
 | BGM, SFX, spatial audio | `forgeax-engine-audio` | Host playback, intent/cleanup evidence, user gesture handling |
 | Black frame, wrong binding, GPU divergence | `forgeax-engine-rhi-debug`; use `forgeax-engine-debug` for symptom routing | One capture artifact, inspect/replay or paired differential |

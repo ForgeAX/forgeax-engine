@@ -10,7 +10,7 @@ import {
   type Result,
   RhiError,
 } from '@forgeax/engine-rhi';
-import { addLoadWork, beginLoadTimeline } from '@forgeax/engine-types';
+import { addLoadWork, beginLoadTimeline, sha256 } from '@forgeax/engine-types';
 
 type Recipe = PipelineLibraryRender | PipelineLibraryCompute;
 type NativePipeline = GPURenderPipeline | GPUComputePipeline;
@@ -20,6 +20,12 @@ interface Program {
   handle?: NativePipeline;
   ready: boolean;
   pending?: Promise<NativePipeline>;
+  pendingSince?: number;
+  startedAt?: number;
+  origin?: 'runtime' | 'startup-warmup' | 'background-warmup';
+  semanticIdentity?: string;
+  /** Library membership on the existing recipe owner, independent of native readiness. */
+  preload?: number;
 }
 const MAX_ENTRIES = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -98,12 +104,23 @@ function identity(value: object): string {
   const { label: _label, ...semantic } = value as Record<string, unknown>;
   return JSON.stringify(pod(semantic));
 }
-/** Load progress item for the `index`-th preparation request (render recipes first). */
-function recipeLabel(manifest: PipelineLibraryManifest, index: number): string {
-  const renders = manifest.renderPipelines.length;
-  const recipe =
-    index < renders ? manifest.renderPipelines[index] : manifest.computePipelines[index - renders];
-  return recipe?.label ?? (index < renders ? 'render' : 'compute');
+/** One native preparation request and its load progress item. */
+type WarmRequest = {
+  readonly label: string;
+  readonly run: () => NativePipeline | Promise<NativePipeline>;
+};
+/**
+ * Warm order follows manifest position across both tables (render 0, compute 0,
+ * render 1, ...), so recipes a producer places first are compiled first in
+ * either table; a long render table no longer delays the first compute recipe.
+ */
+function interleaveManifestOrder<T>(render: readonly T[], compute: readonly T[]): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < Math.max(render.length, compute.length); i++) {
+    if (i < render.length) out.push(render[i] as T);
+    if (i < compute.length) out.push(compute[i] as T);
+  }
+  return out;
 }
 function failure(cause: unknown): RhiError {
   return cause instanceof RhiError
@@ -133,8 +150,11 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private shaderInfo = new WeakMap<GPUShaderModule, Promise<GPUCompilationInfo>>();
   private readonly shaderIds = new WeakMap<object, number>();
   private readonly shaderByCode = new Map<string, number>();
-  private readonly shaders: { descriptor: GPUShaderModuleDescriptor; handle: GPUShaderModule }[] =
-    [];
+  private readonly shaders: {
+    descriptor: GPUShaderModuleDescriptor;
+    handle: GPUShaderModule;
+    sourceDigest?: string;
+  }[] = [];
   private readonly groupIds = new WeakMap<object, number>();
   private readonly groupKeys = new Map<string, number>();
   private readonly groups: {
@@ -168,6 +188,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   };
   private backgroundRunning = 0;
   private backgroundFailed = false;
+  private unidentifiedPending = 0;
+  private indexingLibraries = 0;
+  private preparingLibraries = 0;
 
   constructor(private readonly device: GPUDevice) {}
 
@@ -375,6 +398,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
     /** Report this compilation as load work; preparation reports its whole batch upfront. */
     counted: boolean,
+    origin: 'runtime' | 'startup-warmup' | 'background-warmup' = 'runtime',
   ): NativePipeline | Promise<NativePipeline> {
     const program = this.program(kind, descriptor);
     if (program?.ready && program.handle !== undefined) {
@@ -386,16 +410,25 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       return program.pending;
     }
     if (counted) addLoadWork('pipelines', { total: 1 });
+    if (program === undefined) this.unidentifiedPending++;
+    else {
+      program.pendingSince = performance.now();
+      program.origin = origin;
+    }
     const create = async () => {
-      this.active();
-      this.counts.asynchronousCreations++;
-      realmPipelineCreations++;
-      this.counts.compilationPending++;
-      const endPipeline = beginLoadTimeline('pipeline', descriptor.label ?? kind, {
-        mode: 'async',
-        kind,
-      });
+      let started = false;
+      let endPipeline: ReturnType<typeof beginLoadTimeline> | undefined;
       try {
+        this.active();
+        if (program !== undefined) program.startedAt = performance.now();
+        this.counts.asynchronousCreations++;
+        realmPipelineCreations++;
+        this.counts.compilationPending++;
+        started = true;
+        endPipeline = beginLoadTimeline('pipeline', descriptor.label ?? kind, {
+          mode: 'async',
+          kind,
+        });
         const handle =
           kind === 'render'
             ? await this.device.createRenderPipelineAsync(descriptor as GPURenderPipelineDescriptor)
@@ -411,7 +444,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         this.counts.compilationCompleted++;
         return handle;
       } catch (cause) {
-        endPipeline(undefined, { failed: true });
+        endPipeline?.(undefined, { failed: true });
         if (program !== undefined) {
           delete program.handle;
           program.ready = false;
@@ -419,8 +452,14 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         this.counts.failures++;
         throw cause;
       } finally {
-        this.counts.compilationPending--;
-        if (program !== undefined) delete program.pending;
+        if (started) this.counts.compilationPending--;
+        if (program === undefined) this.unidentifiedPending--;
+        else {
+          delete program.pending;
+          delete program.pendingSince;
+          delete program.startedAt;
+          delete program.origin;
+        }
         if (counted) addLoadWork('pipelines', { done: 1, item: descriptor.label ?? kind });
       }
     };
@@ -435,8 +474,75 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       renderPipelines: [...this.programs.values()].filter((p) => p.kind === 'render').length,
       computePipelines: [...this.programs.values()].filter((p) => p.kind === 'compute').length,
       ...this.counts,
+      pending: {
+        unidentified: this.unidentifiedPending,
+        pipelines: [...this.programs.values()]
+          .filter((program) => program.pending !== undefined)
+          .map((program) => this.inspectCompilation(program)),
+      },
       warmup: { ...this.warmup },
       backgroundWarmup: { ...this.backgroundWarmup },
+    };
+  }
+  private inspectCompilation(
+    program: Program,
+  ): NonNullable<PipelineLibraryInspection['pending']>['pipelines'][number] {
+    const recipe = program.recipe;
+    const modules =
+      'vertex' in recipe
+        ? [recipe.vertex.module, ...(recipe.fragment === undefined ? [] : [recipe.fragment.module])]
+        : [recipe.compute.module];
+    const digest = (module: number): string => {
+      const source = entry(this.shaders, module);
+      source.sourceDigest ??= `sha256:${sha256(source.descriptor.code)}`;
+      return source.sourceDigest;
+    };
+    const shaders = [...new Set(modules)].map((module) => ({
+      module,
+      label: entry(this.shaders, module).descriptor.label ?? null,
+      sourceDigest: digest(module),
+    }));
+    const bindGroupLayouts =
+      recipe.layout === 'auto'
+        ? ('auto' as const)
+        : entry(this.layouts, recipe.layout).groups.map((id) => entry(this.groups, id).descriptor);
+    const stage = <T extends { module: number }>(value: T) => ({
+      ...value,
+      module: digest(value.module),
+    });
+    const layout =
+      bindGroupLayouts === 'auto'
+        ? 'auto'
+        : bindGroupLayouts.map(({ label: _label, ...value }) => value);
+    const semantic =
+      'vertex' in recipe
+        ? {
+            ...recipe,
+            layout,
+            vertex: stage(recipe.vertex),
+            ...(recipe.fragment === undefined ? {} : { fragment: stage(recipe.fragment) }),
+          }
+        : { ...recipe, layout, compute: stage(recipe.compute) };
+    program.semanticIdentity ??= `sha256:${sha256(`${program.kind}:${identity(semantic)}`)}`;
+    return {
+      identity: program.semanticIdentity,
+      kind: program.kind,
+      origin: program.origin ?? 'runtime',
+      preload:
+        program.preload === 3
+          ? 'both'
+          : program.preload === 1
+            ? 'startup'
+            : program.preload === 2
+              ? 'background'
+              : this.indexingLibraries > 0
+                ? 'indexing'
+                : 'absent',
+      stage: program.startedAt === undefined ? 'queued' : 'compiling',
+      elapsedMs: Math.max(0, performance.now() - (program.pendingSince ?? performance.now())),
+      recipe: pod(recipe) as Recipe,
+      shaders,
+      bindGroupLayouts: pod(bindGroupLayouts) as typeof bindGroupLayouts,
     };
   }
   export(): Result<PipelineLibraryManifest, RhiError> {
@@ -446,7 +552,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         throw new Error(
           'Incomplete pipeline library: inspect overflow and unrecordable counts before exporting',
         );
-      if ([...this.programs.values()].some((p) => p.pending !== undefined))
+      if (
+        this.preparingLibraries > 0 ||
+        [...this.programs.values()].some((p) => p.pending !== undefined)
+      )
         throw new Error('Pipeline compilation is pending; export after preparation settles');
       const used = [...this.programs.values()].filter((p) => p.handle !== undefined);
       const shaderIds = new Map<number, number>(),
@@ -517,12 +626,16 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   ): Promise<Result<PipelineLibraryInspection, RhiError>> {
     const started = performance.now();
     const background = options.background === true;
+    this.indexingLibraries++;
+    this.preparingLibraries++;
+    let indexed = false;
     const lane = background ? this.backgroundWarmup : this.warmup;
     if (background) {
       this.backgroundRunning++;
       this.backgroundWarmup.state = 'running';
     }
     const settle = (failed: boolean) => {
+      this.preparingLibraries--;
       lane.elapsedMs += performance.now() - started;
       if (!background) return;
       this.backgroundFailed ||= failed;
@@ -575,44 +688,70 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         ...s,
         module: entry(shaders, s.module),
       });
-      const requests: (() => NativePipeline | Promise<NativePipeline>)[] = [
-        ...manifest.renderPipelines.map(
-          ({ fragment, ...d }) =>
-            () =>
-              this.createAsync(
-                'render',
-                {
-                  ...d,
-                  layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
-                  vertex: stage(d.vertex),
-                  ...(fragment === undefined ? {} : { fragment: stage(fragment) }),
-                },
-                false,
-              ),
-        ),
-        ...manifest.computePipelines.map(
-          (d) => () =>
-            this.createAsync(
-              'compute',
-              this.computeDescriptor({
-                ...d,
-                layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
-                compute: stage(d.compute),
-              }),
-              false,
-            ),
-        ),
-      ];
+      const requests = interleaveManifestOrder<WarmRequest>(
+        manifest.renderPipelines.map(({ fragment, ...d }) => ({
+          label: d.label ?? 'render',
+          run: this.indexWarmRequest(
+            'render',
+            {
+              ...d,
+              layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
+              vertex: stage(d.vertex),
+              ...(fragment === undefined ? {} : { fragment: stage(fragment) }),
+            },
+            background,
+          ),
+        })),
+        manifest.computePipelines.map((d) => ({
+          label: d.label ?? 'compute',
+          run: this.indexWarmRequest(
+            'compute',
+            this.computeDescriptor({
+              ...d,
+              layout: d.layout === 'auto' ? 'auto' : entry(layouts, d.layout),
+              compute: stage(d.compute),
+            }),
+            background,
+          ),
+        })),
+      );
+      // Every library recipe has an owner before native requests are issued.
+      // A runtime request can then distinguish an absent recipe from a later
+      // entry of an in-progress background warmup without guessing from labels.
+      this.indexingLibraries--;
+      indexed = true;
       lane.requested += requests.length;
       addLoadWork('pipelines', { total: requests.length });
-      await this.warmRequests(requests, concurrency, background, lane, manifest);
+      await this.warmRequests(requests, concurrency, background, lane);
       this.active();
+      const inspection = this.inspect();
       settle(false);
-      return ok(this.inspect());
+      return ok({
+        ...inspection,
+        warmup: { ...this.warmup },
+        backgroundWarmup: { ...this.backgroundWarmup },
+      });
     } catch (cause) {
+      if (!indexed) this.indexingLibraries--;
       settle(true);
       return err(failure(cause));
     }
+  }
+
+  private indexWarmRequest(
+    kind: 'render' | 'compute',
+    descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
+    background: boolean,
+  ): WarmRequest['run'] {
+    const program = this.program(kind, descriptor);
+    if (program !== undefined) program.preload = (program.preload ?? 0) | (background ? 2 : 1);
+    return () =>
+      this.createAsync(
+        kind,
+        descriptor,
+        false,
+        background ? 'background-warmup' : 'startup-warmup',
+      );
   }
 
   private async backgroundShaders(
@@ -646,11 +785,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   }
 
   private async warmRequests(
-    requests: readonly (() => NativePipeline | Promise<NativePipeline>)[],
+    requests: readonly WarmRequest[],
     concurrency: number,
     background: boolean,
     lane: { completed: number; failed: number },
-    manifest: PipelineLibraryManifest,
   ): Promise<void> {
     let cursor = 0,
       firstError: unknown;
@@ -664,13 +802,13 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           const index = cursor++;
           const request = entry(requests, index);
           try {
-            await request();
+            await request.run();
             lane.completed++;
           } catch (cause) {
             lane.failed++;
             firstError ??= cause;
           }
-          addLoadWork('pipelines', { done: 1, item: recipeLabel(manifest, index) });
+          addLoadWork('pipelines', { done: 1, item: request.label });
         }
       }),
     );

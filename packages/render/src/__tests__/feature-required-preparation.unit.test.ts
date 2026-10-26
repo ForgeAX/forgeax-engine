@@ -5,14 +5,14 @@ import {
   RenderFeaturePreparationFailedError,
   RenderFeatureStageFailedError,
 } from '../errors/render';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature } from '../features/types';
 
 async function frame(feature: RenderFeature<{ required: boolean }>) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const host = createRenderFeatureHost([feature]).unwrap();
   const run = () =>
-    runRenderFeatureFrame(host, [
+    host.runFrame([
       {
         worlds: [],
         owner: 0,

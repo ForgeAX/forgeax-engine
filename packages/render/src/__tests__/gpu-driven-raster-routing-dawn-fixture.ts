@@ -14,7 +14,7 @@ import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import type { PersistentRenderScene } from '../scene/render-scene';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
 import { admitPbrDawnFixture } from './gpu-driven-raster-class-dawn-fixture';
 
@@ -133,6 +133,7 @@ export async function verifyRetainedRasterRouting(input: {
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),

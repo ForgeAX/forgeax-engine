@@ -73,14 +73,17 @@ fn select_lod(@builtin(global_invocation_id) id: vec3<u32>) {
     bitcast<u32>(crossfade.fade),
     select(0u, 1u, crossfade.paired),
   );
-  // Shadow clamp: the finest level a reference view draws and the height
-  // floor that keeps a shadow view within one level of it.
-  let finest = lodFinestLevel(item.height, true, chain.rows, chain.levelCount);
+  // Shadow cap, gated as candidateLod gates it: an ordered non-negative height
+  // rises to the floor that keeps a shadow view at or finer than LOD1.
+  var shadowHeight = item.height;
+  if (item.height >= 0.0) {
+    shadowHeight = max(item.height, lodCoarsestHeight(1u, chain.rows, chain.levelCount));
+  }
   selectionOut[id.x * 2u + 1u] = vec4<u32>(
-    lodFinestLevel(item.height, false, chain.rows, chain.levelCount),
-    finest,
-    bitcast<u32>(lodClampHeight(finest, 1u, chain.rows, chain.levelCount)),
-    0u,
+    selectLodLevel(item.height, 0u, false, chain.rows, chain.levelCount),
+    selectLodLevel(shadowHeight, 0u, false, chain.rows, chain.levelCount),
+    bitcast<u32>(lodCoarsestHeight(1u, chain.rows, chain.levelCount)),
+    lodCrossfade(shadowHeight, chain.rows, chain.levelCount).level,
   );
 }
 

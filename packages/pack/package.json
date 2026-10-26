@@ -145,6 +145,7 @@
     }
   },
   "dependencies": {
+    "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "acorn": "8.16.0",

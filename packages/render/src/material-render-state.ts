@@ -126,11 +126,14 @@ export function shadowCasterRenderState(state: MaterialRenderState = {}): Materi
   };
 }
 
-/** GPU shadow batches preserve the same raster-only state as generated casters. */
+/** GPU shadow batches preserve the same raster-only state as generated casters.
+ * `fog` only selects forward fog and has no meaning in a depth-only shadow pass. */
 export function supportsGpuShadowRenderState(state?: MaterialRenderState): boolean {
   if (state === undefined) return true;
   const raster = shadowCasterRenderState(state) ?? {};
-  return Object.entries(state).every(([key, value]) => value === undefined || key in raster);
+  return Object.entries(state).every(
+    ([key, value]) => value === undefined || key === 'fog' || key in raster,
+  );
 }
 
 type DerivedRenderStates = Map<

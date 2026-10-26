@@ -3,7 +3,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { Camera } from '../components';
 import { LENS_FLARE_GHOST_COUNT, LensFlare, resolveLensFlare } from '../components/lens-flare';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import {
   createLensFlareRenderFeature,
   LENS_FLARE_PARAMS_BYTES,
@@ -103,7 +103,7 @@ describe('camera LensFlare', () => {
   it('creates no resources for disabled cameras and packs one shared parameter layout', () => {
     const host = createRenderFeatureHost([createLensFlareRenderFeature()]).unwrap();
     try {
-      const frame = runRenderFeatureFrame(host, [
+      const frame = host.runFrame([
         {
           identity: 'main',
           render: true,

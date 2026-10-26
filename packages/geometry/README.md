@@ -157,6 +157,10 @@ attribute with one constant linear RGBA value and repacks the interleaved
 vertices; index, tangent, bounds and submesh facts are preserved. Engine Content
 uses it to give its meshes a white vertex color.
 
+`withVertexColors(mesh, colors, { space })` sets per-vertex colours (RGB or RGBA floats
+per vertex, linear by default, `space: 'srgb'` decodes RGB) and repacks the
+interleaved vertices, so no `packInterleavedVertexAttributes` call is needed.
+
 ### 30s hands-on example
 
 ```ts

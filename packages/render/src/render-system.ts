@@ -31,7 +31,7 @@ import { createGpuDrivenOwner } from './assembly/gpu-driven-owner';
 import { createPostProcessParamsOwner } from './assembly/post-process-params';
 import { standardBloomAdmitted } from './bloom-admission';
 import type { CapsuleShadowInspection } from './capsule-shadow/inspection';
-import { projectCaptureScene } from './capture/scene-projection';
+import { selectCaptureViewCamera } from './capture/capture-view';
 import { createCloudFeatureFrameContext, createCloudFeatureView } from './cloud/frame-context';
 import { createClusterBinScratch } from './cluster-binner';
 import { ProjectedDecalInvalidError } from './decals/component';
@@ -89,6 +89,7 @@ import type {
   TransmissionInspection,
 } from './inspection-types';
 import { emptyBloomInspection } from './inspection-types';
+import type { MaterialResource } from './material-resource';
 import { AUTO_EXPOSURE_HISTOGRAM_BYTES } from './pipeline/standard-output/auto-exposure/gpu';
 import {
   type AutoExposureInspection,
@@ -118,6 +119,7 @@ import {
 import { createDynamicGeometryFrameBindings } from './record/dynamic-geometry-consumption';
 import { MaterialBgAssemblyCache } from './record/material-bg-assembly-cache';
 import { RecordingSkinTasks } from './record/recording-skin-tasks';
+import { materialSamplesTarget } from './record/target-capture-graph';
 import {
   disposeTargetCaptureLighting,
   disposeTargetCaptures,
@@ -201,7 +203,6 @@ import { LodInspectionOwner } from './record/lod-inspection';
 import { resolveMaterialSkylight } from './record/main-pass-material';
 import {
   createPreparedResolverCaches,
-  type PreparedMaterialBindingsScope,
   type PreparedResolverCaches,
   preparedMaterialBindings,
 } from './record/prepared-material-bindings';
@@ -275,7 +276,7 @@ import {
   resolveFeatureTargets,
 } from './render-system-record-attempt';
 import { createMaterialResidencyObserver } from './render-system-residency';
-import { PersistentRenderScene } from './scene/render-scene';
+import { PersistentRenderScene, SceneComposition } from './scene/render-scene';
 import { resetSsaoResources } from './ssao-buffers';
 import { resolveSsaoParameters } from './ssao-config';
 import {
@@ -293,6 +294,7 @@ import {
   createTemporalFrameTransaction,
   resetTemporalHistory,
   type TemporalFrame,
+  TemporalViewHistory,
 } from './temporal/frame';
 import { releaseTemporalGpuStates } from './temporal/gpu';
 import { inspectTemporal, type TemporalInspection } from './temporal/inspection';
@@ -685,10 +687,17 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     if (!installed.ok) internals.errorRegistry.fire(installed.error);
   };
   const pointsLinesOwner = new StandardPointsLinesOwner(internals);
+  // Every system of one Renderer (its CameraViews included) reads the
+  // Renderer's single scene composition; the first system creates it.
+  const ownsSceneComposition = internals.sceneComposition === undefined;
   // A publication Renderer shares one projection store across views: its rows
-  // are prepared once at acceptance. Local extraction keeps a store per system.
-  const ownsInstanceCollections = internals.instanceCollections === undefined;
-  const instanceCollections = internals.instanceCollections ?? new InstanceProjectionStore();
+  // are prepared once at acceptance. Local extraction shares the composition's.
+  const ownsInstanceCollections =
+    ownsSceneComposition && internals.instanceCollections === undefined;
+  const instanceCollections =
+    internals.instanceCollections ??
+    internals.sceneComposition?.instanceCollections ??
+    new InstanceProjectionStore();
   const reflectionProbeOwner = new ReflectionProbeRecordOwner(internals);
   const ssrFormatReceipts = new WeakMap<
     RhiDevice,
@@ -729,39 +738,52 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         ),
     } satisfies import('./pipeline-builder').PipelineBuilderShaderModuleFactory);
   const cubeCaptureState: CubeCaptureGraphState = { work: [] };
-  const terrainLayers = new TerrainLayers(
-    () => internals.gpuStore,
-    () => internals.device,
-    internals.immediateShaderModuleFactory ?? gpuDrivenShaderFactory,
-  );
+  const sceneComposition =
+    internals.sceneComposition ??
+    new SceneComposition({
+      terrainLayers: new TerrainLayers(
+        () => internals.gpuStore,
+        () => internals.device,
+        internals.immediateShaderModuleFactory ?? gpuDrivenShaderFactory,
+      ),
+      assets: internals.assets,
+      shaderRegistry: internals.assets.shaderRegistry,
+      getDevice: () => internals.device,
+      onGpuError: (error) => internals.errorRegistry.fire(error),
+      onAssetChange: (scope, change) => {
+        // Published GPU residency is adopted once by the outer view assembly.
+        if (scope.world === undefined) return;
+        const content = change.removed
+          ? undefined
+          : scope.resolveAsset<import('@forgeax/engine-types').Asset>(change.handle);
+        const mesh = content?.ok && content.value.kind === 'mesh' ? content.value : undefined;
+        const adopted = internals.gpuStore.adoptMeshChange(change, mesh, scope);
+        if (!adopted.ok) internals.errorRegistry.fire(adopted.error);
+        const texture = content?.ok && content.value.kind === 'texture' ? content.value : undefined;
+        const adoptedTexture = internals.gpuStore.adoptTextureChange(change, texture, scope);
+        if (!adoptedTexture.ok) internals.errorRegistry.fire(adoptedTexture.error);
+        internals.gpuStore.invalidateSampler(change.handle, scope);
+        internals.gpuStore.adoptCubemapChange(change, scope);
+      },
+      instanceCollections,
+    });
+  internals.sceneComposition = sceneComposition;
+  const terrainLayers = sceneComposition.terrainLayers;
+  if (terrainLayers === undefined)
+    throw new Error('The Renderer composition owns its terrain layers');
   Object.assign(internals, { preparedMaterialTexture: terrainLayers.texture.bind(terrainLayers) });
-  const persistentRenderScene = new PersistentRenderScene({
-    terrainLayers,
-    assets: internals.assets,
-    shaderRegistry: internals.assets.shaderRegistry,
-    getTemporalConsumerDemand: () => internals.standardProfile?.visibleSurface === true,
-    getDevice: () => internals.device,
-    onGpuError: (error) => internals.errorRegistry.fire(error),
-    onAssetChange: (scope, change) => {
-      frameState.irradianceField?.adoptAsset(scope, change);
-      frameState.firedEquirectProjectionFailedHandles.delete(change.handle);
-      // Published GPU residency is adopted once by the outer view assembly.
-      // Each retained view still adopts its own GI dependencies, even when held.
-      if (scope.world === undefined) return;
-      const content = change.removed
-        ? undefined
-        : scope.resolveAsset<import('@forgeax/engine-types').Asset>(change.handle);
-      const mesh = content?.ok && content.value.kind === 'mesh' ? content.value : undefined;
-      const adopted = internals.gpuStore.adoptMeshChange(change, mesh, scope);
-      if (!adopted.ok) internals.errorRegistry.fire(adopted.error);
-      const texture = content?.ok && content.value.kind === 'texture' ? content.value : undefined;
-      const adoptedTexture = internals.gpuStore.adoptTextureChange(change, texture, scope);
-      if (!adoptedTexture.ok) internals.errorRegistry.fire(adoptedTexture.error);
-      internals.gpuStore.invalidateSampler(change.handle, scope);
-      internals.gpuStore.adoptCubemapChange(change, scope);
+  const persistentRenderScene = new PersistentRenderScene(
+    {
+      getTemporalConsumerDemand: () => internals.standardProfile?.visibleSurface === true,
+      // Each view adopts its own GI dependencies once per shared change, even when held.
+      onViewAssetChange: (scope, change) => {
+        frameState.irradianceField?.adoptAsset(scope, change);
+        frameState.firedEquirectProjectionFailedHandles.delete(change.handle);
+      },
     },
-    instanceCollections,
-  });
+    sceneComposition,
+    ownsSceneComposition,
+  );
   const skinTasks = new RecordingSkinTasks({
     device: () => internals.device,
     roots: persistentRenderScene,
@@ -987,7 +1009,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     ssrLastCameraEntity: undefined,
     ssrLastHistoryVersion: undefined,
     graphGeneration: 0,
-    successfulTemporalFrameIndex: 0,
     lastSuccessfulBloom: 'off',
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
     reflectionFallbackReadback: undefined,
@@ -1022,8 +1043,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     pendingStandardLutState: undefined,
     activeTemporalGpuState: undefined,
     retiringTemporalGpuStates: new Set(),
-    lastSuccessfulTemporalView: undefined,
-    pendingTemporalCommit: { kind: 'none' },
+    temporalView: new TemporalViewHistory(),
     environmentGeneration: undefined,
     environmentLifecycle,
     instanceBuffers: new Map(),
@@ -1118,11 +1138,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     // only projects receipts and never starts work or creates image history.
     const owner = reflectionProbeOwner.inspect();
     const temporal =
-      frameState.lastSuccessfulTemporalView === undefined
+      frameState.temporalView.accepted === undefined
         ? undefined
         : ({
             successfulSubmit: true,
-            generation: frameState.lastSuccessfulTemporalView.input.deviceGeneration,
+            generation: frameState.temporalView.accepted.input.deviceGeneration,
           } as const);
     return projectSsrDependencies({
       requested,
@@ -1304,8 +1324,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       caches: PreparedResolverCaches,
     ) =>
     (input: RenderFeaturePreparedGraphicsResolverInput): PreparedGraphicsResolver => {
-      const materialBindings: PreparedMaterialBindingsScope = [];
       const {
+        materialBindings,
         preparedPipelineIds,
         preparedMaterialPipelineShaders,
         preparedGroup0Pipelines,
@@ -1694,7 +1714,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     if (frameState.installedPipelineHandle === lastBuiltPipelineHandle) return;
     resetRenderFeatureGraphState(internals);
     lastBuiltPipelineHandle = frameState.installedPipelineHandle;
-    if (publication === undefined) persistentRenderScene.invalidate();
+    if (publication === undefined) persistentRenderScene.resetView();
   }
 
   /** cameraOwner drives surfaced cameras and frustum cull; resourceOwner drives singleton resources. */
@@ -1719,30 +1739,51 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       { cameraOwner, resourceOwner },
       internals.assets,
       (renderables) =>
-        extractFrames(
-          sourceWorlds,
-          {
-            cameraOwner,
-            resourceOwner,
-            ...(cameraEntityKey === undefined ? {} : { cameraEntityKey }),
-          },
-          internals.assets,
-          materialCaches,
-          {
-            ...materialContext,
-            cull: 'none',
-            ...(internals.viewOutput === undefined ? {} : { viewExtent: internals.viewOutput }),
-            retainHidden: true,
-            renderables,
-            instanceCollections,
-            ...(!internals.device.caps.storageBuffer ||
-            internals.getMaterialShaderArtifact === undefined
-              ? {}
-              : { getMaterialShaderArtifact: internals.getMaterialShaderArtifact }),
-          },
+        captureViewFrame(
+          extractFrames(
+            sourceWorlds,
+            {
+              cameraOwner,
+              resourceOwner,
+              ...(cameraEntityKey === undefined ? {} : { cameraEntityKey }),
+            },
+            internals.assets,
+            materialCaches,
+            {
+              ...materialContext,
+              cull: 'none',
+              ...(internals.viewOutput === undefined ? {} : { viewExtent: internals.viewOutput }),
+              retainHidden: true,
+              renderables,
+              instanceCollections,
+              ...(!internals.device.caps.storageBuffer ||
+              internals.getMaterialShaderArtifact === undefined
+                ? {}
+                : { getMaterialShaderArtifact: internals.getMaterialShaderArtifact }),
+            },
+          ),
         ),
       leases,
+      internals.rendererFrameNumber,
     );
+  }
+
+  /**
+   * A capture view records only its own auxiliary Camera. The rewrite runs
+   * before scene consumption so culling, lights and history follow it.
+   */
+  function captureViewFrame<
+    F extends Pick<ExtractedFrame, 'cameras' | 'auxiliaryCameras' | 'cubeCameras'>,
+  >(frame: F): F {
+    const capture = internals.captureView;
+    if (capture === undefined) return frame;
+    const camera = selectCaptureViewCamera(frame.auxiliaryCameras, capture.camera);
+    return {
+      ...frame,
+      cameras: camera === undefined ? [] : [camera],
+      auxiliaryCameras: [],
+      cubeCameras: [],
+    };
   }
 
   /** A view-output receiver keeps only the published camera it presents. */
@@ -1750,6 +1791,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     publication: PreparedRenderPublication,
     cameraEntityKey: number | undefined,
   ): ExtractedFrame {
+    if (internals.captureView !== undefined)
+      return persistentRenderScene.consumePublication({
+        ...publication,
+        frame: captureViewFrame(publication.frame),
+      });
     const viewOutput = internals.viewOutput;
     const viewCamera =
       viewOutput === undefined
@@ -2058,7 +2104,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       environmentLifecycle.recordSelectionFailure(frame.fogFailure);
     }
     if (!frame.environmentReady || environment === undefined) {
-      frameState.pendingTemporalCommit = { kind: 'none' };
+      frameState.temporalView.discard();
       // A world with no camera still has a valid clear-only render path.
       // It has no environment candidate and therefore must not publish an
       // off/taa temporal state; camera-bearing rejected extraction remains
@@ -2098,7 +2144,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       internals.canvas.width,
       internals.canvas.height,
       generation,
-      frameState.lastSuccessfulTemporalView === undefined,
+      frameState.temporalView.accepted === undefined,
       lastSubmittedGeneration !== undefined && lastSubmittedGeneration !== generation,
     );
     buildFrameBindGroups(attempt.profileSession, pipelineState, frame.cameras.length);
@@ -2185,9 +2231,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     const plan = planMotionBlurFrame({
       params: camera?.motionBlur,
       sampleTimeSeconds: attempt.opts.sampleTimeSeconds,
-      acceptedSampleTimeSeconds: frameState.lastSuccessfulTemporalView?.sampleTimeSeconds,
+      acceptedSampleTimeSeconds: frameState.temporalView.accepted?.sampleTimeSeconds,
       fallbackDeltaSeconds: fallbackDelta,
-      acceptedTemporal: frameState.lastSuccessfulTemporalView,
+      acceptedTemporal: frameState.temporalView.accepted,
       temporalReset: attempt.opts.temporalReset === true,
       width: Math.max(1, internals.canvas.width),
       height: Math.max(1, internals.canvas.height),
@@ -2324,21 +2370,15 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         encoder: attempt.encoder,
         captures: {
           snapshots: frame.cubeCameras,
-          auxiliary: frame.auxiliaryCameras,
           exclusive: attempt.mode === 'capture',
           accept: (
             work: readonly import('./capture/scheduler').CubeCaptureWork[],
-            sharedAuxiliary: readonly CameraSnapshot[],
             sceneInputs: readonly import('./record/target-capture-graph').CubeCaptureGraphWork[],
           ) => {
             scheduledCaptureWork = work;
             sceneInputWork = sceneInputs;
-            auxiliaryCameras = [
-              ...(render
-                ? auxiliaryCameras.filter((camera) => camera.planarReflection !== undefined)
-                : []),
-              ...sharedAuxiliary,
-            ];
+            // Planar mirrors belong to the display view that records them.
+            if (!render) auxiliaryCameras = [];
           },
         },
         input,
@@ -2355,7 +2395,10 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     attempt: RecordAttempt,
     featureFrame: import('./features/host').RenderFeatureFrameResult | undefined,
   ): RenderFeatureGraphCandidate | undefined {
-    assertPublishedFeaturesImplemented(attempt.publication, internals.featureHost);
+    // A capture view records no Features by contract; the Feature-owning
+    // views of the same Renderer validate the published Feature roster.
+    if (internals.captureView === undefined)
+      assertPublishedFeaturesImplemented(attempt.publication, internals.featureHost);
     if (internals.featureHost === undefined || featureFrame === undefined) return undefined;
     if (featureFrame.preparationPending)
       markPipelinePreparationPending(frameState, featurePreparationPendingReason(featureFrame));
@@ -2575,6 +2618,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
   ): FrameRecording<RecordDraws> {
     const { cameras, lights } = view;
     const captureOnly = attempt.mode === 'capture';
+    // Display media (volumes, cloud layers) never enter a capture view's raw scene.
+    const displayMedia = !captureOnly && internals.captureView === undefined;
     const { projection } = scene.visibility;
     const environment = frame.environment;
     const frustumStats = frame.frustumStats;
@@ -2594,7 +2639,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       resourceGeneration: gpuDrivenProduction.resourceGeneration,
     });
     frameState.surfaceSubmissionObservation = surfaceSubmissionCandidate;
-    const probeCaptureScene = projectProbeCaptureScene(scene, features, orderedDispatch);
     const draws = presentedRenderableRecorder(attempt, scene.visibility.worldKeys, frame.gpuOwned);
     attempt.submitted = yield* profileFrameRecording(
       prepareFrameRecording(
@@ -2602,8 +2646,8 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         resourceScope(attempt),
         cameras,
         lights,
-        probeCaptureScene?.renderables ?? projection.renderables,
-        probeCaptureScene?.displayDispatch ?? orderedDispatch,
+        projection.renderables,
+        orderedDispatch,
         frameState,
         dispatchCounts,
         bindGroupCounts,
@@ -2648,12 +2692,12 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         attempt.composition.leases,
         features.candidate,
         pointsLinesOwner,
-        cubeCaptureFrameInput(attempt, scene, features, probeCaptureScene),
+        cubeCaptureFrameInput(attempt, scene, features),
         environment?.environmentSignature ?? '',
         environment?.fogSignature ?? '',
         frame.environmentReady && environment !== undefined,
         persistentRenderScene.transmissionTopologyDemand(),
-        captureOnly ? undefined : frame.volumetricFog,
+        displayMedia ? frame.volumetricFog : undefined,
         attempt.timingCapture,
         scene.shadowCasterProjection,
         scene.visibility.worldKeys,
@@ -2663,7 +2707,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         environment?.fog,
         attempt.opts.sampleTimeSeconds,
         attempt.opts.temporalReset === true,
-        captureOnly ? undefined : frame.cloudLayer,
+        displayMedia ? frame.cloudLayer : undefined,
         attempt.encoder,
         // extractFrames owns this fresh plain light record; features
         // receive view/cloud projections, never this mutable container.
@@ -2685,25 +2729,13 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     };
   }
 
-  /** Capture views share the display projection when any capture consumer exists. */
-  function projectProbeCaptureScene(
-    scene: RecordScene,
-    features: RecordFeatures,
-    orderedDispatch: DispatchList,
-  ) {
-    const projection = scene.shadowCasterProjection;
-    if (
-      projection === undefined ||
-      (features.auxiliaryCameras.length === 0 &&
-        features.sceneInputWork.length === 0 &&
-        features.scheduledCaptureWork.length === 0 &&
-        !scene.reflectionProbes.graph.work.some((work) => work.rawCaptureFace !== undefined))
-    )
-      return undefined;
-    return projectCaptureScene(
-      projection,
-      scene.visibility.projection.renderables,
-      orderedDispatch,
+  /** Retained-scene captures recorded beside this view: Cube faces, planar mirrors, probes, scene inputs. */
+  function hasCaptureConsumers(scene: RecordScene, features: RecordFeatures): boolean {
+    return (
+      features.auxiliaryCameras.length > 0 ||
+      features.sceneInputWork.length > 0 ||
+      features.scheduledCaptureWork.length > 0 ||
+      scene.reflectionProbes.graph.work.some((work) => work.rawCaptureFace !== undefined)
     );
   }
 
@@ -2711,7 +2743,6 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     attempt: RecordAttempt,
     scene: RecordScene,
     features: RecordFeatures,
-    probeCaptureScene: ReturnType<typeof projectProbeCaptureScene>,
   ): CubeCaptureFrameInput {
     const shadowCasterProjection = scene.shadowCasterProjection;
     return {
@@ -2721,14 +2752,9 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       auxiliaryCameras: features.auxiliaryCameras,
       state: cubeCaptureState,
       reflectionProbes: scene.reflectionProbes,
-      ...(probeCaptureScene === undefined
+      ...(shadowCasterProjection === undefined || !hasCaptureConsumers(scene, features)
         ? {}
-        : {
-            captureDispatch: probeCaptureScene.captureDispatch,
-            ...(shadowCasterProjection === undefined
-              ? {}
-              : { subsurfaceDemand: shadowCasterProjection.content.subsurface.authorVisible }),
-          }),
+        : { subsurfaceDemand: shadowCasterProjection.content.subsurface.authorVisible }),
     };
   }
 
@@ -2766,6 +2792,23 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     persistentRenderScene.setPointsLinesInspections(pointsLinesOwner.inspections());
   }
 
+  /**
+   * A capture view never draws a row whose material samples its own target
+   * (the capture graph excludes that same-pass attachment/binding conflict),
+   * so presentation evidence is required only for the rows it can write.
+   */
+  function captureWritableRows(rows: FrameList<RenderableSnapshot>): FrameList<RenderableSnapshot> {
+    const targets = new Set(internals.captureView?.state.work.map((work) => work.target));
+    if (targets.size === 0) return rows;
+    const samplesCapture = (material: MaterialResource): boolean => {
+      for (const target of targets)
+        if (materialSamplesTarget(material.snapshot, target)) return true;
+      return false;
+    };
+    const writable = (row: RenderableSnapshot) => !row.materials.some(samplesCapture);
+    return rows.every(writable) ? rows : rows.filter(writable);
+  }
+
   function verifySubmittedPresentation(
     attempt: RecordAttempt,
     frame: ExtractedFrame,
@@ -2781,10 +2824,11 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     if (internals.getPipelineState() === null || frameState.compiledFrameGraph === null)
       markFramePending(presentation, { code: 'compiled-graph-unavailable' });
     const gpuOwned = frame.gpuOwned;
-    const renderables =
+    const displayRows =
       gpuOwned === undefined
         ? scene.visibility.presentationRenderables
         : projectResidualDisplayRows(frame, gpuOwned, draws.gpuSelection);
+    const renderables = captureWritableRows(displayRows);
     const missing =
       presentation.presentation === 'pending'
         ? undefined
@@ -2862,7 +2906,10 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       internals.getPipelineState()?.perPassResources.discardBloomResources?.();
       return;
     }
-    const temporalCommit = persistentRenderScene.commitTemporalFrame(presentation === 'ready');
+    const temporalCommit = persistentRenderScene.commitTemporalFrame(
+      presentation === 'ready',
+      internals.rendererFrameNumber,
+    );
     if (!temporalCommit.ok) internals.errorRegistry.fire(temporalCommit.error);
     frameState.lastSuccessfulCameraAntialias = view.cameras[0]?.antialias;
     acceptSubmittedDepthOfField(frameState, internals, view.cameras[0]);
@@ -3057,7 +3104,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       return frameState.dynamicResolution?.inspect();
     },
     get temporal(): TemporalInspection {
-      return inspectTemporal(frameState.lastSuccessfulTemporalView, undefined, {
+      return inspectTemporal(frameState.temporalView.accepted, undefined, {
         ...(frameState.activeTemporalGpuState === undefined
           ? {}
           : { active: frameState.activeTemporalGpuState }),
@@ -3073,10 +3120,10 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         camera: latestCamera,
         invalidParams: lastMotionBlurInvalidParams,
         capabilities: internals.device.caps,
-        acceptedTemporal: frameState.lastSuccessfulTemporalView,
+        acceptedTemporal: frameState.temporalView.accepted,
         transaction: frameState.temporalFrameTransaction.inspect(),
         execution: frameState.motionBlurExecution,
-        temporalFrameId: frameState.temporalFrame?.frameId,
+        temporalFrameId: frameState.temporalFrameTransaction.accepted()?.frameId,
         deviceGeneration: internals.deviceScope.generation,
         graphGeneration: frameState.graphGeneration,
       });
@@ -3340,7 +3387,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     },
     bindGroupCounts: bindGroupCounts,
     get temporalFrame(): TemporalFrame | undefined {
-      const accepted = frameState.temporalFrame;
+      const accepted = frameState.temporalFrameTransaction.accepted();
       if (accepted === undefined) return undefined;
       return {
         ...accepted,
@@ -3494,7 +3541,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         frameState.dynamicResolution?.reset();
         pointsLinesOwner.dispose();
         persistentRenderScene.dispose();
-        terrainLayers.dispose();
+        if (ownsSceneComposition) terrainLayers.dispose();
         if (ownsInstanceCollections) instanceCollections.dispose();
         gpuDrivenProduction.dispose();
         disposeFeatureGpuWork();

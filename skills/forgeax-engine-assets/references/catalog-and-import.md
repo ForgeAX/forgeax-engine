@@ -69,6 +69,11 @@ Runtime edits do not rename source, create Catalog rows or save files.
 
 PackIndexEntry.compression accepts none, zstd, basis-etc1s, basis-uastc, or basis-uastc-hdr, also reflected in image metadata/sidecars. zstd wraps binary assets; basis values identify KTX2 block encoding. Missing/none means uncompressed. Mesh binaries default to zstd; texture policy comes from compressionMode, default auto.
 
+Browser build and Player packaging share Asset Bundle preparation and its zstd policy.
+Build `dist/` retains diagnostic Catalog fields and receipts; packaging reuses the verified
+Bundle bytes and removes player-unneeded evidence. Catalog and Pack documents can be
+zstd frames too; use the shared Codec document decoder for offline reads.
+
 Stored zstd encoding is decoded through the runtime-safe Codec path. Texture preparation preserves the admitted source representation and Render selects device residency from real capabilities. Follow the structured source/decode failure; do not fetch artifact URLs or transcode compressed textures independently in game code.
 
 ### Texture compressionMode sidecar

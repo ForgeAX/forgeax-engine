@@ -273,6 +273,15 @@ the parallel unit: source collection, Surface lowering, hashing, variant compila
 and ray cooking run together off the host thread. Each material Worker uses the
 serial program compiler; Pack concurrency does not create nested shader pools.
 
+The existing material queue places uniform-only siblings on one warm lane while
+independent contracts use other idle lanes. Placement derives from roots, profile
+and the detached source contract without uniform values; it never admits cached
+output. Each cook still rereads source bytes, validates its actual values and
+publishes its own GUID, references and artifacts. Non-JSON input retains the
+ordinary cooker path. Native parity tests require identical serial/parallel
+publication bytes, no simultaneous duplicate contract, and two active distinct
+contracts in the two-lane fixture.
+
 | `FORGEAX_SHADER_COMPILE_WORKERS` | Material execution |
 | --- | --- |
 | Unset | Up to four workers, bounded by available CPU and memory |
@@ -280,6 +289,10 @@ serial program compiler; Pack concurrency does not create nested shader pools.
 | `2` through `4` | Requested pool, clamped to CPU and memory admission |
 
 Admission keeps 2 GiB of host headroom and budgets 2 GiB per material lane.
+Automatic admission reserves one CPU for the host. An explicit worker request
+may use every available CPU, still bounded by four lanes and the same memory
+admission. The two-CPU, 8 GiB native fixture exercises serial/parallel byte parity,
+warm contract placement and two simultaneous independent contracts.
 Each Worker has a 1 GiB old-generation heap limit; native/WASM memory is separate.
 Idle workers are unreferenced and do not hold Node open. A failed job rejects its
 caller; a failed Worker is replaced for later jobs without retrying failed work.

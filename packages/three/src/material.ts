@@ -285,6 +285,10 @@ export function materialValues(material: SupportedMaterial): unknown[] {
   ];
 }
 
+function projectFog(material: Material): { readonly fog?: false } {
+  return 'fog' in material && material.fog === false ? { fog: false } : {};
+}
+
 function projectSurface(
   material: SupportedMaterial,
   textures: Readonly<Record<string, MaterialTextureValue>>,
@@ -317,6 +321,7 @@ function projectSurface(
         }
       : {}),
     ...(blend === undefined ? {} : { blend }),
+    ...projectFog(material),
   };
   const values = surfaceValues(material);
   const opts = {

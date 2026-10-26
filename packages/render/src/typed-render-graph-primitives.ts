@@ -236,6 +236,8 @@ export interface TypedScenePassOptions {
   readonly coverageOnly?: boolean | undefined;
   readonly recordMode?:
     | 'opaque'
+    | 'opaque-fogged'
+    | 'opaque-unfogged'
     | 'transmission'
     | 'transparent'
     | 'translucent-before-transmission'

@@ -87,6 +87,13 @@ The RHI rules decide what happens next:
   `adapter-lacks-feature`.
 - Structural validation in `@forgeax/engine-rhi` runs before any raw call.
 
+The shim borrows already validated TLAS entry/instance descriptors directly for
+its synchronous native call: acceleration handles already are native objects and
+there are no Buffer handles to unwrap in a TLAS instance. This removes one full
+roster map and its per-instance object allocations. RHI descriptor/liveness
+validation, native command serialization and the backend TLAS build still consume
+the complete roster; this does not introduce native or GPU incremental builds.
+
 ## Query forwarding contract
 
 The shim forwards the query surface from [`@forgeax/engine-rhi`](../rhi):
@@ -244,6 +251,23 @@ validation failure evicts an earlier unverified handle and remains retryable.
 before renderer readiness, including a replacement device. `renderer.inspect()` exposes
 counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.
 Worker execution uses `await execution.inspectRenderer({pipelineLibrary:true})`.
+`inspect().pending` lists every currently recorded scheduled or native pipeline
+compilation, plus `unidentified` requests whose dependencies or capacity prevented
+recording. Each row carries the runtime/startup/background origin, queued/compiling
+stage, elapsed milliseconds, complete recipe, bind-group layouts and shader-source
+SHA-256 digests. Its semantic identity excludes labels and device-local module
+numbers, so screenshots can identify an exact state variant across devices.
+The inspection contains no shader source or native handles and is detached from
+the library. It describes live native requests, not CPU preparation, not-yet-issued
+warmup entries, or a proof of coverage for gameplay paths that have not requested a pipeline.
+`preload` compares the exact recipe against all libraries supplied to this device:
+`startup`, `background`, or `both` means declared; `absent` means no indexed library
+contains it; `indexing` keeps the answer unresolved while a supplied library is
+still constructing its dependency/recipe roster. The complete roster is indexed
+before native warmup requests are scheduled, so a later background entry is not
+misreported as missing when gameplay requests it first. The request `origin`
+alone is not a coverage verdict. No pending row is fabricated for a backend
+without this inspection.
 Watch new synchronous/asynchronous creations after loading to find missing scenario coverage.
 `prepare(manifest, {concurrency, background})` bounds outstanding native requests
 (default `pipelineWarmupConcurrency`, half the logical processors in 4..16; background
@@ -262,8 +286,9 @@ so menus and Engine Worker loading overlap native compilation. Its progress is
 `inspect().backgroundWarmup` (`requested`, `completed`, `failed`, `elapsedMs`,
 `state: 'idle' | 'running' | 'done' | 'failed'`). A failure logs one console warning and
 never fails the renderer; affected pipelines compile on first use. Device recovery
-replays only the blocking library; the background lane is not re-run on a replacement
-device.
+replays the blocking library before readiness and restarts the background lane on the
+replacement device after readiness. First readiness therefore does not imply that
+the entire background library is warm, including after recovery.
 The cumulative `warmup.elapsedMs` reports preparation wall time, including failed attempts.
 Export refuses in-flight compilation so pending requirements cannot silently disappear.
 Collection is bounded to 4096 entries per dependency class and 64 MiB of UTF-16 shader

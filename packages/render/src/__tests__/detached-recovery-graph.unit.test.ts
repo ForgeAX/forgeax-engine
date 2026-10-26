@@ -16,7 +16,7 @@ import {
   settleCompiledFrameGraphCandidate,
 } from '../record/typed-frame-graph';
 import type { RenderPipeline } from '../render-pipeline';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
 import type { DirectionalCascades, ViewLights } from '../world/render-lights';
 
@@ -58,6 +58,7 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
   };
   const frameState = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     graphGeneration: 0,
     compiledFrameGraphGeneration: 0,

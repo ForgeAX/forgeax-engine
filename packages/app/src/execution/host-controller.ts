@@ -965,9 +965,7 @@ export async function createWorkerExecutionApp(
         kind: 'render-replace',
         epoch: renderEpoch,
         canvas: offscreen,
-        ...(options.appOptions.pipelineLibrary === undefined
-          ? {}
-          : { pipelineLibrary: options.appOptions.pipelineLibrary }),
+        ...forwardPipelineLibraries(options.appOptions),
       },
       [offscreen],
     );

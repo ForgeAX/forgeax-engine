@@ -101,6 +101,11 @@ export interface RayPathTracer {
   ): Result<GraphBuffer, RenderGraphError | RayReferenceError>;
   /** Ordered GPU reset; no host write can overtake already encoded samples. */
   reset(encoder: RhiCommandEncoder): Result<void, RayReferenceError>;
+  /** Stable-shape scene edits keep the existing pipelines and buffers. Caller fences old graphs. */
+  updateScene(
+    scene: RaySurfaceScene,
+    edit: { readonly triangles: readonly number[]; readonly nodes: readonly number[] },
+  ): Result<void, RhiError | RayReferenceError>;
   dispose(): void;
 }
 export const RAY_COVERAGE_CANDIDATES = 64;
@@ -342,14 +347,21 @@ function hasDistinctMaterialIds(materials: readonly TransportMaterial[]): boolea
 function encodeTriangleTraversal(
   request: RayTransportInputs & { readonly materials: readonly TransportMaterial[] },
   masked: ReadonlySet<number>,
+  changed?: readonly number[],
 ): Result<Uint8Array, RayReferenceError> {
-  const triangles = request.scene.triangles.slice();
+  const triangles =
+    changed === undefined ? request.scene.triangles.slice() : new Uint8Array(changed.length * 80);
   const triangleView = new DataView(triangles.buffer);
   const materialById = new Map(request.materials.map((m) => [m.id, m]));
-  for (let i = 0; i < request.scene.triangleCount; i++) {
-    const material = materialById.get(triangleView.getUint32(i * 80 + 60, true));
+  for (let row = 0; row < (changed?.length ?? request.scene.triangleCount); row++) {
+    const i = changed?.[row] ?? row;
+    if (!Number.isInteger(i) || i < 0 || i >= request.scene.triangleCount)
+      return rayReferenceFailure('scene edit references an absent triangle');
+    if (changed !== undefined)
+      triangles.set(request.scene.triangles.subarray(i * 80, (i + 1) * 80), row * 80);
+    const material = materialById.get(triangleView.getUint32(row * 80 + 60, true));
     if (!material) return rayReferenceFailure('triangle references an absent material');
-    const instance = triangleView.getUint32(i * 80 + 48, true);
+    const instance = triangleView.getUint32(row * 80 + 48, true);
     const attributes = instanceTextureFailure(request.scene, material, instance);
     if (attributes !== undefined) return attributes;
     const winding = new DataView(
@@ -357,8 +369,8 @@ function encodeTriangleTraversal(
       request.scene.attributes.byteOffset,
     ).getFloat32(i * RAY_ATTRIBUTE_TRIANGLE_STRIDE + 108, true);
     const side = traversalSide(request.faces, material.snapshot.renderState?.cullMode ?? 'back');
-    triangleView.setUint32(i * 80 + 68, winding < 0 && side !== 0 ? 3 - side : side, true);
-    triangleView.setUint32(i * 80 + 72, masked.has(material.id) ? 1 : 0, true);
+    triangleView.setUint32(row * 80 + 68, winding < 0 && side !== 0 ? 3 - side : side, true);
+    triangleView.setUint32(row * 80 + 72, masked.has(material.id) ? 1 : 0, true);
   }
   return ok(triangles);
 }
@@ -514,8 +526,59 @@ class RayPathTransportAssembly {
         works,
         producers.value.args,
         directDfgLut,
+        (scene, edit) => this.updateScene(buffers.value, scene, edit),
       ),
     );
+  }
+
+  private updateScene(
+    buffers: Record<RayPathBufferName, Buffer>,
+    scene: RaySurfaceScene,
+    edit: { readonly triangles: readonly number[]; readonly nodes: readonly number[] },
+  ): Result<void, RhiError | RayReferenceError> {
+    if (
+      scene.triangles.byteLength !== this.request.scene.triangles.byteLength ||
+      scene.nodes.byteLength !== this.request.scene.nodes.byteLength ||
+      scene.attributes.byteLength !== this.request.scene.attributes.byteLength
+    )
+      return rayReferenceFailure('scene edit changes the transport buffer shape');
+    for (const node of edit.nodes)
+      if (!Number.isInteger(node) || node < 0 || node * 48 >= scene.nodes.byteLength)
+        return rayReferenceFailure('scene edit references an absent BVH node');
+    // Material admission and all addresses are checked before any live buffer writes.
+    const triangles = encodeTriangleTraversal(
+      { ...this.request, scene },
+      this.masked,
+      edit.triangles,
+    );
+    if (!triangles.ok) return triangles;
+    for (let row = 0; row < edit.triangles.length; row++) {
+      const index = edit.triangles[row] as number;
+      const triangle = this.device.queue.writeBuffer(
+        buffers.triangles,
+        index * 80,
+        triangles.value.subarray(row * 80, (row + 1) * 80),
+      );
+      if (!triangle.ok) return triangle;
+      const attribute = this.device.queue.writeBuffer(
+        buffers.attributes,
+        index * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+        scene.attributes.subarray(
+          index * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+          (index + 1) * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+        ),
+      );
+      if (!attribute.ok) return attribute;
+    }
+    for (const index of edit.nodes) {
+      const node = this.device.queue.writeBuffer(
+        buffers.nodes,
+        index * 48,
+        scene.nodes.subarray(index * 48, (index + 1) * 48),
+      );
+      if (!node.ok) return node;
+    }
+    return ok(undefined);
   }
 
   private createKernelBuffers(
@@ -1078,6 +1141,7 @@ function freezeRayPathTracer(
   works: readonly RayPathWork[],
   argsBuffer: Buffer | undefined,
   directDfgLut: DirectDfgLutResource | undefined,
+  updateScene: RayPathTracer['updateScene'],
 ): RayPathTracer {
   let disposed = false;
   const batches = batchRayPathWorks(works);
@@ -1095,6 +1159,10 @@ function freezeRayPathTracer(
     buffers,
     pixelCount: pixels,
     dispatchCount: works.length,
+    updateScene(scene, edit) {
+      if (disposed) return rayReferenceFailure('path tracer is disposed');
+      return updateScene(scene, edit);
+    },
     recordSample(encoder) {
       if (disposed) return rayReferenceFailure('path tracer is disposed');
       for (const [index, batch] of batches.entries()) {

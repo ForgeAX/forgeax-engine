@@ -1,9 +1,14 @@
 import type { Transparency } from '../components/camera';
+import type { MaterialResource } from '../material-resource';
 import { isTransparentLaneMaterial } from '../record/main-pass';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { DispatchList, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import { dispatchPassWork, type MaterialFrame } from '../scene/material-dispatch';
+import {
+  type DispatchPassWork,
+  dispatchPassWork,
+  type MaterialFrame,
+} from '../scene/material-dispatch';
 import { FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import { classifyOitDraw, type OitIneligibleReason } from './eligibility';
 
@@ -75,8 +80,15 @@ export function resolveTransparencyView(input: {
   readonly dispatch: DispatchList;
 }): TransparencyViewResolution {
   const passWork = dispatchPassWork(input.dispatch);
-  if (passWork !== undefined && input.renderables.length === passWork.slots)
-    return resolveTransparencyPassWork(input, passWork.work);
+  if (passWork !== undefined && input.renderables.length === passWork.slots) {
+    const capabilityAbsent = input.requested === 'weighted-blended' && !input.rgba16floatRenderable;
+    return capabilityAbsent || input.requested === 'sorted'
+      ? transparencyResolution(input.requested, 'sorted', capabilityAbsent, {
+          ...emptyCounts(),
+          sorted: sortedTransparentDraws(input.materialFrame, passWork),
+        })
+      : resolveTransparencyPassWork(input, passWork.work);
+  }
   // Only an immutable list can stand for its entries across frames.
   const fixed = !Array.isArray(input.dispatch) || Object.isFrozen(input.dispatch);
   const retained = fixed ? resolvedViews.get(input.dispatch) : undefined;
@@ -100,6 +112,91 @@ export function resolveTransparencyView(input: {
       rows,
     });
   return value;
+}
+
+interface SortedWork {
+  readonly resource: MaterialResource;
+  readonly count: number;
+  transparent: boolean;
+}
+
+/** Forward Pass work of one dispatch owner, with its transparent draw count. */
+interface SortedIndex {
+  dispatch: DispatchList;
+  materials: MaterialFrame;
+  readonly works: Map<string, SortedWork>;
+  readonly byResource: Map<MaterialResource, Set<string>>;
+  sorted: number;
+}
+
+const sortedIndexes = new WeakMap<object, SortedIndex>();
+
+/**
+ * Transparent Forward draws of a sorted view. Successive frames of one owner
+ * revisit only changed Pass work and the work of changed materials.
+ */
+function sortedTransparentDraws(
+  materials: MaterialFrame,
+  { dispatch, lineage }: NonNullable<ReturnType<typeof dispatchPassWork>>,
+): number {
+  const transparentIn = (frame: MaterialFrame, resource: MaterialResource) => {
+    const material = frame.get(resource)?.snapshot;
+    if (material === undefined)
+      throw new Error('Transparency requires its accepted material frame');
+    return isTransparentLaneMaterial(material);
+  };
+  const put = (target: SortedIndex, id: string, work: DispatchPassWork | undefined) => {
+    const previous = target.works.get(id);
+    if (previous !== undefined) {
+      target.works.delete(id);
+      if (previous.transparent) target.sorted -= previous.count;
+      const ids = target.byResource.get(previous.resource);
+      ids?.delete(id);
+      if (ids?.size === 0) target.byResource.delete(previous.resource);
+    }
+    if (work === undefined || work.count === 0 || !matchPass(work.pass.tags, FORWARD_PASS_SELECTOR))
+      return;
+    const transparent = transparentIn(materials, work.resource);
+    target.works.set(id, { resource: work.resource, count: work.count, transparent });
+    if (transparent) target.sorted += work.count;
+    let ids = target.byResource.get(work.resource);
+    if (ids === undefined) {
+      ids = new Set();
+      target.byResource.set(work.resource, ids);
+    }
+    ids.add(id);
+  };
+  const index = sortedIndexes.get(lineage);
+  if (
+    index === undefined ||
+    !dispatch.passWorkChangesSince(index.dispatch, (id, work) => put(index, id, work))
+  ) {
+    const built: SortedIndex = {
+      dispatch,
+      materials,
+      works: new Map(),
+      byResource: new Map(),
+      sorted: 0,
+    };
+    for (const [id, work] of dispatch.identifiedPassWork()) put(built, id, work);
+    sortedIndexes.set(lineage, built);
+    return built.sorted;
+  }
+  if (index.materials !== materials)
+    materials.changesSince(index.materials, (_before, after) => {
+      if (after === undefined) return;
+      for (const id of index.byResource.get(after.resource) ?? []) {
+        const work = index.works.get(id);
+        if (work === undefined) continue;
+        const transparent = transparentIn(materials, work.resource);
+        if (transparent === work.transparent) continue;
+        index.sorted += transparent ? work.count : -work.count;
+        work.transparent = transparent;
+      }
+    });
+  index.dispatch = dispatch;
+  index.materials = materials;
+  return index.sorted;
 }
 
 function sameRows(

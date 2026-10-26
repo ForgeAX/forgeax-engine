@@ -3,11 +3,12 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { decodeDocumentText, decompressZstd } from '@forgeax/engine-codec';
+import { compressZstd } from '@forgeax/engine-codec/encode';
 import { readAssetBundleTable } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { PLAYER_DELIVERY_FILE, prepareDist } from '../delivery-dist.js';
 import { type DistManifest, mediaType, verifyDist } from '../dist.js';
-import { PLAYER_DELIVERY_FILE, preparePlayerDist } from '../player-dist.js';
 
 const sha = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 
@@ -108,6 +109,127 @@ async function fixture(base: string, table: boolean) {
 }
 
 describe('player distribution', () => {
+  it('shares encoded build artifacts with Player packaging while retaining build diagnostics', async () => {
+    const body = new Uint8Array(8192).fill(42);
+    const encoded = await compressZstd(body);
+    if (!encoded.ok) throw encoded.error;
+    const catalog = [
+      {
+        guid: '01900000-0000-7000-8000-000000000001',
+        kind: 'mesh',
+        packageUrl: './assets/main.pack.json',
+        sourcePath: 'assets/main.pack.ts',
+        cookReceiptUrl: './assets/main.receipt.json',
+        provenance: { provider: 'pack-ts' },
+      },
+    ];
+    const source = await writeDist(
+      './',
+      new Map<string, string | Uint8Array>([
+        ['index.html', '<!doctype html>'],
+        ['pack-index.json', JSON.stringify(catalog)],
+        ['shaders/manifest.json', '{}'],
+        ['assets/main.receipt.json', '{"status":"succeeded"}'],
+        ['assets/body.bin', body],
+        ['assets/encoded.bin', encoded.value],
+        [
+          'assets/main.pack.json',
+          JSON.stringify({
+            assets: [
+              {
+                artifacts: {
+                  body: {
+                    path: 'body.bin',
+                    mediaType: 'application/octet-stream',
+                    contentEncoding: 'identity',
+                    byteLength: body.length,
+                    integrity: { algorithm: 'sha256', digest: `sha256:${sha(body)}` },
+                  },
+                  encoded: {
+                    path: 'encoded.bin',
+                    mediaType: 'application/octet-stream',
+                    contentEncoding: 'zstd',
+                    byteLength: body.length,
+                    integrity: { algorithm: 'sha256', digest: `sha256:${sha(body)}` },
+                  },
+                },
+              },
+            ],
+          }),
+        ],
+      ]),
+    );
+    const roots: string[] = [];
+    try {
+      const build = await prepareDist(source.root, source.manifest, { distribution: 'build' });
+      expect(build.root).toBe(source.root);
+      expect(await verifyDist(build.root)).toEqual({ ok: true, value: build.manifest });
+      const read = async (root: string, path: string) => {
+        const text = await decodeDocumentText(await readFile(resolve(root, path)));
+        if (!text.ok) throw new Error(text.error.code);
+        return JSON.parse(text.value);
+      };
+      expect(await read(build.root, 'pack-index.json')).toEqual(catalog);
+      await expect(
+        access(resolve(build.root, 'assets/main.receipt.json')),
+      ).resolves.toBeUndefined();
+      await expect(access(resolve(build.root, 'assets/body.bin'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      const descriptor = (await read(build.root, 'assets/main.pack.json')).assets[0].artifacts.body;
+      expect(descriptor).toMatchObject({
+        contentEncoding: 'zstd',
+        byteLength: body.length,
+        integrity: { algorithm: 'sha256', digest: `sha256:${sha(body)}` },
+      });
+      const bundled = build.manifest.artifacts.filter((artifact) =>
+        artifact.path.startsWith('assets/bundles/'),
+      );
+      expect(bundled).toHaveLength(1);
+      const bundle = bundled[0];
+      if (bundle === undefined) throw new Error('missing Bundle');
+      const bytes = await readFile(resolve(build.root, bundle.path));
+      const decoded = await decompressZstd(
+        bytes.subarray(
+          descriptor.byteRange.offset,
+          descriptor.byteRange.offset + descriptor.byteRange.length,
+        ),
+      );
+      expect(decoded).toEqual({ ok: true, value: body });
+      for (const compressDocuments of [true, false]) {
+        const player = await prepareDist(build.root, build.manifest, { compressDocuments });
+        roots.push(player.root);
+        expect(await verifyDist(player.root)).toEqual({ ok: true, value: player.manifest });
+        expect(player.bundles).toEqual(build.bundles);
+        expect(
+          player.manifest.artifacts.filter((artifact) =>
+            artifact.path.startsWith('assets/bundles/'),
+          ),
+        ).toEqual(bundled);
+        expect(await readFile(resolve(player.root, bundle.path))).toEqual(bytes);
+        expect(await read(player.root, 'pack-index.json')).toEqual(
+          catalog.map(({ cookReceiptUrl, provenance, ...row }) => row),
+        );
+        expect((await read(player.root, 'assets/main.pack.json')).assets[0].artifacts.body).toEqual(
+          descriptor,
+        );
+        if (!compressDocuments)
+          expect(
+            JSON.parse(await readFile(resolve(player.root, 'assets/main.pack.json'), 'utf8')),
+          ).toBeDefined();
+        await expect(
+          access(resolve(player.root, 'assets/main.receipt.json')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      const again = await prepareDist(build.root, build.manifest, { distribution: 'build' });
+      expect(again.manifest).toEqual(build.manifest);
+      expect(again.bundles).toEqual(build.bundles);
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      for (const root of roots) await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ['./', false],
     ['/games/fixture/', true],
@@ -116,7 +238,7 @@ describe('player distribution', () => {
     let playerRoot: string | undefined;
     try {
       expect((await verifyDist(source.root)).ok).toBe(true);
-      const player = await preparePlayerDist(source.root, source.manifest, {
+      const player = await prepareDist(source.root, source.manifest, {
         compressDocuments: false,
       });
       playerRoot = player.root;
@@ -175,7 +297,7 @@ describe('player distribution', () => {
             : artifact,
         ),
       };
-      const player = await preparePlayerDist(source.root, manifest, { compressDocuments: false });
+      const player = await prepareDist(source.root, manifest, { compressDocuments: false });
       playerRoot = player.root;
       expect(player.manifest).toEqual(manifest);
       expect(await readFile(resolve(player.root, 'pack-index.json'), 'utf8')).toBe(bytes);
@@ -198,9 +320,9 @@ describe('player distribution', () => {
     };
     const roots: string[] = [];
     try {
-      const plain = await preparePlayerDist(source.root, manifest, { compressDocuments: false });
+      const plain = await prepareDist(source.root, manifest, { compressDocuments: false });
       roots.push(plain.root);
-      const player = await preparePlayerDist(source.root, manifest);
+      const player = await prepareDist(source.root, manifest);
       roots.push(player.root);
       expect(await verifyDist(player.root)).toEqual({ ok: true, value: player.manifest });
       for (const path of [
@@ -285,7 +407,7 @@ describe('player distribution', () => {
     const source = await writeDist('/', files);
     let playerRoot: string | undefined;
     try {
-      const player = await preparePlayerDist(source.root, source.manifest, {
+      const player = await prepareDist(source.root, source.manifest, {
         compressDocuments: false,
       });
       playerRoot = player.root;
@@ -367,7 +489,7 @@ describe('player distribution', () => {
     ]);
     const source = await writeDist('/', files);
     try {
-      await expect(preparePlayerDist(source.root, source.manifest)).rejects.toThrow(
+      await expect(prepareDist(source.root, source.manifest)).rejects.toThrow(
         /matches Bundles one, two/,
       );
     } finally {

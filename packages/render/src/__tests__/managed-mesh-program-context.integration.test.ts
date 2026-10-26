@@ -307,7 +307,7 @@ it.each([
       [lease],
     );
   };
-  const native = scene as unknown as {
+  const native = scene.shared as unknown as {
     prepareMeshMaterial: (
       scope: import('../publication/resource-scope').RenderResourceScope | undefined,
       handle: number,
@@ -316,7 +316,7 @@ it.each([
       assets?: AssetRegistry,
     ) => import('../material-resource').MaterialResource;
   };
-  const original = native.prepareMeshMaterial.bind(scene);
+  const original = native.prepareMeshMaterial.bind(scene.shared);
   try {
     draw();
     const before = scene.shadowCasterProjection();

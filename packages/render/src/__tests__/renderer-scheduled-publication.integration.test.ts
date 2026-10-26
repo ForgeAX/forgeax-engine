@@ -22,7 +22,7 @@ import {
 } from '../publication/record';
 import { SkinTasks } from '../record/skin-tasks';
 import { PersistentRenderScene } from '../scene/render-scene';
-import { SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames } from '../scene/skin-scene-inputs';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 async function fixture(view = false, skin = false) {
@@ -402,8 +402,8 @@ it('retires the actual submitted Skin roots even when task completion throws syn
   const f = await fixture(false, true),
     cause = new Error('injected synchronous task cleanup failure');
   const actualComplete = SkinTasks.prototype.complete,
-    actualSubmit = SkinSceneInputs.prototype.submitFrame;
-  let owner: SkinSceneInputs | undefined, retired: Promise<void> | undefined;
+    actualSubmit = SkinFrames.prototype.submitFrame;
+  let owner: SkinFrames | undefined, retired: Promise<void> | undefined;
   const complete = vi.spyOn(SkinTasks.prototype, 'complete').mockImplementationOnce(function (
     this: SkinTasks,
   ) {
@@ -411,8 +411,8 @@ it('retires the actual submitted Skin roots even when task completion throws syn
     if (completion !== undefined) void completion.catch(() => {});
     throw cause;
   });
-  const submit = vi.spyOn(SkinSceneInputs.prototype, 'submitFrame').mockImplementation(function (
-    this: SkinSceneInputs,
+  const submit = vi.spyOn(SkinFrames.prototype, 'submitFrame').mockImplementation(function (
+    this: SkinFrames,
     ...args
   ) {
     owner = this;

@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { prepareDist } from '../delivery-dist.js';
 import { writeDistManifest } from '../dist.js';
 import { disposeDevKitHosts, startPreviewProjectWithHost } from '../host.js';
-import { preparePlayerDist } from '../player-dist.js';
 
 it('previews the selected player bytes and validator instead of the diagnostic dist', async () => {
   const root = await mkdtemp(join(tmpdir(), 'preview-delivery-'));
@@ -28,7 +28,7 @@ it('previews the selected player bytes and validator instead of the diagnostic d
       },
       './',
     );
-    const prepared = await preparePlayerDist(join(root, 'dist'), manifest);
+    const prepared = await prepareDist(join(root, 'dist'), manifest);
     player = prepared.root;
     const result = await startPreviewProjectWithHost({ root, dist: player, port: 0, json: true });
     expect(result.ok).toBe(true);

@@ -122,7 +122,6 @@ if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
         writable: true,
       });
     }
-    // create([]) — empty flags array (spec: reserved for future flag extension).
     const gpu = create([]);
     // M2 t-010: shim requestAdapter -> requestDevice to collect every created GPUDevice.
     // Wrapping at gpu.requestAdapter is the single chokepoint covering all *.dawn.test.ts
@@ -135,6 +134,18 @@ if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
     ) => {
       const adapter = await originalRequestAdapter(...adapterArgs);
       if (adapter) {
+        if (process.platform === 'win32') {
+          const info = adapter.info;
+          console.error(
+            '[setup-webgpu] adapter=',
+            JSON.stringify({
+              vendor: info.vendor,
+              architecture: info.architecture,
+              device: info.device,
+              description: info.description,
+            }),
+          );
+        }
         const normalizedAdapter = normalizeDawnAdapter(adapter);
         const originalRequestDevice = normalizedAdapter.requestDevice.bind(normalizedAdapter);
         (

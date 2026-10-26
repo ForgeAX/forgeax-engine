@@ -170,10 +170,10 @@ it.each([
     }
   };
   try {
-    await f.skin.submitFrame(f.frame, Promise.resolve(), true);
+    await f.frames.submitFrame(f.frame, Promise.resolve(), true);
     f.matrix[12] = 5;
     f.skin.joint(0, 19, f.matrix);
-    const first = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
+    const first = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     if (forceOverflow) {
       // Deliberately under-admit palette capacity while retaining the real
       // immutable root. This exercises the actual View overflow owner.
@@ -185,14 +185,14 @@ it.each([
       view._recoverFromOverflow().unwrap();
     }
     await draw(first);
-    await f.skin.submitFrame(first, Promise.resolve(), true);
+    await f.frames.submitFrame(first, Promise.resolve(), true);
     f.skin.joint(0, 19, undefined);
-    const missing = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
+    const missing = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(missing);
-    await f.skin.submitFrame(missing, Promise.resolve(), false);
+    await f.frames.submitFrame(missing, Promise.resolve(), false);
     f.matrix[12] = 9;
     f.skin.joint(0, 19, f.matrix);
-    const restored = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
+    const restored = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(restored);
     expect(results.slice(0, 3).map((row) => row.overflow)).toEqual([0, 0, 0]);
     expect(results.slice(0, 3).map((row) => row.visible)).toEqual([2, 0, 2]);
@@ -209,14 +209,14 @@ it.each([
     expect(results[2]?.output).toBe(results[0]?.output);
     // Accepted history that lacks a joint the current pose has reseeds every
     // previous matrix from current instead of publishing a partial history.
-    await f.skin.submitFrame(restored, Promise.resolve(), true);
+    await f.frames.submitFrame(restored, Promise.resolve(), true);
     f.skin.joint(0, 19, undefined);
-    const gap = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
+    const gap = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(gap);
-    await f.skin.submitFrame(gap, Promise.resolve(), true);
+    await f.frames.submitFrame(gap, Promise.resolve(), true);
     f.matrix[12] = 11;
     f.skin.joint(0, 19, f.matrix);
-    const reseeded = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
+    const reseeded = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(reseeded);
     expect(results.slice(3).map((row) => row.visible)).toEqual([0, 2]);
     expect(results[4]?.samples).toEqual([
@@ -224,7 +224,7 @@ it.each([
       [1, 1, 11, 11],
     ]);
     if (capsuleLifecycle) {
-      await f.skin.submitFrame(reseeded, Promise.resolve(), true);
+      await f.frames.submitFrame(reseeded, Promise.resolve(), true);
       const capsules = {
         joints: new Uint16Array([0]),
         shapes: new Float32Array([0, 0, 0, 0, 1, 0, 0.1]),
@@ -241,9 +241,9 @@ it.each([
           inverseBindMatrices: mat4.identity(mat4.create()),
           ...(shadowCapsules === undefined ? {} : { shadowCapsules }),
         });
-        const frame = required(f.skin.prepareFrame(f.scene.slotsSnapshot()));
+        const frame = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
         await draw(frame, true);
-        await f.skin.submitFrame(frame, Promise.resolve(), false);
+        await f.frames.submitFrame(frame, Promise.resolve(), false);
       }
       expect(results.slice(5).map((row) => row.visible)).toEqual([0, 2, 2, 0]);
       expect(results.slice(5).map((row) => row.overflow)).toEqual([0, 0, 0, 0]);

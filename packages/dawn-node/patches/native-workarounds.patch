@@ -108,3 +108,12 @@ diff --git a/src/dawn/native/metal/CommandBufferMTL.mm b/src/dawn/native/metal/C
                  currentDispatch++;
                  break;
              }
+diff --git a/src/dawn/native/d3d12/PhysicalDeviceD3D12.cpp b/src/dawn/native/d3d12/PhysicalDeviceD3D12.cpp
+--- a/src/dawn/native/d3d12/PhysicalDeviceD3D12.cpp
++++ b/src/dawn/native/d3d12/PhysicalDeviceD3D12.cpp
+@@ -690 +690,5 @@
++    // Avoid pathological optimization of nested compute kernels on WARP.
++    deviceToggles->Default(Toggle::D3DSkipShaderOptimizations,
++                           gpu_info::IsMicrosoftWARP(GetVendorId(), GetDeviceId()));
++
+     // By default use the maximum shader-visible heap size allowed.

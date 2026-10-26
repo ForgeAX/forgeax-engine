@@ -1,6 +1,7 @@
 import { assetDataBytes } from '@forgeax/engine-assets-runtime/internal';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { attributeChannelBytes, packedRowsEligible } from './publication/packed-rows-mesh';
 
 /** A standard MeshAsset candidate prepared for one attached World generation. */
 export interface DynamicGeometryPrepareInput {
@@ -18,6 +19,15 @@ export interface DynamicGeometryPrepareInput {
   readonly topologyRevision?: number;
   /** Captured by the Renderer host from the World FixedTime resource. */
   readonly fixedStep?: number;
+  /**
+   * Render-realm CPU channel request. `'packed-rows'` sends a static raster-only
+   * triangle mesh to the Renderer with its packed interleaved rows only; every
+   * attribute key stays as an empty layout key and cold consumers rebuild the
+   * channels from the rows. Ineligible meshes (skin, morph, LOD, cards,
+   * distance field, non-triangle or non-float32 channels) keep full channels.
+   * The World MeshAsset is never trimmed. Default `'full'`.
+   */
+  readonly renderAttributes?: 'full' | 'packed-rows';
 }
 
 /** Internal lifecycle input after the host resolves the asset reference. */
@@ -317,10 +327,14 @@ function validateMesh(mesh: MeshAsset): string | undefined {
   return undefined;
 }
 
-function meshByteSize(mesh: MeshAsset): number {
+function meshByteSize(mesh: MeshAsset, renderAttributes?: 'full' | 'packed-rows'): number {
   // Charge the complete private MeshAsset copy, including morph/offline data.
   // This is the same logical-view accounting used by its runtime storage owner.
-  return assetDataBytes(mesh);
+  // A packed-rows copy does not carry its canonical channel bytes.
+  const bytes = assetDataBytes(mesh);
+  return renderAttributes === 'packed-rows' && packedRowsEligible(mesh)
+    ? bytes - attributeChannelBytes(mesh)
+    : bytes;
 }
 
 /**
@@ -947,7 +961,7 @@ export function createDynamicGeometryLifecycle(
         'MeshAsset satisfies the standard geometry contract',
         invalid,
       );
-    const candidateBytes = meshByteSize(input.mesh);
+    const candidateBytes = meshByteSize(input.mesh, input.renderAttributes);
     if (
       !Number.isSafeInteger(candidateBytes) ||
       candidateBytes < 0 ||

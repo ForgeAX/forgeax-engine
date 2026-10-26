@@ -7,6 +7,7 @@ import {
   type Texture,
 } from '@forgeax/engine-rhi';
 import { type AssetHandle, ok } from '@forgeax/engine-types';
+import { createCaptureViewPipeline } from '../capture/capture-view';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
 import { CameraView, cameraViewExtent } from '../components/camera-view';
@@ -20,6 +21,7 @@ import type { PreparedRenderPublication, RenderPublicationReceiver } from '../pu
 import { DiffuseGiBudget } from '../raytracing/diffuse-gi-budget';
 import type { GpuTimingCapture } from '../record/gpu-timing';
 import type { RenderSystemInternals } from '../record/render-context';
+import type { CubeCaptureGraphState } from '../record/target-capture-graph';
 import type {
   CameraSnapshot,
   DrawOwnerOptions,
@@ -45,9 +47,13 @@ import { createViewPipelineState } from './view-pipeline-state';
 /**
  * Payload of a view entity's {@link ViewRecorder}: the private RenderSystem
  * and device scope recording that view, its output and its cadence history.
+ * A capture view has no output: its capture graph writes `capture.work`.
  */
 interface ViewRecorderState {
   readonly entity: EntityHandle;
+  readonly capture: CubeCaptureGraphState | undefined;
+  /** A capture view's current target extent, its recording canvas. */
+  captureSize: { width: number; height: number };
   readonly key: string;
   readonly camera: number;
   readonly eye: StereoEye | undefined;
@@ -86,17 +92,16 @@ type ViewSource =
   | undefined;
 
 /**
- * The publication a system records: a system not yet seeded from this source,
- * or one that requires a baseline, receives the full scene snapshot; others
- * consume only the accepted delta.
+ * The publication a system records. Every system reads the Renderer's one
+ * scene composition, so only a composition that cannot apply the accepted
+ * delta (cold, retired or lapsed) receives the full scene snapshot.
  */
 function publicationFor(
   source: ViewSource,
   system: RenderSystem,
-  seeded: boolean,
 ): PreparedRenderPublication | undefined {
   if (source === undefined) return undefined;
-  return !seeded || system.publicationBaselineRequired(source.publication)
+  return system.publicationBaselineRequired(source.publication)
     ? source.receiver.snapshot(source.publication)
     : source.publication;
 }
@@ -192,20 +197,41 @@ function assertProbePlacementViews(
     });
 }
 
-/** Does any Cube or non-planar auxiliary camera need the shared capture recording? */
+/** Does any CubeCamera need the shared capture recording beside composed views? */
 function sharedCaptureDemand(
   publication: PreparedRenderPublication | undefined,
   world: World | undefined,
 ): boolean {
-  if (publication !== undefined)
-    return (
-      publication.frame.cubeCameras.length > 0 ||
-      publication.frame.auxiliaryCameras.some((camera) => camera.planarReflection === undefined)
-    );
-  return (
-    world !== undefined &&
-    (hasCubeCamera(world) ||
-      selectCameraRoles(world).auxiliary.some((camera) => camera.planarReflection === undefined))
+  if (publication !== undefined) return publication.frame.cubeCameras.length > 0;
+  return world !== undefined && hasCubeCamera(world);
+}
+
+/** Membership-only probe: does any non-composed Camera name a RenderTarget? */
+function declaresTargetCamera(world: World): boolean {
+  for (const row of world.query({ read: [Camera], without: [CameraView, StereoCamera] }).unwrap())
+    if (row.get(Camera).target !== 0) return true;
+  return false;
+}
+
+/** Selected auxiliary RenderTarget cameras; planar mirrors stay with their display view. */
+function captureCameras(
+  publication: PreparedRenderPublication | undefined,
+  world: World | undefined,
+  cameraEntityKey: number | undefined,
+): readonly CameraSnapshot[] {
+  let auxiliary = publication?.frame.auxiliaryCameras;
+  if (auxiliary === undefined) {
+    if (world === undefined || !declaresTargetCamera(world)) return [];
+    try {
+      auxiliary = selectCameraRoles(world, cameraEntityKey).auxiliary;
+    } catch {
+      // Invalid camera facts belong to the primary extraction, which reports
+      // the same structured failure for this frame.
+      return [];
+    }
+  }
+  return auxiliary.filter(
+    (camera) => camera.planarReflection === undefined && camera.target !== undefined,
   );
 }
 
@@ -347,7 +373,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
   let ownerIdentity: string | undefined;
   let frame = 0;
   let lastLodObservationCapture: LodObservationCapture | undefined;
-  let capturePublicationSeeded = false;
+  let captureRecorded = false;
   let surfaceDynamicInput: Parameters<RenderSystem['setSurfaceDynamicInput']>[0];
   let composite = createViewCompositor(internals);
   /** Views recorded by the current frame, in composition order; retained storage. */
@@ -364,7 +390,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     void view.device.queue.onSubmittedWorkDone().then(dispose, dispose);
   };
   const clear = () => {
-    capturePublicationSeeded = false;
+    captureRecorded = false;
     views.clear();
   };
   const value = <T>(r: { ok: true; value: T } | { ok: false; error: unknown }): T => {
@@ -387,7 +413,12 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     }
     return undefined;
   };
-  /** Live recorders in composition order. */
+  /** The first live display (composed) recorder that satisfies `match`. */
+  const findDisplayRecorder = (
+    match: (view: ViewRecorderState) => boolean = () => true,
+  ): ViewRecorderState | undefined =>
+    findRecorder((view) => view.capture === undefined && match(view));
+  /** Live recorders in composition order, capture views first. */
   const recorders = (): ViewRecorderState[] => {
     const live: ViewRecorderState[] = [];
     findRecorder((view) => {
@@ -396,9 +427,16 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     });
     return live;
   };
-  const active = (): boolean => views.size > 0;
+  const displayRecorders = (): ViewRecorderState[] =>
+    recorders().filter((view) => view.capture === undefined);
+  const captureRecorders = (): ViewRecorderState[] =>
+    recorders().filter((view) => view.capture !== undefined);
+  /** Composed display views replace the primary display recording. */
+  const active = (): boolean => views.displayCount > 0;
   const systems = (): readonly RenderSystem[] =>
-    active() ? recorders().map((view) => view.system) : [primary];
+    active()
+      ? recorders().map((view) => view.system)
+      : [primary, ...captureRecorders().map((view) => view.system)];
   const allSystems = (): readonly RenderSystem[] => [
     primary,
     ...recorders().map((view) => view.system),
@@ -415,15 +453,25 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
   /** Attach a view's private record internals over the shared Renderer internals. */
   const createRecorder = (
     entity: EntityHandle,
-    facts: { readonly camera: number; readonly eye: number; readonly channels: number },
+    facts: {
+      readonly capture: boolean;
+      readonly camera: number;
+      readonly eye: number;
+      readonly channels: number;
+    },
     target: RenderTarget | undefined,
     viewport: ViewRecorderState['viewport'],
     base: NonNullable<ReturnType<RenderSystemInternals['getPipelineState']>>,
   ): ViewRecorderState => {
     const camera = facts.camera;
     const eye = VIEW_EYES[facts.eye];
-    const key = eye === undefined ? String(camera) : `${camera}:${eye}`;
+    const key = facts.capture
+      ? `capture:${camera}`
+      : eye === undefined
+        ? String(camera)
+        : `${camera}:${eye}`;
     const scope = internals.deviceScope.createChild(`camera:${key}`);
+    const capture: CubeCaptureGraphState | undefined = facts.capture ? { work: [] } : undefined;
     try {
       let view: ViewRecorderState | undefined;
       const local = createViewPipelineState(base, internals, scope);
@@ -439,16 +487,28 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
           configurable: true,
           enumerable: true,
           get: () =>
-            view?.output ?? {
-              width: viewport.renderWidth,
-              height: viewport.renderHeight,
-            },
+            capture !== undefined
+              ? (view?.captureSize ?? { width: 1, height: 1 })
+              : (view?.output ?? {
+                  width: viewport.renderWidth,
+                  height: viewport.renderHeight,
+                }),
         },
         viewOutput: {
           configurable: true,
           enumerable: true,
           get: () => view?.output,
         },
+        // A capture view records its own target through the capture graph;
+        // it carries no Features and composes nothing.
+        ...(capture === undefined
+          ? {}
+          : {
+              captureView: property({ camera, state: capture }),
+              standardPipeline: property(createCaptureViewPipeline(capture)),
+              featureHost: property(undefined),
+              featureSceneInputs: property(undefined),
+            }),
         deviceGeneration: {
           configurable: true,
           enumerable: true,
@@ -512,6 +572,8 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
       system.setSurfaceDynamicInput(surfaceDynamicInput);
       view = {
         entity,
+        capture,
+        captureSize: { width: 1, height: 1 },
         key,
         camera,
         eye,
@@ -609,7 +671,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     const publication = source?.publication;
     const world = worlds[opts.cameraOwner];
     if (wasActive) {
-      capturePublicationSeeded = false;
+      captureRecorded = false;
       composite.dispose();
     }
     const frameSubmitted = yield* primary.prepareSubmission(
@@ -617,10 +679,111 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
       opts,
       leases,
       timing,
-      publicationFor(source, primary, !wasActive),
+      publicationFor(source, primary),
       isCurrent,
     );
     if (!frameSubmitted) return frameSubmitted;
+    const primaryCameras =
+      publication?.frame.cameras ??
+      (world === undefined ? [] : selectCameraRoles(world, opts.cameraEntityKey).display);
+    lastLodObservationCapture = Object.freeze({
+      frameId: internals.observationFrameId ?? 0,
+      deviceGeneration: internals.deviceScope.generation,
+      views: Object.freeze([...primaryObservationViews(primary, primaryCameras, world, worlds)]),
+      leases: captureLeases(leases),
+    });
+    return frameSubmitted;
+  }
+  /**
+   * Record one capture view into the shared encoder. A capture view always
+   * renders; while its target is not resident it records nothing and drops
+   * its recorder, so it seeds again from the current scene.
+   */
+  const appendCaptureView = (
+    recordings: FrameRecording[],
+    entity: EntityHandle,
+    facts: Parameters<typeof createRecorder>[1] &
+      Parameters<typeof cameraViewExtent>[0] & { readonly target: number },
+    worlds: readonly World[],
+    opts: DrawOwnerOptions,
+    leases: readonly RenderReadLease[] | undefined,
+    source: ViewSource,
+    encoder: RhiCommandEncoder,
+  ): void => {
+    const retained = recorderOf(entity);
+    const target = retained?.target ?? views.target(facts);
+    const physical = target === undefined ? undefined : internals.getRenderTargetPhysical?.(target);
+    const base = internals.getPipelineState();
+    if (physical === undefined || base === null) {
+      if (retained !== undefined) renderWorld.removeComponent(entity, ViewRecorder).unwrap();
+      return;
+    }
+    const extent = cameraViewExtent(facts, physical.descriptor.width, physical.descriptor.height);
+    const view = retained ?? createRecorder(entity, facts, target, extent, base);
+    view.captureSize.width = physical.descriptor.width;
+    view.captureSize.height = physical.descriptor.height;
+    view.rendered = true;
+    recorded.push(view);
+    recordings.push(
+      view.system.record(
+        worlds,
+        { ...opts, cameraEntityKey: view.camera },
+        leases,
+        undefined,
+        publicationFor(source, view.system),
+        encoder,
+        true,
+      ),
+    );
+  };
+  /**
+   * The primary display recording with capture views and no composed view:
+   * capture views record first (displays sample their targets), then the
+   * primary display, into one encoder and one submission.
+   */
+  function* prepareCaptureSubmission(
+    worlds: readonly World[],
+    opts: DrawOwnerOptions,
+    leases: readonly RenderReadLease[] | undefined,
+    timing: GpuTimingCapture | undefined,
+    source: ViewSource,
+    isCurrent: (() => boolean) | undefined,
+    wasActive: boolean,
+  ): FramePreparation {
+    const publication = source?.publication;
+    const world = worlds[opts.cameraOwner];
+    if (wasActive) {
+      captureRecorded = false;
+      composite.dispose();
+    }
+    const encoder = value(
+      internals.device.createCommandEncoder({
+        label: `capture-frame:${internals.observationFrameId ?? frame}`,
+      }),
+    );
+    recorded.length = 0;
+    pictures.length = 0;
+    const recordings: FrameRecording[] = [];
+    for (const entity of views.ordered) {
+      const facts = renderWorld.get(entity, RenderView).unwrap();
+      if (!facts.capture) continue;
+      appendCaptureView(recordings, entity, facts, worlds, opts, leases, source, encoder);
+    }
+    recordings.push(
+      primary.record(worlds, opts, leases, timing, publicationFor(source, primary), encoder),
+      submitSharedEncoder(internals, internals.device, encoder),
+    );
+    const frameSubmitted = yield* prepareFrameSubmission(
+      recordings,
+      undefined,
+      internals,
+      isCurrent,
+    );
+    if (!frameSubmitted) return frameSubmitted;
+    for (const view of recorded) {
+      view.lastFrame = frame;
+      view.renderedFrames += 1;
+    }
     const primaryCameras =
       publication?.frame.cameras ??
       (world === undefined ? [] : selectCameraRoles(world, opts.cameraEntityKey).display);
@@ -648,6 +811,9 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     generation = internals.deviceScope.generation;
     composite.dispose();
     composite = createViewCompositor(internals);
+  };
+  const appendViewPicture = (view: ViewRecorderState, target: RenderTarget | undefined): void => {
+    if (target === undefined && view.output !== undefined) pictures.push(view.picture);
   };
   /** Record every enabled view, the shared capture view and the composite into one encoder. */
   function* prepareViewSubmission(
@@ -681,6 +847,10 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     try {
       for (const entity of views.ordered) {
         const facts = renderWorld.get(entity, RenderView).unwrap();
+        if (facts.capture) {
+          appendCaptureView(recordings, entity, facts, worlds, opts, leases, source, encoder);
+          continue;
+        }
         captureCamera ??= facts.camera;
         if (!facts.enabled) continue;
         const viewport = cameraViewExtent(facts, internals.canvas.width, internals.canvas.height);
@@ -703,32 +873,33 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         // A held view re-renders on temporal reset or once its update interval elapses.
         view.rendered =
           resized || opts.temporalReset === true || frame - view.lastFrame >= facts.updateInterval;
-        // Every accepted source delta reaches every retained view, even when its
-        // picture is held. New/re-enabled views seed from the current scene.
+        // Views share the Renderer's scene composition; each catches up its own
+        // camera state from the latest shared advance, even when its picture is held.
         recordings.push(
           view.system.record(
             worlds,
             { ...opts, cameraEntityKey: view.camera },
             leases,
             undefined,
-            publicationFor(source, view.system, retained !== undefined),
+            publicationFor(source, view.system),
             encoder,
             view.rendered,
           ),
         );
         recorded.push(view);
-        if (target === undefined && view.output !== undefined) pictures.push(view.picture);
+        appendViewPicture(view, target);
       }
-      const firstEnabled = recorded[0]?.camera ?? captureCamera;
+      const firstEnabled =
+        recorded.find((view) => view.capture === undefined)?.camera ?? captureCamera;
       captureDemand = sharedCaptureDemand(publication, world);
-      if (firstEnabled !== undefined && (captureDemand || capturePublicationSeeded)) {
+      if (firstEnabled !== undefined && (captureDemand || captureRecorded)) {
         recordings.push(
           primary.record(
             worlds,
             { ...opts, cameraEntityKey: firstEnabled },
             leases,
             undefined,
-            publicationFor(source, primary, capturePublicationSeeded),
+            publicationFor(source, primary),
             encoder,
             'capture',
           ),
@@ -743,7 +914,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         isCurrent,
       );
       if (submitted) markViewTargetsSubmitted();
-      capturePublicationSeeded = captureDemand && submitted;
+      captureRecorded = captureDemand && submitted;
     } finally {
       releaseReplacedOutputs(device, replaced, submitted);
     }
@@ -758,6 +929,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         view.lastFrame = frame;
         view.renderedFrames += 1;
       }
+      if (view.capture !== undefined) continue;
       observed.push(viewObservation(view, renderWorld.get(view.entity, RenderView).unwrap()));
     }
     lastLodObservationCapture = Object.freeze({
@@ -790,14 +962,14 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
     },
     terrainSections() {
       return active()
-        ? recorders().map((view) => ({
+        ? displayRecorders().map((view) => ({
             view: view.key,
             sections: view.system.submittedTerrain,
           }))
         : [{ view: 'primary', sections: primary.submittedTerrain }];
     },
     get currentSystem(): RenderSystem {
-      return active() ? (findRecorder()?.system ?? primary) : primary;
+      return active() ? (findDisplayRecorder()?.system ?? primary) : primary;
     },
     get lastLodObservationCapture(): LodObservationCapture | undefined {
       return lastLodObservationCapture;
@@ -853,13 +1025,12 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
       return active();
     },
     get presentation(): FramePresentation | undefined {
-      if (!active()) return undefined;
-      return findRecorder((view) => view.system.presentation !== 'ready') === undefined
-        ? 'ready'
-        : 'pending';
+      const pending = findRecorder((view) => view.system.presentation !== 'ready') !== undefined;
+      // Without composed views the primary presents; a pending capture still holds the frame.
+      if (!active()) return pending ? 'pending' : undefined;
+      return pending ? 'pending' : 'ready';
     },
     get presentationPendingReason(): FramePresentationPendingReason | undefined {
-      if (!active()) return undefined;
       const view = findRecorder((candidate) => candidate.system.presentation === 'pending');
       return view === undefined
         ? undefined
@@ -869,7 +1040,7 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
           });
     },
     inspect(): readonly CameraViewInspection[] {
-      return recorders().map((v) => ({
+      return displayRecorders().map((v) => ({
         entityKey: v.camera,
         ...(v.eye === undefined ? {} : { eye: v.eye }),
         viewport: [v.viewport.x, v.viewport.y, v.viewport.width, v.viewport.height],
@@ -932,25 +1103,37 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
             ? []
             : selectCameraRoles(world, opts.cameraEntityKey).display);
         const wasActive = active();
-        if (cameras.some((camera) => camera.view !== undefined))
+        const captures = captureCameras(publication, world, opts.cameraEntityKey);
+        if (captures.length > 0 || cameras.some((camera) => camera.view !== undefined))
           adoptOwner(publication?.resources.identity ?? world?.identity);
         views.sync({
           cameras,
+          captures,
           attachment: (camera) => cameraAttachmentId(camera, world, worlds),
         });
         if (internals.standardProfile?.probePlacement !== undefined)
           assertProbePlacementViews(publication, world, views.enabledCount);
-        frameSubmitted = !active()
-          ? yield* preparePrimarySubmission(
-              worlds,
-              opts,
-              leases,
-              timing,
-              source,
-              isCurrent,
-              wasActive,
-            )
-          : yield* prepareViewSubmission(worlds, opts, leases, source, isCurrent);
+        frameSubmitted = active()
+          ? yield* prepareViewSubmission(worlds, opts, leases, source, isCurrent)
+          : views.captureCount > 0
+            ? yield* prepareCaptureSubmission(
+                worlds,
+                opts,
+                leases,
+                timing,
+                source,
+                isCurrent,
+                wasActive,
+              )
+            : yield* preparePrimarySubmission(
+                worlds,
+                opts,
+                leases,
+                timing,
+                source,
+                isCurrent,
+                wasActive,
+              );
         return frameSubmitted;
       } finally {
         if (!frameSubmitted) internals.gpuPassTimingCapture?.abort({ code: 'frame-aborted' });

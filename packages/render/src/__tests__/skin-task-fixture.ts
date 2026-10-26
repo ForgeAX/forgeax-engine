@@ -4,7 +4,7 @@ import { GpuInputArena } from '../gpu-input-arena';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 
 export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSet) {
   const arena = new GpuInputArena(),
@@ -41,7 +41,8 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
   );
   matrix[12] = 3;
   for (const joint of joints) skin.joint(0, joint, matrix);
-  const frame = skin.prepareFrame(scene.slotsSnapshot());
+  const frames = new SkinFrames(skin);
+  const frame = frames.prepareFrame(scene.slotsSnapshot());
   if (frame === undefined) throw new Error('Missing fixed Skin task fixture');
   const first = frame.slots.lookup(0, 17),
     second = frame.slots.lookup(0, 23);
@@ -49,6 +50,7 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
     throw new Error('Missing actual Skin Scene slots');
   return {
     skin,
+    frames,
     arena,
     scene,
     frame,
@@ -56,6 +58,7 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
     second,
     matrix,
     dispose: () => {
+      frames.resetHistory();
       skin.dispose();
       arena.dispose();
     },

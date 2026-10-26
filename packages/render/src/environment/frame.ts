@@ -141,6 +141,7 @@ function selectGradientSky(
       zenith: Object.freeze([...candidate.zenith]) as unknown as GradientSkyFrame['zenith'],
       horizon: Object.freeze([...candidate.horizon]) as unknown as GradientSkyFrame['horizon'],
       ground: Object.freeze([...candidate.ground]) as unknown as GradientSkyFrame['ground'],
+      mid: Object.freeze([...candidate.mid]) as unknown as GradientSkyFrame['mid'],
     }),
   );
 }

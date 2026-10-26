@@ -170,6 +170,80 @@ it('keeps a steady frame at zero phase work and returns the same output', () => 
   expect(phase.sortWork.changed).toBe(sort.changed);
 });
 
+it.each([
+  16, 1024,
+])('retains distance order across camera motion without revisiting rows (N=%s)', (count) => {
+  const f = fixture(0, count);
+  const phase = new DirectDrawPhase();
+  const first = phase.sync(f.input(eye(-100)));
+  // Qualify the retained order once. Later positions stay in the same interval.
+  expect(phase.sync(f.input(eye(-99)))).toBe(first);
+  const work = { ...phase.work };
+  for (const z of [-98, -95, -90]) {
+    const input = f.input(eye(z));
+    expect(phase.sync(input)).toBe(first);
+    expect(phase.work.evaluated).toBe(work.evaluated);
+    expect(phase.work).toEqual(work);
+    expect(order(first)).toEqual(order(new DirectDrawPhase().sync(input)));
+  }
+  const reversed = f.input(eye(count + 100));
+  const next = phase.sync(reversed);
+  expect(order(next)).toEqual(order(new DirectDrawPhase().sync(reversed)));
+  expect(next).not.toBe(first);
+});
+
+it('keeps one distance origin while rows change after camera-only reuse', () => {
+  const f = fixture(0, 32);
+  const phase = new DirectDrawPhase();
+  phase.sync(f.input(eye(-100)));
+  phase.sync(f.input(eye(-90)));
+  for (const [entity, z] of [
+    [4, -95],
+    [18, -50],
+    [10, -92],
+  ] as const) {
+    f.write([source(entity, glass, z)]);
+    const input = f.input(eye(-90));
+    expect(order(phase.sync(input))).toEqual(order(new DirectDrawPhase().sync(input)));
+  }
+});
+
+it('matches fresh sorting across axis changes, ties and reused camera storage', () => {
+  const f = fixture(0, 40);
+  const sources = Array.from({ length: 40 }, (_, index) => {
+    const row = source(index, glass, (index % 5) - 2);
+    row.transform.world[12] = (index % 7) - 3;
+    row.transform.world[13] = (index % 3) - 1;
+    return row;
+  });
+  f.write(sources);
+  const phase = new DirectDrawPhase();
+  const camera = eye(0);
+  for (const axis of [0, 1, 2, 0, 2]) {
+    for (const value of [-20, -4, -1, 0, 1, 4, 20]) {
+      camera.position[axis] = value;
+      const input = f.input(camera);
+      expect(order(phase.sync(input))).toEqual(order(new DirectDrawPhase().sync(input)));
+    }
+  }
+});
+
+it('does not evaluate every distance when a distance consumer has no camera', () => {
+  const f = fixture(0, 32);
+  const phase = new DirectDrawPhase();
+  const input = f.input();
+  assert(input.sort);
+  const withoutCamera = { ...input, sort: { ...input.sort, camera: undefined } };
+  phase.sync(withoutCamera);
+  const work = { ...phase.work };
+  phase.sync(withoutCamera);
+  expect(phase.work).toEqual(work);
+  phase.sync(f.input(eye(50)));
+  expect(order(phase.sync(withoutCamera))).toEqual(
+    order(new DirectDrawPhase().sync(withoutCamera)),
+  );
+});
+
 it('updates only the D changed rows of a steady frame (O(D) bin and sort operations)', () => {
   const f = fixture(2_000, 200);
   const phase = new DirectDrawPhase();
@@ -184,8 +258,10 @@ it('updates only the D changed rows of a steady frame (O(D) bin and sort operati
   ]);
   const output = phase.sync(f.input());
   expect(phase.work.rebuilt - work.rebuilt).toBe(8);
-  expect(phase.binWork.dequeued - bins.dequeued).toBe(8);
-  expect(phase.binWork.enqueued - bins.enqueued).toBe(8);
+  // Moving keeps every bin and Pass entry: no row is requeued, only re-sorted.
+  expect(phase.work.retained - work.retained).toBe(8);
+  expect(phase.binWork.dequeued - bins.dequeued).toBe(0);
+  expect(phase.binWork.enqueued - bins.enqueued).toBe(0);
   expect(phase.binWork.bins).toBe(bins.bins);
   expect(phase.sortWork.changed - sort.changed).toBe(8);
   expect(phase.work.cold).toBe(work.cold);
@@ -352,4 +428,115 @@ it('re-resolves retained morph streams every sync and adopts a re-created stream
   expect(phase.work.rebuilt).toBe(work.rebuilt);
   stream = { ...mesh } as MeshGpuHandles;
   expect(rowOf(phase.sync(input()))?.mesh).toBe(stream);
+});
+
+it('links temporal draw evidence across roster submissions (O(D) rows, exact output)', () => {
+  const f = fixture(2_000, 0);
+  f.scene.setTemporalTracking(true);
+  const roster = () => f.scene.captureSubmission([], f.scene.slotsSnapshot());
+  f.scene.commitSubmission(roster());
+  const temporalInput = (): DirectDrawInput => {
+    const input = f.input();
+    const draws = input.scene.draws;
+    assert(draws);
+    return {
+      ...input,
+      scene: { ...input.scene, draws: { ...draws, temporal: f.scene.temporalDrawInputs() } },
+    };
+  };
+  const phase = new DirectDrawPhase();
+  phase.sync(temporalInput());
+  const previousOf = (output: ReturnType<DirectDrawPhase['sync']>, entity: number) =>
+    output.rows.find((row) => row.source.entityKey === entity)?.source.temporal?.previousTransform
+      .world[14];
+  for (let frame = 1; frame <= 3; frame++) {
+    f.scene.commitSubmission(roster());
+    // Two rows move each frame; a row that moved in the previous frame now
+    // has a new submitted record and must be re-read too.
+    f.write([source(10, opaque, 100 + frame), source(20 + frame, opaque, 200 + frame)]);
+    const work = phase.work.rebuilt;
+    const cold = phase.work.cold;
+    const output = phase.sync(temporalInput());
+    expect(phase.work.cold).toBe(cold);
+    expect(phase.work.rebuilt - work).toBeLessThanOrEqual(4);
+    const fresh = new DirectDrawPhase().sync(temporalInput());
+    expect(order(output)).toEqual(order(fresh));
+    for (const entity of [10, 20 + frame - 1, 20 + frame])
+      expect(previousOf(output, entity)).toBe(previousOf(fresh, entity));
+  }
+  // The row moved two frames ago now reports its current pose as its previous one.
+  f.scene.commitSubmission(roster());
+  const settled = phase.sync(temporalInput());
+  expect(previousOf(settled, 23)).toBe(203);
+  expect(previousOf(settled, 10)).toBe(103);
+  // A temporal cut cannot be linked: every row is re-read once.
+  f.scene.setTemporalTracking(false);
+  f.scene.setTemporalTracking(true);
+  const cold = phase.work.cold;
+  phase.sync(temporalInput());
+  expect(phase.work.cold).toBe(cold + 1);
+});
+
+it('keeps placements of moved rows exactly equal to a fresh phase (randomized moves, material, layer and caster changes)', () => {
+  const f = fixture(300, 40);
+  const phase = new DirectDrawPhase();
+  const camera = eye(-50);
+  phase.sync(f.input(camera));
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return seed / 2_147_483_648;
+  };
+  const resources = [opaque, other, glass];
+  const current = new Map<number, RenderableSnapshot>();
+  for (let entity = 0; entity < 340; entity++)
+    current.set(entity, source(entity, entity < 300 ? opaque : glass));
+  const flatten = (output: ReturnType<DirectDrawPhase['sync']>) => ({
+    rows: output.rows.map((row) => [
+      row.source.entityKey,
+      row.renderableIndex,
+      row.source.transform.world[14],
+      row.source.layer ?? 0,
+      row.renderState?.blend === undefined,
+    ]),
+    dispatch: output.dispatch.map((entry, index) => [
+      entry.entityIndex,
+      entry.renderableIndex,
+      entry.queue,
+      entry.layer,
+      entry.tags.LightMode,
+      output.entryRows[index]?.source.transform.world[14],
+    ]),
+  });
+  let retained = 0;
+  for (let frame = 0; frame < 40; frame++) {
+    const writes: RenderableSnapshot[] = [];
+    for (let change = 0; change < 24; change++) {
+      const entity = Math.floor(random() * 340);
+      const before = current.get(entity) as RenderableSnapshot;
+      const roll = random();
+      const world = mat4.clone(before.transform.world);
+      world[14] = (world[14] ?? 0) + (random() - 0.5) * 40;
+      let next: RenderableSnapshot = { ...before, transform: { world } };
+      if (roll < 0.1) {
+        const resource = resources[Math.floor(random() * 3)] as MaterialResource;
+        next = { ...next, material: resource, materials: [resource] };
+      } else if (roll < 0.15) next = { ...next, layer: Math.floor(random() * 3) };
+      else if (roll < 0.2) {
+        // `shadowCaster` is either absent (casts) or `false`; toggle between the two.
+        const { shadowCaster, ...casting } = next;
+        next = shadowCaster === false ? casting : { ...next, shadowCaster: false };
+      }
+      current.set(entity, next);
+      writes.push(next);
+    }
+    f.write(writes);
+    const work = phase.work.retained;
+    const input = f.input(camera);
+    const output = phase.sync(input);
+    retained += phase.work.retained - work;
+    expect(flatten(output)).toEqual(flatten(new DirectDrawPhase().sync(input)));
+  }
+  // Most writes only move their row; those keep their bins and entries.
+  expect(retained).toBeGreaterThan(400);
 });

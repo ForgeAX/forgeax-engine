@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   adoptFieldEdit,
   diffFieldEdit,
@@ -67,11 +67,11 @@ it('replaces managed Mesh field rows when an in-place publication preserves payl
     assets.update(handle, { lodHysteresis: 0.25 }).unwrap();
     expect(records.borrow(handle).unwrap()).toBe(mesh);
     const current = capture();
-    const edit = diffFieldEdit(state, [current], base.instances);
+    const edit = diffFieldEdit(state, { sources: [current], instances: base.instances });
     expect(edit.removed.map((row) => row.index)).toEqual([0]);
     expect(edit.added.map((row) => row.id)).toEqual(['0:1:1:1:0']);
     adoptFieldEdit(state, edit, [0]);
-    expect(diffFieldEdit(state, [current], base.instances)).toEqual(none);
+    expect(diffFieldEdit(state, { sources: [current], instances: base.instances })).toEqual(none);
   } finally {
     assets.dispose();
   }
@@ -89,13 +89,13 @@ it('derives empty SDF exterior from adopted trace bounds and revokes it on edits
   const state = fieldEditState(base.sources, base.instances);
   expect(fieldOutsideEmpty(state, grid)).toBe(true); // Touching the last sample is covered.
   const moved = scene([{ key: 1, x: 0.6 }]);
-  adoptFieldEdit(state, diffFieldEdit(state, moved.sources, moved.instances));
+  adoptFieldEdit(state, diffFieldEdit(state, moved));
   expect(fieldOutsideEmpty(state, grid)).toBe(false);
   const removed = scene([]);
-  adoptFieldEdit(state, diffFieldEdit(state, removed.sources, removed.instances));
+  adoptFieldEdit(state, diffFieldEdit(state, removed));
   expect(fieldOutsideEmpty(state, grid)).toBe(true);
   const added = scene([{ key: 2, x: -0.6 }]);
-  adoptFieldEdit(state, diffFieldEdit(state, added.sources, added.instances), [0]);
+  adoptFieldEdit(state, diffFieldEdit(state, added), [0]);
   expect(fieldOutsideEmpty(state, grid)).toBe(false);
   const missing = scene([{ key: 2, x: 0 }]);
   const missingInstance = missing.instances[0];
@@ -110,7 +110,8 @@ it('derives empty SDF exterior from adopted trace bounds and revokes it on edits
   const finiteEntry = finiteState.values().next().value;
   if (finiteEntry === undefined) throw new Error('missing adopted instance');
   expect(fieldOutsideEmpty(finiteState, grid)).toBe(true);
-  finiteEntry.transform[12] = NaN;
+  const invalid = scene([{ key: 1, x: NaN }]);
+  adoptFieldEdit(finiteState, diffFieldEdit(finiteState, invalid));
   expect(fieldOutsideEmpty(finiteState, grid)).toBe(false);
 });
 
@@ -120,14 +121,14 @@ it('diffs moves and removals of owned identities against their owned rows', () =
     { key: 2, x: 4 },
   ]);
   const state = fieldEditState(base.sources, base.instances);
-  expect(diffFieldEdit(state, base.sources, base.instances)).toEqual(none);
+  expect(diffFieldEdit(state, base)).toEqual(none);
 
   const moved = scene([
     { key: 1, x: 0 },
     { key: 2, x: 6 },
   ]);
   // Re-projection may renumber rows; the edit addresses the field's owned row.
-  const edit = diffFieldEdit(state, moved.sources, moved.instances);
+  const edit = diffFieldEdit(state, moved);
   expect(edit.moved.map((m) => [m.index, m.to[12]])).toEqual([[1, 6]]);
   expect(edit.removed).toEqual([]);
   expect(fieldEditBounds(edit)).toEqual([
@@ -135,10 +136,10 @@ it('diffs moves and removals of owned identities against their owned rows', () =
     { min: [5.5, -0.5, -0.5], max: [6.5, 0.5, 0.5] },
   ]);
   adoptFieldEdit(state, edit);
-  expect(diffFieldEdit(state, moved.sources, moved.instances)).toEqual(none);
+  expect(diffFieldEdit(state, moved)).toEqual(none);
 
   const removed = scene([{ key: 2, x: 6 }]);
-  expect(diffFieldEdit(state, removed.sources, removed.instances)).toMatchObject({
+  expect(diffFieldEdit(state, removed)).toMatchObject({
     moved: [],
     removed: [{ index: 0 }],
     added: [],
@@ -157,7 +158,7 @@ it('diffs new identities as adds and owns them at the rows the field assigns', (
     { key: 3, x: 9 },
     { key: 2, x: 4 },
   ]);
-  const edit = diffFieldEdit(state, added.sources, added.instances);
+  const edit = diffFieldEdit(state, added);
   expect(edit.moved).toEqual([]);
   expect(edit.removed).toEqual([]);
   expect(edit.rematerialized).toEqual([]);
@@ -167,7 +168,7 @@ it('diffs new identities as adds and owns them at the rows the field assigns', (
   expect(() => adoptFieldEdit(state, edit)).toThrow(/one row each/);
   adoptFieldEdit(state, edit, [7]);
   expect(state.get('0:3:3:1:0')?.index).toBe(7);
-  expect(diffFieldEdit(state, added.sources, added.instances)).toEqual(none);
+  expect(diffFieldEdit(state, added)).toEqual(none);
 });
 
 it('diffs material-only changes in place and mesh changes as removal plus add', () => {
@@ -181,7 +182,7 @@ it('diffs material-only changes in place and mesh changes as removal plus add', 
     { key: 1, x: 0 },
     { key: 2, x: 5, material: white },
   ]);
-  const edit = diffFieldEdit(state, repainted.sources, repainted.instances);
+  const edit = diffFieldEdit(state, repainted);
   expect(edit.added).toEqual([]);
   expect(edit.removed).toEqual([]);
   expect(edit.moved.map((m) => m.index)).toEqual([1]);
@@ -189,20 +190,20 @@ it('diffs material-only changes in place and mesh changes as removal plus add', 
   // A material change alone recomposes no SDF voxels.
   expect(fieldEditBounds({ ...edit, moved: [] })).toEqual([]);
   adoptFieldEdit(state, edit);
-  expect(diffFieldEdit(state, repainted.sources, repainted.instances)).toEqual(none);
+  expect(diffFieldEdit(state, repainted)).toEqual(none);
 
   const remeshed = scene([
     { key: 1, x: 0, mesh: {} },
     { key: 2, x: 5, material: white },
   ]);
-  const replaced = diffFieldEdit(state, remeshed.sources, remeshed.instances);
+  const replaced = diffFieldEdit(state, remeshed);
   expect(replaced.removed.map((r) => r.index)).toEqual([0]);
   expect(replaced.added.map((a) => a.id)).toEqual(['0:1:1:1:0']);
   expect(replaced.rematerialized).toEqual([]);
   // The replacement may reuse its own freed row.
   adoptFieldEdit(state, replaced, [0]);
   expect(state.get('0:1:1:1:0')?.index).toBe(0);
-  expect(diffFieldEdit(state, remeshed.sources, remeshed.instances)).toEqual(none);
+  expect(diffFieldEdit(state, remeshed)).toEqual(none);
 });
 
 it('bounds Global SDF recomposition to the edited box plus the distance band', () => {
@@ -269,9 +270,50 @@ it('retains material binding identity across accepted shared-root value updates'
       },
     },
   ]);
-  const edit = diffFieldEdit(state, updated.sources, updated.instances);
+  const edit = diffFieldEdit(state, updated);
   expect(edit.moved).toHaveLength(1);
   expect(edit.rematerialized).toEqual([]);
   const rebound = scene([{ key: 1, x: 0, material: { ...material, resource: {} } }]);
-  expect(diffFieldEdit(state, rebound.sources, rebound.instances).rematerialized).toHaveLength(1);
+  expect(diffFieldEdit(state, rebound).rematerialized).toHaveLength(1);
+});
+
+it.each([128, 1024])('adopts 8 field edits without enumerating N=%i owned rows', (count) => {
+  const initial = scene(Array.from({ length: count }, (_, key) => ({ key, x: key * 4 })));
+  const state = fieldEditState(initial.sources, initial.instances);
+  const current = scene(
+    Array.from({ length: count }, (_, key) => ({ key, x: key * 4 + (key < 8 ? 1 : 0) })),
+  );
+  const edit = diffFieldEdit(state, current);
+  expect(edit.moved).toHaveLength(8);
+  const enumerate = vi.spyOn(state, Symbol.iterator);
+  adoptFieldEdit(state, edit);
+  expect(enumerate).not.toHaveBeenCalled();
+  enumerate.mockRestore();
+  expect([...state.values()].slice(0, 8).map((row) => row.transform[12])).toEqual(
+    Array.from({ length: 8 }, (_, index) => index * 4 + 1),
+  );
+});
+
+it('updates the SDF exterior proof from adopted rows without scanning clean entries', () => {
+  const grid = {
+    origin: [-1, -1, -1] as const,
+    dimensions: [3, 3, 3] as const,
+    spacing: 1,
+    maxDistance: 1,
+    coverageDistance: 0.5,
+  };
+  const base = scene(Array.from({ length: 1024 }, (_, key) => ({ key, x: 0 })));
+  const state = fieldEditState(base.sources, base.instances);
+  expect(fieldOutsideEmpty(state, grid)).toBe(true);
+  const enumerate = vi.spyOn(state, 'values');
+  const moved = scene([{ key: 7, x: 2 }]);
+  const changedSources = [{ worldId: 0, slot: 7 }];
+  adoptFieldEdit(state, diffFieldEdit(state, { ...moved, changedSources }));
+  expect(fieldOutsideEmpty(state, grid)).toBe(false);
+  adoptFieldEdit(state, diffFieldEdit(state, { sources: [], instances: [], changedSources }));
+  expect(fieldOutsideEmpty(state, grid)).toBe(true);
+  expect(state.size).toBe(1023);
+  expect(enumerate).not.toHaveBeenCalled();
+  enumerate.mockRestore();
+  expect(fieldOutsideEmpty(state, { ...grid, origin: [10, 10, 10] })).toBe(false);
 });

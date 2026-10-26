@@ -133,14 +133,7 @@ import {
   type GpuGeometryCapture,
   gbufferGeometryProgram,
 } from './production-raster-geometry-capture';
-import {
-  admittedRasterBatchCount,
-  type LodProjectionState,
-  lodCoverageMayFade,
-  lodProjectionState,
-  lodSelectionChangeCount,
-  type shadowLodProjectionState,
-} from './production-raster-lod';
+import { admittedRasterBatchCount, lodCoverageMayFade } from './production-raster-lod';
 import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
@@ -399,7 +392,6 @@ interface SubmissionAdmission {
 /** The main and shadow filtered plans of one prepared plan, with their admission. */
 interface FilteredFrame {
   readonly preparedPlan: PreparedProductionPlan;
-  readonly lodProjection: LodProjectionState;
   readonly filtered: FilteredProductionPlan;
   readonly admission: SubmissionAdmission;
   readonly shadowFiltered: FilteredProductionPlan | undefined;
@@ -412,7 +404,6 @@ interface PreparedRasterFrame {
   readonly materials: GpuSceneResourceFrame;
   readonly materialPipelineState: PipelineState;
   readonly preparedPlan: PreparedProductionPlan;
-  readonly lodProjection: LodProjectionState;
   readonly filtered: FilteredProductionPlan;
   readonly shadowFiltered: FilteredProductionPlan | undefined;
   readonly liveRasterBatches: readonly LiveRasterBatch[];
@@ -809,13 +800,6 @@ export class GpuDrivenProduction {
   private planRebuildBatches = 0;
   private preparedAssemblyHits = 0;
   private planRebuildCandidates = 0;
-  private lodSelectionChanges = 0;
-  private lodSelectionBaseline:
-    | {
-        readonly prepared: PreparedProductionPlan;
-        readonly selections: readonly (readonly number[])[];
-      }
-    | undefined;
   private pendingDrawSummary: (() => GpuDrawSummary) | undefined;
   private gpuOwnedEntityCount = 0;
   private batchBindGroupCreates = 0;
@@ -1005,7 +989,6 @@ export class GpuDrivenProduction {
     this.planRebuildBatches = 0;
     this.preparedAssemblyHits = 0;
     this.planRebuildCandidates = 0;
-    this.lodSelectionChanges = 0;
     this.batchBindGroupCreates = 0;
     this.validatedGpuOwnedRows = 0;
     this.cpuFallbackDrawItems = 0;
@@ -1159,7 +1142,6 @@ export class GpuDrivenProduction {
     materials: GpuSceneResourceFrame,
     preparedPlan: PreparedProductionPlan,
   ): FilteredFrame | undefined {
-    const lodProjection = this.observeLodProjection(input, scene, preparedPlan);
     const filtered = this.mainFilteredPlan(input, preparedPlan);
     runRecordProfilePhase(input.profilePhase, 'record/gpu-driven-prepare/filter/counts', () => {
       this.indirectDrawCount = admittedRasterBatchCount(filtered.plan);
@@ -1170,31 +1152,7 @@ export class GpuDrivenProduction {
       return undefined;
     const admission = this.submissionAdmission(input, scene);
     this.admissionCache = admission;
-    return { preparedPlan, lodProjection, filtered, admission, shadowFiltered };
-  }
-
-  private observeLodProjection(
-    input: GpuDrivenPrepareInput,
-    scene: PersistentGpuDrivenState,
-    preparedPlan: PreparedProductionPlan,
-  ): LodProjectionState {
-    const lodProjection = lodProjectionState(
-      preparedPlan,
-      input.camera,
-      scene.slotAt,
-      input.profilePhase,
-    );
-    const lodBaseline = this.lodSelectionBaseline;
-    this.lodSelectionChanges =
-      lodBaseline?.prepared === preparedPlan
-        ? lodSelectionChangeCount(
-            lodBaseline.selections,
-            lodProjection.selections,
-            preparedPlan.lodPlan,
-          )
-        : 0;
-    this.lodSelectionBaseline = { prepared: preparedPlan, selections: lodProjection.selections };
-    return lodProjection;
+    return { preparedPlan, filtered, admission, shadowFiltered };
   }
 
   /**
@@ -1289,7 +1247,7 @@ export class GpuDrivenProduction {
     scene: PersistentGpuDrivenState,
     materials: GpuSceneResourceFrame,
     materialPipelineState: PipelineState,
-    { preparedPlan, lodProjection, filtered, admission, shadowFiltered }: FilteredFrame,
+    { preparedPlan, filtered, admission, shadowFiltered }: FilteredFrame,
   ): Result<PreparedGpuDrivenFrame | undefined, RhiError | GpuDrivenPreparationError> {
     const surfaceArtifact = filtered.materialBatches.find(({ artifact }) =>
       isSingleLayerMediumArtifact(artifact),
@@ -1371,7 +1329,6 @@ export class GpuDrivenProduction {
         materials,
         materialPipelineState,
         preparedPlan,
-        lodProjection,
         filtered,
         shadowFiltered,
         liveRasterBatches: this.liveRasterBatches,
@@ -1811,8 +1768,6 @@ export class GpuDrivenProduction {
       input.batchExecutions,
       frame.scene,
       frame.materials.inputReads(),
-      frame.lodProjection,
-      frame.preparedPlan,
       input.camera,
       input.capsuleShadowDirectional === true,
       input.materialFrame,
@@ -2341,6 +2296,8 @@ export class GpuDrivenProduction {
       projected.rasterClasses,
       scene.scene.transformBuffer,
       sceneTransformBytes(scene),
+      projected.frame.materialRaster.visibleBindingIdentity,
+      projected.frame.skinRaster?.visibleBindingIdentity,
     ];
     const runs = this.retainedEncodes.begin(
       bundlePass,
@@ -2717,15 +2674,7 @@ export class GpuDrivenProduction {
     const value = runRecordProfilePhase(
       profilePhase,
       'record/gpu-driven-prepare/plan/admission',
-      () =>
-        assemblePreparedPlan(
-          scene.plan,
-          batchRows,
-          scene.worldKeys,
-          fixedMembership && sameRows && previous?.plan === scene.plan
-            ? previous.value.lodPlan
-            : undefined,
-        ),
+      () => assemblePreparedPlan(scene.plan, batchRows, scene.worldKeys),
     );
     preparation.cached = {
       plan: scene.plan,
@@ -2752,8 +2701,6 @@ export class GpuDrivenProduction {
     batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
     scene: PersistentGpuDrivenState,
     inputReads: import('../gpu-scene-inputs').GpuInputReadFrame,
-    lod: LodProjectionState,
-    lodPrepared: Parameters<typeof shadowLodProjectionState>[0],
     camera: CameraSnapshot,
     capsuleShadowDirectional: boolean,
     directMaterials: import('../scene/material-dispatch').MaterialFrame | undefined,
@@ -2799,8 +2746,6 @@ export class GpuDrivenProduction {
       projectionSource: shadowSource.projectionSource,
       shadowScene,
       inputReads,
-      lod,
-      lodPrepared,
       camera,
       capsuleShadowDirectional,
       directMaterials,
@@ -2810,7 +2755,6 @@ export class GpuDrivenProduction {
       meshBinding: meshBinding.value,
       visibleBindingIdentity: materialRaster.visibleBindingIdentity,
       skinVisibleBindingIdentity: this.skinRaster?.visibleBindingIdentity,
-      lodByMatrix: new Map(),
       cullCamera: undefined,
       preparedByBatch: undefined,
       next: new Map(),
@@ -3354,7 +3298,6 @@ export class GpuDrivenProduction {
       planRebuildBatches: this.planRebuildBatches,
       preparedAssemblyHits: this.preparedAssemblyHits,
       planRebuildCandidates: this.planRebuildCandidates,
-      lodSelectionChanges: this.lodSelectionChanges,
       shadowCasterFlips: this.shadowCasterClasses.inspect().flips,
       shadowCasterClassification: this.shadowCasterClasses.inspect(),
       shadowViews: this.shadowViews?.inspect() ?? [],

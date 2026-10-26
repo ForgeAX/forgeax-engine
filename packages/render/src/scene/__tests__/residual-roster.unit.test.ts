@@ -8,7 +8,11 @@ import { RenderScene } from '../render-scene';
 import { ResidualRoster } from '../residual-roster';
 
 const covered = new MaterialResource(defaultMaterialSnapshot(1));
-const residual = new MaterialResource(defaultMaterialSnapshot(2));
+// A distinct texture binding keeps the residual material out of the covered row-material batch.
+const residual = new MaterialResource({
+  ...defaultMaterialSnapshot(2),
+  textureHandles: new Map([['baseColorTexture', 2]]),
+} as unknown as ReturnType<typeof defaultMaterialSnapshot>);
 
 function source(entityKey: number, material: MaterialResource, batched = true): RenderableSnapshot {
   const base = receiptRow().source;

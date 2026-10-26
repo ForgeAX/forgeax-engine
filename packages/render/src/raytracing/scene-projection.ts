@@ -1,6 +1,7 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
+import { meshAttributeChannels } from '../publication/packed-rows-mesh';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
@@ -56,8 +57,10 @@ export function projectRayScene(
     const mesh = world.resolveAsset<MeshAsset>(source.assetHandle).unwrap();
     if (mesh.kind !== 'mesh')
       return rayReferenceFailure('retained transport source must resolve to a MeshAsset').unwrap();
+    // Packed-rows meshes rebuild their channels exactly from the rows here.
+    const channels = meshAttributeChannels(mesh);
     const read = (key: keyof MeshAsset['attributes']) => {
-      const value = mesh.attributes[key];
+      const value = channels[key];
       if (value === undefined || value instanceof Float32Array) return value;
       if (value instanceof ArrayBuffer && value.byteLength % 4 === 0)
         return new Float32Array(value);

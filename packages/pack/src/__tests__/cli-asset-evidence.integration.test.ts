@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { compressZstd } from '@forgeax/engine-codec/encode';
 import { afterEach, describe, expect, it } from 'vitest';
 import { encodeCatalogWire } from '../catalog-wire.js';
 import { runCliAsset } from '../cli-asset.js';
@@ -241,4 +242,39 @@ it.each([
   expect(JSON.parse(stdout.join('')).artifacts.data.verification).toBe(
     mode === 'valid' ? 'passed' : 'failed',
   );
+});
+
+it('verifies compressed Catalog, Pack and receipt documents through the shared codec', async () => {
+  const project = await evidenceFixture('array');
+  for (const relative of ['catalog.json', 'assets/config.pack.json', 'receipts.json']) {
+    const file = join(project, relative);
+    const encoded = await compressZstd(await readFile(file));
+    if (!encoded.ok) throw encoded.error;
+    await writeFile(file, encoded.value);
+  }
+  const stdout: string[] = [],
+    stderr: string[] = [];
+  const code = await runCliAsset(
+    [
+      'lookup',
+      '--guid',
+      guid,
+      '--project',
+      project,
+      '--catalog',
+      join(project, 'catalog.json'),
+      '--json',
+    ],
+    {
+      stdoutWrite: (line) => stdout.push(line),
+      stderrWrite: (line) => stderr.push(line),
+    },
+  );
+  expect(code).toBe(0);
+  expect(stderr).toEqual([]);
+  expect(JSON.parse(stdout[0] as string)).toMatchObject({
+    guid,
+    cook: { status: 'ready', freshness: 'current' },
+    artifacts: { data: { verification: 'passed' } },
+  });
 });

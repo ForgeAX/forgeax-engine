@@ -11,6 +11,12 @@ import {
   gpuDrivenGeometryEligible,
 } from './batch-topology';
 import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
+import {
+  type RowMaterialGroup,
+  rowMaterialResource,
+  rowMaterialSlot,
+  rowMaterialSourcesKey,
+} from './row-materials';
 
 type Draws = Map<number, readonly GpuDrivenBatch[]>;
 type Meshes = Map<number, Draws>;
@@ -41,14 +47,21 @@ function sameGeometry(
   );
 }
 
+/** A row-material binding answers through its group for every material the group holds. */
+function selectionKey(binding: GpuDrivenBatchBinding): MaterialResource | RowMaterialGroup {
+  return binding.rowGroup ?? binding.material;
+}
+
 const MASK_DRAWS = 31;
 const MASK_COMPUTED = 1 << 31;
 const MASK_DRAWS_ALL = 0x7fffffff;
 
 /** Shared execution membership, queried by the draw that is about to consume it. */
 export class GpuDrawSelection {
-  /** Source-addressed index, built on the first source query only. */
-  #materials: Map<MaterialResource, Worlds> | undefined;
+  /** Source-addressed index by material, or by group for row-material batches. */
+  #materials: Map<MaterialResource | RowMaterialGroup, Worlds> | undefined;
+  /** Row-material groups of the index; one per batch class. */
+  readonly #groups: RowMaterialGroup[] = [];
   /** Owned executions per shared binding; selections diff these to retain derived answers. */
   readonly #byBinding = new Map<GpuDrivenBatchBinding, GpuDrivenBatch[]>();
   /** Weakly keyed: a selection never keeps an earlier selection (or its plan) reachable. */
@@ -90,16 +103,18 @@ export class GpuDrawSelection {
     return changed;
   }
 
-  private get materials(): Map<MaterialResource, Worlds> {
+  private get materials(): Map<MaterialResource | RowMaterialGroup, Worlds> {
     if (this.#materials !== undefined) return this.#materials;
-    const materials = new Map<MaterialResource, Worlds>();
+    const materials = new Map<MaterialResource | RowMaterialGroup, Worlds>();
     for (const owned of this.#byBinding.values())
       for (const batch of owned) {
         const binding = batch.binding as GpuDrivenBatchBinding;
-        let worlds = materials.get(binding.material);
+        const key = selectionKey(binding);
+        let worlds = materials.get(key);
         if (worlds === undefined) {
           worlds = new Map();
-          materials.set(binding.material, worlds);
+          materials.set(key, worlds);
+          if (binding.rowGroup !== undefined) this.#groups.push(binding.rowGroup);
         }
         let meshes = worlds.get(binding.worldId);
         if (meshes === undefined) {
@@ -125,16 +140,41 @@ export class GpuDrawSelection {
     return this.#byBinding.size === 0;
   }
 
-  /** Materials of executed bindings by World; their readiness covers every owned draw. */
+  /**
+   * Materials of executed bindings by World; their readiness covers every
+   * owned draw. A row-material batch's members share its texture bindings.
+   */
   *coveredMaterials(): Generator<readonly [worldId: number, material: MaterialResource]> {
-    for (const [material, worlds] of this.materials)
-      for (const worldId of worlds.keys()) yield [worldId, material];
+    for (const owned of this.#byBinding.values())
+      for (const batch of owned) {
+        const binding = batch.binding as GpuDrivenBatchBinding;
+        yield [binding.worldId, binding.material];
+      }
   }
 
   private batches(source: RenderableSnapshot, draw: GpuDrivenDrawSnapshot, compactIndex: number) {
     if (source.assetHandle === undefined) return undefined;
-    return this.materials
-      .get(source.materials[draw.materialSlot] ?? source.material)
+    const material = source.materials[draw.materialSlot] ?? source.material;
+    // Like a material batch, a group answers for every draw of a material it holds.
+    const rowMaterial = rowMaterialSlot(source, draw.materialSlot)
+      ? (rowMaterialResource(source) ?? material)
+      : undefined;
+    const materials = this.materials;
+    let group: RowMaterialGroup | undefined;
+    if (rowMaterial !== undefined) {
+      // Most materials sit in one group; derive the source signature only on a membership hit.
+      let sources: string | undefined;
+      for (const candidate of this.#groups) {
+        if (!candidate.rows.has(rowMaterial)) continue;
+        sources ??= rowMaterialSourcesKey(source.materialBindingSources);
+        if (candidate.sources === sources) {
+          group = candidate;
+          break;
+        }
+      }
+    }
+    return materials
+      .get(group ?? material)
       ?.get(source.worldId)
       ?.get(source.assetHandle)
       ?.get(gpuDrivenSourceDrawItemIndex(draw, compactIndex));
@@ -146,7 +186,7 @@ export class GpuDrawSelection {
    */
   coversBinding(binding: GpuDrivenBatchBinding): boolean {
     const owned = this.materials
-      .get(binding.material)
+      .get(selectionKey(binding))
       ?.get(binding.worldId)
       ?.get(binding.assetHandle)
       ?.get(binding.drawItemIndex);

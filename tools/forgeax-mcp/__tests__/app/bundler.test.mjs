@@ -4,6 +4,44 @@ import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { createRemoteBundler } from '../../src/app/bundler.mjs';
 
+for (const scenario of ['reset before headers', 'reset during body', 'persistent reset', 'HTTP error']) {
+  test(`remote source reads handle ${scenario} without replaying HTTP failures`, async () => {
+    let reads = 0;
+    const server = createServer((request, response) => {
+      reads++;
+      if (scenario === 'HTTP error') {
+        response.writeHead(503).end('unavailable');
+      } else if (scenario === 'persistent reset' || reads === 1) {
+        if (scenario === 'reset during body') {
+          response.writeHead(200, { 'content-type': 'text/javascript', 'content-length': 1000 });
+          response.write('export const value = ');
+          setTimeout(() => response.destroy(), 10);
+        } else request.socket.destroy();
+      } else response.end('export const value = 42;');
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const url = `http://127.0.0.1:${server.address().port}/entry.mjs`;
+    const bundle = createRemoteBundler((input) => {
+      assert.equal(input, url);
+      return new URL(input);
+    });
+    try {
+      if (scenario === 'persistent reset' || scenario === 'HTTP error') {
+        await assert.rejects(bundle(url), scenario === 'HTTP error' ? /HTTP 503/ : /source fetch failed/);
+      } else {
+        const result = await bundle(url);
+        const module = await import(`data:text/javascript,${encodeURIComponent(result.source)}`);
+        assert.equal(module.value, 42);
+      }
+      assert.equal(reads, scenario === 'HTTP error' ? 1 : 2);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
+
 test('wide document graphs share bounded source reads and retain every module', async () => {
   let active = 0;
   let peak = 0;

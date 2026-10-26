@@ -754,8 +754,9 @@ export function recordGeometryDraws(
   const meshGroup2DynamicOffsets = [0];
   let lastStencilReference: number | null = null;
   let lastViewOffset = viewBindGroupDynamicOffset;
-  const viewOffsetForBlend = (blend: GPUBlendState | undefined): number => {
-    const composition = c.translucentFog === true ? translucentFogComposition(blend) : undefined;
+  const viewOffsetForBlend = (blend: GPUBlendState | undefined, fog?: boolean): number => {
+    const composition =
+      c.translucentFog === true && fog !== false ? translucentFogComposition(blend) : undefined;
     return composition === undefined
       ? viewBindGroupDynamicOffset
       : translucentViewOffset(composition);
@@ -1058,7 +1059,7 @@ export function recordGeometryDraws(
           );
     }
     // Fog composition follows the authored blend, before OIT replaces it.
-    const viewOffset = viewOffsetForBlend(pipelineRenderState?.blend);
+    const viewOffset = viewOffsetForBlend(pipelineRenderState?.blend, pipelineRenderState?.fog);
     if (oitAccumulateDraw) pipelineRenderState = oitAccumulateRenderState(pipelineRenderState);
     let smPipelineHandle: typeof pipelineState.unlitPipeline;
     let materialPipelineEntry: MaterialShaderPipelineEntry | null = null;
@@ -1464,7 +1465,10 @@ export function recordGeometryDraws(
       0,
       viewBindGroup as BindGroup,
       new Uint32Array([
-        viewOffsetForBlend(pointsLinesMaterial.renderState?.blend),
+        viewOffsetForBlend(
+          pointsLinesMaterial.renderState?.blend,
+          pointsLinesMaterial.renderState?.fog,
+        ),
         entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
       ]),
       0,

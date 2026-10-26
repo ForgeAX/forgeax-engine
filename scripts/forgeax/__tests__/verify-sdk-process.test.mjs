@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { createSdkVerifierProcess } from '../verify-sdk-process.mjs';
+import { createSdkVerifierProcess, readSdkProjectDocument } from '../verify-sdk-process.mjs';
 
 const packageManager = 'pnpm@11.7.0';
 const literalArgs = ['quote"literal', 'back\\slash', 'ampersand&', 'percent%'];
@@ -89,4 +89,41 @@ process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.
   assert.deepEqual(value.args, literalArgs);
   assert.equal(value.cwd, cwd);
   assert.equal(value.env, 'pinned');
+});
+
+test('candidate document reads share the public Codec for plain and compressed builds', async (t) => {
+  const { compressZstd } = await import('../../../packages/codec/dist/encode/index.mjs');
+  const project = await realpath(await mkdtemp(resolve(tmpdir(), 'sdk catalog ')));
+  t.after(() => rm(project, { force: true, recursive: true }));
+  const installed = resolve(project, 'node_modules/@forgeax');
+  await mkdir(installed, { recursive: true });
+  await symlink(
+    resolve(import.meta.dirname, '../../../packages/engine'),
+    resolve(installed, 'engine'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  const rows = [{ guid: '11111111-1111-4111-8111-111111111111', kind: 'mesh' }];
+  const scene = {
+    schemaVersion: '2.0.0',
+    kind: 'internal-text-package',
+    assets: [{ guid: rows[0].guid, kind: 'scene', payload: { entities: [] } }],
+  };
+  const runner = createSdkVerifierProcess(packageManager);
+  for (const [kind, value] of [
+    ['catalog', rows],
+    ['json', scene],
+  ]) {
+    const plain = Buffer.from(JSON.stringify(value));
+    const compressed = await compressZstd(plain);
+    assert.equal(compressed.ok, true);
+    if (!compressed.ok) throw compressed.error;
+    for (const bytes of [plain, compressed.value]) {
+      const file = resolve(project, kind === 'catalog' ? 'pack-index.json' : 'scene.pack.json');
+      await writeFile(file, bytes);
+      assert.deepEqual(
+        await readSdkProjectDocument(runner.execFileAsync, project, file, kind),
+        value,
+      );
+    }
+  }
 });

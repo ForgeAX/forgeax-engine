@@ -2,16 +2,15 @@ import type { RecorderSession } from '@forgeax/engine-profiler';
 import type { CommandBuffer, RhiCommandEncoder, RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { CubeCaptureWork } from '../capture/scheduler';
 import { RendererOperationError } from '../errors/render';
-import {
-  type RenderFeatureFrameBatch,
-  type RenderFeatureFrameInput,
-  type RenderFeatureFrameResult,
-  type RenderFeatureHost,
-  runRenderFeatureFrame,
+import type {
+  RenderFeatureFrameBatch,
+  RenderFeatureFrameInput,
+  RenderFeatureFrameResult,
+  RenderFeatureHost,
 } from '../features/host';
 import { MaterialUniformRecording } from '../record/material-uniforms';
 import type { RenderSystemInternals } from '../record/render-context';
-import type { CameraSnapshot, CubeCameraSnapshot, RenderPhase } from '../render-contract';
+import type { CubeCameraSnapshot, RenderPhase } from '../render-contract';
 import { recordSharedFeatureGraph } from './feature-frame-graph';
 import type {
   RendererFrameStageResult,
@@ -55,11 +54,9 @@ export interface FeatureFrameRequest {
   readonly encoder: RhiCommandEncoder;
   readonly captures?: {
     readonly snapshots: readonly CubeCameraSnapshot[];
-    readonly auxiliary: readonly CameraSnapshot[];
     readonly exclusive: boolean;
     readonly accept: (
       work: readonly CubeCaptureWork[],
-      auxiliary: readonly CameraSnapshot[],
       sceneInputs: readonly import('../record/target-capture-graph').CubeCaptureGraphWork[],
     ) => void;
   };
@@ -331,7 +328,7 @@ class FrameSubmission {
     for (const { request } of featureRequests)
       request.internals.framePassNames = this.framePassNames;
     first.internals.featureSceneInputs?.begin(first.input.frameNumber);
-    const batch = runRenderFeatureFrame(first.host, inputs);
+    const batch = first.host.runFrame(inputs);
     this.batch = batch;
     for (const { request } of featureRequests) {
       const view = batch.views.get(request.input.identity);
@@ -361,9 +358,6 @@ class FrameSubmission {
     for (const entry of featureRequests)
       entry.request.captures?.accept(
         entry === captureView ? captureWork : [],
-        entry === captureView
-          ? (captures?.auxiliary.filter((camera) => camera.planarReflection === undefined) ?? [])
-          : [],
         entry === captureView ? sceneInputs : [],
       );
     if (sceneInputs.length > 0) {

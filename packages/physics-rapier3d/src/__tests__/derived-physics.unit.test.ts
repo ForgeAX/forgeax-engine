@@ -2600,3 +2600,135 @@ describe('type-only derived body preparations', () => {
     }
   });
 });
+
+describe('empty derived retirements', () => {
+  it('leave the same native mass properties as a body that never had derived shapes', async () => {
+    const RAPIER = await loadRapier3D();
+    if ('code' in RAPIER) throw RAPIER;
+    let seed = 12345;
+    const rnd = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return seed / 2 ** 32;
+    };
+    const massState = (body: {
+      mass(): number;
+      localCom(): unknown;
+      principalInertia(): unknown;
+      principalInertiaLocalFrame(): unknown;
+      numColliders(): number;
+    }) => [
+      body.mass(),
+      body.localCom(),
+      body.principalInertia(),
+      body.principalInertiaLocalFrame(),
+      body.numColliders(),
+    ];
+    for (let trial = 0; trial < 24; trial += 1) {
+      const pw = createRapier3DPhysicsWorld(RAPIER);
+      try {
+        pw.setGravity(vec3.create(0, 0, 0));
+        const additionalMass = rnd() < 0.5 ? 0 : 0.5 + rnd() * 3;
+        const density = rnd() < 0.3 ? 0 : 0.5 + rnd() * 2;
+        for (const entity of [7, 8])
+          pw.ensureBody(
+            entity,
+            {
+              position: { x: entity * 4, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0, w: 1 },
+              scale: { x: 1, y: 1, z: 1 },
+            },
+            {
+              type: 1,
+              mass: additionalMass,
+              linearDamping: 0,
+              angularDamping: 0,
+              gravityScale: 0,
+              ccdEnabled: 0,
+            },
+            {
+              shape: 0,
+              mesh: 0 as AssetHandle<'mesh'>,
+              halfExtents: [0.25, 0.5, 0.75],
+              radius: 0.25,
+              halfHeight: 0.25,
+              friction: 0.5,
+              restitution: 0,
+              density,
+              isSensor: false,
+              collisionGroups: 0xffffffff,
+              solverGroups: 0xffffffff,
+            },
+          );
+        const shapes = Array.from({ length: 1 + Math.floor(rnd() * 3) }, (_, index) => {
+          const lower = [rnd() - 1, rnd() - 1, rnd() - 1];
+          return rnd() < 0.5
+            ? {
+                id: `compound-${index}`,
+                revision: 1,
+                kind: 'convex-compound' as const,
+                pieces: [
+                  boxPoints(
+                    lower,
+                    lower.map((value) => value + 0.2 + rnd()),
+                  ),
+                ],
+                origin: [rnd(), rnd(), rnd()] as const,
+              }
+            : {
+                id: `voxels-${index}`,
+                revision: 1,
+                kind: 'voxels' as const,
+                regions: Int32Array.from([0, 0, 0, 1 + Math.floor(rnd() * 3), 1, 2]),
+                voxelSize: [0.25, 0.25, 0.25] as const,
+                origin: [rnd(), rnd(), rnd()] as const,
+              };
+        });
+        const automatic = rnd() < 0.5;
+        pw.admitDerivedShapeCandidate(
+          pw
+            .prepareDerivedShapeCandidate({
+              entity: 7,
+              sourceKey: 'body:7',
+              revision: 1,
+              bodyType: 'dynamic',
+              shapes,
+              ...(automatic
+                ? {}
+                : {
+                    massProperties: {
+                      mode: 'explicit' as const,
+                      mass: 0.5 + rnd() * 3,
+                      centerOfMass: [rnd(), rnd(), rnd()] as const,
+                      principalInertia: [0.5 + rnd(), 0.5 + rnd(), 0.5 + rnd()] as const,
+                    },
+                  }),
+              velocityPolicy: 'preserve',
+              constraints: [],
+            })
+            .unwrap(),
+        ).unwrap();
+        pw.step(1 / 60);
+        pw.admitDerivedShapeCandidate(
+          pw
+            .prepareDerivedShapeCandidate({
+              entity: 7,
+              sourceKey: 'body:7',
+              revision: 2,
+              bodyType: 'dynamic',
+              shapes: [],
+              velocityPolicy: 'reset',
+            })
+            .unwrap(),
+        ).unwrap();
+        pw.step(1 / 60);
+        const bodies = pw as unknown as {
+          bodyForEntity(entity: number): Parameters<typeof massState>[0];
+        };
+        expect(pw.getDerivedPublication(7)).toMatchObject({ revision: 2, shapeIds: [] });
+        expect(massState(bodies.bodyForEntity(7))).toEqual(massState(bodies.bodyForEntity(8)));
+      } finally {
+        pw.dispose();
+      }
+    }
+  });
+});

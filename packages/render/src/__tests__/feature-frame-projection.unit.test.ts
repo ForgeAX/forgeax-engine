@@ -2,11 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createFullscreenRenderFeature } from '../features/fullscreen';
-import {
-  createRenderFeatureHost,
-  type RenderFeatureFrameInput,
-  runRenderFeatureFrame,
-} from '../features/host';
+import { createRenderFeatureHost, type RenderFeatureFrameInput } from '../features/host';
 import type { RenderFeature, RenderFeatureHiddenEntityReport } from '../features/types';
 
 function view(
@@ -39,7 +35,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
     const left = report(world, 9);
     const right = report(world, 10);
     const host = createRenderFeatureHost([]).unwrap();
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       view('left', [world], [left, left]),
       view('right', [world], [right, right]),
     ]);
@@ -74,7 +70,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
         ok({ work: work === 'empty' ? [] : [{ scope: 'frame', resources: [], passes: [] }] }),
     };
     const host = createRenderFeatureHost([feature]).unwrap();
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       view('left', [world, otherWorld], [left, shared]),
       view('right', [world, otherWorld], [right, shared]),
     ]);
@@ -108,7 +104,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
       second,
     ];
     const host = createRenderFeatureHost(features).unwrap();
-    const batch = runRenderFeatureFrame(host, [view('left', [world]), view('right', [world])]);
+    const batch = host.runFrame([view('left', [world]), view('right', [world])]);
     try {
       expect(batch.frame.errors).toEqual([]);
       for (const projected of batch.views.values()) {
@@ -139,7 +135,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
     try {
       for (const active of [false, true, false, true]) {
         enabled = active;
-        const batch = runRenderFeatureFrame(host, [view('left', [world]), view('right', [world])]);
+        const batch = host.runFrame([view('left', [world]), view('right', [world])]);
         try {
           expect(batch.frame.errors).toEqual([]);
           for (const projected of batch.views.values()) {

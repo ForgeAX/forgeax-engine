@@ -9,7 +9,7 @@ description: ForgeaX code-first GPU VFX authoring, cooking, playback, and render
 
 | Effect | Path |
 |:--|:--|
-| Rain, snow, sparks, bubbles, dust or sandstorm, fire, smoke, magic motes; up to a few thousand particles per field; behaviour written in game TypeScript | `Points` sprites on a `point-list` mesh, moved with `writeRange` each frame ([cookbook 12](../forgeax-engine-sdk/references/gameplay-cookbook.md#12-particles-rain-snow-sparks-bubbles-dust-fire-smoke-magic)). No shader, no cook. |
+| Rain, snow, sparks, bubbles, dust or sandstorm, fire, smoke, magic motes; up to a few thousand particles per field; behaviour written in game TypeScript | `Points` sprites on a `point-list` mesh, moved with `writeRange` each frame ([particles-core](../forgeax-engine-sdk/references/effects/particles-core.md)). No shader, no cook. |
 | Tens of thousands of particles, GPU scene collision, force fields, ribbons, trails, beams, mesh particles, event sub-emitters | Cooked GPU VFX below. |
 
 `Points` take a world (`sizeUnits: world`) or pixel size, square, circle or `soft`
@@ -43,7 +43,14 @@ emitter `schedule: { rate: 0, bursts: [{ time: 0, count }] }` and a billboard
 renderer with `blend: 'additive'`, then spawn one `ParticleEffectPlayer` per burst
 (a distinct `seed` varies it) and despawn it after the longest particle lifetime.
 The complete files are recipe 5 of the
-[gameplay cookbook](../forgeax-engine-sdk/references/gameplay-cookbook.md#5-one-shot-vfx-burst).
+[effects cookbook](../forgeax-engine-sdk/references/effects/vfx-burst.md).
+
+Players advance once per World frame: the `vfx-gpu-runtime` Update system runs
+after `FixedUpdate` and steps each simulating player by `Time.delta` times its
+`timeScale`, so particles move at render rate. Bound hitches with
+`TimePolicy.maxDeltaSeconds`; do not add a VFX-side step clock. Each intent
+records `delta`, `initialDelta` and cycle `elapsed`; device recovery replays the
+same dispatch count and cycle time over even steps.
 
 Every particle topology fogs at its own depth through the shared
 `translucent_fog`; alpha blending adds in-scattering and additive blending only

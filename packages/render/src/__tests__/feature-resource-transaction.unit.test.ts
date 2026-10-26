@@ -5,7 +5,6 @@ import {
   createRenderFeatureHost,
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameBatch,
-  runRenderFeatureFrame,
 } from '../features/host';
 import { createMotionBlurFeature } from '../features/motion-blur/motion-blur-feature';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
@@ -71,7 +70,7 @@ describe('Feature resource frame transaction', () => {
         }),
     };
     const f = await fixture(feature);
-    const frame = () => runRenderFeatureFrame(f.host, [{ ...f.common, identity: 'a', render }]);
+    const frame = () => f.host.runFrame([{ ...f.common, identity: 'a', render }]);
     submit(frame());
     render = false;
     const held = frame();
@@ -124,8 +123,7 @@ describe('Feature resource frame transaction', () => {
     };
     const f = await fixture(feature);
     const create = vi.spyOn(f.device, 'createBuffer');
-    const frame = () =>
-      runRenderFeatureFrame(f.host, [{ ...f.common, identity: 'a', render: true }]);
+    const frame = () => f.host.runFrame([{ ...f.common, identity: 'a', render: true }]);
     const first = frame();
     submit(first);
     const previous = create.mock.results[0]?.value;
@@ -159,8 +157,7 @@ describe('Feature resource frame transaction', () => {
       cloudHistory: false,
     });
     const frame = (width: number) =>
-      runRenderFeatureFrame(
-        f.host,
+      f.host.runFrame(
         ['a', 'b'].map((identity) => ({
           ...f.common,
           identity,

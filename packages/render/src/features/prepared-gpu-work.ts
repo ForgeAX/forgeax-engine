@@ -318,7 +318,8 @@ interface ProgramItem {
 
 interface BufferItem {
   readonly name: string;
-  readonly signature: string;
+  /** Unaligned size the owned buffer was declared with. */
+  readonly requestedSize: number;
   readonly reference: RenderFeatureGpuBufferRef;
   readonly buffer: Buffer;
   readonly size: number;
@@ -418,30 +419,17 @@ function failure(
   );
 }
 
-const bufferUsageSignatures = new WeakMap<readonly RenderFeatureGpuBufferUsage[], string>();
-/**
- * The exact spelling of `stable({ size, usage: sorted usage })`, built
- * directly: buffers are prepared every frame, and the generic canonical walk
- * dominated steady particle planning. Frozen usage arrays memoize their part.
- */
-export function bufferSignature(
-  size: number,
-  usage: readonly RenderFeatureGpuBufferUsage[],
-): string {
-  let usageText = Object.isFrozen(usage) ? bufferUsageSignatures.get(usage) : undefined;
-  if (usageText === undefined) {
-    const sorted = [...usage].sort();
-    usageText = '[';
-    for (let index = 0; index < sorted.length; index += 1)
-      usageText += (index === 0 ? '' : ',') + JSON.stringify(sorted[index]);
-    usageText += ']';
-    if (Object.isFrozen(usage)) bufferUsageSignatures.set(usage, usageText);
-  }
-  return `{size:${JSON.stringify(size)},usage:${usageText}}`;
-}
-
-export function stableRenderFeatureValue(value: unknown): string {
-  return stable(value);
+/** The owned buffer item when it was declared with this size and usage bit set. */
+function ownedBufferMatching(
+  item: BufferItem | undefined,
+  requestedSize: number,
+  physicalUsage: number,
+): BufferItem | undefined {
+  return item?.owned === true &&
+    item.requestedSize === requestedSize &&
+    item.physicalUsage === physicalUsage
+    ? item
+    : undefined;
 }
 
 function stable(value: unknown): string {
@@ -994,7 +982,7 @@ function createRenderFeatureGpuWorkSession(input: {
   };
   const copyInto = <K, V>(target: Map<K, V>, source: ReadonlyMap<K, V>): void => {
     clearCollection(target);
-    for (const [key, value] of source) target.set(key, value);
+    if (source.size > 0) for (const [key, value] of source) target.set(key, value);
   };
   const snapshotIndexes = (): typeof candidateState => {
     const state = candidateState;
@@ -1469,11 +1457,15 @@ function createRenderFeatureGpuWorkSession(input: {
           return uploadFailure('upload-range-invalid');
       }
     }
-    const signature = bufferSignature(descriptor.size, descriptor.usage);
-    let item = buffers.get(name) ?? parkedBuffers.get(name)?.item;
-    if (item !== undefined && (item.signature !== signature || !item.owned)) item = undefined;
+    // Size and the usage bit set identify an owned buffer: equal bits are the
+    // same usage set in any order, so no per-frame signature text is built.
+    const usage = descriptor.usage.reduce((bits, key) => bits | BUFFER_USAGE[key], COPY_DST);
+    let item = ownedBufferMatching(
+      buffers.get(name) ?? parkedBuffers.get(name)?.item,
+      descriptor.size,
+      usage,
+    );
     if (item === undefined) {
-      const usage = descriptor.usage.reduce((bits, key) => bits | BUFFER_USAGE[key], COPY_DST);
       const created = input.device.createBuffer({
         label: name,
         size: alignedSize(descriptor.size),
@@ -1496,7 +1488,7 @@ function createRenderFeatureGpuWorkSession(input: {
       }) as RenderFeatureGpuBufferRef;
       item = {
         name,
-        signature,
+        requestedSize: descriptor.size,
         reference,
         buffer: created.value,
         size: alignedSize(descriptor.size),
@@ -1578,7 +1570,7 @@ function createRenderFeatureGpuWorkSession(input: {
     }) as RenderFeatureGpuBufferRef;
     const item: BufferItem = {
       name,
-      signature: stable({ external: true, size, usage: [...descriptor.usage].sort() }),
+      requestedSize: descriptor.size,
       reference,
       buffer: resource,
       size,

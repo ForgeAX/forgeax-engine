@@ -368,6 +368,40 @@ export interface CubeCaptureFrameInput {
   readonly reflectionProbes?: import('./render-context').ReflectionProbeRecordState;
 }
 
+/** One auxiliary camera's write into a 2D/array/3D target layer; cube targets take no camera. */
+function targetCaptureWork(
+  camera: CameraSnapshot,
+  physical: import('../targets/physical').RenderTargetPhysical | undefined,
+): import('./typed-frame-graph').CubeCaptureGraphWork | undefined {
+  if (camera.target === undefined || physical === undefined || physical.descriptor.shape === 'cube')
+    return undefined;
+  const layer = camera.targetLayer ?? 0;
+  const layerCount = renderTargetLayerCount(physical.descriptor);
+  if (!Number.isInteger(layer) || layer < 0 || layer >= layerCount)
+    throw new RenderTargetLayerInvalidError({
+      operation: 'write',
+      layer,
+      shape: physical.descriptor.shape,
+      layerCount,
+    });
+  return { target: camera.target, layer, physical, faceCamera: camera };
+}
+
+/** A capture view's single target write, published to its capture graph's live state. */
+function prepareCaptureView(
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot,
+): readonly import('./typed-frame-graph').CubeCaptureGraphWork[] | undefined {
+  const capture = internals.captureView;
+  if (capture === undefined) return [];
+  const work = targetCaptureWork(
+    camera,
+    camera.target === undefined ? undefined : internals.getRenderTargetPhysical?.(camera.target),
+  );
+  capture.state.work = work === undefined ? [] : [work];
+  return work === undefined ? undefined : capture.state.work;
+}
+
 function prepareCubeCapture(
   internals: RenderSystemInternals,
   input: CubeCaptureFrameInput | undefined,
@@ -427,22 +461,8 @@ function prepareCubeCapture(
       camera.planarReflection === undefined
         ? internals.getRenderTargetPhysical?.(camera.target)
         : planarCapture?.physical;
-    if (physical === undefined || physical.descriptor.shape === 'cube') continue;
-    const layer = camera.targetLayer ?? 0;
-    const layerCount = renderTargetLayerCount(physical.descriptor);
-    if (!Number.isInteger(layer) || layer < 0 || layer >= layerCount)
-      throw new RenderTargetLayerInvalidError({
-        operation: 'write',
-        layer,
-        shape: physical.descriptor.shape,
-        layerCount,
-      });
-    physicalWork.push({
-      target: camera.target,
-      layer,
-      physical,
-      faceCamera: camera,
-    });
+    const work = targetCaptureWork(camera, physical);
+    if (work !== undefined) physicalWork.push(work);
   }
   physicalWork.push(...(input.sceneInputs ?? []));
   input.state.work = physicalWork;
@@ -807,7 +827,7 @@ function resolveVolumetricFogHistoryContext(
   const previousSignature = frameState.volumetricFogHistorySignature;
   let reset = acceptedGraph !== graph || acceptedSlot === null || previousSignature === null;
   if (!reset && previousSignature !== null) {
-    const temporal = frameState.temporalFrame;
+    const temporal = frameState.temporalFrameTransaction.accepted();
     const previousResetReason = temporal?.resetReason;
     const reprojection =
       previousResetReason === 'out-of-screen'
@@ -1010,7 +1030,7 @@ function stageSsrHistoryCandidate(
   values.setFloat32(12, 0.5, true);
   // Reuse the shared successful-submit snapshot; SSR owns no jitter sequence
   // or independently advancing previous-camera state.
-  const previousJitter = frameState.lastSuccessfulTemporalView?.currentJitterUv;
+  const previousJitter = frameState.temporalView.accepted?.currentJitterUv;
   values.setFloat32(16, temporalView.currentJitterUv?.[0] ?? 0, true);
   values.setFloat32(20, temporalView.currentJitterUv?.[1] ?? 0, true);
   values.setFloat32(24, previousJitter?.[0] ?? 0, true);
@@ -1866,7 +1886,9 @@ function uploadAcceptedStandardLighting(
   standard: StandardTopologyInputValue,
   profilePhase: RecordProfileRunner | undefined,
   projectorLightSlot: number | undefined,
+  captureOnly: boolean,
 ): boolean {
+  if (captureOnly) return true;
   if (frameState.standardLightingGraphSignature !== standardLightingTopologySignature(standard)) {
     internals.errorRegistry.fire(
       new RendererOperationError('device-operation-failed', {
@@ -2636,6 +2658,8 @@ export function* prepareFrameRecording(
       camera,
       frameState.frameNumber,
     );
+    const captureViewWork = prepareCaptureView(internals, camera);
+    if (captureViewWork === undefined) return false;
     const reflectionFallbackCandidate = hasReflectionFallbackCandidate(
       cubeCapture,
       ssrDependencies,
@@ -2726,7 +2750,7 @@ export function* prepareFrameRecording(
       geometry: directGeometry,
       lodRows: shadowLodRows,
     });
-    const gpuShadowMaterials = new ShadowMaterialContent();
+    const gpuShadowMaterials = new ShadowMaterialContent(fixedMaterials);
     const directShadowMaterials = new ShadowMaterialContent();
     const subsurface = resolveFrameSubsurface(
       internals,
@@ -2946,7 +2970,7 @@ export function* prepareFrameRecording(
             graphShadowMapSize,
             rasterGpuDriven,
             featureGraphCandidate,
-            cubeCapture?.state,
+            internals.captureView?.state ?? cubeCapture?.state,
             cameras.length === 0,
             graphTransmission,
             volume.graphFog,
@@ -2962,6 +2986,7 @@ export function* prepareFrameRecording(
             terrainReceivers,
             subsurface.value,
             rendererRecording,
+            fixedMaterials.hasUnfoggedOpaque,
           ),
     );
     if (
@@ -2972,7 +2997,6 @@ export function* prepareFrameRecording(
       return false;
     }
     if (
-      !captureOnly &&
       !uploadAcceptedStandardLighting(
         internals,
         frameState,
@@ -2982,6 +3006,7 @@ export function* prepareFrameRecording(
         standard,
         profilePhase,
         volume.spotLightProjector?.lightSlotIndex,
+        captureOnly,
       )
     ) {
       abortPreparedGpuDriven(attempt);
@@ -3194,9 +3219,10 @@ export function* prepareFrameRecording(
           frameState.environmentFrame?.source.kind === 'atmosphere'
             ? frameState.environmentFrame.source.atmosphere
             : undefined,
-          false,
+          internals.captureView !== undefined,
           clock.elapsedSeconds,
           { width: targetW, height: targetH },
+          frameState.environmentFrame?.sky,
         );
         if (pipelineState.pointsLinesViewBuffer !== undefined) {
           writePointsLinesViewUbo(
@@ -3412,8 +3438,8 @@ export function* prepareFrameRecording(
     const resumed = yield FRAME_RECORDING_CHECKPOINT;
     if (!resumed.ok) return false;
     swapTarget = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
-      captureOnly
-        ? captureSwapTarget(cubeCaptureWork)
+      captureOnly || captureViewWork.length > 0
+        ? captureSwapTarget(captureOnly ? cubeCaptureWork : captureViewWork)
         : acquireSwapChainTarget(internals, pipelineState),
     );
     if (swapTarget === null) {

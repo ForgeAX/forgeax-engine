@@ -21,6 +21,18 @@ backend-owned.
 
 > AI users: read [AGENTS.md §RHI / WebGPU](../../AGENTS.md) first; the铁律 (spec-alignment / capability-gated / opaque handle / math-free) is the SSOT and supersedes any divergence in this README.
 
+## Pipeline compilation inspection
+
+`RhiDevice.pipelineLibrary?.inspect().pending` is optional backend-owned data.
+When present, it lists all recorded scheduled/native requests with their complete
+recipes, shader digests, label-independent semantic identities, origin, stage
+and request elapsed time. `preload` names exact startup/background membership,
+explicit absence, or unresolved library indexing. A runtime-origin request can
+still belong to a background library. `unidentified` counts live requests that cannot be
+recorded. Absence means unsupported inspection, not zero outstanding work.
+This is neither driver-internal compiler timing nor a complete CPU preparation
+roster. See the [WebGPU implementation contract](../rhi-webgpu/README.md#device-pipeline-library).
+
 ## Query capability matrix
 
 The query surface is split by the fact that can actually gate it: occlusion

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
+import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { describe, expect, it, vi } from 'vitest';
@@ -101,7 +101,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>) { (*p).age +=
   );
 }
 
-describe('GPU VFX fixed-tick intents', () => {
+describe('GPU VFX frame-tick intents', () => {
   it('does no player discovery or asset polling during unchanged paused ticks', async () => {
     const assets = new AssetRegistry();
     const world = new World({ assets });
@@ -246,7 +246,7 @@ describe('GPU VFX fixed-tick intents', () => {
       assets.dispose();
     }
   });
-  it('adopts an edited definition on FixedUpdate while queued ticks retain their exact version', async () => {
+  it('adopts an edited definition on the next update while queued ticks retain their exact version', async () => {
     const assets = new AssetRegistry();
     const world = new World({ assets });
     const handle = assets.create(runtimeEffectFixture(world, effect)).unwrap();
@@ -368,7 +368,7 @@ describe('GPU VFX fixed-tick intents', () => {
     const queued = runtime.snapshot()[0];
     expect(queued?.reset).toBe(true);
     if (queued === undefined) throw new Error('missing initial reset');
-    // Park and resume between fixed ticks. The first render acknowledgement
+    // Park and resume between ticks. The first render acknowledgement
     // can still be in flight when the next actual playback tick is queued.
     world.set(player, ParticleEffectPlayer, { playing: false }).unwrap();
     runtime.forEachEmitterSource(world, () => {});
@@ -490,7 +490,8 @@ describe('GPU VFX fixed-tick intents', () => {
     const resumed = runtime
       .snapshot()
       .find((intent) => intent.emitter.id === 'sparks' && intent.reset);
-    expect(resumed).toMatchObject({ seed: 2, reset: true, phaseTick: 0, spawnCount: 8 });
+    // One 1/30 s frame is one intent: the time-zero burst of 7 plus two rate spawns.
+    expect(resumed).toMatchObject({ seed: 2, reset: true, phaseTick: 0, spawnCount: 9 });
   });
 
   it('keeps stage recovery scoped to the cooked generation', () => {
@@ -499,7 +500,7 @@ describe('GPU VFX fixed-tick intents', () => {
     expect(source).not.toContain('runtimeCompiler');
   });
 
-  it('uploads channel inputs with the fixed tick and isolates per-player overflow', async () => {
+  it('uploads channel inputs with their tick and isolates per-player overflow', async () => {
     const channelEffect = structuredClone(effect) as VfxGpuEffectAsset;
     const channelEmitters = channelEffect.program.emitters as unknown as Array<
       Record<string, unknown>
@@ -927,7 +928,7 @@ describe('GPU VFX fixed-tick intents', () => {
         programFingerprint: runtimeAssetRegistry(world.assets).read(handle).unwrap().program
           .fingerprint,
         seed: 1,
-        fixedDelta: 1 / 60,
+        delta: 1 / 60,
         emitters: [
           expect.objectContaining({
             id: 'sparks',
@@ -987,7 +988,7 @@ describe('GPU VFX fixed-tick intents', () => {
   it.each([
     ['pause', false, 8],
     ['restart-on-visible', true, 0],
-  ] as const)('%s applies culling lifecycle at fixed-tick boundaries', async (policy, reset, firstParticleId) => {
+  ] as const)('%s applies culling lifecycle at tick boundaries', async (policy, reset, firstParticleId) => {
     const world = new World({ assets: new AssetRegistry() });
     const policyEffect = structuredClone(effect) as VfxGpuEffectAsset;
     (policyEffect.program.emitters[0] as { simulationWhenCulled: string }).simulationWhenCulled =
@@ -1073,7 +1074,7 @@ it('keeps paused stable frames idle but executes zero-time reset and replay', as
   const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
   try {
     world.update(1 / 60).unwrap();
-    expect(runtime.snapshot()[0]).toMatchObject({ reset: true, fixedDelta: 0, phaseTick: 0 });
+    expect(runtime.snapshot()[0]).toMatchObject({ reset: true, delta: 0, phaseTick: 0 });
     commitSnapshot(runtime);
     for (let index = 0; index < 10; index += 1) world.update(1 / 60).unwrap();
     expect(runtime.snapshot()).toHaveLength(0);
@@ -1083,7 +1084,7 @@ it('keeps paused stable frames idle but executes zero-time reset and replay', as
     world.update(1 / 60).unwrap();
     expect(runtime.snapshot()[0]).toMatchObject({
       reset: false,
-      fixedDelta: 0,
+      delta: 0,
       instancePatchCount: 1,
     });
     commitSnapshot(runtime);
@@ -1091,17 +1092,17 @@ it('keeps paused stable frames idle but executes zero-time reset and replay', as
     expect(runtime.snapshot()).toHaveLength(0);
     runtime.replay(player);
     world.update(1 / 60).unwrap();
-    expect(runtime.snapshot()[0]).toMatchObject({ reset: true, fixedDelta: 0, phaseTick: 0 });
+    expect(runtime.snapshot()[0]).toMatchObject({ reset: true, delta: 0, phaseTick: 0 });
     commitSnapshot(runtime);
     world.set(player, ParticleEffectPlayer, { timeScale: 1 }).unwrap();
     world.update(1 / 60).unwrap();
-    expect(runtime.snapshot()[0]).toMatchObject({ reset: false, fixedDelta: 1 / 60, phaseTick: 1 });
+    expect(runtime.snapshot()[0]).toMatchObject({ reset: false, delta: 1 / 60, phaseTick: 1 });
   } finally {
     await context.fiber.dispose();
   }
 });
 
-it('admits a new player without consuming later fixed-time patches or replay', async () => {
+it('admits a new player without consuming later frame patches or replay', async () => {
   const world = new World({ assets: new AssetRegistry() });
   const handle = runtimeAssetRegistry(world.assets)
     .create(runtimeEffectFixture(world, effect))
@@ -1115,42 +1116,44 @@ it('admits a new player without consuming later fixed-time patches or replay', a
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
   const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
   try {
-    const tick = world.getResource(FixedTime).tick;
     runtime.forEachEmitterSource(world, () => {});
     expect(runtime.snapshot()).toHaveLength(1);
     expect(runtime.snapshot()[0]).toMatchObject({
       reset: true,
-      fixedDelta: 0,
+      delta: 0,
+      elapsed: 0,
       spawnCount: 7,
       phaseTick: 0,
+      tick: 0,
     });
     const initialSequence = runtime.snapshot()[0]?.sequence;
-    expect(world.getResource(FixedTime).tick).toBe(tick);
     const instance = runtime.getInstance(player);
     if (instance === undefined) throw new Error('Missing initialized instance');
     instance.patch({}).unwrap();
-    world.update(1 / 120).unwrap();
+    // A second render-only admission is idempotent: the patch waits for an update.
     runtime.forEachEmitterSource(world, () => {});
     expect(runtime.snapshot()).toHaveLength(1);
     expect(runtime.snapshot()[0]?.sequence).toBe(initialSequence);
     expect(instance.pendingPatchCount).toBe(1);
-    world.update(1 / 120).unwrap();
+    world.update(1 / 30).unwrap();
     expect(runtime.snapshot()[1]).toMatchObject({
       reset: false,
-      fixedDelta: 1 / 60,
-      spawnCount: 1,
+      delta: 1 / 30,
+      elapsed: 1 / 30,
+      spawnCount: 2,
       phaseTick: 1,
+      tick: 1,
       instancePatchCount: 1,
     });
     expect(
       buildVfxRecoveryIntents(runtime.snapshot()[1]).map((intent) => ({
-        fixedDelta: intent.fixedDelta,
+        delta: intent.delta,
         tick: intent.tick,
         spawnCount: intent.spawnCount,
       })),
     ).toEqual([
-      { fixedDelta: 0, tick, spawnCount: 7 },
-      { fixedDelta: 1 / 60, tick: tick + 1, spawnCount: 1 },
+      { delta: 0, tick: 0, spawnCount: 7 },
+      { delta: 1 / 30, tick: 1, spawnCount: 2 },
     ]);
     runtime.replay(player);
     runtime.forEachEmitterSource(world, () => {});
@@ -1158,10 +1161,76 @@ it('admits a new player without consuming later fixed-time patches or replay', a
     world.update(1 / 60).unwrap();
     expect(runtime.snapshot()[0]).toMatchObject({
       reset: true,
-      fixedDelta: 1 / 60,
+      delta: 1 / 60,
       spawnCount: 8,
       phaseTick: 0,
     });
+  } finally {
+    world.despawn(player).unwrap();
+    runtimeAssetRegistry(world.assets).release(handle).unwrap();
+    await context.fiber.dispose();
+  }
+});
+
+it('advances every frame by its own Time delta and recovers the cycle from variable deltas', async () => {
+  const world = new World({ assets: new AssetRegistry() });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, effect))
+    .unwrap();
+  const player = world
+    .spawn({
+      component: ParticleEffectPlayer,
+      data: { effect: handle, playing: true, seed: 3, timeScale: 0.5 },
+    })
+    .unwrap();
+  const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
+  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  try {
+    // Uneven presentation frames, a zero-time frame, and a host hitch that
+    // World Time bounds to TimePolicy.maxDeltaSeconds (0.1 s by default).
+    const frames = [1 / 144, 1 / 30, 1 / 60, 0, 1, 1 / 90];
+    const intents = frames.flatMap((frame) => {
+      world.update(frame).unwrap();
+      const queued = [...runtime.snapshot()];
+      // A zero-time frame without a reset or patch has nothing to simulate.
+      expect(queued).toHaveLength(frame === 0 ? 0 : 1);
+      commitSnapshot(runtime);
+      return queued;
+    });
+    const deltas = [1 / 144, 1 / 30, 1 / 60, 0.1, 1 / 90].map((frame) => frame * 0.5);
+    let elapsed = 0;
+    intents.forEach((intent, index) => {
+      elapsed += deltas[index] ?? 0;
+      expect(intent?.delta).toBeCloseTo(deltas[index] ?? Number.NaN, 12);
+      expect(intent?.elapsed).toBeCloseTo(elapsed, 12);
+      expect(intent).toMatchObject({
+        phaseTick: index,
+        tick: [1, 2, 3, 5, 6][index],
+        reset: index === 0,
+      });
+    });
+    const latest = runtime.lastCommittedEmitter(player, 'sparks');
+    expect(latest?.sequence).toBe(intents.at(-1)?.sequence);
+    const live = intents.reduce((total, intent) => total + (intent?.spawnCount ?? 0), 0);
+    // Rate 60/s over the cycle plus the time-zero burst of 7.
+    expect(live).toBe(7 + Math.floor(60 * elapsed + 1e-9));
+
+    const recovered = buildVfxRecoveryIntents(latest);
+    expect(recovered.map((intent) => intent.phaseTick)).toEqual(intents.map((_, i) => i));
+    expect(recovered.map((intent) => intent.reset)).toEqual(intents.map((_, i) => i === 0));
+    expect(recovered[0]?.delta).toBe(intents[0]?.initialDelta);
+    expect(recovered.at(-1)?.elapsed).toBe(latest?.elapsed);
+    const replayed = recovered.reduce((total, intent) => total + intent.delta, 0);
+    expect(replayed).toBeCloseTo(latest?.elapsed ?? Number.NaN, 12);
+    expect(recovered.reduce((total, intent) => total + intent.spawnCount, 0)).toBe(live);
+    let nextParticleId = 0;
+    for (const intent of recovered) {
+      expect(intent.firstParticleId).toBe(nextParticleId);
+      nextParticleId += intent.spawnCount;
+    }
+    expect(nextParticleId).toBe((latest?.firstParticleId ?? 0) + (latest?.spawnCount ?? 0));
+    // Recovery never republishes the World-facing channel stream.
+    expect(recovered.every((intent) => intent.channelInputs.length === 0)).toBe(true);
   } finally {
     world.despawn(player).unwrap();
     runtimeAssetRegistry(world.assets).release(handle).unwrap();

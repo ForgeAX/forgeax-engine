@@ -1512,7 +1512,12 @@ scope.onmessage = (event): void => {
     }
     case 'render-replace':
       void realm?.renderWorker
-        ?.replace(message.epoch, message.canvas, message.pipelineLibrary)
+        ?.replace(
+          message.epoch,
+          message.canvas,
+          message.pipelineLibrary,
+          message.backgroundPipelineLibrary,
+        )
         .catch((cause) =>
           postFault(
             'runtime',

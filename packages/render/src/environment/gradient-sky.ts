@@ -1,7 +1,10 @@
-// GradientSky background passes. One skybox.wgsl module carries both entries:
+// GradientSky background passes. One skybox.wgsl module carries the entries:
 // the scene entry draws HDR radiance inside the existing skybox pass, and the
 // display entry fills the transparent coverage left in the encoded surface after
-// every output stage, the way a CSS page colour shows behind the canvas.
+// every output stage, the way a CSS page colour shows behind the canvas. Under
+// camera bloom a display sky also adds its sun disc to the HDR scene (the sun
+// entry, alpha left transparent), so the disc blooms like its specular
+// reflection and the display sky shows that glow over itself.
 
 import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
 import type {
@@ -14,6 +17,7 @@ import type {
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import { standardBloomAdmitted } from '../bloom-admission';
 import { tonemapToU32 } from '../components/camera';
 import { type FogFrame, fogIsActive, type GradientSkyFrame } from '../extract/environment';
 import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
@@ -26,11 +30,13 @@ import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeli
 import type { SunCandidate } from './frame';
 
 /** Byte size of `GradientSkyParams` in skybox.wgsl. */
-export const GRADIENT_SKY_PARAMS_BYTES = 128;
+export const GRADIENT_SKY_PARAMS_BYTES = 144;
 /** Scene-referred disc radiance per unit of light intensity: a 3 lux sun blooms. */
 export const GRADIENT_SKY_SUN_DISC_GAIN = 4;
 
 export type GradientSkyDomain = 'scene' | 'display';
+/** Fragment entry: the sky in either domain, or the display sky's HDR sun disc. */
+type GradientSkyEntry = GradientSkyDomain | 'sun';
 
 export interface GradientSkyOutput {
   readonly exposure: number;
@@ -78,6 +84,7 @@ export function packGradientSkyParams(
   }
   if (fogged) values.set(fog.color, 24);
   values.set([output.exposure, output.whitePoint, output.tonemap, output.gamut], 28);
+  values.set([...sky.mid, sky.midHeight], 32);
   return values;
 }
 
@@ -87,6 +94,25 @@ export function gradientSkyIn(
   domain: GradientSkyDomain,
 ): sky is GradientSkyFrame {
   return sky !== undefined && sky.toneMapped === (domain === 'scene');
+}
+
+/**
+ * True when a display sky's sun disc also enters the HDR scene: camera bloom is
+ * admitted and the disc is drawn. The disc then blooms like the specular
+ * highlight it causes on water instead of sitting unbloomed behind the frame.
+ */
+export function gradientSkySunBlooms(
+  sky: GradientSkyFrame | undefined,
+  sun: SunCandidate | undefined,
+  camera: Parameters<typeof standardBloomAdmitted>[0],
+): sky is GradientSkyFrame {
+  return (
+    gradientSkyIn(sky, 'display') &&
+    sky.sunSize > 0 &&
+    sun !== undefined &&
+    sun.intensity > 0 &&
+    standardBloomAdmitted(camera)
+  );
 }
 
 /**
@@ -104,7 +130,8 @@ export function gradientSkyClearColor(
 
 interface GradientSkyDeviceState {
   readonly layout: BindGroupLayout;
-  readonly params: Buffer;
+  /** One lane set per packed domain: the HDR sun and the display sky share a frame. */
+  readonly params: Readonly<Record<GradientSkyDomain, Buffer>>;
   readonly pipelines: Map<string, RenderPipeline>;
 }
 
@@ -123,44 +150,56 @@ function deviceState(device: RhiDevice, module: ShaderModule): GradientSkyDevice
       ],
     })
     .unwrap();
-  const params = device
-    .createBuffer({
-      label: 'gradient-sky-params',
-      size: GRADIENT_SKY_PARAMS_BYTES,
-      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    })
-    .unwrap();
+  const buffer = (domain: GradientSkyDomain) =>
+    device
+      .createBuffer({
+        label: `gradient-sky-params-${domain}`,
+        size: GRADIENT_SKY_PARAMS_BYTES,
+        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+        mappedAtCreation: false,
+      })
+      .unwrap();
+  const params = { scene: buffer('scene'), display: buffer('display') };
   const state = { layout, params, pipelines: new Map<string, RenderPipeline>() };
   deviceStates.set(module, state);
   return state;
+}
+
+// The display entry only fills coverage the scene left transparent; the sun
+// entry adds radiance and keeps the background alpha transparent for it.
+const UNDER = { srcFactor: 'one-minus-dst-alpha', dstFactor: 'one', operation: 'add' } as const;
+const ADD = { srcFactor: 'one', dstFactor: 'one', operation: 'add' } as const;
+const KEEP = { srcFactor: 'zero', dstFactor: 'one', operation: 'add' } as const;
+const ENTRY_POINTS = {
+  scene: 'gradient_sky_fs',
+  display: 'gradient_sky_display_fs',
+  sun: 'gradient_sky_sun_fs',
+} as const satisfies Record<GradientSkyEntry, string>;
+
+function targetFor(entry: GradientSkyEntry, format: TextureFormat): GPUColorTargetState {
+  if (entry === 'scene') return { format };
+  return entry === 'display'
+    ? { format, blend: { color: UNDER, alpha: UNDER } }
+    : { format, blend: { color: ADD, alpha: KEEP } };
 }
 
 function pipelineFor(
   device: RhiDevice,
   module: ShaderModule,
   state: GradientSkyDeviceState,
-  domain: GradientSkyDomain,
+  entry: GradientSkyEntry,
   format: TextureFormat,
   sampleCount: number,
 ): RenderPipeline {
-  const key = `${domain}:${format}:${sampleCount}`;
+  const key = `${entry}:${format}:${sampleCount}`;
   const cached = state.pipelines.get(key);
   if (cached !== undefined) return cached;
-  // The display entry only fills coverage the scene left transparent.
-  const under = { srcFactor: 'one-minus-dst-alpha', dstFactor: 'one', operation: 'add' } as const;
   const pipeline = device
     .createRenderPipeline({
-      label: `gradient-sky-${domain}`,
+      label: `gradient-sky-${entry}`,
       layout: device.createPipelineLayout({ bindGroupLayouts: [state.layout] }).unwrap(),
       vertex: { module, entryPoint: 'vs_main', buffers: [] },
-      fragment: {
-        module,
-        entryPoint: domain === 'scene' ? 'gradient_sky_fs' : 'gradient_sky_display_fs',
-        targets: [
-          domain === 'scene' ? { format } : { format, blend: { color: under, alpha: under } },
-        ],
-      },
+      fragment: { module, entryPoint: ENTRY_POINTS[entry], targets: [targetFor(entry, format)] },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       ...(sampleCount > 1 ? { multisample: { count: sampleCount } } : {}),
     })
@@ -178,6 +217,19 @@ function outputOf(c: _InternalRenderPipelineContext, camera: CameraSnapshot): Gr
   };
 }
 
+/** The entry this pass draws: the sky in its own domain, or a blooming display sun. */
+function entryFor(
+  c: _InternalRenderPipelineContext,
+  domain: GradientSkyDomain,
+): { sky: GradientSkyFrame; entry: GradientSkyEntry } | undefined {
+  const environment = c.frameState.environmentFrame;
+  const sky = environment?.sky;
+  if (gradientSkyIn(sky, domain)) return { sky, entry: domain };
+  if (domain === 'scene' && gradientSkySunBlooms(sky, environment?.sun, c.camera))
+    return { sky, entry: 'sun' };
+  return undefined;
+}
+
 /** Draw the frame's GradientSky in `domain` into the open pass; absent skies record nothing. */
 export function encodeGradientSky(
   c: _InternalRenderPipelineContext,
@@ -186,19 +238,22 @@ export function encodeGradientSky(
   target: Pick<RenderPipelineTarget, 'format' | 'sampleCount'>,
 ): void {
   const environment = c.frameState.environmentFrame;
-  const sky = environment?.sky;
+  const selected = entryFor(c, domain);
   const module = c.pipelineState.perPassResources.skyboxModule;
-  if (!gradientSkyIn(sky, domain) || module === undefined || module === null) return;
+  if (selected === undefined || module === undefined || module === null) return;
   const device = c.runtime.device;
   const state = deviceState(device, module);
-  const params = packGradientSkyParams(
-    sky,
+  // The sun entry carries scene radiance: the disc a toneMapped sky would draw.
+  const packed = selected.entry === 'display' ? 'display' : 'scene';
+  const params = state.params[packed];
+  const values = packGradientSkyParams(
+    selected.sky,
     environment?.sun,
     environment?.fog,
     outputOf(c, c.camera),
-    domain,
+    packed,
   );
-  device.queue.writeBuffer(state.params, 0, params).unwrap();
+  device.queue.writeBuffer(params, 0, values).unwrap();
   const group = device
     .createBindGroup({
       label: 'gradient-sky-bg',
@@ -211,11 +266,13 @@ export function encodeGradientSky(
             value: { buffer: c.pipelineState.viewUniformBuffer, size: VIEW_UNIFORM_BYTES },
           },
         },
-        { binding: 4, resource: { kind: 'buffer', value: { buffer: state.params } } },
+        { binding: 4, resource: { kind: 'buffer', value: { buffer: params } } },
       ],
     })
     .unwrap();
-  pass.setPipeline(pipelineFor(device, module, state, domain, target.format, target.sampleCount));
+  pass.setPipeline(
+    pipelineFor(device, module, state, selected.entry, target.format, target.sampleCount),
+  );
   pass.setBindGroup(0, group);
   pass.draw(3);
 }

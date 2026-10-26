@@ -4,7 +4,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { parse, validate } from '../../../naga/src/index';
 import { ANTIALIAS_SMAA, antialiasFromF32, Camera } from '../components/camera';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import { smaaLookupData } from '../features/smaa/lookup-data';
 import { createSmaaRenderFeature, SMAA_PROGRAMS } from '../features/smaa/shaders';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
@@ -71,8 +71,7 @@ describe('SMAA authoring and production programs', () => {
     const selectedCamera = extractCameraSnapshots(world)[0];
     if (selectedCamera === undefined) throw new Error('Camera fixture missing');
     const host = createRenderFeatureHost([createSmaaRenderFeature()]).unwrap();
-    const batch = runRenderFeatureFrame(
-      host,
+    const batch = host.runFrame(
       [
         {
           identity: 'disabled',

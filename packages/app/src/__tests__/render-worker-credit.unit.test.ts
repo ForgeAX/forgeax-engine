@@ -812,7 +812,7 @@ it('uses the App startup budget for child initialization and still bounds a stal
   }
 });
 
-it('forwards the startup pipeline library only with the start that supplies it', async () => {
+it('forwards the startup pipeline libraries only with the start that supplies them', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
   const assets = new AssetRegistry({
@@ -828,6 +828,7 @@ it('forwards the startup pipeline library only with the start that supplies it',
     renderPipelines: [],
     computePipelines: [],
   };
+  const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: '// background' }] };
   for (const resupplied of [undefined, pipelineLibrary]) {
     const source = new SourceRenderWorker(
       world,
@@ -842,8 +843,9 @@ it('forwards the startup pipeline library only with the start that supplies it',
       () => {},
     );
     try {
-      await source.start(canvas, pipelineLibrary);
+      await source.start(canvas, pipelineLibrary, backgroundPipelineLibrary);
       expect(CreditWorker.current.init?.pipelineLibrary).toBe(pipelineLibrary);
+      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toBe(backgroundPipelineLibrary);
       const lost = CreditWorker.current;
       lost.emit({
         kind: 'failed',
@@ -852,9 +854,11 @@ it('forwards the startup pipeline library only with the start that supplies it',
         error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
       });
       // Replacement carries only what the Host supplies with it; nothing was retained.
-      await source.replace(2, canvas, resupplied);
+      const background = resupplied === undefined ? undefined : backgroundPipelineLibrary;
+      await source.replace(2, canvas, resupplied, background);
       expect(CreditWorker.current).not.toBe(lost);
       expect(CreditWorker.current.init?.pipelineLibrary).toBe(resupplied);
+      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toBe(background);
     } finally {
       await source.dispose();
     }

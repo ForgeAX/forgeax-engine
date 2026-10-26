@@ -2,7 +2,7 @@ import type { RenderPipeline, RhiCaps } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeaturePreparedRef } from '../features/prepared-graphics';
 import {
   createPreparedGraphicsStore,
@@ -302,8 +302,7 @@ describe('prepared graphics owner lookup', () => {
         ['right', 'left'],
       ]) {
         revision += 1;
-        const batch = runRenderFeatureFrame(
-          host,
+        const batch = host.runFrame(
           viewOrder.map((identity) => ({
             identity,
             render: true,

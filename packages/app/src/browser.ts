@@ -51,6 +51,7 @@ import {
   observeCanvasDeviceLimit,
   refreshCanvasDeviceLimit,
   resetCanvasDeviceLimit,
+  setCanvasDeviceLimit,
   syncCanvasDrawingBuffer,
 } from './canvas-sizing';
 
@@ -485,6 +486,7 @@ async function startWorkerExecutionApp(
           ? display
           : undefined,
       ),
+    renderDeviceLimit: setCanvasDeviceLimit,
     ...(bundler !== undefined ? { bundler } : {}),
     capabilities: context.capabilities,
     selection: context.selection,

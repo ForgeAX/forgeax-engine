@@ -264,7 +264,7 @@
     "packages/app/src/execution/engine-worker-runtime.ts::<anonymous>": 22,
     "packages/app/src/execution/host-controller.ts::createWorkerExecutionApp": 36,
     "packages/app/src/execution/render-mesh-residency.ts::RenderMeshResidency.receive": 21,
-    "packages/app/src/execution/source-render-worker.ts::SourceRenderWorker.start.<anonymous>.<anonymous>#3": 51,
+    "packages/app/src/execution/source-render-worker.ts::SourceRenderWorker.start.<anonymous>.<anonymous>#3": 50,
     "packages/app/src/internal/browser-remote-bridge.ts::assertJsonSafe": 24,
     "packages/app/src/internal/browser-remote-bridge.ts::installBrowserRemoteBridge.connect.<anonymous>#2": 35,
     "packages/app/src/internal/frame-loop.ts::createFrameLoop.runFrame.<anonymous>.<anonymous>#4": 24,

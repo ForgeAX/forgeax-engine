@@ -213,6 +213,23 @@ function publishDarkGradientObservation(
   });
 }
 
+function publishSubmittedDarkGradientObservation(
+  lane: DarkGradientLane | undefined,
+  frameId: number,
+  backendHint: DarkGradientBackend | undefined,
+  app: { readonly renderer: Pick<Renderer, 'inspect'> },
+): void {
+  if (lane === undefined) return;
+  const phase: 'none' | 'fxaa' | undefined =
+    frameId === DARK_GRADIENT_FIXTURE.frameCount
+      ? 'none'
+      : frameId === DARK_GRADIENT_FIXTURE.frameCount * 2
+        ? 'fxaa'
+        : undefined;
+  if (phase === undefined) return;
+  publishDarkGradientObservation(lane, frameId, phase, backendHint, app);
+}
+
 function publishDarkGradientRuntimeEvent(
   event: Readonly<Record<string, unknown>>,
 ): void {
@@ -318,6 +335,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         presentationProof: inspection.output.presentationProof ?? null,
       };
       if (event.kind === 'frame-submitted') {
+        publishSubmittedDarkGradientObservation(
+          darkGradientLane,
+          event.frameId,
+          darkGradientBackendHint,
+          app,
+        );
         publishDarkGradientRuntimeEvent({
           ...base,
           lastSuccessfulLifecyclePhase: 'frame-submitted',
@@ -517,7 +540,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
             }) => void;
           };
           host.__forgeaxDarkGradientArmCapture?.({ phase: 'none', engineFrameId: darkGradientFrameCount });
-          queueMicrotask(() => publishDarkGradientObservation(darkGradientLane, darkGradientFrameCount, 'none', darkGradientBackendHint, app));
         }
         if (darkGradientFrameCount === DARK_GRADIENT_FIXTURE.frameCount * 2) {
           const host = globalThis as typeof globalThis & {
@@ -528,7 +550,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
             }) => void;
           };
           host.__forgeaxDarkGradientArmCapture?.({ phase: 'fxaa', engineFrameId: darkGradientFrameCount });
-          queueMicrotask(() => publishDarkGradientObservation(darkGradientLane, darkGradientFrameCount, 'fxaa', darkGradientBackendHint, app));
         }
       },
     });

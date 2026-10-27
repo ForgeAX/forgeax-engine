@@ -16,7 +16,10 @@ import {
   VisibilityStateValue,
 } from '../../components';
 import type { RenderResult } from '../../render-contract';
-import { projectAuxiliaryCamerasForView } from '../../render-system-extract';
+import {
+  projectAuxiliaryCamerasForView,
+  type RenderableSnapshot,
+} from '../../render-system-extract';
 import type { RenderTargetDescriptor } from '../../targets/contracts';
 import { resolveRenderTargetMaterialSource } from '../../targets/material-source';
 import { isCanvasTextureSource } from '../../textures/canvas-texture';
@@ -335,19 +338,11 @@ it('keeps a render-target slot override bound when its row is published again', 
       .unwrap();
     return accepted;
   };
-  const overrideTarget = (row: { materialOverrides?: readonly unknown[] }) => {
-    const bound = (
-      row.materialOverrides?.[0] as
-        | { snapshot: { textureSources?: ReadonlyMap<string, unknown> } }
-        | undefined
-    )?.snapshot.textureSources?.get('baseColorTexture');
-    if (
-      bound === undefined ||
-      isCanvasTextureSource(bound as never) ||
-      isExternalTextureSource(bound as never)
-    )
+  const overrideTarget = (row: RenderableSnapshot | undefined) => {
+    const bound = row?.materialOverrides?.[0]?.snapshot.textureSources?.get('baseColorTexture');
+    if (bound === undefined || isCanvasTextureSource(bound) || isExternalTextureSource(bound))
       throw new Error('Missing published target source');
-    return resolveRenderTargetMaterialSource(bound as never)?.target;
+    return resolveRenderTargetMaterialSource(bound)?.target;
   };
   publish();
   // A cockpit monitor: the screen already exists, then its slot switches to a
@@ -365,7 +360,7 @@ it('keeps a render-target slot override bound when its row is published again', 
     .unwrap();
   world.set(screen, MeshRenderer, { materials: [monitor] }).unwrap();
   const first = publish();
-  const bound = overrideTarget(first.frame.renderables[0] as never);
+  const bound = overrideTarget(first.frame.renderables.at(0));
   expect(bound).toBeDefined();
   expect(bound).not.toBe(target);
   world
@@ -384,7 +379,7 @@ it('keeps a render-target slot override bound when its row is published again', 
   world.set(screen, Visibility, { state: VisibilityStateValue.inherited }).unwrap();
   const shown = publish();
   expect(shown.frame.renderables).toHaveLength(1);
-  expect(overrideTarget(shown.frame.renderables[0] as never)).toBe(bound);
+  expect(overrideTarget(shown.frame.renderables.at(0))).toBe(bound);
   world.despawn(screen).unwrap();
   publish();
   publisher.dispose();

@@ -266,6 +266,7 @@ async function closeSmokeBrowser() {
   const cleanupErrors = [];
   const currentPage = page;
   const currentContext = context;
+  const currentBrowser = browser;
   const currentBrowserServer = browserServer;
   // Keep teardown errors separate from the completed gameplay oracle. These
   // bounded observations do not acknowledge App/Worker disposal or settle work.
@@ -362,10 +363,12 @@ async function closeSmokeBrowser() {
   });
   await attemptClose('page', () => currentPage?.close());
   await attemptClose('context', () => currentContext?.close());
-  // The public server handle owns the process, including when the protocol
-  // client can no longer close it. Recovery retires that process but keeps
-  // the original 10-second close failure as a failed smoke.
-  const browserClosed = await attemptClose('browser', () => currentBrowserServer?.close());
+  // Disconnect Playwright's client before the BrowserServer closes its process.
+  // Keep both operations within the original browser cleanup deadline.
+  const browserClosed = await attemptClose('browser', async () => {
+    await currentBrowser?.close();
+    await currentBrowserServer?.close();
+  });
   if (!browserClosed)
     await attemptClose('browser process', () => currentBrowserServer?.kill());
   try {

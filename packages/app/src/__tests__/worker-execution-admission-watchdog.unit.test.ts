@@ -169,6 +169,7 @@ async function createRunningApp(
   syncCanvas?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['syncCanvas'],
   startupTimeoutMs: number | null = 2_000,
   frameTimeoutMs?: number | null,
+  renderDeviceLimit?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['renderDeviceLimit'],
 ) {
   const { callbacks, raf } = makeRaf();
   vi.stubGlobal('requestAnimationFrame', raf);
@@ -176,6 +177,7 @@ async function createRunningApp(
   const result = await createWorkerExecutionApp({
     canvas: makeCanvas(),
     ...(syncCanvas === undefined ? {} : { syncCanvas }),
+    ...(renderDeviceLimit === undefined ? {} : { renderDeviceLimit }),
     appOptions: {
       execution: {
         bootstrap: 'https://example.test/game.js',
@@ -825,6 +827,29 @@ describe('Worker frame admission watchdog', () => {
       capabilities: { backendKind: 'webgpu', compute: true, storageBuffer: false },
       limits: { maxStorageBuffersPerShaderStage: 0 },
     });
+    await app.dispose();
+  });
+
+  it('hands the Render Worker texture bound to Host canvas sizing outside the report limits', async () => {
+    const renderDeviceLimit = vi.fn();
+    const { app } = await createRunningApp(
+      'render-worker',
+      2,
+      undefined,
+      undefined,
+      undefined,
+      renderDeviceLimit,
+    );
+    listener()({
+      kind: 'render-ready',
+      epoch: 1,
+      limits: { maxStorageBuffersPerShaderStage: 8 },
+      maxTextureDimension2D: 8192,
+    });
+
+    expect(renderDeviceLimit).toHaveBeenCalledTimes(1);
+    expect(renderDeviceLimit.mock.calls[0]?.[1]).toBe(8192);
+    expect(app.execution.report().render?.limits).toEqual({ maxStorageBuffersPerShaderStage: 8 });
     await app.dispose();
   });
 

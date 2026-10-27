@@ -20,6 +20,7 @@ import { prepareDist } from '../delivery-dist.js';
 import { collectDistArtifacts } from '../dist.js';
 import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
+import { type HostVersions, hostVersions } from '../host/versions.js';
 import type { DevKitAppOptions } from '../plugin-build.js';
 import type { BuildOptions, ProjectFacts } from '../types.js';
 import { type PluginSourceInventory, pluginAssetClosure } from './plugin-assets.js';
@@ -54,6 +55,7 @@ export async function prepareWechatBuild(
       appOptions,
       process.env.FORGEAX_WECHAT_CPU_PROFILE === '1',
       process.env.FORGEAX_WECHAT_FRAME_TRACE === '1',
+      await hostVersions(facts),
     ),
   );
   await writeFile(resolve(generated, 'wechat-game.ts'), wechatGameSource(physics, facts));
@@ -344,6 +346,7 @@ export function wechatHostSource(
   appOptions: DevKitAppOptions = {},
   cpuProfile = false,
   frameTrace = false,
+  versions?: HostVersions,
 ): string {
   const loadingLabels = resolveLoadProgressLabels(appOptions.loadingLabels);
   return `import { createWechatPlatform, createWechatWasmHost, createWechatWgpuHost, createWechatInputBackend, createWechatAudioBackend, createWechatPackageFetcher } from '@forgeax/engine/platform-wechat';
@@ -554,7 +557,7 @@ async function boot(identity, reload) {
   releases.push(() => uiLifetime.abort());
   ui = await createBlitzUi({
     wasm: uiWasm ??= createWechatWasmHost(native, 'payload/wasm/ui.wasm.br').unwrap(),
-    html: ${JSON.stringify(hostStartupDocument(facts.name, loadingLabels).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
+    html: ${JSON.stringify(hostStartupDocument(facts.name, loadingLabels, versions).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
     width: canvas.width, height: canvas.height, pixelRatio: display.pixelRatio,
     font: new Uint8Array(await (await fetcher('https://forgeax.package/ui-fonts/files/noto-sans-sc-latin-wght-normal.woff2')).arrayBuffer()),
     fontFamily: 'Noto Sans SC Variable',

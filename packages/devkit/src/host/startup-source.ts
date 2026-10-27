@@ -1,5 +1,6 @@
 /** Shared author markup and one startup lifecycle, emitted statically for each host. */
 import { DEFAULT_LOAD_PROGRESS_LABELS, type LoadProgressLabels } from '@forgeax/engine-types';
+import type { HostVersions } from './versions.js';
 
 function escapeHtml(value: string): string {
   return value
@@ -22,6 +23,7 @@ function scriptJson(value: unknown): string {
 export function hostStartupDocument(
   title: string,
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  versions?: HostVersions,
 ): string {
   const status = labels.phases['engine-code'] ?? labels.loading;
   return `<!doctype html>
@@ -37,8 +39,7 @@ export function hostStartupDocument(
       #app { display: block; }
       #app-shell { position: relative; isolation: isolate; }
       #game-ui { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-      #forgeax-fps { display: none; position: absolute; top: 12px; left: 50%; margin-left: -46px; width: 92px; box-sizing: border-box; padding: 5px 8px; z-index: 2147483645; border: 1px solid rgb(230 235 245 / 30%); border-radius: 6px; background: rgb(5 12 22 / 88%); color: #ffe17b; font: 600 13px/18px system-ui, sans-serif; text-align: center; pointer-events: none; }
-      @media (max-width: 600px) { #forgeax-fps { top: auto; bottom: 12px; } }
+      #forgeax-status { display: none; position: absolute; left: 10px; bottom: 8px; max-width: calc(100% - 20px); z-index: 2147483645; color: #fff; opacity: 0.5; font: 400 10px/14px system-ui, sans-serif; pointer-events: none; user-select: none; }
       #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #05070b; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
       #forgeax-loading[aria-hidden="true"] { opacity: 0; pointer-events: none; }
       #forgeax-loading-content { display: grid; justify-items: center; gap: 12px; max-width: min(480px, 100%); }
@@ -60,7 +61,7 @@ export function hostStartupDocument(
   </head>
   <body>
     <div id="app-shell"><canvas id="app"></canvas><div id="game-ui"></div>
-    <div id="forgeax-fps" aria-label="Completed game frames per second">FPS --</div>
+    <div id="forgeax-status">${versions === undefined ? '' : `Game ${escapeHtml(versions.game)} | Engine ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="Completed game frames per second">FPS --</span></div>
     <div id="forgeax-loading" role="status" aria-live="polite" aria-atomic="true">
       <div id="forgeax-loading-content">
         <h1 id="forgeax-loading-title">${escapeHtml(title)}</h1>
@@ -366,11 +367,10 @@ export function hostStartupScript(
         };
         // Receipt observation outlives the loading overlay. It does not request
         // render frames or sample rAF; one timer updates text only when changed.
-        // Browser pages opt in with ?fps=1 so capture, play and release frames
-        // stay free of developer chrome; URL-less native hosts keep the badge.
         const frameRate = (() => {
           const node = document.querySelector('#forgeax-fps');
-          let closed = !gamePage || node?.id !== 'forgeax-fps' || (host === undefined && query.get('fps') !== '1');
+          const status = document.querySelector('#forgeax-status');
+          let closed = !gamePage || node?.id !== 'forgeax-fps';
           let session, surface, deviceGeneration = -1, lastFrame = -1;
           let since, count = 0, timer;
           const text = value => {
@@ -379,7 +379,7 @@ export function hostStartupScript(
           const reset = () => {
             clearStartupTimeout(timer); timer = undefined;
             since = undefined; count = 0;
-            text('FPS --'); setDisplay(node, 'none');
+            text('FPS --'); setDisplay(status, 'none');
           };
           const tick = () => {
             if (closed || !isForeground()) { reset(); return; }
@@ -405,7 +405,7 @@ export function hostStartupScript(
             lastFrame = detail.frameId;
             if (since === undefined) {
               since = clockNow();
-              setDisplay(node, 'block');
+              setDisplay(status, 'block');
               timer = setStartupTimeout(tick, 1000);
             } else count += 1;
           };

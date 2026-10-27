@@ -3,9 +3,11 @@ import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 
-function fixture(native = true, search = '?fps=1') {
+function fixture(native = true, search = '') {
   document.open();
-  document.write(hostStartupDocument('FPS game'));
+  document.write(
+    hostStartupDocument('FPS game', undefined, { game: '1.2.3', engine: 'abcdef123456' }),
+  );
   document.close();
   let visible = true;
   const host = {
@@ -52,6 +54,7 @@ function fixture(native = true, search = '?fps=1') {
     startup,
     receive,
     hud: () => document.querySelector<HTMLElement>('#forgeax-fps'),
+    status: () => document.querySelector<HTMLElement>('#forgeax-status'),
     visibility(next: boolean) {
       visible = next;
       startup.visibilityChanged();
@@ -77,7 +80,8 @@ describe('ordinary game FPS HUD', () => {
       page.receive(33, 1, 'ready', 'retired-world');
       await vi.advanceTimersByTimeAsync(850);
       expect(page.hud()?.textContent).toBe('FPS 30.0');
-      expect(page.hud()?.style.display).toBe('block');
+      expect(page.status()?.textContent).toBe('Game 1.2.3 | Engine abcdef123456 | FPS 30.0');
+      expect(page.status()?.style.display).toBe('block');
       await vi.advanceTimersByTimeAsync(1000);
       expect(page.hud()?.textContent).toBe('FPS 0.0');
     } finally {
@@ -86,15 +90,15 @@ describe('ordinary game FPS HUD', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps browser pages without ?fps=1 free of the badge', async () => {
+  it('omits game diagnostics from workspace pages', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-    const page = fixture(false, '');
+    const page = fixture(false, '?forgeaxWorkspace=preview');
     try {
       page.receive(1);
       await vi.advanceTimersByTimeAsync(150);
       for (let i = 2; i <= 31; i++) page.receive(i);
       await vi.advanceTimersByTimeAsync(2000);
-      expect(page.hud()?.style.display).not.toBe('block');
+      expect(page.status()?.style.display).not.toBe('block');
       expect(page.hud()?.textContent).toBe('FPS --');
     } finally {
       page.startup.destroy();
@@ -111,7 +115,7 @@ describe('ordinary game FPS HUD', () => {
       page.receive(51);
       page.visibility(false);
       await vi.advanceTimersByTimeAsync(4000);
-      expect(page.hud()?.style.display).toBe('none');
+      expect(page.status()?.style.display).toBe('none');
       page.visibility(true);
       page.receive(60);
       page.receive(61);
@@ -123,7 +127,7 @@ describe('ordinary game FPS HUD', () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(page.hud()?.textContent).toBe('FPS 1.0');
       page.startup.fail(new Error('device lost'), { fault: { code: 'device-lost' } });
-      expect(page.hud()?.style.display).toBe('none');
+      expect(page.status()?.style.display).toBe('none');
       await vi.advanceTimersByTimeAsync(0); // jsdom queues the focused Reload control's event.
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -164,14 +168,14 @@ describe('ordinary game FPS HUD', () => {
       expect(page.hud()?.textContent).toBe('FPS 1.0');
 
       window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
-      expect(page.hud()?.style.display).toBe('none');
+      expect(page.status()?.style.display).toBe('none');
       await vi.advanceTimersByTimeAsync(4000);
       window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
       page.receive(3);
       page.receive(4);
       await vi.advanceTimersByTimeAsync(1000);
       expect(page.hud()?.textContent).toBe('FPS 1.0');
-      expect(page.hud()?.style.display).toBe('block');
+      expect(page.status()?.style.display).toBe('block');
     } finally {
       page.startup.destroy();
     }

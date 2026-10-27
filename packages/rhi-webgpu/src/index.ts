@@ -378,9 +378,16 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike): RhiAdapter {
   };
 }
 
+const DEFAULT_BROWSER_ADAPTER_OPTIONS: RequestAdapterOptions = Object.freeze({
+  powerPreference: 'high-performance',
+});
+
 /** Request an ambient browser adapter. Explicit native/test providers use
  * `requestAdapterFrom`; both return the same RHI adapter and device path.
- * The compatible surface is unused by browser WebGPU. */
+ * The compatible surface is unused by browser WebGPU. Without caller options
+ * the request prefers `'high-performance'`, so dual-GPU laptops pick the
+ * discrete GPU instead of the browser's power-saving default; explicit options
+ * (including `{}`) pass through unchanged. */
 export async function requestAdapter(
   opts?: RequestAdapterOptions | undefined,
   _compatibleSurface?: RhiCanvasTarget | undefined,
@@ -389,7 +396,7 @@ export async function requestAdapter(
     typeof globalThis !== 'undefined'
       ? (globalThis as { navigator?: Navigator }).navigator?.gpu
       : undefined;
-  return requestAdapterFrom(ambient, opts);
+  return requestAdapterFrom(ambient, opts ?? DEFAULT_BROWSER_ADAPTER_OPTIONS);
 }
 
 /**

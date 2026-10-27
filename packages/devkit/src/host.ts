@@ -110,6 +110,7 @@ import {
   resourcePresentationSource,
 } from './host/resource-presentation-source.js';
 import { hostStartupDocument, hostStartupScript } from './host/startup-source.js';
+import { type HostVersions, hostVersions } from './host/versions.js';
 import {
   composeBoundHostAssembly,
   type DevKitHostBinding,
@@ -2179,8 +2180,9 @@ function htmlSource(
   title: string,
   startupScreen = true,
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  versions?: HostVersions,
 ): string {
-  return hostStartupDocument(title, labels).replace(
+  return hostStartupDocument(title, labels, versions).replace(
     '  </body>',
     `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
     <script>
@@ -3122,6 +3124,7 @@ export async function createViteConfig(
           facts.name,
           bootstrapRoot === 'project-bootstrap',
           resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
+          await hostVersions(facts),
         ),
       ),
       writeFile(

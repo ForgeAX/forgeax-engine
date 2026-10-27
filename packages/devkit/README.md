@@ -1603,12 +1603,19 @@ repair the validator rather than obfuscating Engine code or bypassing publishing
 
 ## Startup diagnostics
 
-Ordinary game pages opened with `?fps=1` (and URL-less WeChat hosts) show a
-compact FPS badge after their first scene-ready Renderer completion. Without
-the flag, browser pages omit it, so `dev capture`, `dev verify`, `project play`
-and released builds never record developer chrome. Browser and WeChat hosts count the same successful scene
+Ordinary game pages show `Game <version> | Engine <version> | FPS <rate>`
+after their first scene-ready Renderer completion. The shared browser/WeChat
+startup document owns this unobtrusive bottom-left line: 10px, half-opacity white
+text, no border or background, and no pointer input. Game releases use
+`package.json#version`; leave the template placeholder `0.0.0` for development
+to show the game's 12-character Git commit instead. Engine releases use the
+installed DevKit package version; source checkouts use their own Git commit,
+and SDK source archives use SDK provenance. A `0.0.0-dev.<hash>` archive shows
+its hash. Without either version or Git provenance the label is `unversioned`.
+Labels are baked into generated HTML, including static and offline delivery.
+Browser and WeChat hosts count the same successful scene
 receipts over one-second monotonic-clock windows; rAF, loading-only completions
-and duplicate/retired receipts do not count. The badge updates text only when its
+and duplicate/retired receipts do not count. The line updates FPS text only when its
 value changes, takes no input and requests no extra render frames. Visibility,
 Surface/device and session changes reset the sample; failure or disposal removes
 its timer and listeners. Workspace and tool pages omit it.

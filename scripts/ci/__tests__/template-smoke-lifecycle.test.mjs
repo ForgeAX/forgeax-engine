@@ -369,15 +369,15 @@ test('successful Preview browser cleanup leaves no deadline timers keeping Node 
       close: async () => { if (!disposed) throw new Error('must dispose before destroying page'); console.log('page'); },
     };
     let context = { close: async () => console.log('context') };
-    let browser = { close: async () => console.log('browser') };
-    let browserServer = { close: async () => console.log('browser') };
+    let browser = { close: async () => console.log('browser-client') };
+    let browserServer = { close: async () => console.log('browser-server') };
     ${functionSource('async function closeSmokeBrowser()', 'async function waitForSubmittedRendererFrame')}
     await closeSmokeBrowser();
   `,
     ],
     { timeout: 5000, encoding: 'utf8' },
   );
-  assert.equal(output.trim(), 'dispose\npage\ncontext\nbrowser');
+  assert.equal(output.trim(), 'dispose\npage\ncontext\nbrowser-client\nbrowser-server');
 });
 
 test('failed Preview browser shutdown retires its owned process and preserves the failure', () => {
@@ -852,10 +852,14 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
           events.push('context');
         },
       },
-      browser: {},
+      browser: {
+        close: async () => {
+          events.push('browser-client');
+        },
+      },
       browserServer: {
         close: async () => {
-          events.push('browser');
+          events.push('browser-server');
         },
       },
       sleep: async (ms) => {
@@ -881,7 +885,7 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
         return true;
       });
     } else await close();
-    assert.deepEqual(events, ['dispose', 'page', 'context', 'browser']);
+    assert.deepEqual(events, ['dispose', 'page', 'context', 'browser-client', 'browser-server']);
     assert.deepEqual(evidence.pageErrors, []);
     assert.deepEqual(evidence.consoleErrors, []);
     assert.equal(evidence.shutdown.events.length, 32);

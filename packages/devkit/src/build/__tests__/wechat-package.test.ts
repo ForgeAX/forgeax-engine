@@ -18,7 +18,15 @@ it.each([
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-app-options-'));
   try {
     await prepareWechatBuild(
-      { name: 'Native App options', roots: {} } as ProjectFacts,
+      {
+        root,
+        id: 'native-app-options',
+        name: 'Native App options',
+        roots: {},
+        assetRoots: ['assets'],
+        assetLibraries: [],
+        packageJson: { version: '1.2.3' },
+      },
       root,
       {
         assets: new Map(),
@@ -30,6 +38,7 @@ it.each([
       budget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: budget, time },
     );
     const source = await readFile(resolve(root, 'wechat-main.ts'), 'utf8');
+    expect(source).toContain('Game 1.2.3 | Engine ');
     const call = source.slice(
       source.indexOf('graphics = value(await constructRuntimeRendererHost('),
       source.indexOf('releases.push(() => graphics.renderer.dispose());'),

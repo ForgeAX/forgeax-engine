@@ -3,14 +3,14 @@
   "policy": "engine-public-source/1",
   "producerSha256": "e42020b607d2ff23bb0dfb7fe3a5926c724a361b1de9dd68d5ede03c24211cfe",
   "release": {
-    "version": "0.5.0-dev.15782.cb4ea3e8cea2",
+    "version": "0.5.0-dev.15783.60decda69627",
     "channel": "next",
-    "candidateSha256": "24b565e8fc942865c4b01b13a3d50147a70b1b59b3fa70e67df171c2ff8e5ee1"
+    "candidateSha256": "5b31a3a671a51f0d4f1971912a20edbd86b0f7aa2bcd51b46b8dff0ef509064b"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "cb4ea3e8cea27add93ce3dd0c75440b59a2c90d3"
+      "commit": "60decda696276defab51fb8afff8f4a30e03decf"
     },
     {
       "root": "forgeax-engine-assets",
@@ -12421,9 +12421,9 @@
     },
     {
       "path": "apps/hello/fxaa/src/main.ts",
-      "bytes": 22285,
+      "bytes": 22732,
       "executable": false,
-      "sha256": "d5aa7a3fb6be1a28a774543381c5222326afdbcfc6c22b25c3a1580f61442f34"
+      "sha256": "1a3eda22a6adb699bfff55af3d5a04e16f6e34f4244b58c140613ff6aa6aea24"
     },
     {
       "path": "apps/hello/fxaa/src/mipmap-pipeline-probe.ts",
@@ -22477,9 +22477,9 @@
     },
     {
       "path": "apps/preview/scripts/smoke-templates.mjs",
-      "bytes": 66853,
+      "bytes": 66885,
       "executable": false,
-      "sha256": "0cdb7c0ae4f3bcd252a83d1fca0a49586a2add4ac444c822b02a32d20d46d89d"
+      "sha256": "b9c048ce1546f2032444d5528fdd9aae382a89bf42d82108b59ed95e990691c7"
     },
     {
       "path": "apps/preview/scripts/smoke-ui-authoring.mjs",
@@ -23841,7 +23841,7 @@
       "path": "config/function-complexity-baseline.json",
       "bytes": 105938,
       "executable": false,
-      "sha256": "abbacde4d40ab97c049399884677a6ed747ade6460a4a772f24a3fa7b8ec7350"
+      "sha256": "34795ee4480b7bae2ad72f7d2e57e7d12a45a09efb188780c0c4ac429dc761b4"
     },
     {
       "path": "config/jscpd.json",
@@ -27943,9 +27943,9 @@
     },
     {
       "path": "packages/app/src/__tests__/canvas-sizing.test.ts",
-      "bytes": 14170,
+      "bytes": 14703,
       "executable": false,
-      "sha256": "8423e32a13aba4ef5e1414e51003119acc0fcf8b24d57aed8cdfd29ee9519904"
+      "sha256": "5f094f1a08fc1f78b09eaf84cbcd3a889c90b4fb04785cdb03ac6b94d5bbf0bc"
     },
     {
       "path": "packages/app/src/__tests__/component-introspection.unit.test.ts",
@@ -28591,9 +28591,9 @@
     },
     {
       "path": "packages/app/src/__tests__/worker-execution-admission-watchdog.unit.test.ts",
-      "bytes": 57890,
+      "bytes": 58789,
       "executable": false,
-      "sha256": "6b0aabae6c64cf155c87d3864b1b10ec8cd8a327b609527e0fed107ce40f5f89"
+      "sha256": "6a17645ad30d6e19ea65c2bfa5e8744c3fa182d127a1581ff072e8ebc381e0c0"
     },
     {
       "path": "packages/app/src/__tests__/worker-execution-stop.test.ts",
@@ -28705,9 +28705,9 @@
     },
     {
       "path": "packages/app/src/browser.ts",
-      "bytes": 45571,
+      "bytes": 45640,
       "executable": false,
-      "sha256": "4a77ae2aac6cb35d3b38f4227609dfc05739c766c90db3e6991074e16fc23b87"
+      "sha256": "a28122e8797a1cd579505df5b3cff0619ee0420be0854e1e6753485408c32ffe"
     },
     {
       "path": "packages/app/src/canvas-policy.ts",
@@ -28717,9 +28717,9 @@
     },
     {
       "path": "packages/app/src/canvas-sizing.ts",
-      "bytes": 7263,
+      "bytes": 7635,
       "executable": false,
-      "sha256": "822fbce75c05fd2a3b36e9ea38739145c1ae76b25145123682fb293b1f02fd90"
+      "sha256": "a6464b256bde8faaf32a4a7c8ec5a60f71cc196a6c6fc2852fe93a4eb7969dcb"
     },
     {
       "path": "packages/app/src/create-app.ts",
@@ -28795,9 +28795,9 @@
     },
     {
       "path": "packages/app/src/execution/host-controller.ts",
-      "bytes": 56520,
+      "bytes": 56967,
       "executable": false,
-      "sha256": "22b914dcd60df95d9b9db633278bdecf543ec797869a017ee696e86e45b39170"
+      "sha256": "10271c6cd2fc6c532deff85d16d7c55aa451ad776b476fc04a72b7618dfb340d"
     },
     {
       "path": "packages/app/src/execution/index.ts",
@@ -28825,9 +28825,9 @@
     },
     {
       "path": "packages/app/src/execution/protocol.ts",
-      "bytes": 14723,
+      "bytes": 14859,
       "executable": false,
-      "sha256": "2961e2f164a2a02e0821d20295d497756ee6c844554264b7b92f9462584f4662"
+      "sha256": "782ef1c5bfd341a4d8c3d9bece5df7bc92a9d2ef72dffb5e2281343892445743"
     },
     {
       "path": "packages/app/src/execution/received-publication-materials.ts",
@@ -28903,9 +28903,9 @@
     },
     {
       "path": "packages/app/src/execution/source-render-worker.ts",
-      "bytes": 40432,
+      "bytes": 40873,
       "executable": false,
-      "sha256": "227ee1b0abe33dc1485fc31b922c912589dd27d190f6e7dfb1b75a6063033c37"
+      "sha256": "715f5ca6335efcd8567b7e393024725328197d7a6b0f6f377a73c5fc19033214"
     },
     {
       "path": "packages/app/src/execution/types.ts",
@@ -32179,9 +32179,9 @@
     },
     {
       "path": "packages/devkit/README.md",
-      "bytes": 175271,
+      "bytes": 175761,
       "executable": false,
-      "sha256": "95ee95cee392695ea6ae38354687e15a50b12ee8cfa136cfc5f97f18037ac7b6"
+      "sha256": "365a5a0f2a32e7f882942967c92b9dadd686c20b51528ddd09e26923641adeed"
     },
     {
       "path": "packages/devkit/scripts/check-capture-policy.mjs",
@@ -32479,15 +32479,21 @@
     },
     {
       "path": "packages/devkit/src/__tests__/frame-rate-hud.unit.test.ts",
-      "bytes": 6227,
+      "bytes": 6486,
       "executable": false,
-      "sha256": "f26df8877111a0fca2b860e674806a06b8465d706a822f4920ac56486af26020"
+      "sha256": "a2dd284fb95f0607063edca19530b79ff07c56e20c926bf9f9b4247fb9095977"
     },
     {
       "path": "packages/devkit/src/__tests__/game-channel.test.ts",
       "bytes": 11508,
       "executable": false,
       "sha256": "7b851b3135936232a14106fc12f98a34706ad095b4e71b5e1cb2e0fc88f3f4ee"
+    },
+    {
+      "path": "packages/devkit/src/__tests__/game-status-hud.e2e.test.ts",
+      "bytes": 2696,
+      "executable": false,
+      "sha256": "695741efff5c4ee28bc99cebee15408b3af56b44cdf06e7334d09590c06404bb"
     },
     {
       "path": "packages/devkit/src/__tests__/game-vfx-assembly.integration.test.ts",
@@ -32572,6 +32578,12 @@
       "bytes": 4939,
       "executable": false,
       "sha256": "3dc261631e26fb4a2a43b03af22779362288ac32851fd4aa0c6f7595b9dac04b"
+    },
+    {
+      "path": "packages/devkit/src/__tests__/host-versions.unit.test.ts",
+      "bytes": 2780,
+      "executable": false,
+      "sha256": "b596902923c73276d56acb7b4b27aed593b96c98e560d5df7583017a0a37a62f"
     },
     {
       "path": "packages/devkit/src/__tests__/host-watcher.integration.test.ts",
@@ -33433,9 +33445,9 @@
     },
     {
       "path": "packages/devkit/src/build/__tests__/wechat-package.test.ts",
-      "bytes": 7658,
+      "bytes": 7870,
       "executable": false,
-      "sha256": "3a4e1c857d424789604529755ae382483e432e687766c7b0270f2b8d4a25d765"
+      "sha256": "8ed6cbab093f2a5e670362e0b38f69e70a643a20571352dc441e120fd7788c4c"
     },
     {
       "path": "packages/devkit/src/build/__tests__/wechat-profile-source.unit.test.ts",
@@ -33445,9 +33457,9 @@
     },
     {
       "path": "packages/devkit/src/build/__tests__/wechat-recovery.test.ts",
-      "bytes": 27639,
+      "bytes": 27745,
       "executable": false,
-      "sha256": "b065f377243b03c175f68d13e59f93b28bf5c90618a03be27fc0fb04a60cb9d3"
+      "sha256": "386749d34158c4dcf35c081689f05358765f4c1346d2ef3a5c958c9500579e75"
     },
     {
       "path": "packages/devkit/src/build/__tests__/wechat-startup-failure.test.ts",
@@ -33601,9 +33613,9 @@
     },
     {
       "path": "packages/devkit/src/build/wechat.ts",
-      "bytes": 36821,
+      "bytes": 36962,
       "executable": false,
-      "sha256": "5b14640b2a01c7bdca897d240d42dd48d336a7184f36d7443ccdf7611e955b6f"
+      "sha256": "8b54fc2a3282d21cffc116307719622975409579f421cbcd3c6a0f0e7c318058"
     },
     {
       "path": "packages/devkit/src/capture-render-failure.ts",
@@ -33715,9 +33727,9 @@
     },
     {
       "path": "packages/devkit/src/host.ts",
-      "bytes": 155655,
+      "bytes": 155799,
       "executable": false,
-      "sha256": "a2db7e0c245b3f70666218c0606a526ddbc5fe3a39c8426f4fa73b61f97d2124"
+      "sha256": "00607ec9df016f96ca8d9ecd3733ea473a6fbdd4725c32a6c5eaa0f4edc74119"
     },
     {
       "path": "packages/devkit/src/host/__tests__/bootstrap-root-owner.test-d.ts",
@@ -33745,9 +33757,15 @@
     },
     {
       "path": "packages/devkit/src/host/startup-source.ts",
-      "bytes": 41963,
+      "bytes": 41844,
       "executable": false,
-      "sha256": "076e524b336cd7f16786a36d6241652e4c709bba1f79346f3a0d7939cfed69be"
+      "sha256": "7e69e7af06b8453bfc6d39bf58af973dcafeec5af9b4aa183a3ddc79666f053f"
+    },
+    {
+      "path": "packages/devkit/src/host/versions.ts",
+      "bytes": 2032,
+      "executable": false,
+      "sha256": "be6efd5c8473735ed3b7b2f32abf5a4bfe104bd0a89a39c03d35eff4fea41a7b"
     },
     {
       "path": "packages/devkit/src/index.ts",
@@ -46230,6 +46248,12 @@
       "sha256": "ec7efb618a2aaef7fb0fee28c0f5102cbbdad34ff8e8ea2b95163d983394abf9"
     },
     {
+      "path": "packages/render/src/__tests__/feature-compute-pass-encode.unit.test.ts",
+      "bytes": 1977,
+      "executable": false,
+      "sha256": "1f8f62ae15a73134b7da97fe1062095bede8bdbb730f67ff00c61a60210ecbf8"
+    },
+    {
       "path": "packages/render/src/__tests__/feature-copy-enablement.integration.test.ts",
       "bytes": 8121,
       "executable": false,
@@ -53629,9 +53653,9 @@
     },
     {
       "path": "packages/render/src/features/prepared-gpu-work.ts",
-      "bytes": 90947,
+      "bytes": 91345,
       "executable": false,
-      "sha256": "b3962cf37785fda637032329a15b45f125ec83b7fdb32e2b2c39457cd7eeb700"
+      "sha256": "35357cadbb8bb13ae995e2e4d381891ac4427bce0894fda2325af62c83205776"
     },
     {
       "path": "packages/render/src/features/prepared-graphics-store.ts",
@@ -54961,9 +54985,9 @@
     },
     {
       "path": "packages/render/src/publication/__tests__/targets.integration.test.ts",
-      "bytes": 15345,
+      "bytes": 15190,
       "executable": false,
-      "sha256": "8f96f3aa9dc3f3da65799579260e39862f3c0f526400aab1262e6cf19adb2d66"
+      "sha256": "f6ea2ac431cbabfb384ad302025a071e2f2781703243511e2032d729138f9495"
     },
     {
       "path": "packages/render/src/publication/__tests__/texture-consumers.unit.test.ts",
@@ -58872,6 +58896,12 @@
       "sha256": "6be7979be4e28a8d6d03e8ab9572b7cac183bc5b522cf91adff486f7546691d1"
     },
     {
+      "path": "packages/rhi-webgpu/src/__tests__/request-adapter-default.unit.test.ts",
+      "bytes": 962,
+      "executable": false,
+      "sha256": "0e3ed2f2876034ce43195916683f3ced675a69079af0bc221d2150b4aae2afe7"
+    },
+    {
       "path": "packages/rhi-webgpu/src/__tests__/rgba16float-live-probe.browser.test.ts",
       "bytes": 631,
       "executable": false,
@@ -58909,9 +58939,9 @@
     },
     {
       "path": "packages/rhi-webgpu/src/index.ts",
-      "bytes": 26273,
+      "bytes": 26652,
       "executable": false,
-      "sha256": "bf8bdc90e8f06e0133b78533ead84c715c3dfa298af6ce4ec0f759d3215c8b23"
+      "sha256": "d2b108fb252f8436ed5e8df3777438e0ee36665689f80c977ded9d4eb249e363"
     },
     {
       "path": "packages/rhi-webgpu/src/internal/__tests__/timestamp-query.unit.test.ts",
@@ -70705,9 +70735,9 @@
     },
     {
       "path": "packages/vfx-render/src/__tests__/restart-resources.dawn.test.ts",
-      "bytes": 26973,
+      "bytes": 27627,
       "executable": false,
-      "sha256": "bd742900a19fee4060211ab4e0ba5d7a9e7a5dff0a35bffcf0b7f1f308780576"
+      "sha256": "8ddaadb103e611f59e9e9140d57af6dbb1773037cb29919610d24950fef992e4"
     },
     {
       "path": "packages/vfx-render/src/__tests__/retained-intent-delta.integration.test.ts",
@@ -75043,9 +75073,9 @@
     },
     {
       "path": "scripts/ci/__tests__/template-smoke-lifecycle.test.mjs",
-      "bytes": 36971,
+      "bytes": 37128,
       "executable": false,
-      "sha256": "01447d1e6c80ec157451ca08565b32d36d18f692ba78dbe3018763378cb05abb"
+      "sha256": "73c299920ace2c39cb8f2ad3d948c7e4fd6e1e2ff55312e91fe084b255852089"
     },
     {
       "path": "scripts/ci/__tests__/test-suite-entry.test.mjs",

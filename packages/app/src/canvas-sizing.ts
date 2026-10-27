@@ -25,6 +25,14 @@ export function resetCanvasDeviceLimit(canvas: CanvasSurface): void {
   deviceLimits.delete(canvas);
 }
 
+/**
+ * Record a device texture bound reported by another realm (the Render Worker).
+ * Invalid values keep the conservative startup budget.
+ */
+export function setCanvasDeviceLimit(canvas: CanvasSurface, maxTextureDimension2D: number): void {
+  deviceLimits.set(canvas, deviceLimit(maxTextureDimension2D));
+}
+
 /** Synchronize layout or explicit physical pixels within the same size budgets. */
 export function syncCanvasDrawingBuffer(
   canvas: CanvasSurface,
@@ -70,13 +78,14 @@ export function refreshCanvasDeviceLimit(
   } catch {
     // Optional inspection cannot bypass the conservative startup budget.
   }
-  deviceLimits.set(
-    canvas,
-    typeof limit === 'number' && Number.isFinite(limit) && limit >= 1
-      ? Math.floor(limit)
-      : STARTUP_DIMENSION_LIMIT,
-  );
+  deviceLimits.set(canvas, deviceLimit(limit));
   syncCanvasDrawingBuffer(canvas);
+}
+
+function deviceLimit(limit: unknown): number {
+  return typeof limit === 'number' && Number.isFinite(limit) && limit >= 1
+    ? Math.floor(limit)
+    : STARTUP_DIMENSION_LIMIT;
 }
 
 /** Cache limits per renderer generation, releasing the subscription with its host. */

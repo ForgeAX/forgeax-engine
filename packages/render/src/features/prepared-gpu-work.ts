@@ -227,17 +227,26 @@ export function encodeRenderFeatureGpuComputePass(
   work: RenderFeatureResolvedGpuComputePass,
   resolveTarget?: (target: RenderFeatureComputeTarget) => TextureView,
 ): void {
+  // A compute pass keeps its pipeline and bind groups across dispatches, so
+  // consecutive dispatches that share them skip the redundant set calls.
+  let pipeline: ComputePipeline | undefined;
+  let bindGroup: BindGroup | undefined;
   for (const dispatch of work.dispatches) {
-    pass.setPipeline(dispatch.pipeline);
+    if (dispatch.pipeline !== pipeline) {
+      pass.setPipeline(dispatch.pipeline);
+      pipeline = dispatch.pipeline;
+    }
     if (dispatch.resolveBindGroup !== undefined && resolveTarget === undefined) {
       throw new Error('Graph texture resolver required for sampled compute work');
     }
-    pass.setBindGroup(
-      0,
+    const group =
       dispatch.resolveBindGroup !== undefined && resolveTarget !== undefined
         ? dispatch.resolveBindGroup(resolveTarget)
-        : dispatch.bindGroup,
-    );
+        : dispatch.bindGroup;
+    if (group !== bindGroup) {
+      pass.setBindGroup(0, group);
+      bindGroup = group;
+    }
     if ('workgroups' in dispatch) pass.dispatchWorkgroups(...dispatch.workgroups);
     else pass.dispatchWorkgroupsIndirect(dispatch.indirectBuffer, dispatch.indirectOffset);
   }

@@ -347,6 +347,8 @@ export type EngineToHostMessage =
       readonly epoch: number;
       readonly capabilities?: ExecutionRenderCapabilities;
       readonly limits?: ExecutionRenderLimits;
+      /** Device texture bound for Host canvas sizing; not part of the report limits. */
+      readonly maxTextureDimension2D?: number;
     }
   | ExecutionRenderErrorMessage
   | { readonly kind: 'render-lost'; readonly epoch: number; readonly detail: string }

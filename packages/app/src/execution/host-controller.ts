@@ -63,6 +63,12 @@ export interface CreateWorkerExecutionAppOptions {
     canvas: HTMLCanvasElement,
     display: DisplayFacts | undefined,
   ) => CanvasDrawingBufferSize;
+  /**
+   * Receives the Render Worker device's texture bound once it is ready, so
+   * `syncCanvas` can leave the conservative startup budget. A replaced canvas
+   * after device loss starts from that budget again.
+   */
+  readonly renderDeviceLimit?: (canvas: HTMLCanvasElement, maxTextureDimension2D: number) => void;
   readonly bundler?: BundlerOptions;
   readonly capabilities: ExecutionCapabilities;
   readonly selection: ExecutionSelection;
@@ -965,6 +971,8 @@ export async function createWorkerExecutionApp(
           ...(message.limits === undefined ? {} : { limits: message.limits }),
         },
       };
+    if (message.maxTextureDimension2D !== undefined)
+      options.renderDeviceLimit?.(canvas, message.maxTextureDimension2D);
     if (recovered && ledger.hasCreditInFlight && report.world.identity !== null)
       armFrameAdmission(report.world.identity, ledger.inspect().submitted);
     if (state === 'running') scheduleFrame();

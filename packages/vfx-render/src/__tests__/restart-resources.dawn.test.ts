@@ -382,20 +382,31 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     try {
       const encoder = device.createCommandEncoder().unwrap();
       let begins = 0;
-      const encodedBindings: unknown[] = [];
+      const encodedDispatchBindings: unknown[] = [];
       const observed = new Proxy(encoder, {
         get(target, key) {
           if (key === 'beginComputePass')
             return (...args: Parameters<typeof encoder.beginComputePass>) => {
               begins++;
               const pass = target.beginComputePass(...args);
+              let boundGroup: unknown;
               return new Proxy(pass, {
                 get(target, key) {
                   if (key === 'setBindGroup')
                     return (...args: Parameters<typeof target.setBindGroup>) => {
                       if (fail) throw new Error('Reject after encoded reset');
-                      encodedBindings.push(args[1]);
+                      boundGroup = args[1];
                       return target.setBindGroup(...args);
+                    };
+                  if (key === 'dispatchWorkgroups')
+                    return (...args: Parameters<typeof target.dispatchWorkgroups>) => {
+                      encodedDispatchBindings.push(boundGroup);
+                      return target.dispatchWorkgroups(...args);
+                    };
+                  if (key === 'dispatchWorkgroupsIndirect')
+                    return (...args: Parameters<typeof target.dispatchWorkgroupsIndirect>) => {
+                      encodedDispatchBindings.push(boundGroup);
+                      return target.dispatchWorkgroupsIndirect(...args);
                     };
                   const value = Reflect.get(target, key);
                   return typeof value === 'function' ? value.bind(target) : value;
@@ -417,7 +428,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         return begins;
       }
       result.unwrap();
-      expect(encodedBindings).toEqual(
+      expect(encodedDispatchBindings).toEqual(
         prepared.passes
           .filter((pass) => pass.enabled !== false)
           .flatMap(

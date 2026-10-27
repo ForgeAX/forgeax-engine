@@ -46,6 +46,20 @@ import { workerError } from './worker-error';
 import { shutdownWorker } from './worker-shutdown';
 
 type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
+type RenderReadyHostMessage = Extract<EngineToHostMessage, { readonly kind: 'render-ready' }>;
+
+function renderReadyLimits(
+  limits: Extract<RenderWorkerOutput, { readonly kind: 'ready' }>['limits'],
+): Pick<RenderReadyHostMessage, 'limits' | 'maxTextureDimension2D'> {
+  const maxStorageBuffersPerShaderStage = limits?.maxStorageBuffersPerShaderStage;
+  const maxTextureDimension2D = limits?.maxTextureDimension2D;
+  return {
+    ...(maxStorageBuffersPerShaderStage === undefined
+      ? {}
+      : { limits: { maxStorageBuffersPerShaderStage } }),
+    ...(maxTextureDimension2D === undefined ? {} : { maxTextureDimension2D }),
+  };
+}
 
 /** Sealed publications bounded by the same finite capacity as Host admission. */
 export class SourceRenderWorker {
@@ -400,7 +414,6 @@ export class SourceRenderWorker {
           this.inspectionReady = true;
           this.resolveReady?.();
           this.resolveReady = undefined;
-          const maxStorageBuffersPerShaderStage = message.limits?.maxStorageBuffersPerShaderStage;
           this.post({
             kind: 'render-ready',
             epoch,
@@ -409,9 +422,7 @@ export class SourceRenderWorker {
               compute: message.capabilities.compute,
               storageBuffer: message.capabilities.storageBuffer,
             },
-            ...(maxStorageBuffersPerShaderStage === undefined
-              ? {}
-              : { limits: { maxStorageBuffersPerShaderStage } }),
+            ...renderReadyLimits(message.limits),
           });
           resolve();
         } else if (message.kind === 'submitted') {

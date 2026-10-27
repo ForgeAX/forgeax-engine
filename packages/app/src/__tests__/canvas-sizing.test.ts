@@ -4,6 +4,7 @@ import {
   measureCanvasDrawingBuffer,
   observeCanvasDeviceLimit,
   refreshCanvasDeviceLimit,
+  setCanvasDeviceLimit,
   syncCanvasDrawingBuffer,
 } from '../canvas-sizing';
 
@@ -352,6 +353,16 @@ describe('canvas device generations', () => {
     });
     expect(() => refreshCanvasDeviceLimit(canvas, d.renderer)).not.toThrow();
     expect([canvas.width, canvas.height]).toEqual([2048, 1152]);
+  });
+
+  it('measures with a device limit reported from another realm', () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    const canvas = surface(3840, 2160);
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 2048, height: 1152 });
+    setCanvasDeviceLimit(canvas, 8192);
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 3840, height: 2160 });
+    setCanvasDeviceLimit(canvas, Number.NaN);
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 2048, height: 1152 });
   });
 
   it('ignores incomplete or invalid host budgets and non-finite DPR', () => {

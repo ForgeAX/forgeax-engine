@@ -53,7 +53,54 @@ export interface PipelineLibraryInspection {
   readonly unrecordable: number;
   readonly overflow: number;
   readonly sourceBytes: number;
-  /** Current scheduled/native compilations, not a coverage verdict or completed history. */
+  /** Bounded device-local history of runtime-demanded native requests, including
+   * requests completed before an asynchronous inspection reaches the device.
+   * Missing means unsupported; overwritten or null pipelines mean incomplete evidence.
+   * Timestamps share this library's performance clock, not the caller's realm. */
+  readonly runtimeRequests?: {
+    readonly libraryId: number;
+    readonly capacity: number;
+    readonly overwritten: number;
+    readonly latestSequence: number;
+    readonly observedAtMs: number;
+    readonly requests: readonly {
+      readonly sequence: number;
+      readonly mode: 'sync' | 'async';
+      readonly kind: 'render' | 'compute';
+      readonly label: string | null;
+      readonly origin: 'runtime' | 'startup-warmup' | 'background-warmup';
+      readonly preloadAtDemand:
+        | 'startup'
+        | 'background'
+        | 'both'
+        | 'absent'
+        | 'indexing'
+        | 'unavailable';
+      readonly requestedAtMs: number;
+      readonly demandedAtMs: number;
+      readonly startedAtMs: number | null;
+      readonly completedAtMs: number | null;
+      /** A synchronous returned handle does not prove native compilation completion. */
+      readonly outcome: 'pending' | 'completed' | 'failed' | 'returned';
+      /** Existing descriptors only; uncached source/semantic digests remain null.
+       * History inspection never hashes WGSL. localIdentity is unique in this library. */
+      readonly pipeline: {
+        readonly localIdentity: number;
+        readonly identity: string | null;
+        readonly kind: 'render' | 'compute';
+        readonly preload: 'startup' | 'background' | 'both' | 'absent' | 'indexing';
+        readonly recipe: PipelineLibraryRender | PipelineLibraryCompute;
+        readonly shaders: readonly {
+          readonly module: number;
+          readonly label: string | null;
+          readonly sourceDigest: string | null;
+        }[];
+        readonly bindGroupLayouts: readonly GPUBindGroupLayoutDescriptor[] | 'auto';
+      } | null;
+    }[];
+  };
+  /** Current scheduled/native compilations, not a coverage verdict or completed history.
+   * Explicit runtimeRequests inspection omits this potentially hashing full snapshot. */
   readonly pending?: {
     /** Requests whose opaque dependencies or capacity prevented recipe recording. */
     readonly unidentified: number;
@@ -108,7 +155,7 @@ export interface PipelineLibraryPrepareOptions {
  * prepare before drawing, and a background prepare may run after readiness.
  */
 export interface PipelineLibrary {
-  inspect(): PipelineLibraryInspection;
+  inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection;
   export(): Result<PipelineLibraryManifest, RhiError>;
   prepare(
     manifest: PipelineLibraryManifest,

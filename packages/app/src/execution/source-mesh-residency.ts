@@ -38,6 +38,7 @@ interface Request {
   consumedLane?: DynamicGeometryRecordStageLane;
   ended?: DynamicGeometryError;
   failure?: DynamicGeometryError;
+  receiverDisposed?: true;
   finish(result: Prepared): void;
   fail(cause: unknown): void;
   release?: {
@@ -337,6 +338,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
   ): Promise<void> {
     const request = retained;
     if (request === undefined) return Promise.resolve();
+    if (request.receiverDisposed) return Promise.resolve();
     if (request.release !== undefined) {
       if (evict && !request.release.evict) {
         request.release.evict = true;
@@ -488,12 +490,18 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       request.ready = false;
       request.ended = error;
       request.fail(error);
-      request.release?.reject(error);
+      if (request.receiverDisposed) request.release?.resolve();
+      else request.release?.reject(error);
     }
     this.requests.clear();
     this.credits.clear();
     this.byEntity.clear();
     this.fixedStep = undefined;
+  }
+  /** Only a successful receiver disposal ACK proves all its allocations released. */
+  confirmRetirement(): void {
+    for (const request of this.requests.values()) request.receiverDisposed = true;
+    this.clear('Render Worker retirement confirmed');
   }
   async dispose(): Promise<void> {
     const results = await Promise.allSettled(

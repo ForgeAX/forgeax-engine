@@ -3124,7 +3124,11 @@ async function makeWebGPURenderer(
         materialShadersSamplePointShadows(getShader().materialShaderManifestEntries()),
       );
       return Object.freeze({
-        ...(library === undefined ? {} : { pipelineLibrary: library.inspect() }),
+        ...(library === undefined
+          ? {}
+          : {
+              pipelineLibrary: library.inspect(options),
+            }),
         ...(backgroundPipelineLibraryState === undefined ? {} : { backgroundPipelineLibraryState }),
         ...(exported?.ok === true ? { pipelineLibraryManifest: exported.value } : {}),
         state,

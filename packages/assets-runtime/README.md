@@ -267,6 +267,9 @@ after 250 ms and 750 ms, with `cache: 'reload'`. Aborts and permanent errors fai
 without retry. Cache reuse retains descriptor identity and integrity validation.
 Capture uses the exact bound source transport, with bounded stored-byte caching;
 a different source never borrows an unrelated URL-only cache.
+Fixed capture and publication preparation decode identity or Zstd platform Response
+documents through the ordinary document reader before validating publication tuples
+and artifact integrity. Custom response `json()` readers retain their decoding authority.
 
 ## Material publication inspection
 

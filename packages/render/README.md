@@ -66,6 +66,11 @@ in-progress library index or an entry already declared for startup/background
 warmup. The frame's `presentationPendingReason` remains the first
 producer blocker, not a complete compilation roster. Hidden preparation retains
 its admitted materials until its final preparation membership retires.
+An explicit `inspect({runtimeRequests:true})` includes supported bounded
+runtime-request history, omitting the legacy full pending list to avoid uncached source
+hashing. Default Renderer inspection never materializes that history.
+Keep request outcomes/library-local timestamps separate from current pending state;
+historical compilation does not establish the cause of a later stalled frame.
 
 When the backend exposes `RhiDevice.createRenderPipelineAsync`, explicit
 preparation waits for native pipeline compilation completion. WebGPU forwards
@@ -6350,6 +6355,10 @@ out by elevation sine `fogBlend` (0 never fogs the sky), so distant fogged geome
 the sky without a seam. The disc is drawn over the haze and hidden below the horizon.
 
 A GradientSky replaces `Camera.clearColor`: the scene target clears transparent.
+
+App installs its schema through `renderComponentsPlugin()`, so authored Scene
+data can use `components: { GradientSky: { ... } }` before any runtime spawn.
+A standalone World installs that plugin before creating or loading the Scene.
 
 - `toneMapped: false` (default) is display-referred, like Three.js `scene.background`.
   The `gradient-sky-display` pass runs after every output stage (tone mapping, LUT,

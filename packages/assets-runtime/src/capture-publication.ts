@@ -22,6 +22,7 @@ import {
 import type { AssetRegistry } from './asset-registry.js';
 import type { CatalogSource } from './catalog-source.js';
 import { PackReader } from './internal/pack-reader.js';
+import { readDocumentJson } from './internal/retained-pack-json.js';
 import { runtimeSourceReader } from './internal/runtime-assets.js';
 import { assetLoadCancelled } from './internal/wait-for-asset.js';
 import { readArtifact, readStoredArtifact } from './registry/artifact-io.js';
@@ -101,7 +102,7 @@ export async function captureAssetPublication(
         ? await (async () => {
             const response = await bound(row.packageUrl, request);
             if (!response.ok) throw new TypeError('fixed Pack is unavailable');
-            const raw = await response.json();
+            const raw = await readDocumentJson(response);
             options.signal?.throwIfAborted();
             const packageScope =
               scopeId ??

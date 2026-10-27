@@ -269,6 +269,29 @@ misreported as missing when gameplay requests it first. The request `origin`
 alone is not a coverage verdict. No pending row is fabricated for a backend
 without this inspection.
 Watch new synchronous/asynchronous creations after loading to find missing scenario coverage.
+For a late observer, `inspect({runtimeRequests:true}).runtimeRequests` materializes
+the last 32 runtime-demanded native requests, including completed/failed requests
+and runtime demands joining an already compiling background entry. Ordinary
+inspection does not materialize this history. Explicit history inspection omits
+the legacy `pending` recipe list, whose uncached identities may require source hashing;
+the compilation counters remain available. Historical recipes use cached nullable
+digests and device-local identities only, including while requests are pending.
+Renderer and Worker callers opt in
+with `inspect({runtimeRequests:true})` and
+`execution.inspectRenderer({runtimeRequests:true, fields:['pipelineLibrary']})`.
+Recording adds only bounded metadata and references to the existing Program on a
+runtime miss/demand; completed cache hits and undemanded warmup do not record.
+Recording does not copy descriptors/WGSL, hash sources, schedule GPU work or alter
+compilation concurrency. Complete recipes and cached identities are read only by
+the explicit inspection. Disposal clears this history with its device owner.
+The tuple `(libraryId, sequence)` identifies a request on that renderer realm;
+the semantic pipeline identity identifies the recipe across devices. `overwritten`
+is cumulative ring eviction, not a count of current-incident losses. A null pipeline
+and `preloadAtDemand:'unavailable'` preserve an unrecordable request without
+inventing a missing-manifest verdict. `returned` means a synchronous handle returned,
+not native compilation-completion evidence. Timestamps and `observedAtMs` use the
+library performance clock; caller/Worker receipt times have their own clock boundary.
+This is bounded diagnostic evidence, not a permanent trace or driver compiler timing.
 `prepare(manifest, {concurrency, background})` bounds outstanding native requests
 (default `pipelineWarmupConcurrency`, half the logical processors in 4..16; background
 default 1..4, capped independently of core count). Explicit background concurrency

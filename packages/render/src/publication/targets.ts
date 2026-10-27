@@ -1,6 +1,7 @@
 import { createRenderTargetHost, type RenderTargetHost } from '../assembly/render-target-host';
 import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { captureMaterialOverrides } from '../scene/mesh-materials';
 import type {
   RenderTarget,
   RenderTargetDescriptor,
@@ -189,12 +190,25 @@ export class RenderPublicationTargetReceiver {
     const snapshots = new Map<number, RenderableSnapshot>();
     const renderables = input.frame.renderables.map((row) => {
       const materials = row.materials.map(rebind);
-      if (materials.every((material, index) => material === row.materials[index])) return row;
+      // Slot overrides (MeshRenderer.materials) reference the same staged
+      // resources; they must resolve to the same rebound copy, or adoption
+      // cannot map them to the accepted material.
+      const overrides = row.materialOverrides?.map((material) =>
+        material === undefined ? undefined : rebind(material),
+      );
+      if (
+        materials.every((material, index) => material === row.materials[index]) &&
+        (overrides?.every((material, index) => material === row.materialOverrides?.[index]) ?? true)
+      )
+        return row;
       const first = row.materials.indexOf(row.material);
       const rebound = {
         ...row,
         materials,
         material: materials[Math.max(0, first)] ?? row.material,
+        ...(overrides === undefined
+          ? {}
+          : { materialOverrides: captureMaterialOverrides(overrides) }),
       };
       snapshots.set(row.entityKey, rebound);
       return rebound;

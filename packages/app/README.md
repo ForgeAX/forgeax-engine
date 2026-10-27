@@ -692,10 +692,19 @@ advanced. Topology changes use the existing publication temporal reset. Worker
 replacement invalidates the source candidate owner even if the new device uses
 the same numeric generation; `isDynamicGeometryCurrent(candidate)` exposes that
 owner check without inventing another device generation.
-If unexpected Worker loss leaves mesh release unconfirmed, the source reports
-the existing fatal execution fault with `meshReleaseUnconfirmed`; recovery must
-rebuild the paired World/Engine owner. Terminating a Worker is not a GPU release
-acknowledgment and does not make that original World reusable.
+For confirmed ready-time device loss with resident meshes, App freezes source
+admission and requests the receiver's existing bounded disposal handshake.
+A successful `disposed` acknowledgment proves mesh, Renderer and recorder
+cleanup before the existing epoch/baseline replacement retains the source World.
+
+Concurrent App disposal joins that same handshake instead of requesting mesh
+releases from the failed receiver.
+
+> [!IMPORTANT]
+> Unexpected transport loss, cleanup failure and disposal timeout leave GPU
+> release unconfirmed. They retain the fatal execution fault with
+> `meshReleaseUnconfirmed` and require rebuilding the paired World/Engine owner.
+> Worker termination alone is not a release acknowledgment.
 
 | Report fact | Meaning |
 |:--|:--|
@@ -1015,6 +1024,15 @@ promise a particular Host callback cadence. A credit-return continuation keeps
 that same reservation, and pause, stop or observed device recovery retires the
 blocked frame.
 
+`app.execution.setFrameRateLimit(fps)` caps admitted frames on both the local
+loop and the Worker Host; `null` (the default) admits every display callback.
+The limit selects display callbacks, so a 30 FPS limit on a 60 Hz display admits
+every second callback with an even interval instead of alternating short and
+long frames. A due frame that waits for credit keeps the cadence anchored to its
+display callback. Each admitted frame still measures its real delta, so World
+time, `TimePolicy.maxDeltaSeconds` and fixed-step catch-up are unchanged. A
+value that is not `null` or a finite positive number throws `RangeError`.
+
 `app.onError` receives structured failures from the World update and renderer draw paths.
 
 ```ts
@@ -1211,6 +1229,7 @@ the realm-neutral assembly with an explicit platform lease.
 | `ExecutionOptions.assetCatalog` | `ExecutionAssetCatalog` | Supplies the serializable catalog URL and optional scope fence to the selected Engine realm. |
 | `App.execution.report()` | `ExecutionReport` | Returns schema-valid worker decisions, Host capability observations, the actual Render Worker backend/storage-buffer capability and limit, health, frame-credit, performance, audio, and fault projection. |
 | `App.execution.rebuild()` | `Promise<Result<ExecutionReport, AppError>>` | Rebuilds only a poisoned Worker World with a new identity. |
+| `App.execution.setFrameRateLimit(fps)` | `void` | Caps admitted frames to `fps` on display callbacks with an even cadence; `null` removes the cap. Throws `RangeError` for other non-positive or non-finite values. |
 | `App.start()` | `Result<void, AppError>` | Arms the rAF loop. |
 | `App.stop()` / `pause()` / `resume()` | `Result<void, AppError>` | Controls the rAF lifecycle. |
 | `App.dispose()` | `Promise<Result<void, AppError>>` | Drains the Cordis realm, Host resources, and renderer ownership. |
@@ -1609,7 +1628,10 @@ does not remove recovery input. A failed or disposed child startup releases its
 one-shot forwarding field as well.
 
 `app.remoteEval` executes in the selected Engine realm. Its `execution` root
-exposes `inspectRenderer({ signal?, fields?, pipelineLibrary? })` (type `ExecutionRendererInspectionContext`):
+exposes `inspectRenderer({ signal?, fields?, pipelineLibrary?, runtimeRequests? })` (type `ExecutionRendererInspectionContext`):
+
+`runtimeRequests:true` selects cached bounded demand history and omits the legacy
+full pending recipe list, avoiding uncached Shader hashing in this incident read.
 
 ```js
 return await execution.inspectRenderer();

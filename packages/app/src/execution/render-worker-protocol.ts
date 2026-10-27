@@ -135,6 +135,7 @@ export type RenderWorkerInput =
   | {
       readonly kind: 'inspect';
       readonly pipelineLibrary?: boolean;
+      readonly runtimeRequests?: boolean;
       readonly fields?: readonly (keyof RenderInspection)[];
       readonly requestId: number;
       readonly identity: RenderPublicationIdentity;

@@ -213,6 +213,12 @@ function frames(): ExecutionFrameMessage[] {
     .filter((message) => message.kind === 'frame');
 }
 
+function lastFrame(): ExecutionFrameMessage {
+  const frame = frames().at(-1);
+  if (frame === undefined) throw new Error('no frame was posted');
+  return frame;
+}
+
 function completeMessage(frame: ExecutionFrameMessage): EngineToHostMessage {
   return {
     kind: 'frame-complete',
@@ -1464,5 +1470,73 @@ describe('Worker inspection replies', () => {
     });
     await expect(run).rejects.toMatchObject({ code: 'live-world-stale' });
     await app.dispose();
+  });
+});
+
+describe('Worker frame-rate limit', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    probes.sessionListeners.length = 0;
+    probes.pending.message = undefined;
+    probes.now = 0;
+    probes.visible = true;
+    probes.platformListeners.clear();
+    probes.sessionDispose.mockResolvedValue(ok(undefined));
+  });
+
+  it('admits every second 60 Hz callback at 30 FPS with the measured delta, and null restores every callback', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    try {
+      app.execution.setFrameRateLimit(30);
+      expect(() => app.execution.setFrameRateLimit(0)).toThrow(RangeError);
+      let previous = frame;
+      listener()(completeMessage(previous));
+      const admitted: number[] = [];
+      for (let index = 1; index <= 12; index++) {
+        const time = (index * 1000) / 60;
+        callbacks.at(-1)?.(time);
+        const latest = lastFrame();
+        if (latest === previous) continue;
+        admitted.push(time);
+        expect(latest.deltaSeconds).toBeCloseTo(1 / 30, 6);
+        previous = latest;
+        listener()(completeMessage(previous));
+      }
+      expect(admitted.map((time) => Math.round(time))).toEqual([33, 67, 100, 133, 167, 200]);
+      app.execution.setFrameRateLimit(null);
+      for (let index = 13; index <= 15; index++) {
+        callbacks.at(-1)?.((index * 1000) / 60);
+        const latest = lastFrame();
+        expect(latest).not.toBe(previous);
+        previous = latest;
+        listener()(completeMessage(previous));
+      }
+      expect(app.lastError).toBeUndefined();
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('keeps the limited cadence on the callback grid when credit releases a due frame late', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    try {
+      app.execution.setFrameRateLimit(30);
+      // The 33 ms callback is due but has no credit; the frame posts at 40 ms.
+      callbacks.at(-1)?.(1000 / 60);
+      callbacks.at(-1)?.(2000 / 60);
+      const posted = frames().length;
+      probes.now = 40;
+      listener()(completeMessage(frame));
+      expect(frames()).toHaveLength(posted + 1);
+      const late = lastFrame();
+      listener()(completeMessage(late));
+      callbacks.at(-1)?.(3000 / 60);
+      expect(frames()).toHaveLength(posted + 1);
+      callbacks.at(-1)?.(4000 / 60);
+      expect(frames()).toHaveLength(posted + 2);
+    } finally {
+      await app.dispose();
+    }
   });
 });

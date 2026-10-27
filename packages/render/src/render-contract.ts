@@ -648,7 +648,10 @@ export interface Renderer {
   currentDeviceGeneration?: () => number;
   /** Detached bounds from an extracted World or the bound publication source; undefined if unavailable. */
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
-  inspect(options?: { readonly pipelineLibrary?: boolean }): RenderInspection;
+  inspect(options?: {
+    readonly pipelineLibrary?: boolean;
+    readonly runtimeRequests?: boolean;
+  }): RenderInspection;
   /** Opt-in diagnostic; caller holds this receipt until readback finishes. */
   observeGeometry?: (
     receipt: FrameReceipt,

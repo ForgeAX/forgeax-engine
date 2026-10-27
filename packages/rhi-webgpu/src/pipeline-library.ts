@@ -11,10 +11,12 @@ import {
   RhiError,
 } from '@forgeax/engine-rhi';
 import { addLoadWork, beginLoadTimeline, sha256 } from '@forgeax/engine-types';
+import { type CompilationRecord, PipelineCompilationRecords } from './pipeline-compilation-records';
 
 type Recipe = PipelineLibraryRender | PipelineLibraryCompute;
 type NativePipeline = GPURenderPipeline | GPUComputePipeline;
 interface Program {
+  readonly localIdentity: number;
   readonly recipe: Recipe;
   readonly kind: 'render' | 'compute';
   handle?: NativePipeline;
@@ -26,6 +28,7 @@ interface Program {
   semanticIdentity?: string;
   /** Library membership on the existing recipe owner, independent of native readiness. */
   preload?: number;
+  runtimeRequest?: CompilationRecord<Program>;
 }
 const MAX_ENTRIES = 4096;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
@@ -191,6 +194,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private unidentifiedPending = 0;
   private indexingLibraries = 0;
   private preparingLibraries = 0;
+  private readonly compilationRecords = new PipelineCompilationRecords<Program>();
 
   constructor(private readonly device: GPUDevice) {}
 
@@ -320,7 +324,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         this.counts.overflow++;
         return undefined;
       }
-      program = { kind, recipe, ready: false };
+      program = { localIdentity: this.programs.size + 1, kind, recipe, ready: false };
       this.programs.set(key, program);
     }
     return program;
@@ -355,6 +359,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       this.counts.pipelineHits++;
       return program.handle;
     }
+    const record = this.recordRuntimeRequest(program, kind, descriptor, 'sync');
     const endPipeline = beginLoadTimeline('pipeline', descriptor.label ?? kind, {
       mode: 'sync',
       kind,
@@ -368,9 +373,11 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           : this.device.createComputePipeline(descriptor as GPUComputePipelineDescriptor);
       endPipeline();
       if (program !== undefined) program.handle = handle;
+      this.compilationRecords.finish(record, 'returned');
       // A synchronous handle is usable, but it is never compilation-completion evidence.
       return handle;
     } catch (cause) {
+      this.compilationRecords.finish(record, 'failed');
       endPipeline(undefined, { failed: true });
       this.counts.failures++;
       throw cause;
@@ -406,6 +413,8 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       return program.handle;
     }
     if (program?.pending !== undefined) {
+      if (origin === 'runtime' && program.runtimeRequest === undefined)
+        program.runtimeRequest = this.recordRuntimeRequest(program, kind, descriptor, 'async');
       this.counts.pipelineHits++;
       return program.pending;
     }
@@ -415,12 +424,19 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       program.pendingSince = performance.now();
       program.origin = origin;
     }
+    const record =
+      origin === 'runtime'
+        ? this.recordRuntimeRequest(program, kind, descriptor, 'async')
+        : undefined;
+    if (program !== undefined && record !== undefined) program.runtimeRequest = record;
     const create = async () => {
       let started = false;
       let endPipeline: ReturnType<typeof beginLoadTimeline> | undefined;
       try {
         this.active();
         if (program !== undefined) program.startedAt = performance.now();
+        const requested = program?.runtimeRequest ?? record;
+        if (requested !== undefined) requested.startedAtMs = performance.now();
         this.counts.asynchronousCreations++;
         realmPipelineCreations++;
         this.counts.compilationPending++;
@@ -442,8 +458,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           program.ready = true;
         }
         this.counts.compilationCompleted++;
+        this.compilationRecords.finish(program?.runtimeRequest ?? record, 'completed');
         return handle;
       } catch (cause) {
+        this.compilationRecords.finish(program?.runtimeRequest ?? record, 'failed');
         endPipeline?.(undefined, { failed: true });
         if (program !== undefined) {
           delete program.handle;
@@ -459,6 +477,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           delete program.pendingSince;
           delete program.startedAt;
           delete program.origin;
+          delete program.runtimeRequest;
         }
         if (counted) addLoadWork('pipelines', { done: 1, item: descriptor.label ?? kind });
       }
@@ -467,22 +486,98 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     if (program !== undefined) program.pending = pending;
     return pending;
   }
-  inspect(): PipelineLibraryInspection {
+  inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection {
     return {
       state: this.closed ? 'disposed' : 'active',
       shaders: this.shaders.length,
       renderPipelines: [...this.programs.values()].filter((p) => p.kind === 'render').length,
       computePipelines: [...this.programs.values()].filter((p) => p.kind === 'compute').length,
       ...this.counts,
-      pending: {
-        unidentified: this.unidentifiedPending,
-        pipelines: [...this.programs.values()]
-          .filter((program) => program.pending !== undefined)
-          .map((program) => this.inspectCompilation(program)),
-      },
+      ...(options?.runtimeRequests === true
+        ? {
+            runtimeRequests: this.compilationRecords.inspect((program) =>
+              this.inspectRuntimeRecipe(program),
+            ),
+          }
+        : {
+            pending: {
+              unidentified: this.unidentifiedPending,
+              pipelines: [...this.programs.values()]
+                .filter((program) => program.pending !== undefined)
+                .map((program) => this.inspectCompilation(program)),
+            },
+          }),
       warmup: { ...this.warmup },
       backgroundWarmup: { ...this.backgroundWarmup },
     };
+  }
+  private inspectRuntimeRecipe(
+    program: Program,
+  ): NonNullable<PipelineLibraryInspection['runtimeRequests']>['requests'][number]['pipeline'] {
+    const recipe = program.recipe;
+    const modules =
+      'vertex' in recipe
+        ? [recipe.vertex.module, ...(recipe.fragment === undefined ? [] : [recipe.fragment.module])]
+        : [recipe.compute.module];
+    const shaders = [...new Set(modules)].map((module) => {
+      const source = entry(this.shaders, module);
+      return {
+        module,
+        label: source.descriptor.label ?? null,
+        sourceDigest: source.sourceDigest ?? null,
+      };
+    });
+    const bindGroupLayouts =
+      recipe.layout === 'auto'
+        ? 'auto'
+        : entry(this.layouts, recipe.layout).groups.map((id) => entry(this.groups, id).descriptor);
+    return {
+      localIdentity: program.localIdentity,
+      identity: program.semanticIdentity ?? null,
+      kind: program.kind,
+      preload:
+        program.preload === 3
+          ? 'both'
+          : program.preload === 1
+            ? 'startup'
+            : program.preload === 2
+              ? 'background'
+              : this.indexingLibraries > 0
+                ? 'indexing'
+                : 'absent',
+      recipe: pod(recipe) as Recipe,
+      shaders,
+      bindGroupLayouts: pod(bindGroupLayouts) as typeof bindGroupLayouts,
+    };
+  }
+  private recordRuntimeRequest(
+    program: Program | undefined,
+    kind: 'render' | 'compute',
+    descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
+    mode: 'sync' | 'async',
+  ): CompilationRecord<Program> {
+    const now = performance.now();
+    return this.compilationRecords.begin({
+      program,
+      kind,
+      mode,
+      label: descriptor.label ?? null,
+      origin: mode === 'sync' ? 'runtime' : (program?.origin ?? 'runtime'),
+      preloadAtDemand:
+        program === undefined
+          ? 'unavailable'
+          : program.preload === 3
+            ? 'both'
+            : program?.preload === 1
+              ? 'startup'
+              : program?.preload === 2
+                ? 'background'
+                : this.indexingLibraries > 0
+                  ? 'indexing'
+                  : 'absent',
+      requestedAtMs: mode === 'sync' ? now : (program?.pendingSince ?? now),
+      startedAtMs: mode === 'sync' ? now : (program?.startedAt ?? null),
+    });
   }
   private inspectCompilation(
     program: Program,
@@ -817,6 +912,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   }
   dispose(): void {
     this.closed = true;
+    this.compilationRecords.clear();
     this.programs.clear();
     this.computeEntryModules.clear();
     this.shaderInfo = new WeakMap();

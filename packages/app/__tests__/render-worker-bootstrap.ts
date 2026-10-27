@@ -1,8 +1,9 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { type EntityHandle, FixedUpdate, Update } from '@forgeax/engine-ecs';
+import { type EntityHandle, FixedTime, FixedUpdate, Update } from '@forgeax/engine-ecs';
 import {
   Camera,
   DirectionalLight,
+  type DynamicGeometryReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -14,6 +15,7 @@ import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
 /** Test-only access to the real child Worker, used to terminate its GPU owner. */
 const entry: ExecutionBootstrapEntry = (data) => {
   let renderWorker: Worker | undefined;
+  let adapterInfo: Record<string, unknown> | undefined;
   const NativeWorker = globalThis.Worker;
   let recordPublication: (baseline: boolean) => void = () => {};
   let recordDelivery: (durationMs: number) => void = () => {};
@@ -30,6 +32,10 @@ const entry: ExecutionBootstrapEntry = (data) => {
           navigator.gpu.requestAdapter = async (...args) => {
             const adapter = await requestAdapter(...args);
             if (adapter) {
+              postMessage({ kind: 'probe-adapter', info: {
+                vendor: adapter.info.vendor, architecture: adapter.info.architecture,
+                description: adapter.info.description, fallback: adapter.info.isFallbackAdapter,
+              } });
               const requestDevice = adapter.requestDevice.bind(adapter);
               adapter.requestDevice = async (...args) => {
                 device = await requestDevice(...args);
@@ -64,6 +70,10 @@ const entry: ExecutionBootstrapEntry = (data) => {
       if (options?.name === 'forgeax-render') {
         renderWorker = this;
         this.addEventListener('message', (event) => {
+          if (event.data.kind === 'probe-adapter') {
+            event.stopImmediatePropagation();
+            adapterInfo = event.data.info;
+          }
           if (event.data.kind === 'probe-delivery') {
             event.stopImmediatePropagation();
             recordDelivery(event.data.durationMs);
@@ -239,7 +249,54 @@ const entry: ExecutionBootstrapEntry = (data) => {
           };
           ctx.world.addSystem(Update, system).unwrap();
           if (port !== undefined) {
-            port.onmessage = (event) => {
+            port.onmessage = async (event) => {
+              if (event.data === 'lose-device-with-resident-mesh') {
+                try {
+                  const geometry = ctx.executionBootstrapHost.dynamicGeometry;
+                  const entity = movers[0];
+                  if (geometry === undefined || entity === undefined)
+                    throw new Error('Missing dynamic geometry recovery fixture');
+                  const replacement = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
+                  let candidate = (
+                    await geometry.prepareDynamicGeometry({
+                      world: ctx.world, entity, meshHandle: replacement, revision: 1,
+                    })
+                  ).unwrap();
+                  let admitted = false;
+                  const admission = 'recovery-mesh-admission';
+                  let receipt: DynamicGeometryReceipt;
+                  try {
+                    receipt = await new Promise<DynamicGeometryReceipt>((resolve, reject) => {
+                      ctx.world.addSystem(FixedUpdate, {
+                        name: admission,
+                        queries: [],
+                        fn(world) {
+                          try {
+                            if (!admitted) {
+                              candidate = geometry.acceptDynamicGeometry(candidate, {
+                                world, fixedStep: world.getResource(FixedTime).tick,
+                              }).unwrap();
+                              admitted = true;
+                            }
+                            const consumed = geometry.dynamicGeometryReceipt(candidate);
+                            if (consumed !== undefined) resolve(consumed);
+                          } catch (cause) { reject(cause); }
+                        },
+                      }).unwrap();
+                    });
+                  } finally {
+                    ctx.world.removeSystem(FixedUpdate, admission).unwrap();
+                  }
+                  renderWorker?.postMessage('lose-device');
+                  port.postMessage({ ticks, worldIdentity: ctx.world.identity, command: event.data, adapter: adapterInfo, meshReceipt: receipt });
+                } catch (cause) {
+                  port.postMessage({
+                    ticks, worldIdentity: ctx.world.identity,
+                    command: event.data, error: String(cause),
+                  });
+                }
+                return;
+              }
               if (event.data === 'reset-metrics') {
                 for (const rows of Object.values(timings)) rows.length = 0;
                 publications.length = 0;

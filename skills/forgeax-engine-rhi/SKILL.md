@@ -7,6 +7,19 @@ description: >-
 
 # forgeax-engine-rhi
 
+## Late pipeline inspection
+
+`device.pipelineLibrary?.inspect({runtimeRequests:true})` explicitly materializes
+the WebGPU owner's bounded runtime-demand history. Renderer/Worker callers use
+`runtimeRequests:true`; normal inspection never expands these records. History mode
+omits the legacy full `pending` recipe list to avoid hashing uncached Shader text;
+compilation counters and cached nullable identities remain available.
+Use semantic identities for recipes and `(libraryId, sequence)` for requests.
+Null recipes, unsupported history and ring eviction are incomplete evidence.
+`returned` sync handles are not native completion. Do not move nearest-recipe
+matching, Shader-source copies or scene/provenance walks into frame handling.
+See [the owner contract](../../packages/rhi-webgpu/README.md#device-pipeline-library).
+
 > RHI is the pure interface between engine and GPU. For unexplained rendering failures start with [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md); material authoring uses [`forgeax-engine-material`](../forgeax-engine-material/SKILL.md), passes/post-processing use [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md). This skill covers backends, capabilities, descriptors, and resource lifetime. `rhi-webgpu` adapts browsers; `rhi-wgpu` + `wgpu-wasm` provide the compatibility path; explicitly injected `rhi-null` supports structural tests.
 
 For opaque ray-query foundation work, use the [reference verification guide](../../scripts/raytracing/README.md) and [native owner contract](../../packages/rhi-wgpu-native/README.md#opaque-scene-reference-transport). Keep portable compute replay, native scene re-execution, and RHI-level AS command capture distinct: RHI Debug records BLAS/TLAS builds on ray-query-capable RHI devices: RhiNull, and in Node the native-wgpu device of `@forgeax/engine-rhi-wgpu-native`, an opt-in napi addon ([Node binding](../../packages/rhi-wgpu-native/README.md#node-binding-napi-rs)).

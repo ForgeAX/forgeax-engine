@@ -15,6 +15,7 @@ import {
 } from '../browser-frame-signal';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { ErrorFanoutRegistry } from '../internal/error-fanout';
+import { createFramePacer } from '../internal/frame-pacer';
 import { browserInputOptions } from '../internal/input-attach';
 import type { AppStepFrameOptions, BundlerOptions, CanvasDrawingBufferSize } from '../types';
 import {
@@ -336,6 +337,10 @@ export async function createWorkerExecutionApp(
   let cancelHostFrame: PlatformRelease | undefined;
   // One due browser tick can wait for Worker credit without another refresh wait.
   let frameDue = false;
+  // Display callback time that made the pending frame due; a limited cadence
+  // stays on that callback grid even when credit releases the frame later.
+  let frameDueAt: number | undefined;
+  const pacer = createFramePacer();
   let lastTimestamp: number | undefined;
   // A pre-pause completion cannot acknowledge the next frame's history reset.
   let temporalResetAfterFrame: number | undefined;
@@ -459,6 +464,7 @@ export async function createWorkerExecutionApp(
 
   const cancelFrame = (): void => {
     frameDue = false;
+    frameDueAt = undefined;
     const release = cancelHostFrame;
     cancelHostFrame = undefined;
     release?.();
@@ -654,6 +660,8 @@ export async function createWorkerExecutionApp(
     const timestamp = time.value;
     const deltaSeconds = lastTimestamp === undefined ? 0 : (timestamp - lastTimestamp) / 1_000;
     lastTimestamp = timestamp;
+    pacer.admitted(frameDueAt ?? timestamp);
+    frameDueAt = undefined;
     if (postFrame(deltaSeconds, timestamp / 1_000)) scheduleFrame();
   };
   /**
@@ -753,7 +761,18 @@ export async function createWorkerExecutionApp(
     const requested = platform.requestFrame(() => {
       cancelHostFrame = undefined;
       if (state !== 'running' || !platform.visible()) return;
+      const time = platform.now();
+      if (!time.ok) {
+        failPlatform(time.error);
+        return;
+      }
+      if (!pacer.due(time.value)) {
+        traceAdmission('host-tick-due', 'frame-rate-limit');
+        scheduleFrame();
+        return;
+      }
       frameDue = true;
+      frameDueAt = time.value;
       traceAdmission('host-tick-due', 'callback');
       admitFrame();
     });
@@ -1203,6 +1222,7 @@ export async function createWorkerExecutionApp(
     audioMeasurements.clear();
     state = 'idle';
     frameDue = false;
+    frameDueAt = undefined;
     resumeAfterHostShow = false;
     temporalResetAfterFrame = undefined;
     const freshReport = createExecutionReport(report.capabilities, report.workers);
@@ -1374,6 +1394,7 @@ export async function createWorkerExecutionApp(
   };
 
   const execution: ExecutionControl = {
+    setFrameRateLimit: (framesPerSecond) => pacer.setLimit(framesPerSecond),
     report: () =>
       cloneExecutionReport({
         ...report,

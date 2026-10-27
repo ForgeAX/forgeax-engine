@@ -143,6 +143,23 @@ describe('RenderViews', () => {
     expect(views.target({ target: handle })).toBeUndefined();
   });
 
+  it('keeps its target reference when other facts of the view change', () => {
+    const { world, views, sync } = fixture();
+    const target = { kind: 'render-target' } as unknown as RenderTarget;
+    const capture = { entityKey: 4, historyVersion: 1, target } as unknown as CameraSnapshot;
+    sync([], [capture]);
+    const [entity] = views.ordered;
+    if (entity === undefined) throw new Error('expected one view');
+    const handle = world.get(entity, RenderView).unwrap().target;
+    sync([], [{ ...capture, historyVersion: 2 } as CameraSnapshot]);
+    const row = world.get(entity, RenderView).unwrap();
+    expect(row.viewGeneration).toBe(2);
+    expect(row.target).toBe(handle);
+    expect(views.target(row)).toBe(target);
+    sync([], []);
+    expect(views.target({ target: handle })).toBeUndefined();
+  });
+
   it('rejects a CameraView without camera identity before writing', () => {
     const { views, spies, sync } = fixture();
     expect(() => sync([{ view: camera(1).view } as CameraSnapshot])).toThrow(/entityKey/);

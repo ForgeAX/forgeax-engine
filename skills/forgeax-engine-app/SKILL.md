@@ -23,6 +23,10 @@ App only admits a frame when the renderer is `alive`. `device-lost` and
 when logic and rendering are co-located. With a Render Worker, inspect `report.render`: App replaces
 the GPU owner with a fresh epoch/baseline while retaining the source World identity.
 World updates wait until the replacement is ready and has publication capacity.
+For confirmed device loss with resident meshes, wait for the receiver's bounded
+disposal acknowledgment before reusing the source World. Cleanup failure,
+timeout or transport loss remains fatal with `meshReleaseUnconfirmed`; do not
+infer GPU release from Worker termination.
 Recheck both together after asynchronous waits: loss clears the old queue before
 the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
@@ -108,6 +112,7 @@ const report = result.value.execution.report();
 | Shared numeric kernels | Leave `kernels: 'auto'`, serve COOP/COEP and inspect actual `kernelDispatch` |
 | Host-only bootstrap | Set `engine: false`; leave dependent policies auto or false |
 | Partial Kernel write | Call `app.execution.rebuild()` and use the new World identity |
+| Fixed presentation rate (e.g. 30 FPS) | `app.execution.setFrameRateLimit(30)`; `null` removes it. Admission stays on display callbacks and World time is unchanged |
 
 World and Assets stay in the Engine Worker. With `render` enabled, a child owns
 Renderer/WebGPU; source plugins inject World/Assets and use bootstrap

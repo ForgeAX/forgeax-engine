@@ -26,6 +26,19 @@ export default defineFeature({
         checks.ok('native compilation inspection is available', pending !== undefined);
         checks.equal('new device has no unidentified compilations', pending?.unidentified, 0);
         checks.equal('new device has no pending pipelines', pending?.pipelines.length, 0);
+        checks.ok(
+          'ordinary inspection does not materialize runtime history',
+          device.pipelineLibrary?.inspect().runtimeRequests === undefined,
+        );
+        const snapshot = device.pipelineLibrary?.inspect({ runtimeRequests: true });
+        checks.equal(
+          'history mode omits the hashing pending snapshot',
+          snapshot?.pending,
+          undefined,
+        );
+        const history = snapshot?.runtimeRequests;
+        checks.equal('runtime history has a fixed capacity', history?.capacity, 32);
+        checks.equal('new device has no runtime demands', history?.requests.length, 0);
 
         const src = device.createBuffer({
           size: 16,

@@ -2098,7 +2098,7 @@ function capsuleShadowLightFor(
 
 /**
  * View / mesh uniform uploads are needed when geometry or a feature consumes
- * View, or when a skybox, atmosphere or volume reads the View UBO. The
+ * View, or when a skybox, gradient sky, atmosphere or volume reads the View UBO. The
  * clear-pass-only path skips the writeBuffer round-trips.
  */
 function frameNeedsViewUploads(
@@ -2116,6 +2116,7 @@ function frameNeedsViewUploads(
     (raster !== undefined && materialSlotCount > 0) ||
     getRenderFeatureGraphState(internals).plans.some(({ plan }) => plan.passes.length > 0) ||
     skyboxActive ||
+    frameState.environmentFrame?.sky !== undefined ||
     frameState.environmentFrame?.source.kind === 'atmosphere' ||
     activeVolume !== undefined ||
     preparedVolume !== undefined

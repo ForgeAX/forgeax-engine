@@ -209,3 +209,91 @@ it('publishes every display-owned planar target once and rejects duplicate outpu
   receiver.dispose();
   assets.dispose();
 });
+
+it('keeps a held render-target material bound when a later packet adds a row that references it', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const source = new RenderPublicationTargetOwner();
+  const host = createRenderTargetHost();
+  const identity = { source: 'held-target-material', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity, undefined, [], source);
+  const receiver = new RenderPublicationReceiver(identity, host);
+  const target = unwrap(source.authoring.createRenderTarget(descriptor));
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: { target: world.allocSharedRef('RenderTarget', target) } },
+    )
+    .unwrap();
+  const texture = unwrap(
+    source.authoring.createRenderTargetTextureSource(target, {
+      aspect: 'color',
+      dimension: '2d',
+      mipLevel: 0,
+    }),
+  );
+  const material = assets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColorTexture: { source: texture } },
+    })
+    .unwrap();
+  const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
+  const screen = (x: number) =>
+    world
+      .spawn(
+        { component: Transform, data: { pos: [x, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: cubeMesh } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
+  const publish = () => {
+    world.update(0).unwrap();
+    const candidate = publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
+    return { packet, accepted };
+  };
+  const remoteTarget = (row: {
+    material: { snapshot: { textureSources?: ReadonlyMap<string, unknown> } };
+  }) => {
+    const bound = row.material.snapshot.textureSources?.get('baseColorTexture');
+    if (
+      bound === undefined ||
+      isCanvasTextureSource(bound as never) ||
+      isExternalTextureSource(bound as never)
+    )
+      throw new Error('Missing published target source');
+    return resolveRenderTargetMaterialSource(bound as never)?.target;
+  };
+  screen(0);
+  const first = publish();
+  expect(first.packet.targetSources).toHaveLength(1);
+  const bound = remoteTarget(first.accepted.frame.renderables[0] as never);
+  expect(bound).toBeDefined();
+  expect(bound).not.toBe(target);
+  screen(2);
+  const second = publish();
+  expect(second.packet.materials).toHaveLength(0);
+  expect(second.packet.targetSources).toHaveLength(1);
+  expect(second.accepted.frame.renderables).toHaveLength(1);
+  expect(remoteTarget(second.accepted.frame.renderables[0] as never)).toBe(bound);
+  publisher.dispose();
+  source.dispose();
+  host.dispose();
+  receiver.dispose();
+  assets.dispose();
+});

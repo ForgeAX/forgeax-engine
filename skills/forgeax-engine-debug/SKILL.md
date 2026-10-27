@@ -276,6 +276,11 @@ logs for late dependencies. A literal dynamic import remains eligible for Vite
 pretransform even with `@vite-ignore`; Node-only transports must load only on
 their native execution path. Preserve native remote-server and real cold-browser
 regressions when correcting that boundary.
+For the learn-render 4.10 MSAA paired proof, a cold Vite optimizer scan followed
+by the app's 30-second `page.goto` timeout has one signature-bound retry through
+the [Browser gate guide](../../scripts/ci/README.md#failure-recovery). Keep the
+real OFF/ON captures and P2 assertions on both attempts; a repeated timeout stays
+red.
 For Play startup `ERR_OUTDATED_OPTIMIZED_DEP`, check the frozen plugin graph's
 preparation order. Vite optimizer `init()` starts its scan asynchronously;
 plugin capture must await that initial scan before freezing module URLs. Keep

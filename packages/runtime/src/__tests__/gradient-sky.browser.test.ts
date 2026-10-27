@@ -114,6 +114,7 @@ interface Scenario {
   /** Camera bloom; the readback domain defaults to the sky's own. */
   readonly bloom?: boolean;
   readonly domain?: 'linear-hdr' | 'final-display';
+  readonly emptyScene?: boolean;
 }
 
 async function renderSky(scenario: Scenario) {
@@ -134,14 +135,15 @@ async function renderSky(scenario: Scenario) {
     .create(Materials.standard({ baseColor: [0, 0, 0, 1], emissive: [1, 0, 0] }))
     .unwrap();
   const box = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-  world
-    .spawn(
-      // A red box low on the left: the sky must never replace geometry.
-      { component: Transform, data: { pos: [-2, -1.5, -3] } },
-      { component: MeshFilter, data: { assetHandle: box } },
-      { component: MeshRenderer, data: { materials: [material] } },
-    )
-    .unwrap();
+  if (!scenario.emptyScene)
+    world
+      .spawn(
+        // A red box low on the left: the sky must never replace geometry.
+        { component: Transform, data: { pos: [-2, -1.5, -3] } },
+        { component: MeshFilter, data: { assetHandle: box } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
@@ -242,7 +244,7 @@ async function saveEvidence(scenario: Scenario, bytes: Uint8Array, stride: numbe
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = SIZE;
   canvas.getContext('2d')?.putImageData(new ImageData(rgba, SIZE, SIZE), 0, 0);
-  const name = `${scenario.renderPath}-${scenario.fog ? 'fog' : 'clear'}${scenario.stops ? '-three-stop' : ''}`;
+  const name = `${scenario.renderPath}-${scenario.fog ? 'fog' : 'clear'}${scenario.stops ? '-three-stop' : ''}${scenario.emptyScene ? '-empty' : ''}`;
   const png = canvas.toDataURL('image/png').split(',')[1] ?? '';
   await commands.writeFile(`artifacts/gradient-sky/${name}.png`, png, 'base64');
 }
@@ -388,4 +390,25 @@ it('adds a blooming display sun disc to the HDR scene and shows its glow over th
   // The glow falls off with distance from the disc, like the bloom of its reflection.
   const gain = (px: number, py: number) => sum(lit(px, py)) - sum(unlit(px, py));
   expect(gain(...halo)).toBeGreaterThan(2 * gain(10, 20));
+});
+
+// A sky is an independent background: no mesh may be needed to upload its view.
+it('renders a gradient and sun disc without geometry', { timeout: 180_000 }, async () => {
+  const pixel = await renderSky({
+    renderPath: 'forward',
+    toneMapped: false,
+    tonemap: TONEMAP_ACES_FILMIC,
+    fog: false,
+    emptyScene: true,
+  });
+  const hue = LIGHT_COLOR.map((v) => (v / Math.max(...LIGHT_COLOR) + 1) / 2) as unknown as Rgb;
+  for (const [px, py] of [...SAMPLES, SUN_PIXEL]) {
+    const expected = expectedSky(rayAt(px, py), hue, undefined).map(encode);
+    const actual = pixel(px, py);
+    for (let channel = 0; channel < 3; channel++)
+      expect(
+        Math.abs((actual[channel] ?? 0) - (expected[channel] ?? 0)),
+        `${px},${py}[${channel}]`,
+      ).toBeLessThan(2.5);
+  }
 });

@@ -659,7 +659,7 @@ export function createRenderPublisher(
         videoFrames: this.videoFrames,
         ...(this.canvasFrames.length > 0 ? { canvasFrames: this.canvasFrames } : {}),
         targets: targetSnapshot(),
-        targetSources: publicationTargetSources(publishedMaterials),
+        targetSources: publicationTargetSources(referencedMaterialRows()),
         features: featureRows,
         assetVersions: this.addedAssetVersions(),
         retiredAssetVersions: this.retiredAssetVersions(),
@@ -1428,6 +1428,12 @@ export function createRenderPublisher(
       : [...materialRows]
           .filter(([id]) => (materialHolds.get(id) ?? materialRecords.get(id)?.holds ?? 0) > 0)
           .map(([id, value]) => ({ id, value }));
+  /** Every material a row of this packet references, held ones included, so their target sources resolve. */
+  const referencedMaterialRows = (): RenderPublication['materials'] =>
+    [...materialSources].map(([id, resource]) => ({
+      id,
+      value: materialRows.get(id) ?? resource.snapshot,
+    }));
   const targetSnapshot = (): RenderPublication['targets'] => targetOwner?.snapshot() ?? [];
   const currentFeatureAsset = (identity: string | number, captured: Asset): number | undefined => {
     const handle =

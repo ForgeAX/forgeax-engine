@@ -608,6 +608,7 @@ function materialTextureSourcesError(
   resources: readonly (MaterialResource | undefined)[],
   canvasIds: ReadonlySet<string>,
   sourceTokens: ReadonlySet<string>,
+  originKey: (key: string) => string | undefined,
 ): RenderPublicationError | undefined {
   for (const resource of resources)
     for (const source of resource?.snapshot.textureSources?.values() ?? [])
@@ -615,7 +616,9 @@ function materialTextureSourcesError(
         isExternalTextureSource(source) ||
         (isCanvasTextureSource(source)
           ? !canvasIds.has(renderTextureSourceKey(source))
-          : !sourceTokens.has(renderTextureSourceKey(source)))
+          : !sourceTokens.has(
+              originKey(renderTextureSourceKey(source)) ?? renderTextureSourceKey(source),
+            ))
       )
         return shapeError('missing material texture source');
   return undefined;
@@ -1046,6 +1049,7 @@ export class RenderPublicationReceiver {
           [...resources, ...(overrides ?? [])],
           canvasIds,
           sourceTokens,
+          (key) => this.targets?.originKey(key),
         ) ?? templateSkinError(template.snapshot);
       if (bindingError !== undefined) return bindingError;
       const binding = template.snapshot.skinBinding;

@@ -465,6 +465,36 @@ test('RHI-debug retries only bounded external capture instability markers', () =
   assert.equal(isRetryableOutput('rhi-debug', 'AssertionError: paired captures differ'), false);
 });
 
+test('RHI-debug retries only the cold MSAA optimizer navigation timeout', () => {
+  const msaaNavigationTimeout = [
+    '$ pnpm --filter @forgeax/engine-rhi-debug build && node scripts/smoke-browser-pair.mjs',
+    '[vite] VITE v8.3.5 ready in 1333 ms',
+    '[vite] (client) [optimizer] scanning dependencies...',
+    'page.goto: Timeout 30000ms exceeded.',
+    'Call log:',
+    '  - navigating to "http://127.0.0.1:33465/", waiting until "domcontentloaded"',
+    '    at apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa/' +
+      'scripts/smoke-browser-pair.mjs:578:18 {',
+  ].join('\n');
+  assert.equal(isRetryableOutput('rhi-debug', msaaNavigationTimeout), true);
+  assert.equal(
+    isRetryableOutput(
+      'rhi-debug',
+      msaaNavigationTimeout.replace('[optimizer] scanning dependencies...', ''),
+    ),
+    false,
+  );
+  assert.equal(
+    isRetryableOutput('rhi-debug', msaaNavigationTimeout.replace('30000ms', '45000ms')),
+    false,
+  );
+  assert.equal(
+    isRetryableOutput('rhi-debug', msaaNavigationTimeout.replace('domcontentloaded', 'load')),
+    false,
+  );
+  assert.equal(isRetryableOutput('rhi-debug', 'AssertionError: paired captures differ'), false);
+});
+
 test('RHI-debug retries only the dedicated CSM adapter-acquisition stall', () => {
   const csmStall =
     '[learn-render 5.3.3 csm] RED -- capture hook readiness timed out after 90000ms: ' +

@@ -3,14 +3,14 @@
   "policy": "engine-public-source/1",
   "producerSha256": "e42020b607d2ff23bb0dfb7fe3a5926c724a361b1de9dd68d5ede03c24211cfe",
   "release": {
-    "version": "0.5.0-dev.15780.790527b45b35",
+    "version": "0.5.0-dev.15781.5f1c4f9f70b5",
     "channel": "next",
-    "candidateSha256": "b8f5cf2e61676fff970af60b4c99ace4807421fd9bd2abe7615f56ae752d5ce2"
+    "candidateSha256": "ea7ebdb22a588c23d4ee50a7a5929d114703c0aa203697c713affccf733bc3de"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "790527b45b351e28d3a715f6fd3024e137bf84dc"
+      "commit": "5f1c4f9f70b507af0e8a931bff4821b9cd941a6f"
     },
     {
       "root": "forgeax-engine-assets",
@@ -6205,9 +6205,9 @@
     },
     {
       "path": "apps/feature-lab/__tests__/catalog-coverage.test.ts",
-      "bytes": 3513,
+      "bytes": 3634,
       "executable": false,
-      "sha256": "2c8fa5b2d91a6d4f4d851519a202db9fd151f9c6b32694b998af2353624125c5"
+      "sha256": "a3a414dfa12bedc9512e8ea69758298f43b63a4091452f5c584ef7a0ae29b386"
     },
     {
       "path": "apps/feature-lab/__tests__/headless-features.test.ts",
@@ -6241,9 +6241,9 @@
     },
     {
       "path": "apps/feature-lab/README.md",
-      "bytes": 8744,
+      "bytes": 10316,
       "executable": false,
-      "sha256": "40d7810e92ae3ae02007bf2817557ddb9dc6355c8e012a9d09781da54894ee30"
+      "sha256": "d2f23cd06520caf881bbeb569cc125cb8a77c369f7ef23e5f4a74fe933b82a35"
     },
     {
       "path": "apps/feature-lab/scripts/run-features.mjs",
@@ -6388,6 +6388,12 @@
       "bytes": 5615,
       "executable": false,
       "sha256": "877497c4bd3f2b2b88bb520fb21ff11d1678300f43da94b889ab19b65127eeda"
+    },
+    {
+      "path": "apps/feature-lab/src/features/app-execution/load-progress-and-timeline.ts",
+      "bytes": 3263,
+      "executable": false,
+      "sha256": "9bfabdfc3ab25bdaf251e690d71b22276e4ee5c7cac77c1465f780a5fe562f42"
     },
     {
       "path": "apps/feature-lab/src/features/app-execution/main-serial-tier.ts",
@@ -7342,6 +7348,12 @@
       "bytes": 2768,
       "executable": false,
       "sha256": "ae72eae81a189e2a7fa13c8ddaa19af7db68b28b735a57d669fa7b2a81cb1d6f"
+    },
+    {
+      "path": "apps/feature-lab/src/features/lighting-shadows/gradient-sky.ts",
+      "bytes": 1121,
+      "executable": false,
+      "sha256": "99b7779f4d0b02a5f0ca553c169aeb6394827a3ffdad2d956c5e8a2f28512662"
     },
     {
       "path": "apps/feature-lab/src/features/lighting-shadows/ies-light-profiles.ts",
@@ -8818,6 +8830,12 @@
       "bytes": 3389,
       "executable": false,
       "sha256": "8d8ec672b99be807be2e6b4d41244c23ae8dbe27c79774dc29aca5ef1f3eb8e9"
+    },
+    {
+      "path": "apps/feature-lab/src/node-features/rhi-backends/webgpu-cpu-diagnostics.ts",
+      "bytes": 3675,
+      "executable": false,
+      "sha256": "eee39fe9d74b14bd76c2655d8ced7efa845eb030a52ff92acc5148f836c707c2"
     },
     {
       "path": "apps/feature-lab/src/node-features/vfx/vfx-compiler-cooker.ts",
@@ -23815,9 +23833,9 @@
     },
     {
       "path": "config/dependency-vulnerability-baseline.json",
-      "bytes": 1403,
+      "bytes": 2113,
       "executable": false,
-      "sha256": "8dfaab6597331e721cf88005e5495d272f09c32cbd31a16bce0c629ab73b125f"
+      "sha256": "34c245058ecf58a892b3fca69bcb048050750a10366743f4984c678e0bddff99"
     },
     {
       "path": "config/function-complexity-baseline.json",
@@ -45493,9 +45511,9 @@
     },
     {
       "path": "packages/render/README.md",
-      "bytes": 665214,
+      "bytes": 665367,
       "executable": false,
-      "sha256": "a5b03b81dd51928f7171d3fff00bc1e193830df0c76c51ccde854e6d9b6f7cf0"
+      "sha256": "aa4c1bdcb216095c95b3108f0217b00e9e02d935e4f98d111d58c8754199d2f0"
     },
     {
       "path": "packages/render/REGRESSION-AUDIT-2026-09-20.md",
@@ -54931,9 +54949,9 @@
     },
     {
       "path": "packages/render/src/publication/__tests__/targets.integration.test.ts",
-      "bytes": 8490,
+      "bytes": 11717,
       "executable": false,
-      "sha256": "e2e0cc06bd5d2fa2d12b7206d6c433d20eb769d78d3f1215aa30becb713e0618"
+      "sha256": "16b05790ef2e5c33df303f406de7910b34655b764b58cc83f7c7ab6dc22e6ae9"
     },
     {
       "path": "packages/render/src/publication/__tests__/texture-consumers.unit.test.ts",
@@ -55027,15 +55045,15 @@
     },
     {
       "path": "packages/render/src/publication/publisher.ts",
-      "bytes": 69015,
+      "bytes": 69329,
       "executable": false,
-      "sha256": "4dd1254f493e378dc3ed094a92079ef653791bb1449ccf900f11f0b38ff47a72"
+      "sha256": "c95be8d07e6eb8fe945b72708fc355f03f16be700e99cf53acee4c62168e9e02"
     },
     {
       "path": "packages/render/src/publication/receiver.ts",
-      "bytes": 76380,
+      "bytes": 76553,
       "executable": false,
-      "sha256": "f6a517accfadbb356d263fa2bad36f094d2828ec8c523d7e634f4ef488b7b588"
+      "sha256": "fc520b2179b1693bc3388a85567a1f158df90a9bf3169f5d76cccf307c8c243b"
     },
     {
       "path": "packages/render/src/publication/record.ts",
@@ -55057,9 +55075,9 @@
     },
     {
       "path": "packages/render/src/publication/targets.ts",
-      "bytes": 8388,
+      "bytes": 9201,
       "executable": false,
-      "sha256": "817cf7d0e32cf7da0490f996384e865b4a0772901ec6e51dffa6f7bf4e489b09"
+      "sha256": "66cd26e1c8c87aaeef74bf708c1a0455121c2fa7409d84e3d1b652731887afd9"
     },
     {
       "path": "packages/render/src/publication/texture-consumers.ts",
@@ -56077,9 +56095,9 @@
     },
     {
       "path": "packages/render/src/record/frame.ts",
-      "bytes": 131035,
+      "bytes": 131103,
       "executable": false,
-      "sha256": "aa3e03f69615abf2b1ecbac5eff6ffe1fc3c6c0c69b0aea3b0f15a8bc7cbd004"
+      "sha256": "09e319e46131530a7beeb2796b06d3af36d494d39a641302aca1322871718d0b"
     },
     {
       "path": "packages/render/src/record/gpu-draw-receipts.ts",
@@ -61099,9 +61117,9 @@
     },
     {
       "path": "packages/runtime/src/__tests__/gradient-sky.browser.test.ts",
-      "bytes": 14773,
+      "bytes": 15685,
       "executable": false,
-      "sha256": "b5378542414f344bb2b6de0731be22a0c511acaae85ec43cf38aeaabbbda6ae0"
+      "sha256": "421e2f7c04acf160d4398347852a5534a5ef3e459893ac5e5b953e54bcfd3d9b"
     },
     {
       "path": "packages/runtime/src/__tests__/gtao-default-plane.dawn.test.ts",
@@ -74917,9 +74935,9 @@
     },
     {
       "path": "scripts/ci/__tests__/run-browser-gate-with-retry.test.mjs",
-      "bytes": 20323,
+      "bytes": 21510,
       "executable": false,
-      "sha256": "5e2aef59f3627a26826308d8cfe233c5faa61c1bd197672532e532433de780c3"
+      "sha256": "0763a2a6c29bee19da6c467064e9cc2a070d58d7b0adbaf3ac5d3a064b4036f4"
     },
     {
       "path": "scripts/ci/__tests__/run-direct-light-dawn.test.mjs",
@@ -75463,9 +75481,9 @@
     },
     {
       "path": "scripts/ci/run-browser-gate-with-retry.mjs",
-      "bytes": 21264,
+      "bytes": 21845,
       "executable": false,
-      "sha256": "97a679e055f8ded330de9b0e75113a7822e3a8a1805d3d556e0befd4b594f267"
+      "sha256": "eee774992958386333e40e4e16af722a8a2256ac0933f7357ca7fb51443806c1"
     },
     {
       "path": "scripts/ci/run-ci-focus.mjs",
@@ -77731,9 +77749,9 @@
     },
     {
       "path": "skills/forgeax-engine-debug/SKILL.md",
-      "bytes": 67776,
+      "bytes": 68105,
       "executable": false,
-      "sha256": "85f526e69d34b5768a9885fb80e99cb0639e78d7cabc3c0930f1f2f8753a4c6e"
+      "sha256": "4b6c24e94bdc6e0db81ba76fe435330e85e02f51089906d19e9bc62ccf5dde4f"
     },
     {
       "path": "skills/forgeax-engine-ecs/SKILL.md",
@@ -78229,9 +78247,9 @@
     },
     {
       "path": "skills/forgeax-engine-sdk/references/feature-catalog.md",
-      "bytes": 109495,
+      "bytes": 110864,
       "executable": false,
-      "sha256": "addd1c8fbca9eeea0f09d676086819c715349b69b55d78d873cca64a07897f6e"
+      "sha256": "b66a4afe68f84d3737a3debc980a53d11793ae5c7de06940643e851b74330434"
     },
     {
       "path": "skills/forgeax-engine-sdk/references/game-delivery.md",

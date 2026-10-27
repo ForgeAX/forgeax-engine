@@ -6377,6 +6377,9 @@ frame selection with `environment-selection-invalid` naming the field
 the scene; match `Skylight.color` / `groundColor` to it. Reflection probes and cube
 captures do not render it.
 
+A World containing only a Camera and GradientSky still renders the complete
+gradient and sun disc; the camera View upload does not require a mesh draw.
+
 ### Material output and Forward graph composition
 
 `createStandardForwardPipeline(output)` from `render/authoring` retains the native

@@ -55,6 +55,8 @@ const GATE_PROVED_ROWS = new Set([
   'Browser compositor capture',
   'Borrowed browser Page capture',
   'Persistent playthrough capture',
+  // A scripted gameplay journey owns its own project, browser and final-frame gate.
+  'Scripted gameplay verification',
   'RHI debug viewer',
   // DeepSeek Harness federation.
   'DSH Engine panel',

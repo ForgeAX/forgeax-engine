@@ -3,6 +3,7 @@ import { cdp, commands, page } from 'vitest/browser';
 declare module 'vitest/browser' {
   interface BrowserCommands {
     recordRenderWorkerEvidence(tier: string, evidence: unknown): Promise<void>;
+    renderWorkerDevTools(action: 'open' | 'close', targetId: string): Promise<string | undefined>;
   }
 }
 
@@ -53,6 +54,7 @@ async function expectPicture(canvas: HTMLCanvasElement): Promise<void> {
 it.each([
   'terminate-render',
   'lose-device',
+  'lose-device-with-resident-mesh',
 ])('preserves World and freezes simulation during known %s recovery and host canvas replacement', async (command) => {
   await page.viewport(800, 600);
   const before = await cdp().send('Target.getTargets');
@@ -66,7 +68,8 @@ it.each([
   canvas.style.height = '128px';
   document.body.append(canvas);
   const channel = new MessageChannel();
-  const messages: { ticks: number; worldIdentity: string; command: string }[] = [];
+  const messages: { ticks: number; worldIdentity: string; command: string; error?: string; adapter?: Record<string, unknown>; meshReceipt?: { frameId: number; deviceGeneration: number } }[] = [];
+  let devtoolsTarget: string | undefined;
   const lifecycle: { phase: string; epoch: number; ticks: number; worldIdentity: string }[] = [];
   const recoveryPingMs: number[] = [];
   let pingStarted: number | undefined;
@@ -108,8 +111,16 @@ it.each([
       .toBeGreaterThan(0);
     await expectPicture(canvas);
     const originalWorld = execution.report().world.identity;
+    if (command === 'lose-device-with-resident-mesh') {
+      const target = await cdp().send('Target.getTargetInfo');
+      devtoolsTarget = await commands.renderWorkerDevTools('open', target.targetInfo.targetId);
+      expect(devtoolsTarget).toBeDefined();
+    }
     channel.port1.postMessage(command);
-    await expect.poll(() => messages.length, { timeout: 5000 }).toBe(1);
+    await expect.poll(() => messages.length, { timeout: 30_000 }).toBe(1);
+    expect(messages[0]?.error).toBeUndefined();
+    if (command === 'lose-device-with-resident-mesh')
+      expect(messages[0]?.meshReceipt?.frameId).toBeGreaterThan(0);
     const ticks = messages[0]?.ticks ?? Number.NaN;
     await expect.poll(() => execution.report().render?.epoch, { timeout: 40_000 }).toBe(2);
     // A silent Worker termination is detected by the original transport deadline.
@@ -140,6 +151,16 @@ it.each([
     expect(app.canvas?.isConnected).toBe(true);
     expect(app.lastError).toBeUndefined();
     if (app.canvas === undefined) throw new Error('Replacement canvas missing');
+    if (command === 'lose-device-with-resident-mesh') {
+      let completed = 0;
+      const onCompleted = () => { completed++; };
+      app.canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+      try {
+        await expect.poll(() => completed, { timeout: 60_000 }).toBeGreaterThanOrEqual(60);
+      } finally {
+        app.canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+      }
+    }
     await expectPicture(app.canvas);
     clearInterval(heartbeat);
     await expect.poll(() => pingStarted, { timeout: 5000 }).toBeUndefined();
@@ -147,6 +168,8 @@ it.each([
     await commands.recordRenderWorkerEvidence(command, {
       kind: 'render-worker-recovery',
       command,
+      adapter: messages[0]?.adapter,
+      meshReceipt: messages[0]?.meshReceipt,
       entities: RECOVERY_ENTITIES,
       samples: recoveryPingMs.length,
       pingMax: Math.max(...recoveryPingMs),
@@ -163,6 +186,8 @@ it.each([
     throw cause;
   } finally {
     clearInterval(heartbeat);
+    if (devtoolsTarget !== undefined)
+      await commands.renderWorkerDevTools('close', devtoolsTarget).catch(() => {});
     await app.dispose();
     channel.port1.close();
     app.canvas?.remove();

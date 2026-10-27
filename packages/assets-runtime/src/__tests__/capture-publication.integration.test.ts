@@ -108,6 +108,40 @@ async function fixture(plugin = false, encoding: 'identity' | 'zstd' = 'zstd') {
 }
 
 it.each([
+  'capture',
+  'validate',
+] as const)('reads identity and zstd Pack documents through %s publication admission', async (operation) => {
+  const { compressZstd } = await import('@forgeax/engine-codec/encode');
+  for (const encoding of ['identity', 'zstd'] as const) {
+    const input = await fixture();
+    if (encoding === 'zstd') {
+      const bytes = defined(input.bodies.get(packageUrl));
+      const compressed = await compressZstd(bytes);
+      if (!compressed.ok) throw compressed.error;
+      input.bodies.set(packageUrl, compressed.value);
+    }
+    if (operation === 'capture') {
+      const result = await captureAssetPublication(
+        defined(input.rows[0]),
+        input.rows,
+        createCatalogSource({ entries: input.rows }),
+        input.fetcher,
+      );
+      expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
+      expect(result.unwrap().pack).toEqual(input.publication.pack);
+    } else {
+      const result = await validateAssetPublication(input.rows, input.fetcher, undefined, {
+        decoders: runtimePackDecoders,
+      });
+      expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
+      expect((defined(result.unwrap().get(guid)) as MeshAsset).attributes.position).toEqual(
+        input.original.attributes.position,
+      );
+    }
+  }
+});
+
+it.each([
   'cold',
   'owned',
 ] as const)('verifies a captured Bundle once while checking every %s artifact', async (mode) => {

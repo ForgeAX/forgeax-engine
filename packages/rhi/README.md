@@ -32,6 +32,11 @@ still belong to a background library. `unidentified` counts live requests that c
 recorded. Absence means unsupported inspection, not zero outstanding work.
 This is neither driver-internal compiler timing nor a complete CPU preparation
 roster. See the [WebGPU implementation contract](../rhi-webgpu/README.md#device-pipeline-library).
+`inspect({runtimeRequests:true})` requests optional bounded runtime
+demand history, including requests completed before the read. Ordinary inspection
+leaves that payload absent. History mode omits the hashing full `pending` list,
+retaining compilation counters and cached nullable recipe digests. Missing history
+means unsupported, not no compilation.
 
 ## Query capability matrix
 

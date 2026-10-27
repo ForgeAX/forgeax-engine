@@ -356,6 +356,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
     beforeDraw: observation.prepareFrame,
+    pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
   if (args.onFrameSubmitted !== undefined || rhiCapture !== undefined) {

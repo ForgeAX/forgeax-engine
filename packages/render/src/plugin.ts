@@ -9,10 +9,12 @@ import { CameraView } from './components/camera-view';
 import { CapsuleShadow } from './components/capsule-shadow';
 import { ClippingPlanes } from './components/clipping-planes';
 import { CloudLayer } from './components/cloud-layer';
+import { CubeCamera } from './components/cube-camera';
 import { DepthOfField } from './components/depth-of-field';
 import { DirectionalLight } from './components/directional-light';
 import { DynamicResolution } from './components/dynamic-resolution';
 import { Fog } from './components/fog';
+import { GradientSky } from './components/gradient-sky';
 import { Instances } from './components/instances';
 import { Layer } from './components/layer';
 import { LensEffects } from './components/lens-effects';
@@ -29,7 +31,9 @@ import { PointLightShadow } from './components/point-light-shadow';
 import { Points } from './components/points';
 import { PostProcessParams } from './components/post-process-params';
 import { RectAreaLight } from './components/rect-area-light';
+import { ReflectionProbe } from './components/reflection-probe';
 import { SceneInstance } from './components/scene-instance';
+import { ScreenSpaceReflection } from './components/screen-space-reflection';
 import { ShadowParticipation } from './components/shadow-participation';
 import { SkyboxBackground } from './components/skybox-background';
 import { Skylight } from './components/skylight';
@@ -59,10 +63,12 @@ const RENDER_COMPONENTS: readonly Component[] = [
   ShadowParticipation,
   PlanarReflection,
   CloudLayer,
+  CubeCamera,
   DirectionalLight,
   DynamicResolution,
   DepthOfField,
   Fog,
+  GradientSky,
   Instances,
   Layer,
   LightProbe,
@@ -76,7 +82,9 @@ const RENDER_COMPONENTS: readonly Component[] = [
   Lines,
   PostProcessParams,
   RectAreaLight,
+  ReflectionProbe,
   SceneInstance,
+  ScreenSpaceReflection,
   SkyboxBackground,
   Skylight,
   SortKey,

@@ -14,6 +14,7 @@ import type { AppErrorCode, AppErrorDetailFor } from '../errors';
 import { AppError } from '../errors';
 import type { ExecutionFrameInspection } from '../execution';
 import { APP_PHASE_CATALOG, type DrawSource } from '../types';
+import type { FramePacer } from './frame-pacer';
 
 type FrameState = 'idle' | 'running' | 'paused' | 'stopped';
 
@@ -35,6 +36,8 @@ export interface FrameLoopOptions {
   readonly beforeDraw?: () => void;
   readonly drawSource?: DrawSource;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
+  /** Optional frame-rate limit; a callback it rejects only reserves its successor. */
+  readonly pacer?: FramePacer;
 }
 
 export interface FrameLoopHandle {
@@ -693,6 +696,22 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       setState('paused');
       opts.onError?.(scheduled.error);
       return;
+    }
+    // A limited loop keeps the reserved successor and skips this callback
+    // until the limit interval has elapsed; an unlimited loop never samples here.
+    const pacer = opts.pacer;
+    if (pacer !== undefined && pacer.limit() !== null) {
+      let sampled: number;
+      try {
+        sampled = now();
+      } catch (cause) {
+        setState('paused');
+        cancelFrame();
+        opts.onError?.(makeWorldUpdateError(cause));
+        return;
+      }
+      if (!pacer.due(sampled)) return;
+      pacer.admitted(sampled);
     }
 
     // Device loss is a renderer-owned degraded interval, not an application

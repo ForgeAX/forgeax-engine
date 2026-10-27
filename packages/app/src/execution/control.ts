@@ -2,6 +2,7 @@ import type { AudioState } from '@forgeax/engine-audio';
 import type { World } from '@forgeax/engine-ecs';
 import { err } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
+import { createFramePacer, type FramePacer } from '../internal/frame-pacer';
 import { executionAudioReport, executionWorldReport } from './report';
 import type { ExecutionControl, ExecutionEngineHealth, ExecutionReport } from './types';
 import { serializableDetail } from './worker-error';
@@ -12,6 +13,8 @@ export function cloneExecutionReport(report: ExecutionReport): ExecutionReport {
 
 export interface LocalExecutionControl extends ExecutionControl {
   setEngineHealth(health: ExecutionEngineHealth): void;
+  /** The main-realm frame loop admits callbacks through this limit. */
+  readonly framePacer: FramePacer;
 }
 
 export interface LocalExecutionReportProviders {
@@ -25,7 +28,10 @@ export function createLocalExecutionControl(
   providers: LocalExecutionReportProviders = {},
 ): LocalExecutionControl {
   let current = cloneExecutionReport(initial);
+  const framePacer = createFramePacer();
   return {
+    framePacer,
+    setFrameRateLimit: (framesPerSecond) => framePacer.setLimit(framesPerSecond),
     setEngineHealth: (health) => {
       current = { ...current, engine: { ...current.engine, health } };
     },

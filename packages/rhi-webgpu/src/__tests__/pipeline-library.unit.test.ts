@@ -3,6 +3,7 @@ import { snapshotLoadTimeline } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { disposeDevice, makeRhiDevice } from '../device';
 import { createShaderModule, createShaderModuleImmediate } from '../index';
+import { PipelineCompilationRecords } from '../pipeline-compilation-records';
 import { backgroundPipelineWarmupConcurrency } from '../pipeline-library';
 import { createMockGpu } from './__mocks__/gpu-device';
 
@@ -46,6 +47,120 @@ async function fixture() {
     descriptor,
   };
 }
+
+it('does not hash an uncached Shader through the pending list during lightweight history inspection', async () => {
+  const f = await fixture();
+  const pending = f.device.createRenderPipelineAsync(f.descriptor());
+  const inspection = f.device.pipelineLibrary.inspect({ runtimeRequests: true });
+  expect(inspection.pending).toBeUndefined();
+  expect(inspection.runtimeRequests?.requests[0]?.pipeline?.shaders[0]?.sourceDigest).toBeNull();
+  await pending;
+});
+
+it('retains a runtime request that completed before an asynchronous observer arrives', async () => {
+  const f = await fixture();
+  await f.device.createRenderPipelineAsync(f.descriptor());
+  expect(f.device.pipelineLibrary.inspect().runtimeRequests).toBeUndefined();
+  const inspection = f.device.pipelineLibrary.inspect({ runtimeRequests: true });
+  expect(inspection.compilationPending).toBe(0);
+  expect(inspection.pending).toBeUndefined();
+  expect(inspection.runtimeRequests).toMatchObject({
+    latestSequence: 1,
+    overwritten: 0,
+    requests: [
+      {
+        sequence: 1,
+        mode: 'async',
+        outcome: 'completed',
+        preloadAtDemand: 'absent',
+        pipeline: {
+          localIdentity: 1,
+          identity: null,
+          kind: 'render',
+          shaders: [{ sourceDigest: null }],
+        },
+      },
+    ],
+  });
+  const request = inspection.runtimeRequests?.requests[0];
+  if (request === undefined || request.startedAtMs === null)
+    throw new Error('Missing runtime request');
+  expect(request.completedAtMs).toBeGreaterThanOrEqual(request.startedAtMs);
+  expect(request.startedAtMs).toBeGreaterThanOrEqual(request.requestedAtMs);
+  expect(JSON.stringify(inspection.runtimeRequests)).not.toContain('shader source');
+});
+
+it('bounds runtime evidence while completed cache hits add no requests or native work', async () => {
+  const f = await fixture();
+  for (let i = 0; i < 80; i++)
+    await f.device.createRenderPipelineAsync(f.descriptor(`source ${i}`));
+  const descriptor = f.descriptor('source 79');
+  const record = vi.spyOn(PipelineCompilationRecords.prototype, 'begin');
+  const inspect = vi.spyOn(PipelineCompilationRecords.prototype, 'inspect');
+  for (let i = 0; i < 500; i++) f.device.createRenderPipeline(descriptor).unwrap();
+  expect(record).not.toHaveBeenCalled();
+  expect(f.device.pipelineLibrary.inspect().runtimeRequests).toBeUndefined();
+  expect(inspect).not.toHaveBeenCalled();
+  const history = f.device.pipelineLibrary.inspect({ runtimeRequests: true }).runtimeRequests;
+  if (history === undefined) throw new Error('Missing runtime history');
+  expect(history).toMatchObject({ capacity: 32, latestSequence: 80, overwritten: 48 });
+  expect(history.requests).toHaveLength(32);
+  expect(history.requests[0]?.sequence).toBe(49);
+  expect(history.requests.at(-1)?.sequence).toBe(80);
+  expect(f.render).toHaveBeenCalledTimes(80);
+  expect(f.sync).not.toHaveBeenCalled();
+  record.mockRestore();
+  inspect.mockRestore();
+});
+
+it('retains a runtime demand joining an existing background compilation without issuing another one', async () => {
+  const a = await fixture();
+  a.device.createRenderPipeline(a.descriptor()).unwrap();
+  const manifest = a.device.pipelineLibrary.export().unwrap(),
+    b = await fixture();
+  let release: (value: GPURenderPipeline) => void = () => {
+    throw new Error('Native request not started');
+  };
+  b.render.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const warm = b.device.pipelineLibrary.prepare(manifest, { background: true, concurrency: 1 });
+  await vi.waitFor(() => expect(b.render).toHaveBeenCalledOnce());
+  expect(
+    b.device.pipelineLibrary.inspect({ runtimeRequests: true }).runtimeRequests?.requests,
+  ).toEqual([]);
+  const demand = b.device.createRenderPipelineAsync(b.descriptor());
+  release({} as GPURenderPipeline);
+  await warm;
+  await demand;
+  expect(
+    b.device.pipelineLibrary.inspect({ runtimeRequests: true }).runtimeRequests?.requests,
+  ).toMatchObject([
+    {
+      outcome: 'completed',
+      origin: 'background-warmup',
+      preloadAtDemand: 'background',
+      pipeline: { preload: 'background' },
+    },
+  ]);
+  expect(b.render).toHaveBeenCalledOnce();
+});
+
+it('retains failures/retries and distinguishes returned sync handles from native completion', async () => {
+  const f = await fixture();
+  f.render.mockRejectedValueOnce(new Error('deliberate failure'));
+  expect((await f.device.createRenderPipelineAsync(f.descriptor())).ok).toBe(false);
+  await f.device.createRenderPipelineAsync(f.descriptor());
+  f.device.createRenderPipeline(f.descriptor('sync-only')).unwrap();
+  expect(
+    f.device.pipelineLibrary
+      .inspect({ runtimeRequests: true })
+      .runtimeRequests?.requests.map((row) => row.outcome),
+  ).toEqual(['failed', 'completed', 'returned']);
+});
 
 it('reuses build-projected compute closures for ordinary sync/async requests and archive round trips', async () => {
   const f = await fixture();

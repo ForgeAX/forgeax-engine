@@ -214,6 +214,33 @@ it('invalidates old leases when a replacement epoch keeps the same native genera
   });
 });
 
+it.each([
+  'ready',
+  'releasing',
+  'preparing',
+] as const)('settles old lease cleanup only after confirmed receiver disposal: %s', async (state) => {
+  const f = sourceFixture();
+  const pending = f.source.prepare(f.input);
+  if (state === 'preparing') {
+    const failed = expect(pending).rejects.toMatchObject({
+      code: 'dynamic-geometry-gpu-not-ready',
+    });
+    f.source.confirmRetirement();
+    await failed;
+  } else {
+    f.respond('mesh-ready');
+    const lease = (await pending).unwrap();
+    const released = state === 'releasing' ? lease.release(false) : undefined;
+    const messages = f.messages.length;
+    f.source.confirmRetirement();
+    if (released !== undefined) await released;
+    expect(lease.isCurrent()).toBe(false);
+    await lease.release(true);
+    expect(f.messages).toHaveLength(messages);
+  }
+  expect(f.source.hasUnreleasedMeshes).toBe(false);
+});
+
 it('escalates committed release to eviction on dispose while retaining one completion fence', async () => {
   const f = sourceFixture();
   const pending = f.source.prepare(f.input);

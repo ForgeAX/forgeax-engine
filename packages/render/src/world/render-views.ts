@@ -268,9 +268,12 @@ export class RenderViews {
       world.removeComponent(declared.entity, ViewRecorder).unwrap();
     if (sameTarget && sameFacts(current, facts)) return;
     if (current.order !== facts.order || current.enabled !== facts.enabled) this.orderDirty = true;
-    facts.target = sameTarget ? current.target : this.acquireTarget(camera.target);
+    // Hold a grant across the write even for the same target: `set` releases
+    // the column's reference before retaining the new value, and the column
+    // may be the only holder.
+    facts.target = this.acquireTarget(camera.target);
     world.set(declared.entity, RenderView, facts).unwrap();
-    if (!sameTarget) this.releaseTarget(facts.target);
+    this.releaseTarget(facts.target);
   }
 
   /** One caller grant held across the write; the column retains its own reference. */

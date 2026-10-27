@@ -75,7 +75,7 @@ class CreditWorker {
 }
 afterEach(() => vi.unstubAllGlobals());
 
-async function programTransportFixture() {
+async function programTransportFixture(post: (message: EngineToHostMessage) => void = () => {}) {
   vi.stubGlobal('Worker', CreditWorker);
   const shaders = new ShaderRegistry({ manifestUrl: undefined });
   shaders.installMaterialArtifact('test::candidate-program', {
@@ -96,7 +96,7 @@ async function programTransportFixture() {
       bootstrapUrl: '',
       workers: workerSelection({ render: true, kernels: false }),
     },
-    () => {},
+    post,
   );
   const previous = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const mesh = createBoxGeometry(2, 2, 2).unwrap();
@@ -144,8 +144,87 @@ async function programTransportFixture() {
       identity: worker.init?.identity,
       result: { ok: true, deviceGeneration },
     });
-  return { source, worker, prepare, waitRequest, ready };
+  return { source, worker, prepare, waitRequest, ready, world, canvas };
 }
+
+it.each([
+  'confirmed',
+  'cleanup-error',
+  'timeout',
+  'dispose',
+] as const)('requires a successful retirement ACK before recovering device loss with resident meshes: %s', async (retirement) => {
+  const messages: EngineToHostMessage[] = [];
+  const f = await programTransportFixture((message) => messages.push(message));
+  try {
+    const prepared = f.prepare();
+    const request = await f.waitRequest(0);
+    f.ready(request.requestId);
+    const candidate = (await prepared).unwrap();
+    const worldIdentity = f.world.identity;
+    messages.length = 0;
+    const terminate = vi.spyOn(f.worker, 'terminate');
+    const send = f.worker.postMessage.bind(f.worker);
+    const retirements: RenderWorkerInput[] = [];
+    vi.spyOn(f.worker, 'postMessage').mockImplementation((message, transfer) => {
+      if (message.kind === 'dispose') retirements.push(message);
+      else send(message, transfer);
+    });
+    vi.useFakeTimers();
+    f.worker.emit({
+      kind: 'failed',
+      stage: 'draw',
+      recoverable: true,
+      renderer: { state: 'device-lost' },
+      error: {
+        code: 'device-operation-failed',
+        expected: 'a live GPU device',
+        hint: 'replace the lost device',
+        detail: { operation: 'complete-frame', cause: { code: 'device-lost' } },
+      },
+    });
+    expect(retirements).toEqual([{ kind: 'dispose' }]);
+    expect(f.source.hasPublicationCapacity).toBe(false);
+    expect(f.source.dynamicGeometry.isDynamicGeometryCurrent(candidate)).toBe(false);
+    expect(terminate).not.toHaveBeenCalled();
+    expect(messages).toEqual([]);
+    const disposing = retirement === 'dispose' ? f.source.dispose() : undefined;
+    expect(retirements).toHaveLength(1);
+
+    if (retirement === 'timeout') await vi.advanceTimersByTimeAsync(5_001);
+    else {
+      f.worker.emit({
+        kind: 'disposed',
+        ...(retirement === 'cleanup-error' ? { error: { code: 'cleanup-failed' } } : {}),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    if (disposing !== undefined) {
+      await disposing;
+      expect(messages).toEqual([]);
+      expect(f.source.hasPublicationCapacity).toBe(false);
+      expect(f.worker.controls.some((message) => message.kind === 'mesh-release')).toBe(false);
+    } else if (retirement === 'confirmed') {
+      expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 }));
+      expect(messages.some((message) => message.kind === 'fault')).toBe(false);
+      await f.source.replace(2, f.canvas);
+      expect(f.source.hasPublicationCapacity).toBe(true);
+      expect(f.world.identity).toBe(worldIdentity);
+      expect(f.source.dynamicGeometry.isDynamicGeometryCurrent(candidate)).toBe(false);
+    } else {
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          kind: 'fault',
+          retryable: false,
+          detail: expect.objectContaining({ meshReleaseUnconfirmed: true }),
+        }),
+      );
+      expect(messages.some((message) => message.kind === 'render-lost')).toBe(false);
+    }
+  } finally {
+    vi.useRealTimers();
+    await f.source.dispose();
+  }
+});
 
 it('sends first candidate programs until valid preparation ACK, then reuses publication program knowledge', async () => {
   const f = await programTransportFixture();
@@ -1112,9 +1191,13 @@ it('carries selected inspection fields to the child without adding frame work', 
   await source.start(canvas);
   const worker = CreditWorker.current;
   try {
-    const pending = source.inspectRenderer({ fields: ['frame', 'pipelineLibrary'] });
+    const pending = source.inspectRenderer({
+      fields: ['frame', 'pipelineLibrary'],
+      runtimeRequests: true,
+    });
     const request = inspectionRequest(worker);
     expect(request.fields).toEqual(['frame', 'pipelineLibrary']);
+    expect(request.runtimeRequests).toBe(true);
     const value = { frame: inspectedFacts.frame, pipelineLibrary: undefined };
     worker.emit({ ...inspectionReply(request), result: { ok: true, value } });
     expect(await pending).toEqual({ ok: true, value });

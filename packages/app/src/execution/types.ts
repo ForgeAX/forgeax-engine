@@ -223,6 +223,13 @@ export type ExecutionBootstrapValue =
 export interface ExecutionControl {
   report(): ExecutionReport;
   rebuild(): Promise<Result<ExecutionReport, AppError>>;
+  /**
+   * Limit admitted frames to at most `framesPerSecond`; `null` admits every
+   * display callback (the default). Admissions stay on display callbacks with
+   * an even cadence, and World time remains the measured elapsed time.
+   * Throws `RangeError` unless the value is `null` or finite and positive.
+   */
+  setFrameRateLimit(framesPerSecond: number | null): void;
 }
 
 /** Detached facts from the actual selected Renderer; fields may be selected before transport. */
@@ -244,6 +251,8 @@ export interface ExecutionRendererInspectionOptions<
   K extends keyof RenderInspection = keyof RenderInspection,
 > {
   readonly pipelineLibrary?: boolean;
+  /** Materialize the bounded runtime request history only for an explicit diagnostic read. */
+  readonly runtimeRequests?: boolean;
   readonly signal?: AbortSignal;
   /** Select owner fields before structured cloning; omission preserves the full snapshot. */
   readonly fields?: readonly K[];

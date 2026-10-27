@@ -19,6 +19,7 @@ import type { CatalogSource } from './catalog-source.js';
 import { DecoderRegistry } from './internal/decoder-registry';
 import { PackReader } from './internal/pack-reader.js';
 import { validatePublicationReferences } from './internal/publication-references.js';
+import { readDocumentJson } from './internal/retained-pack-json.js';
 import {
   assertPrivateMeshStorage,
   prepareAssetPayload,
@@ -91,7 +92,7 @@ export async function preparePublicationPayloads(
         if (input === undefined) {
           const response = await read(row.packageUrl);
           if (!response.ok) throw new TypeError('candidate Pack unavailable');
-          input = (await response.json()) as RuntimePackEnvelope;
+          input = (await readDocumentJson(response)) as RuntimePackEnvelope;
         }
         const tuple = row.publication;
         if (!tuple) throw new TypeError('candidate publication missing');

@@ -167,7 +167,9 @@ it('applies paired row/channel patches from rows and rejects channel-only patche
   const next = paired.value as MeshAsset;
   expect(isPackedRowsMesh(next)).toBe(true);
   expect(next.attributes.position?.byteLength).toBe(0);
-  expect(Array.from(meshAttributeChannels(next).position?.subarray(0, 3) ?? [])).toEqual([9, 8, 7]);
+  const nextPositions = meshAttributeChannels(next).position;
+  if (!(nextPositions instanceof Float32Array)) throw new Error('Expected float32 positions');
+  expect(Array.from(nextPositions.subarray(0, 3))).toEqual([9, 8, 7]);
   expect(meshAttributeChannels(packed)).not.toBe(before);
   expect(paired.change.ranges.map((range) => range.path.join('.'))).toEqual([
     'attributes.position',
@@ -179,9 +181,9 @@ it('applies paired row/channel patches from rows and rejects channel-only patche
   // Full meshes keep the existing channel write semantics.
   const fullPatch = prepareAssetPatch(full, { ...base, ranges: [channelRange, rowRange] }, true);
   fullPatch.commit();
-  expect(
-    Array.from((fullPatch.value as MeshAsset).attributes.position?.subarray(0, 3) ?? []),
-  ).toEqual([9, 8, 7]);
+  const fullPositions = (fullPatch.value as MeshAsset).attributes.position;
+  if (!(fullPositions instanceof Float32Array)) throw new Error('Expected float32 positions');
+  expect(Array.from(fullPositions.subarray(0, 3))).toEqual([9, 8, 7]);
 });
 
 it('never admits the packed-rows form into a managed World asset store', () => {

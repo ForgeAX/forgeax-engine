@@ -12,6 +12,8 @@ import {
   MeshFilter,
   MeshRenderer,
   PlanarReflection,
+  Visibility,
+  VisibilityStateValue,
 } from '../../components';
 import type { RenderResult } from '../../render-contract';
 import { projectAuxiliaryCamerasForView } from '../../render-system-extract';
@@ -282,7 +284,7 @@ it('keeps a held render-target material bound when a later packet adds a row tha
   screen(0);
   const first = publish();
   expect(first.packet.targetSources).toHaveLength(1);
-  const bound = remoteTarget(first.accepted.frame.renderables[0] as never);
+  const bound = remoteTarget(first.accepted.frame.renderables.at(0) as never);
   expect(bound).toBeDefined();
   expect(bound).not.toBe(target);
   screen(2);
@@ -290,7 +292,101 @@ it('keeps a held render-target material bound when a later packet adds a row tha
   expect(second.packet.materials).toHaveLength(0);
   expect(second.packet.targetSources).toHaveLength(1);
   expect(second.accepted.frame.renderables).toHaveLength(1);
-  expect(remoteTarget(second.accepted.frame.renderables[0] as never)).toBe(bound);
+  expect(remoteTarget(second.accepted.frame.renderables.at(0) as never)).toBe(bound);
+  publisher.dispose();
+  source.dispose();
+  host.dispose();
+  receiver.dispose();
+  assets.dispose();
+});
+
+it('keeps a render-target slot override bound when its row is published again', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const source = new RenderPublicationTargetOwner();
+  const host = createRenderTargetHost();
+  const identity = { source: 'target-slot-override', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity, undefined, [], source);
+  const receiver = new RenderPublicationReceiver(identity, host);
+  const pass = {
+    name: 'Forward',
+    program: { module: 'forgeax::default-standard-pbr' },
+    renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+  };
+  const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
+  const plain = assets.create({ kind: 'material', passes: [pass], values: {} }).unwrap();
+  const screen = world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 0] } },
+      { component: MeshFilter, data: { assetHandle: cubeMesh } },
+      { component: MeshRenderer, data: { materials: [plain] } },
+    )
+    .unwrap();
+  const publish = () => {
+    world.update(0).unwrap();
+    const candidate = publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
+    return accepted;
+  };
+  const overrideTarget = (row: { materialOverrides?: readonly unknown[] }) => {
+    const bound = (
+      row.materialOverrides?.[0] as
+        | { snapshot: { textureSources?: ReadonlyMap<string, unknown> } }
+        | undefined
+    )?.snapshot.textureSources?.get('baseColorTexture');
+    if (
+      bound === undefined ||
+      isCanvasTextureSource(bound as never) ||
+      isExternalTextureSource(bound as never)
+    )
+      throw new Error('Missing published target source');
+    return resolveRenderTargetMaterialSource(bound as never)?.target;
+  };
+  publish();
+  // A cockpit monitor: the screen already exists, then its slot switches to a
+  // material that samples an offscreen camera target.
+  const target = unwrap(source.authoring.createRenderTarget(descriptor));
+  const texture = unwrap(
+    source.authoring.createRenderTargetTextureSource(target, {
+      aspect: 'color',
+      dimension: '2d',
+      mipLevel: 0,
+    }),
+  );
+  const monitor = assets
+    .create({ kind: 'material', passes: [pass], values: { baseColorTexture: { source: texture } } })
+    .unwrap();
+  world.set(screen, MeshRenderer, { materials: [monitor] }).unwrap();
+  const first = publish();
+  const bound = overrideTarget(first.frame.renderables[0] as never);
+  expect(bound).toBeDefined();
+  expect(bound).not.toBe(target);
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: { target: world.allocSharedRef('RenderTarget', target) } },
+    )
+    .unwrap();
+  world
+    .addComponent(screen, {
+      component: Visibility,
+      data: { state: VisibilityStateValue.hidden },
+    })
+    .unwrap();
+  publish();
+  world.set(screen, Visibility, { state: VisibilityStateValue.inherited }).unwrap();
+  const shown = publish();
+  expect(shown.frame.renderables).toHaveLength(1);
+  expect(overrideTarget(shown.frame.renderables[0] as never)).toBe(bound);
+  world.despawn(screen).unwrap();
+  publish();
   publisher.dispose();
   source.dispose();
   host.dispose();

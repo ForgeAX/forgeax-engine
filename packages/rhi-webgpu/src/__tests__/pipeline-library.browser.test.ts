@@ -50,3 +50,47 @@ it('exposes a cloneable native compilation recipe before GPU creation settles', 
     raw.destroy();
   }
 });
+
+it('preserves a real completed native request before the first history inspection', async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('WebGPU adapter unavailable');
+  const raw = await adapter.requestDevice(),
+    library = new WebGpuPipelineLibrary(raw);
+  try {
+    const module = library.createShaderModule({
+      label: 'late-inspection-shader',
+      code: '@compute @workgroup_size(1) fn cs() {}',
+    });
+    const descriptor = {
+      label: 'late-inspection',
+      layout: 'auto' as const,
+      compute: { module, entryPoint: 'cs' },
+    };
+    const native = library.createComputePipelineAsync(descriptor);
+    const early = library.inspect({ runtimeRequests: true });
+    expect(early.pending).toBeUndefined();
+    expect(early.runtimeRequests?.requests[0]?.pipeline?.shaders[0]?.sourceDigest).toBeNull();
+    await native;
+    expect(library.inspect().runtimeRequests).toBeUndefined();
+    const snapshot = structuredClone(library.inspect({ runtimeRequests: true }));
+    expect(snapshot.pending).toBeUndefined();
+    expect(snapshot.runtimeRequests?.requests).toMatchObject([
+      {
+        sequence: 1,
+        outcome: 'completed',
+        mode: 'async',
+        pipeline: {
+          localIdentity: 1,
+          identity: null,
+          kind: 'compute',
+          preload: 'absent',
+        },
+      },
+    ]);
+    for (let i = 0; i < 1000; i++) library.createComputePipelineAsync(descriptor);
+    expect(library.inspect({ runtimeRequests: true }).runtimeRequests?.latestSequence).toBe(1);
+  } finally {
+    library.dispose();
+    raw.destroy();
+  }
+});

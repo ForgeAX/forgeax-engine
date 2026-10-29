@@ -91,21 +91,42 @@ type RequestArgs<T extends unknown[]> = {
   [K in keyof T]: K extends '15' ? LayoutKind | undefined : T[K];
 };
 
+const formatKeys = new WeakMap<
+  readonly string[],
+  { readonly copy: readonly string[]; readonly key: string }
+>();
+
+/** Attachment format lists are pass-owned arrays; join each once while unchanged. */
+function formatsKey(formats: readonly string[]): string {
+  const cached = formatKeys.get(formats);
+  if (cached !== undefined && cached.copy.length === formats.length) {
+    let same = true;
+    for (let index = 0; index < formats.length && same; index++)
+      same = cached.copy[index] === formats[index];
+    if (same) return cached.key;
+  }
+  const key = formats.join(',');
+  formatKeys.set(formats, { copy: formats.slice(), key });
+  return key;
+}
+
 /** Immutable layout/state owners and scalar specialization values determine one request. */
 export function materialPipelineRequestFacts(
   args: [
     ...RequestArgs<Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>>,
     pipelinePreparation?: boolean | undefined,
   ],
+  /** Reused lookup storage; a stored request must keep its own copy. */
+  facts: Fact[] = [],
 ): Fact[] {
-  const facts: Fact[] = args.slice();
   facts.length = 22;
+  for (let index = 0; index < 22; index++) facts[index] = args[index];
   facts[2] = renderStateHash(args[2]);
   facts[7] =
     args[13]?.digest ??
     deriveVertexLayoutProjection(args[7] ?? DEFAULT_VERTEX_ATTRIBUTE_MAP).digest;
   facts[13] = args[13]?.digest;
-  facts[17] = args[17]?.join(',');
+  facts[17] = args[17] === undefined ? undefined : formatsKey(args[17]);
   // Constants can be fresh objects or mutated records; compare their current values.
   facts[21] = undefined;
   if (args[21] !== undefined)

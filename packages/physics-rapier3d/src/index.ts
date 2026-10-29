@@ -5,6 +5,7 @@
 
 export type { Rapier3DCollisionEvent } from './physics-entity-records.js';
 export { registerPhysicsSystems } from './physics-sync.js';
+export { default } from './plugin.js';
 export {
   createRapier3DPhysicsWorld,
   RapierPhysicsWorld3D,

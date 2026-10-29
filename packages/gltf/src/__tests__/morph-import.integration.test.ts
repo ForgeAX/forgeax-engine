@@ -86,13 +86,15 @@ describe('real glTF morph import through Pack and AssetRegistry', () => {
     const animationPayload = animationEntry?.payload as {
       readonly channels: readonly {
         readonly property: string;
-        readonly sampler: { readonly input: readonly number[]; readonly output: readonly number[] };
+        readonly sampler: { readonly input: unknown; readonly output: unknown };
       }[];
     };
     expect(animationPayload.channels).toHaveLength(1);
     expect(animationPayload.channels[0]?.property).toBe('weights');
-    expect(animationPayload.channels[0]?.sampler.input).toEqual([0, 1]);
-    expect(animationPayload.channels[0]?.sampler.output).toEqual([0, 0.75, 0.25, 0]);
+    // Keyframes live in the samples artifact; the payload keeps element windows.
+    expect(animationPayload.channels[0]?.sampler.input).toEqual({ offset: 0, count: 2 });
+    expect(animationPayload.channels[0]?.sampler.output).toEqual({ offset: 2, count: 4 });
+    expect(animationEntry?.artifacts).toHaveProperty('animation-clip/samples.bin');
 
     const runtime = new AssetRegistry({ scopeId: 'import-fixture' });
     const world = new World({ assets: runtime });

@@ -126,19 +126,26 @@ and emission keeps the original job order.
 The packaged input roster contains `base-ssao` and `point-ssao`. SSAO is an
 independent fullscreen entry, so the same projection used for transferred inputs
 removes it when disabled without recompiling material shaders. All four public
-point-shadow/SSAO configurations remain available. The release producer removes
-obsolete no-SSAO copies while preserving declarations and other live profiles.
-The packaged `buildEngineShaderManifest` path retains SSAO in both point-shadow
+point-shadow/SSAO configurations remain available. The packaged
+`buildEngineShaderManifest` path retains SSAO in both point-shadow
 configurations, matching its source-built manifest and the runtime Standard
 profile. Explicit bundler `engineEntries.hdrpSsao: false` still removes it;
 configured shared inputs retain their producer-owned projection.
 
-Each prepared profile records `source.json` with the `engineShaderSourceDigest`
-of the `@forgeax/engine-shader` `src/` WGSL it was compiled from. The loader
-recomputes that digest over the resolved shader sources and admits the profile
-only on an exact match; a missing record or a mismatch (for example a profile
-left behind by an earlier SDK or Dawn preparation after a WGSL edit) warns once
-and compiles from source instead of publishing stale bindings.
+Both profiles live in one deterministic `dist/engine-inputs/profiles.json.gz`
+container (`packaged-profiles` entry). It pools the WGSL fragments and source
+tables the profiles share, carries the import catalog once, and stores each
+profile's rows with its own key, fragment-table and source order, because
+compiler and merged app-input producers order them differently.
+`packagedProfilePublication` rebuilds the exact producer publication, and the
+encoder refuses a profile that would not. A single-profile preparation retains the other profile only when it
+was compiled from the same WGSL. The container records the
+`engineShaderSourceDigest` of the `@forgeax/engine-shader` `src/` WGSL it was
+compiled from. The loader recomputes that digest over the resolved shader
+sources and admits a profile only on an exact match; a mismatch (for example a
+container left behind by an earlier SDK or Dawn preparation after a WGSL edit),
+an obsolete container version or an absent profile warns or falls back and
+compiles from source instead of publishing stale bindings.
 
 The public `VIEW_ABI` export is typed transport metadata for
 `forgeax_view::common`: group 0, binding 0, and the 1280-byte upload shape, including camera clipping planes, fog and atmosphere. It contains no live WebGPU object. Consumers should use the manifest
@@ -197,7 +204,8 @@ again. A completed authored generation is not held in a permanent option cache.
 | 入口 | 说明 |
 |:--|:--|
 | `forgeaxShader(options?)` | Vite plugin factory，返回含 4 hook + `resolveId` + `load`（virtual module 通道）的 `Plugin` 对象（w14 落地 + feat-20260608 M3 扩展） |
-| `engineShaderSourceDigest(root)` / `PACKAGED_SOURCE_RECORD` | Packaged-profile provenance: SHA-256 over every `*.wgsl` under `root`, written by the release producer to `source.json` and re-derived by the loader |
+| `engineShaderSourceDigest(root)` | Packaged-profile provenance: SHA-256 over every `*.wgsl` under `root`, recorded in the packaged container and re-derived by the loader |
+| `encodePackagedProfiles` / `decodePackagedProfiles` / `packagedProfilePublication` / `PACKAGED_PROFILES_FILE` / `PACKAGED_PROFILE_NAMES` | The pooled `profiles.json.gz` container and exact per-profile publication rebuild |
 | `toRollupLog(err)` | `ShaderError` → `RollupLog`（hint 双投影，w14 落地） |
 | `ForgeaXShaderRollupLog` | RollupLog 扩展类型（`hint` 顶层投影是 forgeax 自定义字段） |
 | `virtual:forgeax/bundler` | Build-time virtual module emitting `forgeaxBundlerAdapter()` factory（feat-20260608 M3，详见下节） |

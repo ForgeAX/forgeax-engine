@@ -1,6 +1,11 @@
-import type { RhiCanvasContext, Texture, TextureView } from '@forgeax/engine-rhi';
+import {
+  type RhiCanvasContext,
+  RhiError,
+  type Texture,
+  type TextureView,
+} from '@forgeax/engine-rhi';
 import type { RenderGraphExecutionPhase } from '../render-contract';
-import type { ExtractedLights } from '../render-system-extract';
+import type { ViewLights } from '../world/render-lights';
 import {
   configurePipelineSurface,
   type PipelineState,
@@ -69,7 +74,7 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
 export function acquireSwapChainTarget(
   internals: RenderSystemInternals,
   pipelineState: PipelineState,
-): { currentTexture: Texture; view: TextureView; targetW: number; targetH: number } | null {
+): { texture: Texture; view: TextureView; targetW: number; targetH: number } | null {
   const output = internals.viewOutput?.texture ?? internals.presentationOutput;
   if (output !== undefined) {
     const view = internals.device.createTextureView(output, {
@@ -80,7 +85,7 @@ export function acquireSwapChainTarget(
       return null;
     }
     return {
-      currentTexture: output,
+      texture: output,
       view: view.value,
       targetW: internals.viewOutput?.width ?? internals.canvas.width,
       targetH: internals.viewOutput?.height ?? internals.canvas.height,
@@ -131,27 +136,74 @@ export function acquireSwapChainTarget(
     }
     currentTextureResult = retry;
   }
-  const viewDescriptor =
+  const format =
     pipelineState.colorAttachmentFormat === pipelineState.format
-      ? {}
-      : { format: pipelineState.colorAttachmentFormat as GPUTextureFormat };
-  const viewResult = internals.device.createTextureView(currentTextureResult.value, viewDescriptor);
-  if (!viewResult.ok) {
-    internals.errorRegistry.fire(viewResult.error);
-    return null;
-  }
+      ? undefined
+      : (pipelineState.colorAttachmentFormat as GPUTextureFormat);
+  const view = swapChainView(internals, currentTextureResult.value, format);
+  if (view === null) return null;
   return {
-    currentTexture: currentTextureResult.value,
-    view: viewResult.value,
+    texture: currentTextureResult.value,
+    view,
     targetW: internals.canvas.width | 0,
     targetH: internals.canvas.height | 0,
   };
 }
 
+// A surface that hands back the same texture again (native hosts, headless
+// carriers) reuses its view; a browser's per-frame texture misses and is
+// released with that texture.
+const swapChainViews = new WeakMap<
+  Texture,
+  { readonly format: GPUTextureFormat | undefined; readonly view: TextureView }
+>();
+
+function swapChainView(
+  internals: RenderSystemInternals,
+  texture: Texture,
+  format: GPUTextureFormat | undefined,
+): TextureView | null {
+  const cached = swapChainViews.get(texture);
+  if (cached !== undefined && cached.format === format) return cached.view;
+  const viewResult = internals.device.createTextureView(
+    texture,
+    format === undefined ? {} : { format },
+  );
+  if (!viewResult.ok) {
+    internals.errorRegistry.fire(viewResult.error);
+    return null;
+  }
+  swapChainViews.set(texture, { format, view: viewResult.value });
+  return viewResult.value;
+}
+
+/** Preparation reads dimensions without acquiring the canvas's next texture. */
+export function frameTargetExtent(
+  internals: RenderSystemInternals,
+  captureOnly: boolean,
+  captureTarget?: { readonly width: number; readonly height: number },
+): { targetW: number; targetH: number } {
+  const capture = captureOnly ? captureTarget : undefined;
+  return {
+    targetW: (capture?.width ?? internals.viewOutput?.width ?? internals.canvas.width) | 0,
+    targetH: (capture?.height ?? internals.viewOutput?.height ?? internals.canvas.height) | 0,
+  };
+}
+
+export function requireFrameTarget(target: ReturnType<typeof acquireSwapChainTarget> | undefined) {
+  if (target == null)
+    throw new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'the presentation target is acquired after pipeline preparation',
+      hint: 'resolve surface resources only while executing ready frame passes',
+    });
+  return target;
+}
+
 /** The exact light projections consumed by GPU and raster shadow views. */
-export function hasShadowViewDemand(lights: ExtractedLights): boolean {
+export function hasShadowViewDemand(lights: ViewLights): boolean {
   return (
-    (lights.lightViewProj?.length ?? 0) > 0 ||
+    (lights.cascades?.lightViewProj?.length ?? 0) > 0 ||
     lights.pointShadow.length > 0 ||
     lights.spot.some((spot) => spot.lightViewProj !== undefined)
   );
@@ -159,10 +211,10 @@ export function hasShadowViewDemand(lights: ExtractedLights): boolean {
 
 export function resolveShadowMapSize(
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
 ): number | undefined {
-  if (lights.cascadeCount === undefined) return undefined;
-  const requested = lights.shadowMapSize;
+  if (lights.cascades?.cascadeCount === undefined) return undefined;
+  const requested = lights.cascades?.shadowMapSize;
   if (!(requested !== undefined && requested > 0)) return requested;
   const maxDimension = internals.device.limits.maxTextureDimension2D;
   if (!(maxDimension > 0)) return Math.floor(requested);
@@ -180,7 +232,7 @@ export function resolveShadowMapSize(
  */
 export function resolveSpotShadowMapSize(
   internals: RenderSystemInternals,
-  lights: ExtractedLights,
+  lights: ViewLights,
 ): number | undefined {
   const requested = lights.spot.find(
     (spot) => spot.shadowAtlasTile >= 0 && spot.lightViewProj !== undefined,

@@ -1,6 +1,7 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
+import { meshAttributeChannels } from '../publication/packed-rows-mesh';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
@@ -10,13 +11,13 @@ import type { MeshFrame } from '../scene/mesh-frame';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { buildRaySurfaceScene, type RaySurfaceInstance } from './attributes';
 import { rayReferenceFailure } from './scene';
-import { projectVisibleSurfaces } from './visible-surface';
+import type { VisibleSurfaceProjection } from './visible-surface';
 
 /** One frozen query projection of the complete retained scene, including offscreen sources. */
 export function projectRayScene(
   slots: FrameList<RenderSceneSlot>,
   worlds: readonly RenderResourceScope[],
-  maxSurfaceRecords: number,
+  visibleSurface: VisibleSurfaceProjection,
   frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ) {
   const sources =
@@ -29,7 +30,12 @@ export function projectRayScene(
         'transport contributor has no admitted geometry; missing representation is not a ray miss',
       ).unwrap();
   }
-  const surfaces = projectVisibleSurfaces(sources, maxSurfaceRecords).unwrap();
+  const surfaces = {
+    records: visibleSurface.records.slice(),
+    slotBases: new Map(visibleSurface.slotBases),
+    entityBases: new Map(visibleSurface.entityBases),
+    layout: visibleSurface.layout,
+  };
   const instances: RaySurfaceInstance[] = [];
   // These dense material addresses belong only to this snapshot. World handles
   // and retained surface rows remain the source identity; no identity allocator.
@@ -51,8 +57,10 @@ export function projectRayScene(
     const mesh = world.resolveAsset<MeshAsset>(source.assetHandle).unwrap();
     if (mesh.kind !== 'mesh')
       return rayReferenceFailure('retained transport source must resolve to a MeshAsset').unwrap();
+    // Packed-rows meshes rebuild their channels exactly from the rows here.
+    const channels = meshAttributeChannels(mesh);
     const read = (key: keyof MeshAsset['attributes']) => {
-      const value = mesh.attributes[key];
+      const value = channels[key];
       if (value === undefined || value instanceof Float32Array) return value;
       if (value instanceof ArrayBuffer && value.byteLength % 4 === 0)
         return new Float32Array(value);

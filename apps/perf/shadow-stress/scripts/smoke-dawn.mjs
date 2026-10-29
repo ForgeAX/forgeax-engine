@@ -345,7 +345,6 @@ const gpuDrivenSamples = evidence.gpuDrivenSamples.filter((sample) => sample.fra
 const GPU_DRIVEN_COUNTERS = [
   'planRebuildBatches',
   'planRebuildCandidates',
-  'lodSelectionChanges',
   'filteredPlanBuilds',
   'preparedBatchBuilds',
   'filteredBatchBuilds',
@@ -434,8 +433,6 @@ const result = {
       evidence.postSpawn.directionalCascadeCount === 4,
     sampledEveryFrame: samples.length === sampleFrames,
     gpuDrivenSampledEveryFrame: evidence.gpuDrivenSamples.length === profileFrames + sampleFrames - 1,
-    lodSelectionObserved:
-      !evidence.options.lodOscillate || gpuDrivenSamples.some((sample) => sample.lodSelectionChanges > 0),
     everyShadowViewReported: samples.every(
       (sample) =>
         sample.viewCount === expectedViewCount &&

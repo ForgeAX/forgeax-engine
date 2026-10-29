@@ -102,6 +102,33 @@ export function readComponentMutationEpoch(world: World, component: Component): 
   return world[worldInternal].getComponentMutationEpochs()[componentId(component)] ?? 0;
 }
 
+/** Latest mutation epoch of any component token outside `except`. */
+export function readMutationEpochExcept(world: World, except: readonly Component[]): number {
+  const epochs = world[worldInternal].getComponentMutationEpochs();
+  let latest = 0;
+  for (let id = 0; id < epochs.length; id += 1) {
+    const epoch = epochs[id] ?? 0;
+    if (epoch <= latest) continue;
+    let excluded = false;
+    for (const component of except) if (componentId(component) === id) excluded = true;
+    if (!excluded) latest = epoch;
+  }
+  return latest;
+}
+
+/**
+ * Latest epoch at which `entity`'s `component` was added or written; -1 when
+ * the entity is dead or lacks the component.
+ */
+export function readEntityComponentEpoch(
+  world: World,
+  entity: EntityHandle,
+  component: Component,
+): number {
+  const change = world[worldInternal].getComponentChange(entity, componentId(component));
+  return change === undefined ? -1 : Math.max(change.added, change.changed);
+}
+
 export interface RenderReadVersion {
   readonly mutationEpoch: number;
   readonly structureEpoch: number;

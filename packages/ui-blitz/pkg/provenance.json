@@ -1,23 +1,22 @@
 {
   "schema": "forgeax-ui-blitz/2",
   "upstreamBase": "74fe1abf090732524c86d96e6cdb6f95d8f8d6dc",
-  "forkRevision": "2174b77da947ad9cec9a8bb957f4669d82a4b17a",
+  "forkRevision": "45a003ce743e88d225eb0a8fc08ce37f50112317",
   "forkDirty": false,
   "rust": "cargo 1.99.0 (5f94df478 2026-08-27)",
   "wasmBindgen": "0.2.129",
   "paint": "vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference",
   "profile": "release",
-  "sourceDigest": "8d6cd46923ec0e93d67e686f143383c1cdc2fb8e05b3e3a64da54d6c7e4055ed",
+  "sourceDigest": "f625d614a3d8297a9e945265bccd9cf024d044fbba6e6946ea5c5ab5dccea29e",
   "inputs": {
     "packages/ui-blitz/Cargo.lock": "3a9346a23cb4616ac6967fcbf41d34c7d034a107693c1acac656db99e707d817",
     "packages/ui-blitz/Cargo.toml": "4d384538a114de44a0e853de270434f1dac82ed4d6762c4eb409853c0b4f20e7",
-    "packages/ui-blitz/rust/GPU-ABI.md": "2bf971b80d7ab2606a517faed7522430f7659f4d0643c093817bb51cd5b6a0c6",
     "packages/ui-blitz/rust/control_tests.rs": "f6dca194ef5391447897736303bd67789248b5b28da62d81796a80a1d52b13ee",
     "packages/ui-blitz/rust/focus_tests.rs": "edb3359f2b921a6f032c64aa924759479a472e24a84a4825b30b66a8bff9ec52",
     "packages/ui-blitz/rust/form_tests.rs": "29f0e6be07dcea666437a24d5396e81e7a94ca0952e7b5e33507b0180363001b",
     "packages/ui-blitz/rust/gpu.rs": "f51f309ff4071e79092648c302c98688201b2beeb0b60fbf14a00f9d2ae916f0",
     "packages/ui-blitz/rust/image_tests.rs": "0e6ffe0862c70043338c965757ae05bbce9f07e69c7fe2adf6472560bfde7c01",
-    "packages/ui-blitz/rust/lib.rs": "8bb447d97fb52ddc1a582002afb950b05692fe80e8ed16cf1e9614f957edf47f",
+    "packages/ui-blitz/rust/lib.rs": "98f6d1899933f9c1084eaef32183a788c16aae669e9e404aba895818a3fe3370",
     "packages/ui-blitz/rust/resources.rs": "6b5a99190e2308a6535441139761a5eae9c7d05e22620bc8116af9d65a0f4564",
     "packages/ui-blitz/rust/scroll_tests.rs": "bad72d5586ce760630cac0d33b11e32ad04aecc347d5453c7646ac2e7250459e",
     "packages/ui-blitz/rust/test-assets/aspect-pattern.txt": "c9f46a837298d171e114a9b636266b453315b8e5b4d7527fa360559bc5886d98",
@@ -28,7 +27,7 @@
     "packages/ui-blitz/scripts/native-init.js": "a439f694b820270930c51a66253ed75411402a412c963501e59ebfd053b6be7d",
     "packages/ui-blitz/scripts/provenance.mjs": "2442c40fc617533b71dd184c4295915e0ac16feaa488d96f50ad83b8cec9eff3",
     "packages/ui-blitz/scripts/verify-current.mjs": "d7d252de7046aeb5ce1d3ca0adb626cf978476603339b851a2fe896db47a5ab3",
-    "packages/ui-blitz/vendor/README.md": "f1012dba21667be04e0e4275f2347dfeb51903b27df71c9c841952eaba76d780",
+    "packages/ui-blitz/vendor/README.md": "1ed4cd878cd8608a387d237ac42856adae7b5fc08354f7fa2075a7e3547a6e29",
     "packages/ui-blitz/vendor/UPSTREAM.json": "3f9b75ca55191160dc587eaa2455cc2f1a5d209f220314b22386be523848b2ed",
     "packages/ui-blitz/vendor/shaders/blend.wgsl": "31fa789fc76bc5889154b6237a621af66655ff3a257fc75156598df15cda1bc6",
     "packages/ui-blitz/vendor/shaders/clear.wgsl": "b875fb67b3f509279f6f83cb251e928cacb60b4cbf7a909ce477e67f75903d70",
@@ -165,7 +164,7 @@
     "third_party/blitz/packages/blitz-dom/src/config.rs": "1afd231ae9b973b2ebd6d83cc0d5b0835df64e5852edaa91ebfa4d5f38bbebf3",
     "third_party/blitz/packages/blitz-dom/src/cssom.rs": "139f26fd97a442c78dc65fd70190cfa26142545909437c73afa534f047567059",
     "third_party/blitz/packages/blitz-dom/src/debug.rs": "d92479478dc66189055f7fda5ef6c02569ff9436d9d80028712adf633d444151",
-    "third_party/blitz/packages/blitz-dom/src/document.rs": "48f7d1fae392a6a0eb32edd7b7bcd57759bf1aca859477d61204e72f623d0ed2",
+    "third_party/blitz/packages/blitz-dom/src/document.rs": "07d5350cebe43abf74b297de2d6d747fe8613bc3410972d82794f1b8ebbb77e2",
     "third_party/blitz/packages/blitz-dom/src/events/driver.rs": "e5786bfa2d0519aeb04d48757bcfc63dba051cd326eda586c855eaabe55c8824",
     "third_party/blitz/packages/blitz-dom/src/events/focus.rs": "7228231360e017b41809b75ce1186ed2311289f096f3562ff7f807ee85282985",
     "third_party/blitz/packages/blitz-dom/src/events/ime.rs": "449142c2c72bae26fafeb5b65d6a35963ba7f62d1c2772e303aba920c0c7a47e",
@@ -194,18 +193,18 @@
     "third_party/blitz/packages/blitz-dom/src/node/custom_widget.rs": "f3902c776c32a517db8e319a449bf969249e978a13514ac2aa3448793b5a9baa",
     "third_party/blitz/packages/blitz-dom/src/node/element.rs": "757251b33d9080a8d82410f6c3f91ecee82e2ab630e87d801cba46aa4785f6d6",
     "third_party/blitz/packages/blitz-dom/src/node/mod.rs": "e6c19a26fe7cc8dd57dba627ab1a88b7885b45938b0fe6a1e7b0babf21e97adf",
-    "third_party/blitz/packages/blitz-dom/src/node/node.rs": "af4529090558e3a5d94fcd518b25ea94f8102988434dcb3aeac7d307b2a8f9cf",
+    "third_party/blitz/packages/blitz-dom/src/node/node.rs": "b279f604c6bd637045e48aee20d390d44d91924b090078f5558b320b1d712084",
     "third_party/blitz/packages/blitz-dom/src/node/range.rs": "01e73c4ed981edd0c42aaff52754c370a1f28126d1d52c3557ff1524b6d25931",
     "third_party/blitz/packages/blitz-dom/src/node/scrollbar.rs": "a0e609c676d76083c75cca6eb137ed53775e097974e73ae6fc30a7fa11fc56ab",
     "third_party/blitz/packages/blitz-dom/src/node/select.rs": "aed53a3fe1dba327073bdb0688661850d4107557f75c503f4ebd976e0e7dafe6",
     "third_party/blitz/packages/blitz-dom/src/node/serialize.rs": "46ce4aa8b2abd529df54a2409682175816bee0812cb18ebd20b2e260f0739413",
     "third_party/blitz/packages/blitz-dom/src/node/stylo_data.rs": "e9813223b5f9b62473c57323fb91031429b9e77a85efd019682756624fd97776",
     "third_party/blitz/packages/blitz-dom/src/node/svg.rs": "aad26a348364b008c9cdb8896032a6c1087d4c7ba93235d9b6ed1ee7e9676693",
-    "third_party/blitz/packages/blitz-dom/src/node/text.rs": "e5ade42914f844b2cb67f25b635cf5939b656522e78ed4f8f8112c83f7f76cc8",
+    "third_party/blitz/packages/blitz-dom/src/node/text.rs": "c28f510abcd59c57607965cd9f27d609160375fa82770958001aaadab189e22e",
     "third_party/blitz/packages/blitz-dom/src/query_selector.rs": "e764d8d1f6e61c1985ca3756a28a3f25d4eaa00a972ed95983c3b88aac4762e1",
     "third_party/blitz/packages/blitz-dom/src/resolve.rs": "bdd10a7dddbb61901a3ee76f71752c406aaf06e1c6e248858e576d9311dc04a7",
     "third_party/blitz/packages/blitz-dom/src/resolved_style.rs": "c2d8f6f1261d2acb0b97e7d791b92f0da7d34e7a993c4d808fe4326f8ea6f732",
-    "third_party/blitz/packages/blitz-dom/src/scrolling.rs": "1dc7b90f045b505e06f13e33b2989d99ae69b0ad7f5b6f9b28f0007bbfbd7939",
+    "third_party/blitz/packages/blitz-dom/src/scrolling.rs": "63dfcc978f44acd92fc206a3130e81a8000cdc1cde6d00cb5566e2f1a143225e",
     "third_party/blitz/packages/blitz-dom/src/selection.rs": "c5a0811b464d9fcdae528f271e9947b5567550ee3943779bd7e38b7bcd0d240f",
     "third_party/blitz/packages/blitz-dom/src/shadow.rs": "110967456313d7df0e38d9397ea4498f2d285cd7cd874287751941775bb50a61",
     "third_party/blitz/packages/blitz-dom/src/stylo.rs": "ef34468264dea5f7c05e117d2e24964b9d67c1b0c90a6cde95d84acd9929a29c",
@@ -2017,8 +2016,8 @@
   ],
   "outputs": {
     "ui_blitz_bg.wasm": {
-      "bytes": 15694722,
-      "sha256": "6d9c1708be0b208608ed0c27f43173c35469492dadf597230800c9c5278b50ec"
+      "bytes": 15695399,
+      "sha256": "856b65ec4d79270c4518d37ac80be60e9897aeb08edd34e4e6b888dbbccd8434"
     },
     "ui_blitz_bg.wasm.d.ts": {
       "bytes": 8798,
@@ -2034,7 +2033,7 @@
     },
     "ui-native.mjs": {
       "bytes": 44084,
-      "sha256": "db5ffb01bc0df51380134f74c74ef16306f94ae7dc345985cfdab7acf2b39965"
+      "sha256": "614028c6993894ea86374e5553469a2c58a4ddaf605ca3744b6c09d2630d72b1"
     },
     "ui-native.d.mts": {
       "bytes": 5281,

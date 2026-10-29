@@ -9,6 +9,7 @@ import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
+  type FrameModel,
   openReplay,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
@@ -19,6 +20,7 @@ import { assert, expect } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -308,7 +310,7 @@ export async function verifyRendererDiffuse(
     const direct = await hdr('direct');
     (await recorder.frameBoundary()).unwrap();
     const directTape = (await directPending).unwrap();
-    await save('direct.rhitape', directTape.bytes);
+    await save('direct.rhitape', compactTape(directTape).bytes);
     centers.direct = direct.center;
     expect(direct.center[0]).toBeGreaterThan(0);
     renderValue(renderer.setProfile({ ...directProfile, diffuseGi: settings }));
@@ -344,7 +346,7 @@ export async function verifyRendererDiffuse(
     (await recorder.frameBoundary()).unwrap();
     const encoded = (await pending).unwrap();
     const rawD = await readD();
-    await save('renderer.rhitape', encoded.bytes);
+    await save('renderer.rhitape', compactTape(encoded).bytes);
     await save('raw-d.bin', rawD);
     const viewD = new DataView(rawD.buffer);
     const centerOffset = (16 * 32 + 16) * 80;
@@ -385,21 +387,23 @@ export async function verifyRendererDiffuse(
           'ray-path.accumulation',
       );
       assert(accumulationResource);
-      const reread = (
-        await replay.readResourceAtWork(accumulationResource.resourceId, composite.workIndex)
+      const histories = diffuseHistories(model, reconstruction);
+      const reads = (
+        await replay.readAtWorks(
+          [accumulationResource, ...histories].map((resource) => ({
+            resourceId: resource.resourceId,
+            workIndex: composite.workIndex,
+          })),
+        )
       ).unwrap();
+      const reread = reads[0]?.unwrap();
+      assert(reread);
       expect(reread.bytes).toEqual(rawD);
       if (reconstruction !== undefined) {
-        const histories = model.resources.filter((resource) =>
-          ['ray-diffuse.history-a', 'ray-diffuse.history-b'].includes(
-            (resource.descriptor as { desc?: { label?: string } }).desc?.label ?? '',
-          ),
-        );
         expect(histories).toHaveLength(2);
-        for (const resource of histories) {
-          const history = (
-            await replay.readResourceAtWork(resource.resourceId, composite.workIndex)
-          ).unwrap();
+        for (const [index, resource] of histories.entries()) {
+          const history = reads[index + 1]?.unwrap();
+          assert(history);
           await save(`history-${resource.resourceId.replaceAll(':', '-')}.bin`, history.bytes);
           const data = new DataView(
             history.bytes.buffer,
@@ -680,4 +684,13 @@ export async function verifyRendererDiffuse(
     surface?.destroy();
     native?.destroy();
   }
+}
+
+function diffuseHistories(model: FrameModel, reconstruction: 'combined' | undefined) {
+  if (reconstruction === undefined) return [];
+  return model.resources.filter((resource) =>
+    ['ray-diffuse.history-a', 'ray-diffuse.history-b'].includes(
+      (resource.descriptor as { desc?: { label?: string } }).desc?.label ?? '',
+    ),
+  );
 }

@@ -115,6 +115,14 @@ continues to write only local Transform and never owns a renderer pose cache.
 Animation channels contain one `targetId`. The previous `targetPath` wire was a
 clean cut: there is no dual read, adapter, or fallback.
 
+Published clips keep numeric sampler `input`/`output` arrays in the
+`animation-clip/samples.bin` artifact (little-endian f32); the payload holds
+`{ offset, count }` element windows into it. String and boolean property outputs
+stay inline. Pack's `encodeAnimationClipSamples` is the single producer codec
+used by the glTF, FBX and ScriptablePack producers, and the decoder resolves the
+windows to `Float32Array` views before ordinary sampler validation. In-memory
+clips and inline JSON arrays still decode unchanged.
+
 ## TypeScript-first animation control
 
 > [!IMPORTANT]

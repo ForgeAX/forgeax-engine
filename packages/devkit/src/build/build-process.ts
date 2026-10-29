@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { ImporterRegistry } from '@forgeax/engine-import';
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import { copyPackData } from '@forgeax/engine-pack/runtime';
@@ -116,6 +117,63 @@ let tail = Promise.resolve();
 let started = false;
 const runs = new Map<number, ToolRun<unknown>>();
 
+/** The closed set of public project App option keys. */
+const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
+  'dynamicGeometryMeshBudgetBytes',
+  'assetBudgetBytes',
+  'standardProfile',
+  'pipelineLibrary',
+  'backgroundPipelineLibrary',
+  'time',
+  'renderPipelineCapacity',
+  'renderTaskYield',
+  'loadingLabels',
+  'wechat',
+]);
+
+const LOADING_LABEL_KEYS = new Set(['lang', 'loading', 'elapsed', 'slow', 'reload']);
+
+function validateRenderTaskYield(value: unknown): void {
+  if (value !== undefined && value !== 'none' && value !== 'features')
+    throw new TypeError("devkitAppOptions.renderTaskYield must be 'none' or 'features'");
+}
+
+/** Optional loading labels are strings, plus a `phases` map of phase id to string. */
+function validateLoadingLabels(value: unknown): void {
+  if (value === undefined) return;
+  const record = (candidate: unknown): candidate is Record<string, unknown> =>
+    typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate);
+  const valid =
+    record(value) &&
+    Object.entries(value).every(([key, label]) =>
+      key === 'phases'
+        ? record(label) && Object.values(label).every((name) => typeof name === 'string')
+        : LOADING_LABEL_KEYS.has(key) && typeof label === 'string',
+    );
+  if (!valid)
+    throw new TypeError(
+      'devkitAppOptions.loadingLabels must contain lang/loading/elapsed/slow/reload strings and a phases string map',
+    );
+}
+
+function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
+  if (wechat !== undefined) {
+    if (
+      typeof wechat !== 'object' ||
+      wechat === null ||
+      Array.isArray(wechat) ||
+      Object.keys(wechat).some((key) => key !== 'maxRenderShortSide') ||
+      (wechat.maxRenderShortSide !== undefined &&
+        (!Number.isInteger(wechat.maxRenderShortSide) ||
+          wechat.maxRenderShortSide < 0 ||
+          wechat.maxRenderShortSide > 0xffff_ffff))
+    )
+      throw new TypeError(
+        'devkitAppOptions.wechat must contain only an unsigned maxRenderShortSide pixel budget',
+      );
+  }
+}
+
 /** Admit a closed data-only projection; World and Render retain their policies. */
 function projectAppOptions(value: unknown): DevKitAppOptions {
   if (value === undefined) return {};
@@ -123,20 +181,15 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     typeof value !== 'object' ||
     value === null ||
     (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
-    Reflect.ownKeys(value).some(
-      (key) =>
-        key !== 'dynamicGeometryMeshBudgetBytes' &&
-        key !== 'standardProfile' &&
-        key !== 'pipelineLibrary' &&
-        key !== 'time' &&
-        key !== 'renderPipelineCapacity',
-    )
+    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
   const capacity = options.renderPipelineCapacity;
   if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
     throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
+  validateRenderTaskYield(options.renderTaskYield);
+  validateWechatOptions(options.wechat);
   if (options.time !== undefined) {
     const time = options.time;
     if (
@@ -145,17 +198,21 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
       Array.isArray(time) ||
       Object.entries(time).some(
         ([key, value]) =>
-          !['fixedDeltaSeconds', 'maxStepsPerUpdate', 'maxDeltaSeconds'].includes(key) ||
-          typeof value !== 'number' ||
-          !Number.isFinite(value) ||
-          value <= 0 ||
-          (key === 'maxStepsPerUpdate' && !Number.isSafeInteger(value)),
+          (key === 'fixedCatchUp' ? value !== 'substeps' && value !== 'merged' : false) ||
+          (key !== 'fixedCatchUp' &&
+            (!['fixedDeltaSeconds', 'maxStepsPerUpdate', 'maxDeltaSeconds'].includes(key) ||
+              typeof value !== 'number' ||
+              !Number.isFinite(value) ||
+              value <= 0 ||
+              (key === 'maxStepsPerUpdate' && !Number.isSafeInteger(value)))),
       )
     )
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
   }
+  validateLoadingLabels(options.loadingLabels);
   if (options.dynamicGeometryMeshBudgetBytes !== undefined)
     validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
+  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
   if (options.standardProfile !== undefined) {
     const invalid = validateRenderProfile(options.standardProfile);
     if (invalid !== undefined) throw new TypeError(invalid);

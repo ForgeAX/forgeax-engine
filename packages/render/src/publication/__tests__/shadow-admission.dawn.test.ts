@@ -22,6 +22,7 @@ import { afterAll, assert, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { installDefaultAssetDecoders } from '../../../../runtime/src/asset-contributions';
 import { createRenderer } from '../../../../runtime/src/createRenderer';
+import { encodeRenderPublication } from '../record';
 
 function required<T>(
   result:
@@ -194,11 +195,15 @@ it.each([
           const packet = structuredClone(candidate.packet);
           candidate.accept();
           try {
-            const receipt = required(renderer.draw({ publication: packet }));
+            const receipt = required(
+              renderer.draw({ publication: encodeRenderPublication(packet) }),
+            );
             required(await receipt.completed);
             return receipt;
           } finally {
-            publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+            publisher
+              .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+              .unwrap();
           }
         });
         const gpuShadow = !cpu && gpuEnabled[frameIndex] === true;
@@ -264,11 +269,15 @@ it.each([
           const packet = structuredClone(candidate.packet);
           candidate.accept();
           try {
-            const receipt = required(renderer.draw({ publication: packet }));
+            const receipt = required(
+              renderer.draw({ publication: encodeRenderPublication(packet) }),
+            );
             required(await receipt.completed);
             return receipt;
           } finally {
-            publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+            publisher
+              .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+              .unwrap();
           }
         });
       }

@@ -1,3 +1,4 @@
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createRenderFeatureHost } from '../features/host';
 import {
@@ -9,7 +10,9 @@ import { ownRenderFeatureProgramData } from '../features/prepared-gpu-work';
 
 describe('Host feature signature admission', () => {
   it('shares detached program evidence across instance membership without trusting borrowed mutations', () => {
-    const host = createRenderFeatureHost([]).unwrap();
+    const host = createRenderFeatureHost([
+      { identity: 'feature', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+    ]).unwrap();
     const source = {
       wgsl: '@compute @workgroup_size(1) fn main() {}',
       entryPoints: ['main'],
@@ -53,7 +56,9 @@ describe('Host feature signature admission', () => {
       entryPoints: ['main'],
       bytes,
     } as never);
-    const host = createRenderFeatureHost([]).unwrap();
+    const host = createRenderFeatureHost([
+      { identity: 'feature', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+    ]).unwrap();
     const plan: RenderFeatureWorkPlan = {
       resources: [{ kind: 'compute-program', name: 'program', program }],
       passes: [],
@@ -63,7 +68,9 @@ describe('Host feature signature admission', () => {
     expect(renderFeaturePlanSignatureEvidenceMatches(plan, signature ?? '')).toBe(false);
   });
   it('observes unchanged declarations once when a later resource changes', () => {
-    const host = createRenderFeatureHost([]).unwrap();
+    const host = createRenderFeatureHost([
+      { identity: 'feature', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+    ]).unwrap();
     const shader = vi.fn(() => '@compute @workgroup_size(1) fn main() {}');
     const plan = (size: number): RenderFeatureWorkPlan => ({
       resources: [
@@ -105,7 +112,9 @@ describe('Host feature signature admission', () => {
   });
 
   it('leaves the accepted snapshot intact after a failed capture and rejects later mutation', () => {
-    const host = createRenderFeatureHost([]).unwrap();
+    const host = createRenderFeatureHost([
+      { identity: 'feature', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+    ]).unwrap();
     const program = {
       wgsl: '@compute @workgroup_size(1) fn main() {}',
       entryPoints: ['main'],
@@ -140,4 +149,22 @@ describe('Host feature signature admission', () => {
     expect(revision).not.toBe(initial);
     expect(renderFeaturePlanSignatureEvidenceMatches(first, revision ?? '')).toBe(true);
   });
+});
+
+it('publishes detached signature counters while the installed feature keeps accumulating', () => {
+  const host = createRenderFeatureHost([
+    { identity: 'feature', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+  ]).unwrap();
+  const plan: RenderFeatureWorkPlan = { resources: [], passes: [] };
+  host.recordPlanSignature('feature', plan);
+  const before = host.inspection().signatures[0];
+  expect(before).toBeDefined();
+  host.recordPlanSignature('feature', plan);
+  host.recordPlanSignature('feature', plan);
+  const after = host.inspection().signatures[0];
+  expect(after?.cacheHits).toBe((before?.cacheHits ?? 0) + 2);
+  expect(before?.cacheHits).toBe(0);
+  expect(after).not.toBe(before);
+  expect(Object.isFrozen(before)).toBe(true);
+  expect(after?.nativeCalls).toBeUndefined();
 });

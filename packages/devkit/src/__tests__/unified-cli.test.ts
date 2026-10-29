@@ -353,6 +353,26 @@ describe('unified CLI', () => {
     });
   }, 60_000);
 
+  it('presents a compact process tree unless --detail asks for the owner value', async () => {
+    const root = await fixtureRoot();
+    const full = await runUnifiedCli(['help', '--tree', '--root', root, '--json']);
+    const compact = await runUnifiedCli(['help', '--tree', '--root', root, '--json'], {
+      presentation: 'compact',
+    });
+    const detail = await runUnifiedCli(['help', '--tree', '--detail', '--root', root, '--json'], {
+      presentation: 'compact',
+    });
+    expect(detail).toEqual(full);
+    expect(compact.omitted).toEqual({
+      fields: ['value.nodes[].path', 'value.nodes[].summary (groups)'],
+      flag: '--detail',
+    });
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length * 0.75);
+    const nodes = (compact.value as { readonly nodes: readonly { readonly name: string }[] }).nodes;
+    expect(nodes.map(({ name }) => name)).toContain('dev');
+    expect(JSON.stringify(compact.value)).not.toContain('"path":"dev');
+  }, 60_000);
+
   it('keeps project plugin inspection JSON-safe and parses structured flags', async () => {
     const root = await fixtureRoot();
     const plugins = await runUnifiedCli(['asset', 'plugin', 'inspect', '--root', root, '--json']);
@@ -403,7 +423,16 @@ describe('unified CLI', () => {
       '{"kind":"manual","multiplier":1}',
       '--json',
     ]);
-    expect(camera).toMatchObject({ ok: false, error: { code: 'live-not-running' } });
+    expect(camera).toMatchObject({
+      ok: false,
+      error: {
+        code: 'live-not-running',
+        detail: {
+          executionOwner: 'dev',
+          start: expect.arrayContaining(['dev', 'start', '--root']),
+        },
+      },
+    });
   });
 
   it('declares live-not-running on every live leaf that can return it', async () => {

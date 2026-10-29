@@ -23,15 +23,19 @@ describe('Standard Surface pass templates', () => {
     expect(shader).toContain('#import forgeax_material::surface_v1');
     expect(shader).toContain('alphaClipThreshold');
     expect(shader).toContain('fn fs_shadow');
-    expect(shader).not.toMatch(/\bin\.position\s*=|\bin\.positionWS\s*=/);
+    // The only position write is the engine-owned scene-index morph deformation.
+    const morph = /\bin\.position\s*=\s*sceneIndexMorphPosition\(/g;
+    expect(shader.match(morph)).toHaveLength(1);
+    expect(shader.replace(morph, '')).not.toMatch(/\bin\.position\s*=|\bin\.positionWS\s*=/);
   });
 
-  it('keeps the GPU scene palette base separate from the material row', () => {
+  it('addresses Skin tasks by the actual candidate, separately from the material row', () => {
     const shader = source('default-standard-pbr-skin.wgsl');
     expect(shader).toContain('paletteBase : u32');
-    expect(shader).toContain('palette[paletteBase + in.skinIndex.x]');
+    expect(shader).toContain('skinTaskDescriptor(paletteBase)');
+    expect(shader).toContain('let paletteBase = visible.z;');
     expect(shader).toContain('let materialIndex = visible.y;');
     expect(shader).not.toContain('meshes[visible.x]');
-    expect(shader).toContain('let paletteBase = 0u;');
+    expect(shader).toContain('let paletteBase = skinTaskDirectCandidate();');
   });
 });

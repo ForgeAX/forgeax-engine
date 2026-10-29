@@ -5,7 +5,7 @@ import { defineRelationship } from '../relationship-index';
 import { World } from '../world';
 
 const SAMPLE_ROUNDS = 31;
-const WARMUP_ROUNDS = 3;
+const WARMUP_ROUNDS = 5;
 const PARENT_COUNT = 8;
 const CHILD_COUNT = 512;
 const pair = defineRelationship({
@@ -89,8 +89,9 @@ function runWorldWorkload(mode: 'baseline' | 'candidate'): number {
 
 function measure(): { baseline: SampleStats; candidate: SampleStats } {
   const samples = { baseline: [] as number[], candidate: [] as number[] };
-  // Seven observations make p95 the maximum. Warm both complete workloads and
-  // alternate their order so compilation and runner drift do not favor one arm.
+  // Warm both complete workloads before collecting 31 observations. At this
+  // sample count, nearest-rank p95 is the second-highest result; alternating
+  // order limits bias from compilation and runner drift.
   for (let round = -WARMUP_ROUNDS; round < SAMPLE_ROUNDS; round += 1) {
     const order =
       round % 2 === 0 ? (['baseline', 'candidate'] as const) : (['candidate', 'baseline'] as const);

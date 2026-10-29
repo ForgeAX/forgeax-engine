@@ -22,7 +22,7 @@ import { attachEngineFatalBanner } from './engine-fatal-banner.ts';
 
 function claimViewportPanel(panelHost: PanelHost) {
   return panelHost.claim({
-    id: SLOT, pageType: PAGE_TYPE, titleKey: TITLE_I18N_KEY,
+    id: SLOT, home: { kind: 'page', pageType: PAGE_TYPE }, titleKey: TITLE_I18N_KEY,
     activity: { labelKey: TITLE_I18N_KEY, icon: 'box' }, layout: PANEL_LAYOUT,
     closable: PANEL_CLOSABLE,
     dockTitleHidden: true,

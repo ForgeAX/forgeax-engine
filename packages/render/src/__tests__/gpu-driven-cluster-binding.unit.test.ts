@@ -1,3 +1,4 @@
+import { mat4 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import {
   type BindGroup,
@@ -15,13 +16,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { GpuScene } from '../gpu-scene';
-import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
+import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { GpuDrivenStandardPbrFrameResources, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
+import { SkinFrames, type SkinSceneFrame, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   admitGpuFixture,
   mesh,
@@ -55,7 +56,6 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
     ),
     receipt: createStandardPbrArtifactReceipt(true),
   };
-  const allocator = createSkinPaletteAllocator(device, 1 << 20);
   const snapshots = kinds.map((kind, index): RenderableSnapshot => {
     const source = preparedSnapshot(index + 1, index + 1);
     const materialShaderId =
@@ -80,12 +80,7 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
       materials: [material],
       ...(kind === 'skin'
         ? {
-            skin: allocator.allocatePersistentSlice({
-              identity: `skin-${index}`,
-              generation: 1,
-              jointCount: 1,
-              bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-            }),
+            skinBinding: { skeleton: 7, joints: [19] },
           }
         : {}),
       gpuDrivenDraws: defined(source.gpuDrivenDraws).map((draw) => ({
@@ -105,7 +100,6 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
           ...(kind === 'skin'
             ? {
                 vertexInputs: skin.receipt.vertexInputs,
-                skinPaletteAddress: skin.receipt.skinPaletteAddress,
               }
             : {}),
         },
@@ -117,8 +111,19 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   if (available.status !== 'available') throw new Error('Expected Null GPU Scene');
   const topology = new BatchTopology();
   const meshBySlot = new Map(snapshots.map((_, index) => [index, mesh(device)]));
+  const skinInputs = new SkinSceneInputs(available.scene.inputs.arena, () => ({
+    kind: 'skeleton',
+    jointCount: 1,
+    inverseBindMatrices: mat4.identity(mat4.create()),
+  }));
+  const skinFrames = new SkinFrames(skinInputs);
+  let skinFrame: SkinSceneFrame | undefined;
   const publish = (rows: readonly RenderableSnapshot[]) => {
+    skinFrames.discardFrame();
     const delta = scene.apply(rows.map(updateSnapshot));
+    skinInputs.apply(delta);
+    skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+    skinFrame = skinFrames.prepareFrame(scene.slotsSnapshot());
     available.scene.sync(delta).unwrap();
     topology.apply(delta);
   };
@@ -126,8 +131,13 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   const skinLayout = device
     .createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } },
+        {
+          binding: 0,
+          visibility: 1,
+          buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+        },
         { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
       ],
     })
     .unwrap();
@@ -141,7 +151,6 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
             materialArtifact: rigid,
             materialPipelineState: {
               ...state,
-              skinPaletteAllocator: allocator,
               gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
               pbrSkinMeshBindGroupLayout: skinLayout,
             },
@@ -151,6 +160,7 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
             ]),
             scene: {
               scene: available.scene,
+              skin: skinFrame,
               plan: topology.query(topology.sourcePlan(), undefined),
               slots: scene.slotsSnapshot(),
               slotAt: scene.slotAt,
@@ -167,14 +177,13 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
     group,
     snapshots,
     scene: available.scene,
-    allocator,
     meshBySlot,
     publish,
     prepare,
     close() {
       production.dispose();
+      skinInputs.dispose();
       available.scene.dispose();
-      allocator.dispose();
     },
   };
 }
@@ -295,7 +304,7 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       expect(first.bindings).toEqual([{ group: cluster, offsets: [0] }]);
       expect(clusterBindGroupForMesh).toHaveBeenCalledExactlyOnceWith(
         f.scene.transformBuffer,
-        f.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+        f.scene.transformByteLength,
       );
       expect(r.record(frame)).toEqual(first);
       expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(2);
@@ -316,25 +325,29 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       skin = f.group();
     const clusterBindGroupForMesh = vi.fn((_buffer: Buffer, _bytes: number) => rigid);
     const clusterBindGroupForSkin = vi.fn(
-      (_buffer: Buffer, _bytes: number, _palette: Buffer, _window: number) => skin,
+      (_buffer: Buffer, _bytes: number, _task: SkinTaskBinding) => skin,
     );
     try {
       const frame = r.record({ clusterBindGroupForMesh, clusterBindGroupForSkin });
       expect(frame.draws).toBe(4);
       expect(frame.bindings).toEqual([
         { group: rigid, offsets: [0] },
-        { group: skin, offsets: [0, 0, 0] },
+        { group: skin, offsets: [0, 768] },
         { group: rigid, offsets: [0] },
-        { group: skin, offsets: [0, 0, 0] },
+        { group: skin, offsets: [0, 768] },
       ]);
       expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(1);
       expect(clusterBindGroupForSkin).toHaveBeenCalledTimes(2);
       for (const call of clusterBindGroupForSkin.mock.calls) {
         expect(call).toEqual([
           f.scene.transformBuffer,
-          f.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride,
-          defined(f.snapshots[1]?.skin).buffer,
-          f.allocator.bindingWindowBytes,
+          f.scene.transformByteLength,
+          expect.objectContaining({
+            data: expect.anything(),
+            auxiliary: expect.anything(),
+            auxiliaryOffset: 768,
+            auxiliarySize: 16,
+          }),
         ]);
       }
     } finally {
@@ -370,7 +383,7 @@ describe('GPU-driven rigid clustered binding resolution', () => {
       expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(3);
       expect(clusterBindGroupForMesh).toHaveBeenLastCalledWith(
         f.scene.transformBuffer,
-        f.scene.rowCapacity * GPU_SCENE_LAYOUTS.transform.stride,
+        f.scene.transformByteLength,
       );
     } finally {
       await next?.close();

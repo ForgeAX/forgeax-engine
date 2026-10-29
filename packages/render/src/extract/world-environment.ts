@@ -1,10 +1,14 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
-import type { World } from '@forgeax/engine-ecs';
-import { routeWorldError, SpawnLightInvalidBoundsError } from '@forgeax/engine-ecs/projection';
+import type { Component, EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
+import {
+  readRenderArrayView,
+  routeWorldError,
+  SpawnLightInvalidBoundsError,
+} from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type Mat4, mat4, type Vec3, vec3 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
-import { GlobalTransform, readPresentationWorldMatrix, Transform } from '@forgeax/engine-scene';
+import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import type { AssetHandle, IesProfileAsset, TextureAsset } from '@forgeax/engine-types';
 import { type ExtractedCloudLayer, extractCloudLayer } from '../cloud/extract';
 import {
@@ -18,10 +22,6 @@ import {
   Skylight,
   SpotLight,
 } from '../components';
-import {
-  type DirectionalShadowQuality,
-  directionalShadowQualityFromF32,
-} from '../components/directional-shadow-filter';
 import {
   computeInvRangeSquared,
   degToCos,
@@ -49,9 +49,9 @@ import type {
   DirectionalCsmConfig,
   DirectionalLightSnapshot,
   ExtractedFrame,
-  ExtractedLights,
   IesProfileSnapshot,
   LightProbeSnapshot,
+  LightRoster,
   PointLightSnapshot,
   PointShadowSnapshot,
   PreparedExtractContext,
@@ -65,25 +65,24 @@ import {
   buildRectAreaWorldFrame,
   collectCubeCameraSnapshots,
   collectReflectionProbeFacts,
-  computeDirectionalCsm,
   type createWorldInternalView,
   extractVolumeSnapshot,
-  pssmSplit,
   Severity,
   selectCameraRoles,
 } from '../render-system-extract';
-import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
+import { readEnvironmentPose } from './environment-gate';
+
+type WorldInternalView = ReturnType<typeof createWorldInternalView>;
+type RgbTuple = readonly [number, number, number];
 
 /** Produces light, camera and atmosphere facts once, before renderable projection. */
 export function extractWorldEnvironment(
   world: World,
   context: Pick<PreparedExtractContext, 'assets' | 'cameraEntityKey' | 'worldId' | 'viewExtent'>,
-  worldInternal: ReturnType<typeof createWorldInternalView>,
+  worldInternal: WorldInternalView,
   fog: ExtractedFrame['fog'],
 ) {
   const { assets } = context;
-  const directionalLightQuery = world.query({ read: [DirectionalLight] }).unwrap();
-
   // feat-20260601 D-3: camera / point / spot light world transforms are read
   // through the single resolved `GlobalTransform.world` mat4 (written by
   // propagateTransforms).
@@ -95,17 +94,8 @@ export function extractWorldEnvironment(
   // Plan-decisions K-2 sniffing scheme B (archetype-edge sniff once via
   // `row.get(X) !== undefined`); K-3 invariant preserved (`_getArrayView`
   // calls survive untouched, only the entity source changes).
-  let volumetricFog = extractVolumeSnapshot(world, assets, worldInternal);
-  let cloudLayer: ExtractedCloudLayer | undefined;
-  const extractedCloudLayer = extractCloudLayer(world);
-  if (extractedCloudLayer.ok) {
-    cloudLayer = extractedCloudLayer.value;
-  } else {
-    worldInternal._routeError(extractedCloudLayer.error, {
-      severity: Severity.Error,
-      systemName: 'RenderSystem.extract (cloud-layer)',
-    });
-  }
+  const volumetricFogSource = extractVolumeSnapshot(world, assets, worldInternal);
+  const cloudLayer = extractCloudLayerOrRoute(world, worldInternal);
 
   const cameraRoles = selectCameraRoles(world, context.cameraEntityKey, context.viewExtent);
   const cameras = [...cameraRoles.display];
@@ -118,1043 +108,57 @@ export function extractWorldEnvironment(
   // position from the companion Transform via the joined queries.
   // Host-side pre-multiplication: color *= intensity (charter P4); cone
   // deg -> cos (D-S2); range -> 1/range^2 (D-S5).
-  let directional: DirectionalLightSnapshot | undefined;
-  let directionalCount = 0;
-  // feat-20260621 M2: capture shadow fields from the first-hit DirectionalLight.
-  // castShadow defaults to false; only an explicit opt-in requests CSM.
-  let firstHitCastShadow: boolean | undefined;
-  let firstHitShadowFields:
-    | {
-        cascadeCount: number;
-        splitLambda: number;
-        cascadeBlend: number;
-        mapSize: number;
-        depthBias: number;
-        normalBias: number;
-        shadowDistance: number;
-        shadowFilter: number;
-        shadowAngularRadius: number;
-        maxPenumbraTexels: number;
-        shadowMapAspect: number;
-        shadowCasterChannels: number;
-        shadowAutoUpdate: boolean;
-        shadowRevision: number;
-        staggerCascades: boolean;
-        staticShadowCache: boolean;
-        shadowProjection: number;
-        shadowViewProjection: Float32Array;
-        shadowBiasMode: number;
-        shadowRadius: number;
-        shadowIntensity: number;
-        shadowBlurSamples: number;
-      }
-    | undefined;
-  for (const row of directionalLightQuery) {
-    const l = row.get(DirectionalLight);
-    const channelsError =
-      validateChannelMask(l.lightingChannels) ??
-      validateChannelMask(l.shadowCasterChannels, 'shadowCasterChannels');
-    if (channelsError !== null) {
-      worldInternal._routeError(channelsError, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (lighting-channels)',
-      });
-      continue;
-    }
-    directionalCount += 1;
-    const intensity = l.intensity;
-    const snapshot: DirectionalLightSnapshot = {
-      kind: 'directional',
-      lightingChannels: l.lightingChannels,
-      entity: row.entity,
-      direction: vec3.create(l.direction[0] ?? 0, l.direction[1] ?? -1, l.direction[2] ?? 0),
-      color: vec3.create(
-        (l.color[0] ?? 1) * intensity,
-        (l.color[1] ?? 1) * intensity,
-        (l.color[2] ?? 1) * intensity,
-      ),
-      intensity,
-      contactShadowLength: l.contactShadowLength,
-    };
-    if (directional === undefined) {
-      // First hit wins; record-stage N>1 fail-fast (M3 / w19) flags duplicates.
-      directional = snapshot;
-      firstHitCastShadow = l.castShadow;
-      firstHitShadowFields = {
-        cascadeCount: l.cascadeCount,
-        splitLambda: l.splitLambda,
-        cascadeBlend: l.cascadeBlend,
-        mapSize: l.mapSize,
-        depthBias: l.depthBias,
-        normalBias: l.normalBias,
-        shadowDistance: l.shadowDistance,
-        shadowFilter: l.shadowFilter,
-        shadowAngularRadius: l.shadowAngularRadius,
-        maxPenumbraTexels: l.maxPenumbraTexels,
-        shadowMapAspect: l.shadowMapAspect,
-        shadowCasterChannels: l.shadowCasterChannels,
-        shadowAutoUpdate: l.shadowAutoUpdate,
-        shadowRevision: l.shadowRevision,
-        staggerCascades: l.staggerCascades,
-        staticShadowCache: l.staticShadowCache,
-        shadowProjection: l.shadowProjection,
-        shadowViewProjection: new Float32Array(l.shadowViewProjection),
-        shadowBiasMode: l.shadowBiasMode,
-        shadowRadius: l.shadowRadius,
-        shadowIntensity: l.shadowIntensity,
-        shadowBlurSamples: l.shadowBlurSamples,
-      };
-    }
-  }
-
-  let directionalShadowError: LightValidationError | undefined;
-  if (directional !== undefined && firstHitShadowFields !== undefined) {
-    const validation = validateDirectionalLightData({
-      direction: directional.direction,
-      contactShadowLength: directional.contactShadowLength,
-      castShadow: firstHitCastShadow,
-      ...firstHitShadowFields,
-    });
-    if (!validation.ok) {
-      directionalShadowError = validation.error;
-      worldInternal._routeError(directionalShadowError, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (directional-shadow)',
-      });
-    }
-  }
+  const sun = extractDirectionalLights(world, worldInternal);
+  const directionalShadowError = validateDirectionalShadow(sun, worldInternal);
 
   const iesProfiles = new Map<number, IesProfileSnapshot>();
-  const iesProfile = (handle: number | undefined, entity: number): IesProfileSnapshot => {
-    if (handle === undefined || Number(handle) === 0) return {};
-    const key = Number(handle);
-    const cached = iesProfiles.get(key);
-    if (cached !== undefined) return cached;
-    const resolved = runtimeAssets(world.assets).resolveAsset<IesProfileAsset>(handle);
-    let result: IesProfileSnapshot = { iesProfileHandle: key };
-    if (
-      resolved.ok &&
-      resolved.value.kind === 'ies-profile' &&
-      resolved.value.data.byteLength === IES_SLICE_WIDTH * IES_SLICE_HEIGHT * 2
-    ) {
-      result = {
-        iesProfileHandle: key,
-        // Cooked assets are immutable. Preserve payload identity so the upload
-        // cache hashes once; publication clones metadata without transferring it.
-        iesProfileData: resolved.value.data,
-      };
-    } else {
-      worldInternal._routeError(
-        !resolved.ok
-          ? resolved.error
-          : createLightResourceUnavailable({
-              entity,
-              feature: 'ies',
-              generation: 0,
-              sourceKey: String(key),
-              reason: 'format',
-              expected: 'a cooked 256 × 128 r16float IesProfileAsset',
-              actual: 'invalid profile payload',
-              hint: 'recook the IES profile; the unresolved modifier is identity',
-            }),
-        { severity: Severity.Error, systemName: 'RenderSystem.extract (ies-profile)' },
-      );
-    }
-    iesProfiles.set(key, result);
-    return result;
-  };
-  const pointSnapshots: PointLightSnapshot[] = [];
-  // feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-4: track entity per
-  // pointSnapshots index so the post-extract pointShadow join can stamp
-  // `shadowAtlasLayer + shadowNear + shadowFar` onto the matching PointLight.
-  const pointSnapshotEntities: number[] = [];
-  const pointLightQuery = world
-    .query({
-      read: [PointLight],
-      optional: [Transform, GlobalTransform],
-    })
-    .unwrap();
-  for (const row of pointLightQuery) {
-    const p = row.get(PointLight);
-    const decayError = validatePointLightDecay(p.decay);
-    if (decayError !== null) {
-      worldInternal._routeError(decayError, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (point-light-decay)',
-      });
-      continue;
-    }
-    const channelsError = validateChannelMask(p.lightingChannels);
-    if (channelsError !== null) {
-      worldInternal._routeError(channelsError, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (lighting-channels)',
-      });
-      continue;
-    }
-    // K-2 scheme B: archetype-edge sniff -- `bundle.Transform` key is absent
-    // when the archetype does not carry the Transform column.
-    const hasTransform = row.get(GlobalTransform) !== undefined;
-    const intensity = p.intensity;
-    const range = p.range;
-    const entityId = row.entity;
-    // Position = world-space translation extracted from GlobalTransform.world.
-    // A point light archetype without a Transform column sits at the origin.
-    let worldMat: Float32Array | undefined;
-    if (hasTransform) {
-      const view = readPresentationWorldMatrix(world, entityId);
-      if (view !== undefined) worldMat = new Float32Array(view);
-    }
-    const position =
-      worldMat !== undefined ? mat4.getTranslation(vec3.create(), worldMat) : vec3.create(0, 0, 0);
-    pointSnapshots.push({
-      kind: 'point',
-      decay: Math.fround(p.decay),
-      lightingChannels: p.lightingChannels,
-      entity: entityId,
-      worldId: context.worldId,
-      position,
-      color: vec3.create(
-        (p.color[0] ?? 1) * intensity,
-        (p.color[1] ?? 1) * intensity,
-        (p.color[2] ?? 1) * intensity,
-      ),
-      intensity,
-      invRangeSquared: computeInvRangeSquared(range),
-      ...iesProfile(p.iesProfile, entityId),
-      ...(Number(p.iesProfile) > 0
-        ? {
-            axisX: vec3.normalize(
-              vec3.create(),
-              vec3.create(worldMat?.[0] ?? 1, worldMat?.[1] ?? 0, worldMat?.[2] ?? 0),
-            ),
-            axisY: vec3.normalize(
-              vec3.create(),
-              vec3.create(worldMat?.[4] ?? 0, worldMat?.[5] ?? 1, worldMat?.[6] ?? 0),
-            ),
-          }
-        : {}),
-    });
-    pointSnapshotEntities.push(entityId);
-  }
-
-  const spotSnapshots: SpotLightSnapshot[] = [];
-  const spotLightQuery = world
-    .query({
-      read: [SpotLight],
-      optional: [Transform, GlobalTransform],
-    })
-    .unwrap();
-  // feat-20260625-spot-light-shadow-mapping M1 w5: tile allocation for castShadow spots.
-  // Cap = 4 (OOS-5), sentinel -1 = unassigned (plan-strategy D-4).
-  // Direction degeneration (near-zero) also skips shadow (requirements $112).
-  let spotTileNext = 0;
   // Spot Cookies, Spot projectors, and RectAreaLight source textures share
   // one light-texture array. A slice is keyed by the TextureAsset handle, so
   // every consumer of the same asset reads the same prepared mip chain.
   const lightTextureSlices = new Map<number, number>();
-  const lightTextureSlice = (
-    handle: number | undefined,
-    source: LightTextureSource | undefined,
-  ) => {
-    if (handle === undefined || handle <= 0) return undefined;
-    const existing = lightTextureSlices.get(handle);
-    if (existing !== undefined || source === undefined) return existing;
-    if (lightTextureSlices.size >= COOKIE_SLICE_CAPACITY) return undefined;
-    const slice = lightTextureSlices.size;
-    lightTextureSlices.set(handle, slice);
-    return slice;
-  };
-  for (const row of spotLightQuery) {
-    const s = row.get(SpotLight);
-    const channelsError =
-      validateChannelMask(s.lightingChannels) ??
-      validateChannelMask(s.shadowCasterChannels, 'shadowCasterChannels');
-    if (channelsError !== null) {
-      worldInternal._routeError(channelsError, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (lighting-channels)',
-      });
-      continue;
-    }
-    const hasTransform = row.get(GlobalTransform) !== undefined;
-    const intensity = s.intensity;
-    const range = s.range;
-    const innerConeDeg = s.innerConeDeg;
-    const outerConeDeg = s.outerConeDeg;
-    let worldMat: Float32Array | undefined;
-    if (hasTransform) {
-      const entity = row.entity;
-      const view = readPresentationWorldMatrix(world, entity);
-      if (view !== undefined) worldMat = new Float32Array(view);
-    }
-    const position =
-      worldMat !== undefined ? mat4.getTranslation(vec3.create(), worldMat) : vec3.create(0, 0, 0);
-    const dir = vec3.create(s.direction[0] ?? 0, s.direction[1] ?? -1, s.direction[2] ?? 0);
+  const points = extractPointLights(world, context.worldId, worldInternal, iesProfiles);
+  const spotSnapshots = extractSpotLights(
+    world,
+    context,
+    worldInternal,
+    iesProfiles,
+    lightTextureSlices,
+  );
+  const rectSnapshots = extractRectAreaLights(
+    world,
+    worldInternal,
+    iesProfiles,
+    lightTextureSlices,
+  );
+  const volumetricFog = attachVolumeSpotProjector(volumetricFogSource, spotSnapshots);
 
-    // Extract is the single direction-normalization owner for direct-light
-    // snapshots. URP and HDRP preserve this value downstream.
-    const dirLen = Math.sqrt(
-      (dir[0] ?? 0) * (dir[0] ?? 0) + (dir[1] ?? 0) * (dir[1] ?? 0) + (dir[2] ?? 0) * (dir[2] ?? 0),
-    );
-    const EPSILON = 1e-6;
-    const hasValidDirection = dirLen > EPSILON;
-    if (!hasValidDirection) {
-      worldInternal._routeError(
-        new SpawnLightInvalidBoundsError('SpotLight', 'direction', [
-          dir[0] ?? 0,
-          dir[1] ?? 0,
-          dir[2] ?? 0,
-        ]),
-        {
-          severity: Severity.Error,
-          systemName: 'RenderSystem.extract (spot-direction)',
-        },
-      );
-    }
-    const dirN = vec3.create(
-      hasValidDirection ? (dir[0] ?? 0) / dirLen : (dir[0] ?? 0),
-      hasValidDirection ? (dir[1] ?? 0) / dirLen : (dir[1] ?? 0),
-      hasValidDirection ? (dir[2] ?? 0) / dirLen : (dir[2] ?? 0),
-    );
+  const directionalShadow = directionalShadowSource(sun, directionalShadowError);
+  const pointShadowSnapshots = extractPointShadows(world, context.worldId, worldInternal);
+  joinPointShadowLayers(points.snapshots, points.entities, pointShadowSnapshots);
+  const castsShadow = sun.castShadow === true;
 
-    // ── shadow fields (feat-20260625-spot-light-shadow-mapping M1) ──
-    const castShadow = s.castShadow;
-    const sMapSize = s.mapSize;
-    const sNearPlane = s.nearPlane;
-    const shadowProjection = resolvePunctualShadowFarPlane(s.range, sNearPlane, s.farPlane);
-    const sFarPlane = shadowProjection.ok ? shadowProjection.value : s.farPlane;
-    const cookieHandle = Number(s.cookie) > 0 ? Number(s.cookie) : undefined;
-    const cookieAsset =
-      cookieHandle === undefined
-        ? undefined
-        : runtimeAssets(world.assets).resolveAsset<TextureAsset>(cookieHandle);
-    // Resolve the legacy projector before assigning array slices so the
-    // extended-lighting path can reuse its texture transport without losing
-    // the old lightViewProj projection semantics.
-    const hasProjector = Number(s.projector) > 0;
-    let projectorHandle: AssetHandle<'texture'> | undefined;
-    let projectorAsset: TextureAsset | undefined;
-    let projectorGuid: string | undefined;
-    if (hasProjector) {
-      const candidate = Math.round(Number(s.projector)) as AssetHandle<'texture'>;
-      const resolvedProjector = runtimeAssets(world.assets).resolveAsset<TextureAsset>(candidate);
-      if (!resolvedProjector.ok || resolvedProjector.value.kind !== 'texture') {
-        worldInternal._routeError(
-          resolvedProjector.ok
-            ? new RhiError({
-                code: 'asset-not-registered',
-                expected: 'SpotLight.projector resolves to a TextureAsset',
-                hint: 'load the authored projector TextureAsset before assigning SpotLight.projector',
-                detail: { assetHandle: Number(candidate) },
-              })
-            : resolvedProjector.error,
-          { severity: Severity.Error, systemName: 'RenderSystem.extract (spot-projector)' },
-        );
-      } else {
-        projectorHandle = candidate;
-        projectorAsset = resolvedProjector.value;
-        projectorGuid = assets?.guidOf(candidate) ?? `handle:${Number(candidate)}`;
-      }
-    }
-    const cookieProjection =
-      cookieAsset?.ok && cookieAsset.value.kind === 'texture'
-        ? prepareCookieProjection(cookieAsset.value)
-        : undefined;
-    const cookieSource = cookieProjection?.source;
-    const projectorProjection =
-      projectorAsset === undefined ? undefined : prepareCookieProjection(projectorAsset);
-    const projectorSource = projectorProjection?.source;
-    const cookieSlice = lightTextureSlice(cookieHandle, cookieSource);
-    const projectorSlice = lightTextureSlice(
-      projectorHandle === undefined ? undefined : Number(projectorHandle),
-      projectorSource,
-    );
-    const shadowIntensity = s.shadowIntensity;
-    // `shared<T>` columns are u32-backed and zero-filled when the optional
-    // field is absent. Treat only a positive handle as an authored projector;
-    // checking nullish values alone would turn the zero sentinel into a
-    // phantom projector matrix and an avoidable asset-not-found diagnostic.
-    let lightViewProj: Float32Array | undefined;
-    let shadowAtlasTile = -1;
-
-    // A projector needs the same perspective transform even when its SpotLight
-    // has no shadow atlas tile. The matrix remains a derived light fact; the
-    // shadow tile stays -1 so shadow visibility is still independently gated.
-    if ((castShadow || hasProjector) && !shadowProjection.ok) {
-      worldInternal._routeError(shadowProjection.error, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (spot-shadow-projection)',
-      });
-    }
-    if ((castShadow || hasProjector) && hasValidDirection && shadowProjection.ok) {
-      const target = vec3.create(
-        (position[0] ?? 0) + (dirN[0] ?? 0),
-        (position[1] ?? 0) + (dirN[1] ?? 0),
-        (position[2] ?? 0) + (dirN[2] ?? 0),
-      );
-      // D-1: perspective(outerConeDeg*2, aspect=1, near, far) x lookAt(pos, pos+dir).
-      // FOV = outerConeDeg * 2 in degrees; mat4.perspective takes fov in radians.
-      const fov = outerConeDeg * 2 * (Math.PI / 180);
-      const proj = mat4.create();
-      mat4.perspectiveReverseZ(proj, fov, 1, sNearPlane, sFarPlane);
-      const view = mat4.create();
-      mat4.lookAt(view, position, target, vec3.create(0, 1, 0));
-      lightViewProj = new Float32Array(16);
-      // Reinterpret the Float32Array surface field as a Mat4 out-param; a
-      // factory would force a needless alloc+copy. brand-cast-ok
-      mat4.multiply(lightViewProj as Mat4, proj, view);
-
-      // D-4: allocate tile 0..3; 5th+ = -1 sentinel.
-      if (castShadow && spotTileNext < 4) {
-        shadowAtlasTile = spotTileNext;
-        spotTileNext += 1;
-      }
-    }
-
-    spotSnapshots.push({
-      kind: 'spot',
-      lightingChannels: s.lightingChannels,
-      entity: row.entity,
-      worldId: context.worldId,
-      // D-6: position reflects world transform; direction stays sourced
-      // from SpotLight.direction (NOT rotated by the parent).
-      position,
-      direction: dirN,
-      color: vec3.create(
-        (s.color[0] ?? 1) * intensity,
-        (s.color[1] ?? 1) * intensity,
-        (s.color[2] ?? 1) * intensity,
-      ),
-      intensity,
-      invRangeSquared: computeInvRangeSquared(range),
-      cosInner: degToCos(innerConeDeg),
-      cosOuter: degToCos(outerConeDeg),
-      ...iesProfile(s.iesProfile, row.entity),
-      ...(cookieHandle === undefined
-        ? {}
-        : {
-            cookieHandle,
-            ...(cookieSlice === undefined ? {} : { cookieSlice }),
-          }),
-      ...(cookieSource === undefined ? {} : { cookieSource }),
-      ...(cookieProjection === undefined ? {} : { cookieMatrix: cookieProjection.matrix }),
-      ...(projectorSlice === undefined ? {} : { projectorSlice }),
-      ...(projectorSource === undefined ? {} : { projectorSource }),
-      ...(projectorProjection === undefined ? {} : { projectorMatrix: projectorProjection.matrix }),
-      rollDeg: s.rollDeg,
-      // ── shadow fields ──
-      castShadow,
-      lightViewProj:
-        s.shadowProjection === 1 ? new Float32Array(s.shadowViewProjection) : lightViewProj,
-      mapSize: sMapSize,
-      nearPlane: sNearPlane,
-      farPlane: sFarPlane,
-      shadowAtlasTile,
-      shadowIntensity,
-      shadowBlurSamples: s.shadowBlurSamples,
-      depthBias: s.depthBias,
-      normalBias: s.normalBias,
-      shadowMapAspect: s.shadowMapAspect,
-      shadowCasterChannels: s.shadowCasterChannels,
-      shadowAutoUpdate: s.shadowAutoUpdate,
-      shadowRevision: s.shadowRevision,
-      pcfKernelSize: s.pcfKernelSize,
-      shadowFilter: s.shadowFilter,
-      shadowBiasMode: s.shadowBiasMode,
-      ...(projectorHandle === undefined ||
-      projectorAsset === undefined ||
-      projectorGuid === undefined
-        ? {}
-        : {
-            projectorHandle,
-            projectorAsset,
-            projectorGuid,
-            projectorGeneration: 1,
-            projectorRevision: 1,
-          }),
-    });
-  }
-
-  const rectSnapshots: RectAreaDirectLightSnapshot[] = [];
-  const rectLightQuery = world
-    .query({
-      read: [RectAreaLight],
-      optional: [Transform, GlobalTransform],
-    })
-    .unwrap();
-  for (const row of rectLightQuery) {
-    const light = row.get(RectAreaLight);
-    const channelsError = validateChannelMask(light.lightingChannels);
-    if (channelsError !== null) {
-      worldInternal._routeError(channelsError, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (lighting-channels)',
-      });
-      continue;
-    }
-    const validation = validateRectAreaLightData({
-      intensity: light.intensity,
-      color: light.color,
-      width: light.width,
-      height: light.height,
-      range: light.range,
-    });
-    if (!validation.ok) {
-      worldInternal._routeError(validation.error, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (rect-area-light)',
-      });
-      continue;
-    }
-    const worldView = row.get(GlobalTransform);
-    const worldMat =
-      worldView === undefined
-        ? undefined
-        : new Float32Array(readPresentationWorldMatrix(world, row.entity) ?? []);
-    const position =
-      worldMat !== undefined ? mat4.getTranslation(vec3.create(), worldMat) : vec3.create(0, 0, 0);
-    const frame = buildRectAreaWorldFrame({
-      center: position,
-      axisX: [worldMat?.[0] ?? 1, worldMat?.[1] ?? 0, worldMat?.[2] ?? 0],
-      axisY: [worldMat?.[4] ?? 0, worldMat?.[5] ?? 1, worldMat?.[6] ?? 0],
-      width: light.width,
-      height: light.height,
-    });
-    let sourceTextureHandle: number | undefined;
-    let sourceTextureSlice: number | undefined;
-    let sourceTextureSource: LightTextureSource | undefined;
-    if (light.sourceTexture !== undefined && Number(light.sourceTexture) > 0) {
-      const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(light.sourceTexture);
-      const projection =
-        resolved.ok && resolved.value.kind === 'texture'
-          ? prepareCookieProjection(resolved.value)
-          : undefined;
-      if (projection === undefined) {
-        worldInternal._routeError(
-          resolved.ok
-            ? new RhiError({
-                code: 'asset-not-registered',
-                expected:
-                  'RectAreaLight.sourceTexture resolves to a 2D TextureAsset: uncompressed rgba8unorm[-srgb], bgra8unorm[-srgb], r8unorm, rgba16float, rgba32float, or a BC/ETC2/ASTC block format whose colorSpace matches its -srgb suffix',
-                hint: 'assign a 2D image texture (not a cube, array or 3D texture) whose colorSpace matches its format before assigning RectAreaLight.sourceTexture; the light renders untextured until then',
-                detail: { assetHandle: Number(light.sourceTexture) },
-              })
-            : resolved.error,
-          { severity: Severity.Error, systemName: 'RenderSystem.extract (rect-source-texture)' },
-        );
-      }
-      sourceTextureHandle = Number(light.sourceTexture);
-      sourceTextureSource = projection?.source;
-      sourceTextureSlice = lightTextureSlice(sourceTextureHandle, sourceTextureSource);
-    }
-    rectSnapshots.push({
-      kind: 'rect-area',
-      lightingChannels: light.lightingChannels,
-      position,
-      color: vec3.create(
-        (light.color[0] ?? 1) * light.intensity,
-        (light.color[1] ?? 1) * light.intensity,
-        (light.color[2] ?? 1) * light.intensity,
-      ),
-      intensity: light.intensity,
-      invRangeSquared: computeInvRangeSquared(light.range),
-      halfWidth: frame.halfWidth,
-      halfHeight: frame.halfHeight,
-      axisX: frame.axisX,
-      axisY: frame.axisY,
-      ...iesProfile(light.iesProfile, row.entity),
-      ...(sourceTextureHandle === undefined ? {} : { sourceTextureHandle }),
-      ...(sourceTextureSlice === undefined || sourceTextureSource === undefined
-        ? {}
-        : { cookieSlice: sourceTextureSlice, cookieSource: sourceTextureSource }),
-    });
-  }
-  // The SpotLight is the sole projector owner. Once all light snapshots have
-  // been extracted, publish its accepted TextureAsset tuple on the volume
-  // snapshot so surface and volume consume the same identity and revision.
-  let volumeSpot: SpotLightSnapshot | undefined;
-  const extractedFog = volumetricFog;
-  if (extractedFog !== undefined) {
-    if (extractedFog.spotLightEntity !== undefined) {
-      volumeSpot = spotSnapshots.find((light) => light.entity === extractedFog.spotLightEntity);
-    } else if (extractedFog.lightKind === 'spot') {
-      volumeSpot = spotSnapshots.find((light) => light.entity === extractedFog.lightEntity);
-    }
-  }
-  if (
-    volumetricFog !== undefined &&
-    volumetricFog.status === 'available' &&
-    volumeSpot?.projectorAsset !== undefined &&
-    volumeSpot.projectorHandle !== undefined
-  ) {
-    const projectorHandle = volumeSpot.projectorHandle;
-    const projectorAsset = volumeSpot.projectorAsset;
-    volumetricFog = {
-      ...volumetricFog,
-      projector: {
-        guid: volumeSpot.projectorGuid ?? `handle:${Number(volumeSpot.projectorHandle)}`,
-        generation: volumeSpot.projectorGeneration ?? 1,
-        view: '2d',
-        sampler: 'linear-clamp-to-edge',
-        projection: 'spot-projection',
-        revision: volumeSpot.projectorRevision ?? 1,
-      },
-      projectorHandle,
-      projectorAsset,
-    };
-  }
-
-  // bug-20260710-editor-cross-world-shadow: CSM matrices are computed by the
-  // shared pure {@link computeDirectionalCsm}, called here per-world with THIS
-  // world's own `cameras[0]`. In a single-world app the light and camera share
-  // the world, so this per-world result is final. In the editor
-  // super-composite the light's world may have no camera → this yields no
-  // matrices; {@link extractFrames} then RECOMPUTES at
-  // the merge layer using the surfaced (cameraOwner) camera + the raw config
-  // carried on ExtractedLights. The raw config + direction are surfaced
-  // unconditionally so the merge layer can re-run the builder.
-  let lightViewProj: Float32Array[] | undefined;
-  let splitPlanes: Float32Array | undefined;
-  let cascadeCount: number | undefined;
-  let cascadeBlend: number | undefined;
-  let shadowMapSize: number | undefined;
-  let directionalShadowQuality: DirectionalShadowQuality | undefined;
-  let directionalCsmConfig: DirectionalCsmConfig | undefined;
-  let directionalCsmDirection: Vec3 | undefined;
-
-  // Camera data needed for frustum corner computation (first camera only;
-  // multi-camera CSM is OOS-1). Undefined in a cameraless world.
-  const cameraData = cameras[0];
-
-  // feat-20260621 M2: CSM computation gated on castShadow from the
-  // merged DirectionalLight. castShadow defaults to false (first-hit-wins
-  // semantics, D-6 no cardinality cap).
-  if (
-    directional !== undefined &&
-    firstHitCastShadow === true &&
-    directionalShadowError === undefined
-  ) {
-    const dirSnapshot = directional;
-    const sf = firstHitShadowFields;
-    if (sf !== undefined) {
-      directionalCsmConfig = {
-        ...(sf.shadowProjection === 1 ? { shadowViewProjection: sf.shadowViewProjection } : {}),
-        shadowMapAspect: sf.shadowMapAspect,
-        shadowCasterChannels: sf.shadowCasterChannels,
-        shadowAutoUpdate: sf.shadowAutoUpdate,
-        shadowRevision: sf.shadowRevision,
-        shadowBiasMode: sf.shadowBiasMode,
-        shadowRadius: sf.shadowRadius,
-        shadowIntensity: sf.shadowIntensity,
-        shadowBlurSamples: sf.shadowBlurSamples,
-        cascadeCount: sf.cascadeCount,
-        splitLambda: sf.splitLambda,
-        cascadeBlend: sf.cascadeBlend,
-        mapSize: sf.mapSize,
-        shadowDistance: sf.shadowDistance,
-        shadowFilter: sf.shadowFilter,
-        shadowAngularRadius: sf.shadowAngularRadius,
-        maxPenumbraTexels: sf.maxPenumbraTexels,
-        ...(sf.staggerCascades ? { staggerCascades: true } : {}),
-        ...(sf.staticShadowCache ? {} : { staticShadowCache: false as const }),
-      };
-      directionalCsmDirection = dirSnapshot.direction;
-      const csm = computeDirectionalCsm(dirSnapshot.direction, directionalCsmConfig, cameraData);
-      // Cascade metadata (splitPlanes / count / blend / mapSize) is available
-      // even without a camera (splitPlanes needs only near/far); the matrices
-      // need the camera. When csm is null (no camera) leave lightViewProj
-      // undefined — the merge layer recomputes. Still surface the split/count
-      // metadata so a single-world path keeps its prior fields.
-      cascadeCount = csm?.cascadeCount ?? Math.round(sf.cascadeCount);
-      cascadeBlend = csm?.cascadeBlend ?? sf.cascadeBlend;
-      shadowMapSize = sf.mapSize;
-      if (csm !== null) {
-        lightViewProj = csm.lightViewProj;
-        splitPlanes = csm.splitPlanes;
-        directionalShadowQuality = csm.directionalShadowQuality;
-      } else {
-        const sNear = cameraData?.near ?? 0.1;
-        const splits = pssmSplit(sNear, sf.shadowDistance, cascadeCount, sf.splitLambda);
-        const padded = new Float32Array(16);
-        for (let i = 0; i < splits.length; i++) padded[i * 4] = splits[i] ?? 0;
-        splitPlanes = padded;
-      }
-      directionalShadowQuality = directionalShadowQualityFromF32(
-        sf.shadowFilter,
-        sf.shadowAngularRadius,
-        sf.maxPenumbraTexels,
-      );
-    }
-  }
-
-  // feat-20260613-csm M3 / w14 (plan-strategy §D-7): pad the up-to-4
-  // splitPlanes into a fixed length-4 Float32Array (unused slots = 0) so
-  // the View UBO tail keeps a stable layout regardless of the runtime
-  // cascadeCount. Host-side correctness invariant: only the first
-  // cascadeCount slots are ever read by the WGSL kernel.
-  const paddedSplitPlanes = new Float32Array(16);
-  if (splitPlanes !== undefined) {
-    for (let i = 0; i < splitPlanes.length; i++) {
-      paddedSplitPlanes[i] = splitPlanes[i] ?? 0;
-    }
-  }
-
-  // feat-20260612-point-light-shadows-urp-hdrp M1 / T-M1-7 (plan-strategy §D-3,
-  // requirements §5.3): query (PointLight + PointLightShadow + Transform)
-  // archetype join. For each shadow caster, build 6 face VP matrices and pack
-  // into Float32Array(96). Atlas layer is assigned in spawn order while the
-  // renderer-owned atlas has capacity; the sentinel -1 is shader-side and
-  // applies to non-admitted PointLightShadow requests as well.
-  const pointShadowSnapshots: PointShadowSnapshot[] = [];
-  {
-    const pointShadowQuery = world
-      .query({ read: [Transform, GlobalTransform, PointLightShadow, PointLight] })
-      .unwrap();
-    for (const row of pointShadowQuery) {
-      const ps = row.get(PointLightShadow);
-      const channelsError = validateChannelMask(ps.shadowCasterChannels, 'shadowCasterChannels');
-      if (channelsError !== null) {
-        worldInternal._routeError(channelsError, {
-          severity: Severity.Error,
-          systemName: 'RenderSystem.extract (shadow-channels)',
-        });
-        continue;
-      }
-      // Read world-space position from GlobalTransform.world (mat4 column-major;
-      // translation lives at indices 12..14, mirroring CameraSnapshot.world
-      // semantics in this file).
-      // feat-20260614 M4 / w13: TypedArrayFor for `array<f32, 16>` now
-      // resolves to a concrete `Float32Array` (was `never` pre-w11), which
-      // surfaces the row-window slicing -- `t.world` is the stride-16 flat
-      // column view; row i lives at `[i*16, (i+1)*16)`. The prior
-      // `t.world?.[i]` form silently returned a single element under the
-      // `never`-typed bundle path and `wRow[12]` widened to `undefined ?? 0`
-      // so light positions clamped to the origin.
-      const wRow = readPresentationWorldMatrix(world, row.entity);
-      if (wRow === undefined) continue;
-      const px = wRow[12] ?? 0;
-      const py = wRow[13] ?? 0;
-      const pz = wRow[14] ?? 0;
-      const lightPos =
-        ps.shadowProjection === 1 ? vec3.clone(ps.shadowPosition) : vec3.create(px, py, pz);
-      const mapSize = ps.mapSize;
-      const nearPlane = ps.nearPlane;
-      const projection = resolvePunctualShadowFarPlane(
-        row.get(PointLight).range,
-        nearPlane,
-        ps.farPlane,
-      );
-      if (!projection.ok) {
-        worldInternal._routeError(projection.error, {
-          severity: Severity.Error,
-          systemName: 'RenderSystem.extract (point-shadow-projection)',
-        });
-        continue;
-      }
-      const farPlane = projection.value;
-      // The renderer, not ECS, owns the atlas budget. Preserve every request
-      // for inspection, but emit the shader sentinel for entries that cannot
-      // acquire a layer so record never calls faceView outside the atlas.
-      const layer =
-        pointShadowSnapshots.length < SHADOW_ATLAS_DEFAULT_LAYERS
-          ? pointShadowSnapshots.length
-          : -1;
-
-      const matrices = buildPointShadowMatrices(lightPos, nearPlane, farPlane);
-      const packed = new Float32Array(96);
-      for (let f = 0; f < 6; f++) {
-        const m = matrices[f];
-        if (m === undefined) continue;
-        for (let k = 0; k < 16; k++) {
-          packed[f * 16 + k] = m[k] ?? 0;
-        }
-      }
-      pointShadowSnapshots.push({
-        entity: row.entity,
-        worldId: context.worldId,
-        position: lightPos,
-        mapSize,
-        nearPlane,
-        farPlane,
-        depthBias: ps.depthBias,
-        normalBias: ps.normalBias,
-        shadowCasterChannels: ps.shadowCasterChannels,
-        shadowAutoUpdate: ps.shadowAutoUpdate,
-        shadowRevision: ps.shadowRevision,
-        shadowFilter: ps.shadowFilter,
-        shadowBiasMode: ps.shadowBiasMode,
-        shadowIntensity: ps.shadowIntensity,
-        pcfKernelSize: ps.pcfKernelSize ?? 3,
-        shadowAtlasLayer: layer,
-        shadowMatrices: packed,
-      });
-    }
-  }
-
-  // feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-4 (plan-strategy §D-8):
-  // join pointShadow snapshots into the matching PointLightSnapshot so the
-  // record stage threads `shadowAtlasLayer + shadowNear + shadowFar` through
-  // the unified direct-light metadata payload.
-  // Mutates the freshly-built PointLightSnapshot in place; the snapshot is
-  // not exposed elsewhere this frame yet (consumed only by lights.point[]).
-  if (pointShadowSnapshots.length > 0) {
-    const shadowByEntity = new Map<number, PointShadowSnapshot>();
-    for (const ps of pointShadowSnapshots) shadowByEntity.set(ps.entity, ps);
-    for (let i = 0; i < pointSnapshots.length; i++) {
-      const entityId = pointSnapshotEntities[i] ?? 0;
-      const ps = shadowByEntity.get(entityId);
-      if (ps !== undefined) {
-        pointSnapshots[i] = {
-          ...(pointSnapshots[i] as PointLightSnapshot),
-          shadowAtlasLayer: ps.shadowAtlasLayer,
-          shadowNear: ps.nearPlane,
-          shadowFar: ps.farPlane,
-          pcfKernelSize: ps.pcfKernelSize ?? 3,
-        };
-      }
-    }
-  }
-
-  const lights: ExtractedLights = {
-    directional,
-    directionalCount,
-    point: pointSnapshots,
+  const lights: LightRoster = {
+    directional: sun.directional,
+    directionalCount: sun.directionalCount,
+    point: points.snapshots,
     spot: spotSnapshots,
     rect: rectSnapshots,
-    lightViewProj,
-    splitPlanes: splitPlanes !== undefined ? paddedSplitPlanes : undefined,
-    cascadeCount,
-    cascadeBlend,
-    shadowMapSize,
-    depthBias: firstHitCastShadow === true ? firstHitShadowFields?.depthBias : undefined,
-    normalBias: firstHitCastShadow === true ? firstHitShadowFields?.normalBias : undefined,
-    directionalShadowQuality,
+    depthBias: castsShadow ? sun.shadowFields?.depthBias : undefined,
+    normalBias: castsShadow ? sun.shadowFields?.normalBias : undefined,
     directionalShadowError,
     pointShadow: pointShadowSnapshots,
-    // bug-20260710-editor-cross-world-shadow: raw CSM config + light direction
-    // so the merge layer can recompute matrices against the surfaced camera.
-    directionalCsmConfig,
-    directionalCsmDirection,
+    directionalCsmConfig: directionalShadow?.directionalCsmConfig,
+    directionalCsmDirection: directionalShadow?.directionalCsmDirection,
   };
 
   // A caster may be outside the display camera while still contributing to a
   // light's shadow map. Keep the light-space visibility projection alongside
   // camera culling so the direct extraction path and persistent composition
   // retain the same shadow-only rule.
-
-  // feat-20260520-skylight-ibl-cubemap M4 / t26+t27: query Skylight entities.
-  // First archetype hit wins (mirrors DirectionalLight pattern); multi-Skylight
-  // warn in record stage (t27) uses skylightCount.
-  const skylightQuery = world.query({ read: [Skylight], optional: [GlobalTransform] }).unwrap();
-  let skylight: SkylightSnapshot | undefined;
-  let skylightCount = 0;
-  for (const row of skylightQuery) {
-    const s = row.get(Skylight);
-    // equirect is OPTIONAL: an omitted field zero-inits to handle 0, which
-    // record treats as "no equirect" -> solid-color ambient via the white
-    // fallback cube. A Skylight WITHOUT an equirect is still a valid snapshot
-    // (the prior `equirectRaw !== undefined` gate dropped color-only
-    // skylights, leaving the scene black -- the downstream gap #4).
-    const equirectRaw = s.equirect;
-    const intensity = s.intensity;
-    const colorR = s.color[0] ?? 1.0;
-    const colorG = s.color[1] ?? 1.0;
-    const colorB = s.color[2] ?? 1.0;
-    const rotation: [number, number, number, number] = [
-      s.rotation[0] ?? 0,
-      s.rotation[1] ?? 0,
-      s.rotation[2] ?? 0,
-      s.rotation[3] ?? 1,
-    ];
-    skylightCount += 1;
-    if (skylight === undefined) {
-      const captureWorld = readPresentationWorldMatrix(world, row.entity);
-      skylight = {
-        ...(captureWorld === undefined
-          ? {}
-          : {
-              capturePosition: [
-                captureWorld[12] ?? 0,
-                captureWorld[13] ?? 0,
-                captureWorld[14] ?? 0,
-              ] as const,
-            }),
-        equirectHandle: equirectRaw !== undefined ? Math.round(equirectRaw) : 0,
-        color: [colorR, colorG, colorB],
-        ambientIrradiance: [
-          s.ambientIrradiance[0] ?? 0,
-          s.ambientIrradiance[1] ?? 0,
-          s.ambientIrradiance[2] ?? 0,
-        ],
-        intensity,
-        rotation,
-        // w19: winning entity handle for the multi-Skylight once-warn (F-8).
-        entityHandle: row.entity,
-      };
-    }
-  }
-
-  const lightProbeQuery = world.query({ read: [LightProbe, GlobalTransform] }).unwrap();
-  const lightProbes: LightProbeSnapshot[] = [];
-  for (const row of lightProbeQuery) {
-    const probe = row.get(LightProbe);
-    const validation = validateLightProbeData({
-      irradiance: probe.irradiance,
-      radius: probe.radius,
-    });
-    if (!validation.ok) {
-      worldInternal._routeError(validation.error, {
-        severity: Severity.Error,
-        systemName: 'RenderSystem.extract (light-probe)',
-      });
-      continue;
-    }
-    const transform = readPresentationWorldMatrix(world, row.entity);
-    if (transform === undefined) continue;
-    lightProbes.push({
-      identity: String(row.entity),
-      worldId: context.worldId,
-      position: [transform[12] ?? 0, transform[13] ?? 0, transform[14] ?? 0],
-      radius: probe.radius,
-      irradiance: new Float32Array(probe.irradiance),
-      admitted: true,
-    });
-  }
-
-  // feat-20260531-skybox-env-background M2 / w5: query SkyboxBackground entities.
-  // First archetype hit wins (mirrors Skylight pattern); multi-entity
-  // once-warn in record stage uses skyboxCount.
-  const skyboxQuery = world.query({ read: [SkyboxBackground] }).unwrap();
-  let skybox: SkyboxSnapshot | undefined;
-  let skyboxCount = 0;
-  for (const row of skyboxQuery) {
-    const s = row.get(SkyboxBackground);
-    const equirectRaw = s.equirect;
-    const modeRaw = s.mode;
-    const rotation: [number, number, number, number] = [
-      s.rotation[0] ?? 0,
-      s.rotation[1] ?? 0,
-      s.rotation[2] ?? 0,
-      s.rotation[3] ?? 1,
-    ];
-    skyboxCount += 1;
-    if (skybox === undefined && equirectRaw !== undefined) {
-      skybox = {
-        equirectHandle: Math.round(equirectRaw),
-        mode: modeRaw,
-        rotation,
-        // w19: winning entity handle for the multi-SkyboxBackground warn (F-8).
-        entityHandle: row.entity,
-      };
-    }
-  }
-
-  const environmentCandidates: EnvironmentCandidate[] = [];
-  const imageEnvironment =
-    skylight?.equirectHandle !== undefined && skylight.equirectHandle > 0
-      ? skylight
-      : skybox?.equirectHandle !== undefined && skybox.equirectHandle > 0
-        ? skybox
-        : undefined;
-  if (imageEnvironment !== undefined) {
-    environmentCandidates.push({
-      kind: 'image',
-      entityKey: imageEnvironment.entityHandle,
-      sourceKey: `equirect:${imageEnvironment.equirectHandle}`,
-    });
-  }
-  const atmosphereQuery = world.query({ read: [Atmosphere], optional: [GlobalTransform] }).unwrap();
-  for (const row of atmosphereQuery) {
-    const value = row.get(Atmosphere);
-    const tuple = (channels: ArrayLike<number>): readonly [number, number, number] => [
-      channels[0] ?? 0,
-      channels[1] ?? 0,
-      channels[2] ?? 0,
-    ];
-    const atmosphereWorld = readPresentationWorldMatrix(world, row.entity);
-    const atmosphere = {
-      planetRadius: value.planetRadius,
-      atmosphereHeight: value.atmosphereHeight,
-      groundOrigin: [
-        atmosphereWorld?.[12] ?? 0,
-        atmosphereWorld?.[13] ?? 0,
-        atmosphereWorld?.[14] ?? 0,
-      ] as const,
-      capturePosition:
-        skylight?.capturePosition ??
-        ([
-          atmosphereWorld?.[12] ?? 0,
-          (atmosphereWorld?.[13] ?? 0) + 1,
-          atmosphereWorld?.[14] ?? 0,
-        ] as const),
-      rayleighScattering: tuple(value.rayleighScattering),
-      rayleighScaleHeight: value.rayleighScaleHeight,
-      mieScattering: value.mieScattering,
-      mieAbsorption: value.mieAbsorption,
-      mieScaleHeight: value.mieScaleHeight,
-      mieAnisotropy: value.mieAnisotropy,
-      absorption: tuple(value.absorption),
-      absorptionPeakHeight: value.absorptionPeakHeight,
-      absorptionHalfWidth: value.absorptionHalfWidth,
-      groundAlbedo: tuple(value.groundAlbedo),
-      multipleScattering: value.multipleScattering,
-      sunAngularRadius: value.sunAngularRadius,
-      aerialPerspectiveStart: value.aerialPerspectiveStart,
-      aerialPerspectiveDistanceScale: value.aerialPerspectiveDistanceScale,
-    } as const;
-    environmentCandidates.push({
-      kind: 'atmosphere',
-      entityKey: row.entity,
-      sourceKey: `atmosphere:${row.entity}`,
-      atmosphere,
-    });
-  }
-  const directionalDirection = directional?.direction;
-  const directionalLength =
-    directionalDirection === undefined
-      ? 0
-      : Math.hypot(
-          directionalDirection[0] ?? 0,
-          directionalDirection[1] ?? 0,
-          directionalDirection[2] ?? 0,
-        );
-  const sunIntensity = directional?.intensity ?? 0;
-  const sunColor =
-    sunIntensity > 0 && directional !== undefined
-      ? ([
-          (directional.color[0] ?? 0) / sunIntensity,
-          (directional.color[1] ?? 0) / sunIntensity,
-          (directional.color[2] ?? 0) / sunIntensity,
-        ] as [number, number, number])
-      : ([0, 0, 0] as [number, number, number]);
-  const sun =
-    directional === undefined || directional.entity === undefined || directionalLength <= 1e-6
-      ? []
-      : [
-          {
-            entityKey: directional.entity,
-            direction: [
-              -(directionalDirection?.[0] ?? 0) / directionalLength,
-              -(directionalDirection?.[1] ?? 0) / directionalLength,
-              -(directionalDirection?.[2] ?? 0) / directionalLength,
-            ] as [number, number, number],
-            color: sunColor,
-            intensity: directional.intensity,
-          },
-        ];
-  const environmentSelection = selectEnvironment({
-    environments: environmentCandidates,
-    fogs: fog === undefined ? [] : [fog],
-    suns: sun,
-  });
-  if (!environmentSelection.ok) {
-    routeWorldError(world, environmentSelection.error, {
-      systemName: 'RenderSystem.extract (environment-selection)',
-    });
-    throw environmentSelection.error;
-  }
-  const environment: EnvironmentFrame = environmentSelection.value;
+  const { skylight, skylightCount } = extractSkylight(world);
+  const lightProbes = extractLightProbes(world, context.worldId, worldInternal);
+  const { skybox, skyboxCount } = extractSkybox(world);
+  const environment = selectWorldEnvironment(world, skylight, skybox, sun.directional, fog);
 
   return {
     cameras,
@@ -1171,4 +175,1454 @@ export function extractWorldEnvironment(
     skybox,
     skyboxCount,
   };
+}
+
+function routeExtractError(
+  worldInternal: WorldInternalView,
+  error: Parameters<WorldInternalView['_routeError']>[0],
+  systemName: string,
+): void {
+  worldInternal._routeError(error, { severity: Severity.Error, systemName });
+}
+
+function extractCloudLayerOrRoute(
+  world: World,
+  worldInternal: WorldInternalView,
+): ExtractedCloudLayer | undefined {
+  const extractedCloudLayer = extractCloudLayer(world);
+  if (extractedCloudLayer.ok) return extractedCloudLayer.value;
+  routeExtractError(worldInternal, extractedCloudLayer.error, 'RenderSystem.extract (cloud-layer)');
+  return undefined;
+}
+
+/** Routes an invalid lighting or caster channel mask; the light is then skipped. */
+function admitLightChannels(
+  worldInternal: WorldInternalView,
+  lightingChannels: number,
+  shadowCasterChannels?: number,
+): boolean {
+  const channelsError =
+    validateChannelMask(lightingChannels) ??
+    (shadowCasterChannels === undefined
+      ? null
+      : validateChannelMask(shadowCasterChannels, 'shadowCasterChannels'));
+  if (channelsError === null) return true;
+  routeExtractError(worldInternal, channelsError, 'RenderSystem.extract (lighting-channels)');
+  return false;
+}
+
+/** Host-side pre-multiplication: color *= intensity (charter P4). */
+function scaledLightColor(
+  world: World,
+  entity: EntityHandle,
+  component: Component,
+  intensity: number,
+): Vec3 {
+  return vec3.create(
+    (world[worldRead].getArrayElement(entity, component, 'color', 0) as number) * intensity,
+    (world[worldRead].getArrayElement(entity, component, 'color', 1) as number) * intensity,
+    (world[worldRead].getArrayElement(entity, component, 'color', 2) as number) * intensity,
+  );
+}
+
+function copyPresentationWorldMatrix(world: World, entity: EntityHandle): Float32Array | undefined {
+  const view = readEnvironmentPose(world, entity);
+  return view === undefined ? undefined : new Float32Array(view);
+}
+
+/** A light archetype without a Transform column sits at the origin. */
+function worldTranslationOf(worldMat: Float32Array | undefined): Vec3 {
+  return worldMat !== undefined
+    ? mat4.getTranslation(vec3.create(), worldMat)
+    : vec3.create(0, 0, 0);
+}
+
+function quaternionOf(
+  world: World,
+  entity: EntityHandle,
+  component: Component,
+): [number, number, number, number] {
+  const read = world[worldRead];
+  return [
+    read.getArrayElement(entity, component, 'rotation', 0) as number,
+    read.getArrayElement(entity, component, 'rotation', 1) as number,
+    read.getArrayElement(entity, component, 'rotation', 2) as number,
+    read.getArrayElement(entity, component, 'rotation', 3) as number,
+  ];
+}
+
+function rgbTuple(
+  world: World,
+  entity: EntityHandle,
+  component: Component,
+  field: string,
+): RgbTuple {
+  const read = world[worldRead];
+  return [
+    read.getArrayElement(entity, component, field, 0) as number,
+    read.getArrayElement(entity, component, field, 1) as number,
+    read.getArrayElement(entity, component, field, 2) as number,
+  ];
+}
+
+function directionalShadowFieldsOf(world: World, entity: EntityHandle) {
+  return {
+    cascadeCount: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'cascadeCount',
+    ) as number,
+    splitLambda: world[worldRead].getFieldValue(entity, DirectionalLight, 'splitLambda') as number,
+    cascadeBlend: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'cascadeBlend',
+    ) as number,
+    mapSize: world[worldRead].getFieldValue(entity, DirectionalLight, 'mapSize') as number,
+    depthBias: world[worldRead].getFieldValue(entity, DirectionalLight, 'depthBias') as number,
+    normalBias: world[worldRead].getFieldValue(entity, DirectionalLight, 'normalBias') as number,
+    shadowDistance: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowDistance',
+    ) as number,
+    shadowFilter: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowFilter',
+    ) as number,
+    shadowAngularRadius: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowAngularRadius',
+    ) as number,
+    maxPenumbraTexels: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'maxPenumbraTexels',
+    ) as number,
+    shadowMapAspect: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowMapAspect',
+    ) as number,
+    shadowCasterChannels: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowCasterChannels',
+    ) as number,
+    shadowAutoUpdate:
+      world[worldRead].getFieldValue(entity, DirectionalLight, 'shadowAutoUpdate') === 1,
+    shadowRevision: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowRevision',
+    ) as number,
+    staggerCascades:
+      world[worldRead].getFieldValue(entity, DirectionalLight, 'staggerCascades') === 1,
+    staticShadowCache:
+      world[worldRead].getFieldValue(entity, DirectionalLight, 'staticShadowCache') === 1,
+    shadowProjection: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowProjection',
+    ) as number,
+    shadowViewProjection: new Float32Array(
+      readRenderArrayView(world, entity, DirectionalLight, 'shadowViewProjection') as Float32Array,
+    ),
+    shadowBiasMode: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowBiasMode',
+    ) as number,
+    shadowRadius: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowRadius',
+    ) as number,
+    shadowIntensity: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowIntensity',
+    ) as number,
+    shadowBlurSamples: world[worldRead].getFieldValue(
+      entity,
+      DirectionalLight,
+      'shadowBlurSamples',
+    ) as number,
+  };
+}
+
+/**
+ * First hit wins; record-stage N>1 fail-fast (M3 / w19) flags duplicates.
+ * feat-20260621 M2: shadow fields come from the first-hit DirectionalLight.
+ * castShadow defaults to false; only an explicit opt-in requests CSM.
+ */
+function extractDirectionalLights(world: World, worldInternal: WorldInternalView) {
+  let directional: DirectionalLightSnapshot | undefined;
+  let directionalCount = 0;
+  let castShadow: boolean | undefined;
+  let shadowFields: ReturnType<typeof directionalShadowFieldsOf> | undefined;
+  for (const row of world.query({ read: [DirectionalLight] }).unwrap()) {
+    const lLightingChannels = world[worldRead].getFieldValue(
+      row.entity,
+      DirectionalLight,
+      'lightingChannels',
+    ) as number;
+    const lShadowCasterChannels = world[worldRead].getFieldValue(
+      row.entity,
+      DirectionalLight,
+      'shadowCasterChannels',
+    ) as number;
+    if (!admitLightChannels(worldInternal, lLightingChannels, lShadowCasterChannels)) continue;
+    directionalCount += 1;
+    if (directional !== undefined) continue;
+    const lIntensity = world[worldRead].getFieldValue(
+      row.entity,
+      DirectionalLight,
+      'intensity',
+    ) as number;
+    const lContactShadowLength = world[worldRead].getFieldValue(
+      row.entity,
+      DirectionalLight,
+      'contactShadowLength',
+    ) as number;
+    const lCastShadow =
+      world[worldRead].getFieldValue(row.entity, DirectionalLight, 'castShadow') === 1;
+    directional = {
+      kind: 'directional',
+      lightingChannels: lLightingChannels,
+      entity: row.entity,
+      direction: vec3.create(
+        world[worldRead].getArrayElement(row.entity, DirectionalLight, 'direction', 0) as number,
+        world[worldRead].getArrayElement(row.entity, DirectionalLight, 'direction', 1) as number,
+        world[worldRead].getArrayElement(row.entity, DirectionalLight, 'direction', 2) as number,
+      ),
+      color: scaledLightColor(world, row.entity, DirectionalLight, lIntensity),
+      intensity: lIntensity,
+      contactShadowLength: lContactShadowLength,
+    };
+    castShadow = lCastShadow;
+    shadowFields = directionalShadowFieldsOf(world, row.entity);
+  }
+  return { directional, directionalCount, castShadow, shadowFields };
+}
+
+type DirectionalExtraction = ReturnType<typeof extractDirectionalLights>;
+
+function validateDirectionalShadow(
+  sun: DirectionalExtraction,
+  worldInternal: WorldInternalView,
+): LightValidationError | undefined {
+  if (sun.directional === undefined || sun.shadowFields === undefined) return undefined;
+  const validation = validateDirectionalLightData({
+    direction: sun.directional.direction,
+    contactShadowLength: sun.directional.contactShadowLength,
+    castShadow: sun.castShadow,
+    ...sun.shadowFields,
+  });
+  if (validation.ok) return undefined;
+  routeExtractError(worldInternal, validation.error, 'RenderSystem.extract (directional-shadow)');
+  return validation.error;
+}
+
+/** Resolves an IES profile once per handle; an unresolved modifier is identity. */
+function resolveIesProfile(
+  world: World,
+  worldInternal: WorldInternalView,
+  cache: Map<number, IesProfileSnapshot>,
+  handle: number | undefined,
+  entity: number,
+): IesProfileSnapshot {
+  if (handle === undefined || Number(handle) === 0) return {};
+  const key = Number(handle);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const resolved = runtimeAssets(world.assets).resolveAsset<IesProfileAsset>(handle);
+  let result: IesProfileSnapshot = { iesProfileHandle: key };
+  if (
+    resolved.ok &&
+    resolved.value.kind === 'ies-profile' &&
+    resolved.value.data.byteLength === IES_SLICE_WIDTH * IES_SLICE_HEIGHT * 2
+  ) {
+    result = {
+      iesProfileHandle: key,
+      // Cooked assets are immutable. Preserve payload identity so the upload
+      // cache hashes once; publication clones metadata without transferring it.
+      iesProfileData: resolved.value.data,
+    };
+  } else {
+    routeExtractError(
+      worldInternal,
+      !resolved.ok
+        ? resolved.error
+        : createLightResourceUnavailable({
+            entity,
+            feature: 'ies',
+            generation: 0,
+            sourceKey: String(key),
+            reason: 'format',
+            expected: 'a cooked 256 × 128 r16float IesProfileAsset',
+            actual: 'invalid profile payload',
+            hint: 'recook the IES profile; the unresolved modifier is identity',
+          }),
+      'RenderSystem.extract (ies-profile)',
+    );
+  }
+  cache.set(key, result);
+  return result;
+}
+
+/** Assigns one shared light-texture array slice per TextureAsset handle. */
+function assignLightTextureSlice(
+  slices: Map<number, number>,
+  handle: number | undefined,
+  source: LightTextureSource | undefined,
+): number | undefined {
+  if (handle === undefined || handle <= 0) return undefined;
+  const existing = slices.get(handle);
+  if (existing !== undefined || source === undefined) return existing;
+  if (slices.size >= COOKIE_SLICE_CAPACITY) return undefined;
+  const slice = slices.size;
+  slices.set(handle, slice);
+  return slice;
+}
+
+/** IES profiles orient by the light's local X/Y axes. */
+function iesAxesOf(worldMat: Float32Array | undefined) {
+  return {
+    axisX: vec3.normalize(
+      vec3.create(),
+      vec3.create(worldMat?.[0] ?? 1, worldMat?.[1] ?? 0, worldMat?.[2] ?? 0),
+    ),
+    axisY: vec3.normalize(
+      vec3.create(),
+      vec3.create(worldMat?.[4] ?? 0, worldMat?.[5] ?? 1, worldMat?.[6] ?? 0),
+    ),
+  };
+}
+
+function extractPointLights(
+  world: World,
+  worldId: PreparedExtractContext['worldId'],
+  worldInternal: WorldInternalView,
+  iesProfiles: Map<number, IesProfileSnapshot>,
+) {
+  const snapshots: PointLightSnapshot[] = [];
+  // feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-4: track entity per
+  // snapshot index so the post-extract pointShadow join can stamp
+  // `shadowAtlasLayer + shadowNear + shadowFar` onto the matching PointLight.
+  const entities: number[] = [];
+  const pointLightQuery = world
+    .query({
+      read: [PointLight],
+      optional: [Transform, GlobalTransform],
+    })
+    .unwrap();
+  for (const row of pointLightQuery) {
+    const pDecay = world[worldRead].getFieldValue(row.entity, PointLight, 'decay') as number;
+    const pLightingChannels = world[worldRead].getFieldValue(
+      row.entity,
+      PointLight,
+      'lightingChannels',
+    ) as number;
+    const pIesProfile = world[worldRead].getFieldValue(
+      row.entity,
+      PointLight,
+      'iesProfile',
+    ) as ShapeOf<SchemaOf<typeof PointLight>>['iesProfile'];
+    const pIntensity = world[worldRead].getFieldValue(
+      row.entity,
+      PointLight,
+      'intensity',
+    ) as number;
+    const pRange = world[worldRead].getFieldValue(row.entity, PointLight, 'range') as number;
+    const decayError = validatePointLightDecay(pDecay);
+    if (decayError !== null) {
+      routeExtractError(worldInternal, decayError, 'RenderSystem.extract (point-light-decay)');
+      continue;
+    }
+    if (!admitLightChannels(worldInternal, pLightingChannels)) continue;
+    const entityId = row.entity;
+    // K-2 scheme B: archetype-edge sniff -- `bundle.Transform` key is absent
+    // when the archetype does not carry the Transform column.
+    const worldMat = row.has(GlobalTransform)
+      ? copyPresentationWorldMatrix(world, entityId)
+      : undefined;
+    const position = worldTranslationOf(worldMat);
+    const ies = resolveIesProfile(world, worldInternal, iesProfiles, pIesProfile, entityId);
+    snapshots.push({
+      kind: 'point',
+      decay: Math.fround(pDecay),
+      lightingChannels: pLightingChannels,
+      entity: entityId,
+      worldId,
+      position,
+      color: scaledLightColor(world, row.entity, PointLight, pIntensity),
+      intensity: pIntensity,
+      invRangeSquared: computeInvRangeSquared(pRange),
+      ...ies,
+      ...(Number(pIesProfile) > 0 ? iesAxesOf(worldMat) : {}),
+    });
+    entities.push(entityId);
+  }
+  return { snapshots, entities };
+}
+
+/**
+ * Extract is the single direction-normalization owner for direct-light
+ * snapshots. URP and HDRP preserve this value downstream. A degenerate
+ * direction is routed and kept unnormalized; it skips the shadow projection.
+ */
+function normalizeSpotDirection(direction: ArrayLike<number>, worldInternal: WorldInternalView) {
+  const x = direction[0] ?? 0;
+  const y = direction[1] ?? -1;
+  const z = direction[2] ?? 0;
+  const length = Math.sqrt(x * x + y * y + z * z);
+  const valid = length > 1e-6;
+  if (!valid) {
+    routeExtractError(
+      worldInternal,
+      new SpawnLightInvalidBoundsError('SpotLight', 'direction', [x, y, z]),
+      'RenderSystem.extract (spot-direction)',
+    );
+    return { direction: vec3.create(x, y, z), valid };
+  }
+  return { direction: vec3.create(x / length, y / length, z / length), valid };
+}
+
+/**
+ * Resolve the legacy projector before assigning array slices so the
+ * extended-lighting path can reuse its texture transport without losing the
+ * old lightViewProj projection semantics.
+ */
+function resolveSpotProjector(
+  world: World,
+  assets: PreparedExtractContext['assets'],
+  worldInternal: WorldInternalView,
+  projector: number,
+) {
+  const handle = Math.round(Number(projector)) as AssetHandle<'texture'>;
+  const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(handle);
+  if (resolved.ok && resolved.value.kind === 'texture') {
+    return {
+      handle,
+      asset: resolved.value,
+      guid: assets?.guidOf(handle) ?? `handle:${Number(handle)}`,
+    };
+  }
+  routeExtractError(
+    worldInternal,
+    resolved.ok
+      ? new RhiError({
+          code: 'asset-not-registered',
+          expected: 'SpotLight.projector resolves to a TextureAsset',
+          hint: 'load the authored projector TextureAsset before assigning SpotLight.projector',
+          detail: { assetHandle: Number(handle) },
+        })
+      : resolved.error,
+    'RenderSystem.extract (spot-projector)',
+  );
+  return undefined;
+}
+
+function resolveSpotCookie(world: World, cookie: number) {
+  const cookieHandle = Number(cookie) > 0 ? Number(cookie) : undefined;
+  if (cookieHandle === undefined) return { cookieHandle, cookieProjection: undefined };
+  const cookieAsset = runtimeAssets(world.assets).resolveAsset<TextureAsset>(cookieHandle);
+  const cookieProjection =
+    cookieAsset.ok && cookieAsset.value.kind === 'texture'
+      ? prepareCookieProjection(cookieAsset.value)
+      : undefined;
+  return { cookieHandle, cookieProjection };
+}
+
+/**
+ * D-1: perspective(outerConeDeg*2, aspect=1, near, far) x lookAt(pos, pos+dir).
+ * FOV = outerConeDeg * 2 in degrees; mat4.perspective takes fov in radians.
+ */
+function spotLightViewProjection(
+  position: Vec3,
+  direction: Vec3,
+  outerConeDeg: number,
+  nearPlane: number,
+  farPlane: number,
+): Float32Array {
+  const target = vec3.create(
+    (position[0] ?? 0) + (direction[0] ?? 0),
+    (position[1] ?? 0) + (direction[1] ?? 0),
+    (position[2] ?? 0) + (direction[2] ?? 0),
+  );
+  const fov = outerConeDeg * 2 * (Math.PI / 180);
+  const proj = mat4.create();
+  mat4.perspectiveReverseZ(proj, fov, 1, nearPlane, farPlane);
+  const view = mat4.create();
+  mat4.lookAt(view, position, target, vec3.create(0, 1, 0));
+  const lightViewProj = new Float32Array(16);
+  // Reinterpret the Float32Array surface field as a Mat4 out-param; a
+  // factory would force a needless alloc+copy. brand-cast-ok
+  mat4.multiply(lightViewProj as Mat4, proj, view);
+  return lightViewProj;
+}
+
+/** Cookie and projector texture transport fields on a SpotLightSnapshot. */
+function spotLightTextureFields(
+  cookieHandle: number | undefined,
+  cookieSlice: number | undefined,
+  cookieProjection: ReturnType<typeof prepareCookieProjection> | undefined,
+  projectorSlice: number | undefined,
+  projectorProjection: ReturnType<typeof prepareCookieProjection> | undefined,
+) {
+  const cookieSource = cookieProjection?.source;
+  const projectorSource = projectorProjection?.source;
+  return {
+    ...(cookieHandle === undefined
+      ? {}
+      : {
+          cookieHandle,
+          ...(cookieSlice === undefined ? {} : { cookieSlice }),
+        }),
+    ...(cookieSource === undefined ? {} : { cookieSource }),
+    ...(cookieProjection === undefined ? {} : { cookieMatrix: cookieProjection.matrix }),
+    ...(projectorSlice === undefined ? {} : { projectorSlice }),
+    ...(projectorSource === undefined ? {} : { projectorSource }),
+    ...(projectorProjection === undefined ? {} : { projectorMatrix: projectorProjection.matrix }),
+  };
+}
+
+function spotProjectorIdentityFields(projector: ReturnType<typeof resolveSpotProjector>) {
+  return projector === undefined
+    ? {}
+    : {
+        projectorHandle: projector.handle,
+        projectorAsset: projector.asset,
+        projectorGuid: projector.guid,
+        projectorGeneration: 1,
+        projectorRevision: 1,
+      };
+}
+
+function extractSpotLights(
+  world: World,
+  context: Pick<PreparedExtractContext, 'assets' | 'worldId'>,
+  worldInternal: WorldInternalView,
+  iesProfiles: Map<number, IesProfileSnapshot>,
+  lightTextureSlices: Map<number, number>,
+): SpotLightSnapshot[] {
+  const spotSnapshots: SpotLightSnapshot[] = [];
+  const spotLightQuery = world
+    .query({
+      read: [SpotLight],
+      optional: [Transform, GlobalTransform],
+    })
+    .unwrap();
+  for (const row of spotLightQuery) {
+    const sLightingChannels = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'lightingChannels',
+    ) as number;
+    const sShadowCasterChannels = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowCasterChannels',
+    ) as number;
+    const sDirection = readRenderArrayView(
+      world,
+      row.entity,
+      SpotLight,
+      'direction',
+    ) as Float32Array;
+    const sCastShadow = world[worldRead].getFieldValue(row.entity, SpotLight, 'castShadow') === 1;
+    const sRange = world[worldRead].getFieldValue(row.entity, SpotLight, 'range') as number;
+    const sNearPlane = world[worldRead].getFieldValue(row.entity, SpotLight, 'nearPlane') as number;
+    const authoredFarPlane = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'farPlane',
+    ) as number;
+    const sCookie = world[worldRead].getFieldValue(row.entity, SpotLight, 'cookie') as ShapeOf<
+      SchemaOf<typeof SpotLight>
+    >['cookie'];
+    const sProjector = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'projector',
+    ) as ShapeOf<SchemaOf<typeof SpotLight>>['projector'];
+    const sOuterConeDeg = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'outerConeDeg',
+    ) as number;
+    const sIntensity = world[worldRead].getFieldValue(row.entity, SpotLight, 'intensity') as number;
+    const sInnerConeDeg = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'innerConeDeg',
+    ) as number;
+    const sIesProfile = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'iesProfile',
+    ) as ShapeOf<SchemaOf<typeof SpotLight>>['iesProfile'];
+    const sRollDeg = world[worldRead].getFieldValue(row.entity, SpotLight, 'rollDeg') as number;
+    const sShadowProjection = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowProjection',
+    ) as number;
+    const sShadowViewProjection = readRenderArrayView(
+      world,
+      row.entity,
+      SpotLight,
+      'shadowViewProjection',
+    ) as Float32Array;
+    const sMapSize = world[worldRead].getFieldValue(row.entity, SpotLight, 'mapSize') as number;
+    const sShadowIntensity = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowIntensity',
+    ) as number;
+    const sShadowBlurSamples = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowBlurSamples',
+    ) as number;
+    const sDepthBias = world[worldRead].getFieldValue(row.entity, SpotLight, 'depthBias') as number;
+    const sNormalBias = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'normalBias',
+    ) as number;
+    const sShadowMapAspect = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowMapAspect',
+    ) as number;
+    const sShadowAutoUpdate =
+      world[worldRead].getFieldValue(row.entity, SpotLight, 'shadowAutoUpdate') === 1;
+    const sShadowRevision = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowRevision',
+    ) as number;
+    const sPcfKernelSize = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'pcfKernelSize',
+    ) as number;
+    const sShadowFilter = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowFilter',
+    ) as number;
+    const sShadowBiasMode = world[worldRead].getFieldValue(
+      row.entity,
+      SpotLight,
+      'shadowBiasMode',
+    ) as number;
+    if (!admitLightChannels(worldInternal, sLightingChannels, sShadowCasterChannels)) continue;
+    const worldMat = row.has(GlobalTransform)
+      ? copyPresentationWorldMatrix(world, row.entity)
+      : undefined;
+    const position = worldTranslationOf(worldMat);
+    const { direction: dirN, valid: hasValidDirection } = normalizeSpotDirection(
+      sDirection,
+      worldInternal,
+    );
+
+    // ── shadow fields (feat-20260625-spot-light-shadow-mapping M1) ──
+    const castShadow = sCastShadow;
+    const shadowProjection = resolvePunctualShadowFarPlane(sRange, sNearPlane, authoredFarPlane);
+    const sFarPlane = shadowProjection.ok ? shadowProjection.value : authoredFarPlane;
+    const { cookieHandle, cookieProjection } = resolveSpotCookie(world, sCookie);
+    // `shared<T>` columns are u32-backed and zero-filled when the optional
+    // field is absent. Treat only a positive handle as an authored projector;
+    // checking nullish values alone would turn the zero sentinel into a
+    // phantom projector matrix and an avoidable asset-not-found diagnostic.
+    const hasProjector = Number(sProjector) > 0;
+    const projector = hasProjector
+      ? resolveSpotProjector(world, context.assets, worldInternal, sProjector)
+      : undefined;
+    const projectorProjection =
+      projector === undefined ? undefined : prepareCookieProjection(projector.asset);
+    const cookieSlice = assignLightTextureSlice(
+      lightTextureSlices,
+      cookieHandle,
+      cookieProjection?.source,
+    );
+    const projectorSlice = assignLightTextureSlice(
+      lightTextureSlices,
+      projector === undefined ? undefined : Number(projector.handle),
+      projectorProjection?.source,
+    );
+    let lightViewProj: Float32Array | undefined;
+
+    // A projector needs the same perspective transform even when its SpotLight
+    // has no shadow atlas tile. The matrix remains a derived light fact; the
+    // shadow tile stays -1 so shadow visibility is still independently gated.
+    const needsProjection = castShadow || hasProjector;
+    if (needsProjection && !shadowProjection.ok) {
+      routeExtractError(
+        worldInternal,
+        shadowProjection.error,
+        'RenderSystem.extract (spot-shadow-projection)',
+      );
+    }
+    if (needsProjection && hasValidDirection && shadowProjection.ok) {
+      lightViewProj = spotLightViewProjection(position, dirN, sOuterConeDeg, sNearPlane, sFarPlane);
+    }
+
+    spotSnapshots.push({
+      kind: 'spot',
+      lightingChannels: sLightingChannels,
+      entity: row.entity,
+      worldId: context.worldId,
+      // D-6: position reflects world transform; direction stays sourced
+      // from SpotLight.direction (NOT rotated by the parent).
+      position,
+      direction: dirN,
+      color: scaledLightColor(world, row.entity, SpotLight, sIntensity),
+      intensity: sIntensity,
+      invRangeSquared: computeInvRangeSquared(sRange),
+      cosInner: degToCos(sInnerConeDeg),
+      cosOuter: degToCos(sOuterConeDeg),
+      ...resolveIesProfile(world, worldInternal, iesProfiles, sIesProfile, row.entity),
+      ...spotLightTextureFields(
+        cookieHandle,
+        cookieSlice,
+        cookieProjection,
+        projectorSlice,
+        projectorProjection,
+      ),
+      rollDeg: sRollDeg,
+      // ── shadow fields ──
+      castShadow,
+      lightViewProj:
+        sShadowProjection === 1 ? new Float32Array(sShadowViewProjection) : lightViewProj,
+      mapSize: sMapSize,
+      nearPlane: sNearPlane,
+      farPlane: sFarPlane,
+      // The Render World assigns each casting spot a stable tile.
+      shadowAtlasTile: -1,
+      shadowIntensity: sShadowIntensity,
+      shadowBlurSamples: sShadowBlurSamples,
+      depthBias: sDepthBias,
+      normalBias: sNormalBias,
+      shadowMapAspect: sShadowMapAspect,
+      shadowCasterChannels: sShadowCasterChannels,
+      shadowAutoUpdate: sShadowAutoUpdate,
+      shadowRevision: sShadowRevision,
+      pcfKernelSize: sPcfKernelSize,
+      shadowFilter: sShadowFilter,
+      shadowBiasMode: sShadowBiasMode,
+      ...spotProjectorIdentityFields(projector),
+    });
+  }
+  return spotSnapshots;
+}
+
+/** RectAreaLight world frame; a light without a Transform column sits at the origin. */
+function rectAreaWorldFrameOf(
+  world: World,
+  entity: EntityHandle,
+  hasTransform: boolean,
+  width: number,
+  height: number,
+) {
+  const worldMat = hasTransform
+    ? new Float32Array(readEnvironmentPose(world, entity) ?? [])
+    : undefined;
+  const position = worldTranslationOf(worldMat);
+  const frame = buildRectAreaWorldFrame({
+    center: position,
+    axisX: [worldMat?.[0] ?? 1, worldMat?.[1] ?? 0, worldMat?.[2] ?? 0],
+    axisY: [worldMat?.[4] ?? 0, worldMat?.[5] ?? 1, worldMat?.[6] ?? 0],
+    width,
+    height,
+  });
+  return { position, frame };
+}
+
+/** Resolves a RectAreaLight source texture into the shared light-texture array. */
+function resolveRectSourceTexture(
+  world: World,
+  worldInternal: WorldInternalView,
+  lightTextureSlices: Map<number, number>,
+  sourceTexture: number,
+) {
+  const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(sourceTexture);
+  const projection =
+    resolved.ok && resolved.value.kind === 'texture'
+      ? prepareCookieProjection(resolved.value)
+      : undefined;
+  if (projection === undefined) {
+    routeExtractError(
+      worldInternal,
+      resolved.ok
+        ? new RhiError({
+            code: 'asset-not-registered',
+            expected:
+              'RectAreaLight.sourceTexture resolves to a 2D TextureAsset: uncompressed rgba8unorm[-srgb], bgra8unorm[-srgb], r8unorm, rgba16float, rgba32float, or a BC/ETC2/ASTC block format whose colorSpace matches its -srgb suffix',
+            hint: 'assign a 2D image texture (not a cube, array or 3D texture) whose colorSpace matches its format before assigning RectAreaLight.sourceTexture; the light renders untextured until then',
+            detail: { assetHandle: Number(sourceTexture) },
+          })
+        : resolved.error,
+      'RenderSystem.extract (rect-source-texture)',
+    );
+  }
+  const sourceTextureHandle = Number(sourceTexture);
+  const sourceTextureSource = projection?.source;
+  const sourceTextureSlice = assignLightTextureSlice(
+    lightTextureSlices,
+    sourceTextureHandle,
+    sourceTextureSource,
+  );
+  return {
+    sourceTextureHandle,
+    ...(sourceTextureSlice === undefined || sourceTextureSource === undefined
+      ? {}
+      : { cookieSlice: sourceTextureSlice, cookieSource: sourceTextureSource }),
+  };
+}
+
+function extractRectAreaLights(
+  world: World,
+  worldInternal: WorldInternalView,
+  iesProfiles: Map<number, IesProfileSnapshot>,
+  lightTextureSlices: Map<number, number>,
+): RectAreaDirectLightSnapshot[] {
+  const rectSnapshots: RectAreaDirectLightSnapshot[] = [];
+  const rectLightQuery = world
+    .query({
+      read: [RectAreaLight],
+      optional: [Transform, GlobalTransform],
+    })
+    .unwrap();
+  for (const row of rectLightQuery) {
+    const lightLightingChannels = world[worldRead].getFieldValue(
+      row.entity,
+      RectAreaLight,
+      'lightingChannels',
+    ) as number;
+    const lightIntensity = world[worldRead].getFieldValue(
+      row.entity,
+      RectAreaLight,
+      'intensity',
+    ) as number;
+    const lightWidth = world[worldRead].getFieldValue(row.entity, RectAreaLight, 'width') as number;
+    const lightHeight = world[worldRead].getFieldValue(
+      row.entity,
+      RectAreaLight,
+      'height',
+    ) as number;
+    const lightRange = world[worldRead].getFieldValue(row.entity, RectAreaLight, 'range') as number;
+    const lightSourceTexture = world[worldRead].getFieldValue(
+      row.entity,
+      RectAreaLight,
+      'sourceTexture',
+    ) as ShapeOf<SchemaOf<typeof RectAreaLight>>['sourceTexture'];
+    const lightIesProfile = world[worldRead].getFieldValue(
+      row.entity,
+      RectAreaLight,
+      'iesProfile',
+    ) as ShapeOf<SchemaOf<typeof RectAreaLight>>['iesProfile'];
+    if (!admitLightChannels(worldInternal, lightLightingChannels)) continue;
+    const validation = validateRectAreaLightData({
+      intensity: lightIntensity,
+      color: readRenderArrayView(world, row.entity, RectAreaLight, 'color') as Float32Array,
+      width: lightWidth,
+      height: lightHeight,
+      range: lightRange,
+    });
+    if (!validation.ok) {
+      routeExtractError(worldInternal, validation.error, 'RenderSystem.extract (rect-area-light)');
+      continue;
+    }
+    const { position, frame } = rectAreaWorldFrameOf(
+      world,
+      row.entity,
+      row.has(GlobalTransform),
+      lightWidth,
+      lightHeight,
+    );
+    const sourceTexture =
+      lightSourceTexture !== undefined && Number(lightSourceTexture) > 0
+        ? resolveRectSourceTexture(world, worldInternal, lightTextureSlices, lightSourceTexture)
+        : {};
+    rectSnapshots.push({
+      kind: 'rect-area',
+      entity: row.entity,
+      lightingChannels: lightLightingChannels,
+      position,
+      color: scaledLightColor(world, row.entity, RectAreaLight, lightIntensity),
+      intensity: lightIntensity,
+      invRangeSquared: computeInvRangeSquared(lightRange),
+      halfWidth: frame.halfWidth,
+      halfHeight: frame.halfHeight,
+      axisX: frame.axisX,
+      axisY: frame.axisY,
+      ...resolveIesProfile(world, worldInternal, iesProfiles, lightIesProfile, row.entity),
+      ...sourceTexture,
+    });
+  }
+  return rectSnapshots;
+}
+
+/**
+ * The SpotLight is the sole projector owner. Once all light snapshots have
+ * been extracted, publish its accepted TextureAsset tuple on the volume
+ * snapshot so surface and volume consume the same identity and revision.
+ */
+function attachVolumeSpotProjector(
+  volumetricFog: ReturnType<typeof extractVolumeSnapshot>,
+  spotSnapshots: readonly SpotLightSnapshot[],
+): ReturnType<typeof extractVolumeSnapshot> {
+  if (volumetricFog === undefined) return volumetricFog;
+  let volumeSpot: SpotLightSnapshot | undefined;
+  if (volumetricFog.spotLightEntity !== undefined) {
+    volumeSpot = spotSnapshots.find((light) => light.entity === volumetricFog.spotLightEntity);
+  } else if (volumetricFog.lightKind === 'spot') {
+    volumeSpot = spotSnapshots.find((light) => light.entity === volumetricFog.lightEntity);
+  }
+  if (
+    volumetricFog.status !== 'available' ||
+    volumeSpot?.projectorAsset === undefined ||
+    volumeSpot.projectorHandle === undefined
+  ) {
+    return volumetricFog;
+  }
+  const projectorHandle = volumeSpot.projectorHandle;
+  return {
+    ...volumetricFog,
+    projector: {
+      guid: volumeSpot.projectorGuid ?? `handle:${Number(projectorHandle)}`,
+      generation: volumeSpot.projectorGeneration ?? 1,
+      view: '2d',
+      sampler: 'linear-clamp-to-edge',
+      projection: 'spot-projection',
+      revision: volumeSpot.projectorRevision ?? 1,
+    },
+    projectorHandle,
+    projectorAsset: volumeSpot.projectorAsset,
+  };
+}
+
+function directionalCsmConfigOf(
+  sf: ReturnType<typeof directionalShadowFieldsOf>,
+): DirectionalCsmConfig {
+  return {
+    ...(sf.shadowProjection === 1 ? { shadowViewProjection: sf.shadowViewProjection } : {}),
+    shadowMapAspect: sf.shadowMapAspect,
+    shadowCasterChannels: sf.shadowCasterChannels,
+    shadowAutoUpdate: sf.shadowAutoUpdate,
+    shadowRevision: sf.shadowRevision,
+    shadowBiasMode: sf.shadowBiasMode,
+    shadowRadius: sf.shadowRadius,
+    shadowIntensity: sf.shadowIntensity,
+    shadowBlurSamples: sf.shadowBlurSamples,
+    cascadeCount: sf.cascadeCount,
+    splitLambda: sf.splitLambda,
+    cascadeBlend: sf.cascadeBlend,
+    mapSize: sf.mapSize,
+    shadowDistance: sf.shadowDistance,
+    shadowFilter: sf.shadowFilter,
+    shadowAngularRadius: sf.shadowAngularRadius,
+    maxPenumbraTexels: sf.maxPenumbraTexels,
+    ...(sf.staggerCascades ? { staggerCascades: true } : {}),
+    ...(sf.staticShadowCache ? {} : { staticShadowCache: false as const }),
+  };
+}
+
+/**
+ * The shadow configuration and direction a view fits its cascades from,
+ * gated on castShadow (default false, first hit wins) and a valid config.
+ */
+function directionalShadowSource(
+  sun: DirectionalExtraction,
+  shadowError: LightValidationError | undefined,
+) {
+  const { directional, shadowFields: sf } = sun;
+  if (directional === undefined || sun.castShadow !== true || shadowError !== undefined) {
+    return undefined;
+  }
+  if (sf === undefined) return undefined;
+  return {
+    directionalCsmConfig: directionalCsmConfigOf(sf),
+    directionalCsmDirection: directional.direction,
+  };
+}
+
+/** Six face view-projection matrices packed into Float32Array(96). */
+function packPointShadowMatrices(lightPos: Vec3, nearPlane: number, farPlane: number) {
+  const matrices = buildPointShadowMatrices(lightPos, nearPlane, farPlane);
+  const packed = new Float32Array(96);
+  for (let f = 0; f < 6; f++) {
+    const m = matrices[f];
+    if (m === undefined) continue;
+    for (let k = 0; k < 16; k++) {
+      packed[f * 16 + k] = m[k] ?? 0;
+    }
+  }
+  return packed;
+}
+
+/**
+ * feat-20260612-point-light-shadows-urp-hdrp M1 / T-M1-7 (plan-strategy §D-3,
+ * requirements §5.3): query (PointLight + PointLightShadow + Transform)
+ * archetype join. For each shadow caster, build 6 face VP matrices and pack
+ * into Float32Array(96). Atlas layer is assigned in spawn order while the
+ * renderer-owned atlas has capacity; the sentinel -1 is shader-side and
+ * applies to non-admitted PointLightShadow requests as well.
+ */
+function extractPointShadows(
+  world: World,
+  worldId: PreparedExtractContext['worldId'],
+  worldInternal: WorldInternalView,
+): PointShadowSnapshot[] {
+  const pointShadowSnapshots: PointShadowSnapshot[] = [];
+  const pointShadowQuery = world
+    .query({ read: [Transform, GlobalTransform, PointLightShadow, PointLight] })
+    .unwrap();
+  for (const row of pointShadowQuery) {
+    const psShadowCasterChannels = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'shadowCasterChannels',
+    ) as number;
+    const psShadowProjection = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'shadowProjection',
+    ) as number;
+    const psShadowPosition = readRenderArrayView(
+      world,
+      row.entity,
+      PointLightShadow,
+      'shadowPosition',
+    ) as Float32Array;
+    const psNearPlane = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'nearPlane',
+    ) as number;
+    const psFarPlane = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'farPlane',
+    ) as number;
+    const psMapSize = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'mapSize',
+    ) as number;
+    const psDepthBias = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'depthBias',
+    ) as number;
+    const psNormalBias = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'normalBias',
+    ) as number;
+    const psShadowAutoUpdate =
+      world[worldRead].getFieldValue(row.entity, PointLightShadow, 'shadowAutoUpdate') === 1;
+    const psShadowRevision = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'shadowRevision',
+    ) as number;
+    const psShadowFilter = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'shadowFilter',
+    ) as number;
+    const psShadowBiasMode = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'shadowBiasMode',
+    ) as number;
+    const psShadowIntensity = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'shadowIntensity',
+    ) as number;
+    const psPcfKernelSize = world[worldRead].getFieldValue(
+      row.entity,
+      PointLightShadow,
+      'pcfKernelSize',
+    ) as number;
+    const channelsError = validateChannelMask(psShadowCasterChannels, 'shadowCasterChannels');
+    if (channelsError !== null) {
+      routeExtractError(worldInternal, channelsError, 'RenderSystem.extract (shadow-channels)');
+      continue;
+    }
+    // Read world-space position from GlobalTransform.world (mat4 column-major;
+    // translation lives at indices 12..14, mirroring CameraSnapshot.world
+    // semantics in this file).
+    // feat-20260614 M4 / w13: TypedArrayFor for `array<f32, 16>` now
+    // resolves to a concrete `Float32Array` (was `never` pre-w11), which
+    // surfaces the row-window slicing -- `t.world` is the stride-16 flat
+    // column view; row i lives at `[i*16, (i+1)*16)`. The prior
+    // `t.world?.[i]` form silently returned a single element under the
+    // `never`-typed bundle path and `wRow[12]` widened to `undefined ?? 0`
+    // so light positions clamped to the origin.
+    const wRow = readEnvironmentPose(world, row.entity);
+    if (wRow === undefined) continue;
+    const lightPos =
+      psShadowProjection === 1
+        ? vec3.clone(psShadowPosition)
+        : vec3.create(wRow[12] ?? 0, wRow[13] ?? 0, wRow[14] ?? 0);
+    const projection = resolvePunctualShadowFarPlane(
+      world[worldRead].getFieldValue(row.entity, PointLight, 'range') as number,
+      psNearPlane,
+      psFarPlane,
+    );
+    if (!projection.ok) {
+      routeExtractError(
+        worldInternal,
+        projection.error,
+        'RenderSystem.extract (point-shadow-projection)',
+      );
+      continue;
+    }
+    const farPlane = projection.value;
+    pointShadowSnapshots.push({
+      entity: row.entity,
+      worldId,
+      position: lightPos,
+      mapSize: psMapSize,
+      nearPlane: psNearPlane,
+      farPlane,
+      depthBias: psDepthBias,
+      normalBias: psNormalBias,
+      shadowCasterChannels: psShadowCasterChannels,
+      shadowAutoUpdate: psShadowAutoUpdate,
+      shadowRevision: psShadowRevision,
+      shadowFilter: psShadowFilter,
+      shadowBiasMode: psShadowBiasMode,
+      shadowIntensity: psShadowIntensity,
+      pcfKernelSize: psPcfKernelSize ?? 3,
+      // The Render World assigns each request a stable cube layer.
+      shadowAtlasLayer: -1,
+      shadowMatrices: packPointShadowMatrices(lightPos, psNearPlane, farPlane),
+    });
+  }
+  return pointShadowSnapshots;
+}
+
+/**
+ * feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-4 (plan-strategy §D-8):
+ * join pointShadow snapshots into the matching PointLightSnapshot so the
+ * record stage threads `shadowNear + shadowFar` through the unified
+ * direct-light metadata payload; the Render World stamps the light's stable
+ * `shadowAtlasLayer`. Replaces the freshly-built snapshot in place; it is not
+ * exposed elsewhere this frame yet.
+ */
+function joinPointShadowLayers(
+  pointSnapshots: PointLightSnapshot[],
+  pointSnapshotEntities: readonly number[],
+  pointShadowSnapshots: readonly PointShadowSnapshot[],
+): void {
+  if (pointShadowSnapshots.length === 0) return;
+  const shadowByEntity = new Map<number, PointShadowSnapshot>();
+  for (const ps of pointShadowSnapshots) shadowByEntity.set(ps.entity, ps);
+  for (let i = 0; i < pointSnapshots.length; i++) {
+    const ps = shadowByEntity.get(pointSnapshotEntities[i] ?? 0);
+    if (ps === undefined) continue;
+    pointSnapshots[i] = {
+      ...(pointSnapshots[i] as PointLightSnapshot),
+      shadowAtlasLayer: ps.shadowAtlasLayer,
+      shadowNear: ps.nearPlane,
+      shadowFar: ps.farPlane,
+      pcfKernelSize: ps.pcfKernelSize ?? 3,
+    };
+  }
+}
+
+/**
+ * equirect is OPTIONAL: an omitted field zero-inits to handle 0, which record
+ * treats as "no equirect" -> solid-color ambient via the white fallback cube.
+ * A Skylight WITHOUT an equirect is still a valid snapshot (the prior
+ * `equirectRaw !== undefined` gate dropped color-only skylights, leaving the
+ * scene black -- the downstream gap #4).
+ */
+function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapshot {
+  const captureWorld = readEnvironmentPose(world, entity);
+  return {
+    ...(captureWorld === undefined
+      ? {}
+      : {
+          capturePosition: [
+            captureWorld[12] ?? 0,
+            captureWorld[13] ?? 0,
+            captureWorld[14] ?? 0,
+          ] as const,
+        }),
+    equirectHandle:
+      (world[worldRead].getFieldValue(entity, Skylight, 'equirect') as ShapeOf<
+        SchemaOf<typeof Skylight>
+      >['equirect']) !== undefined
+        ? Math.round(
+            world[worldRead].getFieldValue(entity, Skylight, 'equirect') as ShapeOf<
+              SchemaOf<typeof Skylight>
+            >['equirect'],
+          )
+        : 0,
+    color: [
+      world[worldRead].getArrayElement(entity, Skylight, 'color', 0) as number,
+      world[worldRead].getArrayElement(entity, Skylight, 'color', 1) as number,
+      world[worldRead].getArrayElement(entity, Skylight, 'color', 2) as number,
+    ],
+    groundColor: [
+      world[worldRead].getArrayElement(entity, Skylight, 'groundColor', 0) as number,
+      world[worldRead].getArrayElement(entity, Skylight, 'groundColor', 1) as number,
+      world[worldRead].getArrayElement(entity, Skylight, 'groundColor', 2) as number,
+    ],
+    ambientIrradiance: [
+      world[worldRead].getArrayElement(entity, Skylight, 'ambientIrradiance', 0) as number,
+      world[worldRead].getArrayElement(entity, Skylight, 'ambientIrradiance', 1) as number,
+      world[worldRead].getArrayElement(entity, Skylight, 'ambientIrradiance', 2) as number,
+    ],
+    intensity: world[worldRead].getFieldValue(entity, Skylight, 'intensity') as number,
+    rotation: quaternionOf(world, entity, Skylight),
+    // w19: winning entity handle for the multi-Skylight once-warn (F-8).
+    entityHandle: entity,
+  };
+}
+
+/**
+ * feat-20260520-skylight-ibl-cubemap M4 / t26+t27: first archetype hit wins
+ * (mirrors DirectionalLight pattern); multi-Skylight warn in record stage
+ * (t27) uses skylightCount.
+ */
+function extractSkylight(world: World) {
+  const skylightQuery = world.query({ read: [Skylight], optional: [GlobalTransform] }).unwrap();
+  let skylight: SkylightSnapshot | undefined;
+  let skylightCount = 0;
+  for (const row of skylightQuery) {
+    skylightCount += 1;
+    if (skylight === undefined) skylight = skylightSnapshotOf(world, row.entity);
+  }
+  return { skylight, skylightCount };
+}
+
+function extractLightProbes(
+  world: World,
+  worldId: PreparedExtractContext['worldId'],
+  worldInternal: WorldInternalView,
+): LightProbeSnapshot[] {
+  const lightProbeQuery = world.query({ read: [LightProbe, GlobalTransform] }).unwrap();
+  const lightProbes: LightProbeSnapshot[] = [];
+  for (const row of lightProbeQuery) {
+    const probeIrradiance = readRenderArrayView(
+      world,
+      row.entity,
+      LightProbe,
+      'irradiance',
+    ) as Float32Array;
+    const probeRadius = world[worldRead].getFieldValue(row.entity, LightProbe, 'radius') as number;
+    const validation = validateLightProbeData({
+      irradiance: probeIrradiance,
+      radius: probeRadius,
+    });
+    if (!validation.ok) {
+      routeExtractError(worldInternal, validation.error, 'RenderSystem.extract (light-probe)');
+      continue;
+    }
+    const transform = readEnvironmentPose(world, row.entity);
+    if (transform === undefined) continue;
+    lightProbes.push({
+      identity: String(row.entity),
+      worldId,
+      position: [transform[12] ?? 0, transform[13] ?? 0, transform[14] ?? 0],
+      radius: probeRadius,
+      irradiance: new Float32Array(probeIrradiance),
+      admitted: true,
+    });
+  }
+  return lightProbes;
+}
+
+/**
+ * feat-20260531-skybox-env-background M2 / w5: first archetype hit wins
+ * (mirrors Skylight pattern); multi-entity once-warn in record stage uses
+ * skyboxCount.
+ */
+function extractSkybox(world: World) {
+  const skyboxQuery = world.query({ read: [SkyboxBackground] }).unwrap();
+  let skybox: SkyboxSnapshot | undefined;
+  let skyboxCount = 0;
+  for (const row of skyboxQuery) {
+    const sEquirect = world[worldRead].getFieldValue(
+      row.entity,
+      SkyboxBackground,
+      'equirect',
+    ) as ShapeOf<SchemaOf<typeof SkyboxBackground>>['equirect'];
+    const sMode = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'mode') as number;
+    skyboxCount += 1;
+    if (skybox === undefined && sEquirect !== undefined) {
+      skybox = {
+        equirectHandle: Math.round(sEquirect),
+        mode: sMode,
+        rotation: quaternionOf(world, row.entity, SkyboxBackground),
+        // w19: winning entity handle for the multi-SkyboxBackground warn (F-8).
+        entityHandle: row.entity,
+      };
+    }
+  }
+  return { skybox, skyboxCount };
+}
+
+function atmosphereParametersOf(
+  world: World,
+  entity: EntityHandle,
+  atmosphereWorld: ArrayLike<number> | undefined,
+  skylight: SkylightSnapshot | undefined,
+) {
+  const groundX = atmosphereWorld?.[12] ?? 0;
+  const groundY = atmosphereWorld?.[13] ?? 0;
+  const groundZ = atmosphereWorld?.[14] ?? 0;
+  return {
+    planetRadius: world[worldRead].getFieldValue(entity, Atmosphere, 'planetRadius') as number,
+    atmosphereHeight: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'atmosphereHeight',
+    ) as number,
+    groundOrigin: [groundX, groundY, groundZ] as const,
+    capturePosition: skylight?.capturePosition ?? ([groundX, groundY + 1, groundZ] as const),
+    rayleighScattering: rgbTuple(world, entity, Atmosphere, 'rayleighScattering'),
+    rayleighScaleHeight: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'rayleighScaleHeight',
+    ) as number,
+    mieScattering: world[worldRead].getFieldValue(entity, Atmosphere, 'mieScattering') as number,
+    mieAbsorption: world[worldRead].getFieldValue(entity, Atmosphere, 'mieAbsorption') as number,
+    mieScaleHeight: world[worldRead].getFieldValue(entity, Atmosphere, 'mieScaleHeight') as number,
+    mieAnisotropy: world[worldRead].getFieldValue(entity, Atmosphere, 'mieAnisotropy') as number,
+    absorption: rgbTuple(world, entity, Atmosphere, 'absorption'),
+    absorptionPeakHeight: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'absorptionPeakHeight',
+    ) as number,
+    absorptionHalfWidth: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'absorptionHalfWidth',
+    ) as number,
+    groundAlbedo: rgbTuple(world, entity, Atmosphere, 'groundAlbedo'),
+    multipleScattering: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'multipleScattering',
+    ) as number,
+    sunAngularRadius: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'sunAngularRadius',
+    ) as number,
+    aerialPerspectiveStart: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'aerialPerspectiveStart',
+    ) as number,
+    aerialPerspectiveDistanceScale: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'aerialPerspectiveDistanceScale',
+    ) as number,
+  } as const;
+}
+
+function environmentCandidatesOf(
+  world: World,
+  skylight: SkylightSnapshot | undefined,
+  skybox: SkyboxSnapshot | undefined,
+): EnvironmentCandidate[] {
+  const environmentCandidates: EnvironmentCandidate[] = [];
+  const imageEnvironment =
+    skylight?.equirectHandle !== undefined && skylight.equirectHandle > 0
+      ? skylight
+      : skybox?.equirectHandle !== undefined && skybox.equirectHandle > 0
+        ? skybox
+        : undefined;
+  if (imageEnvironment !== undefined) {
+    environmentCandidates.push({
+      kind: 'image',
+      entityKey: imageEnvironment.entityHandle,
+      sourceKey: `equirect:${imageEnvironment.equirectHandle}`,
+    });
+  }
+  const atmosphereQuery = world.query({ read: [Atmosphere], optional: [GlobalTransform] }).unwrap();
+  for (const row of atmosphereQuery) {
+    environmentCandidates.push({
+      kind: 'atmosphere',
+      entityKey: row.entity,
+      sourceKey: `atmosphere:${row.entity}`,
+      atmosphere: atmosphereParametersOf(
+        world,
+        row.entity,
+        readEnvironmentPose(world, row.entity),
+        skylight,
+      ),
+    });
+  }
+  return environmentCandidates;
+}
+
+/** Sun color is the light color with its pre-multiplied intensity divided back out. */
+function sunColorOf(directional: DirectionalLightSnapshot): [number, number, number] {
+  const sunIntensity = directional.intensity;
+  return sunIntensity > 0
+    ? [
+        (directional.color[0] ?? 0) / sunIntensity,
+        (directional.color[1] ?? 0) / sunIntensity,
+        (directional.color[2] ?? 0) / sunIntensity,
+      ]
+    : [0, 0, 0];
+}
+
+/** The environment sun points toward the light: the negated, normalized light direction. */
+function sunCandidatesOf(directional: DirectionalLightSnapshot | undefined) {
+  if (directional === undefined || directional.entity === undefined) return [];
+  const direction = directional.direction;
+  const length = Math.hypot(direction[0] ?? 0, direction[1] ?? 0, direction[2] ?? 0);
+  if (length <= 1e-6) return [];
+  return [
+    {
+      entityKey: directional.entity,
+      direction: [
+        -(direction[0] ?? 0) / length,
+        -(direction[1] ?? 0) / length,
+        -(direction[2] ?? 0) / length,
+      ] as [number, number, number],
+      color: sunColorOf(directional),
+      intensity: directional.intensity,
+    },
+  ];
+}
+
+function selectWorldEnvironment(
+  world: World,
+  skylight: SkylightSnapshot | undefined,
+  skybox: SkyboxSnapshot | undefined,
+  directional: DirectionalLightSnapshot | undefined,
+  fog: ExtractedFrame['fog'],
+): EnvironmentFrame {
+  const environmentSelection = selectEnvironment({
+    environments: environmentCandidatesOf(world, skylight, skybox),
+    fogs: fog === undefined ? [] : [fog],
+    suns: sunCandidatesOf(directional),
+  });
+  if (!environmentSelection.ok) {
+    routeWorldError(world, environmentSelection.error, {
+      systemName: 'RenderSystem.extract (environment-selection)',
+    });
+    throw environmentSelection.error;
+  }
+  return environmentSelection.value;
 }

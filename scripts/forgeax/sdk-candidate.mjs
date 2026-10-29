@@ -7,12 +7,12 @@ import { promisify } from 'node:util';
 
 import Ajv2020 from 'ajv/dist/2020.js';
 import { assertReleaseSource, releasePolicy } from './release-policy.mjs';
-import { filesUnder, sha256 } from './sdk-lib.mjs';
+import { filesUnder, SDK_NPM_PACKAGE_NAMES, sha256 } from './sdk-lib.mjs';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const candidateSchemaPath = resolve(repositoryRoot, 'schemas/sdk-candidate.schema.json');
-export const CANDIDATE_SCHEMA_VERSION = '2.0.0';
+export const CANDIDATE_SCHEMA_VERSION = '3.0.0';
 export const CANDIDATE_GATES = Object.freeze([
   'npm-consumer',
   'archive-browser',
@@ -117,7 +117,7 @@ async function listNpmArchives(candidateRoot) {
   const files = (await filesUnder(npmRoot)).filter((path) => path.endsWith('.tgz')).sort();
   if (files.length === 0) throw new Error('sdk-candidate-npm-archives-missing');
   const packages = await Promise.all(files.map(packageArchive));
-  const roster = ['@forgeax/engine', '@forgeax/view', '@forgeax/engine-sdk'];
+  const roster = SDK_NPM_PACKAGE_NAMES;
   if (packages.some(({ name }) => !roster.includes(name)))
     throw new Error('sdk-candidate-npm-roster-foreign');
   const ordered = roster.map((name) => packages.find((item) => item.name === name));
@@ -155,7 +155,12 @@ export async function sealCandidate({
   // Offline identity check: branch ancestry (including rc-contains-stable) was
   // proven by release-policy.mjs when the Candidate resolved its source.
   const engineCommit = buildResult.engineCommit;
-  assertReleaseSource(version, engineCommit, engineCommit, () => true, engineCommit);
+  assertReleaseSource(
+    version,
+    engineCommit,
+    { [releasePolicy(version).branch]: engineCommit, stable: engineCommit },
+    () => true,
+  );
   if (!/^[0-9a-f]{40}$/.test(buildResult.viewCommit ?? ''))
     throw new Error('sdk-candidate-view-commit-invalid');
   const runId = Number(sourceWorkflowRunId);
@@ -214,7 +219,47 @@ export async function sealCandidate({
   return candidate;
 }
 
-export async function validateCandidate({ candidateRoot, expectedVersion, expectedEngineCommit }) {
+/** The sealed SDK ZIP; npm-only consumers may validate without transporting it. */
+export function candidateArchivePath(sdkVersion) {
+  return `forgeax-sdk-v${sdkVersion}.zip`;
+}
+
+/**
+ * Every sealed artifact must exist with its recorded bytes. npm publication
+ * never reads the ZIP: with `withoutArchive` only that exact sealed path may be
+ * absent, and a present copy is still verified.
+ */
+async function verifySealedArtifacts(root, candidate, withoutArchive) {
+  const actualFiles = new Map(
+    (await filesUnder(root)).map((path) => [posixRelative(root, path), path]),
+  );
+  const artifactPaths = new Set(candidate.artifacts.map(({ path }) => path));
+  if (artifactPaths.size !== candidate.artifacts.length)
+    throw new Error('sdk-candidate-artifacts-duplicate');
+  actualFiles.delete('sdk-candidate.json');
+  const archivePath = candidateArchivePath(candidate.sdkVersion);
+  if (!artifactPaths.has(archivePath)) throw new Error('sdk-candidate-archive-unmanifested');
+  const required = candidate.artifacts.filter(
+    ({ path }) => !(withoutArchive && path === archivePath && !actualFiles.has(path)),
+  );
+  if (actualFiles.size !== required.length) throw new Error('sdk-candidate-unmanifested-artifact');
+  for (const entry of required) {
+    const path = actualFiles.get(entry.path);
+    if (path === undefined) throw new Error(`sdk-candidate-artifact-missing: ${entry.path}`);
+    const digest = await digestFile(path);
+    if (digest.bytes !== entry.bytes || digest.sha256 !== entry.sha256) {
+      throw new Error(`sdk-candidate-artifact-mismatch: ${entry.path}`);
+    }
+  }
+  return actualFiles;
+}
+
+export async function validateCandidate({
+  candidateRoot,
+  expectedVersion,
+  expectedEngineCommit,
+  withoutArchive = false,
+}) {
   const root = resolve(candidateRoot);
   const candidate = await readJson(
     resolve(root, 'sdk-candidate.json'),
@@ -230,9 +275,11 @@ export async function validateCandidate({ candidateRoot, expectedVersion, expect
   assertReleaseSource(
     candidate.sdkVersion,
     candidate.engineCommit,
-    candidate.engineCommit,
+    {
+      [releasePolicy(candidate.sdkVersion).branch]: candidate.engineCommit,
+      stable: candidate.engineCommit,
+    },
     () => true,
-    candidate.engineCommit,
   );
   if (expectedVersion !== undefined && candidate.sdkVersion !== expectedVersion) {
     throw new Error('sdk-candidate-version-mismatch');
@@ -240,23 +287,7 @@ export async function validateCandidate({ candidateRoot, expectedVersion, expect
   if (expectedEngineCommit !== undefined && candidate.engineCommit !== expectedEngineCommit) {
     throw new Error('sdk-candidate-engine-commit-mismatch');
   }
-  const actualFiles = new Map(
-    (await filesUnder(root)).map((path) => [posixRelative(root, path), path]),
-  );
-  const artifactPaths = new Set(candidate.artifacts.map(({ path }) => path));
-  if (artifactPaths.size !== candidate.artifacts.length)
-    throw new Error('sdk-candidate-artifacts-duplicate');
-  if (actualFiles.has('sdk-candidate.json')) actualFiles.delete('sdk-candidate.json');
-  if (actualFiles.size !== artifactPaths.size)
-    throw new Error('sdk-candidate-unmanifested-artifact');
-  for (const entry of candidate.artifacts) {
-    const path = actualFiles.get(entry.path);
-    if (path === undefined) throw new Error(`sdk-candidate-artifact-missing: ${entry.path}`);
-    const digest = await digestFile(path);
-    if (digest.bytes !== entry.bytes || digest.sha256 !== entry.sha256) {
-      throw new Error(`sdk-candidate-artifact-mismatch: ${entry.path}`);
-    }
-  }
+  const actualFiles = await verifySealedArtifacts(root, candidate, withoutArchive);
   const buildIdentity = await readJson(
     resolve(root, 'sdk-build-result.json'),
     'sdk-candidate-build-result-missing',
@@ -293,7 +324,7 @@ export async function validateCandidate({ candidateRoot, expectedVersion, expect
   ) {
     throw new Error('sdk-candidate-npm-roster-mismatch');
   }
-  const expectedRoster = ['@forgeax/engine', '@forgeax/view', '@forgeax/engine-sdk'];
+  const expectedRoster = SDK_NPM_PACKAGE_NAMES;
   if (
     candidate.npmPackages.length !== expectedRoster.length ||
     candidate.npmPackages.some(
@@ -349,6 +380,7 @@ async function main() {
       candidateRoot,
       expectedVersion: parsed.value('version'),
       expectedEngineCommit: parsed.value('engine-commit'),
+      withoutArchive: parsed.value('without-archive') === true,
     });
     process.stdout.write(`${JSON.stringify({ ok: true, candidateId: candidate.candidateId })}\n`);
     return;

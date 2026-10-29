@@ -266,6 +266,7 @@ async function closeSmokeBrowser() {
   const cleanupErrors = [];
   const currentPage = page;
   const currentContext = context;
+  const currentBrowser = browser;
   const currentBrowserServer = browserServer;
   // Keep teardown errors separate from the completed gameplay oracle. These
   // bounded observations do not acknowledge App/Worker disposal or settle work.
@@ -291,10 +292,15 @@ async function closeSmokeBrowser() {
     if (currentPage === undefined || currentPage.isClosed()) return null;
     return currentPage.evaluate(() => {
       const inspection = globalThis.__forgeaxPreviewInspection;
-      if (inspection === undefined) return null;
+      const progress = document.querySelector('canvas#app')?.forgeaxFrameProgress;
       return {
-        frame: inspection.frameProgress(),
-        renderer: inspection.renderer.health(),
+        frame: progress === undefined
+          ? null
+          : {
+              submitted: progress.submitted?.frameId ?? null,
+              completed: progress.completed?.frameId ?? null,
+            },
+        renderer: inspection?.renderer.health() ?? null,
       };
     });
   };
@@ -357,10 +363,12 @@ async function closeSmokeBrowser() {
   });
   await attemptClose('page', () => currentPage?.close());
   await attemptClose('context', () => currentContext?.close());
-  // The public server handle owns the process, including when the protocol
-  // client can no longer close it. Recovery retires that process but keeps
-  // the original 10-second close failure as a failed smoke.
-  const browserClosed = await attemptClose('browser', () => currentBrowserServer?.close());
+  // Disconnect Playwright's client before the BrowserServer closes its process.
+  // Keep both operations within the original browser cleanup deadline.
+  const browserClosed = await attemptClose('browser', async () => {
+    await currentBrowser?.close();
+    await currentBrowserServer?.close();
+  });
   if (!browserClosed)
     await attemptClose('browser process', () => currentBrowserServer?.kill());
   try {
@@ -403,8 +411,8 @@ async function probeFreshGame3dRendererViability(evidence) {
     'fresh game-3d renderer did not submit a frame',
   );
   const canvas = await page.evaluate(() => ({
-    width: document.querySelector('canvas')?.width ?? 0,
-    height: document.querySelector('canvas')?.height ?? 0,
+    width: document.querySelector('canvas#app')?.width ?? 0,
+    height: document.querySelector('canvas#app')?.height ?? 0,
   }));
   if (canvas.width <= 0 || canvas.height <= 0) {
     throw new Error(`fresh game-3d canvas has no drawable size: ${JSON.stringify(canvas)}`);
@@ -814,6 +822,7 @@ async function waitForServerReady() {
     if (body !== undefined) {
       if (response.ok) {
         decodeCatalogWire(JSON.parse(body)).unwrap();
+        console.log(`[templates] catalog-ready-ms=${Date.now() - startedAt}`);
         return;
       }
       if (response.status !== 503) {
@@ -1047,14 +1056,13 @@ async function waitForTemplateReady(requireCompletedFrame = true) {
       await page.waitForFunction(
         ({ requireCompletedFrame, finalStage, startedAtMs }) => {
           const inspection = globalThis.__forgeaxPreviewInspection;
-          const canvas = document.querySelector('canvas');
+          const canvas = document.querySelector('canvas#app');
           const health = inspection?.renderer.health();
           const state = health?.reason;
-          const dataset = document.documentElement.dataset;
-          const submitted = dataset.forgeaxFrameSubmitted;
-          const completed = dataset.forgeaxFrameCompleted;
-          const hasSubmittedFrame = submitted !== undefined && Number(submitted) >= 0;
-          const hasCompletedFrame = completed !== undefined && Number(completed) >= 0;
+          const submitted = canvas?.forgeaxFrameProgress?.submitted?.frameId;
+          const completed = canvas?.forgeaxFrameProgress?.completed?.frameId;
+          const hasSubmittedFrame = Number.isSafeInteger(submitted) && submitted > 0;
+          const hasCompletedFrame = Number.isSafeInteger(completed) && completed > 0;
           const canvasSized = (canvas?.width ?? 0) > 0 && (canvas?.height ?? 0) > 0;
           const elapsedMs = Math.max(0, Date.now() - startedAtMs);
           const timing = globalThis.__forgeaxTemplateReadinessTiming ?? {};
@@ -1124,6 +1132,7 @@ async function diagnoseTemplateReadyFailure(cause, templateSlug) {
       const canvas = document.querySelector('canvas#app');
       let health;
       let healthError;
+      const progress = canvas?.forgeaxFrameProgress;
       try {
         health = inspection?.renderer.health();
       } catch (error) {
@@ -1133,9 +1142,14 @@ async function diagnoseTemplateReadyFailure(cause, templateSlug) {
         inspectionAvailable: inspection !== undefined,
         rendererHealth: health,
         rendererHealthError: healthError,
-        frameProgress: inspection?.frameProgress?.() ?? null,
-        frameSubmitted: document.documentElement.dataset.forgeaxFrameSubmitted ?? null,
-        frameCompleted: document.documentElement.dataset.forgeaxFrameCompleted ?? null,
+        frameProgress: progress === undefined
+          ? null
+          : {
+              submitted: progress.submitted?.frameId ?? null,
+              completed: progress.completed?.frameId ?? null,
+            },
+        frameSubmitted: progress?.submitted?.frameId ?? null,
+        frameCompleted: progress?.completed?.frameId ?? null,
         canvas: canvas === null
           ? null
           : { width: canvas.width, height: canvas.height, connected: canvas.isConnected },
@@ -1545,8 +1559,8 @@ async function smokeTemplate(template, evidence) {
       listed: inspection.list(),
       state: inspection.renderer.health(),
       canvas: {
-        width: document.querySelector('canvas')?.width ?? 0,
-        height: document.querySelector('canvas')?.height ?? 0,
+        width: document.querySelector('canvas#app')?.width ?? 0,
+        height: document.querySelector('canvas#app')?.height ?? 0,
       },
     };
   });

@@ -8,6 +8,7 @@ import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { GPU_MEMBER_RECORD_WORDS } from '../gpu-scene-inputs';
 import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { MaterialFrame } from '../scene/material-dispatch';
@@ -155,8 +156,9 @@ it('adds a GPU execution without reading, copying, reallocating or uploading sha
   try {
     updateGpuView(view, first, gpu, planes).unwrap();
     expect(reads).toBeGreaterThan(0);
-    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(10_000 * 8 * 4);
-    expect(view.inspect().sharedInputUploadBytes).toBeLessThanOrEqual(2 * 10_000 * 8 * 4);
+    const recordBytes = 10_000 * GPU_MEMBER_RECORD_WORDS * 4;
+    expect(view.inspect().sharedInputUploadBytes).toBeGreaterThanOrEqual(recordBytes);
+    expect(view.inspect().sharedInputUploadBytes).toBeLessThanOrEqual(2 * recordBytes);
     expect(expansions()).toBe(0);
     const capacity = view.inspect().candidateCapacity;
     reads = 0;

@@ -124,7 +124,10 @@ const identities: readonly ShadowViewIdentity[] = [
 ];
 
 describe('GPU-driven shadow views Dawn structural evidence', () => {
-  it('shares candidate plans while preserving three independent GPU frusta for 60 submissions', async () => {
+  it.each([
+    false,
+    true,
+  ])('shares candidate plans while preserving three independent GPU frusta for 60 submissions (owned %s)', async (ownedRequests) => {
     const { device, native } = await nativeDeviceFixture();
     native.pushErrorScope('validation');
     const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
@@ -246,7 +249,8 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         pool.invalidate('view-clipping-changed');
         const update = () => {
           if (prepared?.updateShadowViews === undefined) throw Error('expected shadow projection');
-          prepared.updateShadowViews(views).unwrap();
+          const requests = ownedRequests ? views.map((view) => ({ ...view })) : views;
+          prepared.updateShadowViews(requests, ownedRequests ? true : undefined).unwrap();
           return views.map(({ identity }) => {
             const submitted = pool.submission(identity);
             if (submitted === undefined) throw Error('expected projected production shadow view');
@@ -853,7 +857,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     if (pointIdentity === undefined || pointInput === undefined) {
       throw new Error('point shadow input missing');
     }
-    pool.invalidate('skin-palette-changed', pointIdentity);
+    pool.invalidate('skin-task-demand', pointIdentity);
     expect(updateShadowView(pool, pointInput, pointInput.sourcePlan).unwrap().cache).toBe(
       'invalidated',
     );

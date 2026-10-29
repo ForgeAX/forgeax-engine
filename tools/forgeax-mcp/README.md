@@ -14,6 +14,28 @@ The selected View package must provide both public page operations. An older
 View checkout will return an owner or operation failure; the adapter does not
 fall back to private Broker access.
 
+## Dependency floors
+
+The MCP SDK accepts `@hono/node-server` 2.x. Both workspace package-manager
+policies require 2.1.3 or later in that major to prevent static middleware from
+decoding a routed path a second time
+([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)).
+The real HTTP regression retains public encoded filenames and protected routes
+while rejecting malformed paths that could bypass prefix middleware.
+
+The workspace's npm/Bun and pnpm overrides require Zod 4.6.7, body-parser 2.4.0,
+qs 6.16.1 and fast-uri 3.1.9 within their existing major versions. The SDK's Express
+dependency accepts the patched body-parser minor; its older locked copy can
+crash on trailing compressed request bytes
+([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)).
+The SDK's Ajv resolver also accepts the patched fast-uri version, which preserves
+scheme, host and relative-reference identity during normalization.
+Express also accepts qs 6.16.1, which fixes comma-array serialization throwing
+on elements with a non-callable own `toString`
+([GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw)).
+Regenerate both workspace lockfiles when changing these policies. Keep normal
+compressed request handling enabled.
+
 ## View operating modes
 
 All modes use the same View and public Engine owner APIs. Platform behavior is
@@ -98,7 +120,7 @@ Both servers use stdio and connect to the same selected backend. Server names, p
 | Platform transport | App-only Host messages, admitted HTTP bytes, module compilation and chunks; no second business registry |
 | Codex behavior | `forgeax.view.platform.codex` adds draft references; generic MCP has no OpenAI extension dependency |
 | Resource ownership | Child SDK teardown precedes bridge removal; pending and admitted sockets retire with their owner. Reopening the same resource identity retains its document; a new public View presentation retires the old subtree, including when it reuses a fixed URL |
-| Performance | One batched 60 Hz event pump, three foreground/one background slots, gzip level 1, bounded resource references, shared concurrent reads; 192 KiB chunks with four reads in flight. Remote module compilation shares four source reads across documents, keeping wide import graphs within the loopback connection budget |
+| Performance | One batched 60 Hz event pump, three foreground/one background slots, gzip level 1, bounded resource references, shared concurrent reads; 192 KiB chunks with four reads in flight. Remote module compilation shares four source reads across documents, keeping wide import graphs within the loopback connection budget. A reset source GET retries once within its original 30-second deadline and read slot; HTTP failures remain terminal |
 | Resource reads | Same-turn GET/HEAD fetches use bounded HTTP batches. Each read retains its status, response bytes and cancellation; mutations are not batched. The 256 MiB resource budget bounds both each decoded HTTP response and the retained wire cache; oversized response streams cancel before full buffering. Batch replies reuse the common compressed byte decoder and origin admission. Gzip buffers feed the native transform directly; concurrent read/write handles backpressure and decode rejection without a Blob storage stream |
 | Source URLs | The isolated document exposes its logical base through the platform; sandbox origin and browser security policy remain intact |
 | Document frames | `FrontendPlatform.createFrame` carries both Preview and Play through MCP. Play owns its disposable handle; Preview placement borrows its retained document. No child navigates localhost. The game retains the sampled platform preparation without inheriting the Preview root |
@@ -130,6 +152,11 @@ node --test tools/forgeax-mcp/__tests__/app/*.test.mjs
 node tools/forgeax-mcp/test/local-plugin.mjs
 node tools/forgeax-mcp/test/app-browser.mjs "$ENGINE/templates/game-3d" /absolute/path/to/evidence
 ```
+
+The restart probe checks its HTTP result before awaiting a replacement URL,
+within the existing 60-second bound. Failed CLI records retain the command,
+elapsed time, exit code/signal and redacted stderr. A control failure must not
+be hidden by parsing an HTTP error body as JSON or by a later URL timeout.
 
 The browser gate creates its own disposable game-3d copy and backend, exercises the installed stdio package, nested SDK bridges, real Scene and repeated Play rendering (at least 60 completed frames each), Stop during preparation, theme, guide HTML preview and teardown. Its carrier enforces `frame-src 'none'` to reject URL navigation while admitting isolated srcdoc delivery. Its reference-host image is separate from native Codex evidence. It never stops another project's backend.
 

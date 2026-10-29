@@ -24,7 +24,7 @@ const renderer = created.value;
 ```
 
 Create the host before the Renderer and pass `host.feature` at Renderer
-construction. `attachWorld` installs the VFX asset decoder and one FixedUpdate producer;
+construction. `attachWorld` installs the VFX asset decoder and one Update intent producer;
 `detachWorld` releases both. The asset owner resolves Material/Mesh dependencies at effect
 admission. The Host borrows those accepted handles and owns no GUID loader or asset cache.
 
@@ -61,8 +61,8 @@ lit meshes and authored particle programs retain their original paths.
 |:--|:--|
 | Extract | Synchronize Player lifecycle through VFX, including zero-time admission, then read the explicit simulation camera, complete view roster, and ordered GPU intents once per attached World |
 | Plan | Declare shared frame simulation and independent view projection work in one plan |
-| Record | Produce requested simulation scene inputs, execute each fixed tick and trail-history write once, then copy the completed state through native buffer-copy passes into each updating view before sorting, projection, and indirect draws |
-| Recover | Drop generation-owned GPU state and reconstruct retained active players from committed FixedUpdate inputs |
+| Record | Produce requested simulation scene inputs, execute each queued tick and trail-history write once, then copy the completed state through native buffer-copy passes into each updating view before sorting, projection, and indirect draws |
+| Recover | Drop generation-owned GPU state and reconstruct retained active players from committed tick inputs |
 
 Published frame data names each emitter by the source asset identity, its fixed revision,
 and emitter ID. WGSL and reflection travel once in the publication's fixed-version rows;
@@ -75,7 +75,7 @@ Loaded and code-created effects use the same immutable definition capture. Emitt
 data interfaces or force fields share prepared logical compute bindings and stateless programs;
 particle storage, event buffers, history, uploads and execution state remain per Player.
 Each actual preparation request participates in shared program readiness. A definition edit
-starts a new play cycle at FixedUpdate while already queued ticks retain the previous version.
+starts a new play cycle at the next update while already queued ticks retain the previous version.
 Unchanged material Cook records stay resident when a values-only asset patch is published.
 
 The explicit simulation camera provider receives `read(world, views)`, where
@@ -105,7 +105,12 @@ visibility feedback latency. An updating view owns its camera basis,
 sorted indices, projection counters, indirect commands, trail-offset scratch,
 and output instances. Sorting or mesh projection in one view cannot mutate
 another view or the shared simulation. View order and cadence do not change
-the number of fixed ticks consumed.
+the number of ticks consumed.
+
+Before the first emitter work, an empty source keeps the frame submission,
+abort and source-feedback boundary without preparing runtime/arena resources or
+empty view work. First playback enters ordinary planning; later empty frames
+retain the normal retirement and recovery path.
 
 A view plan includes only the shared resources its own declarations reference;
 per-tick simulation inputs stay in the frame graph. An emitter retains the tick slots of its largest admitted batch; fewer or zero queued ticks disable the unused simulation/history passes and omit their uploads. Fixed/render cadence changes do not rebuild that topology, and only submitted active ticks advance the source acknowledgement. View visibility toggles
@@ -115,7 +120,7 @@ resource replacement, capacity changes and emitter lifetime still follow
 Renderer admission and fences. Emitter declarations use stable resource-identity
 order, so switching between queued and retained state does not shift another
 emitter's resource evidence. Resource sorting is separate from pass construction:
-passes preserve original queued/retained group order, with fixed ticks and
+passes preserve original queued/retained group order, with ticks and
 history writes ordered within each emitter. Transparent premultiplied-alpha
 passes remain ordered writes to their scene attachment; sorting resource
 declarations cannot reorder their blending. Optional GPU particle-depth sorting
@@ -131,7 +136,7 @@ counts. Depth sampling differences, clear/discard operations and phase boundarie
 keep separate passes. Simulation, projection, shadows, source acknowledgement and
 resource retirement continue through their existing owners.
 
-A fixed tick with zero scheduled spawns retains its spawn declaration with a
+A tick with zero scheduled spawns retains its spawn declaration with a
 zero workgroup count. Renderer validates the full declaration and resources,
 then omits that empty GPU command while preserving graph identity and resource
 lifetime. Particle updates, custom stages, compaction, events, and trail history
@@ -194,7 +199,7 @@ fraction and friction removes a fraction of tangential speed, both in `[0,1]`.
 The result exposes contact, outside coverage, exhausted work, unknown gradient
 and invalid parameters separately. The bounded helper and numeric statuses are
 defined once in the [compiler kernel](../vfx-compiler/src/scene-sdf.ts).
-It performs at most 64 field samples and four contacts per fixed tick. Distance,
+It performs at most 64 field samples and four contacts per tick. Distance,
 gradient and the bounded cubic ray prefix derive from the same eight corners. A contact
 projects in gradient units beyond the threshold by a two-epsilon margin; this
 does not change voxel spacing or geometric contact expansion. The original
@@ -210,13 +215,13 @@ transformed local error and one world-grid cell diagonal, so the spacing and
 local-field resolution directly affect premature contact.
 
 The field does not depend on GI, display frusta or view cadence. Renderer records
-composition before shared fixed-tick simulation in the same graph/submission.
+composition before shared tick simulation in the same graph/submission.
 Matching consumers share the same physical buffer; hot unchanged requests omit
 composition. Accepted replacement, failed preparation, rejected submission,
 detach and device recovery use the Renderer transaction and submission fence.
 There is no CPU particle mirror or per-frame particle readback. The ordinary
 Pack example is [`boss-lightning/sdf.html`](../../apps/hello/boss-lightning/sdf.html).
-The [collision evidence report](reports/scene-sdf-collision/README.md) retains
+The collision evidence report retains
 captured-input repairs, paired images, raw tapes, prior failures and the
 remaining delivery acceptance boundaries.
 
@@ -237,8 +242,8 @@ world-distance and custom sorting keep their existing keys.
 | Alive flags, scan scratch, stable indices | Emitter instance | Initial clear only |
 | Shared indirect counts | Emitter instance | Compaction owns instance counts |
 | View indices, counters, indirect commands, trail scratch | View and renderer instance | GPU copy from shared state before view sorting and projection |
-| Tick uniforms | Bounded ring | One small write per fixed tick |
-| Program v3 Parameters | Emitter instance | One snapshot write per fixed tick when declared |
+| Tick uniforms | Bounded ring | One small write per tick |
+| Program v3 Parameters | Emitter instance | One snapshot write per tick when declared |
 | Program v3 Custom | Emitter instance | GPU-persistent; no per-particle CPU mirror |
 | Renderer projection instances | View and renderer instance | None after allocation |
 | Mesh geometry/index data | Prepared graphics cache | Initial upload |
@@ -404,12 +409,12 @@ direct dispatches; it does not count declaration slots or GPU invocations.
 readiness and recovery evidence. Device loss or a stale generation discards the
 affected topology resources. The first submitted replacement-device frame
 reconstructs active retained GPU state from the runtime's deterministic
-committed fixed-tick inputs; rejected candidate frames do not publish that
+committed tick inputs; rejected candidate frames do not publish that
 generation or replay World-facing events.
 
 Same-program replay, seed changes and stop/play restarts retain the player/emitter's
 particle buffers, programs and bindings. Reset copies execute immediately before
-their fixed tick in the submitted command stream; preparing or abandoning a frame
+their tick in the submitted command stream; preparing or abandoning a frame
 never clears accepted GPU state. One immutable zero buffer serves all emitters,
 with a small indirect-argument template per emitter. Ordinary ticks retain one
 compute chain; only an actual mid-batch reset introduces an additional boundary.
@@ -460,7 +465,7 @@ Null/backend unit tests prove graph and resource structure; they do not replace 
 ## Managed field residency
 
 Asset admission binds vector-field textures to runtime references and the effect
-holds those dependencies. Each actual FixedUpdate captures their exact owner
+holds those dependencies. Each actual update captures their exact owner
 versions; already queued ticks and retained recovery inputs keep their own leases.
 The source publishes each `(asset, revision)` once through the existing asset
 version table. Tick messages carry only those references, including across Workers;

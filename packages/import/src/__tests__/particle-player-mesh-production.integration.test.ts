@@ -170,30 +170,28 @@ describe('Player mesh effects through ordinary Pack build production', () => {
       if (asset === undefined) throw new Error(`missing ${key} production asset`);
       expect(asset.refs).toEqual(refs);
       expect(catalog.find((asset) => asset.guid === effectGuid)?.refs).toEqual(refs);
-      expect(asset.payload.program.emitters[0]?.renderers[0]).toMatchObject({
-        kind: 'mesh',
-        mesh,
-        material,
-        lighting: 'unlit',
-      });
+      // The published payload keeps only the fingerprint; the artifact owns the program.
+      expect(asset.payload).not.toHaveProperty('program');
       const artifact = asset.artifacts['particle-effect/program.json'];
       if (artifact === undefined) throw new Error('missing published VFX program descriptor');
       const artifactBytes = emitted.get(`assets/${artifact.path}`);
       if (!(artifactBytes instanceof Uint8Array))
         throw new Error(`missing emitted VFX program at ${artifact.path}`);
       const program = JSON.parse(new TextDecoder().decode(artifactBytes));
-      expect(program).toEqual({
-        format: asset.payload.program.format,
-        emitters: asset.payload.program.emitters,
+      expect(program.format).toBe('forgeax-vfx-program-4');
+      expect(program.emitters[0]?.renderers[0]).toMatchObject({
+        kind: 'mesh',
+        mesh,
+        material,
+        lighting: 'unlit',
       });
       expect(program.emitters[0].wgsl).toContain('@compute');
       const fingerprint = `sha256:${createHash('sha256').update(artifactBytes).digest('hex')}`;
       expect(asset.payload.programFingerprint).toBe(fingerprint);
-      expect(asset.payload.program.fingerprint).toBe(fingerprint);
       expect(artifact).toMatchObject({
         byteLength: artifactBytes.byteLength,
         integrity: { algorithm: 'sha256', digest: fingerprint },
-        assetCodec: { name: 'forgeax-vfx-program', version: asset.payload.program.format },
+        assetCodec: { name: 'forgeax-vfx-program', version: program.format },
       });
     }
   }, 60_000);

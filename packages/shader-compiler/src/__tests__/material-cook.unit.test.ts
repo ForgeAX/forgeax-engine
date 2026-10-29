@@ -78,6 +78,11 @@ describe('cookMaterialAsset', () => {
     ).toBe(true);
     for (const program of record.programs) {
       expect(draft.artifacts[program.artifact.path]?.bytes).toEqual(program.artifact.bytes);
+      for (const selection of program.selections)
+        if (selection.context.pipeline !== 'ray' && selection.context.geometry === 'skinned') {
+          expect(selection.abi?.positionBounds).toBe('standard-input');
+          expect(selection.abi?.generation).toBe(5);
+        }
     }
     // Explicit custom schemas remain authoritative: the native producer must
     // reject the original incomplete interface rather than fill it silently.
@@ -308,6 +313,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     if (!result.ok) return;
     expect(result.value.passes[0]?.compile.manifestEntry.wgsl).not.toContain('textureSample(');
     expect(result.value.passes[0]?.parameters).toHaveLength(2);
+    expect(result.value.passes[0]?.abi.positionBounds).toBeUndefined();
   });
 
   it('exposes the Pack cooker from the shader compiler owner', async () => {

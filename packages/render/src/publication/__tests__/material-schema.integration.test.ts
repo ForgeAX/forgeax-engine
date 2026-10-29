@@ -29,10 +29,11 @@ import {
   recordMaterialUniforms,
 } from '../../record/material-uniforms';
 import { MATERIAL_PER_ENTITY_STRIDE } from '../../record/render-context';
-import { type RenderPublication, renderPublicationTransfers } from '../contract';
+import type { RenderPublication } from '../contract';
 import { installPublicationPrograms, publicationMaterialSchemaRebinder } from '../programs';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 function fixture(
   schema: readonly ParamSchemaEntry[],
@@ -81,7 +82,7 @@ function fixture(
         },
       ],
     } satisfies RenderPublication,
-    { transfer: renderPublicationTransfers(candidate.packet) },
+    { transfer: renderPublicationTransfers(candidate.message) },
   );
   candidate.accept();
   const receiver = new RenderPublicationReceiver(identity);
@@ -98,7 +99,7 @@ it('rebinds a Worker clone to the selected program owner before retaining accept
   expect(getAdmittedParamSchemaInterface(f.admitted)).toBeDefined();
   expect(getAdmittedParamSchemaInterface(f.copied)).toBeUndefined();
   installPublicationPrograms(f.assets, f.packet.programs);
-  const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet), f.assets).unwrap();
   const owned = f.assets.shaderRegistry.findMaterialArtifact('game::forward').unwrap().paramSchema;
   const material = accepted.frame.renderables.at(0)?.material.snapshot;
   if (material?.materialParamSchema === undefined) throw new Error('Missing accepted schema');
@@ -108,7 +109,9 @@ it('rebinds a Worker clone to the selected program owner before retaining accept
   expect(accepted.frame.renderables.at(0)?.materialOverrides?.[0]).toBe(
     accepted.frame.renderables.at(0)?.material,
   );
-  expect(f.receiver.snapshot(accepted).frame.renderables.at(0)?.material.snapshot).toBe(material);
+  expect(
+    [...f.receiver.snapshot(accepted).scene.rows.capture()][0]?.snapshot.material.snapshot,
+  ).toBe(material);
   expect(
     accepted.operations[0]?.kind === 'update' && accepted.operations[0].snapshot?.material.snapshot,
   ).toBe(material);
@@ -132,8 +135,9 @@ it('finishes exclusive native material values without changing public receiver o
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
   const sourceMaterial = f.packet.materials[0]?.value;
   if (sourceMaterial === undefined) throw new Error('Missing published material');
-  const received = ownReceivedPublicationMaterials(f.packet);
-  const owned = received.materials[0]?.value;
+  const message = encodeRenderPublication(f.packet);
+  const received = ownReceivedPublicationMaterials(message);
+  const owned = received.side?.materials?.[0]?.value;
   expect(owned).not.toBe(sourceMaterial);
   expect(owned?.immutableValues).toBe(true);
   expect(Object.isFrozen(owned)).toBe(true);
@@ -142,12 +146,14 @@ it('finishes exclusive native material values without changing public receiver o
   expect(owned?.materialParamSchema).not.toBe(sourceMaterial.materialParamSchema);
   expect(owned?.baseColor).not.toBe(sourceMaterial.baseColor);
   expect(owned?.baseColor).toEqual(sourceMaterial.baseColor);
-  expect(received.templates[0]?.snapshot.materials[0]).toBe(received.materials[0]?.id);
-  expect(received.templates).toBe(f.packet.templates);
+  expect(received.side?.templates?.[0]?.snapshot.materials[0]).toBe(
+    received.side?.materials?.[0]?.id,
+  );
+  expect(received.side?.templates).toBe(message.side?.templates);
   expect(Reflect.get(sourceMaterial, 'immutableValues')).toBeUndefined();
-  expect(received.transforms).toBe(f.packet.transforms);
-  expect(received.assets).toBe(f.packet.assets);
-  expect(received.targets).toBe(f.packet.targets);
+  expect(received.record).toBe(message.record);
+  expect(received.side?.assets).toBe(message.side?.assets);
+  expect(received.side?.targets).toBe(message.side?.targets);
   // A Feature/asset consumer can retain an alias in the original native clone.
   // Only the detached numeric subtree belongs to the material packer.
   const aliased = sourceMaterial.paramSnapshot;
@@ -199,7 +205,9 @@ it('finishes exclusive native material values without changing public receiver o
       assets: [],
     });
     for (const row of next.materials) row.value.paramSnapshot.factor = 0.5;
-    const changed = f.receiver.accept(ownReceivedPublicationMaterials(next), f.assets).unwrap();
+    const changed = f.receiver
+      .accept(ownReceivedPublicationMaterials(encodeRenderPublication(next)), f.assets)
+      .unwrap();
     const updated = changed.frame.renderables.at(0)?.material.snapshot;
     if (updated === undefined) throw new Error('Missing updated material');
     expect(updated).not.toBe(material);
@@ -218,11 +226,12 @@ it('finishes exclusive native material values without changing public receiver o
       materials: [],
       upserts: new Uint32Array(),
     };
-    expect(ownReceivedPublicationMaterials(moved)).toBe(moved);
-    const transformed = f.receiver.accept(moved, f.assets).unwrap();
-    expect(f.receiver.snapshot(transformed).frame.renderables.at(0)?.material.snapshot).toBe(
-      updated,
-    );
+    const movedMessage = encodeRenderPublication(moved);
+    expect(ownReceivedPublicationMaterials(movedMessage)).toBe(movedMessage);
+    const transformed = f.receiver.accept(movedMessage, f.assets).unwrap();
+    expect(
+      [...f.receiver.snapshot(transformed).scene.rows.capture()][0]?.snapshot.material.snapshot,
+    ).toBe(updated);
   } finally {
     writes.mockRestore();
     device.destroyBuffer(buffer).unwrap();
@@ -257,9 +266,9 @@ it('detaches numeric and ABI aliases while preserving dynamic resource identitie
       { id: row.id + 1, value: sibling },
     ],
   };
-  const received = ownReceivedPublicationMaterials(packet);
-  const owned = received.materials[0]?.value;
-  const second = received.materials[1]?.value;
+  const received = ownReceivedPublicationMaterials(encodeRenderPublication(packet));
+  const owned = received.side?.materials?.[0]?.value;
+  const second = received.side?.materials?.[1]?.value;
   if (owned === undefined || second === undefined) throw new Error('Missing owned values');
   expect(owned.materialParamSchema).toBe(second.materialParamSchema);
   expect(owned.materialParamSchema).not.toBe(material.materialParamSchema);
@@ -297,7 +306,7 @@ it.each([
   ],
 ] as readonly (readonly ParamSchemaEntry[])[])('preserves a distinct authored or merged schema: %j', (...snapshotSchema) => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }], snapshotSchema);
-  const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet), f.assets).unwrap();
   expect(accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema).toBe(f.copied);
   expect(getAdmittedParamSchemaInterface(f.copied)).toBeUndefined();
   f.receiver.dispose();
@@ -306,7 +315,7 @@ it.each([
 
 it('retains the program schema while accepting new values and transform-only publications', () => {
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
-  const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet), f.assets).unwrap();
   const first = accepted.frame.renderables.at(0)?.material.snapshot;
   const next = structuredClone({
     ...f.packet,
@@ -317,7 +326,7 @@ it('retains the program schema while accepting new values and transform-only pub
     assets: [],
   });
   for (const row of next.materials) row.value.paramSnapshot.factor = 0.5;
-  const changed = f.receiver.accept(next, f.assets).unwrap();
+  const changed = f.receiver.accept(encodeRenderPublication(next), f.assets).unwrap();
   const second = changed.frame.renderables.at(0)?.material.snapshot;
   expect(second?.paramSnapshot?.factor).toBe(0.5);
   expect(first?.paramSnapshot?.factor).toBe(0.25);
@@ -329,19 +338,21 @@ it('retains the program schema while accepting new values and transform-only pub
   });
   const moved = f.receiver
     .accept(
-      {
+      encodeRenderPublication({
         ...next,
         base: 2,
         revision: 3,
         templates: [],
         materials: [],
         upserts: new Uint32Array(),
-      },
+      }),
       f.assets,
     )
     .unwrap();
   expect(moved.frame.renderables).toHaveLength(0);
-  expect(f.receiver.snapshot(moved).frame.renderables.at(0)?.material.snapshot).toBe(second);
+  expect([...f.receiver.snapshot(moved).scene.rows.capture()][0]?.snapshot.material.snapshot).toBe(
+    second,
+  );
   f.receiver.dispose();
   f.publisher.dispose();
 });
@@ -353,11 +364,11 @@ it.each([
   const f = fixture([{ name: 'factor', type: 'f32' }]);
   const malformed =
     reason === 'shape'
-      ? { ...f.packet, transformEntities: new Uint32Array() }
+      ? { ...f.packet, upserts: new Uint32Array([1]) }
       : { ...f.packet, epoch: f.packet.epoch + 1 };
-  expect(f.receiver.accept(malformed, f.assets).ok).toBe(false);
+  expect(f.receiver.accept(encodeRenderPublication(malformed), f.assets).ok).toBe(false);
   expect(f.assets.shaderRegistry.paramSchemaProjectionStats().admissions).toBe(0);
-  expect(f.receiver.accept(f.packet, f.assets).ok).toBe(true);
+  expect(f.receiver.accept(encodeRenderPublication(f.packet), f.assets).ok).toBe(true);
   f.receiver.dispose();
   f.publisher.dispose();
 });
@@ -385,7 +396,7 @@ it('does not install programs when target descriptor admission fails', () => {
       },
     ],
   } satisfies RenderPublication;
-  expect(() => receiver.accept(packet, f.assets)).toThrow();
+  expect(() => receiver.accept(encodeRenderPublication(packet), f.assets)).toThrow();
   expect(f.assets.shaderRegistry.paramSchemaProjectionStats().admissions).toBe(0);
   receiver.dispose();
   host.dispose();
@@ -395,7 +406,7 @@ it('does not install programs when target descriptor admission fails', () => {
 
 it('preserves accepted resources and revision when program validation fails, then retries', () => {
   const f = fixture([{ name: 'factor', type: 'f32' }]);
-  const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet), f.assets).unwrap();
   const asset = f.packet.assets[0];
   if (asset === undefined) throw new Error('Missing fixture asset');
   const original = accepted.resources.resolveAsset(asset.handle).unwrap();
@@ -411,11 +422,16 @@ it('preserves accepted resources and revision when program validation fails, the
     programs,
     assets: [],
   } satisfies RenderPublication;
-  expect(() => f.receiver.accept(rejected, f.assets)).toThrow('conflicting immutable shader');
+  expect(() => f.receiver.accept(encodeRenderPublication(rejected), f.assets)).toThrow(
+    'conflicting immutable shader',
+  );
   expect(accepted.resources.revision).toBe(1);
-  expect(accepted.resources.time).toBe(f.packet.time);
+  expect(accepted.resources.time).toEqual(f.packet.time);
   expect(accepted.resources.resolveAsset(asset.handle).unwrap()).toBe(original);
-  const corrected = f.receiver.accept({ ...rejected, programs: f.packet.programs }, f.assets);
+  const corrected = f.receiver.accept(
+    encodeRenderPublication({ ...rejected, programs: f.packet.programs }),
+    f.assets,
+  );
   expect(corrected.ok).toBe(true);
   expect(accepted.resources.revision).toBe(2);
   f.receiver.dispose();
@@ -427,7 +443,7 @@ it('does not collapse distinct numeric defaults during schema admission', () => 
     [{ name: 'factor', type: 'f32', default: 0 }],
     [{ name: 'factor', type: 'f32', default: -0 }],
   );
-  const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet), f.assets).unwrap();
   expect(accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema).toBe(f.copied);
   const first = accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema?.[0];
   expect(Object.is(first !== undefined && 'default' in first ? first.default : undefined, -0)).toBe(
@@ -441,15 +457,17 @@ it('rebinds shared received schemas without merging distinct material values or 
   const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
   const first = f.packet.materials[0];
   if (first === undefined) throw new Error('Missing material');
-  const received = ownReceivedPublicationMaterials({
-    ...f.packet,
-    materials: [
-      first,
-      { id: first.id + 1, value: { ...first.value, paramSnapshot: { factor: 0.5 } } },
-      { id: first.id + 2, value: { ...first.value, materialShaderId: 'game::other' } },
-      { id: first.id + 3, value: { ...first.value, paramSnapshot: { factor: 1 } } },
-    ],
-  });
+  const received = ownReceivedPublicationMaterials(
+    encodeRenderPublication({
+      ...f.packet,
+      materials: [
+        first,
+        { id: first.id + 1, value: { ...first.value, paramSnapshot: { factor: 0.5 } } },
+        { id: first.id + 2, value: { ...first.value, materialShaderId: 'game::other' } },
+        { id: first.id + 3, value: { ...first.value, paramSnapshot: { factor: 1 } } },
+      ],
+    }),
+  );
   installPublicationPrograms(f.assets, f.packet.programs);
   f.assets.shaderRegistry.installMaterialArtifact('game::other', {
     source: '',
@@ -459,11 +477,11 @@ it('rebinds shared received schemas without merging distinct material values or 
     .findMaterialArtifact('game::forward')
     .unwrap().paramSchema;
   const rebind = publicationMaterialSchemaRebinder(f.assets.shaderRegistry);
-  const rebound = received.materials.map(({ value }) => rebind(value));
+  const rebound = (received.side?.materials ?? []).map(({ value }) => rebind(value));
   expect(rebound.map((row) => row.paramSnapshot?.factor)).toEqual([0.25, 0.5, 0.25, 1]);
   expect(rebound[0]?.materialParamSchema).toBe(canonical);
   expect(rebound[1]?.materialParamSchema).toBe(canonical);
-  expect(rebound[2]).toBe(received.materials[2]?.value);
+  expect(rebound[2]).toBe(received.side?.materials?.[2]?.value);
   expect(rebound[3]?.materialParamSchema).toBe(canonical);
   expect(rebound[0]).not.toBe(rebound[1]);
   f.receiver.dispose();
@@ -497,7 +515,7 @@ it.each([
 ] as const)('keeps the canonical built-in ABI admitted across native publication: %s', (id, schema) => {
   expect(getAdmittedParamSchemaInterface(schema)).toBeDefined();
   const f = fixture(schema, schema, id);
-  const accepted = f.receiver.accept(f.packet, f.assets).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(f.packet), f.assets).unwrap();
   const owned = f.assets.shaderRegistry.findMaterialArtifact(id).unwrap().paramSchema;
   expect(accepted.frame.renderables.at(0)?.material.snapshot.materialParamSchema).toBe(owned);
   expect(owned).toEqual(schema);

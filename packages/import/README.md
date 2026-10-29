@@ -1,5 +1,7 @@
 # @forgeax/engine-import
 
+The IES importer declares `.ies` single-output registration through `capabilities.sourceFormats`. DevKit uses that declaration to author an `ies-profile` sidecar; native import still validates the LM-63 input and owns the cooked output.
+
 A registered importer may emit ordinary engine asset kinds such as `texture` or
 `mesh`. Catalog projection records the declared schema and GUID; it does not grant
 the importer ownership of the runtime kind. The existing domain decoder validates
@@ -44,6 +46,8 @@ The output is the same Pack v2 durable payload used by ordinary importers. The
 `skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`, and
 `particle-effect`, and `ies-profile`; all are loadable by GUID, while `refs`,
 `artifacts`, `mediaType`, and `programFingerprint` remain producer facts.
+A published particle payload keeps `programFingerprint` and emitter summaries
+only; the `particle-effect/program.json` artifact is the single program copy.
 Particle mesh renderers retain either a static Mesh GUID or the closed
 `{ source: 'player' }` selector in their immutable program artifact. Only static
 Mesh GUIDs become Pack references; the Player's ordinary MeshFilter resolves
@@ -101,6 +105,12 @@ identity. The result is a dynamic `sourceKey -> Asset` map; the bridge derives
 `AssetGuid` values from `(subjectPackageId, sourceKey)` and sends the resulting
 assets through the same registered output producers and Pack v2 finalizer used
 by ordinary imports.
+
+The optional ScriptablePack product DDC preserves typed-array backing buffers
+and shared-view offsets using V8's native ArrayBuffer encoding. Cached geometry
+reads and Worker messages copy the asset's own buffers rather than the complete
+serialized Pack. Earlier cache formats are cold misses; source generation,
+content digests and publication validation remain authoritative.
 
 Authored material outputs with passes use the registered `material` NativeCooker,
 including Engine Standard roots. A shipped template is source ownership, not a
@@ -408,6 +418,11 @@ and other domain fields. Interleaved vertices are a derived projection, checked
 byte-for-byte before publication, and do not require a duplicate content hash.
 Actual encoded artifacts retain independent byte-integrity SHA-256 digests.
 
+Direct Pack JSON cooks consecutive assets in batches of at most four when their
+native cookers declare `concurrency: 'parallel'`. Undeclared cookers run alone.
+Every admitted batch drains before validation returns its first authored error.
+GUID checks, fingerprints and reference closure retain the existing finalizer.
+
 When the host supplies `buildCacheRoot`, the ScriptablePack worklist checks a
 Pack-product DDC entry before evaluating `build()`. Its key includes the current
 source closure, package/parameter identity, output
@@ -581,6 +596,21 @@ Successful source-package publication projects Catalog revisions from the head
 accepted by its DDC commit. It does not reread a later writer's head or repeat
 the complete entry validation; stale-owner recovery and transport rollback
 retain their existing fences.
+
+`source-package-ddc-failed` covers staging and publication failures as well as
+invalid bytes. Read `detail.ddcError` for the DDC owner's structured code,
+expected evidence and recovery actions; the outer hint retains that owner's
+guidance. Host-only paths and exact recovery targets are omitted from this
+projection. A non-current CAS outcome is recorded in `detail.ddcCommitResult`.
+
+| Evidence | Producer recovery |
+|:--|:--|
+| `ddc-lease-expired` or a stale/lost commit | Inspect the active publication and retry with a fresh lease; the entry may still be valid. |
+| `ddc-entry-conflict` | Preserve the verified entry and investigate the competing publication. |
+| `ddc-entry-invalid` or `ddc-entry-incomplete` | Inspect the named entry, preserve last-known-good and cold-cook through the producer. |
+
+An outer DDC failure alone is not evidence of cache corruption. Do not delete
+the complete project cache to recover a publication ownership failure.
 
 ### Source-format LOD adapters
 

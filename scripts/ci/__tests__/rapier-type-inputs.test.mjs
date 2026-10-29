@@ -11,10 +11,7 @@ test('CI prepares actual native Rapier declarations before a cold package typech
   try {
     mkdirSync(join(root, 'scripts/forgeax'), { recursive: true });
     mkdirSync(join(root, 'scripts/lib'), { recursive: true });
-    cpSync(
-      join(repository, 'scripts/lib/rust-build-paths.mjs'),
-      join(root, 'scripts/lib/rust-build-paths.mjs'),
-    );
+    cpSync(join(repository, 'scripts/lib'), join(root, 'scripts/lib'), { recursive: true });
     cpSync(join(repository, 'package.json'), join(root, 'package.json'));
     symlinkSync(join(repository, 'node_modules'), join(root, 'node_modules'), 'dir');
     cpSync(

@@ -8,7 +8,8 @@ import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, buildBatchAlignedSubmission } from '../gpu-driven/batch-topology';
-import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
+import { LOD_VIEW_CONSTANTS_BYTES, writeLodViewConstants } from '../gpu-driven/lod-projection.wgsl';
+import { lodViewCameraFromMatrix } from '../gpu-driven/production-raster-lod';
 import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import {
   type ShadowViewIdentity,
@@ -26,12 +27,17 @@ import { FrameProjection } from '../scene/frame-list';
 import { TreeFrame } from '../scene/frame-tree-list';
 import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import { RenderScene } from '../scene/render-scene';
+import { SkinInputs } from '../scene/skin-inputs';
 import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
 import { updateShadowView } from './helpers/gpu-input-read-domain';
 
 const shadowViewsPath = new URL('../gpu-driven/shadow-views.ts', import.meta.url);
 const shadowViewsSource = existsSync(shadowViewsPath) ? readFileSync(shadowViewsPath, 'utf8') : '';
 const recordFrameSource = readFileSync(new URL('../record/frame.ts', import.meta.url), 'utf8');
+const frameGpuDrivenSource = readFileSync(
+  new URL('../record/frame-gpu-driven.ts', import.meta.url),
+  'utf8',
+);
 const viewSource = readFileSync(new URL('../gpu-driven/view-gpu.ts', import.meta.url), 'utf8');
 
 const shadowKinds = [
@@ -145,11 +151,6 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
     sourcePlan: topology.query(topology.sourcePlan(), undefined),
     scene: scene.scene,
     planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
-    lodProjectedHeights: new Map([
-      [0, 0.5],
-      [1, 0.5],
-    ]),
-    lodSelection: 'near/near',
     ...extra,
   } as const;
   updateShadowView(pool, input).unwrap();
@@ -158,6 +159,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
     pool,
     input,
     identity,
+    projection,
     dispose: () => {
       pool.dispose();
       scene.scene.dispose();
@@ -166,6 +168,189 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
 }
 
 describe('GPU-driven shadow view owner contract', () => {
+  it('refreshes active Skin depth from current data even when retired root addresses are reused', async () => {
+    const f = await lodShadowFixture();
+    const skin = new SkinInputs(f.input.scene.inputs.arena);
+    const source = skin.source();
+    const topology = new BatchTopology();
+    const value = preparedPbrSnapshot(snapshot(1));
+    topology.apply(
+      f.projection.apply([
+        updateSnapshot({
+          ...value,
+          gpuDrivenDraws: (value.gpuDrivenDraws ?? []).map((draw) => ({
+            ...draw,
+            geometry: { ...draw.geometry, deformation: 'skin' },
+            ...(draw.prepared === undefined
+              ? {}
+              : {
+                  prepared: {
+                    ...draw.prepared,
+                    identity: { ...draw.prepared.identity, deformation: 'skin' },
+                  },
+                }),
+          })),
+        }),
+      ]),
+    );
+    const plan = topology.query(topology.sourcePlan(), undefined);
+    const prepared = value.gpuDrivenDraws?.[0]?.prepared;
+    if (prepared === undefined) throw new Error('Missing prepared Skin fixture');
+    const sourcePlan = {
+      ...plan,
+      batches: plan.batches.map((batch) => ({
+        ...batch,
+        prepared: { ...prepared, identity: { ...prepared.identity, deformation: 'skin' as const } },
+      })),
+    };
+    expect(sourcePlan.batches.length).toBeGreaterThan(0);
+    const matrix = mat4.identity(mat4.create());
+    skin.setJoint(source, 7, matrix);
+    const capture = () => ({
+      slots: f.projection.slotsSnapshot(),
+      current: skin.capture(),
+      previous: undefined,
+    });
+    let frame = capture();
+    const update = () =>
+      updateShadowView(f.pool, { ...f.input, sourcePlan, skin: frame }, sourcePlan).unwrap();
+    try {
+      expect(update().cache).toBe('invalidated');
+      f.pool._commitResourceReplacement();
+      expect(update().cache).toBe('invalidated');
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      expect(f.pool.project(graph, f.identity).unwrap().passNames.length).toBeGreaterThan(0);
+      const root = frame.current.inputRoot();
+      frame.current.release();
+      matrix[12] = 1;
+      skin.setJoint(source, 7, matrix);
+      frame = capture();
+      // A physical root/address is not a content identity once its leases end.
+      expect(frame.current.inputRoot()).toBe(root);
+      expect(update().cache).toBe('invalidated');
+      f.pool._commitResourceReplacement();
+      expect(update().cache).toBe('invalidated');
+      const replacement = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      expect(
+        f.pool.project(replacement, f.identity, true).unwrap().passNames.length,
+      ).toBeGreaterThan(0);
+      f.pool._commitResourceReplacement();
+      skin.setJoint(source, 7, matrix);
+      frame.current.release();
+      frame = capture();
+      expect(update().cache).toBe('invalidated');
+      const unknown = {
+        ...frame,
+        current: { root: frame.current.root, jointCapacity: 0 } as typeof frame.current,
+      };
+      expect(
+        updateShadowView(f.pool, { ...f.input, sourcePlan, skin: unknown }, sourcePlan).unwrap()
+          .cache,
+      ).toBe('invalidated');
+      f.pool._commitResourceReplacement();
+      expect(update().cache).toBe('invalidated');
+    } finally {
+      frame.current.release();
+      skin.dispose();
+      f.dispose();
+    }
+  });
+
+  it('derives keys from current identity values, including mutable Terrain receiver fields', () => {
+    const identity: {
+      kind: 'directional';
+      index: number;
+      face?: number;
+      layer?: 'static';
+      terrainReceiver?: { worldId: number; entityKey: number };
+    } = { kind: 'directional', index: 0 };
+    const base = shadowViewIdentityKey(identity);
+    expect(shadowViewIdentityKey(identity)).toBe(base);
+    identity.layer = 'static';
+    expect(shadowViewIdentityKey(identity)).not.toBe(base);
+    delete identity.layer;
+    expect(shadowViewIdentityKey(identity)).toBe(base);
+    identity.terrainReceiver = { worldId: 1, entityKey: 2 };
+    const terrain = shadowViewIdentityKey(identity);
+    identity.terrainReceiver.entityKey = 3;
+    expect(shadowViewIdentityKey(identity)).not.toBe(terrain);
+    identity.terrainReceiver.worldId = 2;
+    expect(shadowViewIdentityKey(identity)).toBe(shadowViewIdentityKey({ ...identity }));
+    identity.face = 5;
+    identity.index = 99;
+    expect(shadowViewIdentityKey(identity)).toBe(shadowViewIdentityKey({ ...identity }));
+  });
+
+  it('reads the owner submission directly and retains older values across transitions', async () => {
+    const f = await lodShadowFixture();
+    try {
+      const first = f.pool.submission(f.identity);
+      expect(first).toBeDefined();
+      const repeated = f.pool.submission(f.identity);
+      expect(repeated).toEqual(first);
+      expect(repeated).toBe(first);
+      expect(Object.isFrozen(first?.identity)).toBe(true);
+      if (first === undefined) throw new Error('Missing submission');
+      const borrowed = { ...structuredClone(first.identity) };
+      expect(shadowViewIdentityKey(borrowed)).toBe(shadowViewIdentityKey(f.identity));
+      borrowed.index++;
+      expect(shadowViewIdentityKey(borrowed)).not.toBe(shadowViewIdentityKey(f.identity));
+      const topology = f.pool.topologySignature();
+      expect(f.pool.activeIdentities()).toEqual([f.identity]);
+      updateShadowView(f.pool, f.input).unwrap();
+      const hit = f.pool.submission(f.identity);
+      expect(hit?.cache).toBe('hit');
+      expect(hit).not.toBe(first);
+      expect(first?.cache).toBe('invalidated');
+      expect(f.pool.submission(f.identity)).toBe(hit);
+      expect(f.pool.topologySignature()).toBe(topology);
+      f.pool.invalidate('artifact-changed', f.identity);
+      const rebuilt = updateShadowView(f.pool, f.input).unwrap();
+      expect(rebuilt.cache).toBe('invalidated');
+      expect(rebuilt.identity).toBe(first.identity);
+      expect(f.pool.submission(f.identity)?.identity).toBe(first.identity);
+      expect(first.cache).toBe('invalidated');
+      f.pool.retain([]);
+      expect(f.pool.submission(f.identity)).toBeUndefined();
+      expect(f.pool.topologySignature()).toBe('');
+      expect(f.pool.activeIdentities()).toEqual([]);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('refreshes topology signatures for resource generations and equal-sized roster changes', async () => {
+    const f = await lodShadowFixture();
+    try {
+      const original = f.pool.topologySignature();
+      expect(f.pool.topologySignature()).toBe(original);
+      const view = f.pool.submission(f.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      const generation = view.graphResourceGeneration;
+      const observed = vi.spyOn(view, 'graphResourceGeneration', 'get');
+      observed.mockReturnValue(generation + 1);
+      const resized = f.pool.topologySignature();
+      expect(resized).not.toBe(original);
+      expect(f.pool.topologySignature()).toBe(resized);
+      observed.mockRestore();
+      expect(f.pool.topologySignature()).toBe(original);
+      const other = { ...f.identity, index: 1 };
+      updateShadowView(f.pool, { ...f.input, identity: other }).unwrap();
+      f.pool.retain([other]);
+      const replaced = f.pool.topologySignature();
+      expect(replaced).not.toBe(resized);
+      expect(replaced).toContain(shadowViewIdentityKey(other));
+      expect(replaced).not.toContain(`${shadowViewIdentityKey(f.identity)}:`);
+      expect(f.pool.topologySignature()).toBe(replaced);
+      f.pool.retain([]);
+      expect(f.pool.topologySignature()).toBe('');
+      updateShadowView(f.pool, f.input).unwrap();
+      expect(f.pool.topologySignature()).not.toBe('');
+    } finally {
+      f.dispose();
+    }
+  });
+
   it.each([
     'outside',
     'partial',
@@ -530,7 +715,7 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(f.pool.invalidationReason(f.identity)).toBe('source-changed');
       expect(next.plan).not.toBe(first.plan);
       expect(Reflect.get(next.view, 'bindGroup')).toBeDefined();
-      expect(next.view.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
+      expect(next.view.inspect().batchUploadBytes).toBeGreaterThan(0);
     } finally {
       f.dispose();
     }
@@ -800,10 +985,10 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(retry.plan.batches).toEqual(first.plan.batches);
       expect(retry.view.visibleBuffer).toBe(second.view.visibleBuffer);
       // The aborted view needs a fresh plan and redraw, while the accepted
-      // task bytes remain identical. This low-level subset is a raw array:
-      // its actual read produces one fresh eight-word member node.
-      expect(retry.view.inspect().sharedInputUploadBytes).toBe(8 * 4);
-      expect(retry.view.inspect().batchUploadBytes).toBe(4); // Only the raw member-root word.
+      // task bytes remain identical. Its member subset stays encoded while
+      // the view holds it, so neither member nodes nor task words re-upload.
+      expect(retry.view.inspect().sharedInputUploadBytes).toBe(0);
+      expect(retry.view.inspect().batchUploadBytes).toBe(0);
       expect(retry.view.inspect().viewConstantsUploadBytes).toBeGreaterThan(0);
       expect(f.pool.invalidationReason(other.identity)).toBe('submit-aborted');
       f.pool._commitResourceReplacement();
@@ -821,7 +1006,10 @@ describe('GPU-driven shadow view owner contract', () => {
       ).unwrap();
       expect(recovered.view.visibleBuffer).not.toBe(visible);
       expect(recovered.plan).not.toBe(retry.plan);
-      expect(recovered.view.inspect().sharedInputUploadBytes).toBe(8 * 4);
+      // Replacement storage re-uploads the view's task words; its held member
+      // encoding in the shared scene input stays valid.
+      expect(recovered.view.inspect().sharedInputUploadBytes).toBe(0);
+      expect(recovered.view.inspect().batchUploadBytes).toBeGreaterThan(0);
     } finally {
       f.dispose();
     }
@@ -850,8 +1038,9 @@ describe('GPU-driven shadow view owner contract', () => {
 
   it('fences shadow view cache identity at accepted graph generations', () => {
     expect(recordFrameSource).not.toMatch(/cacheToken|shadowViewToken/);
-    expect(recordFrameSource).toMatch(/targetSize:\s*graphShadowMapSize/);
-    expect(recordFrameSource).toMatch(/graphGeneration:\s*frameState\.graphGeneration/);
+    expect(frameGpuDrivenSource).not.toMatch(/cacheToken|shadowViewToken/);
+    expect(recordFrameSource).toMatch(/graphShadowMapSize,\s*frameState\.graphGeneration,/);
+    expect(frameGpuDrivenSource).toMatch(/targetSize,\s*graphGeneration,/);
     expect(shadowViewsSource).not.toMatch(/cacheToken/);
   });
 
@@ -861,7 +1050,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
     const projection = new RenderScene();
     const delta = projection.apply([updateSnapshot(snapshot(1))]);
-    const sceneAvailability = GpuScene.create(device, 1).unwrap();
+    const sceneAvailability = GpuScene.create(device, 8).unwrap();
     expect(sceneAvailability.status).toBe('available');
     if (sceneAvailability.status !== 'available') return;
     sceneAvailability.scene.sync(delta).unwrap();
@@ -941,7 +1130,6 @@ describe('GPU-driven shadow view owner contract', () => {
       const payloadOnly = updateShadowView(pool, {
         ...input,
         planes: movedPlanes,
-        lodProjectedHeights: new Map([[0, 0.25]]),
       }).unwrap();
       expect(payloadOnly.cache).toBe('invalidated');
       expect(payloadOnly.plan).toBe(first.plan);
@@ -954,9 +1142,9 @@ describe('GPU-driven shadow view owner contract', () => {
         cacheRebuildReasons: { 'first-publication': 1, 'view-changed': 1 },
       });
       expect(acceptedCounters?.cacheRebuilds).toBe(1);
-      // This raw subset captures a fresh member node and its root word.
+      // This raw subset captures a fresh member node, its one record and its root word.
       expect(payloadOnly.view.inspect()).toMatchObject({
-        sharedInputUploadBytes: 32,
+        sharedInputUploadBytes: 52,
         batchUploadBytes: 4,
       });
       pool._commitResourceReplacement();
@@ -1041,7 +1229,7 @@ describe('GPU-driven shadow view owner contract', () => {
         )
         .unwrap();
     };
-    const sceneAvailability = GpuScene.create(device, 1).unwrap();
+    const sceneAvailability = GpuScene.create(device, 8).unwrap();
     if (sceneAvailability.status !== 'available') throw new Error('scene unavailable');
     const scene = sceneAvailability.scene;
     moveCaster(0);
@@ -1112,7 +1300,7 @@ describe('GPU-driven shadow view owner contract', () => {
       return { ...value, transform: { world } };
     };
     const delta = projection.apply([updateSnapshot(at(1, 0)), updateSnapshot(at(2, 50))]);
-    const sceneAvailability = GpuScene.create(device, 2).unwrap();
+    const sceneAvailability = GpuScene.create(device, 8).unwrap();
     if (sceneAvailability.status !== 'available') throw new Error('scene unavailable');
     const scene = sceneAvailability.scene;
     scene.sync(delta, undefined, boundsOf).unwrap();
@@ -1157,96 +1345,30 @@ describe('GPU-driven shadow view owner contract', () => {
     scene.dispose();
   });
 
-  it('re-rasters only for LOD level changes of casters inside the retained frustum', async () => {
-    const { pool, input, identity, dispose } = await lodShadowFixture();
-
-    // Heights within one level move only the cross-fade.
-    const nearer = new Map([
-      [0, 0.45],
-      [1, 0.45],
-    ]);
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: nearer,
-        lodSelection: 'near/near*',
-      }).unwrap().cache,
-    ).toBe('hit');
-    // The out-of-view caster drops a level: its shadow texels are outside this view.
-    const farOutside = new Map([
-      [0, 0.45],
-      [1, 0.05],
-    ]);
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: farOutside,
-        lodSelection: 'near/far',
-      }).unwrap().cache,
-    ).toBe('hit');
-    // The in-view caster drops a level: the retained raster is stale.
-    const farInside = new Map([
-      [0, 0.05],
-      [1, 0.05],
-    ]);
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: farInside,
-        lodSelection: 'far/far',
-      }).unwrap().cache,
-    ).toBe('invalidated');
-    expect(pool.invalidationReason(identity)).toBe('lod-changed');
-    dispose();
-  });
-
-  it('keeps finer retained levels of a clamped static layer', async () => {
-    const clamp = {
-      position: new Float32Array(3),
-      projection: 'orthographic',
-      fov: 0,
-      orthoTop: 1,
-      orthoBottom: -1,
-    } as unknown as LodViewCamera;
-    const { pool, input, dispose } = await lodShadowFixture({ lodClampCamera: clamp });
-    const heights = (value: number) =>
-      new Map([
-        [0, value],
-        [1, value],
-      ]);
-    // The reference camera coarsens: the finer retained raster still serves.
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: heights(0.05),
-        lodSelection: 'far/far',
-      }).unwrap().cache,
-    ).toBe('hit');
-    // Returning to the retained levels stays a hit.
-    expect(
-      updateShadowView(pool, {
-        ...input,
-        lodProjectedHeights: heights(0.5),
-        lodSelection: 'near/near',
-      }).unwrap().cache,
-    ).toBe('hit');
-    dispose();
-
-    // Built coarse, a finer selection is too fine for the retained raster.
-    const coarse = await lodShadowFixture({
-      lodClampCamera: clamp,
-      lodProjectedHeights: heights(0.05),
-      lodSelection: 'far/far',
-    });
-    expect(
-      updateShadowView(coarse.pool, {
-        ...coarse.input,
-        lodProjectedHeights: heights(0.5),
-        lodSelection: 'near/near',
-      }).unwrap().cache,
-    ).toBe('invalidated');
-    expect(coarse.pool.invalidationReason(coarse.identity)).toBe('lod-changed');
-    coarse.dispose();
+  it.each([
+    true,
+    false,
+  ])('writes the shadow LOD cap flag only for a light-matrix view (matrix: %s)', async (lightView) => {
+    const matrix = new Float32Array(
+      mat4.orthographic(mat4.create(), -400, 400, -400, 400, 0.1, 100),
+    );
+    const lodCamera = lodViewCameraFromMatrix(matrix);
+    const f = await lodShadowFixture(lightView ? { matrix, lodCamera } : { lodCamera });
+    try {
+      const { view } = updateShadowView(f.pool, f.input).unwrap();
+      const uploaded = (view as unknown as { viewUpload: Uint8Array }).viewUpload;
+      const row = (clamp: boolean) => {
+        const bytes = new Uint8Array(LOD_VIEW_CONSTANTS_BYTES);
+        writeLodViewConstants(new DataView(bytes.buffer), 0, lodCamera, clamp);
+        return Buffer.from(bytes);
+      };
+      // The light-matrix view is the only producer of the clamp flag; no
+      // main-camera height or level reaches its constants.
+      expect(Buffer.from(uploaded).indexOf(row(lightView))).toBeGreaterThanOrEqual(0);
+      expect(Buffer.from(uploaded).indexOf(row(!lightView))).toBe(-1);
+    } finally {
+      f.dispose();
+    }
   });
 
   it('keeps a static layer cached across out-of-view flips and every spawn', async () => {
@@ -1326,7 +1448,7 @@ describe('GPU-driven shadow view owner contract', () => {
       world[12] = x;
       return { ...snapshot(entityKey), transform: { world } };
     };
-    const scene = GpuScene.create(device, 2).unwrap();
+    const scene = GpuScene.create(device, 8).unwrap();
     if (scene.status !== 'available') throw new Error('scene unavailable');
     scene.scene
       .sync(

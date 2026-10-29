@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
@@ -50,6 +50,8 @@ test('the official tool has one Engine version and no private workspace dependen
   try {
     await stageViewToolPackage(f.view, f.output, '1.2.3');
     const value = JSON.parse(await readFile(resolve(f.output, 'package.json')));
+    assert.equal(value.private, true, 'View is an SDK-local tool, never an npm publication');
+    assert.equal(value.version, '1.2.3');
     assert.equal(
       await readFile(resolve(f.output, 'dist/index.mjs'), 'utf8'),
       "export * from '@forgeax/engine/profiler';\n",
@@ -104,12 +106,14 @@ test('the packed tool loads the real cold-import dependency outside its source c
   const execute = promisify(execFile);
   try {
     await stageViewToolPackage(f.view, f.output, '1.2.3');
-    const { stdout } = await execute(
+    await execute(
       'npm',
       ['pack', '--ignore-scripts', '--json', '--pack-destination', f.directory],
       { cwd: f.output },
     );
-    const [{ filename }] = JSON.parse(stdout);
+    const archives = (await readdir(f.directory)).filter((name) => name.endsWith('.tgz'));
+    assert.equal(archives.length, 1, 'npm pack must produce exactly one archive');
+    const [filename] = archives;
     const installed = resolve(f.directory, 'installed');
     await mkdir(installed);
     await execute('tar', ['-xzf', resolve(f.directory, filename), '-C', installed]);

@@ -22,7 +22,7 @@ export function addTypedDebugOverlayPass(
       return overlay !== undefined && (overlay.hasWork?.() ?? true);
     },
     encode: ({ pass, frame }) => {
-      const projection = cameraLensProjection(frame.camera);
+      const projection = cameraLensProjection(frame.camera, mat4.create());
       const view = mat4.invert(mat4.create(), frame.camera.world);
       const result = frame.runtime.debugOverlay?.encode(
         pass,

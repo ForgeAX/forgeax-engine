@@ -5,7 +5,7 @@ export default vfxProbe(
     title: 'Persistent GPU simulation',
     catalog: 'Persistent GPU simulation',
     summary:
-      'Particle state lives in renderer-owned GPU buffers; each fixed tick becomes compute dispatches (spawn/update/compact) with no CPU particle mirror or readback.',
+      'Particle state lives in renderer-owned GPU buffers; each frame tick becomes compute dispatches (spawn/update/compact) with no CPU particle mirror or readback.',
     expect:
       'The VFX feature reports compute dispatches every frame while playing; the tick counter keeps advancing; pausing render consumption stops the dispatches and resuming restarts them.',
   },

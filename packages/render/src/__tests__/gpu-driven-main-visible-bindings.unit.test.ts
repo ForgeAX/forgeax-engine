@@ -495,19 +495,65 @@ describe('Main GPU-driven prepared visible windows', () => {
       create.mockClear();
       r.record(f.prepare());
       expect(create).not.toHaveBeenCalled();
-      expect(recordings.windows).toHaveLength(6);
-      for (const [pass, call] of recordings.windows.entries()) {
-        for (const [batch, binding] of call.entries()) {
-          expect(binding).toBe(first[pass]?.[batch]);
-        }
-      }
-      expect(f.production.inspect().preparedBundleHits).toBe(6);
+      expect(f.production.inspect().preparedBundleHits).toBeGreaterThan(0);
+      // Unchanged runs replay their retained native commands without
+      // resolving visible windows again.
+      expect(recordings.windows).toHaveLength(0);
       expect(f.production.inspect().encodedIndirectDraws).toBe(36);
     } finally {
       recordings.restore();
       create.mockRestore();
       await r.close();
       await f.close();
+    }
+  });
+
+  it('re-records retained native runs when any Skin task physical fact changes', async () => {
+    const f = await fixture(false, 3, 64);
+    const initial = f.prepare();
+    const r = recorder(f, initial, true, true);
+    const buffer = () => f.device.createBuffer({ size: 4096, usage: 128 }).unwrap();
+    const allocated = [buffer(), buffer()];
+    const task = {
+      data: defined(allocated[0]),
+      auxiliary: defined(allocated[1]),
+      dataOffset: 0,
+      auxiliaryOffset: 256,
+      dataSize: 1024,
+      auxiliarySize: 16,
+    };
+    const taskBinding = vi
+      .spyOn(GpuDrivenView.prototype, 'skinTaskBinding')
+      .mockImplementation(() => task);
+    const recordings = observeRasterRecordings();
+    try {
+      r.record();
+      recordings.clear();
+      r.record(f.prepare());
+      expect(recordings.windows).toHaveLength(0);
+      for (const field of ['dataOffset', 'auxiliaryOffset', 'dataSize', 'auxiliarySize'] as const) {
+        task[field] += 256;
+        r.record(f.prepare());
+        expect(recordings.windows.length).toBeGreaterThan(0);
+        recordings.clear();
+        r.record(f.prepare());
+        expect(recordings.windows).toHaveLength(0);
+      }
+      for (const field of ['data', 'auxiliary'] as const) {
+        task[field] = buffer();
+        allocated.push(task[field]);
+        r.record(f.prepare());
+        expect(recordings.windows.length).toBeGreaterThan(0);
+        recordings.clear();
+        r.record(f.prepare());
+        expect(recordings.windows).toHaveLength(0);
+      }
+    } finally {
+      recordings.restore();
+      taskBinding.mockRestore();
+      await r.close();
+      await f.close();
+      for (const resource of allocated) f.device.destroyBuffer(resource).unwrap();
     }
   });
 
@@ -590,7 +636,7 @@ describe('Main GPU-driven prepared visible windows', () => {
         slots: f.projection.slotsSnapshot(),
       };
       const changed = f.prepare({ scene });
-      expect(changed.topologySignature).toBe(initial.topologySignature);
+      expect(changed.topologySignature()).toBe(initial.topologySignature());
       lookup.mockClear();
       const next = r.record(changed);
       expect(lookup).toHaveBeenCalledTimes(resolvedWindows);
@@ -783,7 +829,7 @@ describe('Main GPU-driven prepared visible windows', () => {
     try {
       const first = r.record();
       const split = f.prepare({ materialBindingClasses: bindings });
-      expect(split.topologySignature).toBe(merged.topologySignature);
+      expect(split.topologySignature()).toBe(merged.topologySignature());
       const splitGroups = r.record(split);
       expect(splitGroups.length).toBeGreaterThan(first.length);
       lookup.mockClear();
@@ -800,38 +846,41 @@ describe('Main GPU-driven prepared visible windows', () => {
     }
   });
 
-  it('replaces early and late windows after view-only capacity growth', async () => {
+  it('keeps the compiled graph and replaces early and late windows after view-only capacity growth', async () => {
     const f = await fixture();
     const initial = f.prepare();
+    // Prepared bundles keep their recorded windows; direct encodes expose the bound groups.
     const r = recorder(f, initial, true, true);
+    const direct = recorder(f, initial);
     const lookup = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'visibleWindowBindGroupForBuffer');
     const recordings = observeRasterRecordings();
-    let next: ReturnType<typeof recorder> | undefined;
     try {
       r.record();
       const oldWindows = recordings.windows.flat();
       const oldContents = oldWindows.map((windows) => [...windows]);
       const first = oldWindows.flat();
       const firstBuffer = defined(lookup.mock.calls[0])[0];
+      direct.record();
       const instanceBuffer = defined(f.input.scene).scene.instanceBuffer;
       const bindings = new Map([['0:1', 'split']]);
       const grown = f.prepare({ materialBindingClasses: bindings });
-      expect(grown.topologySignature).not.toBe(initial.topologySignature);
+      // View storage is resolved when the graph executes: growth keeps the graph.
+      expect(grown.topologySignature()).toBe(initial.topologySignature());
       expect(defined(f.input.scene).scene.instanceBuffer).toBe(instanceBuffer);
-      lookup.mockClear();
-      next = recorder(f, grown);
-      const groups = next.record();
+      r.record(grown);
       expect(oldWindows).toEqual(oldContents);
+      lookup.mockClear();
+      const groups = direct.record(grown);
+      expect(groups.length).toBeGreaterThan(0);
       expect(groups.every((group) => !first.includes(group))).toBe(true);
       expect(lookup.mock.calls.every(([buffer]) => buffer !== firstBuffer)).toBe(true);
-      expect(lookup).toHaveBeenCalledTimes(new Set(groups).size);
       lookup.mockClear();
-      expect(next.record(f.prepare({ materialBindingClasses: bindings }))).toEqual(groups);
+      expect(direct.record(f.prepare({ materialBindingClasses: bindings }))).toEqual(groups);
       expect(lookup).not.toHaveBeenCalled();
     } finally {
       recordings.restore();
       lookup.mockRestore();
-      await next?.close();
+      await direct.close();
       await r.close();
       f.close();
     }

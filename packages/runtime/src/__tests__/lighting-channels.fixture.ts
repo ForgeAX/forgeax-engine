@@ -235,6 +235,8 @@ export async function verifyLightingChannels(
           direction: [0, 0, -1],
           intensity: strengths.spot,
           range: 10,
+          // Pixel evidence was recorded with the former hard 60-degree cone.
+          innerConeDeg: 60,
           castShadow: false,
           lightingChannels: 0,
         },
@@ -303,8 +305,8 @@ export async function verifyLightingChannels(
       const packet =
         candidate === undefined
           ? undefined
-          : structuredClone(candidate.packet, {
-              transfer: renderPublicationTransfers(candidate.packet),
+          : structuredClone(candidate.message, {
+              transfer: renderPublicationTransfers(candidate.message),
             });
       candidate?.accept();
       try {

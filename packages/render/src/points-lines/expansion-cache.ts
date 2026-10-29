@@ -6,7 +6,10 @@ export interface PointsLinesExpandedGeometry {
   readonly component: 'Points' | 'Lines';
   /** Source endpoints retained for the M3 triangle-expansion consumer. */
   readonly positions: Float32Array;
-  /** Canonical position/normal/uv/tangent stream: endpoints, corner, neighbor and distance. */
+  /**
+   * Canonical position/normal/uv/tangent stream. Lines: endpoints, corner,
+   * neighbor and distance. Points: center, (size scale, 0, 0), corner, RGBA tint.
+   */
   readonly vertices: Float32Array;
   /** Six indices per expanded quad. */
   readonly indices: Uint32Array;
@@ -25,6 +28,8 @@ export class PointsLinesExpansionCache {
   private readonly identities = new WeakMap<MeshAsset, number>();
   private nextIdentity = 0;
   private readonly entries = new Map<string, PointsLinesExpandedGeometry>();
+  /** Latest key per source slot: a newer mesh generation supersedes the older expansion. */
+  private readonly latest = new Map<string, string>();
 
   getOrCreate(snapshot: PointsLinesPreparedSnapshot, mesh: MeshAsset): PointsLinesExpandedGeometry {
     if (snapshot.component === undefined || snapshot.style === undefined) {
@@ -43,6 +48,12 @@ export class PointsLinesExpansionCache {
       return cached;
     }
     const geometry = deriveExpandedGeometry(snapshot, mesh, key);
+    // Per-frame JS writes (moving particles) bump the generation every frame;
+    // retaining each superseded expansion would hold up to 256 stale copies.
+    const slot = pointsLinesSourceSlot(snapshot);
+    const superseded = this.latest.get(slot);
+    if (superseded !== undefined && superseded !== key) this.entries.delete(superseded);
+    this.latest.set(slot, key);
     this.entries.set(key, geometry);
     if (this.entries.size > 256) {
       const oldest = this.entries.keys().next().value;
@@ -53,11 +64,20 @@ export class PointsLinesExpansionCache {
 
   clear(): void {
     this.entries.clear();
+    this.latest.clear();
   }
 
   get size(): number {
     return this.entries.size;
   }
+}
+
+/**
+ * Generation-free identity of one retained mesh source in one World. Its
+ * prepared GPU buffers are reused across generations of the same source.
+ */
+export function pointsLinesSourceSlot(snapshot: PointsLinesPreparedSnapshot): string {
+  return `world:${snapshot.worldId}:mesh:${snapshot.meshHandle}:component=${snapshot.component ?? 'none'}`;
 }
 
 function expansionKey(snapshot: PointsLinesPreparedSnapshot): string {
@@ -73,18 +93,14 @@ function deriveExpandedGeometry(
   const style = snapshot.style;
   if (component === undefined || style === undefined) return emptyGeometry(snapshot);
   const sourcePositions = readPositions(mesh);
+  if (component === 'Points') return expandPoints(mesh, sourcePositions, key);
   const positions: number[] = [];
   const vertices: number[] = [];
   const indices: number[] = [];
   let sourceCursor = 0;
-  let pointCount = 0;
   let segmentCount = 0;
-  const expectedTopology = component === 'Points' ? 'point-list' : 'line-list';
   for (const submesh of mesh.submeshes) {
-    if (
-      submesh.topology !== expectedTopology &&
-      !(component === 'Lines' && submesh.topology === 'line-strip')
-    ) {
+    if (submesh.topology !== 'line-list' && submesh.topology !== 'line-strip') {
       sourceCursor += submesh.vertexCount;
       continue;
     }
@@ -102,64 +118,47 @@ function deriveExpandedGeometry(
         sourcePositions[offset + 2] ?? 0,
       );
     }
-    if (component === 'Points') {
-      pointCount += elements.length;
-      for (const index of elements) {
-        const offset = index * 3;
-        const position = [
-          sourcePositions[offset] ?? 0,
-          sourcePositions[offset + 1] ?? 0,
-          sourcePositions[offset + 2] ?? 0,
-        ];
-        if (style.kind !== 'points') continue;
-        emitQuad(vertices, indices, position, position);
+    const strip = submesh.topology === 'line-strip';
+    const point = (element: number): readonly number[] => {
+      const offset = (elements[element] ?? 0) * 3;
+      return [
+        sourcePositions[offset] ?? 0,
+        sourcePositions[offset + 1] ?? 0,
+        sourcePositions[offset + 2] ?? 0,
+      ];
+    };
+    const same = (a: readonly number[], b: readonly number[]) => a.every((v, i) => v === b[i]);
+    // Collapse consecutive duplicates once, keeping strip construction linear
+    // even for a long stationary trajectory. Preserve the repeated closing end.
+    if (strip) {
+      let count = 0;
+      for (let i = 0; i < elements.length; i++) {
+        if (count === 0 || !same(point(i), point(count - 1))) elements[count++] = elements[i] ?? 0;
       }
-    } else {
-      const strip = submesh.topology === 'line-strip';
-      const point = (element: number): readonly number[] => {
-        const offset = (elements[element] ?? 0) * 3;
-        return [
-          sourcePositions[offset] ?? 0,
-          sourcePositions[offset + 1] ?? 0,
-          sourcePositions[offset + 2] ?? 0,
-        ];
-      };
-      const same = (a: readonly number[], b: readonly number[]) => a.every((v, i) => v === b[i]);
-      // Collapse consecutive duplicates once, keeping strip construction linear
-      // even for a long stationary trajectory. Preserve the repeated closing end.
-      if (strip) {
-        let count = 0;
-        for (let i = 0; i < elements.length; i++) {
-          if (count === 0 || !same(point(i), point(count - 1)))
-            elements[count++] = elements[i] ?? 0;
-        }
-        elements.length = count;
-      }
-      const closed = strip && elements.length > 2 && same(point(0), point(elements.length - 1));
-      let distance = 0;
-      for (let element = 0; element + 1 < elements.length; element += strip ? 1 : 2) {
-        const start = point(element);
-        const end = point(element + 1);
-        const length = Math.hypot(
-          (end[0] ?? 0) - (start[0] ?? 0),
-          (end[1] ?? 0) - (start[1] ?? 0),
-          (end[2] ?? 0) - (start[2] ?? 0),
-        );
-        emitQuad(
-          vertices,
-          indices,
-          start,
-          end,
-          strip ? point(element > 0 ? element - 1 : closed ? elements.length - 2 : 0) : start,
-          strip
-            ? point(element + 2 < elements.length ? element + 2 : closed ? 1 : element + 1)
-            : end,
-          distance,
-          distance + length,
-        );
-        distance += length;
-        segmentCount++;
-      }
+      elements.length = count;
+    }
+    const closed = strip && elements.length > 2 && same(point(0), point(elements.length - 1));
+    let distance = 0;
+    for (let element = 0; element + 1 < elements.length; element += strip ? 1 : 2) {
+      const start = point(element);
+      const end = point(element + 1);
+      const length = Math.hypot(
+        (end[0] ?? 0) - (start[0] ?? 0),
+        (end[1] ?? 0) - (start[1] ?? 0),
+        (end[2] ?? 0) - (start[2] ?? 0),
+      );
+      emitQuad(
+        vertices,
+        indices,
+        start,
+        end,
+        strip ? point(element > 0 ? element - 1 : closed ? elements.length - 2 : 0) : start,
+        strip ? point(element + 2 < elements.length ? element + 2 : closed ? 1 : element + 1) : end,
+        distance,
+        distance + length,
+      );
+      distance += length;
+      segmentCount++;
     }
     sourceCursor += submesh.vertexCount;
   }
@@ -173,13 +172,95 @@ function deriveExpandedGeometry(
     vertices: expandedVertices,
     indices: expandedIndices,
     sourceVertexCount: sourcePositions.length / 3,
-    pointCount,
+    pointCount: 0,
     segmentCount,
     expandedVertexCount: expandedVertices.length / 12,
     expandedIndexCount: expandedIndices.length,
     sourceBytes: mesh.vertices.byteLength + (mesh.indices?.byteLength ?? 0),
     derivedBytes: expandedVertices.byteLength + expandedIndices.byteLength,
     bounds: boundsOf(expanded),
+  };
+}
+
+/** Source element indices of every accepted point-list submesh, in draw order. */
+function pointElements(mesh: MeshAsset): number[] {
+  const elements: number[] = [];
+  let sourceCursor = 0;
+  for (const submesh of mesh.submeshes) {
+    if (submesh.topology === 'point-list') {
+      if (mesh.indices !== undefined && submesh.indexCount > 0) {
+        const end = submesh.indexOffset + submesh.indexCount;
+        for (let i = submesh.indexOffset; i < end; i++) elements.push(mesh.indices[i] ?? 0);
+      } else {
+        for (let i = 0; i < submesh.vertexCount; i++) elements.push(sourceCursor + i);
+      }
+    }
+    sourceCursor += submesh.vertexCount;
+  }
+  return elements;
+}
+
+/** A Float32 view of an optional attribute stream; other storage reads as absent. */
+function floatStream(value: ArrayBuffer | Float32Array | Uint16Array | undefined) {
+  if (value instanceof Float32Array) return value;
+  return value instanceof ArrayBuffer ? new Float32Array(value) : undefined;
+}
+
+const POINT_CORNERS = [-1, -1, -1, 1, 1, -1, 1, 1] as const;
+
+/**
+ * One camera-facing quad per point, written straight into typed arrays so a
+ * per-frame position/colour write re-expands thousands of points cheaply.
+ * The optional `color` stream tints a point; `uv1.x` scales its size.
+ */
+function expandPoints(
+  mesh: MeshAsset,
+  sourcePositions: Float32Array,
+  key: string,
+): PointsLinesExpandedGeometry {
+  const elements = pointElements(mesh);
+  const colors = floatStream(mesh.attributes.color);
+  const sizes = floatStream(mesh.attributes.uv1);
+  const count = elements.length;
+  const positions = new Float32Array(count * 3);
+  const vertices = new Float32Array(count * 48);
+  const indices = new Uint32Array(count * 6);
+  for (let point = 0; point < count; point++) {
+    const source = elements[point] ?? 0;
+    const x = sourcePositions[source * 3] ?? 0;
+    const y = sourcePositions[source * 3 + 1] ?? 0;
+    const z = sourcePositions[source * 3 + 2] ?? 0;
+    positions.set([x, y, z], point * 3);
+    const scale = sizes === undefined ? 1 : (sizes[source * 2] ?? 1);
+    const tint = colors?.subarray(source * 4, source * 4 + 4);
+    for (let corner = 0; corner < 4; corner++) {
+      const offset = (point * 4 + corner) * 12;
+      vertices[offset] = x;
+      vertices[offset + 1] = y;
+      vertices[offset + 2] = z;
+      vertices[offset + 3] = scale;
+      vertices[offset + 6] = POINT_CORNERS[corner * 2] ?? 0;
+      vertices[offset + 7] = POINT_CORNERS[corner * 2 + 1] ?? 0;
+      if (tint?.length === 4) vertices.set(tint, offset + 8);
+      else vertices.fill(1, offset + 8, offset + 12);
+    }
+    const base = point * 4;
+    indices.set([base, base + 1, base + 2, base + 2, base + 1, base + 3], point * 6);
+  }
+  return {
+    key,
+    component: 'Points',
+    positions,
+    vertices,
+    indices,
+    sourceVertexCount: sourcePositions.length / 3,
+    pointCount: count,
+    segmentCount: 0,
+    expandedVertexCount: count * 4,
+    expandedIndexCount: indices.length,
+    sourceBytes: mesh.vertices.byteLength + (mesh.indices?.byteLength ?? 0),
+    derivedBytes: vertices.byteLength + indices.byteLength,
+    bounds: boundsOf(positions),
   };
 }
 

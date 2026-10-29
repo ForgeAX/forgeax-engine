@@ -109,6 +109,16 @@ export function preparedShadowFixture({
   );
   const bundleRecording = captureShadowBundles(device);
   const shadowView = preparedShadowView(device, buffer);
+  shadowView.skinTaskBinding = () => ({
+    data: buffer,
+    auxiliary: buffer,
+    dataOffset: 0,
+    auxiliaryOffset: 768,
+    dataSize: 160,
+    auxiliarySize: 16,
+    jointCount: 1,
+    flags: 1,
+  });
   const context = {
     validatedOrdered: [],
     runtime: {

@@ -1,7 +1,7 @@
-// apps/hello/physics — Physics integration demo using the physicsPlugin.
+// apps/hello/physics — Physics integration demo using the physics3d.
 //
 // Three-statement takeoff (mirrors hello-app pattern):
-//   const app = await createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] });
+//   const app = await createApp(canvas, { plugins: [physics3d] });
 //   if (!app.ok) reportError(app.error);
 //   app.value.start();
 //
@@ -22,7 +22,8 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, physicsPlugin } from '@forgeax/engine-physics';
+import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
@@ -34,7 +35,7 @@ const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-physics: missing <canvas id="app"> in index.html');
 
 const app = await createApp(canvas, {
-    plugins: [physicsPlugin('rapier-3d')],
+    plugins: [physics3d],
 }, forgeaxBundlerAdapter());
 if (!app.ok) reportError(app.error);
 else {

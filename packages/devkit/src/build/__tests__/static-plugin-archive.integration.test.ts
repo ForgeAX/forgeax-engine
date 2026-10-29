@@ -115,6 +115,7 @@ it('archives existing static plugins and tools, then mounts them in a fresh proc
         name: 'Archive test',
         roots: { host: root.definition.guid },
         assetRoots: ['assets'],
+        assetLibraries: [],
         packageJson: {},
       },
       'host',

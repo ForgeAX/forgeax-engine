@@ -11,7 +11,7 @@ const result = spawnSync(
       new URL('../../packages/physics-rapier3d/scripts/build-wasm.mjs', import.meta.url),
     ),
     ...(dimension === '2d' ? ['--2d'] : []),
-    process.argv.includes('--verify') ? '--verify' : '--ensure',
+    ['--verify', '--key'].find((mode) => process.argv.includes(mode)) ?? '--ensure',
   ],
   { stdio: 'inherit' },
 );

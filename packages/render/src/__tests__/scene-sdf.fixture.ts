@@ -134,7 +134,7 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
   const world = new World({ assets });
   const meshHandle = assets.create(mesh).unwrap();
   const scope = worldRenderResources(world);
-  const slots = [
+  let slots = [
     {
       worldId: 0,
       entityKey: 7,
@@ -153,14 +153,21 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
     assets,
     immediateShaderModuleFactory: { createShaderModule: () => ok(module) },
   } as unknown as RenderSystemInternals;
+  const materials = new MaterialFrame(undefined);
+  const meshes = new MeshFrame().with(0, meshHandle, mesh);
+  /** A changed composition publishes new rows under a new revision. */
+  const changeSource = () => {
+    slots = slots.map((slot) => ({ ...slot }));
+    revision++;
+  };
   const source = () => ({
     scopes: [scope] as never,
     retained: {
       identity: scope,
       revision,
       slots,
-      materials: new MaterialFrame(undefined),
-      meshes: new MeshFrame().with(0, meshHandle, mesh),
+      materials,
+      meshes,
       isCurrent: () => true,
       isSourceCurrent: () => true,
     } as never,
@@ -276,18 +283,20 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
     owner.begin();
     expect(owner.prepare('a', request, source()).buffer).toBe(scene.buffer);
     owner.complete(true);
-    revision++;
+    changeSource();
     owner.begin();
     const rejected = owner.prepare('a', request, source());
     expect(rejected.buffer).not.toBe(scene.buffer);
     owner.complete(false);
-    revision--;
+    // The rejected candidate was released, not adopted: the same changed source
+    // prepares a fresh replacement, which an accepted submission then adopts.
     owner.begin();
-    expect(owner.prepare('a', request, source()).buffer).toBe(scene.buffer);
+    const replacement = owner.prepare('a', request, source());
+    expect(replacement.buffer).not.toBe(rejected.buffer);
+    expect(replacement.buffer).not.toBe(scene.buffer);
     owner.complete(true);
-    revision++;
     owner.begin();
-    expect(owner.prepare('a', request, source()).buffer).not.toBe(rejected.buffer);
+    expect(owner.prepare('a', request, source()).buffer).toBe(replacement.buffer);
     owner.complete(false);
     expect(errors).toEqual([]);
   } finally {

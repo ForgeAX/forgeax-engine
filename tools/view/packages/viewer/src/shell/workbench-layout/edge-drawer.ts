@@ -23,7 +23,7 @@ import type { WorkbenchEdge } from './types.ts';
 
 const OPEN_CLASS = 'fx-edge-drawer-open';
 const ANIM_CLASS = 'fx-edge-drawer-animating';
-const ENSURED_EDGES = ['left', 'right', 'bottom'] as const;
+const ALL_EDGES = ['left', 'right', 'bottom'] as const;
 const PORTAL_HOST_CLASS = 'fx-edge-drawer-portal-host';
 const FLYOUT_CLASS = 'fx-edge-drawer-flyout';
 const BOTTOM_SPAN_CLASS = 'fx-bottom-edge-spanning';
@@ -36,6 +36,7 @@ const BOTTOM_SPAN_VARS = [
 
 const DRAWER_VAR_NAMES = [
   '--fx-edge-drawer-width',
+  '--fx-edge-drawer-max-width',
   '--fx-edge-drawer-height',
   '--fx-edge-drawer-left',
   '--fx-edge-drawer-right',
@@ -74,6 +75,8 @@ export type EdgeDrawerController = {
   dispose: () => void;
 };
 
+export type EdgeDrawerOptions = { edges?: readonly WorkbenchEdge[] };
+
 function edgeGroups(api: DockviewApi) {
   return api.groups.filter((g) => g.api.location.type === 'edge');
 }
@@ -109,11 +112,13 @@ function isDismissExemptTarget(target: Element | null) {
 export function installEdgeDrawer(
   api: DockviewApi,
   root: HTMLElement,
+  { edges = ALL_EDGES }: EdgeDrawerOptions = {},
 ): EdgeDrawerController {
   let openGroup: DockviewApi['groups'][number] | null = null;
   /** Edge group id to re-open after page suspend when pin drawer was showing. */
   let pinnedResumeGroupId: string | null = null;
   const pinScope: EdgePinScope = edgePinScopeFor(api);
+  const ensuredEdges = edges;
   let drawerPortalHost: HTMLDivElement | null = null;
   let portaledFlyout: HTMLElement | null = null;
   const grip = document.createElement('div');
@@ -209,24 +214,28 @@ export function installEdgeDrawer(
   const positionGrip = (group: DockviewApi['groups'][number]) => {
     const e = edgeOf(group);
     const r = group.element.getBoundingClientRect();
-    const size = readDrawerSize(group, e);
+    const maxWidth = parseFloat(group.element.style.getPropertyValue('--fx-edge-drawer-max-width'));
+    const size = e === 'bottom' ? readDrawerSize(group, e) : Math.min(readDrawerSize(group, e), maxWidth);
+    const sideHeight = parseFloat(group.element.style.getPropertyValue('--fx-edge-strip-height'));
+    const bottomLeft = parseFloat(group.element.style.getPropertyValue('--fx-edge-strip-left'));
+    const bottomWidth = parseFloat(group.element.style.getPropertyValue('--fx-edge-strip-width'));
     const g = grip.style;
     g.position = 'fixed';
     if (e === 'left') {
       g.top = `${r.top + DRAWER_CROSS_INSET_PX}px`;
-      g.height = `${r.height - 2 * DRAWER_CROSS_INSET_PX}px`;
+      g.height = `${Math.max(0, sideHeight - 2 * DRAWER_CROSS_INSET_PX)}px`;
       g.left = `${r.right + size - 3}px`;
       g.width = '6px';
       g.cursor = 'ew-resize';
     } else if (e === 'right') {
       g.top = `${r.top + DRAWER_CROSS_INSET_PX}px`;
-      g.height = `${r.height - 2 * DRAWER_CROSS_INSET_PX}px`;
+      g.height = `${Math.max(0, sideHeight - 2 * DRAWER_CROSS_INSET_PX)}px`;
       g.left = `${r.left - size - 3}px`;
       g.width = '6px';
       g.cursor = 'ew-resize';
     } else {
-      g.left = `${r.left + DRAWER_CROSS_INSET_PX}px`;
-      g.width = `${r.width - 2 * DRAWER_CROSS_INSET_PX}px`;
+      g.left = `${bottomLeft + DRAWER_CROSS_INSET_PX}px`;
+      g.width = `${Math.max(0, bottomWidth - 2 * DRAWER_CROSS_INSET_PX)}px`;
       g.top = `${r.top - size - 3}px`;
       g.height = '6px';
       g.cursor = 'ns-resize';
@@ -237,22 +246,32 @@ export function installEdgeDrawer(
     const edge = edgeOf(group);
     const style = group.element.style;
     const r = group.element.getBoundingClientRect();
+    const occupied = (side: WorkbenchEdge) => edgeGroups(api).find(candidate =>
+      edgeOf(candidate) === side && candidate.panels.length > 0,
+    )?.element.getBoundingClientRect();
 
     if (edge === 'bottom') {
-      const hostW = root.getBoundingClientRect().width;
-      style.setProperty('--fx-edge-strip-left', `${r.left}px`);
-      style.setProperty('--fx-edge-strip-width', `${r.width}px`);
+      const left = occupied('left')?.right ?? r.left;
+      const right = occupied('right')?.left ?? r.right;
+      style.setProperty('--fx-edge-strip-left', `${left}px`);
+      style.setProperty('--fx-edge-strip-width', `${Math.max(0, right - left)}px`);
       style.setProperty('--fx-edge-drawer-bottom', `${window.innerHeight - r.top}px`);
       style.setProperty('--fx-edge-drawer-left', '0');
-      style.setProperty('--fx-edge-drawer-width', `${hostW}px`);
     } else {
+      const opposite = occupied(edge === 'left' ? 'right' : 'left');
+      const boundary = edge === 'left'
+        ? opposite?.left ?? root.getBoundingClientRect().right
+        : opposite?.right ?? root.getBoundingClientRect().left;
+      const maxWidth = edge === 'left' ? boundary - r.right - 3 : r.left - boundary - 3;
+      const sideHeight = Math.min(r.height, Math.max(0, (occupied('bottom')?.top ?? r.bottom) - r.top));
+      style.setProperty('--fx-edge-drawer-max-width', `${Math.max(0, maxWidth)}px`);
       style.setProperty('--fx-edge-drawer-left', `${r.right}px`);
       style.setProperty('--fx-edge-drawer-right', `${window.innerWidth - r.left}px`);
       style.setProperty('--fx-edge-drawer-top', `${r.bottom}px`);
       style.setProperty('--fx-edge-drawer-bottom', `${window.innerHeight - r.top}px`);
       style.setProperty('--fx-edge-strip-top', `${r.top}px`);
       style.setProperty('--fx-edge-strip-left', `${r.left}px`);
-      style.setProperty('--fx-edge-strip-height', `${r.height}px`);
+      style.setProperty('--fx-edge-strip-height', `${sideHeight}px`);
       style.setProperty('--fx-edge-strip-width', `${r.width}px`);
     }
     if (openGroup === group && drawerPortalHost) {
@@ -387,7 +406,25 @@ export function installEdgeDrawer(
   };
 
   const ensureEdgeSlots = () => {
-    for (const pos of ENSURED_EDGES) {
+    for (const group of [...edgeGroups(api)]) {
+      const position = group.api.location.type === 'edge' ? group.api.location.position : undefined;
+      if (!position || ensuredEdges.includes(position as WorkbenchEdge)) continue;
+      let gridGroup = api.groups.find((candidate) => candidate.api.location.type === 'grid');
+      const panels = [...group.panels];
+      for (let index = 0; index < panels.length; index += 1) {
+        const panel = panels[index]!;
+        if (!gridGroup) {
+          gridGroup = api.addGroup();
+          panel.api.moveTo({ group: gridGroup, position: 'center', index });
+        } else {
+          panel.api.moveTo({ group: gridGroup, position: index === 0 ? 'bottom' : 'center', index });
+          if (index === 0 && panel.group.api.location.type === 'grid') gridGroup = panel.group;
+        }
+      }
+      if (group.panels.length > 0) throw new Error(`Could not move panels out of the disallowed ${position} edge group`);
+      api.removeEdgeGroup(position as WorkbenchEdge);
+    }
+    for (const pos of ensuredEdges) {
       if (api.getEdgeGroup?.(pos)) continue;
       try {
         api.addEdgeGroup?.(pos, {
@@ -411,7 +448,7 @@ export function installEdgeDrawer(
   };
 
   const syncEmptyEdges = () => {
-    for (const pos of ENSURED_EDGES) {
+    for (const pos of ensuredEdges) {
       const group = edgeGroups(api).find((g) => g.api.location.type === 'edge' && g.api.location.position === pos);
       const hasItems = (group?.panels.length ?? 0) > 0;
       const previewing = group?.element.classList.contains('fx-edge-drop-preview');
@@ -442,7 +479,8 @@ export function installEdgeDrawer(
     const group = edgeGroups(api).find((candidate) => edgeOf(candidate) === 'bottom');
     const slot = group?.element.parentElement;
     const host = root.getBoundingClientRect();
-    if (!group || !(slot instanceof HTMLElement) || !group.panels.length || host.width <= 0) {
+    const previewing = group?.element.classList.contains('fx-edge-drop-preview') === true;
+    if (!group || !(slot instanceof HTMLElement) || (!group.panels.length && !previewing) || host.width <= 0) {
       clearBottomSpan();
       return;
     }
@@ -458,6 +496,7 @@ export function installEdgeDrawer(
     slot.classList.add(BOTTOM_SPAN_CLASS);
   };
   let bottomSpanFrame: number | null = null;
+  let bottomPreviewObserver: MutationObserver | null = null;
   const scheduleBottomSpan = () => {
     if (bottomSpanFrame !== null) cancelAnimationFrame(bottomSpanFrame);
     bottomSpanFrame = requestAnimationFrame(() => {
@@ -540,13 +579,17 @@ export function installEdgeDrawer(
     if (!(native instanceof DragEvent)) return true;
     const point = { x: native.clientX, y: native.clientY };
     const title = native.dataTransfer?.getData('text/plain') || 'Panel';
-    const hit = edgeStripHitFromPoint(api, root, point, title);
+    const hit = edgeStripHitFromPoint(api, root, point, title, ensuredEdges);
     if (hit) {
       syncEdgeDropPreview(api, hit);
       return true;
     }
     const position = event.position;
     if (event.kind === 'edge') {
+      if (!ensuredEdges.includes(position as WorkbenchEdge)) {
+        clearEdgeDropPreview(api);
+        return false;
+      }
       const group = edgeGroups(api).find(
         (g) => g.api.location.type === 'edge' && g.api.location.position === position,
       );
@@ -568,9 +611,17 @@ export function installEdgeDrawer(
     return true;
   };
 
-  const onDragEnd = () => clearEdgeDropPreview(api);
+  const onDragEnd = () => {
+    clearEdgeDropPreview(api);
+    scheduleBottomSpan();
+  };
 
   ensureEdgeSlots();
+  const bottomGroup = edgeGroups(api).find((group) => edgeOf(group) === 'bottom');
+  if (typeof MutationObserver !== 'undefined' && bottomGroup) {
+    bottomPreviewObserver = new MutationObserver(() => scheduleBottomSpan());
+    bottomPreviewObserver.observe(bottomGroup.element, { attributes: true, attributeFilter: ['class'] });
+  }
   syncEmptyEdges();
   syncBottomSpan();
 
@@ -595,6 +646,10 @@ export function installEdgeDrawer(
   });
 
   const panelSub = api.onDidRemovePanel?.(() => {
+    syncEmptyEdges();
+    scheduleBottomSpan();
+  });
+  const panelAddSub = api.onDidAddPanel?.(() => {
     syncEmptyEdges();
     scheduleBottomSpan();
   });
@@ -635,7 +690,9 @@ export function installEdgeDrawer(
       document.removeEventListener('drop', onDragEnd, true);
       layoutSub?.dispose?.();
       panelSub?.dispose?.();
+      panelAddSub?.dispose?.();
       hostResize?.disconnect();
+      bottomPreviewObserver?.disconnect();
       if (bottomSpanFrame !== null) cancelAnimationFrame(bottomSpanFrame);
       clearBottomSpan();
     },

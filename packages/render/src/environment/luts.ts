@@ -10,7 +10,7 @@ import {
   RhiError,
   type Sampler,
 } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -231,7 +231,7 @@ export function addAtmosphereLuts(
             });
           const device = frame.runtime.device;
           const module = factory
-            .createShaderModule({ code: source, label: 'atmosphere_luts' })
+            .createShaderModule(shaderSourceDescriptor(source, 'atmosphere_luts'))
             .unwrap();
           const layout = device
             .createBindGroupLayout({

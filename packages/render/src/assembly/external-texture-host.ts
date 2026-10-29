@@ -8,6 +8,7 @@ import type {
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
+import { uuidv7 } from 'uuidv7';
 import {
   ExternalTextureInvalidError,
   type ExternalTextureInvalidReason,
@@ -168,7 +169,7 @@ function validateGpuTextureShape(
 export function createExternalTextureHost(
   options: ExternalTextureHostOptions,
 ): ExternalTextureHost {
-  const sourceOwner = crypto.randomUUID();
+  const sourceOwner = uuidv7();
   let nextSourceId = 1;
   const entries = new Map<number, Entry>();
   const foreignReported = new Set<string>();

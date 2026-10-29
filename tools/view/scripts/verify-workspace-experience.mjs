@@ -46,7 +46,7 @@ const until = async predicate => {
 };
 try {
   await mkdir(join(root, 'assets'));
-  await cp(join(view, 'scripts/fixtures/workspace-proof.pack.ts'), join(root, 'assets/proof.pack.ts'));
+  await cp(join(view, 'scripts/fixtures/scene-triangle-picking.pack.ts'), join(root, 'assets/proof.pack.ts'));
   await cp(join(view, 'scripts/fixtures/workspace-proof.plugin.ts'), join(root, 'assets/game.plugin.ts'));
   await mkdir(join(root, 'node_modules/@forgeax'), { recursive: true });
   await symlink(engine, join(root, 'node_modules/@forgeax/engine'));
@@ -105,7 +105,8 @@ try {
   const opened = await client.getState();
   assert.equal(opened.project.root, canonicalRoot);
   const assets = await client.listAssets(opened.project.id, { targetId: opened.projectTarget.targetId });
-  const scene = assets.assets.find(asset => asset.kind === 'scene');
+  const scene = assets.assets.find(asset => asset.kind === 'scene'
+    && (asset.sourcePath ?? asset.path ?? '').includes('proof.pack.ts'));
   const mesh = assets.assets.find(asset => asset.kind === 'mesh' && asset.path === 'assets/proof.pack.ts');
   assert.ok(scene && mesh);
   await client.openAsset(scene.guid, { projectId: opened.project.id });
@@ -116,6 +117,22 @@ try {
     return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === element;
   }), true, 'The View Shell must not obscure the Engine owner canvas or intercept its clicks');
   await canvas.screenshot({ path: join(output, 'scene-before.png') });
+  const target = (await client.getState()).preview.target;
+  const identity = { targetId: target.targetId, targetGeneration: target.generation };
+  const outputCenter = await canvas.evaluate(element => ({ x: element.width / 2, y: element.height / 2 }));
+  await client.clearSceneSelection(identity);
+  const boundsPick = await client.call('target.pick', { ...identity, ...outputCenter });
+  const trianglePick = await client.call('target.pick', { ...identity, ...outputCenter, granularity: 'triangle' });
+  assert.equal(boundsPick.granularity, 'bounds', 'Omitted precision retains the existing Engine default');
+  assert.equal(trianglePick.granularity, 'triangle');
+  assert.ok(boundsPick.entityId && trianglePick.entityId);
+  assert.notEqual(boundsPick.entityId, trianglePick.entityId,
+    'The bounds query hits the hollow ring while exact geometry reaches the rear cube');
+  assert.equal((await client.getState()).sceneSelection, null,
+    'Direct Engine pick queries do not change View selection');
+  const rearEntity = await client.call('entity.inspect', { ...identity, entityId: trianglePick.entityId });
+  assert.equal(rearEntity.components.find(component => component.name === 'Name')?.values.value,
+    'Cube behind opening');
   let bounds = await canvas.boundingBox();
   const positionPointer = async () => {
     await page.waitForFunction(() => !document.pointerLockElement);
@@ -125,14 +142,15 @@ try {
   await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
   const selected = await until(async () => (await client.getState()).sceneSelection);
   assert.ok(selected.primary?.entityId, 'First click must select an actual entity');
+  assert.equal(selected.primary.entityId, trianglePick.entityId,
+    'The real View Scene click must select the same rear entity found by exact geometry');
+  const inspector = page.getByTestId('panel-inspector');
+  await inspector.getByText('Cube behind opening', { exact: true }).waitFor();
   console.error('PASS first left-click without prior camera input', selected.primary.entityId);
-  const target = (await client.getState()).preview.target;
-  const identity = { targetId: target.targetId, targetGeneration: target.generation };
   assert.equal(await canvas.evaluate(element => Boolean(element.closest('[data-forgeax-view-workspace="targets"]'))), true,
     'The exact Engine Scene canvas is borrowed into the viewport DOM');
   await client.clearSceneSelection(identity);
   assert.equal((await client.getState()).sceneSelection, null);
-  const outputCenter = await canvas.evaluate(element => ({ x: element.width / 2, y: element.height / 2 }));
   await client.call('target.pick', { ...identity, ...outputCenter });
   assert.equal((await client.getState()).sceneSelection, null, 'A domain pick query cannot change View selection');
   await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
@@ -313,7 +331,7 @@ try {
     { signal: AbortSignal.timeout(600_000) });
   const frame = page.frames().find(value => value.url().includes(playTarget.targetId));
   assert.ok(frame, 'Play has a separate game document');
-  await frame.waitForFunction(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted) >= 60,
+  await frame.waitForFunction(() => (document.querySelector('canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= 60,
     undefined, { timeout: 180_000 });
   assert.equal(await page.locator('.fx-error-notice').count(), 0);
   await page.screenshot({ path: join(output, 'play-before-refresh.png') });
@@ -358,10 +376,8 @@ try {
   assert.equal(await page.locator('.fx-error-notice').count(), 0);
   const contentBrowser = page.getByTestId('panel-content-browser');
   await contentBrowser.waitFor({ state: 'attached' });
-  if (!(await contentBrowser.isVisible())) {
-    await page.locator('.fx-view-workspace-row.is-active .dv-groupview-edge .dv-tab')
-      .filter({ hasText: /^Content Browser$/ }).click();
-  }
+  const revealed = await client.call('presentation.panel.reveal', { panelId: 'content-browser' });
+  assert.equal(revealed.panels.find(panel => panel.id === 'content-browser')?.visible, true);
   await contentBrowser.waitFor({ state: 'visible' });
   await contentBrowser.locator('.cb-crumb-current').filter({ hasText: /^assets$/ }).waitFor();
   for (const [name, kind] of [['proof-plugins.pack.json', 'Plugin'], ['proof.pack.ts', 'Asset Package']]) {
@@ -429,10 +445,14 @@ try {
   console.error('UI', await page?.locator('body').innerText().catch(() => 'unavailable'));
   console.error('FRAMES', await Promise.all((page?.frames() ?? []).map(async frame => ({
     target: new URL(frame.url()).searchParams.get('forgeaxWorkspaceTarget'),
-    summary: await frame.evaluate(() => ({
-      title: document.title, text: document.body?.innerText?.slice(0, 1200),
-      frames: document.documentElement.dataset.forgeaxFrameSubmitted,
-    })).catch(error => ({ error: error.message })),
+    summary: await frame.evaluate(() => {
+      const canvas = document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')
+        ?? document.querySelector('canvas#app');
+      return {
+        title: document.title, text: document.body?.innerText?.slice(0, 1200),
+        frames: canvas?.forgeaxFrameProgress?.submitted?.frameId ?? null,
+      };
+    }).catch(error => ({ error: error.message })),
   }))));
   const state = await client?.getState().catch(() => null);
   console.error('STATE', JSON.stringify(state, (key, value) => key === 'url' || /token/i.test(key) ? '[redacted]' : value));

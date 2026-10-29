@@ -9,7 +9,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
@@ -185,10 +185,10 @@ export function addAtmosphereBackground(
     }
     const device = frame.runtime.device;
     const cubeModule = factory
-      .createShaderModule({ code: sources.cube, label: 'atmosphere_cube' })
+      .createShaderModule(shaderSourceDescriptor(sources.cube, 'atmosphere_cube'))
       .unwrap();
     const backgroundModule = factory
-      .createShaderModule({ code: sources.background, label: 'atmosphere_background' })
+      .createShaderModule(shaderSourceDescriptor(sources.background, 'atmosphere_background'))
       .unwrap();
     const cubeLayout = device
       .createBindGroupLayout({

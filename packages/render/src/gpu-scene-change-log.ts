@@ -30,8 +30,72 @@ interface ChangeEntry {
 }
 
 const HISTORY = 16;
+
+function writeBox(box: Float32Array, bounds: RenderSceneBounds): void {
+  box[0] = bounds.min[0] as number;
+  box[1] = bounds.min[1] as number;
+  box[2] = bounds.min[2] as number;
+  box[3] = bounds.max[0] as number;
+  box[4] = bounds.max[1] as number;
+  box[5] = bounds.max[2] as number;
+}
 const EMPTY = new Float32Array(0);
 const EMPTY_SLOTS = new Int32Array(0);
+
+const BOXED = 1;
+const UNBOUNDED = 2;
+
+/**
+ * Each dense scene slot's current conservative box (six floats) or its
+ * unbounded mark, as slot-indexed columns instead of a per-slot array.
+ */
+class SlotBoxes {
+  private state = new Uint8Array(0);
+  private values = new Float32Array(0);
+
+  hasBox(slot: number): boolean {
+    return this.state[slot] === BOXED;
+  }
+
+  unbounded(slot: number): boolean {
+    return this.state[slot] === UNBOUNDED;
+  }
+
+  pushBox(slot: number, out: number[]): void {
+    for (let i = 0; i < 6; i += 1) out.push(this.values[slot * 6 + i] as number);
+  }
+
+  write(slot: number, bounds: RenderSceneBounds): void {
+    this.ensure(slot);
+    this.state[slot] = BOXED;
+    writeBox(this.values.subarray(slot * 6, slot * 6 + 6), bounds);
+  }
+
+  markUnbounded(slot: number): void {
+    this.ensure(slot);
+    this.state[slot] = UNBOUNDED;
+  }
+
+  delete(slot: number): void {
+    if (slot < this.state.length) this.state[slot] = 0;
+  }
+
+  clear(): void {
+    this.state.fill(0);
+  }
+
+  private ensure(slot: number): void {
+    if (slot < this.state.length) return;
+    let capacity = Math.max(64, this.state.length);
+    while (capacity <= slot) capacity *= 2;
+    const state = new Uint8Array(capacity);
+    state.set(this.state);
+    const values = new Float32Array(capacity * 6);
+    values.set(this.values);
+    this.state = state;
+    this.values = values;
+  }
+}
 
 /**
  * Old and new world boxes of every slot a scene revision changed. A consumer
@@ -40,14 +104,18 @@ const EMPTY_SLOTS = new Int32Array(0);
  * revision older than the retained history reports `'unbounded'`.
  */
 export class GpuSceneChangeLog {
-  private readonly boundsBySlot = new Map<number, Float32Array>();
-  private readonly unboundedSlots = new Set<number>();
+  private readonly slots = new SlotBoxes();
   private readonly entries: ChangeEntry[] = [];
+  private readonly scratchBoxes: number[] = [];
+  private readonly scratchBoxSlots: number[] = [];
+  private readonly scratchUnbounded: number[] = [];
+  private readonly scratchChanged: number[] = [];
+  private readonly scratchSeen = new Set<number>();
   private cached:
     | {
         readonly since: number;
         readonly ignored: ReadonlySet<number> | undefined;
-        readonly observed: ReadonlyMap<number, unknown> | undefined;
+        readonly observed: { has(slot: number): boolean } | undefined;
         readonly value: GpuSceneChangedBounds;
       }
     | undefined;
@@ -60,33 +128,38 @@ export class GpuSceneChangeLog {
   ): void {
     this.cached = undefined;
     const whole = delta.resynced > 0;
-    if (delta.resynced > 0) {
-      this.boundsBySlot.clear();
-      this.unboundedSlots.clear();
-    }
-    const boxes: number[] = [];
-    const boxSlots: number[] = [];
-    const unboundedSlots: number[] = [];
-    const changedSlots: number[] = [];
+    if (delta.resynced > 0) this.slots.clear();
+    // Scratch lists are copied into the retained entry below.
+    const boxes = this.scratchBoxes;
+    const boxSlots = this.scratchBoxSlots;
+    const unboundedSlots = this.scratchUnbounded;
+    const changedSlots = this.scratchChanged;
+    boxes.length = 0;
+    boxSlots.length = 0;
+    unboundedSlots.length = 0;
+    changedSlots.length = 0;
     const pushOld = (slot: number): void => {
-      const previous = this.boundsBySlot.get(slot);
-      if (previous === undefined) {
-        if (this.unboundedSlots.has(slot)) unboundedSlots.push(slot);
+      if (!this.slots.hasBox(slot)) {
+        if (this.slots.unbounded(slot)) unboundedSlots.push(slot);
         return;
       }
-      for (let i = 0; i < 6; i += 1) boxes.push(previous[i] as number);
+      this.slots.pushBox(slot, boxes);
       boxSlots.push(slot);
     };
     for (const record of delta.removedSlots) {
       changedSlots.push(record.slot);
       pushOld(record.slot);
-      this.boundsBySlot.delete(record.slot);
-      this.unboundedSlots.delete(record.slot);
+      this.slots.delete(record.slot);
     }
     // Only an instance-only update may report row boxes; the bounds cache
     // answers them only while the root transform and mesh are unchanged.
-    const rowUpdateSlots = new Set(delta.instanceUpdatedSlots.map((record) => record.slot));
-    const seen = new Set<number>();
+    let rowUpdateSlots: Set<number> | undefined;
+    if (rowBoxesOf !== undefined && delta.instanceUpdatedSlots.length > 0) {
+      rowUpdateSlots = new Set();
+      for (const record of delta.instanceUpdatedSlots) rowUpdateSlots.add(record.slot);
+    }
+    const seen = this.scratchSeen;
+    seen.clear();
     for (const records of [
       delta.createdSlots,
       delta.recreatedSlots,
@@ -99,12 +172,11 @@ export class GpuSceneChangeLog {
         seen.add(record.slot);
         changedSlots.push(record.slot);
         const snapshot = record.snapshot;
-        const retained = this.boundsBySlot.get(record.slot);
         if (
           rowBoxesOf !== undefined &&
-          retained !== undefined &&
-          rowUpdateSlots.has(record.slot) &&
-          snapshot.skin === undefined
+          this.slots.hasBox(record.slot) &&
+          rowUpdateSlots?.has(record.slot) === true &&
+          snapshot.skinBinding === undefined
         ) {
           const bounds = boundsOf?.(record);
           const rows = bounds === undefined ? undefined : rowBoxesOf(record);
@@ -113,37 +185,28 @@ export class GpuSceneChangeLog {
               for (let i = 0; i < 6; i += 1) boxes.push(rows[box + i] as number);
               boxSlots.push(record.slot);
             }
-            retained.set([...bounds.min, ...bounds.max]);
+            this.slots.write(record.slot, bounds);
             continue;
           }
         }
         pushOld(record.slot);
         // Skinned and sprite casters deform beyond their bind-pose box.
         const bounds =
-          snapshot.skin !== undefined || snapshot.spriteInstances !== undefined
+          snapshot.skinBinding !== undefined || snapshot.spriteInstances !== undefined
             ? undefined
             : boundsOf?.(record);
         if (bounds === undefined) {
-          this.boundsBySlot.delete(record.slot);
           if (snapshot.instances?.instanceCount === 0) {
-            this.unboundedSlots.delete(record.slot);
+            this.slots.delete(record.slot);
           } else {
-            this.unboundedSlots.add(record.slot);
+            this.slots.markUnbounded(record.slot);
             unboundedSlots.push(record.slot);
           }
           continue;
         }
-        this.unboundedSlots.delete(record.slot);
-        const box = new Float32Array([
-          bounds.min[0],
-          bounds.min[1],
-          bounds.min[2],
-          bounds.max[0],
-          bounds.max[1],
-          bounds.max[2],
-        ]);
-        this.boundsBySlot.set(record.slot, box);
-        for (let i = 0; i < 6; i += 1) boxes.push(box[i] as number);
+        // The retained box is private to this log; its old values were copied above.
+        this.slots.write(record.slot, bounds);
+        this.slots.pushBox(record.slot, boxes);
         boxSlots.push(record.slot);
       }
     }
@@ -164,12 +227,11 @@ export class GpuSceneChangeLog {
     const boxSlots: number[] = [];
     const unboundedSlots: number[] = [];
     for (const slot of slots) {
-      const box = this.boundsBySlot.get(slot);
-      if (box === undefined) {
+      if (!this.slots.hasBox(slot)) {
         unboundedSlots.push(slot);
         continue;
       }
-      for (const value of box) boxes.push(value);
+      this.slots.pushBox(slot, boxes);
       boxSlots.push(slot);
     }
     this.push({
@@ -185,8 +247,7 @@ export class GpuSceneChangeLog {
   /** Invalidate every retained view, e.g. after a table rebuild. */
   reset(revision: number): void {
     this.cached = undefined;
-    this.boundsBySlot.clear();
-    this.unboundedSlots.clear();
+    this.slots.clear();
     this.push({
       revision,
       boxes: EMPTY,
@@ -199,14 +260,14 @@ export class GpuSceneChangeLog {
 
   /**
    * Boxes changed after `since`, skipping `ignored` slots and, when supplied,
-   * slots absent from the retained owner's `observed` map. The map's values
-   * are unused; consumers can pass their existing membership without copying it.
+   * slots absent from the retained owner's `observed` membership. Consumers
+   * pass their existing membership without copying it.
    */
   changedSince(
     since: number,
     current: number,
     ignored?: ReadonlySet<number>,
-    observed?: ReadonlyMap<number, unknown>,
+    observed?: { has(slot: number): boolean },
   ): GpuSceneChangedBounds {
     if (since === current) return EMPTY;
     if (
@@ -244,6 +305,43 @@ export class GpuSceneChangeLog {
     }
     this.cached = { since, ignored, observed, value };
     return value;
+  }
+
+  /**
+   * Whether every box {@link changedSince} would report misses the caller:
+   * the same answer as testing its merged boxes, without merging them. Boxes
+   * are filtered by `ignored`, judged by `misses` and only then by the
+   * `observed` membership, so a box outside the caller costs no membership
+   * lookup. A change without a proven box, a resync or a revision older than
+   * the history never misses.
+   */
+  changedBoundsMiss(
+    since: number,
+    current: number,
+    misses: (boxes: Float32Array, offset: number) => boolean,
+    ignored?: ReadonlySet<number>,
+    observed?: { has(slot: number): boolean },
+  ): boolean {
+    if (since === current) return true;
+    const first = this.entriesAfter(since);
+    if (first === undefined) return false;
+    for (let index = first; index < this.entries.length; index += 1) {
+      const entry = this.entries[index] as ChangeEntry;
+      if (entry.whole) return false;
+      const unbounded = entry.unboundedSlots;
+      for (let at = 0; at < unbounded.length; at += 1) {
+        const slot = unbounded[at] as number;
+        if (ignored?.has(slot) !== true && (observed === undefined || observed.has(slot)))
+          return false;
+      }
+      const boxSlots = entry.boxSlots;
+      for (let box = 0; box < boxSlots.length; box += 1) {
+        const slot = boxSlots[box] as number;
+        if (ignored?.has(slot) === true || misses(entry.boxes, box * 6)) continue;
+        if (observed === undefined || observed.has(slot)) return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -292,10 +390,9 @@ export class GpuSceneChangeLog {
       }
     }
     for (const slot of wanted) {
-      if (this.unboundedSlots.has(slot)) return 'unbounded';
-      const box = this.boundsBySlot.get(slot);
-      if (box !== undefined) {
-        for (let i = 0; i < 6; i += 1) merged.push(box[i] as number);
+      if (this.slots.unbounded(slot)) return 'unbounded';
+      if (this.slots.hasBox(slot)) {
+        this.slots.pushBox(slot, merged);
       } else if (!found.has(slot)) {
         return 'unbounded';
       }

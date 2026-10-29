@@ -1,3 +1,5 @@
+import type { MaterialShaderProgram } from '@forgeax/engine-shader';
+
 /**
  * Forward fragment entry for Standard draws bound to the unfogged View slot.
  *
@@ -16,17 +18,20 @@
 export const STANDARD_OPAQUE_FRAGMENT_ENTRY = 'fs_opaque';
 
 const DECLARATION = `fn ${STANDARD_OPAQUE_FRAGMENT_ENTRY}(`;
-const declaredBySource = new Map<string, boolean>();
+const declaredByProgram = new WeakMap<MaterialShaderProgram, boolean>();
 
 /** `true` when a material program source declares the `fs_opaque` entry. */
-export function declaresStandardOpaqueEntry(source: string | undefined): boolean {
+export function declaresStandardOpaqueEntry(
+  source: string | MaterialShaderProgram | undefined,
+): boolean {
   if (source === undefined) return false;
-  let declared = declaredBySource.get(source);
+  if (typeof source === 'string') return source.includes(DECLARATION);
+  if (source.entryPoints !== undefined)
+    return source.entryPoints.some((entry) => entry.name === STANDARD_OPAQUE_FRAGMENT_ENTRY);
+  let declared = declaredByProgram.get(source);
   if (declared === undefined) {
-    declared = source.includes(DECLARATION);
-    // Program sources are few and long-lived; bound the memo anyway.
-    if (declaredBySource.size >= 256) declaredBySource.clear();
-    declaredBySource.set(source, declared);
+    declared = source.source.includes(DECLARATION);
+    declaredByProgram.set(source, declared);
   }
   return declared;
 }
@@ -38,7 +43,7 @@ export function declaresStandardOpaqueEntry(source: string | undefined): boolean
  */
 export function declaredFragmentEntry(
   fragmentEntry: string | undefined,
-  source: string | undefined,
+  source: string | MaterialShaderProgram | undefined,
 ): string | undefined {
   return fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY && !declaresStandardOpaqueEntry(source)
     ? undefined
@@ -48,10 +53,13 @@ export function declaredFragmentEntry(
 /** Source of a material program lookup, or `undefined` when it is not registered. */
 export function materialProgramSource(
   lookup:
-    | { readonly ok: true; readonly value: { readonly source: string } }
+    | {
+        readonly ok: true;
+        readonly value: { readonly source: string; readonly program?: MaterialShaderProgram };
+      }
     | { readonly ok: false },
-): string | undefined {
-  return lookup.ok ? lookup.value.source : undefined;
+): string | MaterialShaderProgram | undefined {
+  return lookup.ok ? (lookup.value.program ?? lookup.value.source) : undefined;
 }
 
 export interface ForwardFragmentEntryInput {

@@ -101,6 +101,13 @@ const consumerSource = consumerProject.createSourceFile(
 import { Context, mountPluginAsset, startNativePlugin } from '@forgeax/engine/plugin';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { GameProjectSchema } from '@forgeax/engine/project';
+import { beginLoadSession, beginLoadWork, collectLoadTimeline, markLoadTimeline } from '@forgeax/engine-types';
+
+// Load observers remain usable by native consumers with only the ES library.
+void beginLoadSession;
+void beginLoadWork;
+void collectLoadTimeline;
+void markLoadTimeline;
 
 const movement: Plugin.Object<{ speed: number }> = {
   name: 'movement',

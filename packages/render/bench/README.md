@@ -1,5 +1,69 @@
 # State projection cost measurements
 
+## Fog and environment producers
+
+`fog-environment.ts` measures the real `selectFogFrame` producer alone and then
+followed by `extractWorldEnvironment`, including camera, atmosphere and shadowed
+sun extraction. Cases cover absent/present Fog, cloud Time advancement and
+moving poses. The paired runner keeps result rings and semantic checksums,
+records CPU separately from wall time, and preserves collected-object allocation
+profiles with explicit target attribution and a positive allocation control.
+Fixture construction stays outside timing; cold module imports are recorded separately. These
+are local CPU/allocation measurements, not Worker or GPU acceptance.
+
+Build the carrier at both revisions. Keep the bundles under the package's
+ignored Node cache so external workspace imports resolve, and write raw results
+outside the source checkout.
+
+```sh
+pnpm exec tsup packages/render/bench/fog-environment.ts --format esm \
+  --platform node --target node24 --external @forgeax/engine-ecs \
+  --external @forgeax/engine-scene --external @forgeax/engine-math \
+  --external @forgeax/engine-pack \
+  --out-dir packages/render/node_modules/.cache/fog-producer/candidate
+node packages/render/bench/fog-environment.mjs \
+  packages/render/node_modules/.cache/fog-producer/baseline/fog-environment.js \
+  packages/render/node_modules/.cache/fog-producer/candidate/fog-environment.js \
+  /tmp/forgeax-fog-environment-comparison
+```
+
+## Material context and Standard target definitions
+
+`material-context-targets.ts` exercises the complete material-domain selector and
+Standard target selection followed by logical projection. Cases cover stable
+inputs, every receiving backend/capability domain, in-place capability edits,
+an unrecognized borrowed backend, all four Standard target forms and a mutable
+borrowed target roster. Results
+escape through 32-slot rings; an indexed checksum consumes their semantic
+fields. Inputs are prepared before timing. Module initialization prepares the
+fixed definitions before the steady measurements; their storage is bounded by
+30 material projections and four target/logical rosters (40 target handles),
+independent of devices, views, entities and observed frames. Three paired fresh
+process imports separately record complete module initialization CPU/wall time
+and after-GC heap delta, including dependencies; the heap delta is not an exact
+object census or the steady allocation measure.
+
+The working-set case records the source, measured results and limitations.
+
+Build the same carrier against each source revision into separate directories.
+The paired runner alternates seven CPU samples of one million complete calls
+per arm, then three allocation samples of 10,000 calls. CPU time and wall time
+are separate. Allocation sampling uses the shared probe with an explicit target
+frame, sampling warm-up, collected objects and an escaping-array positive
+control. It preserves every sample, raw profile and entry hash in the supplied
+private output directory. Borrowed inputs retain their ordinary allocations;
+this diagnostic does not claim zero allocation for all target use or a measured
+Worker, GPU or frame-rate improvement.
+
+```sh
+pnpm exec tsup packages/render/bench/material-context-targets.ts --format esm \
+  --out-dir /tmp/forgeax-material-definition-bench/candidate
+node packages/render/bench/material-context-targets.mjs \
+  /tmp/forgeax-material-definition-bench/baseline/material-context-targets.js \
+  /tmp/forgeax-material-definition-bench/candidate/material-context-targets.js \
+  /tmp/forgeax-material-definition-bench/comparison
+```
+
 ## Filtered contribution preparation
 
 `filtered-contributions.ts` exercises the production `BatchTopology`, prepared
@@ -162,3 +226,25 @@ light components; the removed profile shadow flag never disabled these writers.
 The shadow control includes explicit invalidation cost and does not expose a
 second production cache switch. `FORGEAX_SCALE_PROFILE=1` retains a bounded CPU
 profile separately; overflowed captures cannot establish full-run attribution.
+
+## Engine→Render transport
+
+`transport/` measures the whole Worker path per frame: source update + publisher
+encode + `postMessage` under App's publication-slot credit (`source.mjs`), then native
+deserialize + publication decode/apply (`run.mjs --receiver scene`) or the full stub
+Renderer draw and completion (`--receiver renderer`). It reports structured-clone
+bytes, record bytes, transfer count, post time, source/receiver CPU and allocation,
+GC, credit stalls and tick→applied/completed latency. `codec.mjs` is the only
+protocol-specific file; `mechanisms.mjs` compares cloned, transferred and SAB
+transport in isolation; `profile-tree.mjs` summarizes `--profile-source` /
+`--profile-receiver` sampled heap profiles.
+
+```sh
+node packages/render/bench/transport/run.mjs --sweep 100,1000,10000,100000 --changes 0,8,1%,100%
+node packages/render/bench/transport/run.mjs --receiver renderer --count 1000 --changes 8
+node packages/render/bench/transport/mechanisms.mjs
+```
+
+Read allocation from the window counters only; reading `total_allocated_bytes` per
+message flushes allocation buffers and distorts the result. Results and the
+protocol decision live in `reports/unified-render-ecs-20261024/design.md` §10.

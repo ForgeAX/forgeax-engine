@@ -1,4 +1,6 @@
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { captureDisplayFrame } from '../../../../scripts/bench/capture-display-frame.mjs';
 // Standard direct vs clustered pixel-parity fixture
 // (feat-20260608-cluster-lighting / M7 / w26).
 //
@@ -74,7 +76,8 @@ directCanvas.height = CANVAS_H;
 clusteredCanvas.width = CANVAS_W;
 clusteredCanvas.height = CANVAS_H;
 
-bootstrap().catch((err: unknown) => {
+export const bootstrapReady = bootstrap();
+bootstrapReady.catch((err: unknown) => {
   if (err instanceof EngineEnvironmentError) {
     console.error('[parity-standard-lanes] no usable backend:', err);
   } else {
@@ -82,7 +85,7 @@ bootstrap().catch((err: unknown) => {
   }
 });
 
-async function bootstrap(): Promise<void> {
+async function bootstrap() {
   const directRendererResult = await constructRuntimeRendererHost(
     directCanvas,
     { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' } },
@@ -104,18 +107,18 @@ async function bootstrap(): Promise<void> {
   const clusteredWorld = new World({ assets: clusteredRendererResult.value.assets });
   const worldAttachment2 = clusteredRenderer.attach(clusteredWorld);
   if (!worldAttachment2.ok) throw worldAttachment2.error;
-  populateScene(directRenderer, directWorld);
-  populateScene(clusteredRenderer, clusteredWorld);
+  const directLights = populateScene(directRenderer, directWorld);
+  const clusteredLights = populateScene(clusteredRenderer, clusteredWorld);
 
   // Initial draw so canvases have content before the first capture call.
   directWorld.update().unwrap();
-  directRenderer.draw({
+  await drawReadyFrame(directRenderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
   clusteredWorld.update().unwrap();
-  clusteredRenderer.draw({
+  await drawReadyFrame(clusteredRenderer, {
     leases: [worldAttachment2.value],
     camera: { lease: worldAttachment2.value },
     environment: { lease: worldAttachment2.value },
@@ -124,16 +127,18 @@ async function bootstrap(): Promise<void> {
   declareCaptureHooks(
     directRenderer,
     directWorld,
-    directCanvas,
     worldAttachment1.value,
     clusteredRenderer,
     clusteredWorld,
-    clusteredCanvas,
     worldAttachment2.value,
   );
+  return {
+    direct: { world: directWorld, lights: directLights },
+    clustered: { world: clusteredWorld, lights: clusteredLights },
+  };
 }
 
-function populateScene(_renderer: Renderer, world: World): void {
+function populateScene(_renderer: Renderer, world: World) {
 const sceneAssets = world.assets;
 if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
 
@@ -150,7 +155,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
     ],
     values: {
-      baseColor: [BASE_R, BASE_G, BASE_B],
+      baseColor: [BASE_R, BASE_G, BASE_B, 1],
       metallic: 0.0,
       roughness: 0.4,
     },
@@ -167,7 +172,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
   ).unwrap();
 
   // 4 PointLight matched specs.
-  for (const spec of LIGHT_SPECS) {
+  const lights = LIGHT_SPECS.map((spec) =>
     world.spawn(
       { component: Transform, data: { pos: [spec.x, spec.y, spec.z], quat: [0, 0, 0, 1]} },
       {
@@ -178,8 +183,8 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           range: 8,
         },
       },
-    );
-  }
+    ).unwrap(),
+  );
 
   // Camera locked: fov = 45deg, aspect = 1 (512x512), z = 3.
   world.spawn(
@@ -191,6 +196,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
   // helper -- AI users find Materials.unlit / Materials.standard via the
   // same module path).
   void Materials;
+  return lights;
 }
 
 declare global {
@@ -203,42 +209,23 @@ declare global {
 function declareCaptureHooks(
   direct: Renderer,
   directWorld: World,
-  directCanvas: HTMLCanvasElement,
   directLease: RenderWorldLease,
   clustered: Renderer,
   clusteredWorld: World,
-  clusteredCanvas: HTMLCanvasElement,
   clusteredLease: RenderWorldLease,
 ): void {
   const captureFor = (
     renderer: Renderer,
     world: World,
-    canvas: HTMLCanvasElement,
     lease: RenderWorldLease,
   ): (() => Promise<Uint8Array>) => async () => {
     world.update().unwrap();
-    const drawn = renderer.draw({
+    return captureDisplayFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
     });
-    if (!drawn.ok) throw drawn.error;
-    const bitmap = await createImageBitmap(canvas);
-    const captureCanvas = new OffscreenCanvas(CANVAS_W, CANVAS_H);
-    const captureContext = captureCanvas.getContext('2d');
-    if (captureContext === null) throw new Error('parity-standard-lanes: capture context missing');
-    captureContext.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const flat = new Uint8Array(captureContext.getImageData(0, 0, CANVAS_W, CANVAS_H).data);
-    const out = new Uint8Array(CANVAS_W * CANVAS_H * 4);
-    const rowBytes = CANVAS_W * 4;
-    for (let y = 0; y < CANVAS_H; y++) {
-      const srcOffset = y * rowBytes;
-      const dstOffset = (CANVAS_H - 1 - y) * rowBytes;
-      out.set(flat.subarray(srcOffset, srcOffset + rowBytes), dstOffset);
-    }
-    return out;
   };
-  window.__captureLeft = captureFor(direct, directWorld, directCanvas, directLease);
-  window.__captureRight = captureFor(clustered, clusteredWorld, clusteredCanvas, clusteredLease);
+  window.__captureLeft = captureFor(direct, directWorld, directLease);
+  window.__captureRight = captureFor(clustered, clusteredWorld, clusteredLease);
 }

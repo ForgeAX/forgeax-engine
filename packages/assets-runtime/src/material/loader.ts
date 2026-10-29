@@ -5,8 +5,9 @@ import {
   materialLayerPlanIdentity,
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
-import type { MaterialProgramAddress } from '@forgeax/engine-types';
+import { isDeepFrozenJson, type MaterialProgramAddress } from '@forgeax/engine-types';
 import { isRetainedMaterialAbi } from '../internal/retained-material-facts.js';
+import { findVerifiedArtifactBytes } from '../internal/shared-immutable.js';
 
 export interface MaterialLoadRequest {
   readonly guid: string;
@@ -218,28 +219,29 @@ function snapshotMaterialRecord(record: CookedMaterialRecord): CookedMaterialRec
       return accepted;
     };
     if (!dataOnly(record)) return undefined;
-    const metadata = structuredClone({
-      ...record,
-      programs: record.programs.map((program) => ({
-        ...program,
-        artifact: { ...program.artifact, bytes: undefined },
-      })),
-    });
-    return {
-      ...metadata,
-      programs: metadata.programs.map((program, index) => ({
-        ...program,
-        selections: program.selections.map((selection, selectionIndex) => {
-          const abi = record.programs[index]?.selections[selectionIndex]?.abi;
-          return isRetainedMaterialAbi(abi) ? { ...selection, abi } : selection;
-        }),
-        artifact: {
-          ...program.artifact,
-          bytes: (record.programs[index] as CookedMaterialRecord['programs'][number]).artifact
-            .bytes,
-        },
-      })),
+    // Detach mutable adapter data. Retained ABIs, validator-owned program bytes
+    // and deep-frozen package facts cannot change, so they are shared rather
+    // than cloned once per loaded material.
+    const detach = (value: unknown): unknown => {
+      if (value === null || typeof value !== 'object') return value;
+      if (programBytes.has(value as Uint8Array) || isRetainedMaterialAbi(value)) return value;
+      if (isDeepFrozenJson(value)) return value;
+      if (Array.isArray(value)) return value.map(detach);
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value)) {
+        const child = detach((value as Record<string, unknown>)[key]);
+        if (key === '__proto__')
+          Object.defineProperty(out, key, {
+            value: child,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        else out[key] = child;
+      }
+      return out;
     };
+    return detach(record) as CookedMaterialRecord;
   } catch {
     return undefined;
   }
@@ -283,13 +285,31 @@ function materialArtifactData(
   }
 }
 
+/** The realm's verified view when `bytes` has its exact content; equal content proves the digest. */
+function verifiedArtifactBytes(
+  bytes: Uint8Array,
+  digest: string,
+): Uint8Array<ArrayBuffer> | undefined {
+  const verified = findVerifiedArtifactBytes(digest);
+  return verified !== undefined && sameBytes(verified, bytes) ? verified : undefined;
+}
+
 function copyMaterialArtifacts(
   artifacts: readonly { readonly bytes: Uint8Array; readonly digest: string | undefined }[],
+  record: CookedMaterialRecord,
 ):
   | readonly { readonly bytes: Uint8Array<ArrayBuffer>; readonly digest: string | undefined }[]
   | undefined {
   try {
-    return artifacts.map(({ bytes, digest }) => ({ bytes: immutableBytes(bytes), digest }));
+    // A realm-verified view is immutable by contract and never aliases publisher storage.
+    return artifacts.map(({ bytes, digest }, index) => ({
+      bytes:
+        verifiedArtifactBytes(
+          bytes,
+          (record.programs[index] as CookedMaterialRecord['programs'][number]).artifact.digest,
+        ) ?? immutableBytes(bytes),
+      digest,
+    }));
   } catch {
     // An ordered old-path body error must not preempt an earlier integrity failure.
     return undefined;
@@ -310,7 +330,25 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (length !== right.byteLength) return false;
   // Preserve TypedArray.every's detached/out-of-bounds validation without a byte callback.
   Uint8Array.prototype.values.call(left);
-  for (let index = 0; index < length; index += 1) {
+  if (left === right) return true;
+  let index = 0;
+  // Callers pass plain admitted views; aligned ordinary storage compares one word at a time.
+  if (
+    length >= 64 &&
+    left.byteOffset % 4 === 0 &&
+    right.byteOffset % 4 === 0 &&
+    left.buffer instanceof ArrayBuffer &&
+    right.buffer instanceof ArrayBuffer
+  ) {
+    const words = length >>> 2;
+    const leftWords = new Uint32Array(left.buffer, left.byteOffset, words);
+    const rightWords = new Uint32Array(right.buffer, right.byteOffset, words);
+    for (let word = 0; word < words; word += 1) {
+      if (leftWords[word] !== rightWords[word]) return false;
+    }
+    index = words * 4;
+  }
+  for (; index < length; index += 1) {
     if (left[index] !== right[index]) return false;
   }
   return true;
@@ -441,13 +479,15 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
       } catch {
         artifacts = undefined;
       }
-      const snapshot = artifacts === undefined ? undefined : snapshotMaterialRecord(record);
-      const capturedArtifacts =
-        snapshot === undefined || artifacts === undefined
-          ? undefined
-          : copyMaterialArtifacts(artifacts);
-      if (snapshot === undefined || capturedArtifacts === undefined) digest = undefined;
-      else record = snapshot;
+      let capturedArtifacts: ReturnType<typeof copyMaterialArtifacts>;
+      if (artifacts !== undefined) {
+        const snapshot = snapshotMaterialRecord(record);
+        if (snapshot !== undefined) {
+          capturedArtifacts = copyMaterialArtifacts(artifacts, record);
+          if (capturedArtifacts !== undefined) record = snapshot;
+        }
+      }
+      if (capturedArtifacts === undefined) digest = undefined;
       const readySourceClosure =
         digest === undefined
           ? sourceClosure
@@ -461,7 +501,7 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
       const programs: CookedMaterialRecord['programs'][number][] = [];
       for (const [programIndex, program] of record.programs.entries()) {
         const artifact = program.artifact;
-        const captured = digest === undefined ? undefined : capturedArtifacts?.[programIndex];
+        const captured = capturedArtifacts?.[programIndex];
         const published = captured ?? publication.artifacts?.[artifact.path];
         if (published === undefined)
           return materialError(
@@ -473,8 +513,13 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
             true,
           );
         const bytes = captured?.bytes ?? immutableBytes(published.bytes);
+        // Content equal to the realm's verified view needs no second hash.
         const actualDigest =
-          digest === undefined ? createMaterialArtifactDigest(bytes) : await digest(bytes);
+          verifiedArtifactBytes(bytes, artifact.digest) !== undefined
+            ? artifact.digest
+            : digest === undefined
+              ? createMaterialArtifactDigest(bytes)
+              : await digest(bytes);
         if (
           actualDigest !== artifact.digest ||
           (published.digest !== undefined && published.digest !== actualDigest)

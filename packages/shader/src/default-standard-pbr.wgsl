@@ -26,7 +26,7 @@ enable primitive_index;
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
 #import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, applyLodCoverage, meshMotionValid, View, Mesh, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture, transformNormal}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, SCENE_INDEX_LOCAL_IDENTITY}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, SCENE_INDEX_LOCAL_IDENTITY}
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
@@ -656,10 +656,12 @@ fn standardViewZ(in : VsOut) -> f32 {
 #ifdef VISIBLE_SURFACE_AVAILABLE
 @group(3) @binding(7) var<storage, read> visibleSurfaceRows: array<u32>;
 #endif
-fn sceneIndexVertex(in : VsIn, idx : u32) -> VsOut {
+fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
   // Rigid visible = (scene instance row, material row, candidate row, signed LOD fade).
   let visible = visibleItems[idx];
   let draw = sceneIndexDraw(visible.x);
+  var in = source;
+  in.pos = sceneIndexMorphPosition(visible.x, vertex, in.pos);
   var out = vs_main_impl(
     in,
     draw.world,
@@ -691,11 +693,11 @@ fn standardReceivesShadows(in : VsOut) -> bool {
 }
 
 @vertex
-fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
+fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   // This variant binds only the GPU Scene tables; every entry reads the
   // visible stream.
-  return sceneIndexVertex(in, idx);
+  return sceneIndexVertex(in, idx, vertex);
 #else
   // The @group(2) dynamic-offset window is aimed at this entity's Mesh row;
   // @group(3) is the flat per-instance buffer indexed by instance_index.
@@ -734,8 +736,8 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 @vertex
-fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  return sceneIndexVertex(in, idx);
+fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return sceneIndexVertex(in, idx, vertex);
 }
 #endif
 

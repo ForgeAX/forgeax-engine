@@ -6,6 +6,7 @@ import {
 } from '@forgeax/engine-shader';
 import type {
   MaterialParameter,
+  MaterialPass,
   MaterialProgramAbi,
   MaterialSurfaceProgramAbi,
   ParamSchemaEntry,
@@ -33,14 +34,20 @@ import {
   validateMaterialOutputs,
 } from '@forgeax/engine-types';
 import { compareMaterialBindings } from '../compare-param-schema.js';
-import { type CompileResult, compileShader } from '../compile.js';
+import { type CompileOptions, type CompileResult, compileShader } from '../compile.js';
 import { ShaderError } from '../errors.js';
 import { compareDerivedMaterialInterface, validateSceneIndexStorage } from '../reflection.js';
-import { composeSurfaceSource, digestMaterialSourceClosure } from './compose.js';
+import {
+  composeSurfaceSource,
+  digestMaterialSourceClosure,
+  type SurfaceComposition,
+  type SurfaceCompositionRequest,
+} from './compose.js';
+import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
 import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
 import { validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
-import type { MaterialSourceCatalog } from './source-catalog.js';
+import type { MaterialSourceCatalog, MaterialSourceRecord } from './source-catalog.js';
 import { deriveSurfaceShadowPasses } from './surface-shadow';
 import { terrainProgramSource } from './terrain-program.js';
 import {
@@ -48,6 +55,25 @@ import {
   lowerMaterialVariantContext,
   type MaterialVariantContext,
 } from './variant-context.js';
+
+// Compiler-owned template contracts. Runtime never infers this fact from names
+// or vertex inputs. Unknown entry points and project vertex templates get no proof.
+// Legacy aliases publish the same Engine source and therefore the same proof.
+const CANONICAL_POSITION_ENTRIES: Readonly<Record<string, readonly string[]>> = {
+  'forgeax_material::standard': ['vs_main', 'vs_temporal'],
+  'forgeax_material::pbr-skin': ['vs_main', 'vs_temporal'],
+  'forgeax_material::unlit': ['vs_main', 'vs_shadow', 'vs_temporal'],
+  'forgeax::default-shadow-caster': ['vs_main'],
+};
+const STANDARD_POSITION_ENTRIES: Readonly<Record<string, readonly string[]>> = {
+  ...CANONICAL_POSITION_ENTRIES,
+  ...Object.fromEntries(
+    Object.entries(ENGINE_MODULE_ALIASES).flatMap(([canonical, alias]) => {
+      const entries = CANONICAL_POSITION_ENTRIES[canonical];
+      return entries === undefined ? [] : [[alias, entries]];
+    }),
+  ),
+};
 
 export interface MaterialCookRequest {
   readonly material: string;
@@ -754,6 +780,95 @@ function applyModuleSlots(
   return ok(selectedSource);
 }
 
+const SCENE_VISIBLE_ITEMS_BINDING = 2;
+const DEFAULT_SHADOW_CASTER = 'forgeax::default-shadow-caster';
+
+type MaterialVertexInputs = ReturnType<typeof materialVertexInputs>;
+type MaterialDynamicInputLayout = NonNullable<SurfaceCompositionRequest['dynamicInput']>;
+type MaterialAbiKind = 'medium' | 'standard' | 'custom-scene' | 'direct';
+
+/** Material-level facts shared by every pass of one cook. */
+interface MaterialCookUnit {
+  readonly request: MaterialCookRequest;
+  /** Inheritance-resolved authored asset; its Surface declaration applies to every pass. */
+  readonly asset: ResolvedMaterial['asset'];
+  /** Compiler-expanded passes (Terrain identities resolved to their templates). */
+  readonly passes: readonly MaterialPass[];
+  readonly parameters: readonly MaterialParameter[];
+  readonly schema: readonly ParamSchemaEntry[];
+  readonly derived: DerivedMaterialInterface;
+  readonly sceneRowStride: number;
+  readonly generatedModule: string;
+  readonly contractDefines: Readonly<Record<string, boolean>>;
+  readonly materialHasSceneIndex: boolean;
+  readonly mediumSurface: boolean;
+}
+
+/** One pass under cook: its program source, variant context, and template family. */
+interface MaterialPassCook {
+  readonly unit: MaterialCookUnit;
+  readonly pass: MaterialPass;
+  readonly context: MaterialVariantContext;
+  readonly sourceRecord: MaterialSourceRecord;
+  readonly standardTemplate: boolean;
+  readonly mediumSurfaceTemplate: boolean;
+  readonly shadowTemplate: boolean;
+  readonly standardSurfaceTemplate: boolean;
+  readonly sceneSurfaceTemplate: boolean;
+}
+
+/** The pass entry after template slot or Surface composition. */
+interface ComposedPassSource {
+  readonly source: string;
+  readonly imports: Readonly<Record<string, string>>;
+  readonly sourceClosure: readonly string[];
+  readonly sourceClosureDigest: string;
+  readonly surfaceModule: string | undefined;
+  readonly readsVertexColor: boolean | undefined;
+  readonly engineTemplateInputs: boolean;
+}
+
+/** The direct entry with its parameter interface and template lowering applied. */
+interface PassEntrySource {
+  readonly authoredInterface: boolean;
+  readonly importedAuthoredInterface: boolean;
+  readonly customSceneProgram: boolean;
+  readonly loweredSource: string;
+  readonly compileImports: Readonly<Record<string, string>>;
+  readonly effectiveClosureImports: Readonly<Record<string, string>>;
+}
+
+interface SceneEntrySource {
+  readonly source: string;
+  readonly imports: Readonly<Record<string, string>>;
+}
+
+// Fixed Engine Terrain identities survive publication and runtime admission.
+// Only compilation expands their Standard template and Surface composition.
+function expandTerrainPass(pass: MaterialPass): MaterialPass {
+  const terrain = terrainProgramSource(pass.program.module);
+  if (terrain === undefined) return pass;
+  return {
+    ...pass,
+    program: {
+      ...pass.program,
+      module: terrain.module,
+      moduleSlots: { surface: terrain.surface, ...pass.program.moduleSlots },
+    },
+  };
+}
+
+function materialDeclaresSceneIndex(
+  passes: readonly MaterialPass[],
+  sources: MaterialSourceCatalog,
+): boolean {
+  return passes.some((pass) => {
+    if (pass.program.module === DEFAULT_SHADOW_CASTER) return false;
+    const source = sources.get(pass.program.module);
+    return source.ok && sceneIndexEntry(source.value.source) !== undefined;
+  });
+}
+
 export async function cookMaterialAsset(
   request: MaterialCookRequest,
   compile: typeof compileShader = compileShader,
@@ -763,21 +878,7 @@ export async function cookMaterialAsset(
   const resolvedAsset = deriveSurfaceShadowPasses(
     selectMaterialStaticContract(resolved.value.asset),
   );
-  // Fixed Engine Terrain identities survive publication and runtime admission.
-  // Only compilation expands their Standard template and Surface composition.
-  const passes = resolvedAsset.passes?.map((pass) => {
-    const terrain = terrainProgramSource(pass.program.module);
-    return terrain === undefined
-      ? pass
-      : {
-          ...pass,
-          program: {
-            ...pass.program,
-            module: terrain.module,
-            moduleSlots: { surface: terrain.surface, ...pass.program.moduleSlots },
-          },
-        };
-  });
+  const passes = resolvedAsset.passes?.map(expandTerrainPass);
   for (const pass of passes ?? []) {
     const outputs = validateMaterialOutputs(pass.outputs, request.material, pass.name);
     if (!outputs.ok) return outputs;
@@ -785,573 +886,863 @@ export async function cookMaterialAsset(
   const parameters = resolvedAsset.parameters ?? [];
   const loweredContract = lowerStandardContract(parameters, passes, request.material);
   if (!loweredContract.ok) return loweredContract;
-  const { layerPlan } = loweredContract.value;
-  const schema = ok(loweredContract.value.paramSchema);
-  const derived: DerivedMaterialInterface = derive(schema.value);
-  const sceneRowStride = Math.max(16, derived.totalBytes);
-  const generatedModule = generateParameterModule(schema.value);
+  const schema = loweredContract.value.paramSchema;
+  const derived: DerivedMaterialInterface = derive(schema);
+  const unit: MaterialCookUnit = {
+    request,
+    asset: resolved.value.asset,
+    passes: passes ?? [],
+    parameters,
+    schema,
+    derived,
+    sceneRowStride: Math.max(16, derived.totalBytes),
+    generatedModule: generateParameterModule(schema),
+    contractDefines: loweredContract.value.defines,
+    materialHasSceneIndex: materialDeclaresSceneIndex(passes ?? [], request.sources),
+    mediumSurface: resolved.value.asset.surface?.model === 'single-layer-medium',
+  };
   const cooked: MaterialCookedPass[] = [];
-  const materialHasSceneIndex =
-    passes?.some((pass) => {
-      if (pass.program.module === 'forgeax::default-shadow-caster') return false;
-      const source = request.sources.get(pass.program.module);
-      return source.ok && sceneIndexEntry(source.value.source) !== undefined;
-    }) === true;
+  for (const pass of unit.passes) {
+    const cookedPass = await cookMaterialPass(unit, pass, compile);
+    if (!cookedPass.ok) return cookedPass;
+    cooked.push(cookedPass.value);
+  }
+  return ok({
+    resolved: { ...resolved.value, asset: resolvedAsset },
+    passes: cooked,
+    layerPlan: loweredContract.value.layerPlan,
+  });
+}
 
-  for (const pass of passes ?? []) {
-    const tags = pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined;
-    const lightMode = tags?.LightMode ?? pass.name;
-    const context = materialProgramContextForPass(
-      request.context ?? DEFAULT_MATERIAL_VARIANT_CONTEXT,
-      String(lightMode),
+function passVariantContext(
+  request: MaterialCookRequest,
+  pass: MaterialPass,
+): MaterialVariantContext {
+  const tags = pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined;
+  const lightMode = tags?.LightMode ?? pass.name;
+  return materialProgramContextForPass(
+    request.context ?? DEFAULT_MATERIAL_VARIANT_CONTEXT,
+    String(lightMode),
+  );
+}
+
+function classifyPassTemplate(
+  unit: MaterialCookUnit,
+  pass: MaterialPass,
+  context: MaterialVariantContext,
+  sourceRecord: MaterialSourceRecord,
+): MaterialPassCook {
+  const standardTemplate = isStandardRootModule(pass.program.module);
+  const mediumSurfaceTemplate = pass.program.module === 'forgeax::single-layer-medium';
+  const shadowTemplate = pass.program.module === DEFAULT_SHADOW_CASTER;
+  const standardSurfaceTemplate =
+    standardTemplate ||
+    (shadowTemplate &&
+      (pass.program.moduleSlots?.surface !== undefined ||
+        unit.passes.some((entry) => isStandardRootModule(entry.program.module))));
+  return {
+    unit,
+    pass,
+    context,
+    sourceRecord,
+    standardTemplate,
+    mediumSurfaceTemplate,
+    shadowTemplate,
+    standardSurfaceTemplate,
+    sceneSurfaceTemplate:
+      standardSurfaceTemplate ||
+      mediumSurfaceTemplate ||
+      (shadowTemplate && unit.materialHasSceneIndex),
+  };
+}
+
+function templateResourceNames(source: string): ReadonlySet<string> {
+  return new Set(
+    Array.from(
+      source.matchAll(/@group\(1\)\s*@binding\(\d+\)\s+var(?:<[^>]+>)?\s+([A-Za-z_]\w*)\s*:/g),
+      (match) => match[1] as string,
+    ),
+  );
+}
+
+function surfaceDynamicInputLayout(
+  asset: ResolvedMaterial['asset'],
+): Result<MaterialDynamicInputLayout | undefined, MaterialCookError> {
+  if (asset.surface?.dynamicInput === undefined) return ok(undefined);
+  const dynamicInput = deriveMaterialDynamicInputLayout(asset.surface.dynamicInput);
+  if (dynamicInput.ok) return ok(dynamicInput.value);
+  return err(
+    new ShaderError({
+      code: 'shader-compile-failed',
+      expected: 'a valid producer-derived Surface dynamic input layout',
+      message: dynamicInput.error.expected,
+      hint: dynamicInput.error.hint,
+    }),
+  );
+}
+
+async function cookMaterialPass(
+  unit: MaterialCookUnit,
+  pass: MaterialPass,
+  compile: typeof compileShader,
+): Promise<Result<MaterialCookedPass, MaterialCookError>> {
+  const context = passVariantContext(unit.request, pass);
+  const sourceRecord = unit.request.sources.get(pass.program.module);
+  if (!sourceRecord.ok) return err(sourceRecord.error);
+  const templateResources = templateResourceNames(sourceRecord.value.source);
+  const cook = classifyPassTemplate(unit, pass, context, sourceRecord.value);
+  const dynamicInput = surfaceDynamicInputLayout(unit.asset);
+  if (!dynamicInput.ok) return dynamicInput;
+  const usesSurfaceSlot = sourceRecord.value.slots.includes('surface');
+  const composed = usesSurfaceSlot
+    ? composeSurfaceSlotPass(cook, templateResources, dynamicInput.value)
+    : composeModuleSlotPass(cook);
+  if (!composed.ok) return composed;
+  const entry = prepareDirectEntry(cook, composed.value);
+  if (!entry.ok) return entry;
+  const fragmentEntry = pass.program.fragmentEntry ?? defaultFragmentEntry(context);
+  if (pass.outputs !== undefined && fragmentEntry === undefined) {
+    return err(
+      createMaterialError('material-output-contract-invalid', {
+        code: 'material-output-contract-invalid',
+        material: unit.request.material,
+        pass: pass.name,
+        location: 0,
+        reason: 'declared color outputs require a selected fragment entry',
+      }),
     );
-    const sourceRecord = request.sources.get(pass.program.module);
-    if (!sourceRecord.ok) return err(sourceRecord.error);
-    const source = sourceRecord.value.source;
-    const templateResources = new Set(
-      Array.from(
-        source.matchAll(/@group\(1\)\s*@binding\(\d+\)\s+var(?:<[^>]+>)?\s+([A-Za-z_]\w*)\s*:/g),
-        (match) => match[1] as string,
+  }
+  const compileDefines = passCompileDefines(cook, composed.value.surfaceModule);
+  const sceneEntry = prepareSceneIndexEntry(
+    cook,
+    entry.value,
+    usesSurfaceSlot,
+    templateResources,
+    dynamicInput.value,
+  );
+  if (!sceneEntry.ok) return sceneEntry;
+  const compiled = await compile(entry.value.loweredSource, {
+    id: `${pass.program.module}::${pass.name}`,
+    renderEntries: passRenderEntries(pass, pass.program.vertexEntry ?? 'vs_main', fragmentEntry),
+    imports: entry.value.compileImports,
+    defines: compileDefines,
+  });
+  if (!compiled.ok) {
+    return err(
+      mapCookErrorToAuthoredSource(
+        compiled.error,
+        sourceRecord.value.source,
+        entry.value.loweredSource,
       ),
     );
-    const standardTemplate = isStandardRootModule(pass.program.module);
-    const mediumSurfaceTemplate = pass.program.module === 'forgeax::single-layer-medium';
-    const mediumSurface = resolved.value.asset.surface?.model === 'single-layer-medium';
-    const dynamicInput =
-      resolved.value.asset.surface?.dynamicInput === undefined
-        ? undefined
-        : deriveMaterialDynamicInputLayout(resolved.value.asset.surface.dynamicInput);
-    if (dynamicInput !== undefined && !dynamicInput.ok) {
-      return err(
-        new ShaderError({
-          code: 'shader-compile-failed',
-          expected: 'a valid producer-derived Surface dynamic input layout',
-          message: dynamicInput.error.expected,
-          hint: dynamicInput.error.hint,
-        }),
-      );
-    }
-    const dynamicInputLayout = dynamicInput?.ok ? dynamicInput.value : undefined;
-    const shadowTemplate = pass.program.module === 'forgeax::default-shadow-caster';
-    const standardSurfaceTemplate =
-      standardTemplate ||
-      (shadowTemplate &&
-        (pass.program.moduleSlots?.surface !== undefined ||
-          passes?.some((entry) => isStandardRootModule(entry.program.module)) === true));
-    const sceneSurfaceTemplate =
-      standardSurfaceTemplate || mediumSurfaceTemplate || (shadowTemplate && materialHasSceneIndex);
-    const usesSurfaceSlot = sourceRecord.value.slots.includes('surface');
-    let composedSource: Result<string, MaterialError>;
-    let imports: Result<Readonly<Record<string, string>>, MaterialError>;
-    let sourceClosure: readonly string[];
-    let sourceClosureDigest: string;
-    let composedSurfaceModule: string | undefined;
-    let readsVertexColor: boolean | undefined;
-    if (usesSurfaceSlot) {
-      const selectedSurfaceModule =
-        pass.program.moduleSlots?.surface ?? resolved.value.asset.surface?.module;
-      const generatedSurfaceParameters = generateParameterModule(schema.value, {
-        excludeResources: templateResources,
-      });
-      const surface = composeSurfaceSource({
-        material: request.material,
-        pass: pass.name,
-        templateModule: pass.program.module,
-        sources: request.sources,
-        generatedParameters: generatedSurfaceParameters,
-        ...(selectedSurfaceModule === undefined ? {} : { surfaceModule: selectedSurfaceModule }),
-        ...(resolved.value.asset.surface?.model === undefined
-          ? {}
-          : { surfaceModel: resolved.value.asset.surface.model }),
-        ...(dynamicInputLayout === undefined ? {} : { dynamicInput: dynamicInputLayout }),
-      });
-      if (!surface.ok) return surface;
-      composedSource = ok(surface.value.source);
-      imports = ok(surface.value.imports);
-      sourceClosure = surface.value.sourceClosure;
-      sourceClosureDigest = surface.value.sourceClosureDigest;
-      composedSurfaceModule = surface.value.surfaceModule;
-      readsVertexColor = surface.value.readsVertexColor;
-    } else {
-      composedSource = applyModuleSlots(
-        source,
-        pass.program.module,
-        pass.program.moduleSlots,
-        request.sources,
-      );
-      if (!composedSource.ok) return composedSource;
-      imports = collectSourceClosure(composedSource.value, request.sources, generatedModule);
-      if (!imports.ok) return imports;
-      sourceClosure = [sourceRecord.value.moduleId, ...Object.keys(imports.value).sort()];
-      sourceClosureDigest = digestMaterialSourceClosure({
-        [sourceRecord.value.moduleId]: source,
-        ...imports.value,
-      });
-    }
-    // A shared surface can own the material interface behind an import. The
-    // generated parameter module remains in the closure for dependency
-    // tracking, but must not be inserted into the entry when an imported
-    // owner already declares `Material` at @group(1) @binding(0).
-    const authoredRootInterface = hasAuthoredMaterialInterface(composedSource.value);
-    const importedAuthoredInterface = Object.entries(imports.value).some(
-      ([module, importedSource]) =>
-        module !== 'forgeax_material::parameters' && hasAuthoredMaterialInterface(importedSource),
+  }
+  // A scene-index receipt promises an actual second entry, not merely a
+  // string found in the source. Compile the authored declaration with the
+  // scene selector; the direct selector may remove the entire scene entry.
+  // Both native table families share bindings and cannot coexist in a module.
+  let sceneCompiled: CompileResult | undefined;
+  if (sceneEntry.value !== undefined) {
+    const sceneResult = await compileSceneIndexEntry(
+      cook,
+      sceneEntry.value,
+      fragmentEntry,
+      compileDefines,
+      compile,
     );
-    const authoredInterface = authoredRootInterface || importedAuthoredInterface;
-    const sourceDeclaresSceneIndex = sceneIndexEntry(composedSource.value) !== undefined;
-    const visibleItemsBinding = 2;
-    const customSceneProgram =
-      context.capability !== 'uniform-fallback' &&
-      sourceDeclaresSceneIndex &&
-      !standardTemplate &&
-      pass.program.module !== 'forgeax::default-shadow-caster';
-    if (customSceneProgram) {
-      const invalidBinding = invalidSceneIndexBinding(
-        composedSource.value,
-        imports.value,
-        visibleItemsBinding,
-      );
-      if (invalidBinding !== undefined) {
-        return err(sceneIndexAbiError(invalidBinding));
-      }
-    }
-    const needsGeneratedVisibleItems = !sourceClosureHasVisibleItemsDeclaration(
-      composedSource.value,
-      imports.value,
-    );
-    let generatedModuleForEntry = generatedModule;
-    if (customSceneProgram) {
-      try {
-        if (sceneRowStride > GPU_DRIVEN_MATERIAL_ROW_BYTES)
-          throw sceneIndexAbiError(
-            'material schema exceeds the scene-index capacity',
-            derived.totalBytes,
-            GPU_DRIVEN_MATERIAL_ROW_BYTES,
-            'bg-overflow',
-            pass.program.module,
-          );
-        generatedModuleForEntry = generateParameterModule(schema.value, {
-          sceneIndex: true,
-          ...(mediumSurfaceTemplate ? { sceneIndexDeclarations: false } : {}),
-          sceneRowStride,
-          ...(needsGeneratedVisibleItems ? { visibleItemsBinding } : {}),
-        });
-      } catch (error) {
-        return err(
-          sceneIndexAbiError(
-            error instanceof Error ? error.message : String(error),
-            derived.totalBytes,
-            GPU_DRIVEN_MATERIAL_ROW_BYTES,
-            'bg-overflow',
-            pass.program.module,
-          ),
-        );
-      }
-    }
-    const usesInlineGeneratedModule =
-      !composedSource.value.includes('forgeax_material::parameters') &&
-      !composedSource.value.includes('struct MaterialParameters') &&
-      !authoredInterface;
-    const sourceWithInterface = usesInlineGeneratedModule
-      ? composedSource.value.replace(
-          /^(\s*#define_import_path\s+[^\n]+\n?)/,
-          `$1${generatedModuleForEntry.replace(/^#define_import_path[^\n]+\n?/, '')}\n`,
-        )
-      : composedSource.value;
-    const importsForEntry = customSceneProgram
-      ? Object.fromEntries(
-          Object.entries(imports.value).map(([module, importedSource]) => [
-            module,
-            augmentSceneIndexParameterImports(importedSource, needsGeneratedVisibleItems),
-          ]),
-        )
-      : imports.value;
-    const sourceForEntry = customSceneProgram
-      ? augmentSceneIndexParameterImports(sourceWithInterface, needsGeneratedVisibleItems)
-      : sourceWithInterface;
-    const loweredSource =
-      standardTemplate ||
-      pass.program.module === 'forgeax_material::standard' ||
-      pass.program.module === 'forgeax_material::pbr-skin' ||
-      pass.program.module === 'forgeax::default-shadow-caster'
-        ? mediumSurface
-          ? sourceForEntry
-          : lowerStandardPhysicalBindings(sourceForEntry, schema.value)
-        : sourceForEntry;
-    const sourceHasSceneIndexEntry = sceneIndexEntry(loweredSource) !== undefined;
-    const compileImports =
-      generatedModuleForEntry !== generatedModule &&
-      loweredSource.includes('forgeax_material::parameters') &&
-      !/@group\s*\(\s*1\s*\)\s*@binding\s*\(\s*46\s*\)/.test(loweredSource)
-        ? { ...importsForEntry, 'forgeax_material::parameters': generatedModuleForEntry }
-        : importsForEntry;
-    const effectiveClosureImports =
-      usesInlineGeneratedModule && generatedModuleForEntry !== generatedModule
-        ? { ...importsForEntry, 'forgeax_material::parameters': generatedModuleForEntry }
-        : importsForEntry;
-    const fragmentEntry =
-      pass.program.fragmentEntry ??
-      (context.pass === 'depth'
-        ? undefined
-        : context.pass === 'shadow'
-          ? 'fs_shadow'
-          : context.pipeline !== 'forward'
-            ? 'fs_gbuffer'
-            : 'fs_main');
-    if (pass.outputs !== undefined && fragmentEntry === undefined) {
-      return err(
-        createMaterialError('material-output-contract-invalid', {
-          code: 'material-output-contract-invalid',
-          material: request.material,
-          pass: pass.name,
-          location: 0,
-          reason: 'declared color outputs require a selected fragment entry',
-        }),
-      );
-    }
-    const stockSurface = composedSurfaceModule === 'forgeax_material::default_standard_surface';
-    const parameterNames = new Set(schema.value.map((entry) => entry.name));
-    const compileDefines = {
-      ALPHA_HASH_DISABLED: !parameterNames.has('alphaHash'),
-      ALPHA_CLIPPING_DISABLED: !parameterNames.has('alphaCutoff'),
-      STANDARD_UV_INPUT_UNUSED:
-        stockSurface && !schema.value.some((entry) => entry.type === 'texture2d'),
-      STANDARD_TANGENT_INPUT_UNUSED:
-        stockSurface &&
-        !parameterNames.has('normalTexture') &&
-        !parameterNames.has('clearcoatNormalTexture') &&
-        !parameterNames.has('anisotropyStrength'),
-      STANDARD_OBJECT_BASIS_UNUSED:
-        stockSurface &&
-        !parameterNames.has('triplanarSpace') &&
-        !parameterNames.has('normalMapSpace') &&
-        !parameterNames.has('transmission'),
-      STANDARD_VERTEX_MATERIAL_UNUSED:
-        stockSurface &&
-        context.geometry !== 'terrain' &&
-        !parameterNames.has('displacementTexture'),
-      STANDARD_OBJECT_POSITION_UNUSED:
-        stockSurface && !parameterNames.has('alphaHash') && !parameterNames.has('triplanarSpace'),
-      STANDARD_STOCK_SURFACE_AVAILABLE: stockSurface,
-      ...lowerMaterialVariantContext(context),
-      ...loweredContract.value.defines,
-      // The uniform fallback has the portable sampled-texture budget. Its
-      // Standard layout drops the dedicated transmission resources, so the
-      // cooked source must drop the matching branch as well.
-      ...(standardTemplate && context.capability === 'uniform-fallback'
-        ? { TRANSMISSION_AVAILABLE: false }
-        : {}),
-      ...(shadowTemplate && composedSurfaceModule === 'forgeax_material::opaque_surface'
-        ? { OPAQUE_SHADOW_COVERAGE_AVAILABLE: true }
-        : {}),
-      ...(request.vertexColorAvailable === undefined
-        ? {}
-        : { VERTEX_COLOR_AVAILABLE: request.vertexColorAvailable }),
-    };
-    const compileSceneSurface =
-      context.geometry !== 'terrain' &&
-      context.capability !== 'uniform-fallback' &&
-      sceneSurfaceTemplate &&
-      sourceHasSceneIndexEntry &&
-      derived.totalBytes <= GPU_DRIVEN_MATERIAL_ROW_BYTES;
-    let sceneLoweredSource = loweredSource;
-    let sceneCompileImports = compileImports;
-    if (compileSceneSurface && usesSurfaceSlot) {
-      let sceneGeneratedInterface: string;
-      try {
-        sceneGeneratedInterface = generateParameterModule(schema.value, {
-          excludeResources: templateResources,
-          sceneIndex: true,
-          sceneIndexDeclarations: false,
-          sceneMaterialPrivate: true,
-        });
-      } catch (error) {
-        return err(
-          sceneIndexAbiError(
-            error instanceof Error ? error.message : String(error),
-            derived.totalBytes,
-            GPU_DRIVEN_MATERIAL_ROW_BYTES,
-            'bg-overflow',
-            pass.program.module,
-          ),
-        );
-      }
-      const selectedSurfaceModule =
-        pass.program.moduleSlots?.surface ?? resolved.value.asset.surface?.module;
-      const sceneComposed = composeSurfaceSource({
-        material: request.material,
-        pass: pass.name,
-        templateModule: pass.program.module,
-        sources: request.sources,
-        ...(selectedSurfaceModule === undefined ? {} : { surfaceModule: selectedSurfaceModule }),
-        ...(resolved.value.asset.surface?.model === undefined
-          ? {}
-          : { surfaceModel: resolved.value.asset.surface.model }),
-        ...(dynamicInputLayout === undefined ? {} : { dynamicInput: dynamicInputLayout }),
-        generatedParameters: sceneGeneratedInterface,
-      });
-      if (!sceneComposed.ok) return sceneComposed;
-      sceneLoweredSource = mediumSurface
-        ? lowerSingleLayerMediumSceneMaterial(sceneComposed.value.source, schema.value)
-        : lowerStandardPhysicalBindings(sceneComposed.value.source, schema.value);
-      if (
-        !mediumSurface &&
-        sceneComposed.value.surfaceModule !== 'forgeax_material::default_standard_surface'
-      ) {
-        sceneLoweredSource = adaptCustomSurfaceForSceneIndex(sceneLoweredSource);
-      }
-      if (!mediumSurface && !/\bfn\s+evaluate_standard_surface\s*\(/.test(sceneLoweredSource)) {
-        sceneLoweredSource += `\nfn evaluate_standard_surface(input : SurfaceInput, _material : MaterialParameters) -> SurfaceData {\n  return evaluate_surface(input);\n}\n`;
-      }
-      // The scene composition owns a different parameter provider: its
-      // private `material` must be the same module imported by any composable
-      // Surface helper. Reusing the direct imports here silently swaps back
-      // to the uniform provider and leaves MaterialParameters/private symbols
-      // unresolved in the scene entry.
-      sceneCompileImports = sceneComposed.value.imports;
-    }
-    const compiled = await compile(loweredSource, {
-      id: `${pass.program.module}::${pass.name}`,
-      renderEntries: {
-        vertex: pass.program.vertexEntry ?? 'vs_main',
-        ...(fragmentEntry === undefined ? {} : { fragment: fragmentEntry }),
-        ...(pass.outputs === undefined
-          ? {}
-          : { colorFormats: pass.outputs.map((output) => output.format) }),
-      },
-      imports: compileImports,
-      defines: compileDefines,
-    });
-    if (!compiled.ok) {
-      return err(mapCookErrorToAuthoredSource(compiled.error, source, loweredSource));
-    }
-    // A scene-index receipt promises an actual second entry, not merely a
-    // string found in the source. Compile the authored declaration with the
-    // scene selector; the direct selector may remove the entire scene entry.
-    // Both native table families share bindings and cannot coexist in a module.
-    let sceneCompiled: CompileResult | undefined;
-    if (compileSceneSurface || customSceneProgram) {
-      const sceneResult = await compile(
-        lowerSceneMaterialAddresses(sceneLoweredSource, sceneRowStride),
-        {
-          id: `${pass.program.module}::${pass.name}::scene-index`,
-          renderEntries: {
-            vertex: 'vs_scene_index',
-            ...(fragmentEntry === undefined ? {} : { fragment: fragmentEntry }),
-            ...(pass.outputs === undefined
-              ? {}
-              : { colorFormats: pass.outputs.map((output) => output.format) }),
-          },
-          imports: Object.fromEntries(
-            Object.entries(sceneCompileImports).map(([module, source]) => [
-              module,
-              lowerSceneMaterialAddresses(source, sceneRowStride),
-            ]),
-          ),
-          defines: { ...compileDefines, GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true },
-        },
-      );
-      if (!sceneResult.ok) {
-        return err(mapCookErrorToAuthoredSource(sceneResult.error, source, sceneLoweredSource));
-      }
-      sceneCompiled = sceneResult.value;
-    }
-    const declaredSceneIndexEntry = sceneCompiled === undefined ? undefined : 'vs_scene_index';
-    const hasSceneIndexEntry = sceneCompiled !== undefined;
-    const relocatedTextures = new Set(
-      standardTemplate || shadowTemplate ? standardPhysicalTextureFields(schema.value) : [],
-    );
-    if (!authoredInterface) {
-      const checked = compareMaterialBindings(
-        schema.value,
-        compiled.value.bindings,
-        pass.program.module,
-        relocatedTextures,
-      );
-      if (!checked.ok) return checked;
-    }
-    // An imported surface may intentionally own a fixed Material ABI that is
-    // different from the root material's projected parameter schema. Its
-    // declaration is the authoritative contract for this pass; comparing it
-    // to the root-derived interface would reject valid shared surfaces (for
-    // example particle mesh Standard Surface variants) before they can publish.
-    const reflectionChecked =
-      importedAuthoredInterface && !hasSceneIndexEntry
-        ? ok(undefined)
-        : compareDerivedMaterialInterface(
-            derived,
-            compiled.value.reflection,
-            relocatedTextures,
-            standardTemplate || shadowTemplate || hasSceneIndexEntry,
-            hasSceneIndexEntry && !standardTemplate,
-          );
-    if (!reflectionChecked.ok) {
-      return err({
-        ...reflectionChecked.error,
-        detail: {
-          ...reflectionChecked.error.detail,
-          material: request.material,
-          pass: pass.name,
-          module: pass.program.module,
-          source: sourceRecord.value.path,
-          context: Object.fromEntries(
-            Object.entries(context).map(([field, value]) => [field, String(value)]),
-          ),
-        },
-      });
-    }
-    const abiKind =
-      sceneSurfaceTemplate && hasSceneIndexEntry && mediumSurface
-        ? 'medium'
-        : standardSurfaceTemplate && !mediumSurface
-          ? 'standard'
-          : hasSceneIndexEntry
-            ? 'custom-scene'
-            : 'direct';
-    const directEntry = pass.program.vertexEntry ?? 'vs_main';
-    let abi: MaterialProgramAbi;
-    try {
-      if (
-        abiKind === 'custom-scene' &&
-        !hasSceneIndexMaterialAccess(
-          `${loweredSource}\n${Object.values(compileImports).join('\n')}`,
-        )
-      ) {
-        throw new Error(
-          'scene-index entry must read visibleItems and sceneMaterials through the published GPU Scene indices',
-        );
-      }
-      // Generic direct programs retain reflected stream names. Every other
-      // family uses the same paired-entry geometry and storage admission.
-      let vertexInputs =
-        abiKind === 'standard' ? materialVertexInputs(compiled.value.wgsl, directEntry) : undefined;
-      if (sceneCompiled !== undefined) {
-        const storageFailure = validateSceneIndexStorage(
-          abiKind === 'medium' ? undefined : derived,
-          { boundGlobals: sceneCompiled.reflection.boundGlobals, bindings: sceneCompiled.bindings },
-          sceneRowStride,
-          visibleItemsBinding,
-        );
-        if (storageFailure !== undefined) return err(sceneIndexAbiError(storageFailure));
-      }
-      vertexInputs ??= materialVertexInputs(compiled.value.wgsl, directEntry, abiKind !== 'direct');
-      if (sceneCompiled !== undefined) {
-        if (
-          !sameVertexInputs(
-            vertexInputs,
-            materialVertexInputs(sceneCompiled.wgsl, 'vs_scene_index'),
-          )
-        ) {
-          if (abiKind === 'standard')
-            return err(
-              new ShaderError({
-                code: 'shader-compile-failed',
-                expected: 'matching direct and scene-index vertex inputs',
-                message: 'Standard direct and scene-index vertex inputs differ',
-                hint: 'keep the selected Surface geometry contract identical across address modes',
-              }),
-            );
-          throw new Error('direct and scene-index vertex inputs differ');
-        }
-      }
-      const publishedSurface =
-        abiKind === 'direct' ? undefined : surfaceProgramAbi(resolved.value.asset);
-      if (abiKind === 'medium' && publishedSurface === undefined)
-        throw new Error('single-layer medium material must publish a Surface ABI');
-      let skinPaletteAddress: MaterialProgramAbi['skinPaletteAddress'];
-      if (abiKind === 'direct') {
-        const palette = compiled.value.reflection.boundGlobals.find(
-          (global) => global.group === 2 && global.binding === 1,
-        );
-        const usesSkin = vertexInputs.some((input) => input.semantic === 'skinIndex');
-        if (usesSkin && palette?.elementStride !== 64)
-          return err(
-            new ShaderError({
-              code: 'shader-compile-failed',
-              expected: 'the reflected material joint palette with a 64-byte matrix stride',
-              message: `invalid reflected palette stride: ${palette?.elementStride}`,
-              hint: 'repair the producer vertex and palette declarations before publication',
-            }),
-          );
-        if (usesSkin && palette?.elementStride !== undefined)
-          skinPaletteAddress = {
-            group: palette.group,
-            binding: palette.binding,
-            stride: palette.elementStride,
-          };
-      } else if (
-        (abiKind === 'standard' && vertexInputs.some((input) => input.semantic === 'skinIndex')) ||
-        (abiKind === 'custom-scene' &&
-          context.geometry === 'skinned' &&
-          /\bpalette\b/.test(compiled.value.wgsl))
-      )
-        skinPaletteAddress = { group: 2, binding: 1, stride: 64 };
-      abi = createMaterialProgramArtifactReceipt({
-        schema: schema.value,
-        directEntry,
-        vertexInputs,
-        ...(declaredSceneIndexEntry === undefined
-          ? {}
-          : { sceneIndexEntry: declaredSceneIndexEntry, rowStride: sceneRowStride }),
-        ...(abiKind === 'standard' &&
-        schema.value.some((parameter) => parameter.name === 'alphaCutoff') &&
-        composedSurfaceModule !== 'forgeax_material::opaque_surface'
-          ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
-          : {}),
-        ...(skinPaletteAddress === undefined ? {} : { skinPaletteAddress }),
-        ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
-      });
-    } catch (error) {
-      if (abiKind !== 'medium' && abiKind !== 'custom-scene') throw error;
-      if (error instanceof ShaderError) return err(error);
-      return err(
-        new ShaderError({
-          code: 'shader-compile-failed',
-          expected:
-            abiKind === 'medium'
-              ? `single-layer medium scene-index material with a ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte opaque GPU Scene row`
-              : `custom scene-index material schema that fits the ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte GPU Scene row`,
-          message: error instanceof Error ? error.message : String(error),
-          hint:
-            abiKind === 'medium'
-              ? 'keep the medium template scene-index declarations and both nearest-layer/color Surface passes intact'
-              : 'reduce the published parameter schema or keep this material on its direct/specialized lane',
-        }),
-      );
-    }
+    if (!sceneResult.ok) return sceneResult;
+    sceneCompiled = sceneResult.value;
+  }
+  const checked = checkPassInterface(
+    cook,
+    entry.value,
+    compiled.value,
+    sceneCompiled !== undefined,
+  );
+  if (!checked.ok) return checked;
+  const abi = publishPassAbi(cook, composed.value, entry.value, compiled.value, sceneCompiled);
+  if (!abi.ok) return abi;
+  const bindingFailure = validateMaterialProgramBindings(pass.program, compiled.value.bindings);
+  if (bindingFailure !== undefined) return err(bindingFailure);
+  return ok(
+    cookedPassRecord(cook, composed.value, entry.value, compiled.value, sceneCompiled, abi.value),
+  );
+}
 
-    const bindingFailure = validateMaterialProgramBindings(pass.program, compiled.value.bindings);
-    if (bindingFailure !== undefined) return err(bindingFailure);
-    abi = {
+function cookedPassRecord(
+  cook: MaterialPassCook,
+  composed: ComposedPassSource,
+  entry: PassEntrySource,
+  compiled: CompileResult,
+  sceneCompiled: CompileResult | undefined,
+  abi: MaterialProgramAbi,
+): MaterialCookedPass {
+  const { unit, pass } = cook;
+  return {
+    pass: pass.name,
+    context: cook.context,
+    module: pass.program.module,
+    parameters: unit.parameters,
+    paramSchema: unit.schema,
+    generatedModule: unit.generatedModule,
+    sourceClosure: composed.sourceClosure,
+    sourceClosureDigest: passSourceClosureDigest(cook, composed, entry),
+    compile: compiled,
+    ...(sceneCompiled === undefined ? {} : { sceneCompile: sceneCompiled }),
+    layoutIdentity: unit.derived.layoutIdentity,
+    abi: {
       ...abi,
-      ...(compiled.value.reflection.entryPoints === undefined
+      ...(compiled.reflection.entryPoints === undefined
         ? {}
-        : { entryPoints: compiled.value.reflection.entryPoints }),
+        : { entryPoints: compiled.reflection.entryPoints }),
       ...(pass.program.bindings === undefined ? {} : { bindings: pass.program.bindings }),
       ...(pass.program.sceneDepth === undefined ? {} : { sceneDepth: pass.program.sceneDepth }),
-    };
-    cooked.push({
-      pass: pass.name,
-      context,
-      module: pass.program.module,
-      parameters,
-      paramSchema: schema.value,
-      generatedModule,
-      sourceClosure,
-      sourceClosureDigest:
-        compileImports === imports.value && effectiveClosureImports === imports.value
-          ? sourceClosureDigest
-          : digestMaterialSourceClosure({
-              [sourceRecord.value.moduleId]: source,
-              ...(compileImports === imports.value ? effectiveClosureImports : compileImports),
-            }),
-      compile: compiled.value,
-      ...(sceneCompiled === undefined ? {} : { sceneCompile: sceneCompiled }),
-      layoutIdentity: derived.layoutIdentity,
-      abi,
-      ...(readsVertexColor === undefined ? {} : { readsVertexColor }),
-    });
-  }
+    },
+    ...(composed.readsVertexColor === undefined
+      ? {}
+      : { readsVertexColor: composed.readsVertexColor }),
+  };
+}
 
-  return ok({ resolved: { ...resolved.value, asset: resolvedAsset }, passes: cooked, layerPlan });
+/**
+ * Select the scene-index entry source, or undefined when the pass publishes only
+ * a direct entry. A Surface template recomposes its Surface over the scene row.
+ */
+function prepareSceneIndexEntry(
+  cook: MaterialPassCook,
+  entry: PassEntrySource,
+  usesSurfaceSlot: boolean,
+  templateResources: ReadonlySet<string>,
+  dynamicInput: MaterialDynamicInputLayout | undefined,
+): Result<SceneEntrySource | undefined, MaterialCookError> {
+  const { context } = cook;
+  const compileSceneSurface =
+    context.geometry !== 'terrain' &&
+    context.capability !== 'uniform-fallback' &&
+    cook.sceneSurfaceTemplate &&
+    sceneIndexEntry(entry.loweredSource) !== undefined &&
+    cook.unit.derived.totalBytes <= GPU_DRIVEN_MATERIAL_ROW_BYTES;
+  if (compileSceneSurface && usesSurfaceSlot)
+    return composeSceneSurfaceEntry(cook, templateResources, dynamicInput);
+  if (!compileSceneSurface && !entry.customSceneProgram) return ok(undefined);
+  return ok({ source: entry.loweredSource, imports: entry.compileImports });
+}
+
+/** Surface-selection inputs shared by the direct and scene-index Surface compositions. */
+function surfaceCompositionSelection(
+  cook: MaterialPassCook,
+  dynamicInput: MaterialDynamicInputLayout | undefined,
+): Pick<SurfaceCompositionRequest, 'surfaceModule' | 'surfaceModel' | 'dynamicInput'> {
+  const surface = cook.unit.asset.surface;
+  const selectedSurfaceModule = cook.pass.program.moduleSlots?.surface ?? surface?.module;
+  return {
+    ...(selectedSurfaceModule === undefined ? {} : { surfaceModule: selectedSurfaceModule }),
+    ...(surface?.model === undefined ? {} : { surfaceModel: surface.model }),
+    ...(dynamicInput === undefined ? {} : { dynamicInput }),
+  };
+}
+
+function composeSurfaceSlotPass(
+  cook: MaterialPassCook,
+  templateResources: ReadonlySet<string>,
+  dynamicInput: MaterialDynamicInputLayout | undefined,
+): Result<ComposedPassSource, MaterialCookError> {
+  const generatedParameters = generateParameterModule(cook.unit.schema, {
+    excludeResources: templateResources,
+  });
+  const surface = composeSurfaceSource({
+    material: cook.unit.request.material,
+    pass: cook.pass.name,
+    templateModule: cook.pass.program.module,
+    sources: cook.unit.request.sources,
+    generatedParameters,
+    ...surfaceCompositionSelection(cook, dynamicInput),
+  });
+  if (!surface.ok) return surface;
+  return ok({
+    source: surface.value.source,
+    imports: surface.value.imports,
+    sourceClosure: surface.value.sourceClosure,
+    sourceClosureDigest: surface.value.sourceClosureDigest,
+    surfaceModule: surface.value.surfaceModule,
+    readsVertexColor: surface.value.readsVertexColor,
+    engineTemplateInputs: surface.value.engineTemplateInputs,
+  });
+}
+
+function composeModuleSlotPass(
+  cook: MaterialPassCook,
+): Result<ComposedPassSource, MaterialCookError> {
+  const { sources } = cook.unit.request;
+  const { moduleId, source } = cook.sourceRecord;
+  const composedSource = applyModuleSlots(
+    source,
+    cook.pass.program.module,
+    cook.pass.program.moduleSlots,
+    sources,
+  );
+  if (!composedSource.ok) return composedSource;
+  const imports = collectSourceClosure(composedSource.value, sources, cook.unit.generatedModule);
+  if (!imports.ok) return imports;
+  const sourceClosure = [moduleId, ...Object.keys(imports.value).sort()];
+  return ok({
+    source: composedSource.value,
+    imports: imports.value,
+    sourceClosure,
+    sourceClosureDigest: digestMaterialSourceClosure({ [moduleId]: source, ...imports.value }),
+    surfaceModule: undefined,
+    readsVertexColor: undefined,
+    engineTemplateInputs: sourceClosure.every((module) => {
+      if (module === 'forgeax_material::parameters') return true;
+      const dependency = sources.get(module);
+      return dependency.ok && dependency.value.provenance === 'engine';
+    }),
+  });
+}
+
+function prepareDirectEntry(
+  cook: MaterialPassCook,
+  composed: ComposedPassSource,
+): Result<PassEntrySource, MaterialCookError> {
+  // A shared surface can own the material interface behind an import. The
+  // generated parameter module remains in the closure for dependency
+  // tracking, but must not be inserted into the entry when an imported
+  // owner already declares `Material` at @group(1) @binding(0).
+  const authoredRootInterface = hasAuthoredMaterialInterface(composed.source);
+  const importedAuthoredInterface = Object.entries(composed.imports).some(
+    ([module, importedSource]) =>
+      module !== 'forgeax_material::parameters' && hasAuthoredMaterialInterface(importedSource),
+  );
+  const authoredInterface = authoredRootInterface || importedAuthoredInterface;
+  const sourceDeclaresSceneIndex = sceneIndexEntry(composed.source) !== undefined;
+  const customSceneProgram =
+    cook.context.capability !== 'uniform-fallback' &&
+    sourceDeclaresSceneIndex &&
+    !cook.standardTemplate &&
+    !cook.shadowTemplate;
+  if (customSceneProgram) {
+    const invalidBinding = invalidSceneIndexBinding(
+      composed.source,
+      composed.imports,
+      SCENE_VISIBLE_ITEMS_BINDING,
+    );
+    if (invalidBinding !== undefined) return err(sceneIndexAbiError(invalidBinding));
+  }
+  const needsGeneratedVisibleItems = !sourceClosureHasVisibleItemsDeclaration(
+    composed.source,
+    composed.imports,
+  );
+  const generatedModuleForEntry = customSceneProgram
+    ? sceneIndexParameterModule(cook, needsGeneratedVisibleItems)
+    : ok(cook.unit.generatedModule);
+  if (!generatedModuleForEntry.ok) return generatedModuleForEntry;
+  const usesInlineGeneratedModule =
+    !composed.source.includes('forgeax_material::parameters') &&
+    !composed.source.includes('struct MaterialParameters') &&
+    !authoredInterface;
+  const sourceWithInterface = usesInlineGeneratedModule
+    ? composed.source.replace(
+        /^(\s*#define_import_path\s+[^\n]+\n?)/,
+        `$1${generatedModuleForEntry.value.replace(/^#define_import_path[^\n]+\n?/, '')}\n`,
+      )
+    : composed.source;
+  const importsForEntry = customSceneProgram
+    ? Object.fromEntries(
+        Object.entries(composed.imports).map(([module, importedSource]) => [
+          module,
+          augmentSceneIndexParameterImports(importedSource, needsGeneratedVisibleItems),
+        ]),
+      )
+    : composed.imports;
+  const sourceForEntry = customSceneProgram
+    ? augmentSceneIndexParameterImports(sourceWithInterface, needsGeneratedVisibleItems)
+    : sourceWithInterface;
+  const loweredSource = lowerTemplateEntryBindings(cook, sourceForEntry);
+  return ok({
+    authoredInterface,
+    importedAuthoredInterface,
+    customSceneProgram,
+    loweredSource,
+    ...entryImports(
+      cook.unit.generatedModule,
+      generatedModuleForEntry.value,
+      loweredSource,
+      importsForEntry,
+      usesInlineGeneratedModule,
+    ),
+  });
+}
+
+function sceneIndexParameterModule(
+  cook: MaterialPassCook,
+  needsGeneratedVisibleItems: boolean,
+): Result<string, MaterialCookError> {
+  const { derived, sceneRowStride, schema } = cook.unit;
+  try {
+    if (sceneRowStride > GPU_DRIVEN_MATERIAL_ROW_BYTES)
+      throw sceneIndexAbiError(
+        'material schema exceeds the scene-index capacity',
+        derived.totalBytes,
+        GPU_DRIVEN_MATERIAL_ROW_BYTES,
+        'bg-overflow',
+        cook.pass.program.module,
+      );
+    return ok(
+      generateParameterModule(schema, {
+        sceneIndex: true,
+        ...(cook.mediumSurfaceTemplate ? { sceneIndexDeclarations: false } : {}),
+        sceneRowStride,
+        ...(needsGeneratedVisibleItems ? { visibleItemsBinding: SCENE_VISIBLE_ITEMS_BINDING } : {}),
+      }),
+    );
+  } catch (error) {
+    return err(
+      sceneIndexAbiError(
+        error instanceof Error ? error.message : String(error),
+        derived.totalBytes,
+        GPU_DRIVEN_MATERIAL_ROW_BYTES,
+        'bg-overflow',
+        cook.pass.program.module,
+      ),
+    );
+  }
+}
+
+/** Standard-family templates relocate their physical bindings unless a medium Surface owns them. */
+function lowerTemplateEntryBindings(cook: MaterialPassCook, source: string): string {
+  const module = cook.pass.program.module;
+  const standardFamily =
+    cook.standardTemplate ||
+    module === 'forgeax_material::standard' ||
+    module === 'forgeax_material::pbr-skin' ||
+    module === DEFAULT_SHADOW_CASTER;
+  if (!standardFamily || cook.unit.mediumSurface) return source;
+  return lowerStandardPhysicalBindings(source, cook.unit.schema);
+}
+
+function entryImports(
+  generatedModule: string,
+  generatedModuleForEntry: string,
+  loweredSource: string,
+  importsForEntry: Readonly<Record<string, string>>,
+  usesInlineGeneratedModule: boolean,
+): Pick<PassEntrySource, 'compileImports' | 'effectiveClosureImports'> {
+  const sceneModule = generatedModuleForEntry !== generatedModule;
+  const withSceneModule = {
+    ...importsForEntry,
+    'forgeax_material::parameters': generatedModuleForEntry,
+  };
+  return {
+    compileImports:
+      sceneModule &&
+      loweredSource.includes('forgeax_material::parameters') &&
+      !/@group\s*\(\s*1\s*\)\s*@binding\s*\(\s*46\s*\)/.test(loweredSource)
+        ? withSceneModule
+        : importsForEntry,
+    effectiveClosureImports:
+      usesInlineGeneratedModule && sceneModule ? withSceneModule : importsForEntry,
+  };
+}
+
+function defaultFragmentEntry(context: MaterialVariantContext): string | undefined {
+  if (context.pass === 'depth') return undefined;
+  if (context.pass === 'shadow') return 'fs_shadow';
+  return context.pipeline !== 'forward' ? 'fs_gbuffer' : 'fs_main';
+}
+
+function passRenderEntries(
+  pass: MaterialPass,
+  vertex: string,
+  fragment: string | undefined,
+): NonNullable<CompileOptions['renderEntries']> {
+  return {
+    vertex,
+    ...(fragment === undefined ? {} : { fragment }),
+    ...(pass.outputs === undefined
+      ? {}
+      : { colorFormats: pass.outputs.map((output) => output.format) }),
+  };
+}
+
+/** Stock Standard Surface inputs that the parameter schema proves unused. */
+function stockSurfaceInputDefines(
+  stockSurface: boolean,
+  schema: readonly ParamSchemaEntry[],
+  context: MaterialVariantContext,
+): Readonly<Record<string, boolean>> {
+  const parameterNames = new Set(schema.map((entry) => entry.name));
+  return {
+    STANDARD_UV_INPUT_UNUSED: stockSurface && !schema.some((entry) => entry.type === 'texture2d'),
+    STANDARD_TANGENT_INPUT_UNUSED:
+      stockSurface &&
+      !parameterNames.has('normalTexture') &&
+      !parameterNames.has('clearcoatNormalTexture') &&
+      !parameterNames.has('anisotropyStrength'),
+    STANDARD_OBJECT_BASIS_UNUSED:
+      stockSurface &&
+      !parameterNames.has('triplanarSpace') &&
+      !parameterNames.has('normalMapSpace') &&
+      !parameterNames.has('transmission'),
+    STANDARD_VERTEX_MATERIAL_UNUSED:
+      stockSurface && context.geometry !== 'terrain' && !parameterNames.has('displacementTexture'),
+    STANDARD_OBJECT_POSITION_UNUSED:
+      stockSurface && !parameterNames.has('alphaHash') && !parameterNames.has('triplanarSpace'),
+  };
+}
+
+function passCompileDefines(
+  cook: MaterialPassCook,
+  surfaceModule: string | undefined,
+): Readonly<Record<string, boolean>> {
+  const { unit, context } = cook;
+  const parameterNames = new Set(unit.schema.map((entry) => entry.name));
+  const stockSurface = surfaceModule === 'forgeax_material::default_standard_surface';
+  return {
+    ALPHA_HASH_DISABLED: !parameterNames.has('alphaHash'),
+    ALPHA_CLIPPING_DISABLED: !parameterNames.has('alphaCutoff'),
+    ...stockSurfaceInputDefines(stockSurface, unit.schema, context),
+    STANDARD_STOCK_SURFACE_AVAILABLE: stockSurface,
+    ...lowerMaterialVariantContext(context),
+    ...unit.contractDefines,
+    // The uniform fallback has the portable sampled-texture budget. Its
+    // Standard layout drops the dedicated transmission resources, so the
+    // cooked source must drop the matching branch as well.
+    ...(cook.standardTemplate && context.capability === 'uniform-fallback'
+      ? { TRANSMISSION_AVAILABLE: false }
+      : {}),
+    ...(cook.shadowTemplate && surfaceModule === 'forgeax_material::opaque_surface'
+      ? { OPAQUE_SHADOW_COVERAGE_AVAILABLE: true }
+      : {}),
+    ...(unit.request.vertexColorAvailable === undefined
+      ? {}
+      : { VERTEX_COLOR_AVAILABLE: unit.request.vertexColorAvailable }),
+  };
+}
+
+function composeSceneSurfaceEntry(
+  cook: MaterialPassCook,
+  templateResources: ReadonlySet<string>,
+  dynamicInput: MaterialDynamicInputLayout | undefined,
+): Result<SceneEntrySource, MaterialCookError> {
+  const { derived, schema } = cook.unit;
+  let sceneGeneratedInterface: string;
+  try {
+    sceneGeneratedInterface = generateParameterModule(schema, {
+      excludeResources: templateResources,
+      sceneIndex: true,
+      sceneIndexDeclarations: false,
+      sceneMaterialPrivate: true,
+    });
+  } catch (error) {
+    return err(
+      sceneIndexAbiError(
+        error instanceof Error ? error.message : String(error),
+        derived.totalBytes,
+        GPU_DRIVEN_MATERIAL_ROW_BYTES,
+        'bg-overflow',
+        cook.pass.program.module,
+      ),
+    );
+  }
+  const sceneComposed = composeSurfaceSource({
+    material: cook.unit.request.material,
+    pass: cook.pass.name,
+    templateModule: cook.pass.program.module,
+    sources: cook.unit.request.sources,
+    ...surfaceCompositionSelection(cook, dynamicInput),
+    generatedParameters: sceneGeneratedInterface,
+  });
+  if (!sceneComposed.ok) return sceneComposed;
+  // The scene composition owns a different parameter provider: its
+  // private `material` must be the same module imported by any composable
+  // Surface helper. Reusing the direct imports here silently swaps back
+  // to the uniform provider and leaves MaterialParameters/private symbols
+  // unresolved in the scene entry.
+  return ok({
+    source: lowerSceneSurfaceSource(cook.unit, sceneComposed.value),
+    imports: sceneComposed.value.imports,
+  });
+}
+
+function lowerSceneSurfaceSource(unit: MaterialCookUnit, composed: SurfaceComposition): string {
+  if (unit.mediumSurface) return lowerSingleLayerMediumSceneMaterial(composed.source, unit.schema);
+  let source = lowerStandardPhysicalBindings(composed.source, unit.schema);
+  if (composed.surfaceModule !== 'forgeax_material::default_standard_surface') {
+    source = adaptCustomSurfaceForSceneIndex(source);
+  }
+  if (!/\bfn\s+evaluate_standard_surface\s*\(/.test(source)) {
+    source += `\nfn evaluate_standard_surface(input : SurfaceInput, _material : MaterialParameters) -> SurfaceData {\n  return evaluate_surface(input);\n}\n`;
+  }
+  return source;
+}
+
+async function compileSceneIndexEntry(
+  cook: MaterialPassCook,
+  sceneEntry: SceneEntrySource,
+  fragmentEntry: string | undefined,
+  compileDefines: Readonly<Record<string, boolean>>,
+  compile: typeof compileShader,
+): Promise<Result<CompileResult, MaterialCookError>> {
+  const { sceneRowStride } = cook.unit;
+  const sceneResult = await compile(
+    lowerSceneMaterialAddresses(sceneEntry.source, sceneRowStride),
+    {
+      id: `${cook.pass.program.module}::${cook.pass.name}::scene-index`,
+      renderEntries: passRenderEntries(cook.pass, 'vs_scene_index', fragmentEntry),
+      imports: Object.fromEntries(
+        Object.entries(sceneEntry.imports).map(([module, source]) => [
+          module,
+          lowerSceneMaterialAddresses(source, sceneRowStride),
+        ]),
+      ),
+      defines: { ...compileDefines, GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true },
+    },
+  );
+  if (sceneResult.ok) return sceneResult;
+  return err(
+    mapCookErrorToAuthoredSource(sceneResult.error, cook.sourceRecord.source, sceneEntry.source),
+  );
+}
+
+/** Check the reflected program interface against the material's derived parameter contract. */
+function checkPassInterface(
+  cook: MaterialPassCook,
+  entry: PassEntrySource,
+  compiled: CompileResult,
+  hasSceneIndexEntry: boolean,
+): Result<void, MaterialCookError> {
+  const { unit, pass, context } = cook;
+  const standardFamily = cook.standardTemplate || cook.shadowTemplate;
+  const relocatedTextures = new Set(
+    standardFamily ? standardPhysicalTextureFields(unit.schema) : [],
+  );
+  if (!entry.authoredInterface) {
+    const checked = compareMaterialBindings(
+      unit.schema,
+      compiled.bindings,
+      pass.program.module,
+      relocatedTextures,
+    );
+    if (!checked.ok) return checked;
+  }
+  // An imported surface may intentionally own a fixed Material ABI that is
+  // different from the root material's projected parameter schema. Its
+  // declaration is the authoritative contract for this pass; comparing it
+  // to the root-derived interface would reject valid shared surfaces (for
+  // example particle mesh Standard Surface variants) before they can publish.
+  if (entry.importedAuthoredInterface && !hasSceneIndexEntry) return ok(undefined);
+  const reflectionChecked = compareDerivedMaterialInterface(
+    unit.derived,
+    compiled.reflection,
+    relocatedTextures,
+    standardFamily || hasSceneIndexEntry,
+    hasSceneIndexEntry && !cook.standardTemplate,
+  );
+  if (reflectionChecked.ok) return reflectionChecked;
+  return err({
+    ...reflectionChecked.error,
+    detail: {
+      ...reflectionChecked.error.detail,
+      material: unit.request.material,
+      pass: pass.name,
+      module: pass.program.module,
+      source: cook.sourceRecord.path,
+      context: Object.fromEntries(
+        Object.entries(context).map(([field, value]) => [field, String(value)]),
+      ),
+    },
+  });
+}
+
+function passAbiKind(cook: MaterialPassCook, hasSceneIndexEntry: boolean): MaterialAbiKind {
+  const { mediumSurface } = cook.unit;
+  if (cook.sceneSurfaceTemplate && hasSceneIndexEntry && mediumSurface) return 'medium';
+  if (cook.standardSurfaceTemplate && !mediumSurface) return 'standard';
+  return hasSceneIndexEntry ? 'custom-scene' : 'direct';
+}
+
+function publishPassAbi(
+  cook: MaterialPassCook,
+  composed: ComposedPassSource,
+  entry: PassEntrySource,
+  compiled: CompileResult,
+  sceneCompiled: CompileResult | undefined,
+): Result<MaterialProgramAbi, MaterialCookError> {
+  const abiKind = passAbiKind(cook, sceneCompiled !== undefined);
+  try {
+    if (
+      abiKind === 'custom-scene' &&
+      !hasSceneIndexMaterialAccess(
+        `${entry.loweredSource}\n${Object.values(entry.compileImports).join('\n')}`,
+      )
+    ) {
+      throw new Error(
+        'scene-index entry must read visibleItems and sceneMaterials through the published GPU Scene indices',
+      );
+    }
+    const directEntry = cook.pass.program.vertexEntry ?? 'vs_main';
+    const vertexInputs = reflectPassVertexInputs(
+      cook,
+      abiKind,
+      directEntry,
+      compiled,
+      sceneCompiled,
+    );
+    if (!vertexInputs.ok) return vertexInputs;
+    const publishedSurface = abiKind === 'direct' ? undefined : surfaceProgramAbi(cook.unit.asset);
+    if (abiKind === 'medium' && publishedSurface === undefined)
+      throw new Error('single-layer medium material must publish a Surface ABI');
+    const skin = validateSkinVertexResources(vertexInputs.value, compiled, cook.context);
+    if (!skin.ok) return skin;
+    return ok(
+      createMaterialProgramArtifactReceipt({
+        ...(provesStandardPositionBounds(cook, composed, directEntry)
+          ? { positionBounds: 'standard-input' as const }
+          : {}),
+        schema: cook.unit.schema,
+        directEntry,
+        vertexInputs: vertexInputs.value,
+        ...(sceneCompiled === undefined
+          ? {}
+          : { sceneIndexEntry: 'vs_scene_index', rowStride: cook.unit.sceneRowStride }),
+        ...(abiKind === 'standard' &&
+        cook.unit.schema.some((parameter) => parameter.name === 'alphaCutoff') &&
+        composed.surfaceModule !== 'forgeax_material::opaque_surface'
+          ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
+          : {}),
+        ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
+      }),
+    );
+  } catch (error) {
+    return sceneAbiFailure(abiKind, error);
+  }
+}
+
+/** Scene-index families report ABI construction failures; other families rethrow them. */
+function sceneAbiFailure(abiKind: MaterialAbiKind, error: unknown): Result<never, ShaderError> {
+  if (abiKind !== 'medium' && abiKind !== 'custom-scene') throw error;
+  if (error instanceof ShaderError) return err(error);
+  const medium = abiKind === 'medium';
+  return err(
+    new ShaderError({
+      code: 'shader-compile-failed',
+      expected: medium
+        ? `single-layer medium scene-index material with a ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte opaque GPU Scene row`
+        : `custom scene-index material schema that fits the ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte GPU Scene row`,
+      message: error instanceof Error ? error.message : String(error),
+      hint: medium
+        ? 'keep the medium template scene-index declarations and both nearest-layer/color Surface passes intact'
+        : 'reduce the published parameter schema or keep this material on its direct/specialized lane',
+    }),
+  );
+}
+
+/** Compiler-owned proof that an Engine template entry reads the canonical position input. */
+function provesStandardPositionBounds(
+  cook: MaterialPassCook,
+  composed: ComposedPassSource,
+  directEntry: string,
+): boolean {
+  const { sourceRecord, context } = cook;
+  return (
+    composed.engineTemplateInputs &&
+    sourceRecord.provenance === 'engine' &&
+    sourceRecord.slots.every((slot) => slot === 'surface') &&
+    (context.geometry === 'mesh' || context.geometry === 'skinned') &&
+    STANDARD_POSITION_ENTRIES[sourceRecord.moduleId]?.includes(directEntry) === true
+  );
+}
+
+function reflectPassVertexInputs(
+  cook: MaterialPassCook,
+  abiKind: MaterialAbiKind,
+  directEntry: string,
+  compiled: CompileResult,
+  sceneCompiled: CompileResult | undefined,
+): Result<MaterialVertexInputs, MaterialCookError> {
+  // Generic direct programs retain reflected stream names. Every other
+  // family uses the same paired-entry geometry and storage admission.
+  let vertexInputs =
+    abiKind === 'standard' ? materialVertexInputs(compiled.wgsl, directEntry) : undefined;
+  if (sceneCompiled !== undefined) {
+    const storageFailure = validateSceneIndexStorage(
+      abiKind === 'medium' ? undefined : cook.unit.derived,
+      { boundGlobals: sceneCompiled.reflection.boundGlobals, bindings: sceneCompiled.bindings },
+      cook.unit.sceneRowStride,
+      SCENE_VISIBLE_ITEMS_BINDING,
+    );
+    if (storageFailure !== undefined) return err(sceneIndexAbiError(storageFailure));
+  }
+  vertexInputs ??= materialVertexInputs(compiled.wgsl, directEntry, abiKind !== 'direct');
+  if (
+    sceneCompiled !== undefined &&
+    !sameVertexInputs(vertexInputs, materialVertexInputs(sceneCompiled.wgsl, 'vs_scene_index'))
+  ) {
+    if (abiKind === 'standard')
+      return err(
+        new ShaderError({
+          code: 'shader-compile-failed',
+          expected: 'matching direct and scene-index vertex inputs',
+          message: 'Standard direct and scene-index vertex inputs differ',
+          hint: 'keep the selected Surface geometry contract identical across address modes',
+        }),
+      );
+    throw new Error('direct and scene-index vertex inputs differ');
+  }
+  return ok(vertexInputs);
+}
+
+function validateSkinVertexResources(
+  vertexInputs: MaterialVertexInputs,
+  compiled: CompileResult,
+  context: MaterialVariantContext,
+): Result<void, ShaderError> {
+  const skinIndex = vertexInputs.some((input) => input.semantic === 'skinIndex');
+  const skinWeight = vertexInputs.some((input) => input.semantic === 'skinWeight');
+  if (skinIndex !== skinWeight)
+    return err(
+      new ShaderError({
+        code: 'shader-compile-failed',
+        expected: 'paired skinIndex and skinWeight vertex semantics',
+        message: 'incomplete reflected Skin vertex inputs',
+        hint: 'declare both Skin inputs on the actual vertex entry or neither',
+      }),
+    );
+  if (!skinIndex) return ok(undefined);
+  const current = compiled.reflection.boundGlobals.find(
+    (global) => global.group === 2 && global.binding === 1,
+  );
+  const auxiliary = compiled.reflection.boundGlobals.find(
+    (global) => global.group === 2 && global.binding === 2,
+  );
+  const uniform = context.capability === 'uniform-fallback';
+  const valid =
+    auxiliary?.addressSpace === 'uniform' &&
+    (uniform
+      ? current?.addressSpace === 'uniform' && current.span === 16336 && auxiliary.span === 16320
+      : current?.addressSpace === 'storage' &&
+        current.elementStride === 16 &&
+        auxiliary.span === 16);
+  if (valid) return ok(undefined);
+  return err(
+    new ShaderError({
+      code: 'shader-compile-failed',
+      expected: 'the reflected Skin task output/address or bounded current/previous uniform pair',
+      message: `invalid reflected Skin task resources (${context.capability}): current=${current?.addressSpace}/${current?.span}/${current?.elementStride}, auxiliary=${auxiliary?.addressSpace}/${auxiliary?.span}/${auxiliary?.elementStride}`,
+      hint: 'use the shared Skin task ABI before publishing a skinned vertex program',
+    }),
+  );
+}
+
+function passSourceClosureDigest(
+  cook: MaterialPassCook,
+  composed: ComposedPassSource,
+  entry: PassEntrySource,
+): string {
+  const directImports = entry.compileImports === composed.imports;
+  if (directImports && entry.effectiveClosureImports === composed.imports)
+    return composed.sourceClosureDigest;
+  return digestMaterialSourceClosure({
+    [cook.sourceRecord.moduleId]: cook.sourceRecord.source,
+    ...(directImports ? entry.effectiveClosureImports : entry.compileImports),
+  });
 }

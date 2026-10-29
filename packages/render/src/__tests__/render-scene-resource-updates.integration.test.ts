@@ -59,7 +59,7 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
   const requests: PersistentRenderCandidateRequest[] = [];
   const build = (request: PersistentRenderCandidateRequest) => {
     requests.push(request);
-    return extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+    return extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -132,7 +132,7 @@ it('retries consumed transforms when a mixed source publication fails', () => {
       failPartial = false;
       throw new Error('source publication failed');
     }
-    return extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+    return extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -148,7 +148,7 @@ it('retries consumed transforms when a mixed source publication fails', () => {
     failPartial = true;
     expect(draw).toThrow('source publication failed');
     const recovered = draw();
-    const oracle = extractFrames([world], 0, assets, undefined, undefined, {
+    const oracle = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -205,7 +205,7 @@ it('keeps untouched World hidden reports during partial edits and removals', () 
   const scene = new PersistentRenderScene();
   const options = { cull: 'none', retainHidden: true } as const;
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames(worlds, 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+    extractFrames(worlds, 0, assets, scene.materialSnapshotCacheStore(), {
       ...options,
       renderables: request,
     });
@@ -217,7 +217,7 @@ it('keeps untouched World hidden reports during partial edits and removals', () 
       build,
       leases,
     );
-    const oracle = extractFrames(worlds, 0, assets, undefined, undefined, options);
+    const oracle = extractFrames(worlds, 0, assets, undefined, options);
     const hidden = (value: typeof frame) =>
       value.hiddenEntityReports.map((report) => `${report.world.identity}:${report.entity}`).sort();
     expect(hidden(frame)).toEqual(hidden(oracle));
@@ -261,7 +261,7 @@ it('keeps pending temporal sources hidden until the same identity publishes an a
     scene = new PersistentRenderScene();
   let available = true;
   const build = (request: PersistentRenderCandidateRequest) => {
-    const frame = extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+    const frame = extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -325,7 +325,7 @@ it('does not read retired material versions while an authored temporal source is
   const lease = createRenderReadLease(world),
     scene = new PersistentRenderScene({ assets });
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames([world], 0, assets, undefined, scene.materialSnapshotCacheStore(), {
+    extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,

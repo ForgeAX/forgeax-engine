@@ -19,7 +19,6 @@ import assetFrontendPlugin from '../packages/view-plugin-asset/src/frontend.ts';
 import { PAGE_TYPE as DISPLAY_PAGE_TYPE } from '../packages/view-plugin-display/src/identity.ts';
 import { PAGE_TYPE as SCENE_TREE_PAGE_TYPE } from '../packages/view-plugin-scene-tree/src/identity.ts';
 import { PAGE_TYPE as INSPECTOR_PAGE_TYPE } from '../packages/view-plugin-inspector/src/identity.ts';
-import { PAGE_TYPE as CONTENT_BROWSER_PAGE_TYPE } from '../packages/view-plugin-content-browser/src/identity.ts';
 import { PAGE_TYPE as VIEWPORT_PAGE_TYPE } from '../packages/view-plugin-viewport/src/identity.ts';
 import { VIEW_PAGE_TYPES } from '../packages/view-workspace-core/src/contract.ts';
 import { resolveResourcePageType } from '../packages/viewer/src/host/page-registry.ts';
@@ -75,7 +74,7 @@ describe('forgeax-view package contribution', () => {
       VIEW_PAGE_TYPES.texture,
       VIEW_PAGE_TYPES.asset,
     ]);
-    assert.deepEqual(claims.map(({ pageType, id }) => `${pageType}:${id}`), [
+    assert.deepEqual(claims.map(({ home, id }) => `${home.pageType}:${id}`), [
       `${VIEW_PAGE_TYPES.plugins}:plugins`,
       `${VIEW_PAGE_TYPES.material}:material-preview`,
       `${VIEW_PAGE_TYPES.material}:material-properties`,
@@ -98,7 +97,7 @@ describe('forgeax-view package contribution', () => {
     const materialPreview = claims.find((claim) => claim.id === 'material-preview');
     const materialStats = claims.find((claim) => claim.id === 'material-stats');
     assert.equal(materialStats.closable, true);
-    assert.deepEqual(materialStats.layout, { dock: 'bottom', size: { value: 200, unit: 'px' }, stack: 'tabs', order: 2 });
+    assert.deepEqual(materialStats.layout, { dock: 'right-bottom', stack: 'tabs', order: 2 });
     assert.deepEqual(materialPreview.props.owner, {
       panelId: 'material-preview',
       pageType: VIEW_PAGE_TYPES.material,
@@ -107,7 +106,6 @@ describe('forgeax-view package contribution', () => {
     assert.equal(VIEWPORT_PAGE_TYPE, VIEW_PAGE_TYPES.scene);
     assert.equal(SCENE_TREE_PAGE_TYPE, VIEW_PAGE_TYPES.scene);
     assert.equal(INSPECTOR_PAGE_TYPE, VIEW_PAGE_TYPES.scene);
-    assert.equal(CONTENT_BROWSER_PAGE_TYPE, VIEW_PAGE_TYPES.scene);
     const contentBrowser = await readFile(
       new URL('../packages/view-plugin-content-browser/src/ui/ContentBrowserPanel.tsx', import.meta.url),
       'utf8',

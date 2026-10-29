@@ -273,32 +273,40 @@ test('public source preparation completes before consumers start and is absent f
     source.indexOf('const initializedSdk'),
   );
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
-    'selected',
-    'sdkStage',
-    'sourceBuildPnpm',
-    'consumerReady',
-    `${body}\nconsumerReady();`,
+    'context',
+    `const { selected, sdkStage, sourceBuildPnpm, consumerReady, verifySdkSourceEdit,
+      sdkRoot, sourceRoot, unpackRoot, sourceEnv, resolve, execFileAsync, process } = context;
+      ${body}\nconsumerReady();`,
   );
   for (const group of ['source', 'project']) {
     const commands = [];
     const stages = [];
     let ready = false;
     let release;
-    const running = execute(
-      (candidate) => candidate === group,
-      (label, work) => {
+    const running = execute({
+      selected: (candidate) => candidate === group,
+      sdkStage: (label, work) => {
         stages.push(label);
+        if (stages.length > 1) return work();
         return new Promise((resolveStage) => {
           release = () => resolveStage(work());
         });
       },
-      async (args) => {
+      sourceBuildPnpm: async (args) => {
         commands.push(args);
       },
-      () => {
+      consumerReady: () => {
         ready = true;
       },
-    );
+      verifySdkSourceEdit: async () => commands.push(['source-edit']),
+      execFileAsync: async (_file, args) => commands.push(args),
+      sdkRoot: '/sdk',
+      sourceRoot: '/source',
+      unpackRoot: '/unpack',
+      sourceEnv: {},
+      resolve,
+      process,
+    });
     if (group === 'source') {
       assert.equal(ready, false, 'a consumer cannot retire input while source preparation is live');
       assert.deepEqual(stages, ['buildSourceSnapshot']);
@@ -311,13 +319,18 @@ test('public source preparation completes before consumers start and is absent f
       group === 'source'
         ? [
             ['install', '--frozen-lockfile', '--ignore-scripts'],
+            ['source-edit'],
+            ['scripts/clean-build-outputs.mjs'],
             ['build:engine'],
             ['build:tools'],
             ['build:app', 'preview'],
           ]
         : [],
     );
-    assert.deepEqual(stages, group === 'source' ? ['buildSourceSnapshot'] : []);
+    assert.deepEqual(
+      stages,
+      group === 'source' ? ['buildSourceSnapshot', 'verify single-module source editing'] : [],
+    );
   }
 });
 
@@ -341,6 +354,7 @@ test('archive project owns independent runs and installed View while source keep
     'verifySdkViewRuntime',
     'resolve',
     'sdkRoot',
+    'sourceRoot',
     'offlineEnv',
     'archive',
     'dirname',
@@ -348,6 +362,7 @@ test('archive project owns independent runs and installed View while source keep
   );
   const observed = {};
   const independentCommands = [];
+  const viewSourceRoots = [];
   for (const group of ['project', 'source', 'all']) {
     const stages = [];
     await execute(
@@ -362,6 +377,8 @@ test('archive project owns independent runs and installed View while source keep
         await run();
       },
       async (executable, args, options) => {
+        if (args[0]?.endsWith('verify-diagnostic-pages-integration.mjs'))
+          viewSourceRoots.push({ group, root: options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT });
         if (args[0].endsWith('verify-independent-run.mjs'))
           independentCommands.push({
             group,
@@ -373,6 +390,7 @@ test('archive project owns independent runs and installed View while source keep
       async () => {},
       resolve,
       '/sdk',
+      '/source',
       {},
       '/sdk.zip',
       dirname,
@@ -384,6 +402,7 @@ test('archive project owns independent runs and installed View while source keep
     source: [],
     all: ['verifyIndependentRun', 'verifyPairedViewTool', 'verifyInstalledViewRuntime'],
   });
+  assert.deepEqual(viewSourceRoots, [{ group: 'all', root: '/source' }]);
   assert.deepEqual(
     independentCommands,
     ['project', 'all'].map((group) => ({
@@ -445,10 +464,10 @@ test('the real installed View and npm schedulers conserve complete chains and fu
            assert.ok(readFileSync(resolve(process.cwd(), 'scripts/test', name)).length > 0);
          appendFileSync(process.env.FORGEAX_TEST_RECEIPT, 'game3d-installed\\n');`,
       );
-      const diagnostic = resolve(root, 'tools/view-plugins/integration');
+      const diagnostic = resolve(root, 'tools/view/scripts');
       mkdirSync(diagnostic, { recursive: true });
       writeFileSync(
-        resolve(diagnostic, 'verify-diagnostic-pages.mjs'),
+        resolve(diagnostic, 'verify-diagnostic-pages-integration.mjs'),
         `import {appendFileSync} from 'node:fs'; appendFileSync(process.env.FORGEAX_TEST_RECEIPT,'diagnostics\\n');`,
       );
       const options = {
@@ -604,11 +623,13 @@ test('SDK first-frame polling rejects a visible terminal startup error without w
         assert.equal(options.timeout, 120_000);
         const ready = runInNewContext(`(${predicate.toString()})()`, {
           document: {
-            documentElement: { dataset: { forgeaxFrameSubmitted: String(scenario.frame) } },
-            querySelector: () => ({
-              textContent: 'Renderer construct failed: external Instance lost',
-              getClientRects: () => (scenario.visible ? [{}] : []),
-            }),
+            querySelector: (selector) =>
+              selector === 'canvas'
+                ? { forgeaxFrameProgress: { submitted: { frameId: scenario.frame } } }
+                : {
+                    textContent: 'Renderer construct failed: external Instance lost',
+                    getClientRects: () => (scenario.visible ? [{}] : []),
+                  },
           },
           getComputedStyle: () => ({
             display: scenario.visible ? 'block' : 'none',
@@ -787,7 +808,7 @@ test('ZIP Project packaging retains the authored lighting and has no retired red
     assert.deepEqual(
       commands.map(([, args]) => args.slice(0, 2)),
       [
-        ['/immutable-sdk/bin/forgeax.mjs', 'project'],
+        [resolve('/immutable-sdk', 'bin', 'forgeax.mjs'), 'project'],
         ['exec', 'forgeax'],
         ['run', 'doctor'],
         ['run', 'test'],

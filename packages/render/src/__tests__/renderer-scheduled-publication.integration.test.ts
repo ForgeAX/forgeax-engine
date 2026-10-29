@@ -2,20 +2,30 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { mat4 } from '@forgeax/engine-math';
 import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { Skin } from '@forgeax/engine-skinning';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
-import { Camera, MeshFilter, MeshRenderer } from '../components';
+import { Camera, CapsuleShadow, MeshFilter, MeshRenderer } from '../components';
 import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import { CameraView } from '../components/camera-view';
 import type { RenderFeature } from '../features/types';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import {
+  decodeRenderPublication,
+  encodeRenderPublication,
+  renderPublicationTransfers,
+} from '../publication/record';
+import { SkinTasks } from '../record/skin-tasks';
+import { PersistentRenderScene } from '../scene/render-scene';
+import { SkinFrames } from '../scene/skin-scene-inputs';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
-async function fixture() {
+async function fixture(view = false, skin = false) {
   const identity = { source: 'scheduled-publication', epoch: 1 };
   const featureSubmitted = vi.fn();
   const sourceAcknowledged = vi.fn();
@@ -61,7 +71,7 @@ async function fixture() {
   });
   const world = new World({ assets });
   const publisher = createRenderPublisher(world, assets, identity, undefined, [feature]);
-  world
+  const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 8] } },
       {
@@ -77,25 +87,40 @@ async function fixture() {
       },
     )
     .unwrap();
+  if (view) world.addComponent(camera, { component: CameraView, data: {} }).unwrap();
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
   const meshHandle = assets.create(mesh).unwrap();
-  world
+  const renderable = world
     .spawn(
       { component: Transform, data: {} },
       { component: MeshFilter, data: { assetHandle: meshHandle } },
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
+  if (skin) {
+    const skeleton = assets
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices: mat4.identity(mat4.create()),
+      })
+      .unwrap();
+    const joint = world.spawn({ component: Transform, data: {} }).unwrap();
+    world
+      .addComponent(renderable, { component: Skin, data: { skeleton, joints: [joint] } })
+      .unwrap();
+    world.addComponent(renderable, { component: CapsuleShadow, data: {} }).unwrap();
+  }
   world.update(1 / 60).unwrap();
   propagateTransforms(world).unwrap();
   const nextRequest = () => {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     return {
-      publication: packet,
+      publication: encodeRenderPublication(packet),
       onFeatureSourceSubmitted: (identity: string, feedback: unknown) => {
         publisher.acknowledgeFeatures(packet.revision, [{ identity, feedback }]).unwrap();
       },
@@ -121,13 +146,62 @@ async function fixture() {
   };
 }
 
-it('resumes a real published Renderer frame through the shared Feature checkpoint exactly once', async () => {
+it.each([
+  false,
+  true,
+])('cold recovers an existing published view through the actual Renderer entry (CameraView=%s)', async (view) => {
+  const f = await fixture(view),
+    scenes = new Set<PersistentRenderScene>();
+  const actual = PersistentRenderScene.prototype.consumePublication;
+  const consume = vi
+    .spyOn(PersistentRenderScene.prototype, 'consumePublication')
+    .mockImplementation(function (this: PersistentRenderScene, input) {
+      scenes.add(this);
+      return actual.call(this, input);
+    });
+  try {
+    const firstResult = f.renderer.draw(f.request);
+    if (!firstResult.ok) throw firstResult.error;
+    const first = firstResult.value;
+    expect((await first.completed).ok).toBe(true);
+    expect(scenes.size).toBeGreaterThan(0);
+    for (const scene of scenes) {
+      expect(scene.compositionSlots().length).toBe(1);
+      scene.invalidate();
+    }
+    scenes.clear();
+    consume.mockClear();
+    const delta = f.nextRequest();
+    const decoded = decodeRenderPublication(delta.publication, undefined).unwrap();
+    expect(decoded.baseline).toBe(false);
+    expect(decoded.upserts.length).toBe(0);
+    const nextResult = f.renderer.draw(delta);
+    if (!nextResult.ok) throw nextResult.error;
+    const next = nextResult.value;
+    expect((await next.completed).ok).toBe(true);
+    expect(scenes.size).toBeGreaterThan(0);
+    for (const scene of scenes) expect(scene.compositionSlots().length).toBe(1);
+    expect(consume.mock.calls.every(([input]) => input.packet.baseline)).toBe(true);
+  } finally {
+    consume.mockRestore();
+    expect((await f.renderer.dispose()).ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
+  }
+});
+
+it('resumes a real published Renderer frame through the Feature and recording checkpoints exactly once', async () => {
   const f = await fixture();
-  let resume!: () => void;
-  const paused = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
-  const checkpoint = vi.fn(() => paused);
+  const resumes: (() => void)[] = [];
+  const resume = () => {
+    for (const release of resumes.splice(0)) release();
+  };
+  const checkpoint = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resumes.push(resolve);
+      }),
+  );
   try {
     if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
     const pending = f.renderer.drawScheduled(f.request, { checkpoint });
@@ -136,17 +210,104 @@ it('resumes a real published Renderer frame through the shared Feature checkpoin
     expect(f.featureSubmitted).not.toHaveBeenCalled();
     expect(f.sourceAcknowledged).not.toHaveBeenCalled();
     resume();
+    // The view pauses again after CPU preparation, before swap-chain acquisition and submit.
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    expect(f.submit).not.toHaveBeenCalled();
+    expect(f.featureSubmitted).not.toHaveBeenCalled();
+    expect(f.sourceAcknowledged).not.toHaveBeenCalled();
+    resume();
     const result = await pending;
     if (!result.ok) throw result.error;
     expect(result.value.presentation).toBe('ready');
     expect((await result.value.completed).ok).toBe(true);
-    expect(checkpoint).toHaveBeenCalledOnce();
+    expect(checkpoint).toHaveBeenCalledTimes(2);
     expect(f.submit).toHaveBeenCalledOnce();
     expect(f.featureSubmitted).toHaveBeenCalledOnce();
     expect(f.sourceAcknowledged).toHaveBeenCalledExactlyOnceWith('submitted-feedback');
     expect(f.featureAborted).not.toHaveBeenCalled();
   } finally {
     resume();
+    const disposed = await f.renderer.dispose();
+    expect(disposed.ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
+  }
+});
+
+it('holds completion-driven delivery while a scheduled frame is paused and returns credit unheld', async () => {
+  const f = await fixture();
+  const resumes: (() => void)[] = [];
+  const checkpoint = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resumes.push(resolve);
+      }),
+  );
+  const settled = async (promise: Promise<unknown>): Promise<boolean> => {
+    let done = false;
+    void promise.then(() => {
+      done = true;
+    });
+    for (let turn = 0; turn < 8 && !done; turn++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    return done;
+  };
+  try {
+    const first = f.renderer.draw(f.request);
+    if (!first.ok) throw first.error;
+    expect((await first.value.creditCompleted)?.ok).toBe(true);
+    expect((await first.value.completed).ok).toBe(true);
+    const queue = f.submit.mock.instances[0] as RhiNullQueue;
+    if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
+    const pending = f.renderer.drawScheduled(f.nextRequest(), { checkpoint });
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledOnce());
+    const held = queue.onSubmittedWorkDone();
+    const unheld = queue.onSubmittedWorkDoneUnheld();
+    expect(await settled(unheld)).toBe(true);
+    expect(await settled(held)).toBe(false);
+    for (const release of resumes.splice(0)) release();
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    expect(await settled(held)).toBe(false);
+    for (const release of resumes.splice(0)) release();
+    const result = await pending;
+    if (!result.ok) throw result.error;
+    expect(await settled(held)).toBe(true);
+    expect((await result.value.creditCompleted)?.ok).toBe(true);
+    expect((await result.value.completed).ok).toBe(true);
+  } finally {
+    for (const release of resumes.splice(0)) release();
+    expect((await f.renderer.dispose()).ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
+  }
+});
+
+it('aborts at the recording checkpoint without submitting and keeps the next frame drawable', async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  const checkpoint = vi.fn(
+    (): Promise<void> =>
+      checkpoint.mock.calls.length === 1 ? Promise.resolve() : new Promise<void>(() => {}),
+  );
+  try {
+    if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
+    const pending = f.renderer.drawScheduled(f.request, { checkpoint, signal: controller.signal });
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    expect(f.submit).not.toHaveBeenCalled();
+    controller.abort();
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(f.submit).not.toHaveBeenCalled();
+    expect(f.featureSubmitted).not.toHaveBeenCalled();
+    expect(f.sourceAcknowledged).not.toHaveBeenCalled();
+    expect(f.featureAborted).toHaveBeenCalledOnce();
+    // The suspended view was closed, so an ordinary frame records and submits normally.
+    const next = f.renderer.draw(f.nextRequest());
+    if (!next.ok) throw next.error;
+    expect((await next.value.completed).ok).toBe(true);
+    expect(f.submit).toHaveBeenCalledOnce();
+  } finally {
+    controller.abort();
     const disposed = await f.renderer.dispose();
     expect(disposed.ok).toBe(true);
     f.publisher.dispose();
@@ -234,5 +395,46 @@ it('rechecks the current preparation owner before preparing or releasing a real 
     f.publisher.dispose();
     f.submit.mockRestore();
     prepare.mockRestore();
+  }
+});
+
+it('retires the actual submitted Skin roots even when task completion throws synchronously', async () => {
+  const f = await fixture(false, true),
+    cause = new Error('injected synchronous task cleanup failure');
+  const actualComplete = SkinTasks.prototype.complete,
+    actualSubmit = SkinFrames.prototype.submitFrame;
+  let owner: SkinFrames | undefined, retired: Promise<void> | undefined;
+  const complete = vi.spyOn(SkinTasks.prototype, 'complete').mockImplementationOnce(function (
+    this: SkinTasks,
+  ) {
+    const completion = actualComplete.call(this);
+    if (completion !== undefined) void completion.catch(() => {});
+    throw cause;
+  });
+  const submit = vi.spyOn(SkinFrames.prototype, 'submitFrame').mockImplementation(function (
+    this: SkinFrames,
+    ...args
+  ) {
+    owner = this;
+    retired = actualSubmit.apply(this, args);
+    return retired;
+  });
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const result = f.renderer.draw(f.request);
+    if (result.ok) await result.value.completed;
+    expect(complete).toHaveBeenCalledOnce();
+    expect(f.submit).toHaveBeenCalledOnce();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(retired).toBeDefined();
+    await retired;
+    expect(owner?.recordingFrame()).toBeUndefined();
+  } finally {
+    complete.mockRestore();
+    submit.mockRestore();
+    errors.mockRestore();
+    expect((await f.renderer.dispose()).ok).toBe(true);
+    f.publisher.dispose();
+    f.submit.mockRestore();
   }
 });

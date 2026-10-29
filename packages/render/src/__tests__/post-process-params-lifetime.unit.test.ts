@@ -1,8 +1,56 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { createPostProcessParamsOwner } from '../assembly/post-process-params';
+import {
+  collectRequiredFullscreenPostProcesses,
+  registerStandardPostProcessBuiltins,
+  withBuiltinRenderFeatures,
+} from '../assembly/render-feature-post-processes';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+
+it('retains Standard shader parameters across empty Feature frames and device recovery', async () => {
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const device = (await adapter.requestDevice()).unwrap();
+  const owner = createPostProcessParamsOwner(
+    { device, errorRegistry: new RhiErrorListenerRegistry() },
+    vi.fn(),
+  );
+  registerStandardPostProcessBuiltins(owner);
+  const required = new Map(
+    collectRequiredFullscreenPostProcesses(withBuiltinRenderFeatures([])).map((entry) => [
+      entry.identity,
+      entry.source,
+    ]),
+  );
+  const buffers = new Map<string, object>();
+  for (const [id, entry] of owner.builtinEntries) {
+    expect(required.get(id)).toBe(entry.source);
+    const buffer = owner.getBuffer(id);
+    if (entry.params === undefined) expect(buffer, id).toBeUndefined();
+    else {
+      expect(buffer, id).toBeDefined();
+      buffers.set(id, buffer as object);
+    }
+  }
+  expect(buffers.has('forgeax.lens-effects')).toBe(true);
+  expect(buffers.has('forgeax.outline.composite')).toBe(true);
+  expect(owner.builtinEntries.has('forgeax.smaa.edges')).toBe(true);
+  expect(buffers.has('forgeax.lens-flare.composite')).toBe(true);
+  const empty = owner.prepare(new Map()).unwrap();
+  owner.accept(empty);
+  owner.featureEntries = new Map();
+  owner.discard(empty);
+  for (const [id, buffer] of buffers) expect(owner.getBuffer(id)).toBe(buffer);
+  const replacement = (await adapter.requestDevice()).unwrap();
+  const recovery = owner.prepareRecovery(replacement).unwrap();
+  owner.publishRecovery(recovery);
+  for (const [id, buffer] of buffers) {
+    expect(owner.getBuffer(id), id).toBeDefined();
+    expect(owner.getBuffer(id), id).not.toBe(buffer);
+  }
+  owner.dispose();
+});
 
 it('retains graph-admitted params when native pipeline preparation aborts the frame', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -113,4 +161,53 @@ it('keeps accepted candidates detached across builtin registration and late disc
   owner.dispose();
   expect(destroy.mock.calls.filter(([buffer]) => buffer === overlay)).toHaveLength(1);
   expect(destroy.mock.calls.filter(([buffer]) => buffer === builtin)).toHaveLength(1);
+});
+
+it('reuses the active params map as the steady-state candidate and rebuilds on any change', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const owner = createPostProcessParamsOwner(
+    { device, errorRegistry: new RhiErrorListenerRegistry() },
+    vi.fn(),
+  );
+  const entry: PostProcessShaderEntry = {
+    source: 'steady',
+    params: { byteSize: 32, defaultValue: new Uint8Array(32) },
+  };
+  const entries = new Map([['overlay', entry]]);
+  const first = owner.prepare(entries).unwrap();
+  owner.accept(first);
+  owner.featureEntries = entries;
+  const steady = owner.prepare(entries).unwrap();
+  // Unchanged declarations: the active map itself, with nothing created.
+  expect(steady.buffers).toBe(first.buffers);
+  expect(steady.created).toEqual([]);
+  owner.accept(steady);
+  expect(owner.getBuffer('overlay')).toBe(first.buffers.get('overlay'));
+  // An added declaration and a replaced params value each need a new candidate.
+  const added = new Map([
+    ['overlay', entry],
+    ['tint', { source: 'tint', params: { byteSize: 16, defaultValue: new Uint8Array(16) } }],
+  ]);
+  const grown = owner.prepare(added).unwrap();
+  expect(grown.buffers).not.toBe(first.buffers);
+  expect(grown.buffers.get('overlay')).toBe(first.buffers.get('overlay'));
+  owner.discard(grown);
+  const edited = owner
+    .prepare(
+      new Map([
+        [
+          'overlay',
+          { ...entry, params: { byteSize: 32, defaultValue: new Uint8Array(32).fill(1) } },
+        ],
+      ]),
+    )
+    .unwrap();
+  expect(edited.buffers).not.toBe(first.buffers);
+  expect(edited.buffers.get('overlay')).not.toBe(first.buffers.get('overlay'));
+  owner.discard(edited);
+  // A removed declaration orphans the active buffer, so the map is rebuilt.
+  const removed = owner.prepare(new Map()).unwrap();
+  expect(removed.buffers).not.toBe(first.buffers);
+  expect(removed.buffers.size).toBe(0);
+  owner.dispose();
 });

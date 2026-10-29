@@ -1,16 +1,148 @@
 <!-- LANG-SWITCH -->
 **Language**: **English** · [简体中文](README.zh-CN.md)
 
-# ForgeaX Engine
+<p align="center">
+  <img src="https://forgeax.github.io/logo.svg" width="96" alt="ForgeAX" />
+</p>
 
-**An AI-native game engine designed to maximize AI efficiency.**
+<h1 align="center">ForgeAX Engine</h1>
 
-ForgeaX is a TypeScript game engine with **AI agents as its primary users**. Data, lifecycles, APIs, and tools serve one goal: help AI understand the system, act precisely, inspect results, and repair failures.
+<p align="center">
+  <strong>AI-native TypeScript game engine — turn ideas into playable games.</strong>
+</p>
+
+<p align="center">
+  AI agents are its primary users. Data, lifecycles, APIs, and tools serve one goal:<br/>
+  help AI understand the system, act precisely, inspect results, and repair failures.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
+  <a href="https://github.com/ForgeaX-Games/forgeax-engine/actions/workflows/ci.yml"><img src="https://github.com/ForgeaX-Games/forgeax-engine/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://forgeax.github.io/"><img src="https://img.shields.io/badge/docs-forgeax.github.io-brightgreen.svg" alt="Docs" /></a>
+  <img src="https://img.shields.io/badge/TypeScript-ESM-3178c6.svg" alt="TypeScript ESM" />
+  <img src="https://img.shields.io/badge/rendering-WebGPU-ff6a00.svg" alt="WebGPU" />
+</p>
+
+<p align="center">
+  <a href="#made-with-forgeax">Showcase</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#ai-efficiency">AI efficiency</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#explore">Explore</a>
+</p>
 
 > [!IMPORTANT]
 > **Efficiency is the goal; design is the method.** Complete more verified game-development work with less context, fewer failed attempts, and shorter feedback cycles.
 
-[AI efficiency](#ai-efficiency) · [Design principles](#design) · [Architecture](#architecture) · [Get started](#start) · [Explore](#explore)
+<a id="made-with-forgeax"></a>
+## Made with ForgeAX
+
+Games built on the engine, authored through the `forgeax` CLI and an AI-first workflow.
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/games/hellforge/"><img src="https://forgeax.github.io/assets/readme/games/hellforge.jpg" alt="Hellforge" width="100%" /></a><br/>
+      <strong>Hellforge</strong> · ARPG / 3D
+    </td>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/games/planet-snake/"><img src="https://forgeax.github.io/assets/readme/games/planet-snake.jpg" alt="Planet Snake" width="100%" /></a><br/>
+      <strong>Planet Snake</strong> · 3D Survival
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/games/go-karts/"><img src="https://forgeax.github.io/assets/readme/games/go-karts.jpg" alt="Pet Go-Karts" width="100%" /></a><br/>
+      <strong>Pet Go-Karts</strong> · Racing / 3D
+    </td>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/showcase/"><img src="https://forgeax.github.io/assets/readme/games/ai-weapon-spirit.jpg" alt="AI Weapon Spirit" width="100%" /></a><br/>
+      <strong>AI Weapon Spirit</strong> · ARPG / 3D
+    </td>
+  </tr>
+</table>
+
+<p align="center"><a href="https://forgeax.github.io/showcase/">Browse the full showcase →</a></p>
+
+<a id="features"></a>
+## Features
+
+- **Rendering** — Materials, lights, shadows, post-processing, GPU particles, trails, and beams on WebGPU
+- **Gameplay** — ECS world, 2D/3D physics (Rapier), animation, input, audio, and network sync
+- **Asset pipeline** — Import glTF / FBX / images, or generate assets in TypeScript with parameterized variants
+- **AI-first debugging** — Query live entities, record / replay render frames, and inspect draws down to pixels
+- **CLI workflow** — Create, run, inspect, and package games with `forgeax` commands
+- **Multi-platform** — Web, WeChat Mini Game, Steam, Steam Deck, Switch, and Kubee
+
+<a id="get-started"></a>
+## Get started
+
+Install the engine and its AI toolchain into your editor:
+
+```bash
+npx -y @forgeax/game install
+```
+
+Available for Claude Code · Cursor · ChatGPT · Kimi Code · DeepSeek · VS Code.
+
+Or start a project from the engine directly:
+
+```bash
+pnpm dlx @forgeax/engine project new my-game --template game-3d
+cd my-game
+pnpm exec forgeax dev start --headless false
+```
+
+`game-3d` is a third-person reference; `empty` is a minimal start. Read the generated README and skills, then see [Engine](packages/engine/README.md) and the [CLI guide](skills/forgeax-engine-cli/SKILL.md).
+
+<details>
+<summary>Run and verify</summary>
+
+```bash
+pnpm exec forgeax help --tree --json
+pnpm exec forgeax project check
+pnpm exec forgeax dev status --json
+pnpm exec forgeax dev capture --json
+pnpm exec forgeax dev stop --json
+pnpm exec forgeax project test
+pnpm exec forgeax project package --format web-zip
+```
+
+Observations carry a `revision`; captures return PNG and report references. For entity lookup, camera control, and runtime identity constraints, see [persistent live control](packages/devkit/README.md#persistent-live-control).
+
+</details>
+
+<details>
+<summary>Build from engine source / SDK</summary>
+
+Toolchain versions are defined in [`.nvmrc`](.nvmrc), [`.pnpm-version`](.pnpm-version), and [`.bun-version`](.bun-version).
+
+```bash
+pnpm install
+pnpm build:engine
+pnpm test
+```
+
+| Scenario | Entry |
+|:--|:--|
+| Install the SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
+| SDK `source/engine/` | Independent public source with `.forgeax-public-distribution` and prebuilt WASM; run the install / build commands above without private submodules |
+| Full contributor checkout | Clone with `--recurse-submodules` for authorized private asset access; run `pnpm build` for the complete application fleet |
+| Single demo iteration | `pnpm build:app hello/triangle`; broader acceptance follows the Smoke gate |
+
+The SDK includes built packages, templates, skills, and Engine source. See the [SDK guide](skills/forgeax-engine-sdk/SKILL.md) for release and acceptance contracts.
+
+</details>
+
+<a id="prerequisites"></a>
+## Prerequisites
+
+- **Node.js** ≥ 22.13.0 — [`.nvmrc`](.nvmrc) pins `22.22.3`
+- **pnpm** `12.10.1` via Corepack (`corepack enable`)
+- **Bun** ≥ 1.2.0
+- A **WebGPU-capable browser** (latest Chrome / Edge)
 
 <a id="ai-efficiency"></a>
 ## AI efficiency
@@ -31,12 +163,12 @@ Efficiency means **verified useful work**, accounting for diagnosis and rework, 
 > [!NOTE]
 > Screenshots, structural checks, and real GPU execution answer different questions. CPU captures cannot substitute for GPU performance measurements.
 
-<a id="design"></a>
-## Design principles
+<details>
+<summary><strong>Design principles</strong></summary>
 
 **Compression is intelligence: reduce the concepts needed to understand local behavior.** Avoid duplicate state, extra lifecycles, and implicit branches.
 
-| Design principle | How ForgeaX applies it |
+| Design principle | How ForgeAX applies it |
 |:--|:--|
 | **AI is the primary user** | Prioritize discoverable, callable, verifiable machine contracts; AI usability takes precedence over human convention |
 | **One source of truth** | World owns game state, Renderer owns render projections, and source assets plus Meta own author facts; other layers consume or derive |
@@ -46,7 +178,9 @@ Efficiency means **verified useful work**, accounting for diagnosis and rework, 
 | **Explicit states and failures** | Closed unions, structured errors, and reported capability absence and fallback reduce hidden branches |
 | **Prepare at build time, consume at runtime** | Import, WGSL composition and reflection, and VFX compilation produce published content for runtime loading |
 
-See the [AI-first design axiom](AGENTS.md#design-axiom--compression--intelligence) and [module ownership map](AGENTS.md#module-design-map--cognitive-injection) for the full constraints.
+See the AI-first design axiom and module ownership map for the full constraints.
+
+</details>
 
 <a id="architecture"></a>
 ## Architecture
@@ -86,7 +220,8 @@ flowchart TB
     RHI -.->|"Optional recording"| DEBUG
 ```
 
-### Rendering and GPU
+<details>
+<summary><strong>Rendering and GPU</strong></summary>
 
 | Subsystem | Key design and responsibility | Read more |
 |:--|:--|:--|
@@ -95,7 +230,10 @@ flowchart TB
 | **GPU VFX** | GPU simulation and indirect rendering; code authoring and build-time compilation; particles, ribbons, trails, beams, billboards, and meshes | [VFX](packages/vfx/README.md) · [VFX render](packages/vfx-render/README.md) |
 | **RHI / Backends** | Capability-gated operations across browser WebGPU, wgpu WASM, and null backends; a spec-aligned, math-free interface with opaque handles | [RHI](packages/rhi/README.md) · [wgpu](packages/rhi-wgpu/README.md) |
 
-### ECS and multiple Workers
+</details>
+
+<details>
+<summary><strong>ECS and multiple Workers</strong></summary>
 
 [ECS World](packages/ecs/README.md) owns entities, components, relationships, resources, and time. Systems declare access and scheduling in `Update` / `FixedUpdate`. [Scene](packages/scene/README.md) owns hierarchy and transforms; [State](packages/state/README.md) owns state-scoped entity lifetimes. Renderer consumes World changes into a persistent projection.
 
@@ -120,7 +258,10 @@ flowchart LR
 > [!NOTE]
 > Multiple Workers preserve **one logical World** with serial structural changes, no live-object transfer, and no split RenderGraph. Partial shared writes require World rebuild. See [App execution](packages/app/README.md#execution-tiers) and the [multithreaded example](apps/hello/multithreaded-execution/README.md).
 
-### Text and scripted assets
+</details>
+
+<details>
+<summary><strong>Text and scripted assets</strong></summary>
 
 **Procedural generation and parameter reuse bring content into the code workflow.** AI can generate assets in batches, edit text directly, review diffs, and validate automatically.
 
@@ -131,37 +272,28 @@ flowchart LR
 | **Pack · `.pack.json`** | Declare assets, references, and instance parameters for direct field editing and diff review |
 | **Imported assets and sidecars** | External glTF / FBX / image sources and metadata share the identity and cooking path |
 
-```mermaid
-flowchart LR
-    SCRIPT["ScriptablePack<br/>.pack.ts"]
-    TEXT["Pack<br/>.pack.json"]
-    IMPORT["External sources + Meta<br/>models · images · fonts"]
-    COOK["Producer validation and cook"]
-    PUBLISH["Published content<br/>stable GUID · receipt · Catalog"]
-    RUNTIME["Runtime<br/>load by GUID"]
-    SCRIPT --> COOK
-    TEXT --> COOK
-    IMPORT --> COOK
-    COOK --> PUBLISH
-    PUBLISH --> RUNTIME
-```
-
 > [!IMPORTANT]
 > **Sources and artifacts are separate.** `.pack.ts` executes at build time; runtime loads cooked content by stable GUID. Textures, models, and audio can still use binary sources. Repair source inputs, then cook again. See the [Pack authoring contract](packages/pack/README.md).
 
-### Game and engine plugins
+</details>
+
+<details>
+<summary><strong>Game and engine plugins</strong></summary>
 
 Game and engine plugins share native Cordis dependencies, activation, updates, and disposal.
 
 | Plugin layer | Typical responsibility | Composition |
 |:--|:--|:--|
-| Project assembly | Installed plugins, configuration, and realm placement | `forge.json.plugins[]` declares Entries; DevKit generates a static Catalog for native Loader activation |
+| Project assembly | Installed plugins, configuration, and realm placement | `forge.json#roots` references one plugin asset GUID per engine / frontend / build / host root; DevKit compiles the plugin programs for native Loader activation |
 | Engine plugins | Scene, input, physics, audio, and ECS capabilities | Native `inject / provide` declare dependencies and services; `effect` registers contributions and their inverses |
-| Game plugins | Player movement, camera, game UI, and gameplay systems | The reference template combines children through `definePluginGroup` / `usePlugin` in `assets/plugin.ts` |
+| Game plugins | Player movement, camera, game UI, and gameplay systems | The reference template composes child plugin assets with `mountPluginAsset` in `assets/game.pack.ts` (the engine root); the frontend root mounts game UI |
 
-Effects unwind when their Fiber exits. ECS schedules frame work; plugin assembly stays outside hot paths. See the [plugin contract](packages/plugin/README.md) and [`game-3d` root plugin](templates/game-3d/assets/plugin.ts).
+Effects unwind when their Fiber exits. ECS schedules frame work; plugin assembly stays outside hot paths. See the [plugin contract](packages/plugin/README.md) and [`game-3d` root plugin](templates/game-3d/assets/game.pack.ts).
 
-### Simulation and interaction
+</details>
+
+<details>
+<summary><strong>Simulation and interaction</strong></summary>
 
 | Subsystem | Key design and responsibility | Read more |
 |:--|:--|:--|
@@ -170,56 +302,6 @@ Effects unwind when their Fiber exits. ECS schedules frame work; plugin assembly
 | **Animation / Skinning** | Renderer-independent animation graphs, clips, and playback; Skin binding and joint-path resolution | [Animation](packages/animation/README.md) · [Skinning](packages/skinning/README.md) |
 | **Runtime intelligence** | Optional provider-neutral Activity / Session; bounded output, cancellation, and polling; asynchronous services stay outside the ECS frame loop | [Intelligence](packages/intelligence/README.md) |
 | **Input / UI / Audio** | Frozen frame-start input snapshots; Shadow DOM UI; realm-neutral audio intents played by Host Web Audio | [Input](packages/input/README.md) · [UI](packages/ui/README.md) · [Audio](packages/audio/README.md) |
-
-<a id="start"></a>
-## Get started
-
-Install **`@forgeax/engine`**, use focused subpaths such as `/ecs` and `/app`, and operate through `forgeax`.
-
-```bash
-pnpm dlx @forgeax/engine project new my-game --template game-3d
-cd my-game
-pnpm exec forgeax help --tree --json
-pnpm exec forgeax project check
-pnpm exec forgeax dev start --headless false --json
-```
-
-`game-3d` is a third-person reference; `empty` is a minimal start. Read the generated README and skills. See [Engine](packages/engine/README.md) and the [CLI guide](skills/forgeax-engine-cli/SKILL.md).
-
-<details>
-<summary>Run and verify</summary>
-
-```bash
-pnpm exec forgeax dev status --json
-pnpm exec forgeax dev capture --json
-pnpm exec forgeax dev stop --json
-pnpm exec forgeax project test
-pnpm exec forgeax project package --format web-zip
-```
-
-Observations carry a `revision`; captures return PNG and report references. For entity lookup, camera control, and runtime identity constraints, see [persistent live control](packages/devkit/README.md#persistent-live-control).
-
-</details>
-
-<details>
-<summary>Source and SDK</summary>
-
-Toolchain versions are defined in [`.nvmrc`](.nvmrc), [`.pnpm-version`](.pnpm-version), and [`.bun-version`](.bun-version).
-
-```bash
-pnpm install
-pnpm build:engine
-pnpm test
-```
-
-| Scenario | Entry |
-|:--|:--|
-| Install the SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
-| SDK `source/engine/` | Independent public source with `.forgeax-public-distribution` and prebuilt WASM; run the install/build commands above without private submodules |
-| Full contributor checkout | Clone with `--recurse-submodules` for authorized private asset access; run `pnpm build` for the complete application fleet |
-| Single demo iteration | `pnpm build:app hello/triangle`; broader acceptance follows the [Smoke gate](AGENTS.md#smoke-gate) |
-
-The SDK includes built packages, templates, skills, and Engine source. See the [SDK guide](skills/forgeax-engine-sdk/SKILL.md) for release and acceptance contracts.
 
 </details>
 
@@ -234,6 +316,13 @@ The SDK includes built packages, templates, skills, and Engine source. See the [
 | [Engine skills](skills/) | Task-oriented capability discovery and operating paths |
 | [Apps](apps/) / [Templates](templates/) | Examples, regression scenarios, and game starting points |
 | [Forbidden City showcase](apps/showcase/palace/README.md) | `pack.ts` architecture, lighting, and continuous CLI inspection; visual quality remains a work in progress |
+
+<a id="contact"></a>
+## Community
+
+- 🌐 Website — [forgeax.github.io](https://forgeax.github.io/)
+- 📧 Email — forgeax@outlook.com
+- 🐧 QQ group — [join here](https://qun.qq.com/certify-share/s/kRjlj8fNt7?_nsp=1)
 
 > [!NOTE]
 > This README has an [English canonical version](README.md) and a [Simplified Chinese mirror](README.zh-CN.md). Update both in the same commit. Linked package contracts define precise capabilities and limitations.

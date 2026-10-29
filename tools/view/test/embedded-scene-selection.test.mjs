@@ -16,7 +16,13 @@ test('an embedded canvas selection reaches its owning Shell without changing ind
   const provider = api.registerProvider({ sourceId: 'engine-workspace', providerId: 'engine', realm: 'engine', tools:
     ['target.pick', 'entity.inspect', 'entity.highlight'].map(operation => defineTool({ id: `engine.${operation}`, title: operation,
       summary: operation, realm: 'engine', argsSchema: schema, resultSchema: schema, inputSchema: {}, outputSchema: {}, evidence: [] },
-    args => operation === 'target.pick' ? { entityId: 'scene:world:cube' } : args.entityId ? { entityId: args.entityId } : {})) });
+    args => {
+      if (operation === 'target.pick') {
+        assert.equal(args.granularity, 'triangle');
+        return { entityId: 'scene:world:cube', granularity: 'triangle' };
+      }
+      return args.entityId ? { entityId: args.entityId } : {};
+    })) });
   let shellCaller;
   const broker = new ViewWorkspaceBroker({ toolApi: api, accessToken: 'token',
     engineForCaller(caller) {

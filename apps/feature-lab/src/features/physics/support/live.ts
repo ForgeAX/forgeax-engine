@@ -1,6 +1,6 @@
 import type { World } from '@forgeax/engine/ecs';
 
-/** physicsPlugin loads Rapier WASM asynchronously; resolve the resource once it is inserted. */
+/** physics3d loads Rapier WASM asynchronously; resolve the resource once it is inserted. */
 export async function waitForPhysicsWorld<T>(
   world: World,
   frames: (count: number) => Promise<void>,

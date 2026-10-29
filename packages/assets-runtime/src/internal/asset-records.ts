@@ -16,6 +16,15 @@ export interface PreparedAssetContent<T = unknown> {
   readonly dependencies?: readonly number[];
 }
 
+/** Default content byte budget of one AssetRegistry: a runaway-growth guard, not a scene cap. */
+export const DEFAULT_ASSET_BUDGET_BYTES = 4 * 1024 * 1024 * 1024;
+
+/** Shared admission check for public content byte budgets, before any registry is created. */
+export function validateAssetBudgetBytes(bytes: unknown): asserts bytes is number {
+  if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0)
+    throw new RangeError('assetBudgetBytes must be a positive safe integer');
+}
+
 export interface AssetLimits {
   readonly maxAssets?: number;
   readonly maxBytes?: number;
@@ -165,6 +174,169 @@ const identities = realm[identityKey] as {
 const EMPTY_BATCH: AssetChangeBatch = Object.freeze({ changes: Object.freeze([]), accept() {} });
 const EMPTY_READ = ok(EMPTY_BATCH);
 
+interface NestedFieldWrite {
+  readonly target: Record<string, unknown>;
+  readonly field: string;
+  readonly value: unknown;
+  readonly top: string;
+  readonly delta: number;
+}
+
+interface ByteRangeOperation {
+  readonly target: Uint8Array;
+  readonly write: AssetByteWrite;
+  readonly rowBytes: number;
+  readonly byteStride: number;
+  readonly span: number;
+}
+
+/** One validated asset's owned copies, adopted together once every update passes. */
+interface PreparedRangeUpdate {
+  readonly handle: number;
+  readonly record: RecordEntry;
+  readonly value: Record<string, unknown>;
+  readonly replaced: readonly string[];
+  readonly fields: Readonly<Record<string, unknown>>;
+  readonly sizes: ReadonlyMap<string, number>;
+  readonly nested: readonly NestedFieldWrite[];
+  readonly operations: readonly ByteRangeOperation[];
+  readonly contentDelta: number;
+  readonly candidateBytes: number;
+}
+
+function isPathPrefix(a: readonly string[], b: readonly string[]): boolean {
+  return a.length <= b.length && a.every((part, i) => part === b[i]);
+}
+
+function overlapsOtherPath(
+  path: readonly string[],
+  index: number,
+  paths: readonly (readonly string[])[],
+): boolean {
+  return paths.some(
+    (other, otherIndex) =>
+      otherIndex !== index && (isPathPrefix(other, path) || isPathPrefix(path, other)),
+  );
+}
+
+/** The owned value at `path`, or undefined when a step leaves owned object/array fields. */
+function ownedPathValue(root: unknown, path: readonly string[]): unknown {
+  let target: unknown = root;
+  for (const field of path) {
+    if (
+      target === null ||
+      typeof target !== 'object' ||
+      ArrayBuffer.isView(target) ||
+      target instanceof ArrayBuffer ||
+      !Object.hasOwn(target, field)
+    )
+      return undefined;
+    target = (target as Record<string, unknown>)[field];
+  }
+  return target;
+}
+
+function replaceableNestedParent(
+  value: Record<string, unknown>,
+  path: readonly string[],
+  field: string,
+): Result<Record<string, unknown>, AssetError> {
+  const target = ownedPathValue(value, path.slice(0, -1));
+  if (!isObjectFields(target) && !Array.isArray(target))
+    return err(failure('asset-invalid-value', 'an existing owned field parent'));
+  if (!Object.hasOwn(target, field))
+    return err(failure('asset-invalid-value', 'an existing owned nested field'));
+  const descriptor = Object.getOwnPropertyDescriptor(target, field);
+  if (descriptor?.writable !== true || descriptor.configurable !== true)
+    return err(failure('asset-invalid-value', 'a replaceable owned nested field'));
+  return ok(target as Record<string, unknown>);
+}
+
+/** Row size, destination stride and span of a byte write, when all are bounded integers. */
+function byteRangeLayout(
+  write: AssetByteWrite,
+): { readonly rowBytes: number; readonly byteStride: number; readonly span: number } | undefined {
+  const { byteOffset, bytes } = write;
+  const rowBytes = write.rowBytes ?? bytes.byteLength;
+  const byteStride = write.byteStride ?? rowBytes;
+  const count = bytes.byteLength / rowBytes;
+  const span = (count - 1) * byteStride + rowBytes;
+  if (
+    !Number.isSafeInteger(byteOffset) ||
+    byteOffset < 0 ||
+    !Number.isSafeInteger(rowBytes) ||
+    rowBytes <= 0 ||
+    !Number.isSafeInteger(byteStride) ||
+    byteStride < rowBytes ||
+    !Number.isSafeInteger(count) ||
+    !Number.isSafeInteger(span)
+  )
+    return undefined;
+  return { rowBytes, byteStride, span };
+}
+
+function ownedBinaryView(
+  target: unknown,
+  byteOffset: number,
+  span: number,
+): Uint8Array | undefined {
+  if (target instanceof ArrayBuffer)
+    return byteOffset + span > target.byteLength
+      ? undefined
+      : new Uint8Array(target, byteOffset, span);
+  if (!ArrayBuffer.isView(target) || !(target.buffer instanceof ArrayBuffer)) return undefined;
+  if (byteOffset + span > target.byteLength) return undefined;
+  return new Uint8Array(target.buffer, target.byteOffset + byteOffset, span);
+}
+
+function prepareByteWrites(
+  value: Record<string, unknown>,
+  writes: readonly AssetByteWrite[],
+  replaced: readonly string[],
+  paths: readonly (readonly string[])[],
+): Result<ByteRangeOperation[], AssetError> {
+  const operations: ByteRangeOperation[] = [];
+  for (const write of writes) {
+    if (write.bytes.byteLength === 0) continue;
+    const { path, byteOffset } = write;
+    const layout = byteRangeLayout(write);
+    if (
+      path.length === 0 ||
+      replaced.includes(path[0] ?? '') ||
+      paths.some((field) => isPathPrefix(field, path) || isPathPrefix(path, field)) ||
+      layout === undefined
+    )
+      return err(failure('asset-invalid-value', 'a bounded contiguous or strided byte range'));
+    const target = ownedBinaryView(ownedPathValue(value, path), byteOffset, layout.span);
+    if (target === undefined)
+      return err(failure('asset-invalid-value', 'an in-bounds owned binary range'));
+    operations.push({ target, write, ...layout });
+  }
+  return ok(operations);
+}
+
+function copyRangeBytes({ target, write, rowBytes, byteStride }: ByteRangeOperation): void {
+  if (rowBytes === byteStride) {
+    target.set(write.bytes);
+    return;
+  }
+  for (
+    let source = 0, destination = 0;
+    source < write.bytes.byteLength;
+    source += rowBytes, destination += byteStride
+  )
+    target.set(write.bytes.subarray(source, source + rowBytes), destination);
+}
+
+function defineOwnedField(target: Record<string, unknown>, field: string, value: unknown): void {
+  Object.defineProperty(target, field, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 function isObjectFields(value: unknown): value is Record<string, unknown> {
   return (
     value !== null &&
@@ -222,7 +394,7 @@ export class AssetRecords implements AssetReferenceOwner {
   constructor(limits: AssetLimits = {}) {
     this.limits = {
       maxAssets: 65_536,
-      maxBytes: 1024 * 1024 * 1024,
+      maxBytes: DEFAULT_ASSET_BUDGET_BYTES,
       maxSnapshots: 128,
       maxRanges: 64,
       maxObservers: 32,
@@ -652,210 +824,166 @@ export class AssetRecords implements AssetReferenceOwner {
     if (!captured.ok) return captured;
     const prepared = prepare(found.value.value, captured.value, this.limits);
     if (!prepared.ok) return prepared;
+    const commits = this.prepareRangeCommits(prepared.value, measured.value);
+    if (!commits.ok) return commits;
+    if (this.revision !== revision)
+      return err(failure('asset-write-conflict', 'unchanged content during range preparation'));
+    if (commits.value.updates.length === 0) return ok(undefined);
+    this.revision++;
+    this.bytes += commits.value.totalDelta;
+    for (const update of commits.value.updates) this.commitRangeUpdate(update);
+    return ok(undefined);
+  }
+
+  /** Every update is validated and its copies owned before any record changes. */
+  private prepareRangeCommits(
+    updates: readonly AssetRangeUpdate[],
+    capturedBytes: number,
+  ): Result<{ readonly updates: PreparedRangeUpdate[]; readonly totalDelta: number }, AssetError> {
     const adopted = new Set<number>();
-    const commits: (() => void)[] = [];
-    let candidateBytes = measured.value;
+    const commits: PreparedRangeUpdate[] = [];
+    let candidateBytes = capturedBytes;
     let totalDelta = 0;
     let rangeCount = 0;
-    for (const update of prepared.value) {
+    for (const update of updates) {
       if (adopted.has(update.handle))
         return err(failure('asset-invalid-value', 'one range update per asset'));
       adopted.add(update.handle);
       const entry = this.entry(update.handle);
       if (!entry.ok) return entry;
-      const record = entry.value;
-      const value = record.value;
+      const value = entry.value.value;
       if (!isObjectFields(value))
         return err(failure('asset-invalid-value', 'object content with an unchanged kind'));
-      const { writes, fields = {}, remove = [], fieldWrites = [] } = update.ranges;
+      const { writes, fieldWrites = [] } = update.ranges;
       rangeCount += writes.length + fieldWrites.length;
       if (rangeCount > this.limits.maxRanges)
         return err(failure('asset-budget-exceeded', 'bounded range preparation'));
-      const patched = Object.keys(fields);
-      const replaced = [...new Set([...patched, ...remove])];
-      if (replaced.includes('kind'))
-        return err(failure('asset-invalid-value', 'object content with an unchanged kind'));
-      const measuredFields = this.measureInput(fields);
-      if (!measuredFields.ok) return measuredFields;
-      candidateBytes += measuredFields.value;
-      const copiedFields = this.capture(fields);
-      if (!copiedFields.ok) return copiedFields;
-      const sizes = new Map(
-        patched.map((field) => [
-          field,
-          assetFieldBytes(field, assetDataBytes(copiedFields.value[field])),
-        ]),
-      );
-      let contentDelta = 0;
-      for (const field of replaced)
-        contentDelta += (sizes.get(field) ?? 0) - (record.fieldBytes.get(field) ?? 0);
-      const nested: {
-        target: Record<string, unknown>;
-        field: string;
-        value: unknown;
-        top: string;
-        delta: number;
-      }[] = [];
-      const paths: readonly string[][] = fieldWrites.map((write) => [...write.path]);
-      const prefix = (a: readonly string[], b: readonly string[]) =>
-        a.length <= b.length && a.every((part, i) => part === b[i]);
-      const traverse = (path: readonly string[]): unknown => {
-        let target: unknown = value;
-        for (const field of path) {
-          if (
-            target === null ||
-            typeof target !== 'object' ||
-            ArrayBuffer.isView(target) ||
-            target instanceof ArrayBuffer ||
-            !Object.hasOwn(target, field)
-          )
-            return undefined;
-          target = (target as Record<string, unknown>)[field];
-        }
-        return target;
-      };
-      for (const [index, write] of fieldWrites.entries()) {
-        const top = write.path[0],
-          field = write.path.at(-1);
-        if (
-          write.path.length < 2 ||
-          top === undefined ||
-          field === undefined ||
-          top === 'kind' ||
-          replaced.includes(top) ||
-          paths.some(
-            (path, other) =>
-              other !== index && (prefix(path, write.path) || prefix(write.path, path)),
-          )
-        )
-          return err(failure('asset-invalid-value', 'distinct existing nested field paths'));
-        const target = traverse(write.path.slice(0, -1));
-        if (!isObjectFields(target) && !Array.isArray(target))
-          return err(failure('asset-invalid-value', 'an existing owned field parent'));
-        if (!Object.hasOwn(target, field))
-          return err(failure('asset-invalid-value', 'an existing owned nested field'));
-        const descriptor = Object.getOwnPropertyDescriptor(target, field);
-        if (descriptor?.writable !== true || descriptor.configurable !== true)
-          return err(failure('asset-invalid-value', 'a replaceable owned nested field'));
-        const leaf = this.measureInput(write.value);
-        if (!leaf.ok) return leaf;
-        candidateBytes += leaf.value;
-        const capturedLeaf = this.capture(write.value);
-        if (!capturedLeaf.ok) return capturedLeaf;
-        const parent = target as Record<string, unknown>;
-        const delta = leaf.value - assetDataBytes(parent[field]);
-        contentDelta += delta;
-        nested.push({ target: parent, field, value: capturedLeaf.value, top, delta });
-      }
-      const operations: {
-        target: Uint8Array;
-        write: AssetByteWrite;
-        rowBytes: number;
-        byteStride: number;
-        span: number;
-      }[] = [];
-      for (const write of writes) {
-        if (write.bytes.byteLength === 0) continue;
-        const { path, byteOffset, bytes } = write;
-        candidateBytes += bytes.byteLength;
-        const rowBytes = write.rowBytes ?? bytes.byteLength;
-        const byteStride = write.byteStride ?? rowBytes;
-        const count = bytes.byteLength / rowBytes;
-        const span = (count - 1) * byteStride + rowBytes;
-        if (
-          path.length === 0 ||
-          replaced.includes(path[0] ?? '') ||
-          paths.some((field) => prefix(field, path) || prefix(path, field)) ||
-          !Number.isSafeInteger(byteOffset) ||
-          byteOffset < 0 ||
-          !Number.isSafeInteger(rowBytes) ||
-          rowBytes <= 0 ||
-          !Number.isSafeInteger(byteStride) ||
-          byteStride < rowBytes ||
-          !Number.isSafeInteger(count) ||
-          !Number.isSafeInteger(span)
-        )
-          return err(failure('asset-invalid-value', 'a bounded contiguous or strided byte range'));
-        const target = traverse(path);
-        if (
-          (!(target instanceof ArrayBuffer) &&
-            (!ArrayBuffer.isView(target) || !(target.buffer instanceof ArrayBuffer))) ||
-          byteOffset + span > target.byteLength
-        )
-          return err(failure('asset-invalid-value', 'an in-bounds owned binary range'));
-        operations.push({
-          target:
-            target instanceof ArrayBuffer
-              ? new Uint8Array(target, byteOffset, span)
-              : new Uint8Array(target.buffer, target.byteOffset + byteOffset, span),
-          write,
-          rowBytes,
-          byteStride,
-          span,
-        });
-      }
-      totalDelta += contentDelta;
+      const prepared = this.prepareRangeUpdate(update, entry.value, value);
+      if (!prepared.ok) return prepared;
+      candidateBytes += prepared.value.candidateBytes;
+      totalDelta += prepared.value.contentDelta;
       if (!this.fits(candidateBytes) || !this.fits(totalDelta))
         return err(failure('asset-budget-exceeded', 'range candidate and adopted content bytes'));
+      const { operations, replaced, nested } = prepared.value;
       if (operations.length === 0 && replaced.length === 0 && nested.length === 0) continue;
-      commits.push(() => {
-        for (const { target, write, rowBytes, byteStride } of operations) {
-          if (rowBytes === byteStride) target.set(write.bytes);
-          else
-            for (
-              let source = 0, destination = 0;
-              source < write.bytes.byteLength;
-              source += rowBytes, destination += byteStride
-            )
-              target.set(write.bytes.subarray(source, source + rowBytes), destination);
-        }
-        for (const field of replaced) {
-          if (Object.hasOwn(copiedFields.value, field)) {
-            Object.defineProperty(value, field, {
-              value: copiedFields.value[field],
-              enumerable: true,
-              writable: true,
-              configurable: true,
-            });
-            record.fieldBytes.set(field, sizes.get(field) ?? 0);
-          } else {
-            delete value[field];
-            record.fieldBytes.delete(field);
-          }
-        }
-        for (const leaf of nested) {
-          Object.defineProperty(leaf.target, leaf.field, {
-            value: leaf.value,
-            enumerable: true,
-            writable: true,
-            configurable: true,
-          });
-          record.fieldBytes.set(leaf.top, (record.fieldBytes.get(leaf.top) ?? 0) + leaf.delta);
-        }
-        record.bytes += contentDelta;
-        record.revision = this.revision;
-        this.changed(update.handle, [...new Set([...replaced, ...nested.map((leaf) => leaf.top)])]);
-        for (const { write, span } of operations)
-          this.changed(update.handle, [], {
-            path: write.path,
-            byteOffset: write.byteOffset,
-            byteLength: span,
-            ...(write.byteStride === undefined
-              ? {}
-              : {
-                  rowBytes: write.rowBytes ?? write.bytes.byteLength,
-                  byteStride: write.byteStride,
-                }),
-          });
-      });
+      commits.push(prepared.value);
     }
-    if (this.revision !== revision)
-      return err(failure('asset-write-conflict', 'unchanged content during range preparation'));
-    if (commits.length === 0) return ok(undefined);
-    this.revision++;
-    this.bytes += totalDelta;
-    for (const commit of commits) commit();
-    return ok(undefined);
+    return ok({ updates: commits, totalDelta });
+  }
+
+  private prepareRangeUpdate(
+    update: AssetRangeUpdate,
+    record: RecordEntry,
+    value: Record<string, unknown>,
+  ): Result<PreparedRangeUpdate, AssetError> {
+    const { writes, fields = {}, remove = [], fieldWrites = [] } = update.ranges;
+    const patched = Object.keys(fields);
+    const replaced = [...new Set([...patched, ...remove])];
+    if (replaced.includes('kind'))
+      return err(failure('asset-invalid-value', 'object content with an unchanged kind'));
+    const measuredFields = this.measureInput(fields);
+    if (!measuredFields.ok) return measuredFields;
+    const copiedFields = this.capture(fields);
+    if (!copiedFields.ok) return copiedFields;
+    const sizes = new Map(
+      patched.map((field) => [
+        field,
+        assetFieldBytes(field, assetDataBytes(copiedFields.value[field])),
+      ]),
+    );
+    let contentDelta = 0;
+    for (const field of replaced)
+      contentDelta += (sizes.get(field) ?? 0) - (record.fieldBytes.get(field) ?? 0);
+    const paths: readonly (readonly string[])[] = fieldWrites.map((write) => [...write.path]);
+    const nested = this.prepareNestedWrites(value, fieldWrites, replaced, paths);
+    if (!nested.ok) return nested;
+    const operations = prepareByteWrites(value, writes, replaced, paths);
+    if (!operations.ok) return operations;
+    let writtenBytes = 0;
+    for (const write of writes) writtenBytes += write.bytes.byteLength;
+    return ok({
+      handle: update.handle,
+      record,
+      value,
+      replaced,
+      fields: copiedFields.value,
+      sizes,
+      nested: nested.value.leaves,
+      operations: operations.value,
+      contentDelta: contentDelta + nested.value.contentDelta,
+      candidateBytes: measuredFields.value + nested.value.candidateBytes + writtenBytes,
+    });
+  }
+
+  private prepareNestedWrites(
+    value: Record<string, unknown>,
+    fieldWrites: NonNullable<PreparedAssetRanges['fieldWrites']>,
+    replaced: readonly string[],
+    paths: readonly (readonly string[])[],
+  ): Result<
+    { readonly leaves: NestedFieldWrite[]; contentDelta: number; candidateBytes: number },
+    AssetError
+  > {
+    const prepared = { leaves: [] as NestedFieldWrite[], contentDelta: 0, candidateBytes: 0 };
+    for (const [index, write] of fieldWrites.entries()) {
+      const top = write.path[0],
+        field = write.path.at(-1);
+      if (
+        write.path.length < 2 ||
+        top === undefined ||
+        field === undefined ||
+        top === 'kind' ||
+        replaced.includes(top) ||
+        overlapsOtherPath(write.path, index, paths)
+      )
+        return err(failure('asset-invalid-value', 'distinct existing nested field paths'));
+      const parent = replaceableNestedParent(value, write.path, field);
+      if (!parent.ok) return parent;
+      const leaf = this.measureInput(write.value);
+      if (!leaf.ok) return leaf;
+      prepared.candidateBytes += leaf.value;
+      const capturedLeaf = this.capture(write.value);
+      if (!capturedLeaf.ok) return capturedLeaf;
+      const delta = leaf.value - assetDataBytes(parent.value[field]);
+      prepared.contentDelta += delta;
+      prepared.leaves.push({ target: parent.value, field, value: capturedLeaf.value, top, delta });
+    }
+    return ok(prepared);
+  }
+
+  private commitRangeUpdate(update: PreparedRangeUpdate): void {
+    const { record, value, fields, sizes } = update;
+    for (const operation of update.operations) copyRangeBytes(operation);
+    for (const field of update.replaced) {
+      if (Object.hasOwn(fields, field)) {
+        defineOwnedField(value, field, fields[field]);
+        record.fieldBytes.set(field, sizes.get(field) ?? 0);
+      } else {
+        delete value[field];
+        record.fieldBytes.delete(field);
+      }
+    }
+    for (const leaf of update.nested) {
+      defineOwnedField(leaf.target, leaf.field, leaf.value);
+      record.fieldBytes.set(leaf.top, (record.fieldBytes.get(leaf.top) ?? 0) + leaf.delta);
+    }
+    record.bytes += update.contentDelta;
+    record.revision = this.revision;
+    this.changed(update.handle, [
+      ...new Set([...update.replaced, ...update.nested.map((leaf) => leaf.top)]),
+    ]);
+    for (const { write, span } of update.operations)
+      this.changed(update.handle, [], {
+        path: write.path,
+        byteOffset: write.byteOffset,
+        byteLength: span,
+        ...(write.byteStride === undefined
+          ? {}
+          : {
+              rowBytes: write.rowBytes ?? write.bytes.byteLength,
+              byteStride: write.byteStride,
+            }),
+      });
   }
 
   retain(handle: number, target?: string): Result<void, AssetError> {
@@ -1047,7 +1175,10 @@ export class AssetRecords implements AssetReferenceOwner {
       },
       matchesCurrent: (preserveChangeEvidence = false) => {
         if (!active || this.closed || this.preparingAdoption || cursor.index < 0) return false;
-        for (const [reference, retained] of versions) {
+        // Key iteration: this runs per guarded consumer every frame, and an
+        // entries() walk would allocate one [key, value] pair per reference.
+        for (const reference of versions.keys()) {
+          const retained = versions.get(reference) as { readonly revision: number };
           if (this.records.get(reference)?.revision !== retained.revision) {
             if (!preserveChangeEvidence) this.closeCursor(cursor);
             return false;

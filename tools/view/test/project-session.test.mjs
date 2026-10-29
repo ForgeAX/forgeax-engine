@@ -62,6 +62,18 @@ test('URL-less fixture target stays in the current document after project open',
   session.dispose();
 });
 
+test('URL-less fixture target is reused after refresh', async () => {
+  const window = browser('http://localhost:5080/?project=%2Ffixture%2Fproject', 'reload');
+  const api = client({ revision: 1, project: { id: 'fixture-project', root: '/fixture/project' },
+    projectTarget: { targetId: 'fixture-scene-target' } });
+  const session = createProjectSession(api, { window });
+  await session.ready;
+  assert.deepEqual(api.calls, []);
+  assert.deepEqual(window.visits, []);
+  assert.equal(session.getSnapshot().error, null);
+  session.dispose();
+});
+
 test('failed URL project intent ends restoration and can be explicitly retried', async () => {
   const window = browser('http://localhost:8000/?project=%2Fgame');
   const api = client({ revision: 1 });

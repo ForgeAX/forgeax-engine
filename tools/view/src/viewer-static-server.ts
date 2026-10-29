@@ -1,32 +1,9 @@
-import { createReadStream, existsSync, statSync } from 'node:fs';
-import { join, normalize } from 'node:path';
+import { createReadStream } from 'node:fs';
 import { createServer } from 'node:http';
+import { resolveViewerFile, viewerContentType } from '@forgeax/view-workspace-core/viewer-static';
+import { installedEngineRoot } from './engine-root.ts';
 
 export const VIEWER_BOOTSTRAP_PATH = '/__forgeax/view/bootstrap';
-
-const STATIC_MIME: Readonly<Record<string, string>> = Object.freeze({
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.map': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
-  '.json': 'application/json; charset=utf-8',
-});
-
-function staticContentType(filePath: string) {
-  const index = filePath.lastIndexOf('.');
-  if (index === -1) return 'application/octet-stream';
-  return STATIC_MIME[filePath.slice(index)] ?? 'application/octet-stream';
-}
-
-function resolveStaticFile(root: string, requestPath: string) {
-  const relative = normalize(requestPath).replace(/^(\.\.(\/|\\|$))+/, '');
-  const absolute = join(root, relative);
-  if (!absolute.startsWith(root)) return undefined;
-  return absolute;
-}
 
 export function createViewerBootstrapPayload(env = process.env) {
   if (env.FORGEAX_VIEW_BOOTSTRAP_CONFIGURED !== '1') {
@@ -61,6 +38,7 @@ export async function startViewerStaticServer({ host = '127.0.0.1', port = 0, st
   if (!staticRoot || typeof staticRoot !== 'string') {
     throw new TypeError('viewer static server requires staticRoot');
   }
+  const engineRoot = installedEngineRoot();
   const http = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === VIEWER_BOOTSTRAP_PATH) {
@@ -70,15 +48,15 @@ export async function startViewerStaticServer({ host = '127.0.0.1', port = 0, st
       response.end(JSON.stringify(createViewerBootstrapPayload(env)));
       return;
     }
-    let filePath = resolveStaticFile(staticRoot, url.pathname === '/' ? '/index.html' : url.pathname);
-    if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
+    const filePath = resolveViewerFile(staticRoot, url.pathname === '/' ? '/index.html' : url.pathname, engineRoot);
+    if (filePath) {
       response.statusCode = 200;
-      response.setHeader('Content-Type', staticContentType(filePath));
+      response.setHeader('Content-Type', viewerContentType(filePath));
       createReadStream(filePath).pipe(response);
       return;
     }
-    const spa = resolveStaticFile(staticRoot, '/index.html');
-    if (spa && existsSync(spa)) {
+    const spa = resolveViewerFile(staticRoot, '/index.html');
+    if (spa) {
       response.statusCode = 200;
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       createReadStream(spa).pipe(response);

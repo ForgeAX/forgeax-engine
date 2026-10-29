@@ -1,14 +1,28 @@
 import type { CodecResult } from './errors.js';
 import { codecError } from './errors.js';
 
-/** The decompression function returned by fzstd's dynamic import. */
-type FzstdDecompress = (dat: Uint8Array, buf?: Uint8Array) => Uint8Array;
+type ZstdDecompress = (dat: Uint8Array) => Uint8Array;
 
 /** How the decompressor is loaded. Overridable in tests via {@link _setZstdImporter}. */
-type ZstdImporter = () => Promise<FzstdDecompress>;
+type ZstdImporter = () => Promise<ZstdDecompress>;
 
-const defaultImporter: ZstdImporter = () =>
-  import('fzstd').then((mod) => mod.decompress as FzstdDecompress);
+const defaultImporter: ZstdImporter = async () => {
+  try {
+    const { Zstd } = await import('@hpcc-js/wasm-zstd');
+    const decoder = await Zstd.load();
+    return (bytes) => {
+      if (bytes.length === 0) return new Uint8Array(0);
+      // Keep decoded output outside the growing WASM arena. Each session is synchronous.
+      decoder.resetDecompression();
+      const output = decoder.decompressChunk(bytes);
+      decoder.decompressEnd();
+      return output;
+    };
+  } catch {
+    // Hosts that cannot initialize WASM retain the existing pure-JS decoder.
+    return import('fzstd').then((mod) => mod.decompress);
+  }
+};
 
 let importer: ZstdImporter = defaultImporter;
 
@@ -20,9 +34,9 @@ let importer: ZstdImporter = defaultImporter;
  * resolved = decompressor ready, rejected = init failed (retry on next call).
  * @internal
  */
-let _initPromise: Promise<FzstdDecompress> | null = null;
+let _initPromise: Promise<ZstdDecompress> | null = null;
 
-function getDecompressor(): Promise<FzstdDecompress> {
+function getDecompressor(): Promise<ZstdDecompress> {
   if (_initPromise !== null) {
     return _initPromise;
   }
@@ -37,7 +51,7 @@ function getDecompressor(): Promise<FzstdDecompress> {
 /**
  * Test-only: reset the lazy singleton and optionally override the importer, so
  * lazy import / concurrency / failure-retry can be exercised deterministically.
- * Call with no argument to restore the real fzstd importer.
+ * Call with no argument to restore the default importer.
  * @internal
  */
 export function _setZstdImporter(next?: ZstdImporter): void {
@@ -46,14 +60,14 @@ export function _setZstdImporter(next?: ZstdImporter): void {
 }
 
 /**
- * Decompress zstd-compressed bytes using fzstd (pure JS, no WASM).
+ * Decompress zstd bytes with lazy WASM initialization and a pure-JS init fallback.
  *
  * On success returns `{ ok: true, value: decompressed }`.
  * On failure returns a CodecError with `codec-init-failed` or
  * `decompression-failed` per the closed CodecErrorCode union (D-8).
  */
 export async function decompressZstd(bytes: Uint8Array): Promise<CodecResult<Uint8Array>> {
-  let decompress: FzstdDecompress;
+  let decompress: ZstdDecompress;
   try {
     decompress = await getDecompressor();
   } catch {
@@ -67,5 +81,29 @@ export async function decompressZstd(bytes: Uint8Array): Promise<CodecResult<Uin
     return codecError('decompression-failed', {
       reason: 'zstd decompression failed: corrupt or invalid compressed data',
     });
+  }
+}
+
+// Native hosts may install text encoders after loading shared module chunks.
+let utf8: TextDecoder | undefined;
+
+/**
+ * Text of a delivered document stored as UTF-8 or as one zstd frame.
+ *
+ * Player packages may store large JSON documents compressed so any static host
+ * serves them small. JSON text never begins with the zstd magic byte 0x28.
+ */
+export async function decodeDocumentText(bytes: Uint8Array): Promise<CodecResult<string>> {
+  let text = bytes;
+  if (bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd) {
+    const decoded = await decompressZstd(bytes);
+    if (!decoded.ok) return decoded;
+    text = decoded.value;
+  }
+  try {
+    utf8 ??= new TextDecoder('utf-8', { fatal: true });
+    return { ok: true, value: utf8.decode(text) };
+  } catch {
+    return codecError('decompression-failed', { reason: 'document is not UTF-8 text' });
   }
 }

@@ -4,8 +4,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 describe('HostAudioState bus name owner', () => {
   it('keeps the host state focused on lifecycle and error evidence', () => {
     expectTypeOf<AudioState>().toMatchTypeOf<{
-      readonly contextState: 'running' | 'suspended' | 'closed';
-      readonly activeSourceCount: number;
+      readonly contextState: 'running' | 'suspended' | 'closed' | 'unavailable';
+      readonly activeSourceCount: number | null;
       readonly lastError: unknown;
     }>();
   });

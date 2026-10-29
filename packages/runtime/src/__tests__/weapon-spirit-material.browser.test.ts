@@ -13,6 +13,7 @@ import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
 import { testAssets } from './helpers/runtime-assets';
@@ -161,7 +162,8 @@ it.each([
           color: [1, 1, 1],
           intensity: 1,
           castShadow: true,
-          mapSize: 512,
+          mapSize: testQuality.shadowMapSize,
+          cascadeCount: testQuality.cascadeCount,
           shadowDistance: 50,
         },
       })

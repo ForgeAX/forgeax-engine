@@ -1,5 +1,6 @@
+import * as packRuntime from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssets } from '../internal/runtime-assets';
 import { materialRecordFixture } from './fixtures/material-publication';
@@ -8,12 +9,18 @@ import { loadMaterialFixture } from './fixtures/runtime-material';
 it('keeps publication program data with its source instead of copying it into mutable content', async () => {
   const shaders = new ShaderRegistry({ manifestUrl: undefined });
   const owner = new AssetRegistry({ shaderRegistry: shaders });
+  const publication = vi.spyOn(packRuntime, 'createRuntimePackPublication');
   try {
     const record = materialRecordFixture({
       parameters: [{ name: 'roughness', type: 'f32' }],
       values: { roughness: 0.3 },
     });
     const loaded = (await loadMaterialFixture(owner, record)).unwrap();
+    const input = publication.mock.calls[0]?.[0].pack.assets[0]?.payload as { cooked?: unknown };
+    expect(input.cooked).toBe(record);
+    expect(record.programs.every((program) => program.artifact.bytes instanceof Uint8Array)).toBe(
+      true,
+    );
     expect(loaded.payload).not.toHaveProperty('cooked');
     expect(loaded.projection?.specializationKey).toBe(record.specializationKey);
     for (const program of record.programs) {
@@ -22,6 +29,7 @@ it('keeps publication program data with its source instead of copying it into mu
     owner.update(loaded.handle, { values: { roughness: 0.5 } }).unwrap();
     expect(runtimeAssets(owner).borrow(loaded.handle).unwrap()).not.toHaveProperty('cooked');
   } finally {
+    publication.mockRestore();
     owner.dispose();
   }
 });

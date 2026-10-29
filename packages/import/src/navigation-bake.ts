@@ -43,19 +43,17 @@ function failure(
     detail: { field, value },
   };
 }
-/** Explicit production operation. No ECS frame, runtime compiler or generated identity. */
-export async function bakeNavigationMesh(
-  source: NavigationBakeSource,
-): Promise<Result<NavigationMeshAsset, NavigationBakeError>> {
-  if (
-    !source ||
-    !Array.isArray(source.geometry) ||
-    source.geometry.length === 0 ||
-    source.geometry.length > 1_000_000
-  )
-    return err(failure('navigation-bake-invalid', 'geometry', 'a bounded nonempty geometry array'));
-  const { settings: s } = source;
-  if (
+function geometryArrayValid(source: NavigationBakeSource): boolean {
+  return (
+    !!source &&
+    Array.isArray(source.geometry) &&
+    source.geometry.length !== 0 &&
+    source.geometry.length <= 1_000_000
+  );
+}
+
+function settingsValid(s: NavigationBakeSettings): boolean {
+  return !(
     !s ||
     ![s.radius, s.height, s.maxSlopeDeg, s.maxStep, s.cellSize, s.cellHeight].every(
       Number.isFinite,
@@ -71,94 +69,115 @@ export async function bakeNavigationMesh(
     Math.ceil(s.height / s.cellHeight) > 255 ||
     Math.ceil(s.radius / s.cellSize) > 255 ||
     Math.floor(s.maxStep / s.cellHeight) > 255
-  )
-    return err(failure('navigation-bake-invalid', 'settings', s));
-  const maxTriangles = source.maxTriangles ?? 1_000_000;
-  const maxCells = source.maxCells ?? 4_000_000;
-  if (
-    ![maxTriangles, maxCells].every((n) => Number.isInteger(n) && n > 0) ||
-    maxTriangles > 1_000_000 ||
-    maxCells > 4_000_000
-  )
-    return err(failure('navigation-bake-invalid', 'limits', { maxTriangles, maxCells }));
-  const positions: number[] = [],
-    indices: number[] = [];
-  for (const entry of source.geometry) {
-    if (!entry?.mesh?.attributes || !entry.world)
-      return err(
-        failure(
-          'navigation-bake-invalid',
-          'geometry',
-          'mesh attributes and world placement required',
-        ),
-      );
-    const { mesh, world: m } = entry;
-    const raw = mesh.attributes.position;
-    const p =
-      raw instanceof Float32Array
-        ? raw
-        : raw instanceof ArrayBuffer && raw.byteLength % 4 === 0
-          ? new Float32Array(raw)
-          : undefined;
-    if (
-      !p ||
-      !mesh.indices ||
-      p.length % 3 !== 0 ||
-      mesh.indices.length % 3 !== 0 ||
-      m.length !== 16 ||
-      !Array.from(m).every(Number.isFinite) ||
-      m[3] !== 0 ||
-      m[7] !== 0 ||
-      m[11] !== 0 ||
-      m[15] !== 1
-    )
-      return err(
-        failure(
-          'navigation-bake-invalid',
-          'geometry',
-          'indexed positions and affine world matrix required',
-        ),
-      );
-    if (
-      indices.length / 3 + mesh.indices.length / 3 > maxTriangles ||
-      positions.length + p.length > maxTriangles * 9
-    )
-      return err(failure('navigation-bake-limit', 'triangles', maxTriangles));
-    const offset = positions.length / 3;
-    const determinant =
-      (m[0] as number) *
-        ((m[5] as number) * (m[10] as number) - (m[9] as number) * (m[6] as number)) -
-      (m[4] as number) *
-        ((m[1] as number) * (m[10] as number) - (m[9] as number) * (m[2] as number)) +
-      (m[8] as number) *
-        ((m[1] as number) * (m[6] as number) - (m[5] as number) * (m[2] as number));
-    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12)
-      return err(failure('navigation-bake-invalid', 'world', 'singular transform'));
-    for (let i = 0; i < p.length; i += 3) {
-      const x = p[i] as number,
-        y = p[i + 1] as number,
-        z = p[i + 2] as number;
-      positions.push(
-        (m[0] as number) * x + (m[4] as number) * y + (m[8] as number) * z + (m[12] as number),
-        (m[1] as number) * x + (m[5] as number) * y + (m[9] as number) * z + (m[13] as number),
-        (m[2] as number) * x + (m[6] as number) * y + (m[10] as number) * z + (m[14] as number),
-      );
-    }
-    for (let i = 0; i < mesh.indices.length; i += 3) {
-      const a = mesh.indices[i] as number,
-        b = mesh.indices[i + 1] as number,
-        c = mesh.indices[i + 2] as number;
-      if ([a, b, c].some((n) => !Number.isInteger(n) || n < 0 || n >= p.length / 3))
-        return err(failure('navigation-bake-invalid', 'indices', [a, b, c]));
-      indices.push(
-        offset + a,
-        offset + (determinant < 0 ? c : b),
-        offset + (determinant < 0 ? b : c),
-      );
-    }
+  );
+}
+
+function limitsValid(maxTriangles: number, maxCells: number): boolean {
+  return (
+    [maxTriangles, maxCells].every((n) => Number.isInteger(n) && n > 0) &&
+    maxTriangles <= 1_000_000 &&
+    maxCells <= 4_000_000
+  );
+}
+
+function meshPositions(raw: MeshAsset['attributes']['position']): Float32Array | undefined {
+  if (raw instanceof Float32Array) return raw;
+  return raw instanceof ArrayBuffer && raw.byteLength % 4 === 0 ? new Float32Array(raw) : undefined;
+}
+
+function affineWorldValid(m: ArrayLike<number>): boolean {
+  return (
+    m.length === 16 &&
+    Array.from(m).every(Number.isFinite) &&
+    m[3] === 0 &&
+    m[7] === 0 &&
+    m[11] === 0 &&
+    m[15] === 1
+  );
+}
+
+function linearDeterminant(m: ArrayLike<number>): number {
+  return (
+    (m[0] as number) *
+      ((m[5] as number) * (m[10] as number) - (m[9] as number) * (m[6] as number)) -
+    (m[4] as number) *
+      ((m[1] as number) * (m[10] as number) - (m[9] as number) * (m[2] as number)) +
+    (m[8] as number) * ((m[1] as number) * (m[6] as number) - (m[5] as number) * (m[2] as number))
+  );
+}
+
+function appendWorldPositions(p: Float32Array, m: ArrayLike<number>, positions: number[]): void {
+  for (let i = 0; i < p.length; i += 3) {
+    const x = p[i] as number,
+      y = p[i + 1] as number,
+      z = p[i + 2] as number;
+    positions.push(
+      (m[0] as number) * x + (m[4] as number) * y + (m[8] as number) * z + (m[12] as number),
+      (m[1] as number) * x + (m[5] as number) * y + (m[9] as number) * z + (m[13] as number),
+      (m[2] as number) * x + (m[6] as number) * y + (m[10] as number) * z + (m[14] as number),
+    );
   }
-  if (indices.length === 0 || !positions.every((n) => Number.isFinite(n) && Math.abs(n) < 1e7))
-    return err(failure('navigation-bake-invalid', 'geometry', 'empty or non-finite geometry'));
+}
+
+/** Mirrored placements flip winding so every triangle keeps its upward face. */
+function appendWoundIndices(
+  source: ArrayLike<number>,
+  vertexCount: number,
+  offset: number,
+  mirrored: boolean,
+  indices: number[],
+): NavigationBakeError | undefined {
+  for (let i = 0; i < source.length; i += 3) {
+    const a = source[i] as number,
+      b = source[i + 1] as number,
+      c = source[i + 2] as number;
+    if ([a, b, c].some((n) => !Number.isInteger(n) || n < 0 || n >= vertexCount))
+      return failure('navigation-bake-invalid', 'indices', [a, b, c]);
+    indices.push(offset + a, offset + (mirrored ? c : b), offset + (mirrored ? b : c));
+  }
+  return undefined;
+}
+
+function appendPlacedGeometry(
+  entry: NavigationBakeSource['geometry'][number],
+  maxTriangles: number,
+  positions: number[],
+  indices: number[],
+): NavigationBakeError | undefined {
+  if (!entry?.mesh?.attributes || !entry.world)
+    return failure(
+      'navigation-bake-invalid',
+      'geometry',
+      'mesh attributes and world placement required',
+    );
+  const { mesh, world: m } = entry;
+  const p = meshPositions(mesh.attributes.position);
+  if (
+    !p ||
+    !mesh.indices ||
+    p.length % 3 !== 0 ||
+    mesh.indices.length % 3 !== 0 ||
+    !affineWorldValid(m)
+  )
+    return failure(
+      'navigation-bake-invalid',
+      'geometry',
+      'indexed positions and affine world matrix required',
+    );
+  if (
+    indices.length / 3 + mesh.indices.length / 3 > maxTriangles ||
+    positions.length + p.length > maxTriangles * 9
+  )
+    return failure('navigation-bake-limit', 'triangles', maxTriangles);
+  const offset = positions.length / 3;
+  const determinant = linearDeterminant(m);
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12)
+    return failure('navigation-bake-invalid', 'world', 'singular transform');
+  appendWorldPositions(p, m, positions);
+  return appendWoundIndices(mesh.indices, p.length / 3, offset, determinant < 0, indices);
+}
+
+function positionBounds(positions: readonly number[]): { min: number[]; max: number[] } {
   const min = [Infinity, Infinity, Infinity],
     max = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < positions.length; i++) {
@@ -166,10 +185,12 @@ export async function bakeNavigationMesh(
     min[axis] = Math.min(min[axis] as number, positions[i] as number);
     max[axis] = Math.max(max[axis] as number, positions[i] as number);
   }
-  const nx = Math.ceil(((max[0] as number) - (min[0] as number)) / s.cellSize) + 1,
-    nz = Math.ceil(((max[2] as number) - (min[2] as number)) / s.cellSize) + 1;
-  // Bound both horizontal cells and worst-case rasterization work, including stacked geometry.
-  let rasterWork = 0;
+  return { min, max };
+}
+
+/** Worst-case rasterization work, including stacked geometry. */
+function rasterWork(positions: readonly number[], indices: readonly number[], cellSize: number) {
+  let work = 0;
   for (let i = 0; i < indices.length; i += 3) {
     const a = (indices[i] as number) * 3,
       b = (indices[i + 1] as number) * 3,
@@ -178,7 +199,7 @@ export async function bakeNavigationMesh(
       Math.ceil(
         (Math.max(positions[a] as number, positions[b] as number, positions[c] as number) -
           Math.min(positions[a] as number, positions[b] as number, positions[c] as number)) /
-          s.cellSize,
+          cellSize,
       ) + 1;
     const depth =
       Math.ceil(
@@ -192,13 +213,82 @@ export async function bakeNavigationMesh(
             positions[b + 2] as number,
             positions[c + 2] as number,
           )) /
-          s.cellSize,
+          cellSize,
       ) + 1;
-    rasterWork += width * depth;
+    work += width * depth;
   }
+  return work;
+}
+
+type RecastBuild = ReturnType<typeof generateSoloNavMesh>;
+type RecastPolyMesh = NonNullable<RecastBuild['intermediates']['polyMesh']>;
+
+function polyMeshVertices(p: RecastPolyMesh): number[] {
+  const vertices: number[] = [];
+  const origin = p.bmin();
+  for (let i = 0; i < p.nverts(); i++)
+    vertices.push(
+      origin.x + p.verts(i * 3) * p.cs(),
+      origin.y + p.verts(i * 3 + 1) * p.ch(),
+      origin.z + p.verts(i * 3 + 2) * p.cs(),
+    );
+  return vertices;
+}
+
+function polyMeshPolygons(p: RecastPolyMesh): number[][] {
+  const polygons: number[][] = [];
+  for (let i = 0; i < p.npolys(); i++) {
+    const polygon: number[] = [];
+    for (let j = 0; j < p.nvp(); j++) {
+      const v = p.polys(i * p.nvp() * 2 + j);
+      if (v === 65535) break;
+      polygon.push(v);
+    }
+    if (polygon.length >= 3) polygons.push(polygon);
+  }
+  return polygons;
+}
+
+function releaseRecastBuild(built: RecastBuild | undefined): void {
+  built?.navMesh?.destroy();
+  const i = built?.intermediates;
+  if (i) {
+    if (i.heightfield) freeHeightfield(i.heightfield);
+    if (i.compactHeightfield) freeCompactHeightfield(i.compactHeightfield);
+    if (i.contourSet) freeContourSet(i.contourSet);
+    if (i.polyMesh) freePolyMesh(i.polyMesh);
+    if (i.polyMeshDetail) freePolyMeshDetail(i.polyMeshDetail);
+    Raw.destroy(i.buildContext.raw);
+  }
+}
+
+/** Explicit production operation. No ECS frame, runtime compiler or generated identity. */
+export async function bakeNavigationMesh(
+  source: NavigationBakeSource,
+): Promise<Result<NavigationMeshAsset, NavigationBakeError>> {
+  if (!geometryArrayValid(source))
+    return err(failure('navigation-bake-invalid', 'geometry', 'a bounded nonempty geometry array'));
+  const { settings: s } = source;
+  if (!settingsValid(s)) return err(failure('navigation-bake-invalid', 'settings', s));
+  const maxTriangles = source.maxTriangles ?? 1_000_000;
+  const maxCells = source.maxCells ?? 4_000_000;
+  if (!limitsValid(maxTriangles, maxCells))
+    return err(failure('navigation-bake-invalid', 'limits', { maxTriangles, maxCells }));
+  const positions: number[] = [],
+    indices: number[] = [];
+  for (const entry of source.geometry) {
+    const placed = appendPlacedGeometry(entry, maxTriangles, positions, indices);
+    if (placed !== undefined) return err(placed);
+  }
+  if (indices.length === 0 || !positions.every((n) => Number.isFinite(n) && Math.abs(n) < 1e7))
+    return err(failure('navigation-bake-invalid', 'geometry', 'empty or non-finite geometry'));
+  const { min, max } = positionBounds(positions);
+  const nx = Math.ceil(((max[0] as number) - (min[0] as number)) / s.cellSize) + 1,
+    nz = Math.ceil(((max[2] as number) - (min[2] as number)) / s.cellSize) + 1;
+  // Bound both horizontal cells and worst-case rasterization work, including stacked geometry.
   if (
     nx * nz > maxCells ||
-    rasterWork > 200_000_000 ||
+    rasterWork(positions, indices, s.cellSize) > 200_000_000 ||
     ((max[1] as number) - (min[1] as number)) / s.cellHeight > 65500
   )
     return err(
@@ -212,7 +302,7 @@ export async function bakeNavigationMesh(
   } catch (cause) {
     return err(failure('navigation-bake-failed', 'wasm', String(cause)));
   }
-  let built: ReturnType<typeof generateSoloNavMesh> | undefined;
+  let built: RecastBuild | undefined;
   try {
     built = generateSoloNavMesh(
       positions,
@@ -239,44 +329,17 @@ export async function bakeNavigationMesh(
       return err(
         failure('navigation-bake-failed', 'recast', built.success ? 'empty mesh' : built.error),
       );
-    const vertices: number[] = [],
-      polygons: number[][] = [];
-    const origin = p.bmin();
-    for (let i = 0; i < p.nverts(); i++)
-      vertices.push(
-        origin.x + p.verts(i * 3) * p.cs(),
-        origin.y + p.verts(i * 3 + 1) * p.ch(),
-        origin.z + p.verts(i * 3 + 2) * p.cs(),
-      );
-    for (let i = 0; i < p.npolys(); i++) {
-      const polygon: number[] = [];
-      for (let j = 0; j < p.nvp(); j++) {
-        const v = p.polys(i * p.nvp() * 2 + j);
-        if (v === 65535) break;
-        polygon.push(v);
-      }
-      if (polygon.length >= 3) polygons.push(polygon);
-    }
     return ok({
       kind: 'navigation-mesh',
       version: 'recast-poly/1',
       sourceDigest,
       settings: { ...s },
-      vertices,
-      polygons,
+      vertices: polyMeshVertices(p),
+      polygons: polyMeshPolygons(p),
     });
   } catch (cause) {
     return err(failure('navigation-bake-failed', 'recast', String(cause)));
   } finally {
-    built?.navMesh?.destroy();
-    const i = built?.intermediates;
-    if (i) {
-      if (i.heightfield) freeHeightfield(i.heightfield);
-      if (i.compactHeightfield) freeCompactHeightfield(i.compactHeightfield);
-      if (i.contourSet) freeContourSet(i.contourSet);
-      if (i.polyMesh) freePolyMesh(i.polyMesh);
-      if (i.polyMeshDetail) freePolyMeshDetail(i.polyMeshDetail);
-      Raw.destroy(i.buildContext.raw);
-    }
+    releaseRecastBuild(built);
   }
 }

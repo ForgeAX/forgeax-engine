@@ -450,3 +450,32 @@ it('prepares mesh bindings only when a CPU submesh survives GPU ownership', asyn
     f.dispose();
   }
 });
+
+it('shares a resolved draw pipeline across draws and retries a pending one per draw', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 1, submeshes: 3 });
+  const runtime = f.c.runtime as unknown as {
+    getMaterialShaderPipelineEntry: (...args: unknown[]) => unknown;
+  };
+  const resolved = runtime.getMaterialShaderPipelineEntry;
+  const lookups = vi.fn(resolved);
+  runtime.getMaterialShaderPipelineEntry = lookups;
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const draw = vi.spyOn(pass, 'drawIndexed');
+  try {
+    f.record(pass);
+    expect(draw).toHaveBeenCalledTimes(3);
+    expect(lookups).toHaveBeenCalledTimes(1);
+    const pending = vi.fn(() => null);
+    runtime.getMaterialShaderPipelineEntry = pending;
+    draw.mockClear();
+    f.record(pass);
+    expect(pending).toHaveBeenCalledTimes(3);
+    expect(draw).toHaveBeenCalledTimes(0);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});

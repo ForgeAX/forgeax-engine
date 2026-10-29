@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // hello-scene-nesting headless smoke — dawn-node structural smoke.
 //
 // This script boots dawn-node WebGPU, creates a renderer with inline
@@ -212,7 +213,7 @@ const outerHandle = assets.create(outerScene).unwrap();
 // scene's add override supplies a non-rendering Name component.
 world.spawn(
   { component: Transform, data: { pos: [0, 1, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
-  { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
+  { component: Camera, data: { fov: Math.PI / 3, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
 );
 
 const instRes = worldInstantiateScene(world, outerHandle);
@@ -273,9 +274,17 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  else void renderer.observe(r.value, { include: ['draws'] });
+  // Asynchronous scene pipeline preparation may hold early pictures pending.
+  try {
+    const frame = await drawReadyFrame(renderer, {
+      leases: [lease],
+      camera: { lease },
+      environment: { lease },
+    });
+    void renderer.observe(frame, { include: ['draws'] });
+  } catch (error) {
+    console.error(`[smoke] draw frame ${i} error: ${error?.code ?? String(error)}`);
+  }
   framesObserved++;
 }
 const device = sharedDevice;

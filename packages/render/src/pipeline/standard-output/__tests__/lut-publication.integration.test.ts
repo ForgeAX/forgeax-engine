@@ -10,6 +10,7 @@ import { Camera } from '../../../components/camera';
 import { GpuResidencyCache } from '../../../device/gpu-residency';
 import { createRenderPublisher } from '../../../publication/publisher';
 import { RenderPublicationReceiver } from '../../../publication/receiver';
+import { encodeRenderPublication } from '../../../publication/record';
 import { worldRenderResources } from '../../../publication/resource-scope';
 import { prepareStandardLutGpu } from '../lut-gpu';
 
@@ -63,7 +64,7 @@ it('resolves a transferred LUT through the accepted publication GUID and Catalog
     expect(catalogSnapshots).not.toHaveBeenCalled();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const received = receiver.accept(packet).unwrap();
+    const received = receiver.accept(encodeRenderPublication(packet)).unwrap();
     const transferred = received.resources.resolveAsset<TextureAsset>(handle).unwrap();
     expect(transferred).not.toBe(asset);
     expect(assets.guidOf(handle)).toBe(guid);
@@ -102,7 +103,7 @@ it('resolves a transferred LUT through the accepted publication GUID and Catalog
         },
       ],
     };
-    expect(receiver.accept(invalid)).toMatchObject({
+    expect(receiver.accept(encodeRenderPublication(invalid))).toMatchObject({
       ok: false,
       error: { detail: { subject: 'asset source' } },
     });
@@ -152,7 +153,9 @@ it.each([
   let lease: ReturnType<typeof gpuStore.retainTextureResidency>;
   const receive = () => {
     const candidate = publisher.prepare(0).unwrap();
-    const accepted = receiver.accept(structuredClone(candidate.packet)).unwrap();
+    const accepted = receiver
+      .accept(encodeRenderPublication(structuredClone(candidate.packet)))
+      .unwrap();
     candidate.accept();
     return accepted;
   };

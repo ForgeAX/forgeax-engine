@@ -85,8 +85,9 @@ fn terrainNormalAt(heightMap: texture_2d<f32>, section: vec4<f32>, coordinate: v
   // Scale before subtraction: opposite finite f32 heights may have a span
   // greater than f32::MAX. The normalization is invariant under this scale.
   let scale = max(max(max(abs(hL), abs(hR)), max(abs(hT), abs(hB))), step);
-  let dx = (hR / scale - hL / scale) / f32(right - left);
-  let dz = (hB / scale - hT / scale) / f32(bottom - top);
+  // Bound each operand so fast math cannot reassociate an overflowing height difference.
+  let dx = (clamp(hR / scale, -1.0, 1.0) - clamp(hL / scale, -1.0, 1.0)) / f32(right - left);
+  let dz = (clamp(hB / scale, -1.0, 1.0) - clamp(hT / scale, -1.0, 1.0)) / f32(bottom - top);
   if (dx == 0.0 && dz == 0.0) { return vec3<f32>(0.0, 1.0, 0.0); }
   let normal = vec3<f32>(-dx, step / scale, -dz);
   return normalize(normal / max(max(abs(normal.x), abs(normal.y)), abs(normal.z)));

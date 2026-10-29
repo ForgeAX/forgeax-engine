@@ -1311,16 +1311,22 @@ export class UiElement extends UiNode {
     this.scrollTo(this.scrollLeft, value);
   }
   get scrollWidth(): number {
-    return this.scrollMetrics()[2] ?? 0;
+    return Math.round(this.scrollMetrics()[2] ?? 0);
   }
   get scrollHeight(): number {
-    return this.scrollMetrics()[3] ?? 0;
+    return Math.round(this.scrollMetrics()[3] ?? 0);
   }
   get clientWidth(): number {
-    return this.scrollMetrics()[4] ?? 0;
+    return Math.round(this.scrollMetrics()[4] ?? 0);
   }
   get clientHeight(): number {
-    return this.scrollMetrics()[5] ?? 0;
+    return Math.round(this.scrollMetrics()[5] ?? 0);
+  }
+  get clientLeft(): number {
+    return Math.round(this.scrollMetrics()[6] ?? 0);
+  }
+  get clientTop(): number {
+    return Math.round(this.scrollMetrics()[7] ?? 0);
   }
   scrollTo(x: number | ScrollToOptions = {}, y?: number): void {
     const left = typeof x === 'number' ? x : (x.left ?? this.scrollLeft);

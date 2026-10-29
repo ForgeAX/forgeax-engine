@@ -1,7 +1,22 @@
 # @forgeax/engine-physics-rapier3d
 
+```ts
+import physics3d from '@forgeax/engine/physics-rapier3d';
+
+const app = await createApp(canvas, { plugins: [physics3d] });
+```
+
+In a root plugin, use `await ctx.plugin(physics3d, { solverIterations: 2 })`
+to choose global solver precision at activation. The default is 4; valid values
+are integers [1,32]. Lower values trade contact/joint convergence for CPU time.
+See [solver precision](../physics/README.md#solver-precision) for effects and the
+independent per-body additional iterations.
+
+The default plugin owns only Rapier3D. Its module dependency is static;
+WASM initializes lazily during activation. The shared physics contract imports no backend.
+
 Pinned Rapier 0.35.1 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
-Install `physicsPlugin('rapier-3d')` in the World; game code consumes the optional
+Install `physics3d` in the World; game code consumes the optional
 `PhysicsWorld` capabilities rather than retaining Rapier objects.
 
 | Boundary | Owner behavior |
@@ -12,10 +27,14 @@ Install `physicsPlugin('rapier-3d')` in the World; game code consumes the option
 | Character pushes | Native KCC contact impulses push solid dynamic bodies; sensor filtering remains active. No game-side duplicate push is required. |
 | Native step | Exactly one `FixedTime.delta` step per World fixed iteration; World owns host clock, bounded catch-up and discarded time. |
 | Derived geometry | Convex point sets, heightfields and voxel regions become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
-| Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform; sleeping unchanged bodies avoid redundant writes. |
+| Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform through the ECS numeric write fence; only changed f32 poses publish rows, and sleeping unchanged bodies avoid redundant writes. |
 | Managed joint group | Fixed joints or `JointData.revoluteWithAxes` hinges with body-local anchors and separate unit axes. All inputs/endpoints validate first; staged handles retire on preparation failure. |
 | Handoff | Detached body motion, explicit world pose/velocity writes and dynamic impulses use structured Results. Pose writes queue ordinary writeback; animation/visual blend stays upstream. |
 | Retirement | Constraint leases are idempotent across endpoint removal and backend disposal. Partial native retirement is observable as `managed-physics-failed` with `rebuild-required`; it never reports rollback success. |
+
+Writeback preserves Transform scale and shear and uses live entity generations and
+current table bindings, including table growth and structural moves. Native pose
+records returned by `writebackDynamicBodies()` remain detached caller-owned values.
 
 `prepareDerivedShapeCandidates` retains the complete declared roster in the same
 private admission group used by native rollback. The group uses one of 32
@@ -38,7 +57,7 @@ fixed-step publication and cancellation owner as geometry replacements. Shape
 revisions, constraints and body entities remain unchanged; copied, foreign or
 replaced receipts are stale. A cancelled or refused policy never retires accepted
 colliders. See the [physics contract](../physics/README.md#derived-shape-candidates-3d)
-and [real postshot producer evidence](reports/derived-body-type-reuse-20261015.json).
+and real postshot producer evidence.
 
 `getDerivedPublication` returns the existing immutable publication, including its
 frozen shape ID array. Repeated reads retain identity until a new fixed-step
@@ -69,7 +88,7 @@ target's complete old/new support, including two roots edited at different place
 Collider descriptors choose ordinary Shape or an explicit shared geometry/scale;
 there is no parallel JS Shape cache for managed collision roots.
 
-[Regional Terrain measurements](reports/terrain-regional-20261018.md) include the
+Regional Terrain measurements include the
 remaining ray/cell lookup overhead and the measured complete native contact step.
 
 A successful geometry commit can replace ordinary ECS colliders. The backend
@@ -137,15 +156,27 @@ Character push queries retain each collider's manifolds together with its body
 and world pose before querying another collider. Composite/voxel dispatchers may
 replace the scratch manifold vector, so its length is not an append cursor.
 Impulse points and normals include the manifold's subshape frame. Empty manifolds
-apply no impulse. The [multiple-collider regression](reports/kcc-manifold-ownership-20261020.md)
+apply no impulse. The multiple-collider regression
 retains the published-WASM panic and checks pushing plus local-origin invariance.
 
 Changed physics rows are decoded once per synchronization and that same descriptor
 is reconciled and retained. Pose-only edits keep primitive collision dimensions
 untouched, preserving Rapier's shape and contact caches; authored scale edits still
-update the native dimensions. Unchanged rows remain outside the ECS projection's
-work set. Run `node packages/physics-rapier3d/bench/pose-only-sync.mjs` after building
+update the native dimensions. The accepted descriptor also retains unchanged
+RigidBody / Collider / CharacterController inputs: pose writeback does not decode
+or copy these components again. Component writes and membership changes still
+reconcile through the same projection. Root poses use Transform directly; only
+parented bodies read GlobalTransform. Pose sync borrows only the required local
+TRS arrays or the parented world matrix, without materializing a component row.
+Unchanged rows remain outside the ECS projection's work set. Writeback compares
+only borrowed position/rotation arrays; changed poses still use World.set and publish ordinary
+component change evidence. Run `node packages/physics-rapier3d/bench/pose-only-sync.mjs` after building
 to measure sync and real fixed-step costs separately for a moving primitive scene.
+Add `--dynamic` for 2,304 dynamic cuboids with native pose writeback. This spaced
+CPU workload isolates synchronization; it does not measure a dense pile's solver
+cost or browser FPS. `node packages/physics-rapier3d/bench/writeback.mjs` measures
+the complete ECS physics schedule with native writeback and reports a final-pose
+digest for equivalent-work comparisons.
 
 ## Patched WASM delivery
 
@@ -167,13 +198,17 @@ flowchart LR
 | Generated browser/native transports, bundled declarations and license | `pkg/` |
 
 `loadRapier3D()` selects the browser or native transport through the existing
-`wasm-runtime` export. Both are generated from the same patched WASM and bindings.
-The default browser/Node module `pkg/rapier.mjs` embeds those bytes and needs no
-network request or Rust toolchain. The native transport uses `rapier-native.mjs`
-and the identical external `rapier.wasm`. There is no unpatched npm 3D backend.
-SDK source includes the complete seven-file `pkg/` closure through
-`SDK_SOURCE_WASM`; npm packing carries the same module, declaration, WASM,
-license and provenance files.
+`wasm-runtime` export. Browser/Node loading probes the actual WebAssembly runtime
+once and selects the self-contained `rapier-simd.mjs` when SIMD is supported;
+otherwise it loads `rapier.mjs`. Both come from the same patched sources, retain
+scalar geometry math and use the same solver policy. SIMD accelerates the
+solver's packed arithmetic without reducing iterations, contacts or CCD.
+The native Host transport continues to use `rapier-native.mjs` and its identical
+external scalar `rapier.wasm`; it does not infer native capability from the JS
+runtime. No network request or Rust toolchain is needed by either browser payload.
+There is no unpatched npm 3D backend. SDK source includes the complete nine-file
+`pkg/` closure through `SDK_SOURCE_WASM`, including SIMD declarations and the
+shared license/provenance; npm packing carries the same closure.
 
 Contributor builds use `node scripts/build-wasm.mjs --ensure`: a current payload
 is checked and reused; a missing, stale or modified payload is rebuilt. Explicit
@@ -219,7 +254,7 @@ scene gates.
 
 A path-based Host selects the `forgeax-native` bundler condition and calls
 `initializeNativeRapier3D(host)` from `@forgeax/engine-physics-rapier3d/native`
-before activating `physicsPlugin('rapier-3d')`. The ordinary loader and plugin
+before activating `physics3d`. The ordinary loader and plugin
 then consume that same realm-local module. Missing initialization returns
 `PhysicsError` with `code: 'wasm-load-failed'`. Concurrent initialization shares
 one attempt. Failed reads, integrity checks and Host instantiations can retry;

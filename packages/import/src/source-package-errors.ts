@@ -1,3 +1,4 @@
+import type { DdcBrowserError, DdcCommitResult } from '@forgeax/engine-ddc';
 import { IMPORT_ERROR_HINTS, type ImportError } from '@forgeax/engine-types';
 
 const SOURCE_PACKAGE_ERROR_POLICY = {
@@ -14,8 +15,8 @@ const SOURCE_PACKAGE_ERROR_POLICY = {
     hint: 'repair the source or importer, then rebuild or cold-cook the source package',
   },
   'source-package-ddc-failed': {
-    expected: 'a readable persistent DDC entry with matching integrity evidence',
-    hint: 'discard the invalid derived entry, then rebuild or cold-cook the source package',
+    expected: 'a validated persistent DDC entry committed by the active publication owner',
+    hint: 'inspect the DDC failure and active publication, then retry through the producer',
   },
   'source-package-publication-invalid': {
     expected: 'a complete Pack body, refs, artifacts, and route integrity',
@@ -51,6 +52,8 @@ export interface SourcePackageErrorDetail extends SourcePackageErrorContext {
   readonly missing?: readonly string[];
   readonly unexpected?: readonly string[];
   readonly registeredImporters?: readonly string[];
+  readonly ddcError?: DdcBrowserError;
+  readonly ddcCommitResult?: Exclude<DdcCommitResult['result'], 'current'>;
 }
 
 export interface SourcePackageError {
@@ -69,7 +72,9 @@ export function sourcePackageError(
   return {
     code,
     expected: policy?.expected as string,
-    hint: policy?.hint as string,
+    hint:
+      (code === 'source-package-ddc-failed' ? detail.ddcError?.hint : undefined) ??
+      (policy?.hint as string),
     detail: { ...context, ...detail },
   };
 }

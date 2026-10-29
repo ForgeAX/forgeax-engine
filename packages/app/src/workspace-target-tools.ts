@@ -1,6 +1,6 @@
 import { type EntityHandle, Update } from '@forgeax/engine-ecs';
 import type { CanvasInputBoundary } from '@forgeax/engine-input';
-import { pickDisplay } from '@forgeax/engine-picking';
+import { pickDisplay, pickTriangleDisplay } from '@forgeax/engine-picking';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { Camera, getActiveCamera, Outline } from '@forgeax/engine-render';
 import { Children, GlobalTransform } from '@forgeax/engine-scene';
@@ -11,6 +11,7 @@ import { EngineWorkspaceError } from './workspace';
 import { createObservationInspection, observationEntity } from './workspace-target-inspection';
 
 type Inspection = ReturnType<typeof createObservationInspection>;
+export type EngineWorkspacePickGranularity = 'bounds' | 'triangle';
 export interface EngineWorkspaceEntitySource {
   readonly guid: string;
   readonly sourcePath: string;
@@ -36,7 +37,11 @@ export interface EngineWorkspaceTargetTools {
         ReturnType<Inspection['inspect']> & { readonly source?: EngineWorkspaceEntitySource }
       >;
   focus(input: { entityId: string }): unknown | Promise<unknown>;
-  pick?: (input: { x: number; y: number }) => unknown | Promise<unknown>;
+  pick?: (input: {
+    x: number;
+    y: number;
+    granularity?: EngineWorkspacePickGranularity;
+  }) => unknown | Promise<unknown>;
   highlight?: (input: { entityId?: string }) => unknown | Promise<unknown>;
   control?: {
     mode(): 'player' | 'observer';
@@ -116,9 +121,18 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
     const activeCamera = (): EntityHandle | undefined => {
       const active = getActiveCamera(ctx.world)?.entity;
       let first: EntityHandle | undefined;
-      for (const row of ctx.world.query({ with: [Camera, GlobalTransform] }).unwrap()) {
-        first ??= row.entity;
-        if (row.entity === active) return row.entity;
+      for (const querySpan of ctx.world
+        .query({ with: [Camera, GlobalTransform] })
+        .unwrap()
+        .spans()
+        .unwrap()) {
+        const queryEntities = querySpan.entities;
+        for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+          const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+
+          first ??= queriedEntity;
+          if (queriedEntity === active) return queriedEntity;
+        }
       }
       return first;
     };
@@ -201,8 +215,18 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
     ctx.provide('engineWorkspaceTargetTools', {
       ...(display
         ? {
-            pick({ x, y }: { x: number; y: number }) {
+            pick({
+              x,
+              y,
+              granularity = 'bounds',
+            }: {
+              x: number;
+              y: number;
+              granularity?: EngineWorkspacePickGranularity;
+            }) {
               assertAvailable();
+              if (granularity !== 'bounds' && granularity !== 'triangle')
+                throw new TypeError('Pick granularity must be bounds or triangle');
               const canvas = display.canvas;
               const frame = readBrowserFrameSubmitted(canvas);
               const reason = !frame
@@ -236,19 +260,45 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
                     canvasExtent: { width: canvas.width, height: canvas.height },
                   },
                 );
-              const hit = pickDisplay(
-                ctx.world,
-                x,
-                y,
-                frame.barrelDistortion,
-                canvas.width,
-                canvas.height,
-              );
+              let entityId: string | null;
+              if (granularity === 'triangle') {
+                const result = pickTriangleDisplay(
+                  ctx.world,
+                  x,
+                  y,
+                  frame.barrelDistortion,
+                  canvas.width,
+                  canvas.height,
+                );
+                if (result.status === 'unavailable')
+                  throw new EngineWorkspaceError(
+                    'engine-workspace-capability-unavailable',
+                    'CPU triangle geometry for the exact display ray',
+                    'Wait for supported current mesh geometry or request bounds picking.',
+                    { reason: result.reason, entities: result.entities },
+                  );
+                entityId =
+                  result.status === 'hit'
+                    ? `${options.targetId}:${ctx.world.identity}:${result.hit.entity}`
+                    : null;
+              } else {
+                const result = pickDisplay(
+                  ctx.world,
+                  x,
+                  y,
+                  frame.barrelDistortion,
+                  canvas.width,
+                  canvas.height,
+                );
+                entityId = result
+                  ? `${options.targetId}:${ctx.world.identity}:${result.entity}`
+                  : null;
+              }
               return {
                 targetId: options.targetId,
                 frameId: frame.frameId,
-                entityId: hit ? `${options.targetId}:${ctx.world.identity}:${hit.entity}` : null,
-                granularity: 'bounds',
+                entityId,
+                granularity,
               };
             },
             highlight(input: { entityId?: string }) {

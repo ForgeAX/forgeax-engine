@@ -46,6 +46,38 @@ export interface BrowserRemoteBridgeDeps
   readonly port: string;
 }
 
+/**
+ * Page query parameter carrying the DevKit live owner's bridge token. The owner
+ * appends it only to the page it launched; every other page served by the same
+ * Vite (a human tab, an agent's own browser) dials without it.
+ */
+const BRIDGE_OWNER_PARAM = 'forgeaxBridge';
+/**
+ * Final close codes from the live owner: 4403 for a page without its current
+ * token, 4409 for an owner page replaced by a newer one. Neither is retried.
+ */
+const BRIDGE_FINAL_CLOSES = new Set([4403, 4409]);
+
+/** Read once at install so later query rewrites by the game keep the token. */
+function bridgeUrl(port: string): string {
+  const token =
+    typeof location === 'undefined'
+      ? null
+      : new URLSearchParams(location.search).get(BRIDGE_OWNER_PARAM);
+  const query = token === null ? '' : `?${BRIDGE_OWNER_PARAM}=${encodeURIComponent(token)}`;
+  return `ws://127.0.0.1:${port}/bridge${query}`;
+}
+
+/** An observer page keeps running its game; it stops dialing instead of contending. */
+function refusedByOwner(event: CloseEvent): boolean {
+  if (!BRIDGE_FINAL_CLOSES.has(event.code)) return false;
+  console.warn(
+    `[forgeax] ${event.reason || `live bridge closed ${event.code}`}: this page runs normally without the live bridge; ` +
+      'only the newest page launched by `forgeax dev` owns it. Drive that session with `forgeax dev status|eval`.',
+  );
+  return true;
+}
+
 function revokeInputLease(input: unknown): void {
   if (input !== null && typeof input === 'object') {
     const value = input as {
@@ -96,6 +128,7 @@ export async function installBrowserExecutionBridge(deps: {
     readonly captureId?: string;
   }) => void;
 }): Promise<() => void> {
+  const url = bridgeUrl(deps.port);
   let ws: WebSocket | null = null;
   let backoff = 1000;
   let stopped = false;
@@ -103,7 +136,7 @@ export async function installBrowserExecutionBridge(deps: {
   const connect = (): void => {
     if (stopped) return;
     try {
-      ws = new WebSocket(`ws://127.0.0.1:${deps.port}/bridge`);
+      ws = new WebSocket(url);
     } catch {
       return;
     }
@@ -214,10 +247,10 @@ export async function installBrowserExecutionBridge(deps: {
         },
       );
     });
-    const retry = (): void => {
+    const retry = (event: CloseEvent): void => {
       deps.clearInput?.();
       ws = null;
-      if (stopped) return;
+      if (stopped || refusedByOwner(event)) return;
       setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 15_000);
     };
@@ -391,6 +424,7 @@ export async function installBrowserRemoteBridge(
     },
   );
 
+  const url = bridgeUrl(port);
   let ws: WebSocket | null = null;
   let backoff = 1000;
   let stopped = false;
@@ -499,7 +533,7 @@ export async function installBrowserRemoteBridge(
   const connect = (): void => {
     if (stopped) return;
     try {
-      ws = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+      ws = new WebSocket(url);
     } catch {
       return;
     }
@@ -628,10 +662,10 @@ export async function installBrowserRemoteBridge(
         worldIdentity: msg.worldIdentity ?? world.identity,
       });
     });
-    const retry = (): void => {
+    const retry = (event: CloseEvent): void => {
       clearSyntheticInput();
       ws = null;
-      if (stopped) return;
+      if (stopped || refusedByOwner(event)) return;
       setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 15000);
     };

@@ -1,14 +1,16 @@
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import type { DirectionalCsmConfig, ExtractedLights } from '../render-system-extract';
+import type { DirectionalCsmConfig } from '../render-system-extract';
 import { sameShadowMaterialFrames } from '../scene/material-shadow-content';
 import type {
   PersistentShadowCasterProjection,
   ShadowPublicationSource,
 } from '../scene/render-scene';
+import type { DirectionalCascades } from '../world/render-lights';
 import type { DirectionalShadowCache } from './frame-snapshot';
 
-type DirectionalCascadeCadenceLights = Pick<ExtractedLights, 'cascadeCount' | 'lightViewProj'> & {
+type DirectionalCascadeCadenceLights = {
+  readonly cascades?: Pick<DirectionalCascades, 'cascadeCount' | 'lightViewProj'> | undefined;
   readonly directionalCsmConfig?: Pick<DirectionalCsmConfig, 'staggerCascades'> | undefined;
 };
 
@@ -122,8 +124,8 @@ export function prepareDirectionalCascadeCadence(
   readonly cascadeMiss: readonly (ShadowViewInvalidationReason | undefined)[] | undefined;
   readonly next: DirectionalCascadeCadenceState | null;
 } {
-  const current = lights.lightViewProj;
-  const count = lights.cascadeCount ?? 0;
+  const current = lights.cascades?.lightViewProj;
+  const count = lights.cascades?.cascadeCount ?? 0;
   if (
     lights.directionalCsmConfig?.staggerCascades !== true ||
     current === undefined ||

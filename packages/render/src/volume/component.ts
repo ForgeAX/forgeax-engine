@@ -50,10 +50,6 @@ export interface VolumetricFogAuthoring {
   readonly sampling?: 'noise' | 'density' | 'density-albedo';
 }
 
-export type VolumetricFogLightSelection =
-  | { readonly light: EntityHandle; readonly spotLight?: undefined }
-  | { readonly light: EntityHandle; readonly spotLight: EntityHandle };
-
 export type ValidatedVolumetricFog = VolumetricFogAuthoring;
 
 export const VolumetricFog = defineComponent('VolumetricFog', {

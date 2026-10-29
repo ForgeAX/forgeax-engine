@@ -5,6 +5,7 @@
 // Each exposes a `.hint` readonly property for programmatic extraction.
 
 import type { QuerySpanUnavailableReason } from './errors/query-and-component-errors';
+import type { QueryBatchUnavailableReason } from './errors/query-batch-errors';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Re-exports from split error sub-files (w3-b — package cohesion split)
@@ -1085,6 +1086,12 @@ export type EcsErrorDetail =
       readonly roles: readonly string[];
     }
   | { readonly code: 'query-data-requires-fields'; readonly componentName: string }
+  | {
+      readonly code: 'query-batch-unavailable';
+      readonly reason: QueryBatchUnavailableReason;
+      readonly componentName?: string;
+      readonly fieldName?: string;
+    }
   | { readonly code: 'query-span-unavailable'; readonly reason: QuerySpanUnavailableReason }
   | {
       readonly code: 'query-iteration-invalidated';
@@ -1447,3 +1454,8 @@ export class SystemFailedError extends Error {
     this.detail = { systemName, schedule, cause, lastCommittedCommand };
   }
 }
+
+export {
+  QueryBatchUnavailableError,
+  type QueryBatchUnavailableReason,
+} from './errors/query-batch-errors';

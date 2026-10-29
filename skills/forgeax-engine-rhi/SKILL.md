@@ -7,6 +7,19 @@ description: >-
 
 # forgeax-engine-rhi
 
+## Late pipeline inspection
+
+`device.pipelineLibrary?.inspect({runtimeRequests:true})` explicitly materializes
+the WebGPU owner's bounded runtime-demand history. Renderer/Worker callers use
+`runtimeRequests:true`; normal inspection never expands these records. History mode
+omits the legacy full `pending` recipe list to avoid hashing uncached Shader text;
+compilation counters and cached nullable identities remain available.
+Use semantic identities for recipes and `(libraryId, sequence)` for requests.
+Null recipes, unsupported history and ring eviction are incomplete evidence.
+`returned` sync handles are not native completion. Do not move nearest-recipe
+matching, Shader-source copies or scene/provenance walks into frame handling.
+See [the owner contract](../../packages/rhi-webgpu/README.md#device-pipeline-library).
+
 > RHI is the pure interface between engine and GPU. For unexplained rendering failures start with [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md); material authoring uses [`forgeax-engine-material`](../forgeax-engine-material/SKILL.md), passes/post-processing use [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md). This skill covers backends, capabilities, descriptors, and resource lifetime. `rhi-webgpu` adapts browsers; `rhi-wgpu` + `wgpu-wasm` provide the compatibility path; explicitly injected `rhi-null` supports structural tests.
 
 For opaque ray-query foundation work, use the [reference verification guide](../../scripts/raytracing/README.md) and [native owner contract](../../packages/rhi-wgpu-native/README.md#opaque-scene-reference-transport). Keep portable compute replay, native scene re-execution, and RHI-level AS command capture distinct: RHI Debug records BLAS/TLAS builds on ray-query-capable RHI devices: RhiNull, and in Node the native-wgpu device of `@forgeax/engine-rhi-wgpu-native`, an opt-in napi addon ([Node binding](../../packages/rhi-wgpu-native/README.md#node-binding-napi-rs)).
@@ -45,7 +58,7 @@ scope and observer overhead before accepting a rendering performance budget.
 
 ## Color-lighting parity handoff
 
-For backend or native readback failures, start with the [color-lighting parity status index](../../apps/parity/color-lighting/status-index.md), then inspect the [parity README](../../apps/parity/color-lighting/README.md) and the named `CaseReport` evidence. Preserve backend identity, native format, frame, size, and raw hash; capability loss is incomplete evidence, not a fallback pass.
+For backend or native readback failures, start with the color-lighting parity status index, then inspect the [parity README](../../apps/parity/color-lighting/README.md) and the named `CaseReport` evidence. Preserve backend identity, native format, frame, size, and raw hash; capability loss is incomplete evidence, not a fallback pass.
 
 ## Mental model
 
@@ -85,15 +98,22 @@ reject fixture re-baselining. Separate producer Naga CPU results from physical
 
 ```mermaid
 flowchart TD
-  CR["createRenderer(canvas, opts?)"] -->|opts.rhi injection| NULL["rhi-null: headless no-op"]
+  CR["createRenderer(canvas, opts?)"] -->|opts.rhi injection| INJECTED["Explicit backend: no automatic fallback"]
   CR -->|navigator.gpu present| WG["rhi-webgpu: thin browser adapter"]
+  STUB["installWebGpuStub: no-op navigator.gpu"] -.->|optional, per realm| WG
   CR -->|otherwise| WP["rhi-wgpu: thin TS shell"]
+  WG -->|environment admission failure, once| WP
   WG --> RHI["engine-rhi: interface authority"]
   WP --> WASM["wgpu-wasm: one WASM artifact, wgpu 30 + naga 30"]
   WP --> RHI
   WASM --> NAGA["engine-naga: TS shell, excluded from runtime engine-shader"]
-  NULL --> RHI
+  INJECTED --> RHI
 ```
+
+For a startup failure, inspect both structured backend causes and the host
+capabilities using the [Runtime diagnosis contract](../../packages/runtime/README.md#browser-backend-selection-and-diagnosis).
+Verify native WebGPU and WebGL2 with completed frames and pixel readback in the
+actual WebView; browser initialization alone does not establish device support.
 
 ## Usage skeleton
 
@@ -158,6 +178,27 @@ console.log(renderer.inspect().capabilities.backendKind); // 'null'
 - **Independent instances**: every createRenderer with injected RHI gets its own RhiNullDevice and Bookkeeper.
 
 See `packages/rhi-null/README.md` for API, capabilities, bookkeeping, and differences from Vitest mocks.
+
+## WebGPU stub: CPU diagnostics without GPU work
+
+`installWebGpuStub(profile)` (exported by `@forgeax/engine/rhi-webgpu`) replaces the
+calling realm's `navigator.gpu` and `'webgpu'` canvas contexts with a no-op `GPU`.
+`createApp({ gpuStub })` installs it in the main, Engine Worker and Render Worker
+realms; generated hosts use `?forgeax-gpu-stub=1` with `DEFAULT_WEBGPU_STUB_PROFILE`
+(Chrome 155, Apple M4 Pro). Capture another device with
+`captureWebGpuStubProfile(navigator.gpu, name)` on that device.
+
+| Question | RhiNull | WebGPU stub |
+|:--|:--|:--|
+| Purpose | Structural unit tests in Node | CPU cost of the real browser path without a GPU |
+| `backendKind` / caps | `'null'`, fixed caps and limits | `'webgpu'`, the profile's features and limits |
+| Engine path | `backendKind === 'null'` branches; no `rhi-webgpu` translation | Unchanged `rhi-webgpu` and render branches |
+| Validation | Handle ownership and lifetime bookkeeping | None; every call succeeds |
+| Selection | Explicit `opts.rhi` injection | Ambient `navigator.gpu`, per realm |
+
+Submissions complete immediately and mapped ranges are zero-filled, so GPU-driven
+feedback reads empty results. Never use it for pixels, GPU timing, FPS or
+compatibility; a real GPU or Dawn remains the rendering authority.
 
 ## Vertex layout aliases: multi-UV clamp-to-last
 
@@ -248,6 +289,23 @@ on `err.code === 'video-upload-unsupported'` (`packages/runtime/src/errors.ts`).
 | Dawn cannot decode video | No HTMLVideoElement/VideoFrame realm; zero-copy and video pixel acceptance require browser e2e. GPUTexture import and the `texture_external` layout do run on Dawn. |
 | RHI Debug | The recorder snapshots each imported frame into a recorded rgba8 texture view, so tapes replay without media objects. |
 | No audio track handling | RHI does not own video audio; that work is separate. |
+
+## Pipeline library ownership
+
+`device.pipelineLibrary` remains optional. On supporting devices, resource identity
+survives cumulative registration growth. Actual handles, active requests, command
+and bundle owners retain dependencies; Renderer rosters retain prewarm results for
+their generation. The device content index adds no strong reuse cache or source-body
+quota. Source/state changes remain distinct; labels never authorize equivalence.
+
+`export(limits?)` and `prepare(manifest,{inputLimits})` have independent finite action
+policies, with compatible defaults in `PIPELINE_LIBRARY_LIMITS`. Limits cover output,
+escaping, temporary materialization and transport, not process memory. An export
+failure preserves readiness and recovery and may be retried; unknown dependencies
+and pending compilation still fail explicitly. Renderer/Worker inspection forwards
+`pipelineLibraryLimits` and returns the actual `pipelineLibraryPolicy`. Consult the
+[owning contract](../../packages/rhi-webgpu/README.md#device-pipeline-library) before
+changing these bounds. A retained-live-graph export does not prove whole-route coverage.
 
 ## Resource release: destroyBuffer / destroyTexture
 

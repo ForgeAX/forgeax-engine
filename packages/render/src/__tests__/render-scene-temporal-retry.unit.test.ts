@@ -199,6 +199,21 @@ describe('RenderScene temporal retry boundary', () => {
     expect(afterRetry?.previousTransform.world[12]).toBe(9);
   });
 
+  it('keeps the submitted pose through several skipped frames of distinct moves', () => {
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    scene.apply([updateSnapshot(snapshot(7, 1)), updateSnapshot(snapshot(8, 4))]);
+    submit(scene, 7);
+    for (const x of [2, 3, 5]) {
+      scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, world: world(x) }]);
+      // Never submitted: the history keeps the first pre-change record only.
+      expect(scene.temporalSnapshotBySlot(0)?.previousTransform.world[12]).toBe(1);
+      expect(scene.lastSubmittedSlotByIndex(1)).toBe(scene.slotAt(1));
+    }
+    submit(scene, 7);
+    expect(scene.temporalSnapshotBySlot(0)?.previousTransform.world[12]).toBe(5);
+  });
+
   it('keeps last committed root and Instances data across a failed mixed frame and retry', () => {
     const instanceCollections = new InstanceProjectionStore();
     const source = new World();
@@ -267,4 +282,35 @@ describe('RenderScene temporal retry boundary', () => {
       instanceCollections.dispose();
     }
   });
+});
+
+it('captures a roster-covering submission without visiting its rows, at any scene size', () => {
+  for (const count of [1000, 10000]) {
+    const roster = new RenderScene();
+    const listed = new RenderScene();
+    for (const scene of [roster, listed]) {
+      scene.setTemporalTracking(true);
+      scene.apply(Array.from({ length: count }, (_, key) => updateSnapshot(snapshot(key, key))));
+    }
+    let visits = 0;
+    const rows = {
+      *[Symbol.iterator]() {
+        for (let key = 0; key < count; key++) {
+          visits++;
+          yield { worldId: 0, entityKey: key };
+        }
+      },
+    };
+    roster.commitSubmission(roster.captureSubmission(rows, roster.slotsSnapshot()));
+    expect(visits).toBe(0);
+    listed.commitSubmission(listed.captureSubmission(rows));
+    expect(visits).toBe(count);
+    for (const slot of [0, count >> 1, count - 1]) {
+      const record = roster.slotAt(slot);
+      if (record === undefined) throw new Error('missing slot');
+      expect(roster.wasLastSubmittedVisible(slot, record.generation)).toBe(true);
+      expect(roster.temporalSnapshotBySlot(slot)).toEqual(listed.temporalSnapshotBySlot(slot));
+    }
+    expect(roster.wasLastSubmittedVisible(count, 1)).toBe(false);
+  }
 });

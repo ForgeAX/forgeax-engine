@@ -47,7 +47,6 @@ export {
   pluginRootCommand,
   previewCommand,
   projectLintCommand,
-  runRhiDebugCommand,
   sdkInstallCommand,
   shaderCheckCommand,
   skillInstallCommand,
@@ -65,7 +64,6 @@ export type {
 } from './engine-binding.js';
 export {
   ENGINE_BINDING_SCHEMA_VERSION,
-  engineBindingFilePath,
   inspectEngineWorkspace,
   readEngineBinding,
 } from './engine-binding.js';
@@ -96,6 +94,23 @@ export {
   type OperationHistoryPage,
   type OperationHistorySummary,
 } from './operation-history.js';
+export type {
+  PlayContext,
+  PlayErrorCode,
+  PlayFailure,
+  PlayNotReadyReason,
+  PlayOptions,
+  PlayPoint,
+  PlayReport,
+  PlayRuntimeCheck,
+  PlayScreenshot,
+  PlayScript,
+  PlayScriptInvalidReason,
+  PlayStepFailureReason,
+  PlayWaitOptions,
+} from './play.js';
+export { playCommand } from './play.js';
+export type { PlayLayoutIssue, PlayLayoutIssueKind } from './play-layout.js';
 export { type PluginMigrationOptions, pluginMigrateCommand } from './plugin/migration.js';
 export {
   type BootstrapRoot,
@@ -165,6 +180,7 @@ export type {
   PluginCreateOptions,
   PluginInspectOptions,
   PluginRootOptions,
+  PreviewOptions,
   ProjectCommandOptions,
   ProjectFacts,
   ShaderCheckOptions,

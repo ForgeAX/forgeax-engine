@@ -6,6 +6,8 @@ import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterEach, expect, it } from 'vitest';
 import { parseAllDocuments, stringify } from 'yaml';
 import { assetSourceImportCommand } from '../source-transfer.js';
+import { createToolClient } from '../tools/client.js';
+import { runUnifiedCli } from '../unified-cli.js';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -225,7 +227,17 @@ it('imports an exact locked npm dependency and rejects target version conflicts'
     targetPath: 'assets/conflict',
     cloneIdentities: true,
   });
-  expect(conflict).toMatchObject({ ok: false, error: { code: 'pack-source-revision-conflict' } });
+  expect(conflict).toMatchObject({
+    ok: false,
+    error: {
+      code: 'pack-source-revision-conflict',
+      detail: {
+        kind: 'dependency-version',
+        sourceVersion: dependency.version,
+        targetVersion: '1.0.0',
+      },
+    },
+  });
   await expect(
     readFile(resolve(target, 'assets/conflict/assets/role.pack.json')),
   ).rejects.toMatchObject({ code: 'ENOENT' });
@@ -399,4 +411,75 @@ it('imports into an asset directory selected by the target project manifest', as
     targetPath: 'assets/other',
   });
   expect(outside).toMatchObject({ ok: false });
+});
+
+it('imports through the public CLI using declared roots while retaining active-source validation', async () => {
+  const { source, target } = await fixture();
+  await mkdir(resolve(target, '.assetlib/staging/unrelated'), { recursive: true });
+  await writeFile(resolve(target, '.assetlib/staging/unrelated/workbench.meta.json'), '{}');
+  const imported = await runUnifiedCli([
+    'asset',
+    'source',
+    'import',
+    '--root',
+    target,
+    '--json',
+    '--input',
+    JSON.stringify({
+      requestId: 'scoped-import',
+      sourceRoot: source,
+      sourcePath: 'assets/role.pack.json',
+      targetPath: 'assets/imported',
+    }),
+  ]);
+  expect(imported, JSON.stringify(imported)).toMatchObject({ ok: true });
+  await writeFile(resolve(target, 'assets/broken.meta.json'), '{}');
+  const rejected = await runUnifiedCli([
+    'asset',
+    'source',
+    'create',
+    '--root',
+    target,
+    '--json',
+    '--input',
+    JSON.stringify({
+      requestId: 'active-source-error',
+      targetPath: 'assets/new.pack.json',
+      initialAssets: {},
+    }),
+  ]);
+  expect(rejected).toMatchObject({
+    ok: false,
+    error: {
+      detail: {
+        cause: {
+          code: 'pack-malformed-meta',
+          detail: { path: expect.stringContaining('assets/broken.meta.json') },
+        },
+      },
+    },
+  });
+});
+
+it('retains one request-id owner while concurrent first operations initialize the gateway', async () => {
+  const { target } = await fixture();
+  const client = await createToolClient({ projectRoot: target, projectDiscovery: async () => [] });
+  try {
+    const operation = {
+      requestId: 'same-first-mutation',
+      targetPath: 'assets/new.pack.json',
+      format: 'pack.json',
+      initialAssets: { scene: { kind: 'scene', payload: { kind: 'scene', nodes: [] }, refs: [] } },
+    };
+    const results = await Promise.all([
+      client.run('asset.source.create', operation),
+      client.run('asset.source.create', operation),
+    ]);
+    expect(
+      results.map((result) => result.outcome),
+      JSON.stringify(results),
+    ).toEqual(['succeeded', 'succeeded']);
+  } finally {
+    await client.dispose?.();
+  }
 });

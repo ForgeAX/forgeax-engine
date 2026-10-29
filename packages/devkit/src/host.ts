@@ -9,36 +9,36 @@ import { createServer as createNetServer } from 'node:net';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
-import { audioImporter } from '@forgeax/engine-audio-webaudio/audio-importer';
-import { fbxImporter } from '@forgeax/engine-fbx';
-import { fontImporter } from '@forgeax/engine-font/font-importer';
-import { gltfImporter } from '@forgeax/engine-gltf/node-importer';
 import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
 import { createHostAssembly, type HostAssembly } from '@forgeax/engine-host/protocol';
 import { attachHostWebSocketServer, createHostTransport } from '@forgeax/engine-host/transport';
-import { imageImporter } from '@forgeax/engine-image/image-importer';
 import {
   createScriptablePackProductCache,
   createStandardAssetOutputProducerRegistry,
-  iesImporter,
 } from '@forgeax/engine-import';
-import { objImporter, stlImporter, svgImporter } from '@forgeax/engine-mesh-io';
 import { encodeCatalogWire } from '@forgeax/engine-pack';
-import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import type { PackError } from '@forgeax/engine-pack/errors';
 import {
   declaredPackAssets,
-  declaredSourceGuids,
   type ScanInventory,
+  STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
   scanInventory,
 } from '@forgeax/engine-pack/scanner';
 import { projectScriptablePackSceneComponents } from '@forgeax/engine-pack/source';
-import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import {
+  createScriptablePackSourceSnapshot,
+  type ScriptablePackMetadataCache,
+} from '@forgeax/engine-pack/source-node';
 import { validateCanonicalKitReceipt } from '@forgeax/engine-preview';
 import type { SsrAdmissionIdentity } from '@forgeax/engine-render';
 import { createMaterialPackCooker, listMaterialSourcePaths } from '@forgeax/engine-shader-compiler';
-import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
-import { createUiImporter } from '@forgeax/engine-ui/importer';
+import {
+  createStandaloneRuntimeAssetBinding,
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  type Importer,
+  type LoadProgressLabels,
+  resolveLoadProgressLabels,
+} from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
@@ -46,6 +46,8 @@ import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import {
   createLogger,
   createServer as createViteServer,
+  type Environment,
+  type HotUpdateOptions,
   type InlineConfig,
   type Plugin,
   type ResolvedConfig,
@@ -55,8 +57,14 @@ import {
 } from 'vite';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
+import {
+  assetLibrarySourceIdentity,
+  findEngineWorkspaceRoot,
+  owningAssetLibrary,
+} from './asset-libraries.js';
 import { loadProjectCookers } from './build/cookers.js';
-import { executionWorkerEntries } from './build/execution-workers.js';
+import { executionBootstrapEntry } from './build/execution-bootstrap.js';
+import { executionWorkerEntries, runtimeDependencyEntries } from './build/execution-workers.js';
 import { materialBuildCapabilityGuard } from './build/material-profile.js';
 import {
   assertPluginSourceInputs,
@@ -78,6 +86,7 @@ import {
   verifyWechatPackageBudget,
   writeWechatProject,
 } from './build/wechat.js';
+import { PLAYER_DELIVERY_FILE, prepareDist } from './delivery-dist.js';
 import { verifyDist, writeDistManifest } from './dist.js';
 import {
   enginePackageRuntimeIdentity,
@@ -94,26 +103,25 @@ import {
   resourcePresentationSource,
 } from './host/resource-presentation-source.js';
 import { hostStartupDocument, hostStartupScript } from './host/startup-source.js';
+import { type HostVersions, hostVersions } from './host/versions.js';
 import {
   composeBoundHostAssembly,
   type DevKitHostBinding,
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
-import { PLAYER_DELIVERY_FILE } from './player-dist.js';
+import { DEFAULT_IMPORTERS } from './importers.js';
+import { LIVE_BRIDGE_OWNER_PARAM } from './live-bridge-url.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
-import {
-  DEV_EXECUTION_TIMEOUT_MS,
-  DEV_PREPARATION_TIMEOUT_MS,
-  PRODUCTION_EXECUTION_TIMEOUT_MS,
-} from './startup-budget.js';
+import { DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import { projectToolProjection } from './tools/project-tools.js';
 import type {
   BootstrapRoot,
   BuildOptions,
   CommandResult,
+  PreviewOptions,
   ProjectCommandOptions,
   ProjectFacts,
   ProjectPortOptions,
@@ -122,24 +130,38 @@ import { resolveProjectPort } from './types.js';
 
 const activeDevKitHosts = new Set<BackendHost>();
 
+async function notifyAuthoringSourceChange(
+  host: DevKitHostBinding | undefined,
+  context: HotUpdateOptions,
+  resolvedPath: string,
+): Promise<boolean | undefined> {
+  const notify = host?.authoringSourceChanged;
+  if (notify === undefined) return undefined;
+  if (context.type !== 'delete') {
+    try {
+      await context.read();
+    } catch (cause) {
+      let missing = false;
+      if (typeof cause === 'object' && cause !== null) {
+        try {
+          missing = Reflect.get(cause, 'code') === 'ENOENT';
+        } catch {
+          // Preserve the original read failure if its code cannot be read.
+        }
+      }
+      if (!missing) throw cause;
+    }
+  }
+  return notify.call(host, resolvedPath);
+}
+
 export async function disposeDevKitHosts(): Promise<void> {
   const hosts = [...activeDevKitHosts];
   activeDevKitHosts.clear();
   for (const host of hosts) await host.dispose();
 }
 
-export const DEFAULT_IMPORTERS: readonly Importer[] = [
-  audioImporter,
-  imageImporter,
-  fbxImporter,
-  gltfImporter,
-  objImporter,
-  stlImporter,
-  svgImporter,
-  fontImporter,
-  iesImporter,
-  createUiImporter(),
-];
+export { DEFAULT_IMPORTERS } from './importers.js';
 
 export function ignoreDevKitCatalogPath(path: string): boolean {
   const normalized = path.replace(/\\/g, '/');
@@ -149,10 +171,18 @@ export function ignoreDevKitCatalogPath(path: string): boolean {
 export function devKitDdcRoots(projectRoot: string): {
   readonly buildCacheRoot: string;
   readonly projectDdcRoot: string;
+  readonly identityRoot: string;
 } {
+  // Build-cache entries are content-addressed, keyed relative to the project
+  // root, and published atomically, so a copied project reuses its products
+  // and several checkouts may opt into one shared root.
+  const sharedBuildCache = process.env.FORGEAX_BUILD_CACHE_DIR?.trim();
   return {
-    buildCacheRoot: resolve(projectRoot, '.forgeax', 'ddc', 'build-cache'),
+    buildCacheRoot: sharedBuildCache
+      ? resolve(sharedBuildCache)
+      : resolve(projectRoot, '.forgeax', 'ddc', 'build-cache'),
     projectDdcRoot: resolve(projectRoot, '.forgeax', 'ddc', 'v2'),
+    identityRoot: resolve(projectRoot),
   };
 }
 
@@ -208,46 +238,6 @@ interface CanonicalKitLocation {
   readonly guid: string;
 }
 
-/**
- * Materialize the Engine-owned procedural mesh descriptors missing from a
- * standalone project. The project remains the author of any descriptor it
- * explicitly carries (for example, the game-default template); generated
- * rows fill only the GUID closure required by legacy scenes that reference
- * Engine builtins without embedding a duplicate declaration.
- */
-async function prepareBuiltinPack(
-  inventory: Pick<ScanInventory, 'declarations'> | undefined,
-  generated: string,
-): Promise<string | undefined> {
-  if (inventory === undefined) return undefined;
-  const declared = new Set<string>();
-  for (const declaration of inventory.declarations.values())
-    for (const guid of declaredSourceGuids(declaration)) declared.add(guid.toLowerCase());
-  const missing = BUILTIN_MESH_ASSETS.filter((asset) => !declared.has(asset.guid.toLowerCase()));
-  if (missing.length === 0) return undefined;
-  const packPath = resolve(generated, 'engine-builtins.pack.json');
-  await writeFile(
-    packPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: missing.map((asset) => ({
-          guid: asset.guid,
-          kind: 'mesh',
-          payload: { geometry: asset.geometry },
-          refs: [],
-          artifacts: {},
-        })),
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  );
-  return packPath;
-}
-
 /** Return authored single-material packs to the shader compiler's static graph. */
 async function discoverMaterialPackages(
   inventory: Pick<ScanInventory, 'declarations'> | undefined,
@@ -275,16 +265,6 @@ interface EngineWorkspacePackage {
 }
 
 type PackageExportValue = string | null | { readonly [key: string]: PackageExportValue };
-
-function findEngineWorkspaceRoot(): string | undefined {
-  let cursor = dirname(fileURLToPath(import.meta.url));
-  for (;;) {
-    if (existsSync(resolve(cursor, 'pnpm-workspace.yaml'))) return cursor;
-    const parent = dirname(cursor);
-    if (parent === cursor) return undefined;
-    cursor = parent;
-  }
-}
 
 function findInstalledEnginePackageRoot(start: string): string | undefined {
   let cursor = resolve(start);
@@ -419,6 +399,35 @@ async function createEngineWorkspaceResolver(projectRoot: string): Promise<Plugi
   return {
     name: 'forgeax:devkit-engine-workspace-resolver',
     enforce: 'pre',
+    async config(_config, environment) {
+      if (environment.command !== 'serve') return;
+      if (localRoot === undefined) {
+        try {
+          createRequire(resolve(projectRoot, 'package.json')).resolve(
+            '@forgeax/engine/package.json',
+          );
+          return;
+        } catch (cause) {
+          const code = (cause as NodeJS.ErrnoException).code;
+          // Hidden metadata still proves a project-owned package is installed.
+          if (code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') return;
+          if (code !== 'MODULE_NOT_FOUND') throw cause;
+        }
+      }
+      const app = packages.get('@forgeax/engine-app');
+      if (app === undefined) return;
+      // The workspace resolver supplies Engine to projects without an install.
+      // Its same App closure must seed dependency discovery before the first page.
+      return {
+        optimizeDeps: {
+          entries: [
+            '**/*.html',
+            'execution-bootstrap.ts',
+            ...(await runtimeDependencyEntries(resolve(app.root, 'package.json'))),
+          ],
+        },
+      };
+    },
     configResolved(config) {
       conditions = [...config.resolve.conditions, 'import', 'default'];
     },
@@ -479,16 +488,20 @@ async function hostEngineAliases(
   const hostRoot = binding?.backend.context.get('devkitBackend')?.hostPackageRoot;
   if (hostRoot === undefined) return [];
   const hostManifest = JSON.parse(await readFile(resolve(hostRoot, 'package.json'), 'utf8'));
-  // A generic presentation package need not use Engine. Only an explicit
-  // Engine dependency selects a paired runtime and its singleton vocabulary.
+  // An Engine-aware presentation borrows the executing source Host's vocabulary.
+  // Its installed dependency supplies the default when no source workspace runs.
   if (hostManifest.dependencies?.['@forgeax/engine'] === undefined) return [];
-  const hostRequire = createRequire(resolve(hostRoot, 'package.json'));
-  const engineRoot = dirname(hostRequire.resolve('@forgeax/engine/package.json'));
+  const presentationRequire = createRequire(resolve(hostRoot, 'package.json'));
+  const engineRoot =
+    (await engineWorkspacePackages()).get('@forgeax/engine')?.root ??
+    dirname(presentationRequire.resolve('@forgeax/engine/package.json'));
   const manifest = JSON.parse(await readFile(resolve(engineRoot, 'package.json'), 'utf8'));
   const engineRequire = createRequire(resolve(engineRoot, 'package.json'));
   const local = await readEngineBinding(projectRoot);
   if (!local.ok) hostBindingError(`${local.error.code}: ${local.error.hint}`);
-  const localPackages = await engineWorkspacePackages(local.value?.path);
+  const localPackages = local.value
+    ? await engineWorkspacePackages(local.value.path)
+    : new Map<string, EngineWorkspacePackage>();
   const projectRequire = createRequire(resolve(projectRoot, 'package.json'));
   const projectEngineRequire = local.value?.path
     ? undefined
@@ -555,7 +568,11 @@ async function hostFrontendModuleAlias(
   }
 }
 
-async function resolveCanonicalKit(): Promise<CanonicalKitLocation> {
+async function resolveCanonicalKit(
+  bootstrapRoot: string,
+  workspacePreview: boolean,
+): Promise<CanonicalKitLocation | undefined> {
+  if (bootstrapRoot !== 'resource-bootstrap' && !workspacePreview) return undefined;
   const packageJson = hostRequire.resolve('@forgeax/engine-preview/package.json');
   const root = resolve(packageJson, '..', 'assets/canonical-kit');
   if (!existsSync(root)) throw new Error(`canonical preview kit root is missing: ${root}`);
@@ -838,6 +855,37 @@ const bridge = {
 `;
 }
 
+function pipelineLibraryImports(options: DevKitAppOptions): string {
+  return `${options.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}${options.backgroundPipelineLibrary === undefined ? '' : "import backgroundPipelineLibraryUrl from './background-pipeline-library.json?url';\n"}${options.pipelineLibrary === undefined && options.backgroundPipelineLibrary === undefined ? '' : "import { decodeDocumentText } from '@forgeax/engine/codec';\n"}`;
+}
+
+function pipelineLibraryOptions(options: DevKitAppOptions): string {
+  return `${options.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}${options.backgroundPipelineLibrary === undefined ? '' : '...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),'} `;
+}
+
+/** Generated startup-cover binding to the Engine load progress model (see App README). */
+function startupProgressSource(appOptions: DevKitAppOptions): string {
+  return `// The startup cover renders the Engine load progress model from navigation start.
+const startupCover = bootstrapRoot === 'project-bootstrap' && recipeValue === null ? globalThis.__forgeaxStartup : undefined;
+let finishStartupFrame;
+if (startupCover?.progress !== undefined) {
+  beginLoadSession('startup', ENGINE_STARTUP_PHASES, { startedAt: 0 });
+  addLoadWork('engine-code', { total: 1, done: 1 });
+  const loadingLabels = resolveLoadProgressLabels(${JSON.stringify(appOptions.loadingLabels ?? null)} ?? undefined);
+  const stopStartupProgress = subscribeLoadProgress((snapshot) => startupCover.progress(describeLoadProgress(snapshot, loadingLabels)));
+  startupCover.onEntered?.(() => {
+    finishStartupFrame?.();
+    stopStartupProgress();
+    endLoadSession('startup');
+  });
+}
+`;
+}
+
+function renderTaskYieldSource(value: DevKitAppOptions['renderTaskYield']): string {
+  return JSON.stringify(value ?? 'none');
+}
+
 function hostSource(
   facts: ProjectFacts,
   bootstrapRoot: BootstrapRoot,
@@ -862,13 +910,12 @@ function hostSource(
       ? []
       : [`webAudioPlugin(mainAudio)`, `audioPlugin()`, `skinningPlugin()`];
   const startupTimeout =
-    facts.startupTimeoutMs === undefined
-      ? `(import.meta.env.DEV ? ${DEV_EXECUTION_TIMEOUT_MS} : ${PRODUCTION_EXECUTION_TIMEOUT_MS})`
-      : JSON.stringify(facts.startupTimeoutMs);
-  return `${appOptions.pipelineLibrary === undefined ? '' : "import pipelineLibraryUrl from './pipeline-library.json?url';\n"}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+    facts.startupTimeoutMs === undefined ? 'null' : JSON.stringify(facts.startupTimeoutMs);
+  return `${pipelineLibraryImports(appOptions)}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { activateExecutionRoot, addLoadWork, assembleAssetRuntime, beginLoadSession, beginLoadWork, describeLoadProgress, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
 import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
+import { DEFAULT_WEBGPU_STUB_PROFILE } from '@forgeax/engine/rhi-webgpu';
 import { inspectUi } from '@forgeax/engine/ui';
 import { Context, startNativePlugin } from '@forgeax/engine/plugin';
 import { ShaderRegistry } from '@forgeax/engine/shader';
@@ -1284,8 +1331,37 @@ async function previewOwnerFacts(assets, resource, payload, textureBudget) {
 }
 
 ${gameProjectionSource}
+// Development play advance: pause, step whole frames of explicit game time
+// (yielding only while a frame credit is in flight), then resume. No input is
+// synthesized; the input sampled at each stepped frame is whatever is held.
+// Unless render is true, every frame but the last runs the World update only.
+async function advanceGameTime(app, { seconds, stepSeconds, timeoutMs, render = false }) {
+  if (!import.meta.env.DEV) return { ok: false, frames: 0, error: 'advance runs only on a development host' };
+  const frames = Math.ceil(seconds / stepSeconds - 1e-9);
+  const deadline = performance.now() + timeoutMs;
+  const channel = new MessageChannel();
+  const yieldTask = () => new Promise((resolve) => { channel.port1.onmessage = resolve; channel.port2.postMessage(0); });
+  const paused = app.pause().ok;
+  let stepped = 0;
+  try {
+    while (stepped < frames) {
+      const delta = Math.min(stepSeconds, seconds - stepped * stepSeconds);
+      const result = app.stepFrame(delta, { render: render || stepped === frames - 1 });
+      if (result.ok) { stepped += 1; continue; }
+      if (result.error.detail?.reason !== 'credit' || performance.now() > deadline)
+        return { ok: false, frames: stepped, error: result.error.code + ' ' + JSON.stringify(result.error.detail) };
+      await yieldTask();
+    }
+    return { ok: true, frames: stepped };
+  } finally {
+    channel.port1.close();
+    if (paused) app.resume();
+  }
+}
 function exposeGameInspection(app) {
+  const rendererErrors = trackRendererErrors(app, import.meta.env.DEV);
   const inspection = {
+    advance: request => advanceGameTime(app, request),
     ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
     list() {
       return {
@@ -1309,10 +1385,44 @@ function exposeGameInspection(app) {
         limits: inspection.limits,
         execution: app.execution.report(),
         lastError: app.lastError,
+        rendererError: rendererErrors.read(),
       };
     },
   };
   globalThis.__forgeaxGameInspection = inspection;
+}
+// Renderer failures (GPU validation, submit, device loss) leave the game loop
+// and DOM HUD running while the canvas stops presenting. Keep the latest one
+// with its frame and count for capture/play, and log each distinct one once
+// as a warning: capture/play judge it by recency, not as a browser error.
+// The root cause is the innermost coded detail.cause (a Render Worker error
+// arrives inside app-system-update-failed, a GPU error inside
+// device-operation-failed); App-level errors are not renderer errors.
+function rendererErrorSource(error) {
+  let source;
+  for (let entry = error, depth = 0; entry !== null && typeof entry === 'object' && depth < 8; entry = entry.detail?.cause, depth += 1)
+    if (typeof entry.code === 'string' && !entry.code.startsWith('app-')) source = entry;
+  return source;
+}
+function trackRendererErrors(app, log) {
+  let latest = null;
+  let count = 0;
+  const logged = new Set();
+  const completed = () => app.execution.report().frame.completed;
+  const unsubscribe = app.onError((error) => {
+    const source = rendererErrorSource(error);
+    if (source === undefined) return;
+    count += 1;
+    latest = { code: source.code, message: String(source.hint ?? source.message ?? '').slice(0, 2000), frame: completed() };
+    const key = latest.code + ' ' + latest.message;
+    if (!log || logged.has(key) || logged.size >= 16) return;
+    logged.add(key);
+    console.warn('[forgeax] renderer error ' + latest.code + ' at frame ' + latest.frame + ': ' + latest.message + ' (logged once; __forgeaxGameInspection.renderer().rendererError counts repeats)');
+  });
+  return {
+    read: () => latest === null ? null : { ...latest, framesAgo: Math.max(0, completed() - latest.frame), count },
+    unsubscribe,
+  };
 }
 
 let preparedResourceOwner;
@@ -1346,13 +1456,15 @@ const gbufferBatchOrderDiagnostic = (() => {
     throw new Error('GBuffer ordering diagnostic program digests must be SHA-256 values');
   return { order, programDigests };
 })();
-const renderTaskYield = query.get('forgeax-render-task-yield') === 'features' ? 'features' : query.get('forgeax-render-task-yield') === 'completion' ? 'completion' : 'none';
+const renderTaskYield = query.get('forgeax-render-task-yield') === 'features' ? 'features' : query.get('forgeax-render-task-yield') === 'completion' ? 'completion' : query.get('forgeax-render-task-yield') === 'none' ? 'none' : ${renderTaskYieldSource(appOptions.renderTaskYield)};
 const renderPipelineCapacity = query.get('forgeax-render-pipeline-capacity') === '4' ? 4 : query.get('forgeax-render-pipeline-capacity') === '3' ? 3 : query.get('forgeax-render-pipeline-capacity') === '2' ? 2 : ${JSON.stringify(appOptions.renderPipelineCapacity ?? 3)};
 const dynamicGeometryMeshBudgetBytes = query.has('forgeax-dynamic-mesh-budget-bytes')
   ? Number(query.get('forgeax-dynamic-mesh-budget-bytes')) : ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)};
 const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
 const rhiCaptureRequested =
   query.get('forgeax-rhi-capture') === '1' || ${JSON.stringify(rhiCaptureEnabled)};
+// CPU-only diagnostics on hosts without a usable GPU: keep the WebGPU path, drop GPU work.
+const gpuStub = query.get('forgeax-gpu-stub') === '1' ? DEFAULT_WEBGPU_STUB_PROFILE : undefined;
 // A profiler is an inert, bounded capability until a caller starts a capture.
 // Create it in both live execution placements so the persistent CLI can inspect the
 // actual realm; the Worker receives only the structured diagnostics switches.
@@ -1361,7 +1473,7 @@ const workspaceTarget = query.has('forgeaxWorkspace') && !workerExecution && boo
 const workspaceGame = workspaceTarget && query.get('forgeaxWorkspace') === 'game';
 const workspaceMode = workspaceTarget && !workspaceGame;
 const recipeValue = query.get('forgeax-tool-recipe');
-const snapshotValue = query.get('forgeax-tool-snapshot');
+${startupProgressSource(appOptions)}const snapshotValue = query.get('forgeax-tool-snapshot');
 const runIdValue = query.get('forgeax-tool-run-id');
 const appState: { current?: App | import('@forgeax/engine/app').ExecutionApp } = {};
 let disposeFrontendHost;
@@ -1450,6 +1562,23 @@ const appBootstrapPlugin = {
         gameChannel.port2.close();
       }, 'devkit/game-channel');
     }
+    ${
+      appOptions.backgroundPipelineLibrary === undefined
+        ? ''
+        : `// Compiled after renderer readiness. Its fetch overlaps startup, and a
+    // failure only leaves those pipelines to compile on first use.
+    const backgroundPipelineLibraryLoad = fetch(backgroundPipelineLibraryUrl)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Background pipeline library load failed: ' + response.status);
+        const text = await decodeDocumentText(new Uint8Array(await response.arrayBuffer()));
+        if (!text.ok) throw new Error('Background pipeline library decode failed: ' + text.error.code);
+        return JSON.parse(text.value);
+      })
+      .catch((cause) => {
+        console.warn('[forgeax] background pipeline library unavailable', cause);
+        return undefined;
+      });`
+    }
     const runtimePacks = workerExecution ? undefined : await createRuntimePackOptions(runtimeScopeBinding.scopeId${target === 'tauri' ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"});
     const pluginPrograms = workerExecution ? undefined : enginePrograms(crypto.randomUUID(), 'engine-main', initialAssembly.sessionGeneration, runtimePacks.programHost);
     const gameVfx = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null
@@ -1459,10 +1588,16 @@ const appBootstrapPlugin = {
     ${
       appOptions.pipelineLibrary === undefined
         ? ''
-        : `const pipelineLibraryResponse = await fetch(pipelineLibraryUrl);
+        : `const finishPipelineLibraryRead = beginLoadWork('downloads', 'pipeline-library.json');
+    const pipelineLibraryResponse = await fetch(pipelineLibraryUrl);
     if (!pipelineLibraryResponse.ok) throw new Error('Pipeline library load failed: ' + pipelineLibraryResponse.status);
-    const pipelineLibrary = await pipelineLibraryResponse.json();`
+    const pipelineLibraryBytes = new Uint8Array(await pipelineLibraryResponse.arrayBuffer());
+    finishPipelineLibraryRead();
+    const pipelineLibraryText = await decodeDocumentText(pipelineLibraryBytes);
+    if (!pipelineLibraryText.ok) throw new Error('Pipeline library decode failed: ' + pipelineLibraryText.error.code);
+    const pipelineLibrary = JSON.parse(pipelineLibraryText.value);`
     }
+    ${appOptions.backgroundPipelineLibrary === undefined ? '' : 'const backgroundPipelineLibrary = await backgroundPipelineLibraryLoad;'}
     const result = await createApp(
       canvas,
       workerExecution
@@ -1470,8 +1605,9 @@ const appBootstrapPlugin = {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.assetBudgetBytes === undefined ? '' : `assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},`}
             ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
-            ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
+            ${pipelineLibraryOptions(appOptions)}
             execution: {
               createHostAudio: () => {
                 hostAudio = (ctx.get('executionHostAudioFactory') ?? createHostAudioConsumer)();
@@ -1484,7 +1620,7 @@ const appBootstrapPlugin = {
               // Development includes cold Vite compilation before the native Worker handshake.
               startupTimeoutMs: ${startupTimeout},
               bootstrap: new URL(
-                import.meta.env.DEV ? './execution-bootstrap.ts' : './execution-bootstrap.js',
+                './execution-bootstrap.ts',
                 import.meta.url,
               ),
               assetCatalog: {
@@ -1508,13 +1644,15 @@ const appBootstrapPlugin = {
               },
             },
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
+            ...(gpuStub === undefined ? {} : { gpuStub }),
           }
         : {
             uiRoot: document.querySelector('#game-ui') ?? document.body,
             animation,
             dynamicGeometryMeshBudgetBytes,
+            ${appOptions.assetBudgetBytes === undefined ? '' : `assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},`}
             ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
-            ${appOptions.pipelineLibrary === undefined ? '' : 'pipelineLibrary,'}
+            ${pipelineLibraryOptions(appOptions)}
             standardProfile: ${JSON.stringify(appOptions.standardProfile)},
             context: ctx.root,
             ${ssrIdentity === undefined ? '' : `ssrIdentity: ${JSON.stringify(ssrIdentity)},`}
@@ -1529,6 +1667,7 @@ const appBootstrapPlugin = {
             ...(workspaceMode ? { features: [ensureVfxRuntimeHost().feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature] }),
             ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
+            ...(gpuStub === undefined ? {} : { gpuStub }),
           },
       workerExecution ? { ...bundler, importTransport: undefined } : bundler,
     );
@@ -1551,7 +1690,8 @@ const appBootstrapPlugin = {
       // DOM plugins load POD assets through the same catalog without a GPU or
       // a second World. Host UI never downloads the renderer shader manifest.
       const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }), importTransport: bundler.importTransport });
-      if (!import.meta.env.DEV) assets.configurePackIndex(new URL('pack-index.json', document.baseURI).href);
+      // assembleAssetRuntime installs the page catalog source; a second source would
+      // download and parse the complete catalog again.
       const assembly = assembleAssetRuntime(assets, [], {
         ownsRegistry: true,
         catalogSource: assetCatalog,
@@ -1581,17 +1721,20 @@ const appBootstrapPlugin = {
           ? localInspection?.[method](id)
           : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
         const inspection = {
+          advance: request => advanceGameTime(app, request),
           ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
           list: () => import.meta.env.DEV ? sourceRead('list') : { reads: [] },
           read: (id: string) => sourceRead('read', id),
           renderer: () => {
             const execution = app.execution.report();
             const local = 'renderer' in app ? app.renderer.inspect() : undefined;
-            return { state: execution.render?.state ?? local?.state ?? (execution.engine.health === 'running' ? 'alive' : execution.engine.health), frameId: execution.render?.completedFrame ?? execution.frame.completed, ...(local === undefined ? {} : { frame: local.frame }), execution, lastError: app.lastError };
+            return { state: execution.render?.state ?? local?.state ?? (execution.engine.health === 'running' ? 'alive' : execution.engine.health), frameId: execution.render?.completedFrame ?? execution.frame.completed, ...(local === undefined ? {} : { frame: local.frame }), execution, lastError: app.lastError, rendererError: rendererErrors.read() };
           },
         };
+        const rendererErrors = trackRendererErrors(app, import.meta.env.DEV);
         globalThis.__forgeaxGameInspection = inspection;
         ctx.effect(() => () => {
+          rendererErrors.unsubscribe();
           if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
         }, 'devkit/host-inspection');
       }
@@ -1622,11 +1765,11 @@ const appBootstrapPlugin = {
           target: {
             sessionId: query.get('forgeaxWorkspaceSession'), targetId: query.get('forgeaxWorkspaceTarget'),
             worldId: app.world.identity, headed: query.get('forgeaxWorkspaceHeaded') !== '0',
-            width: extent('forgeaxWorkspaceWidth', 1280), height: extent('forgeaxWorkspaceHeight', 720), url: location.href,
+            width: extent('forgeaxWorkspaceWidth', 1280), height: extent('forgeaxWorkspaceHeight', 720), url: (() => { const value = new URL(location.href); value.searchParams.delete(${JSON.stringify(LIVE_BRIDGE_OWNER_PARAM)}); return value.href; })(),
           },
           openResourcePreview: async ({ app: previewApp, asset, canvas: previewCanvas }) => {
             const owner = await prepareResourcePreview(previewApp, { kind: asset.kind, guid: asset.guid }, previewCanvas);
-            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.texture === undefined ? {} : { texture: owner.texture }), ...(owner.display === undefined ? {} : { display: owner.display }) };
+            return { close: owner.close, assetBinding: owner.assetBinding, ...(owner.material === undefined ? {} : { material: owner.material }), ...(owner.texture === undefined ? {} : { texture: owner.texture }), ...(owner.display === undefined ? {} : { display: owner.display }) };
           },
         });
         await fiber.await();
@@ -1952,7 +2095,7 @@ if (query.has('forgeax-tool-replay')) {
           indirectDigest,
           authoredBounds: bounds.aabb,
           seed: player.seed,
-          fixedDelta: player.fixedDelta,
+          delta: player.delta,
           timelineFrames: previewRecipe.frames,
           dispatches: renderObservation.dispatches,
           indirectDraws: renderObservation.indirectDraws,
@@ -2002,6 +2145,7 @@ if (query.has('forgeax-tool-replay')) {
         __forgeaxStartup?: { readonly prepare?: () => void };
       }
     ).__forgeaxStartup?.prepare?.();
+    finishStartupFrame = beginLoadWork('first-frame');
   }
   if (workspaceGame) await activateWorkspace?.();
   if (!appStarted) app.start().unwrap();
@@ -2013,10 +2157,34 @@ if (query.has('forgeax-tool-replay')) {
 `;
 }
 
-function htmlSource(title: string, startupScreen = true): string {
-  return hostStartupDocument(title).replace(
-    '  </body>',
-    `    <script>${hostStartupScript(startupScreen)}</script>
+async function readBuildHtmlHead(
+  facts: ProjectFacts,
+  target: BuildOptions['target'],
+  htmlHead: BuildOptions['htmlHead'],
+): Promise<string> {
+  if (htmlHead === undefined) return '';
+  if (target === 'wechat')
+    throw {
+      code: 'build-html-unsupported',
+      expected: 'an HTML presentation target',
+      hint: 'Use browser or tauri for an HTML head fragment.',
+      detail: { target: target },
+    };
+  return readFile(resolve(facts.root, htmlHead), 'utf8');
+}
+
+function htmlSource(
+  title: string,
+  startupScreen = true,
+  labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  versions?: HostVersions,
+  head = '',
+): string {
+  return hostStartupDocument(title, labels, versions)
+    .replace('  </head>', `${head}\n  </head>`)
+    .replace(
+      '  </body>',
+      `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
     <script>
       (() => {
         // This inert marker keeps generated pages inspectable by older hosts
@@ -2033,7 +2201,7 @@ function htmlSource(title: string, startupScreen = true): string {
       }
     </script>
   </body>`,
-  );
+    );
 }
 
 export async function materializeViteDevPort(port: number): Promise<number> {
@@ -2070,6 +2238,7 @@ export async function buildProject(
         ...(options.target === undefined ? {} : { target: options.target }),
         ...(options.animation === undefined ? {} : { animation: options.animation }),
         ...(options.sourcemap === undefined ? {} : { sourcemap: options.sourcemap }),
+        ...(options.htmlHead === undefined ? {} : { htmlHead: options.htmlHead }),
         ...(options.materialProfile === undefined
           ? {}
           : { materialProfile: options.materialProfile }),
@@ -2085,7 +2254,11 @@ export async function buildProject(
       options.materialProfile,
     );
     if (options.target === 'wechat') await verifyWechatPackageBudget(outDir);
-    return { ok: true, value: manifest };
+    const prepared =
+      manifest.target === 'browser'
+        ? await prepareDist(outDir, manifest, { distribution: 'build' })
+        : { manifest };
+    return { ok: true, value: prepared.manifest };
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'game-build-failed') };
   } finally {
@@ -2095,7 +2268,15 @@ export async function buildProject(
 
 /** Start the Vite development service under one backend Host business plugin. */
 export async function startDevProjectWithHost(
-  options: ProjectCommandOptions = {},
+  options: ProjectCommandOptions & {
+    /**
+     * A stable serving root and Vite dependency cache for an owner that runs one
+     * server at a time (the live dev owner's sequential project children). The
+     * unchanged dependency hash keeps optimized module URLs, and so a retained
+     * browser's HTTP cache, valid across replacements.
+     */
+    readonly reuse?: { readonly generatedRoot: string; readonly viteCacheDir: string };
+  } = {},
   observeInputs?: (paths: readonly string[]) => void,
 ): Promise<CommandResult<unknown>> {
   let result: CommandResult<unknown> | undefined;
@@ -2135,8 +2316,16 @@ export async function startDevProjectWithHost(
               };
               process.chdir(facts.value.root);
               changedDirectory = true;
+              const config = await createViteConfig(facts.value, 'serve', '/', {
+                server: vitePort,
+                ...(options.reuse === undefined
+                  ? {}
+                  : { generatedRoot: options.reuse.generatedRoot }),
+              });
               server = await createViteServer(
-                await createViteConfig(facts.value, 'serve', '/', { server: vitePort }),
+                options.reuse === undefined
+                  ? config
+                  : { ...config, cacheDir: options.reuse.viteCacheDir },
               );
               // Vite invokes configureServer before listen but does not wait
               // for async producer work started by that hook. The Pack plugin
@@ -2202,7 +2391,7 @@ export async function startDevProjectWithHost(
 
 /** Start static dist preview under one DevKit plugin and verify its manifest first. */
 export async function startPreviewProjectWithHost(
-  options: ProjectCommandOptions = {},
+  options: PreviewOptions = {},
 ): Promise<CommandResult<unknown>> {
   let result: CommandResult<unknown> | undefined;
   let started = false;
@@ -2218,7 +2407,8 @@ export async function startPreviewProjectWithHost(
           name: 'forgeax:devkit-preview-server',
           async apply(ctx) {
             const root = resolve(options.root ?? process.cwd());
-            const verified = await verifyDist(resolve(root, 'dist'));
+            const distRoot = resolve(root, options.dist ?? 'dist');
+            const verified = await verifyDist(distRoot);
             if (!verified.ok) {
               result = verified;
               return;
@@ -2244,7 +2434,7 @@ export async function startPreviewProjectWithHost(
                 root,
                 configFile: false,
                 base: verified.value.base,
-                plugins: [await preparePreviewHttpArtifacts(resolve(root, 'dist'), verified.value)],
+                plugins: [await preparePreviewHttpArtifacts(distRoot, verified.value)],
                 preview: {
                   open: false,
                   ...port,
@@ -2254,7 +2444,7 @@ export async function startPreviewProjectWithHost(
                     'Cross-Origin-Resource-Policy': 'cross-origin',
                   },
                 },
-                build: { outDir: resolve(root, 'dist') },
+                build: { outDir: distRoot },
               });
               ctx.effect(() => () => server.close(), 'devkit/preview-server');
               if (options.json !== true) server.printUrls();
@@ -2264,7 +2454,7 @@ export async function startPreviewProjectWithHost(
                   root,
                   urls: server.resolvedUrls,
                   mode: 'preview',
-                  serves: 'dist',
+                  serves: distRoot,
                   capabilities: {
                     'rhi.capture': {
                       available: false,
@@ -2302,7 +2492,482 @@ export async function startPreviewProjectWithHost(
   }
 }
 
+/** Stage timing for Play, build progress or opted-in workspace diagnostics; silent otherwise. */
+function createViteConfigTiming(
+  facts: ProjectFacts,
+  command: 'serve' | 'build',
+  host: DevKitHostBinding | undefined,
+): (stage: string) => void {
+  const startedAt = performance.now();
+  let previousAt = startedAt;
+  return (stage: string): void => {
+    const game = host?.workspace?.execution === 'game';
+    const build = command === 'build' && process.env.FORGEAX_BUILD_PROGRESS === '1';
+    if (!game && !build && (process.env.FORGEAX_WORKSPACE_TIMING !== '1' || !host?.workspace))
+      return;
+    const now = performance.now();
+    console.error(
+      build ? '[forgeax.build]' : game ? '[forgeax.play]' : '[forgeax.vite-config.timing]',
+      JSON.stringify({
+        root: facts.root,
+        targetId: host?.workspace?.targetId,
+        execution: game ? 'game' : 'preview',
+        stage,
+        totalMs: Math.round(now - startedAt),
+        stageMs: Math.round(now - previousAt),
+      }),
+    );
+    previousAt = now;
+  };
+}
+
+function addWorkspaceTimingPlugins(
+  plugins: Plugin[],
+  host: DevKitHostBinding | undefined,
+  timing: (stage: string) => void,
+): void {
+  if (
+    host?.workspace?.execution !== 'game' &&
+    (process.env.FORGEAX_WORKSPACE_TIMING !== '1' || !host?.workspace)
+  )
+    return;
+  plugins.unshift({
+    name: 'forgeax:workspace-vite-timing-start',
+    configResolved() {
+      timing('vite-config-resolved');
+    },
+    configureServer() {
+      timing('vite-configure-server-start');
+    },
+  });
+  plugins.push({
+    name: 'forgeax:workspace-vite-timing-end',
+    configureServer() {
+      timing('vite-configure-server-end');
+    },
+  });
+}
+
+// The CI browser profile keeps the normal producer and catalog contracts,
+// but may defer materialization until the first real GUID request. This
+// shortens cold smoke startup without changing build mode or local defaults.
+// Plugin roots must be materialized before their program modules activate.
+// Deferring the owning pack can create a cycle between program import and
+// the first plugin-definition read. Asset-only projects keep the cheaper
+// on-demand path used by browser CI.
+function devPackReadinessOptions(facts: ProjectFacts): {
+  readonly producerReadiness?: 'on-demand';
+} {
+  const hasPluginRoots = facts.roots.engine !== undefined || facts.roots.frontend !== undefined;
+  return process.env.FORGEAX_DEV_PACK_READINESS === 'on-demand' && !hasPluginRoots
+    ? { producerReadiness: 'on-demand' }
+    : {};
+}
+
+function assertMaterialProfileTarget(
+  materialProfile: BuildOptions['materialProfile'] | undefined,
+  target: BuildOptions['target'] | undefined,
+): void {
+  if (materialProfile !== undefined && target === 'wechat')
+    throw new Error('webgpu-storage validation builds require a desktop WebGPU target');
+}
+
+/**
+ * The generated entry root: each serving host owns a fresh one unless its caller
+ * names a stable one; build never overwrites a live page.
+ */
+async function createGeneratedRoot(
+  projectRoot: string,
+  serving: boolean,
+  stable: string | undefined,
+): Promise<string> {
+  const generatedBase = resolve(projectRoot, '.forgeax', 'generated');
+  await mkdir(generatedBase, { recursive: true });
+  if (!serving) return generatedBase;
+  if (stable === undefined) return await mkdtemp(resolve(generatedBase, 'serve-'));
+  // A previous holder that crashed may have left files; the root starts empty.
+  await rm(stable, { recursive: true, force: true });
+  await mkdir(stable, { recursive: true });
+  return stable;
+}
+
+function projectSourceIgnorePath(
+  bootstrapRoot: BootstrapRoot,
+  failedSources: ReadonlySet<string>,
+): (path: string) => boolean {
+  const ignoreSource =
+    bootstrapRoot === 'resource-bootstrap'
+      ? isResourcePreviewIgnoredPath
+      : isProjectSourceIgnoredPath;
+  return (path: string) => ignoreSource(path) || failedSources.has(path);
+}
+
+function createBuiltinCookers(
+  roots: readonly string[],
+  materialProfile: BuildOptions['materialProfile'] | undefined,
+) {
+  return [
+    createMaterialPackCooker(
+      roots,
+      materialProfile === undefined ? {} : { profile: materialProfile },
+    ),
+    createParticleCodeNativeCookerFromRoots(roots),
+  ];
+}
+
+/** Observes and digests the project's material sources so the snapshot captures them. */
+async function digestMaterialSources(
+  sourceSnapshot: PluginSourceInventory['sourceSnapshot'],
+  projectRoot: string,
+  projectRoots: readonly string[],
+): Promise<void> {
+  const shaderPaths = await sourceSnapshot.observePaths(projectRoot, () =>
+    listMaterialSourcePaths(projectRoots),
+  );
+  for (const path of shaderPaths) await sourceSnapshot.digest(path);
+}
+
+/** A workspace target that previews resources rather than playing the game. */
+function isWorkspacePreview(host: DevKitHostBinding | undefined): boolean {
+  return host?.workspace !== undefined && host.workspace.execution !== 'game';
+}
+
+async function assertHostBindingAdmission(
+  facts: ProjectFacts,
+  command: 'serve' | 'build',
+  bootstrapRoot: BootstrapRoot,
+  host: DevKitHostBinding | undefined,
+): Promise<void> {
+  if (host === undefined) return;
+  if (command !== 'serve' || bootstrapRoot !== 'project-bootstrap')
+    hostBindingError('host binding requires a main-thread project development server');
+  validateHostBinding(host);
+  const externalRoot = (host.frontendAssembly ?? host.backend.assembly.current).root;
+  // Only a binding outside any workspace composes its frontend with the project's own root.
+  if (host.workspace === undefined && externalRoot && facts.roots.frontend)
+    hostBindingError('compose external and project frontend roots explicitly before binding');
+  await host.backend.context.get('devkitBackend')?.assertCurrent();
+}
+
+async function admitInitialSourceSnapshot(
+  facts: ProjectFacts,
+  initialSources: PluginSourceInventory | undefined,
+  metadataCache?: ScriptablePackMetadataCache,
+): Promise<PluginSourceInventory['sourceSnapshot']> {
+  if (initialSources === undefined) return createScriptablePackSourceSnapshot({ metadataCache });
+  await assertPluginSourceInputs(initialSources, facts.root);
+  return initialSources.sourceSnapshot;
+}
+
+function previewSourceFailureOptions(
+  reportFailures: boolean,
+  failedSources: Set<string>,
+): { readonly onSourceFailure?: (path: string, error: PackError) => void } {
+  if (!reportFailures) return {};
+  return {
+    onSourceFailure: (path: string, error: PackError) => {
+      failedSources.add(path);
+      process.stderr.write(`[pack-source] ${JSON.stringify({ path, error })}\n`);
+    },
+  };
+}
+
+/** Canonical-kit texture-view material packs, served only to resource previews. */
+function textureViewMaterialPackages(
+  canonicalKit: CanonicalKitLocation | undefined,
+  resourcePreview: boolean,
+): string[] {
+  if (canonicalKit === undefined || !resourcePreview) return [];
+  const textureViewRoot = resolve(canonicalKit.root, '..', '..', 'dist', 'texture-view');
+  return ['2d', '2d-array', '3d'].map((dimension) =>
+    resolve(textureViewRoot, `${dimension}.pack.json`),
+  );
+}
+
+function packRoots(
+  sourceRoots: readonly string[],
+  canonicalKit: CanonicalKitLocation | undefined,
+): string[] {
+  return [...sourceRoots, ...(canonicalKit === undefined ? [] : [canonicalKit.root])];
+}
+
+/** A bound non-Play host composes the project assembly into its own; otherwise the project's serves. */
+function servedHostAssembly(
+  host: DevKitHostBinding | undefined,
+  sessionGeneration = 1,
+): HostAssembly {
+  const projectAssembly = createHostAssembly({ sessionGeneration });
+  return host && host.workspace?.execution !== 'game'
+    ? composeBoundHostAssembly(host, projectAssembly)
+    : projectAssembly;
+}
+
+async function resolveConsumerEngineAliases(
+  projectRoot: string,
+  host: DevKitHostBinding | undefined,
+): Promise<readonly { readonly find: string; readonly replacement: string }[]> {
+  const selectedAliases = await hostEngineAliases(projectRoot, host);
+  return selectedAliases.length ? selectedAliases : await consumerEngineAliases(projectRoot);
+}
+
+function engineDedupe(aliases: readonly { readonly find: string }[]): string[] {
+  return aliases.length ? aliases.map((alias) => alias.find) : ['@forgeax/engine'];
+}
+
+function writePreviewBatchEntry(generated: string): Promise<void>[] {
+  return [
+    writeFile(
+      resolve(generated, 'preview-batch.html'),
+      '<!doctype html><html><body><canvas></canvas><script type="module" src="./preview-batch.ts"></script></body></html>',
+    ),
+    writeFile(resolve(generated, 'preview-batch.ts'), previewBatchEntrySource()),
+  ];
+}
+
+async function writePipelineLibrary(
+  generated: string,
+  appOptions: DevKitAppOptions,
+): Promise<void> {
+  await Promise.all([
+    appOptions.pipelineLibrary === undefined
+      ? undefined
+      : writeFile(
+          resolve(generated, 'pipeline-library.json'),
+          JSON.stringify(appOptions.pipelineLibrary),
+        ),
+    appOptions.backgroundPipelineLibrary === undefined
+      ? undefined
+      : writeFile(
+          resolve(generated, 'background-pipeline-library.json'),
+          JSON.stringify(appOptions.backgroundPipelineLibrary),
+        ),
+  ]);
+}
+
+async function runtimePacksModuleSource(
+  facts: ProjectFacts,
+  sourceInventory: PluginSourceInventory,
+  target: BuildOptions['target'],
+): Promise<string> {
+  if (target !== 'tauri') return runtimePacksSource;
+  return `${await staticPackProgramsSource(facts, sourceInventory)}
+import type { RuntimePackOptions } from '@forgeax/engine/app';
+export async function createRuntimePackOptions(scopeId: string): Promise<RuntimePackOptions> {
+  return { scopeId, imports, programHost };
+}
+`;
+}
+
+function assertNoBuiltinImporterOverride(importers: readonly Importer[]): void {
+  const builtinImporterKeys = new Set(DEFAULT_IMPORTERS.map((importer) => importer.key));
+  for (const importer of importers)
+    if (builtinImporterKeys.has(importer.key))
+      throw new TypeError(`duplicate builtin/project importer ${importer.key}`);
+}
+
+function previewInputsPlugin(pack: ReturnType<typeof pluginPack>): Plugin {
+  let previewProducer: Promise<string> | undefined;
+  return {
+    name: 'forgeax:preview-inputs',
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use('/__forgeax/preview-inputs', (_request, response) => {
+        previewProducer ??= previewProducerIdentity();
+        void previewProducer.then(
+          (producer) => {
+            response.setHeader('Content-Type', 'application/json');
+            response.setHeader('Cache-Control', 'no-store');
+            response.end(
+              JSON.stringify({
+                producer,
+                catalog: encodeCatalogWire(pack.catalogSnapshot()),
+              }),
+            );
+          },
+          (cause) => {
+            response.statusCode = 500;
+            response.end(JSON.stringify({ error: String(cause) }));
+          },
+        );
+      });
+    },
+  };
+}
+
+function projectSourceWatchPlugin(projectWatchPaths: readonly string[]): Plugin {
+  let injectedWatchDependencies: string[] = [];
+  return {
+    name: 'forgeax:project-source-watch',
+    enforce: 'pre' as const,
+    configResolved(config: ResolvedConfig) {
+      const existing = new Set(config.configFileDependencies);
+      injectedWatchDependencies = projectWatchPaths.filter((path) => !existing.has(path));
+      config.configFileDependencies.push(...injectedWatchDependencies);
+    },
+    configureServer(server: ViteDevServer) {
+      // Vite constructs its watcher from configFileDependencies before configureServer.
+      // Keep project sources out of Vite's later config-restart classification so their
+      // edits reach the project-session HMR owner below.
+      const temporary = new Set(injectedWatchDependencies);
+      const dependencies = server.config.configFileDependencies;
+      for (let index = dependencies.length - 1; index >= 0; index--)
+        if (temporary.has(dependencies[index] ?? '')) dependencies.splice(index, 1);
+      injectedWatchDependencies = [];
+    },
+  };
+}
+
+function generatedHostOwnerPlugin(generated: string): Plugin {
+  // Vite creates the replacement server before closing the old one during restart.
+  let generatedServers = 0;
+  return {
+    name: 'forgeax:generated-host-owner',
+    configureServer() {
+      generatedServers += 1;
+    },
+    // Every closing dev environment runs this on both close and restart. Vite's
+    // native resolver can retain closed environments; release their payloads.
+    // Worker sub-builds run the hook without an environment.
+    closeBundle() {
+      const environment = this.environment as Environment | undefined;
+      if (environment?.mode === 'dev') environment.moduleGraph.invalidateAll();
+    },
+    // Runs once per retiring server, after its environments are torn down.
+    async closeServer() {
+      generatedServers -= 1;
+      if (generatedServers === 0) await rm(generated, { recursive: true, force: true });
+    },
+  };
+}
+
+function rhiDebugPlugins(projectRoot: string): Plugin[] {
+  const engineDebug = process.env.FORGEAX_ENGINE_RHI_DEBUG === '1';
+  const previewWindow = process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1';
+  if (!engineDebug && !previewWindow) return [];
+  return [
+    {
+      ...vitePluginRhiDebug({
+        rootDir:
+          previewWindow && !engineDebug
+            ? (process.env.FORGEAX_EVIDENCE_DIR ?? projectRoot)
+            : projectRoot,
+      }),
+      ...(engineDebug
+        ? {}
+        : {
+            config: () => ({
+              define: { 'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': JSON.stringify('0') },
+            }),
+          }),
+    } as Plugin,
+  ];
+}
+
+function viteResolveOptions(
+  native: boolean,
+  frontendAlias: { readonly find: string; readonly replacement: string } | undefined,
+  consumerAliases: readonly { readonly find: string; readonly replacement: string }[],
+): NonNullable<InlineConfig['resolve']> {
+  return {
+    ...(native
+      ? { conditions: ['forgeax-native', 'module', 'browser', 'development|production'] }
+      : {}),
+    alias: [...(frontendAlias === undefined ? [] : [frontendAlias]), ...consumerAliases],
+    dedupe: engineDedupe(consumerAliases),
+  };
+}
+
+function viteServerOptions(
+  port: ProjectPortOptions | undefined,
+  servedRoots: readonly string[],
+  engineWorkspaceRoot: string | undefined,
+  frontendAlias: { readonly find: string; readonly replacement: string } | undefined,
+): NonNullable<InlineConfig['server']> {
+  return {
+    ...port,
+    // FSEventStreamStop can block the macOS event loop during backend disposal.
+    ...(process.platform === 'darwin' ? { watch: { useFsEvents: false } } : {}),
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+    },
+    fs: {
+      allow: [
+        ...servedRoots,
+        ...(engineWorkspaceRoot === undefined ? [] : [engineWorkspaceRoot]),
+        ...(frontendAlias === undefined ? [] : [dirname(frontendAlias.replacement)]),
+      ],
+    },
+  };
+}
+
+function viteBuildOptions(
+  wechat: Awaited<ReturnType<typeof prepareWechatBuild>> | undefined,
+  realGeneratedRoot: string,
+  projectRoot: string,
+  output: { readonly sourcemap?: BuildOptions['sourcemap']; readonly outDir?: string },
+): NonNullable<InlineConfig['build']> {
+  return {
+    // Syntax capabilities only: lower optional chains/class fields but keep native BigInt.
+    target: wechat ? 'chrome70' : 'esnext',
+    sourcemap: output.sourcemap ?? false,
+    outDir: output.outDir ?? resolve(projectRoot, 'dist'),
+    emptyOutDir: true,
+    modulePreload: false,
+    rollupOptions: {
+      // Portable plugin entries declare strict signatures individually.
+      preserveEntrySignatures: wechat ? 'strict' : 'allow-extension',
+      input: wechat
+        ? { game: wechat.entry }
+        : {
+            index: resolve(realGeneratedRoot, 'index.html'),
+            'execution-bootstrap': resolve(realGeneratedRoot, 'execution-bootstrap.ts'),
+          },
+      output: {
+        ...(wechat ? { format: 'cjs' as const, chunkFileNames: 'assets/[name]-[hash].js' } : {}),
+        entryFileNames: wechat ? 'game.js' : 'assets/[name]-[hash].js',
+      },
+    },
+  };
+}
+
+/** Releases what a failed preparation already owns, then rethrows its cause. */
+async function failProjectPreparation(
+  cause: unknown,
+  disposePreparation: (() => Promise<void>) | undefined,
+  ownsGeneratedRoot: boolean,
+  generated: string,
+): Promise<never> {
+  const failures: unknown[] = [cause];
+  try {
+    await disposePreparation?.();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (ownsGeneratedRoot) {
+    try {
+      await rm(generated, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  throw failures.length === 1
+    ? cause
+    : new AggregateError(failures, 'Project preparation and cleanup failed');
+}
+
 const projectRebuilds = new WeakMap<ViteDevServer, { tail: Promise<void>; generation: number }>();
+
+/** Shader build options a project's facts select; point shadows are an explicit opt-in. */
+export function projectShaderOptions(
+  facts: Pick<ProjectFacts, 'pointShadows'>,
+  materialPackages: readonly string[],
+): Parameters<typeof forgeaxShader>[0] {
+  return {
+    materialPackages,
+    ...(facts.pointShadows === true ? { engineEntries: { pointShadows: true } } : {}),
+  };
+}
 
 export async function createViteConfig(
   facts: ProjectFacts,
@@ -2314,156 +2979,88 @@ export async function createViteConfig(
     readonly bootstrapRoot?: BootstrapRoot;
     readonly outDir?: string;
     readonly sourcemap?: BuildOptions['sourcemap'];
+    readonly htmlHead?: BuildOptions['htmlHead'];
     readonly server?: ProjectPortOptions;
     readonly host?: DevKitHostBinding;
     readonly sessionGeneration?: number;
     readonly animation?: AnimationPlaybackOptions;
     readonly target?: BuildOptions['target'];
+    /**
+     * A serving root reused across sessions by one owner at a time (project play
+     * holds its lock). Vite's dependency-cache hash includes the root, so a fresh
+     * `serve-*` root re-optimizes dependencies on every start.
+     */
+    readonly generatedRoot?: string;
+
+    /** Owner-lifetime reuse keyed by each new snapshot's freshly digested closure. */
+    readonly scriptablePackMetadata?: ScriptablePackMetadataCache;
   } = {},
 ): Promise<InlineConfig> {
-  if (options.materialProfile !== undefined && options.target === 'wechat')
-    throw new Error('webgpu-storage validation builds require a desktop WebGPU target');
+  assertMaterialProfileTarget(options.materialProfile, options.target);
+  const htmlHead = await readBuildHtmlHead(facts, options.target, options.htmlHead);
   const animation =
     options.animation === undefined
       ? environmentAnimationPlayback()
       : animationPlayback(options.animation);
-  const startedAt = performance.now();
-  let previousAt = startedAt;
-  const timing = (stage: string): void => {
-    const game = options.host?.workspace?.execution === 'game';
-    const build = command === 'build' && process.env.FORGEAX_BUILD_PROGRESS === '1';
-    if (
-      !game &&
-      !build &&
-      (process.env.FORGEAX_WORKSPACE_TIMING !== '1' || !options.host?.workspace)
-    )
-      return;
-    const now = performance.now();
-    console.error(
-      build ? '[forgeax.build]' : game ? '[forgeax.play]' : '[forgeax.vite-config.timing]',
-      JSON.stringify({
-        root: facts.root,
-        targetId: options.host?.workspace?.targetId,
-        execution: game ? 'game' : 'preview',
-        stage,
-        totalMs: Math.round(now - startedAt),
-        stageMs: Math.round(now - previousAt),
-      }),
-    );
-    previousAt = now;
-  };
+  const timing = createViteConfigTiming(facts, command, options.host);
   const bootstrapRoot = options.bootstrapRoot ?? 'project-bootstrap';
-  // The CI browser profile keeps the normal producer and catalog contracts,
-  // but may defer materialization until the first real GUID request. This
-  // shortens cold smoke startup without changing build mode or local defaults.
-  // Plugin roots must be materialized before their program modules activate.
-  // Deferring the owning pack can create a cycle between program import and
-  // the first plugin-definition read. Asset-only projects keep the cheaper
-  // on-demand path used by browser CI.
-  const hasPluginRoots = facts.roots.engine !== undefined || facts.roots.frontend !== undefined;
-  const producerReadiness =
-    process.env.FORGEAX_DEV_PACK_READINESS === 'on-demand' && !hasPluginRoots
-      ? 'on-demand'
-      : undefined;
-  if (
-    options.host !== undefined &&
-    (command !== 'serve' || bootstrapRoot !== 'project-bootstrap')
-  ) {
-    hostBindingError('host binding requires a main-thread project development server');
-  }
-  if (options.host) {
-    validateHostBinding(options.host);
-    const externalRoot = (options.host.frontendAssembly ?? options.host.backend.assembly.current)
-      .root;
-    const workspacePreview = options.host.workspace && options.host.workspace.execution !== 'game';
-    if (
-      !workspacePreview &&
-      options.host.workspace?.execution !== 'game' &&
-      externalRoot &&
-      facts.roots.frontend
-    )
-      hostBindingError('compose external and project frontend roots explicitly before binding');
-    await options.host.backend.context.get('devkitBackend')?.assertCurrent();
-  }
-  // The canonical kit ships the engine's default environment (sky.hdr equirect).
-  // Authored scenes (e.g. the default game template) reference it as a Skylight /
-  // SkyboxBackground dependency, so a self-contained standalone build must catalog
-  // it on the game path too — not only the tool-preview (resource-bootstrap) path.
-  const canonicalKit = await resolveCanonicalKit();
+  await assertHostBindingAdmission(facts, command, bootstrapRoot, options.host);
+  const workspacePreview = isWorkspacePreview(options.host);
+  const canonicalKit = await resolveCanonicalKit(bootstrapRoot, workspacePreview);
   timing('canonical-kit');
-  const generatedBase = resolve(facts.root, '.forgeax', 'generated');
-  await mkdir(generatedBase, { recursive: true });
-  // Each serving host owns its executable entry; build never overwrites a live page.
-  const generated =
-    command === 'serve' ? await mkdtemp(resolve(generatedBase, 'serve-')) : generatedBase;
+  const serving = command === 'serve';
+  const generated = await createGeneratedRoot(facts.root, serving, options.generatedRoot);
   let disposePreparation: (() => Promise<void>) | undefined;
   try {
     const realProjectRoot = await realpath(facts.root);
     const realGeneratedRoot = await realpath(generated);
     const projectRoots = facts.assetRoots.map((root) => resolve(facts.root, root));
-    const workspacePreview =
-      options.host?.workspace !== undefined && options.host.workspace.execution !== 'game';
+    const libraryRoots = facts.assetLibraries.map((library) => library.root);
+    const sourceRoots = [...projectRoots, ...libraryRoots];
     const failedSources = new Set<string>();
-    const ignoreSource =
-      bootstrapRoot === 'resource-bootstrap'
-        ? isResourcePreviewIgnoredPath
-        : isProjectSourceIgnoredPath;
-    const ignorePath = (path: string) => ignoreSource(path) || failedSources.has(path);
-    if (options.initialSources !== undefined)
-      await assertPluginSourceInputs(options.initialSources, facts.root);
-    const sourceSnapshot =
-      options.initialSources?.sourceSnapshot ?? createScriptablePackSourceSnapshot();
+    const ignorePath = projectSourceIgnorePath(bootstrapRoot, failedSources);
+    const sourceSnapshot = await admitInitialSourceSnapshot(
+      facts,
+      options.initialSources,
+      options.scriptablePackMetadata,
+    );
     // Both operations read current disk state and own no shared mutable
     // preparation. Keep their lifetime within this invocation: a later Play
     // must discover fresh project and Engine sources even without a watcher.
+    // Only metadata of a byte-identical source closure crosses invocations.
     timing('project-inventory-start');
     const [scanned, engineWorkspaceResolver] = await Promise.all([
-      scanInventory(projectRoots, {
-        ignorePath: (path) => isPluginAssetSourceIgnoredPath(facts.root, path),
-        scriptablePack: { metadataOnly: true, sourceSnapshot },
-        ...(command === 'serve' && workspacePreview
-          ? {
-              onSourceFailure: (path: string, error: PackError) => {
-                failedSources.add(path);
-                process.stderr.write(`[pack-source] ${JSON.stringify({ path, error })}\n`);
-              },
-            }
-          : {}),
+      scanInventory(sourceRoots, {
+        ignorePath: (path) =>
+          isPluginAssetSourceIgnoredPath(
+            owningAssetLibrary(facts.assetLibraries, path)?.root ?? facts.root,
+            path,
+          ),
+        scriptablePack: {
+          ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
+          metadataOnly: true,
+          sourceSnapshot,
+        },
+        ...previewSourceFailureOptions(serving && workspacePreview, failedSources),
       }),
       createEngineWorkspaceResolver(facts.root),
     ]);
     timing('project-inventory-and-engine-resolver');
     if (!scanned.ok) throw scanned.error;
+    const engineWorkspacePlugins =
+      engineWorkspaceResolver === undefined ? [] : [engineWorkspaceResolver];
     const inventory = {
       declarations: new Map([...scanned.value.declarations].filter(([path]) => !ignorePath(path))),
     };
-    const builtinPack = await prepareBuiltinPack(inventory, generated);
-    timing('builtin-pack');
-    const textureViewRoot =
-      canonicalKit !== undefined && (workspacePreview || bootstrapRoot === 'resource-bootstrap')
-        ? resolve(canonicalKit.root, '..', '..', 'dist', 'texture-view')
-        : undefined;
+    // Resource and workspace previews inspect assets; only Play and builds activate authored roots.
+    const activatesProjectRoots = bootstrapRoot !== 'resource-bootstrap' && !workspacePreview;
     const materialPackages = [
       ...(await discoverMaterialPackages(inventory)),
-      ...(textureViewRoot === undefined
-        ? []
-        : ['2d', '2d-array', '3d'].map((dimension) =>
-            resolve(textureViewRoot, `${dimension}.pack.json`),
-          )),
+      ...textureViewMaterialPackages(canonicalKit, !activatesProjectRoots),
     ];
     timing('material-packages');
-    const roots = [
-      ...projectRoots,
-      ...(builtinPack === undefined ? [] : [builtinPack]),
-      ...(canonicalKit === undefined ? [] : [canonicalKit.root]),
-    ];
-    const builtinCookers = [
-      createMaterialPackCooker(
-        roots,
-        options.materialProfile === undefined ? {} : { profile: options.materialProfile },
-      ),
-      createParticleCodeNativeCookerFromRoots(roots),
-    ];
+    const roots = packRoots(sourceRoots, canonicalKit);
+    const builtinCookers = createBuiltinCookers(roots, options.materialProfile);
     const outputVersions = createStandardAssetOutputProducerRegistry(
       [...scanned.value.declarations.values()].flatMap((declaration) =>
         declaration.format === 'pack.ts'
@@ -2473,6 +3070,7 @@ export async function createViteConfig(
     ).versions();
     const productCache = await createScriptablePackProductCache({
       root: devKitDdcRoots(facts.root).buildCacheRoot,
+      identityRoot: facts.root,
       outputVersions,
       cookers: builtinCookers,
     });
@@ -2482,25 +3080,13 @@ export async function createViteConfig(
     const sourceInventory =
       options.initialSources ??
       (await discoverPluginAssets(facts, scanned.value, sourceSnapshot, productCache));
-    const shaderPaths = await sourceSnapshot.observePaths(facts.root, () =>
-      listMaterialSourcePaths(projectRoots),
-    );
-    for (const path of shaderPaths) await sourceSnapshot.digest(path);
+    await digestMaterialSources(sourceSnapshot, facts.root, projectRoots);
     timing('plugin-assets');
     const toolProjection = await projectToolProjection(facts.root, sourceInventory);
     timing('tool-projection');
     const projectTools = toolProjection.tools;
-    const projectAssembly = createHostAssembly({
-      sessionGeneration: options.sessionGeneration ?? 1,
-    });
-    const assembly =
-      options.host && options.host.workspace?.execution !== 'game'
-        ? composeBoundHostAssembly(options.host, projectAssembly)
-        : projectAssembly;
-    const selectedAliases = await hostEngineAliases(facts.root, options.host);
-    const consumerAliases = selectedAliases.length
-      ? selectedAliases
-      : await consumerEngineAliases(facts.root);
+    const assembly = servedHostAssembly(options.host, options.sessionGeneration);
+    const consumerAliases = await resolveConsumerEngineAliases(facts.root, options.host);
     timing('consumer-aliases');
     const frontendAlias = await hostFrontendModuleAlias(options.host);
     timing('frontend-alias');
@@ -2508,13 +3094,8 @@ export async function createViteConfig(
       facts,
       builtinCookers,
       {
-        resolve: {
-          alias: consumerAliases,
-          dedupe: consumerAliases.length
-            ? consumerAliases.map((alias) => alias.find)
-            : ['@forgeax/engine'],
-        },
-        plugins: engineWorkspaceResolver === undefined ? [] : [engineWorkspaceResolver],
+        resolve: { alias: consumerAliases, dedupe: engineDedupe(consumerAliases) },
+        plugins: engineWorkspacePlugins,
       },
       { inventory: sourceInventory },
     );
@@ -2529,26 +3110,17 @@ export async function createViteConfig(
       appOptions: cookerSession.appOptions,
     });
     await Promise.all([
-      ...(command === 'serve'
-        ? [
-            writeFile(
-              resolve(generated, 'preview-batch.html'),
-              '<!doctype html><html><body><canvas></canvas><script type="module" src="./preview-batch.ts"></script></body></html>',
-            ),
-            writeFile(resolve(generated, 'preview-batch.ts'), previewBatchEntrySource()),
-          ]
-        : []),
-      ...(cookerSession.appOptions.pipelineLibrary === undefined
-        ? []
-        : [
-            writeFile(
-              resolve(generated, 'pipeline-library.json'),
-              JSON.stringify(cookerSession.appOptions.pipelineLibrary),
-            ),
-          ]),
+      ...(serving ? writePreviewBatchEntry(generated) : []),
+      writePipelineLibrary(generated, cookerSession.appOptions),
       writeFile(
         resolve(generated, 'index.html'),
-        htmlSource(facts.name, bootstrapRoot === 'project-bootstrap'),
+        htmlSource(
+          facts.name,
+          bootstrapRoot === 'project-bootstrap',
+          resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
+          await hostVersions(facts),
+          htmlHead,
+        ),
       ),
       writeFile(
         resolve(generated, 'main.ts'),
@@ -2570,14 +3142,7 @@ export async function createViteConfig(
       ),
       writeFile(
         resolve(generated, 'runtime-packs.ts'),
-        options.target === 'tauri'
-          ? `${await staticPackProgramsSource(facts, sourceInventory)}
-import type { RuntimePackOptions } from '@forgeax/engine/app';
-export async function createRuntimePackOptions(scopeId: string): Promise<RuntimePackOptions> {
-  return { scopeId, imports, programHost };
-}
-`
-          : runtimePacksSource,
+        await runtimePacksModuleSource(facts, sourceInventory, options.target),
       ),
       writeFile(resolve(generated, 'game-vfx.ts'), gameVfxSource),
       writeFile(
@@ -2609,10 +3174,7 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
     const engineWorkspaceRoot = findEngineWorkspaceRoot();
     const runtimeBinding = createStandaloneRuntimeAssetBinding(facts.id);
     let sessionClosed = false;
-    const builtinImporterKeys = new Set(DEFAULT_IMPORTERS.map((importer) => importer.key));
-    for (const importer of cookerSession.importers)
-      if (builtinImporterKeys.has(importer.key))
-        throw new TypeError(`duplicate builtin/project importer ${importer.key}`);
+    assertNoBuiltinImporterOverride(cookerSession.importers);
     let initialSourceSnapshot: typeof sourceSnapshot | undefined = sourceSnapshot;
     const pack = pluginPack({
       roots,
@@ -2624,124 +3186,34 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
       runtimeBinding,
       // The catalog is consumed by project tools and editors, regardless of
       // where this DevKit package or Vite's generated entry lives. Keep
-      // project assets rooted in the authored project; external dependencies
-      // retain their physical identity and the Pack fallback policy.
+      // project assets rooted in the authored project and mounted libraries
+      // under their forge.json specifier; other external dependencies retain
+      // their physical identity and the Pack fallback policy.
       sourceIdentityFor: (sourcePath) =>
-        filesystemPathRelative(facts.root, sourcePath, false) ?? sourcePath,
-      ...(producerReadiness === undefined ? {} : { producerReadiness }),
+        assetLibrarySourceIdentity(facts.assetLibraries, sourcePath) ??
+        filesystemPathRelative(facts.root, sourcePath, false) ??
+        sourcePath,
+      ...devPackReadinessOptions(facts),
       ddc: devKitDdcRoots(facts.root),
       watch: false,
       importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers],
       cookers: cookerSession.cookers,
       ignorePath,
     });
-    // Vite creates the replacement server before closing the old one during restart.
-    const generatedServers = new Set<ViteDevServer>();
-    let injectedWatchDependencies: string[] = [];
-    let previewProducer: Promise<string> | undefined;
+    const delivery = wechat === undefined ? 'browser' : 'native';
     const plugins: Plugin[] = [
-      ...(command === 'serve'
-        ? [
-            {
-              name: 'forgeax:preview-inputs',
-              configureServer(server: ViteDevServer) {
-                server.middlewares.use('/__forgeax/preview-inputs', (_request, response) => {
-                  previewProducer ??= previewProducerIdentity();
-                  void previewProducer.then(
-                    (producer) => {
-                      response.setHeader('Content-Type', 'application/json');
-                      response.setHeader('Cache-Control', 'no-store');
-                      response.end(
-                        JSON.stringify({
-                          producer,
-                          catalog: encodeCatalogWire(pack.catalogSnapshot()),
-                        }),
-                      );
-                    },
-                    (cause) => {
-                      response.statusCode = 500;
-                      response.end(JSON.stringify({ error: String(cause) }));
-                    },
-                  );
-                });
-              },
-            },
-          ]
-        : []),
+      ...(serving ? [previewInputsPlugin(pack)] : []),
       ...(wechat === undefined ? [] : [wechat.plugin]),
-      ...(command === 'serve'
-        ? [
-            {
-              name: 'forgeax:project-source-watch',
-              enforce: 'pre' as const,
-              configResolved(config: ResolvedConfig) {
-                const existing = new Set(config.configFileDependencies);
-                injectedWatchDependencies = projectWatchPaths.filter((path) => !existing.has(path));
-                config.configFileDependencies.push(...injectedWatchDependencies);
-              },
-              configureServer(server: ViteDevServer) {
-                // Vite constructs its watcher from configFileDependencies before configureServer.
-                // Keep project sources out of Vite's later config-restart classification so their
-                // edits reach the project-session HMR owner below.
-                const temporary = new Set(injectedWatchDependencies);
-                const dependencies = server.config.configFileDependencies;
-                for (let index = dependencies.length - 1; index >= 0; index--)
-                  if (temporary.has(dependencies[index] ?? '')) dependencies.splice(index, 1);
-                injectedWatchDependencies = [];
-              },
-            },
-          ]
-        : []),
-      executionWorkerEntries(undefined, wechat === undefined ? 'browser' : 'native'),
-      ...(command === 'serve'
-        ? [
-            {
-              name: 'forgeax:generated-host-owner',
-              configureServer(server: ViteDevServer) {
-                generatedServers.add(server);
-                const close = server.close.bind(server);
-                server.close = async () => {
-                  try {
-                    await close();
-                  } finally {
-                    for (const environment of Object.values(server.environments))
-                      environment.moduleGraph.invalidateAll();
-                    if (generatedServers.delete(server) && generatedServers.size === 0) {
-                      await rm(generated, { recursive: true, force: true });
-                    }
-                  }
-                };
-              },
-            },
-          ]
-        : []),
-      ...(engineWorkspaceResolver === undefined ? [] : [engineWorkspaceResolver]),
+      ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),
+      executionWorkerEntries(undefined, delivery),
+      executionBootstrapEntry(realGeneratedRoot),
+      ...(serving ? [generatedHostOwnerPlugin(generated)] : []),
+      ...engineWorkspacePlugins,
 
-      ...(command === 'serve' &&
-      (process.env.FORGEAX_ENGINE_RHI_DEBUG === '1' ||
-        process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1')
-        ? [
-            {
-              ...vitePluginRhiDebug({
-                rootDir:
-                  process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1' &&
-                  process.env.FORGEAX_ENGINE_RHI_DEBUG !== '1'
-                    ? (process.env.FORGEAX_EVIDENCE_DIR ?? facts.root)
-                    : facts.root,
-              }),
-              ...(process.env.FORGEAX_ENGINE_RHI_DEBUG === '1'
-                ? {}
-                : {
-                    config: () => ({
-                      define: { 'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': JSON.stringify('0') },
-                    }),
-                  }),
-            } as Plugin,
-          ]
-        : []),
-      forgeaxShader({ materialPackages }) as Plugin,
+      ...(serving ? rhiDebugPlugins(facts.root) : []),
+      forgeaxShader(projectShaderOptions(facts, materialPackages)) as Plugin,
       pack,
-      ...(command === 'serve'
+      ...(serving
         ? [
             devKitHostBridge(options.host, async () => {
               await pack.ready();
@@ -2749,15 +3221,10 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
               const inventory = await publishedPluginInventory(facts.root, sourceInventory, pack);
               timing('published-plugin-inventory');
               const root =
-                bootstrapRoot === 'resource-bootstrap' || workspacePreview || !facts.roots.frontend
+                !activatesProjectRoots || !facts.roots.frontend
                   ? undefined
                   : inventory.assets.get(facts.roots.frontend);
-              if (
-                facts.roots.frontend &&
-                bootstrapRoot !== 'resource-bootstrap' &&
-                !workspacePreview &&
-                !root
-              )
+              if (facts.roots.frontend && activatesProjectRoots && !root)
                 throw new Error(`host root ${facts.roots.frontend} has no published definition`);
               return createHostAssembly({
                 ...assembly,
@@ -2768,10 +3235,10 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
         : []),
       pluginRuntimeProjection(facts.root, sourceInventory.sourceInputs),
       pluginProgramsBuild({
-        ...(wechat === undefined ? {} : { delivery: 'native' }),
+        delivery,
         projectRoot: facts.root,
         tools: projectTools,
-        roots: bootstrapRoot === 'resource-bootstrap' || workspacePreview ? {} : facts.roots,
+        roots: activatesProjectRoots ? facts.roots : {},
         inventory: () => publishedPluginInventory(facts.root, sourceInventory, pack),
         binding: runtimeBinding,
         pack,
@@ -2818,7 +3285,11 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
           if (environment.name !== 'client') return [];
           // Vite presents slash-normalized paths; inventories use native paths.
           const sourcePath = resolve(context.file);
-          const authoringSource = await options.host?.authoringSourceChanged?.(sourcePath);
+          const authoringSource = await notifyAuthoringSourceChange(
+            options.host,
+            context,
+            sourcePath,
+          );
           if (sourcePath.startsWith(`${generated}${sep}`)) return [];
           // Sibling Play files cannot invalidate this immutable frontend.
           if (relative(facts.root, sourcePath).split(sep).includes('.forgeax')) return [];
@@ -2922,8 +3393,11 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
                 await viteBuild({ ...candidate, build: { ...candidate.build, write: false } });
                 if (sessionClosed) return undefined;
                 await assertPluginSourceInputs(validated, facts.value.root);
+                // Vite creates the replacement before closing this server, so it
+                // cannot share a stable root that this server still serves.
+                const { generatedRoot: _servedRoot, ...replacement } = options;
                 const config = await createViteConfig(facts.value, 'serve', base, {
-                  ...options,
+                  ...replacement,
                   sessionGeneration: generation,
                 });
                 try {
@@ -2997,26 +3471,7 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
         },
       },
     ];
-    if (
-      options.host?.workspace?.execution === 'game' ||
-      (process.env.FORGEAX_WORKSPACE_TIMING === '1' && options.host?.workspace)
-    ) {
-      plugins.unshift({
-        name: 'forgeax:workspace-vite-timing-start',
-        configResolved() {
-          timing('vite-config-resolved');
-        },
-        configureServer() {
-          timing('vite-configure-server-start');
-        },
-      });
-      plugins.push({
-        name: 'forgeax:workspace-vite-timing-end',
-        configureServer() {
-          timing('vite-configure-server-end');
-        },
-      });
-    }
+    addWorkspaceTimingPlugins(plugins, options.host, timing);
     return {
       root: generated,
       logLevel: 'warn',
@@ -3033,82 +3488,16 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
         // Vite builds each nested Worker with a separate plugin graph and conditions.
         plugins: () => [createEngineWorkspaceResolver(facts.root)],
       },
-      resolve: {
-        ...(wechat
-          ? { conditions: ['forgeax-native', 'module', 'browser', 'development|production'] }
-          : {}),
-        alias: [...(frontendAlias === undefined ? [] : [frontendAlias]), ...consumerAliases],
-        dedupe: consumerAliases.length
-          ? consumerAliases.map((alias) => alias.find)
-          : ['@forgeax/engine'],
-      },
-      server: {
-        ...options.server,
-        // FSEventStreamStop can block the macOS event loop during backend disposal.
-        ...(process.platform === 'darwin' ? { watch: { useFsEvents: false } } : {}),
-        headers: {
-          'Cross-Origin-Opener-Policy': 'same-origin',
-          'Cross-Origin-Embedder-Policy': 'require-corp',
-          'Cross-Origin-Resource-Policy': 'cross-origin',
-        },
-        fs: {
-          allow: [
-            facts.root,
-            realProjectRoot,
-            generated,
-            realGeneratedRoot,
-            ...roots,
-            ...(engineWorkspaceRoot === undefined ? [] : [engineWorkspaceRoot]),
-            ...(frontendAlias === undefined ? [] : [dirname(frontendAlias.replacement)]),
-          ],
-        },
-      },
-      build: {
-        // Syntax capabilities only: lower optional chains/class fields but keep native BigInt.
-        target: wechat ? 'chrome70' : 'esnext',
-        sourcemap: options.sourcemap ?? false,
-        outDir: options.outDir ?? resolve(facts.root, 'dist'),
-        emptyOutDir: true,
-        modulePreload: false,
-        rollupOptions: {
-          // Portable plugin entries declare strict signatures individually.
-          preserveEntrySignatures: wechat ? 'strict' : 'allow-extension',
-          input: wechat
-            ? { game: wechat.entry }
-            : {
-                index: resolve(realGeneratedRoot, 'index.html'),
-                'execution-bootstrap': resolve(realGeneratedRoot, 'execution-bootstrap.ts'),
-              },
-          output: {
-            ...(wechat
-              ? { format: 'cjs' as const, chunkFileNames: 'assets/[name]-[hash].js' }
-              : {}),
-            entryFileNames: (chunk) =>
-              wechat
-                ? 'game.js'
-                : chunk.name === 'execution-bootstrap'
-                  ? 'assets/execution-bootstrap.js'
-                  : 'assets/[name]-[hash].js',
-          },
-        },
-      },
+      resolve: viteResolveOptions(wechat !== undefined, frontendAlias, consumerAliases),
+      server: viteServerOptions(
+        options.server,
+        [facts.root, realProjectRoot, generated, realGeneratedRoot, ...roots],
+        engineWorkspaceRoot,
+        frontendAlias,
+      ),
+      build: viteBuildOptions(wechat, realGeneratedRoot, facts.root, options),
     };
   } catch (cause) {
-    const failures: unknown[] = [cause];
-    try {
-      await disposePreparation?.();
-    } catch (error) {
-      failures.push(error);
-    }
-    if (command === 'serve') {
-      try {
-        await rm(generated, { recursive: true, force: true });
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    throw failures.length === 1
-      ? cause
-      : new AggregateError(failures, 'Project preparation and cleanup failed');
+    return await failProjectPreparation(cause, disposePreparation, serving, generated);
   }
 }

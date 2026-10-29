@@ -40,10 +40,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@noble/hashes": "^2.2.0",
     "@bokuweb/zstd-wasm": "0.0.27",
-    "fzstd": "^0.1.1",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@hpcc-js/wasm-zstd": "1.17.0",
+    "@noble/hashes": "^2.2.0",
+    "fzstd": "^0.1.1"
   },
   "forgeax": {
     "metrics": {

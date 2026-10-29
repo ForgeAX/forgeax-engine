@@ -37,7 +37,7 @@
     "@webgpu/types": "^0.1.74"
   },
   "peerDependencies": {
-    "ws": "^8.20.0"
+    "ws": "^8.22.0"
   },
   "peerDependenciesMeta": {
     "ws": {

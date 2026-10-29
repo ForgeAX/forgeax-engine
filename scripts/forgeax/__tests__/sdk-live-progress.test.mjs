@@ -57,6 +57,6 @@ test('source Preview queue events and View progress opt into live output', () =>
   assert.match(verifier, /const sourceSmokeOptions = \{\s+streamOutput: true/);
   assert.match(
     verifier,
-    /verifyPublicSourceViewTool[\s\S]*verify-diagnostic-pages\.mjs[\s\S]*streamOutput: true/,
+    /verifyPublicSourceViewTool[\s\S]*verify-diagnostic-pages-integration\.mjs[\s\S]*streamOutput: true/,
   );
 });

@@ -125,7 +125,7 @@ vi.mock('@forgeax/engine-audio-webaudio', () => ({
 vi.mock('../browser-frame-signal', () => ({
   publishBrowserFrameCompleted: probes.browserCompleted,
   publishBrowserFrameSubmitted: vi.fn(),
-  resetBrowserFrameSubmitted: vi.fn(),
+  resetBrowserFrameProgress: vi.fn(),
 }));
 
 import { createWorkerExecutionApp } from '../execution/host-controller';
@@ -169,6 +169,7 @@ async function createRunningApp(
   syncCanvas?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['syncCanvas'],
   startupTimeoutMs: number | null = 2_000,
   frameTimeoutMs?: number | null,
+  renderDeviceLimit?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['renderDeviceLimit'],
 ) {
   const { callbacks, raf } = makeRaf();
   vi.stubGlobal('requestAnimationFrame', raf);
@@ -176,6 +177,7 @@ async function createRunningApp(
   const result = await createWorkerExecutionApp({
     canvas: makeCanvas(),
     ...(syncCanvas === undefined ? {} : { syncCanvas }),
+    ...(renderDeviceLimit === undefined ? {} : { renderDeviceLimit }),
     appOptions: {
       execution: {
         bootstrap: 'https://example.test/game.js',
@@ -211,6 +213,12 @@ function frames(): ExecutionFrameMessage[] {
   return probes.sessionPost.mock.calls
     .map(([message]) => message)
     .filter((message) => message.kind === 'frame');
+}
+
+function lastFrame(): ExecutionFrameMessage {
+  const frame = frames().at(-1);
+  if (frame === undefined) throw new Error('no frame was posted');
+  return frame;
 }
 
 function completeMessage(frame: ExecutionFrameMessage): EngineToHostMessage {
@@ -406,6 +414,78 @@ describe('Worker frame admission watchdog', () => {
     await app.dispose();
     expect(probes.platformListeners.size).toBe(0);
     expect(probes.platformDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('steps a paused Worker App with the explicit delta, one frame credit at a time', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    expect(app.stepFrame(1 / 60)).toMatchObject({
+      ok: false,
+      error: { code: 'app-frame-step-invalid', detail: { reason: 'state' } },
+    });
+    listener()(completeMessage(frame));
+    app.pause().unwrap();
+    callbacks.at(-1)?.(16);
+    expect(frames()).toHaveLength(1);
+    expect(app.stepFrame(Number.NaN)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'delta' } },
+    });
+    expect(app.stepFrame(0.05).ok).toBe(true);
+    const stepped = frames().at(-1);
+    expect(stepped).toMatchObject({ frameId: 2, deltaSeconds: 0.05 });
+    expect(app.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    listener()(completeMessage(stepped as ExecutionFrameMessage));
+    expect(app.stepFrame(0.05).ok).toBe(true);
+    expect(frames()).toHaveLength(3);
+    expect(app.execution.report().engine.health).toBe('idle');
+    listener()(completeMessage(frames().at(-1) as ExecutionFrameMessage));
+    app.resume().unwrap();
+    callbacks.at(-1)?.(5_000);
+    expect(frames().at(-1)).toMatchObject({ frameId: 4, deltaSeconds: 0 });
+    await app.dispose();
+  });
+
+  it('steps update-only frames past a full render pipeline and resets the next picture', async () => {
+    const { app, frame } = await createRunningApp('render-worker');
+    const emit = listener();
+    const settle = (message: ExecutionFrameMessage | undefined) =>
+      emit({
+        ...completeMessage(message as ExecutionFrameMessage),
+        kind: 'simulation-complete',
+      } as EngineToHostMessage);
+    settle(frame);
+    app.pause().unwrap();
+    app.stepFrame(0.05).unwrap();
+    settle(frames().at(-1));
+    // Pictures 1 and 2 fill the two-frame render pipeline.
+    expect(app.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    for (let step = 0; step < 4; step++) {
+      expect(app.stepFrame(0.05, { render: false }).ok).toBe(true);
+      expect(frames().at(-1)).toMatchObject({ frameId: 3 + step, render: false });
+      expect(app.stepFrame(0.05, { render: false })).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'credit' } },
+      });
+      settle(frames().at(-1));
+    }
+    emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(frame) as never });
+    // Only picture 2 is in flight: the skipped frames 3-6 hold no render credit.
+    expect(app.stepFrame(0.05).ok).toBe(true);
+    const picture = frames().at(-1);
+    expect(picture).toMatchObject({ frameId: 7, deltaSeconds: 0.05, temporalReset: true });
+    expect(picture).not.toHaveProperty('render');
+    settle(picture);
+    expect(app.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    await app.dispose();
   });
 
   it('cancels queued host callbacks and preserves an explicit pause through show', async () => {
@@ -747,6 +827,29 @@ describe('Worker frame admission watchdog', () => {
       capabilities: { backendKind: 'webgpu', compute: true, storageBuffer: false },
       limits: { maxStorageBuffersPerShaderStage: 0 },
     });
+    await app.dispose();
+  });
+
+  it('hands the Render Worker texture bound to Host canvas sizing outside the report limits', async () => {
+    const renderDeviceLimit = vi.fn();
+    const { app } = await createRunningApp(
+      'render-worker',
+      2,
+      undefined,
+      undefined,
+      undefined,
+      renderDeviceLimit,
+    );
+    listener()({
+      kind: 'render-ready',
+      epoch: 1,
+      limits: { maxStorageBuffersPerShaderStage: 8 },
+      maxTextureDimension2D: 8192,
+    });
+
+    expect(renderDeviceLimit).toHaveBeenCalledTimes(1);
+    expect(renderDeviceLimit.mock.calls[0]?.[1]).toBe(8192);
+    expect(app.execution.report().render?.limits).toEqual({ maxStorageBuffersPerShaderStage: 8 });
     await app.dispose();
   });
 
@@ -1392,5 +1495,73 @@ describe('Worker inspection replies', () => {
     });
     await expect(run).rejects.toMatchObject({ code: 'live-world-stale' });
     await app.dispose();
+  });
+});
+
+describe('Worker frame-rate limit', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    probes.sessionListeners.length = 0;
+    probes.pending.message = undefined;
+    probes.now = 0;
+    probes.visible = true;
+    probes.platformListeners.clear();
+    probes.sessionDispose.mockResolvedValue(ok(undefined));
+  });
+
+  it('admits every second 60 Hz callback at 30 FPS with the measured delta, and null restores every callback', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    try {
+      app.execution.setFrameRateLimit(30);
+      expect(() => app.execution.setFrameRateLimit(0)).toThrow(RangeError);
+      let previous = frame;
+      listener()(completeMessage(previous));
+      const admitted: number[] = [];
+      for (let index = 1; index <= 12; index++) {
+        const time = (index * 1000) / 60;
+        callbacks.at(-1)?.(time);
+        const latest = lastFrame();
+        if (latest === previous) continue;
+        admitted.push(time);
+        expect(latest.deltaSeconds).toBeCloseTo(1 / 30, 6);
+        previous = latest;
+        listener()(completeMessage(previous));
+      }
+      expect(admitted.map((time) => Math.round(time))).toEqual([33, 67, 100, 133, 167, 200]);
+      app.execution.setFrameRateLimit(null);
+      for (let index = 13; index <= 15; index++) {
+        callbacks.at(-1)?.((index * 1000) / 60);
+        const latest = lastFrame();
+        expect(latest).not.toBe(previous);
+        previous = latest;
+        listener()(completeMessage(previous));
+      }
+      expect(app.lastError).toBeUndefined();
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('keeps the limited cadence on the callback grid when credit releases a due frame late', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    try {
+      app.execution.setFrameRateLimit(30);
+      // The 33 ms callback is due but has no credit; the frame posts at 40 ms.
+      callbacks.at(-1)?.(1000 / 60);
+      callbacks.at(-1)?.(2000 / 60);
+      const posted = frames().length;
+      probes.now = 40;
+      listener()(completeMessage(frame));
+      expect(frames()).toHaveLength(posted + 1);
+      const late = lastFrame();
+      listener()(completeMessage(late));
+      callbacks.at(-1)?.(3000 / 60);
+      expect(frames()).toHaveLength(posted + 1);
+      callbacks.at(-1)?.(4000 / 60);
+      expect(frames()).toHaveLength(posted + 2);
+    } finally {
+      await app.dispose();
+    }
   });
 });

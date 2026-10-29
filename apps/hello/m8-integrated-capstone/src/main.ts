@@ -9,7 +9,8 @@ import {
   type InputSnapshot,
 } from '@forgeax/engine-input';
 import { FixedTime, Update, FixedUpdate } from '@forgeax/engine-ecs';
-import { physicsPlugin, CollidingEntities } from '@forgeax/engine-physics';
+import { CollidingEntities } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { pick } from '@forgeax/engine-picking';
 import { MeshRenderer } from '@forgeax/engine-render';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -33,7 +34,7 @@ const appResult = await createApp(
   canvas,
   {
     time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.1 },
-    plugins: [webAudioPlugin(), audioPlugin(), physicsPlugin('rapier-3d')],
+    plugins: [webAudioPlugin(), audioPlugin(), physics3d],
   },
   { ...forgeaxBundlerAdapter(), importTransport: createRuntimeAssetImportTransport(runtimeBinding) },
 );
@@ -79,7 +80,7 @@ const content = { ready: false, revision: 0, bytes: 0, title: '', markers: 0 };
 const renderMode = { value: 'standard' };
 const fault = { code: 'none' };
 const recovery = { value: 0 };
-const audioCounters = { starts: 0, previousActive: 0 };
+const audioCounters: { starts: number; previousActive: number | null } = { starts: 0, previousActive: 0 };
 let clipHandle = 0 as unknown as AssetHandle<'audio'>;
 let rearmAudio = false;
 let collisionSeen = false;
@@ -161,10 +162,12 @@ world.addSystem(Update, {
     }
 
     const audioState = audio.getState();
-    if (audioState.activeSourceCount > audioCounters.previousActive) {
-      audioCounters.starts += audioState.activeSourceCount - audioCounters.previousActive;
+    const active = audioState.activeSourceCount;
+    const previous = audioCounters.previousActive;
+    if (active !== null && previous !== null && active > previous) {
+      audioCounters.starts += active - previous;
     }
-    audioCounters.previousActive = audioState.activeSourceCount;
+    audioCounters.previousActive = active;
     const contacts = world.get(scene.actor, CollidingEntities);
     collisionSeen ||= contacts.ok && contacts.value.entities.length > 0;
     if (phase.value === 'boot' && content.ready) setNextState(world, Phase, 'playing');

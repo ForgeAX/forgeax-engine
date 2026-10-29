@@ -1,16 +1,148 @@
 <!-- LANG-SWITCH -->
 **Language**: **简体中文** · [English](README.md)
 
-# ForgeaX Engine
+<p align="center">
+  <img src="https://forgeax.github.io/logo.svg" width="96" alt="ForgeAX" />
+</p>
 
-**AI 原生：为最大化 AI 能效而设计的游戏引擎。**
+<h1 align="center">ForgeAX Engine</h1>
 
-ForgeaX 是以 **AI agent 为第一用户**的 TypeScript 游戏引擎。数据、生命周期、API 与工具围绕同一目标设计：让 AI 理解系统、准确操作、检查结果并完成修复。
+<p align="center">
+  <strong>AI 原生的 TypeScript 游戏引擎 —— 把想法变成可玩的游戏。</strong>
+</p>
+
+<p align="center">
+  以 AI agent 为第一用户：数据、生命周期、API 与工具围绕同一目标设计，<br/>
+  让 AI 理解系统、准确操作、检查结果并完成修复。
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
+  <a href="https://github.com/ForgeaX-Games/forgeax-engine/actions/workflows/ci.yml"><img src="https://github.com/ForgeaX-Games/forgeax-engine/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://forgeax.github.io/"><img src="https://img.shields.io/badge/docs-forgeax.github.io-brightgreen.svg" alt="Docs" /></a>
+  <img src="https://img.shields.io/badge/TypeScript-ESM-3178c6.svg" alt="TypeScript ESM" />
+  <img src="https://img.shields.io/badge/rendering-WebGPU-ff6a00.svg" alt="WebGPU" />
+</p>
+
+<p align="center">
+  <a href="#made-with-forgeax">游戏展示</a> ·
+  <a href="#features">特性</a> ·
+  <a href="#get-started">开始使用</a> ·
+  <a href="#ai-efficiency">AI 能效</a> ·
+  <a href="#architecture">引擎架构</a> ·
+  <a href="#explore">深入阅读</a>
+</p>
 
 > [!IMPORTANT]
 > **能效是目标，设计是方法。** 让 AI 用更少上下文、更少试错和更短反馈时间，完成更多经过验证的游戏开发工作。
 
-[AI 能效](#ai-efficiency) · [设计原则](#design) · [引擎架构](#architecture) · [开始使用](#start) · [深入阅读](#explore)
+<a id="made-with-forgeax"></a>
+## 用 ForgeAX 制作
+
+这些游戏都基于本引擎，通过 `forgeax` CLI 与 AI 优先的工作流创作。
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/games/hellforge/"><img src="https://forgeax.github.io/assets/readme/games/hellforge.jpg" alt="地狱熔炉" width="100%" /></a><br/>
+      <strong>地狱熔炉</strong> · ARPG / 3D
+    </td>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/games/planet-snake/"><img src="https://forgeax.github.io/assets/readme/games/planet-snake.jpg" alt="Planet Snake" width="100%" /></a><br/>
+      <strong>Planet Snake</strong> · 3D 生存
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/games/go-karts/"><img src="https://forgeax.github.io/assets/readme/games/go-karts.jpg" alt="萌宠卡丁车" width="100%" /></a><br/>
+      <strong>萌宠卡丁车</strong> · 竞速 / 3D
+    </td>
+    <td width="50%" align="center">
+      <a href="https://forgeax.github.io/showcase/"><img src="https://forgeax.github.io/assets/readme/games/ai-weapon-spirit.jpg" alt="我的 AI 队友不可能是上古器灵！" width="100%" /></a><br/>
+      <strong>我的 AI 队友不可能是上古器灵！</strong> · ARPG / 3D
+    </td>
+  </tr>
+</table>
+
+<p align="center"><a href="https://forgeax.github.io/showcase/">查看完整游戏展示 →</a></p>
+
+<a id="features"></a>
+## 特性
+
+- **渲染** — 材质、灯光、阴影、后处理、GPU 粒子、trail 与 beam，基于 WebGPU
+- **玩法** — ECS World、2D/3D 物理（Rapier）、动画、输入、音频与网络同步
+- **资产管线** — 导入 glTF / FBX / 图像，或用 TypeScript 生成资产并参数化派生变体
+- **AI 优先调试** — 查询活实体、录制 / 重放渲染帧，逐 draw 逐像素检查
+- **CLI 工作流** — 用 `forgeax` 命令创建、运行、检查与打包游戏
+- **多平台** — 造化工坊、微信小游戏、Steam、Steam Deck、Switch 与 Kubee
+
+<a id="get-started"></a>
+## 开始使用
+
+把引擎和它的 AI 工具链装进你的编辑器：
+
+```bash
+npx -y @forgeax/game install
+```
+
+支持：Claude Code · Cursor · ChatGPT · Kimi Code · DeepSeek · VS Code。
+
+或直接用引擎新建工程：
+
+```bash
+pnpm dlx @forgeax/engine project new my-game --template game-3d
+cd my-game
+pnpm exec forgeax dev start --headless false
+```
+
+`game-3d` 是第三人称参考工程，`empty` 是最小起点。先读生成的 README 与技能，再看 [Engine](packages/engine/README.md) 与 [CLI 使用指南](skills/forgeax-engine-cli/SKILL.md)。
+
+<details>
+<summary>运行与验证</summary>
+
+```bash
+pnpm exec forgeax help --tree --json
+pnpm exec forgeax project check
+pnpm exec forgeax dev status --json
+pnpm exec forgeax dev capture --json
+pnpm exec forgeax dev stop --json
+pnpm exec forgeax project test
+pnpm exec forgeax project package --format web-zip
+```
+
+观察结果携带 `revision`，截图返回 PNG 与报告引用。实体查找、摄像机控制和实例身份约束见 [持久运行实例](packages/devkit/README.md#persistent-live-control)。
+
+</details>
+
+<details>
+<summary>从引擎源码 / SDK 构建</summary>
+
+工具链版本以 [`.nvmrc`](.nvmrc)、[`.pnpm-version`](.pnpm-version)、[`.bun-version`](.bun-version) 为准。
+
+```bash
+pnpm install
+pnpm build:engine
+pnpm test
+```
+
+| 场景 | 入口 |
+|:--|:--|
+| 获取 SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
+| SDK 的 `source/engine/` | 独立公开源码面，带 `.forgeax-public-distribution` 标记与预构建 WASM；运行上述 install / build，无需私有子模块 |
+| 完整贡献者 checkout | 首次 clone 使用 `--recurse-submodules` 获取有权限访问的私有资产；完整应用构建运行 `pnpm build` |
+| 单个示例迭代 | `pnpm build:app hello/triangle`；更大范围验收遵循 Smoke gate |
+
+SDK 包含构建产物、模板、技能与 Engine 源码。详见 [SDK 指南](skills/forgeax-engine-sdk/SKILL.md)。
+
+</details>
+
+<a id="prerequisites"></a>
+## 环境要求
+
+- **Node.js** ≥ 22.13.0 —— [`.nvmrc`](.nvmrc) 锁定 `22.22.3`
+- **pnpm** `12.10.1`，通过 Corepack 启用（`corepack enable`）
+- **Bun** ≥ 1.2.0
+- 支持 **WebGPU** 的浏览器（最新版 Chrome / Edge）
 
 <a id="ai-efficiency"></a>
 ## AI 能效
@@ -31,12 +163,12 @@ ForgeaX 是以 **AI agent 为第一用户**的 TypeScript 游戏引擎。数据�
 > [!NOTE]
 > 截图、结构检查和真实 GPU 执行回答不同问题；CPU capture 也不能替代 GPU 性能测量。
 
-<a id="design"></a>
-## 设计原则
+<details>
+<summary><strong>设计原则</strong></summary>
 
 **压缩即智能：减少理解局部行为所需的概念数。** 避免重复状态源、额外生命周期和隐式分支。
 
-| 设计原则 | 在 ForgeaX 中的落实 |
+| 设计原则 | 在 ForgeAX 中的落实 |
 |:--|:--|
 | **AI 是第一用户** | 优先机器可发现、可调用、可验证的契约；与人类使用习惯冲突时，优先服务 AI |
 | **单一事实来源** | World 拥有游戏状态，Renderer 拥有渲染投影，源资产与 Meta 拥有作者事实；其他层读取或推导 |
@@ -46,7 +178,9 @@ ForgeaX 是以 **AI agent 为第一用户**的 TypeScript 游戏引擎。数据�
 | **显式状态与失败** | 闭合 union、结构化错误、明确的能力缺失与 fallback 报告，减少隐藏分支 |
 | **构建期准备，运行时消费** | 导入、WGSL 组合与反射、VFX 编译在构建期完成；运行时加载已发布内容 |
 
-完整约束见 [AI-first 设计公理](AGENTS.md#design-axiom--compression--intelligence) 与 [模块职责地图](AGENTS.md#module-design-map--cognitive-injection)。
+完整约束见 AI-first 设计公理 与 模块职责地图。
+
+</details>
 
 <a id="architecture"></a>
 ## 架构
@@ -86,7 +220,8 @@ flowchart TB
     RHI -.->|"可选录制"| DEBUG
 ```
 
-### 渲染与 GPU
+<details>
+<summary><strong>渲染与 GPU</strong></summary>
 
 | 子系统 | 关键设计与职责 | 深入阅读 |
 |:--|:--|:--|
@@ -95,7 +230,10 @@ flowchart TB
 | **GPU VFX** | GPU 模拟与间接绘制；代码定义、构建期编译；粒子、ribbon、trail、beam、billboard 与 mesh 效果 | [VFX](packages/vfx/README.md) · [VFX render](packages/vfx-render/README.md) |
 | **RHI / 后端** | 按 capability 统一浏览器 WebGPU、wgpu WASM 与 null 后端；接口规范对齐，采用不透明句柄且无数学依赖 | [RHI](packages/rhi/README.md) · [wgpu](packages/rhi-wgpu/README.md) |
 
-### ECS 与多 Worker
+</details>
+
+<details>
+<summary><strong>ECS 与多 Worker</strong></summary>
 
 [ECS World](packages/ecs/README.md) 统一管理实体、组件、关系、资源和时间；`Update` / `FixedUpdate` 系统声明访问与调度。[Scene](packages/scene/README.md) 管理层级与变换，[State](packages/state/README.md) 管理状态所属实体；Renderer 消费 World 变化，维护持久渲染投影。
 
@@ -120,7 +258,10 @@ flowchart LR
 > [!NOTE]
 > 多 Worker 保持**一个逻辑 World**，结构变更串行，不传递活对象或拆分 RenderGraph；共享写入部分失败须重建 World。详见 [App 执行契约](packages/app/README.md#execution-tiers) 与 [多线程示例](apps/hello/multithreaded-execution/README.md)。
 
-### 文本化与脚本化资产
+</details>
+
+<details>
+<summary><strong>文本化与脚本化资产</strong></summary>
 
 **程序生成与参数复用，让内容创作进入代码工作流。** AI 能批量生成资产，也能直接编辑文本、审查 diff 和自动验证。
 
@@ -131,37 +272,28 @@ flowchart LR
 | **Pack · `.pack.json`** | 声明资产、引用与实例参数，直接编辑字段、审查差异 |
 | **导入资产与 sidecar** | glTF / FBX / 图像等外部源与元数据，共享身份和 cook 路径 |
 
-```mermaid
-flowchart LR
-    SCRIPT["ScriptablePack<br/>.pack.ts"]
-    TEXT["Pack<br/>.pack.json"]
-    IMPORT["外部源 + Meta<br/>模型 · 图像 · 字体"]
-    COOK["生产者校验与 cook"]
-    PUBLISH["发布产物<br/>稳定 GUID · receipt · Catalog"]
-    RUNTIME["运行时<br/>按 GUID 加载"]
-    SCRIPT --> COOK
-    TEXT --> COOK
-    IMPORT --> COOK
-    COOK --> PUBLISH
-    PUBLISH --> RUNTIME
-```
-
 > [!IMPORTANT]
 > **源与产物分离。** `.pack.ts` 在构建期执行，运行时按稳定 GUID 加载 cook 产物；纹理、模型、音频仍可使用二进制源。修复回到源输入，再重新 cook。详见 [Pack 创作契约](packages/pack/README.md)。
 
-### 游戏插件与引擎插件
+</details>
+
+<details>
+<summary><strong>游戏插件与引擎插件</strong></summary>
 
 游戏插件与引擎插件共享原生 Cordis 的依赖、激活、更新与退出机制。
 
 | 插件层次 | 典型职责 | 组合方式 |
 |:--|:--|:--|
-| 项目装配 | 选择安装哪些插件、配置与所在 realm | `forge.json.plugins[]` 声明 Entry；DevKit 生成静态 Catalog，由原生 Loader 激活 |
+| 项目装配 | 选择安装哪些插件、配置与所在 realm | `forge.json#roots` 为 engine / frontend / build / host 各根各引用一个插件资产 GUID；DevKit 编译插件程序，交由原生 Loader 激活 |
 | 引擎插件 | 场景、输入、物理、音频等服务与 ECS 能力 | 原生 `inject / provide` 声明依赖与服务，通过 `effect` 注册贡献及其逆操作 |
-| 游戏插件 | 角色移动、镜头、游戏 UI 与玩法系统 | 参考模板在 `assets/plugin.ts` 用 `definePluginGroup` / `usePlugin` 组合子插件 |
+| 游戏插件 | 角色移动、镜头、游戏 UI 与玩法系统 | 参考模板在 `assets/game.pack.ts`（engine 根）用 `mountPluginAsset` 组合子插件资产，UI 由 frontend 根挂载 |
 
-`effect` 的逆操作随 Fiber 退出执行；帧内逻辑由 ECS 调度，插件装配不进入热路径。参考 [插件契约](packages/plugin/README.md) 与 [`game-3d` 根插件](templates/game-3d/assets/plugin.ts)。
+`effect` 的逆操作随 Fiber 退出执行；帧内逻辑由 ECS 调度，插件装配不进入热路径。参考 [插件契约](packages/plugin/README.md) 与 [`game-3d` 根插件](templates/game-3d/assets/game.pack.ts)。
 
-### 模拟与交互
+</details>
+
+<details>
+<summary><strong>模拟与交互</strong></summary>
 
 | 子系统 | 关键设计与职责 | 深入阅读 |
 |:--|:--|:--|
@@ -170,56 +302,6 @@ flowchart LR
 | **动画 / 蒙皮** | 动画图、clip 与播放系统独立于 Renderer；Skin 负责骨骼绑定与关节路径解析 | [Animation](packages/animation/README.md) · [Skinning](packages/skinning/README.md) |
 | **运行时智能服务** | 可选的 provider 无关 Activity / Session；有界输出、取消与轮询；异步服务不阻塞 ECS 帧循环 | [Intelligence](packages/intelligence/README.md) |
 | **输入 / UI / 音频** | 帧起点冻结输入快照；Shadow DOM UI；realm 无关的音频意图交给 Host Web Audio 播放 | [Input](packages/input/README.md) · [UI](packages/ui/README.md) · [Audio](packages/audio/README.md) |
-
-<a id="start"></a>
-## 开始使用
-
-安装 **`@forgeax/engine`**，通过 `/ecs`、`/app` 等子路径使用聚焦能力，统一命令为 `forgeax`。
-
-```bash
-pnpm dlx @forgeax/engine project new my-game --template game-3d
-cd my-game
-pnpm exec forgeax help --tree --json
-pnpm exec forgeax project check
-pnpm exec forgeax dev start --headless false --json
-```
-
-`game-3d` 是第三人称参考工程，`empty` 是最小起点。先读生成的 README 与技能；操作入口见 [Engine](packages/engine/README.md) 与 [CLI 使用指南](skills/forgeax-engine-cli/SKILL.md)。
-
-<details>
-<summary>运行与验证</summary>
-
-```bash
-pnpm exec forgeax dev status --json
-pnpm exec forgeax dev capture --json
-pnpm exec forgeax dev stop --json
-pnpm exec forgeax project test
-pnpm exec forgeax project package --format web-zip
-```
-
-观察结果携带 `revision`，截图返回 PNG 与报告引用。实体查找、摄像机控制和实例身份约束见 [持久运行实例](packages/devkit/README.md#persistent-live-control)。
-
-</details>
-
-<details>
-<summary>源码与 SDK</summary>
-
-工具链版本以 [`.nvmrc`](.nvmrc)、[`.pnpm-version`](.pnpm-version)、[`.bun-version`](.bun-version) 为准。
-
-```bash
-pnpm install
-pnpm build:engine
-pnpm test
-```
-
-| 场景 | 入口 |
-|:--|:--|
-| 获取 SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
-| SDK 的 `source/engine/` | 独立公开源码面，带 `.forgeax-public-distribution` 标记与预构建 WASM；运行上述 install / build，无需私有子模块 |
-| 完整贡献者 checkout | 首次 clone 使用 `--recurse-submodules` 获取有权限访问的私有资产；完整应用构建运行 `pnpm build` |
-| 单个示例迭代 | `pnpm build:app hello/triangle`；更大范围验收遵循 [Smoke gate](AGENTS.md#smoke-gate) |
-
-SDK 包含构建产物、模板、技能与 Engine 源码。详见 [SDK 指南](skills/forgeax-engine-sdk/SKILL.md)。
 
 </details>
 
@@ -234,6 +316,13 @@ SDK 包含构建产物、模板、技能与 Engine 源码。详见 [SDK 指南](
 | [Engine skills](skills/) | 按任务发现引擎能力与操作路径 |
 | [Apps](apps/) / [Templates](templates/) | 示例、回归场景与游戏起点 |
 | [故宫建筑示例](apps/showcase/palace/README.md) | `pack.ts` 建筑、灯光和持续 CLI 观察示例；视觉效果仍在迭代 |
+
+<a id="contact"></a>
+## 社区
+
+- 🌐 官网 —— [forgeax.github.io](https://forgeax.github.io/)
+- 📧 邮箱 —— forgeax@outlook.com
+- 🐧 QQ 群 —— [点击加入](https://qun.qq.com/certify-share/s/kRjlj8fNt7?_nsp=1)
 
 > [!NOTE]
 > 本 README 维护[英文主版本](README.md)与[简体中文镜像](README.zh-CN.md)，内容变更须在同一提交中同步。具体能力和限制以链接的包契约为准。

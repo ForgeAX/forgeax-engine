@@ -6,7 +6,7 @@ import {
   type LodViewCamera,
   writeLodViewConstants,
 } from '../gpu-driven/lod-projection.wgsl';
-import { shadowLodHeightFloor } from '../gpu-driven/production-raster-lod';
+import { SHADOW_LOD_COARSEST } from '../gpu-driven/production-raster-lod';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import {
   buildGpuLodRows,
@@ -423,17 +423,31 @@ describe('GPU LOD projection kernels (Dawn parity)', () => {
       if (expected !== raw.level) hysteresisHeld += 1;
 
       const draws = crossfadeReference(rows, item.height);
-      const finest = Math.min(...draws.map((draw) => draw.level));
-      const floor = shadowLodHeightFloor(
-        { coverages: rows.map((row) => row.screenCoverage), hysteresis: rows[0]?.hysteresis ?? 0 },
-        finest,
+      const capThreshold = rows[SHADOW_LOD_COARSEST + 1]?.screenCoverage;
+      const floor =
+        capThreshold === undefined ? 0 : capThreshold * (1 + (rows[0]?.hysteresis ?? 0));
+      // Production skips the cap for NaN and negative heights (view-gpu candidateLod).
+      const shadowHeight = item.height >= 0 ? Math.max(item.height, f(floor)) : item.height;
+      const shadowLevel = selectGpuLod(rows, {
+        projectedHeight: shadowHeight,
+        previousLevel: 0,
+        historyValid: false,
+      }).level;
+      const shadowDraws = crossfadeReference(rows, shadowHeight);
+      // The gate never feeds a NaN to max(), so every height, NaN included, is pinned.
+      expect(evidence.selection[index * 8 + 5], `height ${item.height}`).toBe(shadowLevel);
+      expect(evidence.selection[index * 8 + 7], `height ${item.height}`).toBe(
+        shadowDraws[0]?.level,
       );
+      // The fixed cap is never coarser than the old main-level + 1 bound,
+      // even when the main camera changes and the light view stays fixed.
+      expect(shadowLevel).toBeLessThanOrEqual(SHADOW_LOD_COARSEST);
+      expect(shadowLevel).toBeLessThanOrEqual(raw.level + 1);
       const actualFloor =
         new Float32Array(new Uint32Array([evidence.selection[index * 8 + 6] ?? 0]).buffer)[0] ??
         Number.NaN;
       if (
         evidence.selection[index * 8 + 4] !== raw.level ||
-        evidence.selection[index * 8 + 5] !== finest ||
         Math.abs(actualFloor - f(floor)) > 1e-6
       ) {
         clampMismatches += 1;

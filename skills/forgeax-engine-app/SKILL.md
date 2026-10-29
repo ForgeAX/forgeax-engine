@@ -8,6 +8,12 @@ description: >-
 
 # forgeax-engine-app
 
+For mounted HUD layout and actions, use the [UI contract](../../packages/ui/README.md).
+`mountUi` gives percentage-height content the host viewport height; keep scrolling
+on the authored element. Its `onAction` delegation reads `data-ui-action`, not an
+arbitrary `data-action` attribute. Verify real click acknowledgement and visible
+geometry rather than the presence of HTML text.
+
 ## Render happy path
 
 The app host follows `RenderScene -> Standard Pipeline -> DeviceScope -> FrameReceipt`.
@@ -22,7 +28,13 @@ App only admits a frame when the renderer is `alive`. `device-lost` and
 `recovering` keep the Host/rAF heartbeat but freeze World update and submit
 when logic and rendering are co-located. With a Render Worker, inspect `report.render`: App replaces
 the GPU owner with a fresh epoch/baseline while retaining the source World identity.
-World updates wait until the replacement is ready.
+World updates wait until the replacement is ready and has publication capacity.
+For confirmed device loss with resident meshes, wait for the receiver's bounded
+disposal acknowledgment before reusing the source World. Cleanup failure,
+timeout or transport loss remains fatal with `meshReleaseUnconfirmed`; do not
+infer GPU release from Worker termination.
+Recheck both together after asynchronous waits: loss clears the old queue before
+the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
 `recover()` is single-flight, so concurrent calls share one Promise. A
 `faulted` renderer must be disposed and recreated; `disposed` is terminal.
@@ -106,6 +118,7 @@ const report = result.value.execution.report();
 | Shared numeric kernels | Leave `kernels: 'auto'`, serve COOP/COEP and inspect actual `kernelDispatch` |
 | Host-only bootstrap | Set `engine: false`; leave dependent policies auto or false |
 | Partial Kernel write | Call `app.execution.rebuild()` and use the new World identity |
+| Fixed presentation rate (e.g. 30 FPS) | `app.execution.setFrameRateLimit(30)`; `null` removes it. Admission stays on display callbacks and World time is unchanged |
 
 World and Assets stay in the Engine Worker. With `render` enabled, a child owns
 Renderer/WebGPU; source plugins inject World/Assets and use bootstrap
@@ -128,6 +141,15 @@ Edit World and Renderer identity; `app.stop()` and `renderer.dispose()` are
 not relocation APIs. `app.stop()` only stops frame scheduling; `app.dispose()`
 drains the plugin realm and releases the renderer.
 
+## WebGPU stub for GPU-less CPU diagnostics
+
+`createApp(canvas, { gpuStub: profile })` installs the `rhi-webgpu` stub in the main
+realm before execution capability probing and forwards the profile to the Engine
+and Render Workers, which install it before their Renderer exists. Worker WebGPU
+counts as available, so the selected topology matches a GPU host. Generated hosts
+map `?forgeax-gpu-stub=1` to `DEFAULT_WEBGPU_STUB_PROFILE`. CPU attribution only;
+see the performance skill.
+
 ## Optional CPU profiling
 
 Attach `@forgeax/engine-profiler` to the App or Renderer assembly when a bounded CPU artifact is
@@ -149,6 +171,14 @@ if (!capture.ok) throw capture.error;
 Read `profiler.phaseCatalog` for the App/Render owner relation. Use
 `validateProfileCapture` and `buildProfileModel` from the profiler package for offline analysis;
 do not recreate phase lists or turn this capability into an ECS, GPU, UI, or RPC surface.
+
+## Load timeline
+
+Loading is recorded by default at negligible cost; nothing needs to be attached.
+Mark game milestones with `markLoadTimeline('home-ready')` / `markLoadTimeline('map-ready')`
+from `@forgeax/engine/app` in any realm, and read every realm with
+`await collectLoadTimeline()` or `globalThis.__forgeaxLoadTimeline.collect()`.
+Record kinds and limits: performance measurement.
 
 ## Render-owned evidence boundary
 
@@ -363,6 +393,10 @@ Pointer-lock FPS / mouse look (reference: `templates/game-3d/assets/camera/camer
 - Gate from the Engine realm with `gameHost.setPointerLockAllowed(allowed)` (send it on
   change, e.g. `allowed = phase === 'playing'`). The Host requests the lock on the next
   trusted canvas click; gameplay never calls `requestPointerLock` or listens for DOM events.
+- The gate defaults to allowed. A cursor game (top-down, RTS, tower defense, UI-driven)
+  closes it once with `gameHost.setPointerLockAllowed(false)` in its plugin `apply`; the
+  latest command is the effective state whenever the browser input backend is created,
+  including during Worker startup and after canvas replacement.
 - Consume `input.mouse.movementDelta` and fire buttons only while
   `input.mouse.pointerLocked`; the click that acquires the lock is not a shot. Clicks while
   locked keep the lock, so left-button fire is safe.

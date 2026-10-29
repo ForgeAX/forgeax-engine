@@ -304,7 +304,7 @@ async function cost(clip:AudioClipAsset,round:number,count:number,regions:number
     ctx.provide('audio',backend);return()=>{ctx.world.addSystem=add;};}},audioPlugin()]},forgeaxBundlerAdapter())).unwrap();
   const appMs=performance.now()-appStart;
   const world=app.world,errors:unknown[]=[];app.onError(e=>errors.push(errorRecord(e)));
-  world.spawn({component:Transform,data:{pos:[0,0,5]}},{component:Camera,data:{aspect:1}}).unwrap();
+  world.spawn({component:Transform,data:{pos:[0,0,5]}},{component:Camera,data:{fov:Math.PI/3,aspect:1}}).unwrap();
   const update=world.update.bind(world);world.update=(...args)=>{const start=performance.now();try{return update(...args);}finally{worldMs+=performance.now()-start;}};
   app.start().unwrap();app.pause().unwrap();
   const beforeHeap=heap(),coldStart=performance.now(),entities:EntityHandle[]=[],regionEntities:EntityHandle[]=[];const groups=Math.ceil(regions/overlap);

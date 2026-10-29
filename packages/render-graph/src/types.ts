@@ -37,11 +37,6 @@ export interface GraphAccelerationStructure {
   readonly [graphAccelerationStructureBrand]: true;
 }
 
-export type GraphResource =
-  | GraphTexture
-  | GraphTextureView
-  | GraphBuffer
-  | GraphAccelerationStructure;
 export type GraphResourceOrigin = 'created' | 'imported';
 export type GraphResourceKind = 'texture' | 'buffer' | 'acceleration-structure';
 

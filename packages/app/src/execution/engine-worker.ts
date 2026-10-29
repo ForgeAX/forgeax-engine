@@ -1,15 +1,23 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { addLoadWork, err, loadProgressScope, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
+import { forwardGpuStub } from './gpu-stub';
 import type {
   EngineToHostMessage,
   ExecutionFaultMessage,
+  ExecutionHostControlMessage,
   ExecutionInitMessage,
   ExecutionReadyMessage,
   ExecutionRenderErrorMessage,
   HostToEngineMessage,
 } from './protocol';
 import { shutdownWorker } from './worker-shutdown';
+
+/** Bind the Worker realm to this page's load progress, when the page has one. */
+export function loadProgressInit(): { readonly loadProgressScope?: string } {
+  const scope = loadProgressScope();
+  return scope === undefined ? {} : { loadProgressScope: scope };
+}
 
 export interface EngineWorkerSession {
   readonly worker: Worker;
@@ -44,6 +52,29 @@ function startupFault(message: ExecutionFaultMessage, moduleUrl: string): AppErr
   });
 }
 
+type EngineMessage<K extends EngineToHostMessage['kind']> = Extract<
+  EngineToHostMessage,
+  { readonly kind: K }
+>;
+
+/** A Render Worker failure before readiness is a bootstrap fault of the Engine session. */
+function renderStartupFault(message: ExecutionRenderErrorMessage): ExecutionFaultMessage {
+  return {
+    kind: 'fault',
+    worldIdentity: message.worldIdentity,
+    source: 'bootstrap',
+    ...message.error,
+    detail: {
+      ...message.error,
+      renderIdentity: message.identity,
+      worldIdentity: message.worldIdentity,
+      ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
+    },
+    partialWrite: false,
+    retryable: false,
+  };
+}
+
 export async function startEngineWorker(
   options: StartEngineWorkerOptions,
 ): Promise<Result<EngineWorkerSession, AppErrorType>> {
@@ -61,23 +92,36 @@ export async function startEngineWorker(
     retired = true;
     for (const cleanup of kernelCleanups.values()) cleanup();
   };
+  // Render notices arrive on a per-session port; a replacement session closes the old one.
+  let renderHostPort: MessagePort | undefined;
+  const closeRenderHostPort = (): void => {
+    if (renderHostPort === undefined) return;
+    renderHostPort.onmessage = null;
+    renderHostPort.close();
+    renderHostPort = undefined;
+  };
   const terminate = (): void => {
     retireKernels();
+    closeRenderHostPort();
     worker.terminate();
   };
   const listeners = new Set<(message: EngineToHostMessage) => void>();
-  type PendingRenderNotice = {
+  type PendingNotice = {
     readonly sequence: number;
     readonly message:
       | Extract<EngineToHostMessage, { readonly kind: 'render-ready' }>
-      | ExecutionRenderErrorMessage;
+      | ExecutionRenderErrorMessage
+      | ExecutionHostControlMessage;
   };
-  let pendingRenderReady: PendingRenderNotice | undefined;
+  let pendingRenderReady: PendingNotice | undefined;
   let settled = false;
   let firstListenerInstalled = false;
-  let pendingRenderError: PendingRenderNotice | undefined;
+  let pendingRenderError: PendingNotice | undefined;
+  // Realm plugins may command pointer lock before the ready ACK. Retain the latest
+  // command until the first Host listener owns delivery.
+  let pendingHostControl: PendingNotice | undefined;
   let omittedRenderErrors = 0;
-  let nextRenderNoticeSequence = 0;
+  let nextNoticeSequence = 0;
   let resolveReady: (result: Result<ExecutionReadyMessage, AppErrorType>) => void = () => {};
   const readyPromise = new Promise<Result<ExecutionReadyMessage, AppErrorType>>((resolve) => {
     resolveReady = resolve;
@@ -91,86 +135,92 @@ export async function startEngineWorker(
           terminate();
           resolveReady(err(deadlineError(options.timeoutMs as number)));
         }, options.timeoutMs);
+  const adoptKernelWorker = (message: EngineMessage<'kernel-worker'>): void => {
+    const port = message.port;
+    if (retired || !options.workers.kernels.enabled || kernelCleanups.has(message.workerId)) {
+      port.close();
+      return;
+    }
+    let kernel: Worker | undefined;
+    let portOwnedByHost = true;
+    const cleanup = (): void => {
+      if (!kernelCleanups.delete(message.workerId)) return;
+      if (portOwnedByHost) port.close();
+      if (kernel !== undefined) {
+        kernel.onerror = null;
+        kernel.terminate();
+      }
+    };
+    kernelCleanups.set(message.workerId, cleanup);
+    try {
+      kernel = new Worker(new URL('./kernel-worker-runtime.mjs', import.meta.url), {
+        type: 'module',
+        name: 'forgeax-kernel',
+      });
+      kernel.onerror = (event): void => {
+        cleanup();
+        worker.onerror?.(event);
+      };
+      kernel.postMessage({ kind: 'kernel-connect', port }, [port]);
+      portOwnedByHost = false;
+    } catch (cause) {
+      cleanup();
+      worker.onerror?.({ message: String(cause) } as ErrorEvent);
+    }
+  };
+  const adoptRenderHostPort = (message: EngineMessage<'render-host-port'>): void => {
+    closeRenderHostPort();
+    const port = message.port;
+    if (retired) {
+      port.close();
+      return;
+    }
+    renderHostPort = port;
+    port.onmessage = (event: MessageEvent<EngineToHostMessage>) => {
+      const notice = event.data;
+      if (notice.kind !== 'render-submitted' && notice.kind !== 'render-complete') return;
+      for (const listener of listeners) listener(notice);
+    };
+  };
+  const settleStartup = (result: Result<ExecutionReadyMessage, AppErrorType>): void => {
+    settled = true;
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (!result.ok) terminate();
+    resolveReady(result);
+  };
+  /** The first ready, render-error or fault notice decides startup. */
+  const observeStartup = (message: EngineToHostMessage): void => {
+    if (message.kind === 'ready') settleStartup(ok(message));
+    else if (message.kind === 'render-error')
+      settleStartup(err(startupFault(renderStartupFault(message), options.bootstrapUrl)));
+    else if (message.kind === 'fault')
+      settleStartup(err(startupFault(message, options.bootstrapUrl)));
+  };
+  const retainEarlyNotice = (message: EngineToHostMessage): void => {
+    if (listeners.size === 0 && message.kind === 'render-ready')
+      pendingRenderReady = { sequence: nextNoticeSequence++, message };
+    if (!firstListenerInstalled && message.kind === 'host-control')
+      pendingHostControl = { sequence: nextNoticeSequence++, message };
+  };
   worker.onmessage = (event: MessageEvent<EngineToHostMessage>) => {
     const message = event.data;
     if (message.kind === 'kernel-worker') {
-      const port = message.port;
-      if (retired || !options.workers.kernels.enabled || kernelCleanups.has(message.workerId)) {
-        port.close();
-        return;
-      }
-      let kernel: Worker | undefined;
-      let portOwnedByHost = true;
-      const cleanup = (): void => {
-        if (!kernelCleanups.delete(message.workerId)) return;
-        if (portOwnedByHost) port.close();
-        if (kernel !== undefined) {
-          kernel.onerror = null;
-          kernel.terminate();
-        }
-      };
-      kernelCleanups.set(message.workerId, cleanup);
-      try {
-        kernel = new Worker(new URL('./kernel-worker-runtime.mjs', import.meta.url), {
-          type: 'module',
-          name: 'forgeax-kernel',
-        });
-        kernel.onerror = (event): void => {
-          cleanup();
-          worker.onerror?.(event);
-        };
-        kernel.postMessage({ kind: 'kernel-connect', port }, [port]);
-        portOwnedByHost = false;
-      } catch (cause) {
-        cleanup();
-        worker.onerror?.({ message: String(cause) } as ErrorEvent);
-      }
+      adoptKernelWorker(message);
       return;
     }
     if (message.kind === 'kernel-retire') {
       kernelCleanups.get(message.workerId)?.();
       return;
     }
-    if (listeners.size === 0 && message.kind === 'render-ready')
-      pendingRenderReady = { sequence: nextRenderNoticeSequence++, message };
-    if (!settled && message.kind === 'ready') {
-      settled = true;
-      if (timeout !== undefined) clearTimeout(timeout);
-      resolveReady(ok(message));
-    } else if (!settled && message.kind === 'render-error') {
-      settled = true;
-      if (timeout !== undefined) clearTimeout(timeout);
-      terminate();
-      resolveReady(
-        err(
-          startupFault(
-            {
-              kind: 'fault',
-              worldIdentity: message.worldIdentity,
-              source: 'bootstrap',
-              ...message.error,
-              detail: {
-                ...message.error,
-                renderIdentity: message.identity,
-                worldIdentity: message.worldIdentity,
-                ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
-              },
-              partialWrite: false,
-              retryable: false,
-            },
-            options.bootstrapUrl,
-          ),
-        ),
-      );
-    } else if (!settled && message.kind === 'fault') {
-      settled = true;
-      if (timeout !== undefined) clearTimeout(timeout);
-      terminate();
-      resolveReady(err(startupFault(message, options.bootstrapUrl)));
+    if (message.kind === 'render-host-port') {
+      adoptRenderHostPort(message);
+      return;
     }
+    retainEarlyNotice(message);
+    if (!settled) observeStartup(message);
     if (message.kind === 'render-error' && !firstListenerInstalled) {
       if (pendingRenderError === undefined)
-        pendingRenderError = { sequence: nextRenderNoticeSequence++, message };
+        pendingRenderError = { sequence: nextNoticeSequence++, message };
       else omittedRenderErrors++;
     }
     for (const listener of listeners) listener(message);
@@ -231,15 +281,25 @@ export async function startEngineWorker(
     ...(options.time !== undefined ? { time: options.time } : {}),
     ...(options.animation === undefined ? {} : { animation: options.animation }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+    ...forwardGpuStub(options),
     ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
+    ...(options.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
     ...(options.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: options.outputColorSpace }),
     ...(options.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: options.dynamicGeometryMeshBudgetBytes }),
+    ...(options.assetBudgetBytes === undefined
+      ? {}
+      : { assetBudgetBytes: options.assetBudgetBytes }),
+    ...loadProgressInit(),
     workers: options.workers,
   };
+  // One Engine Worker to start; its realm reports completion once it runs.
+  addLoadWork('workers', { total: 1 });
   worker.postMessage(init, [
     offscreen,
     ...(options.bootstrapPort === undefined ? [] : [options.bootstrapPort]),
@@ -257,11 +317,12 @@ export async function startEngineWorker(
       if (disposal === undefined) {
         listeners.add(listener);
         if (!firstListenerInstalled) firstListenerInstalled = true;
-        const retained = [pendingRenderReady, pendingRenderError]
-          .filter((notice): notice is PendingRenderNotice => notice !== undefined)
+        const retained = [pendingRenderReady, pendingRenderError, pendingHostControl]
+          .filter((notice): notice is PendingNotice => notice !== undefined)
           .sort((left, right) => left.sequence - right.sequence);
         pendingRenderReady = undefined;
         pendingRenderError = undefined;
+        pendingHostControl = undefined;
         const omitted = omittedRenderErrors;
         omittedRenderErrors = 0;
         for (const notice of retained) {
@@ -278,6 +339,7 @@ export async function startEngineWorker(
       pendingRenderReady = undefined;
       firstListenerInstalled = true;
       pendingRenderError = undefined;
+      pendingHostControl = undefined;
       omittedRenderErrors = 0;
       disposal ??= shutdownWorker(worker, 10_000).finally(retireKernels);
       return disposal;

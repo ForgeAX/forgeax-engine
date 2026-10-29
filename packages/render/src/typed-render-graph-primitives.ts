@@ -9,7 +9,9 @@ import {
 import {
   type BindGroup,
   type BindGroupLayout,
+  type RenderBundleEncoderDescriptor,
   RhiError,
+  type RhiRenderPassEncoder,
   type TextureView,
 } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
@@ -27,16 +29,22 @@ import { buildPerFrameBindGroups } from './record/frame-lighting';
 import type { ValidatedRenderable } from './record/frame-snapshot';
 import {
   encodeMainPass,
+  hasMainPassCpuWork,
   hasMainPassPipelinePreparation,
+  type MainPassOptions,
   prepareMainPassPipelines,
 } from './record/main-pass';
 import { encodeFrameObservationCapture } from './record/observation-capture';
-import { sceneRenderBundleCache } from './record/render-bundle-cache';
+import { retireSceneRenderBundleCache, sceneRenderBundleCache } from './record/render-bundle-cache';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
 } from './record/render-context';
-import { registerScenePass, scenePassContext } from './record/scene-pass-work';
+import {
+  registerScenePass,
+  type ScenePassRequest,
+  scenePassContext,
+} from './record/scene-pass-work';
 import { registerScenePipelinePreparation } from './record/scene-pipeline-preparation';
 import {
   encodeSkyboxPass,
@@ -198,12 +206,17 @@ export function addTypedSkyboxPass(
         clearValue: typedFrameClearColor,
       },
     ],
-    encode: ({ pass, frame }) => encodeSkyboxPass(frame as _InternalRenderPipelineContext, pass),
+    encode: ({ pass, frame }) => {
+      encodeSkyboxPass(frame as _InternalRenderPipelineContext, pass);
+    },
   });
 }
 
 export interface TypedScenePassOptions {
-  readonly executeIf?: ((frame: RenderPipelineFrame) => boolean) | undefined;
+  /** The common borrowed frame and this exact pass's prepared draw-work identity. */
+  readonly executeIf?:
+    | ((frame: RenderPipelineFrame, request: ScenePassRequest) => boolean)
+    | undefined;
   readonly selectEntities?: (frame: RenderPipelineFrame) => {
     readonly worldId: number;
     readonly entities: readonly number[];
@@ -232,6 +245,8 @@ export interface TypedScenePassOptions {
   readonly coverageOnly?: boolean | undefined;
   readonly recordMode?:
     | 'opaque'
+    | 'opaque-fogged'
+    | 'opaque-unfogged'
     | 'transmission'
     | 'transparent'
     | 'translucent-before-transmission'
@@ -256,6 +271,41 @@ export interface TypedScenePassOptions {
   readonly gpuDriven?: RenderPipelineGpuDrivenProjection | undefined;
   /** `late` draws only HZB-revealed GPU items and skips CPU geometry. */
   readonly gpuDrivenPhase?: GpuDrivenDrawPhase | undefined;
+}
+
+/** Scene work is detached; a direct helper caller still borrows the incoming frame. */
+function detachedScenePassContext(
+  frame: RenderPipelineFrame,
+  request: Parameters<typeof scenePassContext>[1],
+): { -readonly [K in keyof _InternalRenderPipelineContext]: _InternalRenderPipelineContext[K] } {
+  const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
+  return internal === frame ? { ...internal } : internal;
+}
+
+function recordSceneCommands(
+  context: _InternalRenderPipelineContext,
+  options: TypedScenePassOptions,
+  descriptor: RenderBundleEncoderDescriptor,
+  pass: RhiRenderPassEncoder,
+  record: (pass: RhiRenderPassEncoder) => void,
+): void {
+  // The native GPU producer retains its own raster bundles. With no CPU
+  // rows or hidden preparation, a second command recorder has no work.
+  if (
+    options.gpuDriven !== undefined &&
+    !hasMainPassCpuWork(context) &&
+    context.gpuDrivenStandardPbrFrameResources?.resourceGeneration !== undefined
+  ) {
+    retireSceneRenderBundleCache(context.frameState, options.name);
+    record(pass);
+    return;
+  }
+  sceneRenderBundleCache(context.frameState, options.name, descriptor).encode(
+    context.runtime.device,
+    pass,
+    record,
+    context.frameState.renderBundleCounters,
+  );
 }
 
 export function addTypedScenePass(
@@ -283,7 +333,7 @@ export function addTypedScenePass(
           : options.recordMode === 'single-layer-medium-color'
             ? 'fs_color'
             : undefined;
-  const formats = colorTargets.map((target) => target.format);
+  const formats = colorTargets.map((target) => target.format as GPUTextureFormat);
   const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
   registerScenePipelinePreparation(graph, (context, artifacts) => {
     const selection = options.selectEntities?.(context);
@@ -296,7 +346,10 @@ export function addTypedScenePass(
               selection.worldId === entry.source.worldId &&
               selection.entities.includes(entry.source.entityKey),
           );
-    const preparedContext = { ...context, pipelinePreparationEntries: entries ?? [] };
+    // A graph can declare this preparation lane while the current frame has
+    // no pending material pipelines. Do not copy its whole context in that case.
+    if (entries === undefined || entries.length === 0) return false;
+    const preparedContext = { ...context, pipelinePreparationEntries: entries };
     if (
       !hasMainPassPipelinePreparation(
         preparedContext,
@@ -379,7 +432,7 @@ export function addTypedScenePass(
     return true;
   });
   options.gpuDriven?.registerPipelinePreparation?.(
-    colorTargets.map((target) => target.format),
+    formats,
     options.gpuDrivenFilter,
     selectForwardFragmentEntry({
       passKind: options.passKind ?? 'forward',
@@ -391,9 +444,44 @@ export function addTypedScenePass(
     options.coverageOnly,
   );
   const bundleDescriptor = {
-    colorFormats: colorTargets.map((target) => target.format as GPUTextureFormat),
+    colorFormats: formats,
     depthStencilFormat: options.depth.format as GPUTextureFormat,
-    sampleCount: colorTargets[0]?.sampleCount ?? options.depth.sampleCount,
+    sampleCount,
+  };
+  // One result object per recording; optional fields need no temporary spread objects.
+  const recordOptions = (
+    frame: RenderPipelineFrame,
+    resources: GraphResourceResolver,
+    transmissionBackdrop: TextureView | null,
+    surfaceRawDepth: TextureView | null,
+    surfaceNearestLayer: TextureView | null,
+    surfaceNearestDepth: TextureView | null,
+  ): MainPassOptions => {
+    const result: { -readonly [K in keyof MainPassOptions]: MainPassOptions[K] } = {
+      bundleDescriptor,
+    };
+    if (options.selectEntities !== undefined) result.selection = options.selectEntities(frame);
+    result.colorFormats = formats;
+    result.passKind = request.passKind;
+    if (request.recordMode !== undefined) result.recordMode = request.recordMode;
+    if (options.transparentDepthWrite !== undefined)
+      result.transparentDepthWrite = options.transparentDepthWrite;
+    if (options.coverageOnly !== undefined) result.coverageOnly = options.coverageOnly;
+    if (request.excludeSelector !== undefined) result.excludeSelector = request.excludeSelector;
+    if (options.transmissionBackdrop !== undefined)
+      result.transmissionBackdropView = transmissionBackdrop;
+    if (surfaceRawDepth !== null) result.surfaceRawDepthView = surfaceRawDepth;
+    if (surfaceNearestLayer !== null) result.surfaceNearestLayerView = surfaceNearestLayer;
+    if (surfaceNearestDepth !== null) result.surfaceNearestDepthView = surfaceNearestDepth;
+    if (fragmentEntryPoint !== undefined) result.fragmentEntryPoint = fragmentEntryPoint;
+    if (options.gpuDriven !== undefined)
+      result.gpuDriven = {
+        projection: options.gpuDriven,
+        resources,
+        ...(options.gpuDrivenPhase === undefined ? {} : { phase: options.gpuDrivenPhase }),
+      };
+    if (options.gpuDrivenFilter !== undefined) result.gpuDrivenFilter = options.gpuDrivenFilter;
+    return result;
   };
   const accesses: GraphAccess[] = [
     ...colorTargets.map((target) => ({
@@ -449,10 +537,7 @@ export function addTypedScenePass(
     executeIf:
       options.executeIf === undefined
         ? undefined
-        : (frame) =>
-            options.executeIf?.(
-              scenePassContext(frame as _InternalRenderPipelineContext, request),
-            ) ?? true,
+        : (frame) => options.executeIf?.(frame, request) ?? true,
     colorAttachments: colorTargets.map((target, index) => ({
       view: target.view,
       ...(target.resolveTarget === undefined ? {} : { resolveTarget: target.resolveTarget }),
@@ -481,7 +566,7 @@ export function addTypedScenePass(
       stencilStoreOp: 'store',
     },
     encode: ({ pass, frame, resources }) => {
-      const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
+      const internal = detachedScenePassContext(frame, request);
       const directionalShadow =
         options.directionalShadow === undefined
           ? undefined
@@ -569,79 +654,41 @@ export function addTypedScenePass(
       // issue the same indirect draw twice. Keep this wrapper responsible for
       // resolving graph-owned attachments; the main-pass owner orders the
       // material producer before the GPU consumer.
-      const { gpuDrivenSelection, ...directContext } = internal;
-      const passContext: _InternalRenderPipelineContext = {
-        ...directContext,
-        ...(options.gpuDriven === undefined || gpuDrivenSelection === undefined
-          ? {}
-          : { gpuDrivenSelection }),
-        ...(options.environment === undefined
-          ? {}
-          : {
-              environmentIbl: {
-                irradiance: resolvedView(resources, options.environment.irradiance),
-                prefilter: resolvedView(resources, options.environment.prefilter),
-              },
-            }),
-        transparentColorFormat: colorTargets[0]?.format as GPUTextureFormat,
-        ...(options.passKind !== 'deferred' && colorTargets[1]?.format === 'rgba16float'
-          ? { reflectionFallbackColorFormat: 'rgba16float' as const }
-          : {}),
-        msaaActive: colorTargets[0]?.sampleCount === 4,
-        viewBindGroup: groups.viewBindGroup,
-        meshBindGroup: groups.meshBindGroup,
-        hdrpClusterBindGroup: groups.hdrpClusterBindGroup,
-        hdrpClusterMembershipBindGroup: groups.hdrpClusterMembershipBindGroup,
-        ...(ssao === undefined ? {} : { hdrpSsaoBlurredView: ssao }),
-      };
-      sceneRenderBundleCache(internal.frameState, options.name, bundleDescriptor).encode(
-        internal.runtime.device,
-        pass,
-        (bundledPass) => {
-          encodeMainPass(passContext, bundledPass, request.selector, {
-            bundleDescriptor,
-            ...(options.selectEntities === undefined
-              ? {}
-              : { selection: options.selectEntities(frame) }),
-            colorFormats: colorTargets.map((target) => target.format as GPUTextureFormat),
-            passKind: request.passKind,
-            ...(request.recordMode === undefined ? {} : { recordMode: request.recordMode }),
-            ...(options.transparentDepthWrite === undefined
-              ? {}
-              : { transparentDepthWrite: options.transparentDepthWrite }),
-            ...(options.coverageOnly === undefined ? {} : { coverageOnly: options.coverageOnly }),
-            ...(request.excludeSelector === undefined
-              ? {}
-              : { excludeSelector: request.excludeSelector }),
-            ...(options.transmissionBackdrop === undefined
-              ? {}
-              : { transmissionBackdropView: transmissionBackdrop }),
-            ...(surfaceRawDepth === null ? {} : { surfaceRawDepthView: surfaceRawDepth }),
-            ...(surfaceNearestLayer === null
-              ? {}
-              : { surfaceNearestLayerView: surfaceNearestLayer }),
-            ...(surfaceNearestDepth === null
-              ? {}
-              : { surfaceNearestDepthView: surfaceNearestDepth }),
-            ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
-            ...(options.gpuDriven === undefined
-              ? {}
-              : {
-                  gpuDriven: {
-                    projection: options.gpuDriven,
-                    resources,
-                    ...(options.gpuDrivenPhase === undefined
-                      ? {}
-                      : { phase: options.gpuDrivenPhase }),
-                  },
-                }),
-            ...(options.gpuDrivenFilter === undefined
-              ? {}
-              : { gpuDrivenFilter: options.gpuDrivenFilter }),
-          });
-        },
-        internal.frameState.renderBundleCounters,
-      );
+      const gpuDrivenSelection = internal.gpuDrivenSelection;
+      // Native Scene Pass work already owns a detached context. Enrich that
+      // context once instead of copying the entire frame twice more per Pass.
+      const passContext = internal;
+      passContext.gpuDrivenSelection =
+        options.gpuDriven === undefined ? undefined : gpuDrivenSelection;
+      if (options.environment !== undefined)
+        passContext.environmentIbl = {
+          irradiance: resolvedView(resources, options.environment.irradiance),
+          prefilter: resolvedView(resources, options.environment.prefilter),
+        };
+      passContext.transparentColorFormat = colorTargets[0]?.format as GPUTextureFormat;
+      if (options.passKind !== 'deferred' && colorTargets[1]?.format === 'rgba16float')
+        passContext.reflectionFallbackColorFormat = 'rgba16float';
+      passContext.msaaActive = colorTargets[0]?.sampleCount === 4;
+      passContext.viewBindGroup = groups.viewBindGroup;
+      passContext.meshBindGroup = groups.meshBindGroup;
+      passContext.hdrpClusterBindGroup = groups.hdrpClusterBindGroup;
+      passContext.hdrpClusterMembershipBindGroup = groups.hdrpClusterMembershipBindGroup;
+      if (ssao !== undefined) passContext.hdrpSsaoBlurredView = ssao;
+      const record = (commands: RhiRenderPassEncoder) =>
+        encodeMainPass(
+          passContext,
+          commands,
+          request.selector,
+          recordOptions(
+            frame,
+            resources,
+            transmissionBackdrop,
+            surfaceRawDepth,
+            surfaceNearestLayer,
+            surfaceNearestDepth,
+          ),
+        );
+      recordSceneCommands(internal, options, bundleDescriptor, pass, record);
     },
   });
 }

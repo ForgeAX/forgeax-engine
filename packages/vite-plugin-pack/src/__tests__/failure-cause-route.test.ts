@@ -63,6 +63,19 @@ describe('catalog failure cause', () => {
     expect(large.body.cause[0].message).toHaveLength(2000);
   });
 
+  it('preserves a native cooker diagnostic such as a WGSL composer error', async () => {
+    const result = await responseFor({
+      code: 'native-cook-failed',
+      expected: 'a registered native cooker to produce a complete draft',
+      hint: 'register the cooker or repair its draft, then rerun recovery',
+      detail: { guid: 'asset-guid', producer: 'Composer error: invalid field accessor normalWS' },
+    });
+    expect(result.body.cause).toMatchObject({
+      code: 'native-cook-failed',
+      detail: { producer: 'Composer error: invalid field accessor normalWS' },
+    });
+  });
+
   it('preserves a nested Error message through the real JSON response', async () => {
     const result = await responseFor(
       Object.assign(new Error('scene source failed'), {

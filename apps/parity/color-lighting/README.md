@@ -3,7 +3,7 @@
 Minimal, evidence-first parity gate for Three.js r184 and ForgeaX color and lighting.
 
 For a complete scene written independently through both public APIs, open
-`scene-authoring.html` and read the [scene authoring comparison](SCENE_AUTHORING.md).
+`scene-authoring.html` and read the scene authoring comparison.
 It includes CSM, PBR materials, post-processing, live controls and both full sources.
 
 ## Start here
@@ -29,7 +29,7 @@ producer gate is exercised by the direct-light Dawn test.
 
 The current backend and pipeline matrix is generated at
 `report/color-lighting-parity/status-index.json`. Read
-[`status-index.md`](./status-index.md) for the recovery map; this README does
+`status-index.md` for the recovery map; this README does
 not duplicate per-case status values.
 
 > [!CAUTION]
@@ -183,7 +183,7 @@ flowchart TD
 
 ## Two-hop navigation
 
-1. Use [`status-index.md`](./status-index.md) to map a report state to its one
+1. Use `status-index.md` to map a report state to its one
    recovery action.
 2. Open the named owner and schema:
    [`SceneCase`](./schemas/scene-case.schema.json),
@@ -320,7 +320,7 @@ Software adapter results establish correctness, not hardware performance.
 
 ## Environment response
 
-[Skylight versus Three.js environment lighting](ENVIRONMENT_RESPONSE.md) provides
+Skylight versus Three.js environment lighting provides
 an interactive Forward/Deferred comparison of uniform and directional HDR environments,
 including rotation, material-region means, spatial errors and optional RHI capture.
 Open `environment-response.html` on this app's dev or preview server.
@@ -328,6 +328,6 @@ Open `environment-response.html` on this app's dev or preview server.
 ## Rendering response
 
 Open `rendering-response.html` for the environment, shadow, transparency, GTAO and
-temporal comparison entry points. [Rendering response](RENDERING_RESPONSE.md)
+temporal comparison entry points. Rendering response
 documents the shared inputs, current policies, intentional differences and
 commands that save the numeric evidence and real engine captures.

@@ -1,15 +1,22 @@
 import assert from 'node:assert/strict';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, Disabled, defineComponent, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry, createTorusGeometry } from '@forgeax/engine-geometry';
+import { mat4 } from '@forgeax/engine-math';
 import type { Context } from '@forgeax/engine-plugin';
 import {
+  attachBarrelDistortionCameraFrame,
   Camera,
   createBarrelDistortionMapping,
+  MeshFilter,
+  MeshRenderer,
   Outline,
   setActiveCamera,
 } from '@forgeax/engine-render';
 import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { Skin } from '@forgeax/engine-skinning';
 import { afterEach, describe, expect, it } from 'vitest';
-import { publishBrowserFrameSubmitted, resetBrowserFrameSubmitted } from '../browser-frame-signal';
+import { publishBrowserFrameSubmitted, resetBrowserFrameProgress } from '../browser-frame-signal';
 import { engineWorkspaceTargetToolsPlugin } from '../workspace-target-tools';
 
 const contexts: Context[] = [];
@@ -123,9 +130,94 @@ describe('workspace target tools plugin', () => {
     expect(pick).toThrow(
       expect.objectContaining({ detail: expect.objectContaining({ reason: 'world-mismatch' }) }),
     );
-    resetBrowserFrameSubmitted(canvas);
+    resetBrowserFrameProgress(canvas);
     expect(pick).toThrow(
       expect.objectContaining({ detail: expect.objectContaining({ reason: 'missing-frame' }) }),
+    );
+  });
+  it('keeps bounds as the default and picks the rear cube through the submitted-frame triangle path', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const ring = assets.create(createTorusGeometry(1, 0.25, 24, 12).unwrap()).unwrap();
+    const box = assets.create(createBoxGeometry(0.8, 0.8, 0.8).unwrap()).unwrap();
+    const ringEntity = world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: ring } },
+        { component: MeshRenderer, data: { materials: [] } },
+      )
+      .unwrap();
+    const cubeEntity = world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, -2] } },
+        { component: MeshFilter, data: { assetHandle: box } },
+        { component: MeshRenderer, data: { materials: [] } },
+      )
+      .unwrap();
+    propagateTransforms(world);
+
+    const canvas = Object.assign(new EventTarget(), {
+      width: 100,
+      height: 100,
+    }) as HTMLCanvasElement;
+    const viewMatrix = mat4.identity(mat4.create());
+    viewMatrix[14] = -5;
+    const mapping = attachBarrelDistortionCameraFrame(
+      createBarrelDistortionMapping(100, 100, { strength: 0 }).unwrap(),
+      {
+        projection: 'perspective' as const,
+        far: 100,
+        viewMatrix,
+        projectionMatrix: mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 1, 0.1, 100),
+      },
+    );
+    publishBrowserFrameSubmitted(canvas, {
+      frameId: 7,
+      deviceGeneration: 3,
+      worldIdentity: world.identity,
+      barrelDistortion: mapping,
+    });
+
+    const context = await createWorldContext(world);
+    contexts.push(context);
+    const fiber = await context.plugin(engineWorkspaceTargetToolsPlugin, {
+      targetId: 'target',
+      display: { canvas, app: {} as never },
+    });
+    await fiber.await();
+    const pick = context.engineWorkspaceTargetTools?.pick;
+    assert(pick);
+    expect(pick({ x: 50, y: 50 })).toMatchObject({
+      targetId: 'target',
+      frameId: 7,
+      granularity: 'bounds',
+      entityId: `target:${world.identity}:${ringEntity}`,
+    });
+    expect(pick({ x: 50, y: 50, granularity: 'triangle' })).toMatchObject({
+      targetId: 'target',
+      frameId: 7,
+      granularity: 'triangle',
+      entityId: `target:${world.identity}:${cubeEntity}`,
+    });
+    expect(pick({ x: 74, y: 51, granularity: 'triangle' })).toMatchObject({
+      entityId: `target:${world.identity}:${ringEntity}`,
+    });
+    expect(pick({ x: 0, y: 0, granularity: 'triangle' })).toMatchObject({ entityId: null });
+
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: ring } },
+        { component: MeshRenderer, data: { materials: [] } },
+        { component: Skin, data: { joints: [] } },
+      )
+      .unwrap();
+    propagateTransforms(world);
+    expect(() => pick({ x: 50, y: 50, granularity: 'triangle' })).toThrowError(
+      expect.objectContaining({
+        code: 'engine-workspace-capability-unavailable',
+        detail: expect.objectContaining({ reason: 'skinned-pose-unavailable' }),
+      }),
     );
   });
   it('projects unnamed and dynamic entities, their hierarchy and actual component fields', async () => {

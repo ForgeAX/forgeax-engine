@@ -60,17 +60,60 @@ describe('declared dynamic geometry preparation batches', () => {
     lifecycle.dispose();
   });
 
-  it('counts one declared batch as one retained transaction, never accepting mixed membership', () => {
+  it('counts one declared batch as one retained transaction, never accepting partial membership', () => {
     const lifecycle = createDynamicGeometryLifecycle(2);
     const world = {};
     const first = lifecycle.prepareCandidates(inputs(world), 1).unwrap();
     const second = lifecycle.prepareCandidates(inputs(world, 33, 100), 1).unwrap();
     expect(lifecycle.prepare(input(world, 200), 1).ok).toBe(false);
-    expect(lifecycle.acceptCandidates([...first, ...second], { world, fixedStep: 1 }).ok).toBe(
-      false,
-    );
+    expect(
+      lifecycle.acceptCandidates([...first, ...second.slice(1)], { world, fixedStep: 1 }).ok,
+    ).toBe(false);
+    expect(lifecycle.inspect()).toMatchObject({ prepared: 66, accepted: 0 });
     for (const candidate of first) lifecycle.cancel(candidate).unwrap();
     lifecycle.prepare(input(world, 200), 1).unwrap();
+    lifecycle.dispose();
+  });
+
+  it('accepts a union of complete declared batches atomically', () => {
+    const lifecycle = createDynamicGeometryLifecycle();
+    const world = {};
+    const first = lifecycle.prepareCandidates(inputs(world, 3), 1).unwrap();
+    const second = lifecycle.prepareCandidates(inputs(world, 2, 10), 1).unwrap();
+    const third = lifecycle.prepareCandidates(inputs(world, 33, 20), 1).unwrap();
+    const union = [...second, ...first, ...third];
+    expect(lifecycle.acceptCandidates(union, { world, fixedStep: 1 }).unwrap()).toHaveLength(38);
+    expect(lifecycle.inspect()).toMatchObject({ prepared: 0, accepted: 38 });
+    lifecycle.dispose();
+  });
+
+  it('refuses the whole union when one member batch is partial, mixed, duplicated or failed', () => {
+    const lifecycle = createDynamicGeometryLifecycle();
+    const world = {};
+    const first = lifecycle.prepareCandidates(inputs(world, 3), 1).unwrap();
+    const second = lifecycle.prepareCandidates(inputs(world, 2, 10), 1).unwrap();
+    const single = lifecycle.prepare(input(world, 30), 1).unwrap();
+    const ordering = { world, fixedStep: 1 };
+    const refused = (candidates: readonly unknown[]) => {
+      expect(lifecycle.acceptCandidates(candidates as typeof first, ordering).ok).toBe(false);
+      expect(lifecycle.inspect()).toMatchObject({ accepted: 0 });
+    };
+    refused([...first, ...second.slice(0, 1)]);
+    refused([...first, ...second, single]);
+    refused([...first, ...second, first[0]]);
+    refused([...first, ...second.slice(0, 1), second[0]]);
+    refused([...first, ...second.map((candidate) => ({ ...candidate, revision: 9 }))]);
+    // A member batch whose preparation failed afterwards (cancelled) cannot be admitted.
+    for (const candidate of second) lifecycle.cancel(candidate).unwrap();
+    refused([...first, ...second]);
+    expect(lifecycle.inspect()).toMatchObject({ prepared: 4, accepted: 0 });
+    // A wrong World ordering refuses every batch of the union.
+    const third = lifecycle.prepareCandidates(inputs(world, 2, 40), 1).unwrap();
+    expect(lifecycle.acceptCandidates([...first, ...third], { world: {}, fixedStep: 1 }).ok).toBe(
+      false,
+    );
+    expect(lifecycle.acceptCandidates([...first, ...third], ordering).unwrap()).toHaveLength(5);
+    expect(lifecycle.inspect()).toMatchObject({ prepared: 1, accepted: 5 });
     lifecycle.dispose();
   });
 

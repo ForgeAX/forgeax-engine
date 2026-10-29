@@ -55,6 +55,7 @@ async function fixture(body: string, nested = false, config?: unknown): Promise<
     name: 'Fixture',
     packageJson: {},
     assetRoots: ['assets'],
+    assetLibraries: [],
     roots: { build: guid },
   };
 }
@@ -93,7 +94,12 @@ describe('native build root process', () => {
       ctx.provide('devkitAppOptions', config);
     } };`,
       false,
-      { dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024, standardProfile, time },
+      {
+        dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
+        standardProfile,
+        time,
+        wechat: { maxRenderShortSide: 0 },
+      },
     );
     const session = await loadProjectCookers(facts, []);
     sessions.push(session);
@@ -101,6 +107,7 @@ describe('native build root process', () => {
       dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
       standardProfile,
       time,
+      wechat: { maxRenderShortSide: 0 },
     });
     const absent = await loadProjectCookers({ ...facts, roots: {} }, []);
     sessions.push(absent);
@@ -120,6 +127,13 @@ describe('native build root process', () => {
     '{ [Symbol("extra")]: 1 }',
     '{ standardProfile: null }',
     '{ time: null }',
+    '{ wechat: null }',
+    '{ wechat: [] }',
+    '{ wechat: { unknown: 720 } }',
+    '{ wechat: { maxRenderShortSide: -1 } }',
+    '{ wechat: { maxRenderShortSide: 0.5 } }',
+    '{ wechat: { maxRenderShortSide: NaN } }',
+    '{ wechat: { maxRenderShortSide: "720" } }',
     '{ time: [] }',
     '{ time: { unknown: 1 } }',
     '{ time: { fixedDeltaSeconds: 0 } }',

@@ -1,6 +1,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { GameProjectSchema } from '@forgeax/engine-project';
+import { resolveAssetLibraries } from './asset-libraries.js';
 import type { CommandError, CommandResult, ProjectFacts } from './types.js';
 
 function projectError(
@@ -49,6 +50,32 @@ function timeoutFromPackage(
     ok: true,
     value: timeoutMs as ProjectFacts['startupTimeoutMs'],
   };
+}
+
+/**
+ * `package.json#forgeax.pointShadows: true` compiles the Standard shaders with
+ * the point-shadow cube-array lane, so `PointLightShadow` casters render in
+ * DevKit dev and production builds. Omitted or false keeps the smaller default
+ * shader build.
+ */
+function pointShadowsFromPackage(
+  root: string,
+  packageJson: Record<string, unknown>,
+): CommandResult<{ readonly pointShadows?: true }> {
+  const forgeax = packageJson.forgeax;
+  const value =
+    forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
+      ? (forgeax as Record<string, unknown>).pointShadows
+      : undefined;
+  if (value !== undefined && typeof value !== 'boolean') {
+    return projectError(
+      'package-manifest-invalid',
+      'package.json#forgeax.pointShadows to be a boolean',
+      'Set true to build point-light shadow shaders, or remove the field.',
+      { root, pointShadows: value },
+    );
+  }
+  return { ok: true, value: value === true ? { pointShadows: true } : {} };
 }
 
 /** Read the shared project startup policy without requiring a forge.json project. */
@@ -148,6 +175,10 @@ export async function readProjectFacts(
   if (!startup.ok) return startup;
   const frame = timeoutFromPackage(root, packageJson, 'frameTimeoutMs');
   if (!frame.ok) return frame;
+  const shaders = pointShadowsFromPackage(root, packageJson);
+  if (!shaders.ok) return shaders;
+  const assetLibraries = await resolveAssetLibraries(root, forge.assetLibraries);
+  if (!assetLibraries.ok) return assetLibraries;
   return {
     ok: true,
     value: {
@@ -157,37 +188,70 @@ export async function readProjectFacts(
       roots: forge.roots,
       ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
       ...(frame.value === undefined ? {} : { frameTimeoutMs: frame.value }),
+      ...shaders.value,
       assetRoots: forge.assetRoots,
+      assetLibraries: assetLibraries.value,
       packageJson,
     },
   };
 }
 
-export function commandError(cause: unknown, fallbackCode: string): CommandError {
+/** Follow structured native error envelopes; never recover fields from message text. */
+function ownerFailures(cause: unknown, seen = new Set<object>()): CommandError[] {
+  if (cause === null || typeof cause !== 'object' || seen.has(cause)) return [];
+  seen.add(cause);
+  const value = cause as Record<string, unknown>;
+  const fields =
+    typeof value.expected === 'string' && typeof value.hint === 'string'
+      ? value
+      : value.meta !== null && typeof value.meta === 'object'
+        ? (value.meta as Record<string, unknown>)
+        : undefined;
   if (
-    cause !== null &&
-    typeof cause === 'object' &&
-    'code' in cause &&
-    'expected' in cause &&
-    'hint' in cause &&
-    'detail' in cause
+    typeof value.code === 'string' &&
+    fields !== undefined &&
+    typeof fields.expected === 'string' &&
+    typeof fields.hint === 'string'
   ) {
-    return cause as CommandError;
+    if (fields === value && typeof value.pluginCode !== 'string' && 'detail' in value)
+      return [cause as CommandError];
+    return [
+      {
+        code: typeof value.pluginCode === 'string' ? value.pluginCode : value.code,
+        expected: fields.expected,
+        hint: fields.hint,
+        detail:
+          fields.detail !== null && typeof fields.detail === 'object'
+            ? (fields.detail as Record<string, unknown>)
+            : {},
+      },
+    ];
   }
+  return [
+    ...(Array.isArray(value.errors)
+      ? value.errors.flatMap((error) => ownerFailures(error, seen))
+      : []),
+    ...ownerFailures(value.cause, seen),
+  ];
+}
+
+export function commandError(cause: unknown, fallbackCode: string): CommandError {
+  const failures = ownerFailures(cause);
+  const [first] = failures;
+  if (failures.length === 1 && first !== undefined) return first;
   return {
     code: fallbackCode,
     expected: 'the ForgeaX command to complete',
     hint: 'Inspect the underlying diagnostic and repair the owning input.',
     detail: {
+      ...(failures.length === 0 ? {} : { failures }),
       reason:
-        cause instanceof Error
+        cause !== null &&
+        typeof cause === 'object' &&
+        'message' in cause &&
+        typeof cause.message === 'string'
           ? cause.message
-          : cause !== null &&
-              typeof cause === 'object' &&
-              'message' in cause &&
-              typeof cause.message === 'string'
-            ? cause.message
-            : String(cause),
+          : String(cause),
     },
   };
 }

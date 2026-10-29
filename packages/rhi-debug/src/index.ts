@@ -17,7 +17,6 @@ export {
   createRhiDebugError,
   type RhiDebugError,
   type RhiDebugErrorCode,
-  type RhiDebugErrorDetail,
   type RhiDebugErrorFor,
 } from './errors';
 export type {
@@ -88,7 +87,6 @@ export type {
   InitialDataSlice,
   RhiCallEvent as V7RhiCallEvent,
   RhiCapsRecorded as V7RhiCapsRecorded,
-  RhiDebugResult,
   Tape as V7Tape,
   TapeBlob as V7TapeBlob,
   TapeBlobCompression,

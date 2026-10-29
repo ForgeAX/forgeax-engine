@@ -343,28 +343,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Validate JSON-authored material descriptors at their loading boundary. */
-export function assertMaterialAsset(
-  value: unknown,
-  context = 'material',
-): asserts value is MaterialAsset {
-  if (!isRecord(value) || value.kind !== 'material') {
-    throw new Error(`${context}: expected a material asset`);
-  }
+const MATERIAL_ASSET_FIELDS = [
+  'kind',
+  'colorSpace',
+  'parent',
+  'passes',
+  'parameters',
+  'staticSwitches',
+  'values',
+  'particleInputs',
+  'surface',
+];
+
+function assertKnownMaterialFields(value: Record<string, unknown>): void {
   for (const field of Object.keys(value)) {
-    if (
-      ![
-        'kind',
-        'colorSpace',
-        'parent',
-        'passes',
-        'parameters',
-        'staticSwitches',
-        'values',
-        'particleInputs',
-        'surface',
-      ].includes(field)
-    ) {
+    if (!MATERIAL_ASSET_FIELDS.includes(field)) {
       throw new MaterialAssetContractError({
         owner:
           field === 'features' || field === 'defines' ? 'material-authoring' : 'material-runtime',
@@ -374,28 +367,184 @@ export function assertMaterialAsset(
       });
     }
   }
-  const forbidden = materialChildForbiddenFields(value as unknown as MaterialAsset);
-  if (value.staticSwitches !== undefined) {
-    if (!isRecord(value.staticSwitches))
+}
+
+function assertMaterialStaticSwitches(staticSwitches: unknown): void {
+  if (staticSwitches === undefined) return;
+  if (!isRecord(staticSwitches))
+    throw new MaterialAssetContractError({
+      owner: 'material-authoring',
+      field: 'staticSwitches',
+      actual: staticSwitches,
+      action: 'remove-field',
+    });
+  for (const [name, enabled] of Object.entries(staticSwitches)) {
+    if (
+      !(MATERIAL_STATIC_SWITCH_NAMES as readonly string[]).includes(name) ||
+      typeof enabled !== 'boolean'
+    )
       throw new MaterialAssetContractError({
         owner: 'material-authoring',
-        field: 'staticSwitches',
-        actual: value.staticSwitches,
+        field: `staticSwitches.${name}`,
+        actual: enabled,
         action: 'remove-field',
       });
-    for (const [name, enabled] of Object.entries(value.staticSwitches)) {
-      if (
-        !(MATERIAL_STATIC_SWITCH_NAMES as readonly string[]).includes(name) ||
-        typeof enabled !== 'boolean'
-      )
-        throw new MaterialAssetContractError({
-          owner: 'material-authoring',
-          field: `staticSwitches.${name}`,
-          actual: enabled,
-          action: 'remove-field',
-        });
-    }
   }
+}
+
+function assertMaterialProgram(
+  program: Record<string, unknown>,
+  context: string,
+  index: number,
+): void {
+  if (typeof program.module !== 'string' || program.module.length === 0) {
+    throw new Error(`${context}: pass ${index} has no module identity`);
+  }
+  if (program.bindings !== undefined && !isMaterialProgramBindingContract(program.bindings))
+    throw new Error(`${context}: pass ${index} has an invalid binding contract`);
+  if (
+    program.sceneDepth !== undefined &&
+    program.sceneDepth !== 'read-only' &&
+    program.sceneDepth !== 'before-pass'
+  )
+    throw new Error(`${context}: pass ${index} has an invalid scene-depth version`);
+  if (
+    (program.vertexEntry !== undefined && typeof program.vertexEntry !== 'string') ||
+    (program.fragmentEntry !== undefined && typeof program.fragmentEntry !== 'string')
+  ) {
+    throw new Error(`${context}: pass ${index} has malformed entry points`);
+  }
+  if (program.moduleSlots === undefined) return;
+  if (!isRecord(program.moduleSlots)) {
+    throw new Error(`${context}: pass ${index} has malformed module slots`);
+  }
+  for (const [name, slot] of Object.entries(program.moduleSlots)) {
+    if (typeof slot !== 'string')
+      throw new Error(`${context}: module slot ${name} is not a string`);
+  }
+}
+
+function assertMaterialPasses(passes: unknown, context: string): void {
+  if (passes === undefined) return;
+  if (!Array.isArray(passes) || passes.length === 0) {
+    throw new Error(`${context}: passes must be a non-empty array`);
+  }
+  for (const [index, pass] of passes.entries()) {
+    if (!isRecord(pass) || typeof pass.name !== 'string' || !isRecord(pass.program)) {
+      throw new Error(`${context}: pass ${index} is malformed`);
+    }
+    const outputs = validateMaterialOutputs(pass.outputs, context, pass.name);
+    if (!outputs.ok) throw Object.assign(new Error(outputs.error.expected), outputs.error);
+    assertMaterialProgram(pass.program, context, index);
+  }
+}
+
+function assertMaterialParameter(parameter: unknown, context: string, index: number): void {
+  if (
+    !isRecord(parameter) ||
+    typeof parameter.name !== 'string' ||
+    typeof parameter.type !== 'string'
+  ) {
+    throw new Error(`${context}: parameter ${index} is malformed`);
+  }
+  if (
+    parameter.colorSpace !== undefined &&
+    parameter.colorSpace !== 'srgb' &&
+    parameter.colorSpace !== 'linear'
+  ) {
+    throw new Error(`${context}: parameter ${index} has invalid colorSpace`);
+  }
+  if (
+    parameter.sampleType !== undefined &&
+    (!isMaterialTextureParameterType(parameter.type) ||
+      (parameter.sampleType !== 'float' && parameter.sampleType !== 'unfilterable-float') ||
+      (parameter.type === 'texture_external' && parameter.sampleType !== 'float'))
+  ) {
+    throw new Error(`${context}: parameter ${index} has invalid sampleType`);
+  }
+  if ('static' in parameter) {
+    throw new MaterialAssetContractError({
+      owner: 'material-authoring',
+      field: 'parameters.static',
+      actual: parameter.static,
+      action: 'remove-field',
+    });
+  }
+}
+
+function assertMaterialParameters(parameters: unknown, context: string): void {
+  if (parameters === undefined) return;
+  if (!Array.isArray(parameters)) throw new Error(`${context}: parameters must be an array`);
+  for (const [index, parameter] of parameters.entries()) {
+    assertMaterialParameter(parameter, context, index);
+  }
+}
+
+function isMaterialParticleInputShape(input: unknown): input is Record<string, unknown> & {
+  readonly name: string;
+} {
+  return (
+    isRecord(input) &&
+    typeof input.name === 'string' &&
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(input.name) &&
+    ['f32', 'vec2<f32>', 'vec3<f32>', 'vec4<f32>'].includes(String(input.type)) &&
+    ['vertex', 'fragment', 'vertex-fragment'].includes(String(input.visibility)) &&
+    Number.isInteger(input.lane) &&
+    (input.lane as number) >= 0 &&
+    (input.lane as number) < 4
+  );
+}
+
+function assertMaterialParticleInputs(particleInputs: unknown, context: string): void {
+  if (particleInputs === undefined) return;
+  if (!Array.isArray(particleInputs) || particleInputs.length > 4) {
+    throw new Error(`${context}: particleInputs must contain at most four entries`);
+  }
+  const names = new Set<string>();
+  const lanes = new Set<number>();
+  for (const [index, input] of particleInputs.entries()) {
+    if (!isMaterialParticleInputShape(input)) {
+      throw new Error(`${context}: particle input ${index} is malformed`);
+    }
+    if (names.has(input.name) || lanes.has(input.lane as number)) {
+      throw new Error(`${context}: duplicate particle input ${input.name}`);
+    }
+    names.add(input.name);
+    lanes.add(input.lane as number);
+  }
+}
+
+function assertMaterialSurface(surface: unknown, context: string): void {
+  if (surface === undefined) return;
+  if (!isRecord(surface)) throw new Error(`${context}: surface must be an object`);
+  if (!isMaterialSurfaceModel(surface.model)) {
+    throw new Error(`${context}: invalid Surface model`);
+  }
+  if (typeof surface.module !== 'string' || surface.module.length === 0) {
+    throw new Error(`${context}: Surface module must be a non-empty string`);
+  }
+  if (surface.dynamicInput === undefined) return;
+  const dynamic = surface.dynamicInput;
+  if (!isRecord(dynamic)) {
+    throw new Error(`${context}: dynamicInput must be an object`);
+  }
+  const layout = deriveMaterialDynamicInputLayout(dynamic as unknown as MaterialDynamicInputSchema);
+  if (!layout.ok) {
+    throw new Error(`${context}: dynamicInput ${layout.error.code}: ${layout.error.expected}`);
+  }
+}
+
+/** Validate JSON-authored material descriptors at their loading boundary. */
+export function assertMaterialAsset(
+  value: unknown,
+  context = 'material',
+): asserts value is MaterialAsset {
+  if (!isRecord(value) || value.kind !== 'material') {
+    throw new Error(`${context}: expected a material asset`);
+  }
+  assertKnownMaterialFields(value);
+  const forbidden = materialChildForbiddenFields(value as unknown as MaterialAsset);
+  assertMaterialStaticSwitches(value.staticSwitches);
   if (forbidden.length > 0) {
     throw new MaterialChildContractError({
       material: context,
@@ -411,130 +560,10 @@ export function assertMaterialAsset(
   ) {
     throw new Error(`${context}: invalid colorSpace`);
   }
-  if (value.passes !== undefined) {
-    if (!Array.isArray(value.passes) || value.passes.length === 0) {
-      throw new Error(`${context}: passes must be a non-empty array`);
-    }
-    for (const [index, pass] of value.passes.entries()) {
-      if (!isRecord(pass) || typeof pass.name !== 'string' || !isRecord(pass.program)) {
-        throw new Error(`${context}: pass ${index} is malformed`);
-      }
-      const outputs = validateMaterialOutputs(pass.outputs, context, pass.name);
-      if (!outputs.ok) throw Object.assign(new Error(outputs.error.expected), outputs.error);
-      if (typeof pass.program.module !== 'string' || pass.program.module.length === 0) {
-        throw new Error(`${context}: pass ${index} has no module identity`);
-      }
-      if (
-        pass.program.bindings !== undefined &&
-        !isMaterialProgramBindingContract(pass.program.bindings)
-      )
-        throw new Error(`${context}: pass ${index} has an invalid binding contract`);
-      if (
-        pass.program.sceneDepth !== undefined &&
-        pass.program.sceneDepth !== 'read-only' &&
-        pass.program.sceneDepth !== 'before-pass'
-      )
-        throw new Error(`${context}: pass ${index} has an invalid scene-depth version`);
-      if (
-        (pass.program.vertexEntry !== undefined && typeof pass.program.vertexEntry !== 'string') ||
-        (pass.program.fragmentEntry !== undefined && typeof pass.program.fragmentEntry !== 'string')
-      ) {
-        throw new Error(`${context}: pass ${index} has malformed entry points`);
-      }
-      if (pass.program.moduleSlots !== undefined) {
-        if (!isRecord(pass.program.moduleSlots)) {
-          throw new Error(`${context}: pass ${index} has malformed module slots`);
-        }
-        for (const [name, slot] of Object.entries(pass.program.moduleSlots)) {
-          if (typeof slot !== 'string')
-            throw new Error(`${context}: module slot ${name} is not a string`);
-        }
-      }
-    }
-  }
-  if (value.parameters !== undefined) {
-    if (!Array.isArray(value.parameters))
-      throw new Error(`${context}: parameters must be an array`);
-    for (const [index, parameter] of value.parameters.entries()) {
-      if (
-        !isRecord(parameter) ||
-        typeof parameter.name !== 'string' ||
-        typeof parameter.type !== 'string'
-      ) {
-        throw new Error(`${context}: parameter ${index} is malformed`);
-      }
-      if (
-        parameter.colorSpace !== undefined &&
-        parameter.colorSpace !== 'srgb' &&
-        parameter.colorSpace !== 'linear'
-      ) {
-        throw new Error(`${context}: parameter ${index} has invalid colorSpace`);
-      }
-      if (
-        parameter.sampleType !== undefined &&
-        (!isMaterialTextureParameterType(parameter.type) ||
-          (parameter.sampleType !== 'float' && parameter.sampleType !== 'unfilterable-float') ||
-          (parameter.type === 'texture_external' && parameter.sampleType !== 'float'))
-      ) {
-        throw new Error(`${context}: parameter ${index} has invalid sampleType`);
-      }
-      if ('static' in parameter) {
-        throw new MaterialAssetContractError({
-          owner: 'material-authoring',
-          field: 'parameters.static',
-          actual: parameter.static,
-          action: 'remove-field',
-        });
-      }
-    }
-  }
-  if (value.particleInputs !== undefined) {
-    if (!Array.isArray(value.particleInputs) || value.particleInputs.length > 4) {
-      throw new Error(`${context}: particleInputs must contain at most four entries`);
-    }
-    const names = new Set<string>();
-    const lanes = new Set<number>();
-    for (const [index, input] of value.particleInputs.entries()) {
-      if (
-        !isRecord(input) ||
-        typeof input.name !== 'string' ||
-        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(input.name) ||
-        !['f32', 'vec2<f32>', 'vec3<f32>', 'vec4<f32>'].includes(String(input.type)) ||
-        !['vertex', 'fragment', 'vertex-fragment'].includes(String(input.visibility)) ||
-        !Number.isInteger(input.lane) ||
-        (input.lane as number) < 0 ||
-        (input.lane as number) >= 4
-      ) {
-        throw new Error(`${context}: particle input ${index} is malformed`);
-      }
-      if (names.has(input.name) || lanes.has(input.lane as number)) {
-        throw new Error(`${context}: duplicate particle input ${input.name}`);
-      }
-      names.add(input.name);
-      lanes.add(input.lane as number);
-    }
-  }
-  if (value.surface !== undefined) {
-    if (!isRecord(value.surface)) throw new Error(`${context}: surface must be an object`);
-    if (!isMaterialSurfaceModel(value.surface.model)) {
-      throw new Error(`${context}: invalid Surface model`);
-    }
-    if (typeof value.surface.module !== 'string' || value.surface.module.length === 0) {
-      throw new Error(`${context}: Surface module must be a non-empty string`);
-    }
-    if (value.surface.dynamicInput !== undefined) {
-      const dynamic = value.surface.dynamicInput;
-      if (!isRecord(dynamic)) {
-        throw new Error(`${context}: dynamicInput must be an object`);
-      }
-      const layout = deriveMaterialDynamicInputLayout(
-        dynamic as unknown as MaterialDynamicInputSchema,
-      );
-      if (!layout.ok) {
-        throw new Error(`${context}: dynamicInput ${layout.error.code}: ${layout.error.expected}`);
-      }
-    }
-  }
+  assertMaterialPasses(value.passes, context);
+  assertMaterialParameters(value.parameters, context);
+  assertMaterialParticleInputs(value.particleInputs, context);
+  assertMaterialSurface(value.surface, context);
 }
 
 /** Validate the asset declaration before shader publication or GPU allocation. */

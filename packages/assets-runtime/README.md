@@ -67,6 +67,71 @@ Full signatures live in [AssetRegistry](src/asset-registry.ts). Mesh geometry
 factories belong to [Geometry](../geometry/README.md); there are no reserved
 built-in mesh handles or additional World payload registrations.
 
+## Content created during play
+
+Debris, grown plants, per-wave ships or a town regenerated from a new seed need
+no Pack declaration. A game plugin injects the realm's `assets` owner, creates
+content with `create`, and registers each inverse in a generator effect, so
+Fiber disposal (removal, hot replacement or failure) despawns before releasing:
+
+```ts
+import { createBoxGeometry } from '@forgeax/engine/geometry';
+import type { Plugin } from '@forgeax/engine/plugin';
+import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
+import { Transform } from '@forgeax/engine/scene';
+
+export const debris: Plugin.Object = {
+  name: 'game/debris',
+  inject: ['world', 'assets'],
+  apply(ctx) {
+    const assets = ctx.assets!;
+    ctx.effect(function* () {
+      const mesh = assets.create(createBoxGeometry(0.5, 0.5, 0.5).unwrap()).unwrap();
+      yield () => assets.release(mesh).unwrap();
+      const material = assets.create(Materials.standard({ baseColor: '#ff6a1a' })).unwrap();
+      yield () => assets.release(material).unwrap();
+      const entity = ctx.world.spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      ).unwrap();
+      yield () => ctx.world.despawn(entity).unwrap();
+      assets.update(material, { values: { roughness: 0.2 } }).unwrap();
+    });
+  },
+};
+```
+
+| Fact | Contract |
+|:--|:--|
+| Identity | Owner-local handle only: `guidOf` and `sourceOf` return `undefined`, `reload` fails with `asset-reference-invalid`, and nothing enters Catalog, source or DDC |
+| Edits | `update`, `replace` and `writeRange` keep the handle and bound entities; create per wave or seed and edit existing handles per frame |
+| Worker boundary | The Engine Worker's owner publishes rows for new content, field patches for material values, and retires handles after the last reference is released |
+| Materials | Default program selections need no cook; authored `staticSwitches` require a published selection, otherwise `material-specialization-not-cooked`. `load` a Pack material that publishes the selection and `copy` it for per-instance values |
+| Tangents | Geometry factories emit `TANGENT`. Normal-mapped surfaces read it, so custom meshes for them supply `computeTangentVec4(positions, normals, uvs, indices)` |
+| Inspection and save | View target inspection reports these references as `unregistered`; exporting them to durable Scene source requires an explicit publication |
+
+`packages/app/src/__tests__/runtime-procedural-content.integration.test.ts`
+runs this plugin against a separate Renderer namespace through structured-clone
+publication, including edit and retirement evidence.
+
+`await assets.readMeshGeometry(guid, { signal })` reads independently owned
+published base geometry for CPU processing. The `MeshGeometry` result contains
+vertices, attributes, optional indices, submeshes and optional AABB, with no
+Asset `kind`, runtime handle or render-readiness receipt. It uses the configured
+source's verified Pack/artifact transport and Mesh decoder, checks canonical
+geometry, and rejects cancellation, invalidation, decoder retirement, changed
+publication or owner replacement before returning. Concurrent readers share
+transport, while their returned buffers remain independent.
+
+This operation does not load default materials or LOD Assets, install material
+programs, retain a decoded source root, or adopt runtime content. Read it only
+when the consumer separately owns its actual rendering materials and LOD policy.
+Use ordinary `load(guid, 'mesh')` for the complete render dependency closure and
+`read(handle)` for runtime-edited content; a source geometry read neither reads
+nor overwrites those edits. Import, cooking and Catalog authority remain with
+the existing producers.
+
 ## Source loading and Catalog
 
 Source GUIDs identify authored outputs. Runtime handles identify admitted content
@@ -188,11 +253,23 @@ reads and prevents late cache refill. `invalidate`, `invalidateAll` and Catalog
 reconciliation affect source reads; accepted runtime content changes through
 explicit reload. `trimReadCache` drops disposable completed reads.
 
+Verified Pack documents are held strongly through a burst of sibling reads, then
+kept through weak references after two seconds without a read. When the host
+reports memory pressure, `trimReadCache` demotes those documents immediately.
+A live document can be reused; after collection, a later request fetches and
+verifies the same complete publication tuple again. Decoded runtime content and
+shared immutable material facts stay with their accepted consumers. This cache
+release never invalidates a publication or retires a live asset. Hosts without
+`WeakRef` retain the strong read cache.
+
 Transient network/body failures and HTTP 408/429/500/502/503/504 retry twice,
 after 250 ms and 750 ms, with `cache: 'reload'`. Aborts and permanent errors fail
 without retry. Cache reuse retains descriptor identity and integrity validation.
 Capture uses the exact bound source transport, with bounded stored-byte caching;
 a different source never borrows an unrelated URL-only cache.
+Fixed capture and publication preparation decode identity or Zstd platform Response
+documents through the ordinary document reader before validating publication tuples
+and artifact integrity. Custom response `json()` readers retain their decoding authority.
 
 ## Material publication inspection
 
@@ -202,6 +279,12 @@ bytes. `inspectMaterialRuntime(ready)` returns detached diagnostic facts.
 `inspect(guid)` observes source evidence; `sourceOf(handle)` reports the accepted
 publication and whether runtime content has changed since adoption. Runtime
 consumers use the program projection attached to that owned content.
+
+Adoption registers every cooked program's verified byte declaration and parameter
+contract. It does not decode or analyze every WGSL variant. The first selected-program
+lookup prepares that source in ShaderRegistry, and later users share its immutable
+CPU facts. All program bytes, references and receipts still pass the existing loader
+verification; asset readiness does not imply that every source has been analyzed.
 
 Runtime selects only prepared program contexts. Root and child source materials
 preserve explicit static choices; parent inheritance is flattened at admission.
@@ -369,6 +452,10 @@ Catalog sources and capture share the ordinary Catalog locator resolution.
 Artifact reads overlap in batches of at most eight, preserving descriptor error
 order and checking every attachment. Shared paths join one byte request; failed
 requests remain retryable through the existing transport policy.
+During one fixed capture, immutable Bundle bytes share one verification per URL
+and declared Bundle digest. Each artifact still validates its own window, decoded
+length and digest. This avoids copying and hashing a whole Bundle for every
+referencing material program; the verification cache retires with that capture.
 When the Registry owns the exact selected Catalog source, capture reuses that
 source's Pack reader and stored artifact cache, including zstd bodies. It verifies
 the frozen descriptor's decoded length and digest again without repeating I/O.
@@ -415,6 +502,40 @@ product. There is no second field cache. This is asset preparation and loading,
 not Renderer field placement, streaming, GPU lifetime management or GI acceptance.
 
 ## Native package transport
+
+Shader delivery can share a compressed Bundle entry across complete programs.
+`byteRange` selects stored group bytes and `decodedRange` selects one original
+program after decompression; individual length and digest verification precede
+asset admission. The existing Bundle store coalesces concurrent group decodes.
+Selected artifacts own their bytes; decoded groups are weakly retained and can be
+collected. Fixed capture preserves the original group and descriptors, while CLI
+verification applies the same decoded-window validation. Other Bundle entries
+retain their ordinary per-artifact transport.
+
+`AssetRegistry.inspectSource()` includes `scopeId`, `generation`, the current
+realm tag, and `bundleTransfers`. Take two snapshots and subtract their monotonic
+counters to select one loading window in that source/realm. This is a low-frequency
+inspection surface; no per-frame export or logging is installed.
+
+| Counter | Meaning |
+|:--|:--|
+| `fullReads`, `rangeReads` | Completed Bundle response bodies for full or range requests |
+| `requestedRangeBytes` | Sum of requested entry lengths for those range reads |
+| `wholeBundleFallbacks` | A range request received HTTP 200 with more bytes than its entry |
+| `responseEntityBytes` | Bytes exposed by `arrayBuffer()`, after HTTP content decoding |
+| `decodedEntryBytes` | Decoded transport-entry bytes; a shared compression group is counted once, before individual program window verification |
+| `declaredContentLengthBytes`, `declaredLengthResponses` | Sum and count of valid response `Content-Length` values |
+| `verifiedReuse`, `coalescedReads`, `residentHits` | Verified extracted reuse, joined entry/Bundle reads and resident entry reads |
+| `evictions`, `rereads` | Resident Bundle release by trim/budget and a released entry read after an earlier full fetch |
+
+The snapshot keeps at most 128 per-Bundle URL/digest rows; aggregate totals
+remain exact and `omittedDetailUpdates` reports missing detail. The snapshot
+copies counters and never retains response bodies or decoded assets. Its
+`httpCache: 'not-observable'` is deliberate: native/fetch response contracts do
+not prove browser cache hits, wire transfer sizes or HTTP header overhead. Use
+browser Resource Timing/HAR alongside these counters for those questions.
+Range-ignoring hosts keep their existing verified full-Bundle fallback;
+diagnostics do not change cache budgets, cancellation, isolation or integrity.
 
 `PackageFetcher` and `PackageResponse` in `@forgeax/engine/types` describe the
 read operations actually consumed by Catalog, Pack, and binary artifact loaders.

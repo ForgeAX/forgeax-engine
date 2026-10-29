@@ -55,7 +55,6 @@ export {
   LTC_SOURCE_PROVENANCE,
   LTC_TABLE_HASHES,
   LTC_TABLE_HEIGHT,
-  LTC_TABLE_INPUT_HASHES,
   LTC_TABLE_WIDTH,
   LTC_TABLES,
 } from './ltc/tables.js';
@@ -105,6 +104,7 @@ export {
 export {
   DEPTH_PYRAMID_SHADER_MODULES,
   FORGEAX_RESERVED_PATH_PREFIX,
+  type MaterialShaderByteEntry,
   type MaterialShaderEntry,
   type RegisteredMaterialShaderEntry,
   ShaderRegistry,
@@ -114,7 +114,6 @@ export {
   type ShaderRegistryOptions,
   type ShaderRegistryOptions as ShaderCatalogOptions,
   SSR_SHADER_MODULES,
-  type SsrShaderModule,
 } from './ShaderRegistry.js';
 export {
   findVariantByKey,
@@ -449,6 +448,8 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
 export * from './cloud-programs';
+export { manifestShaderSource } from './manifest-publication';
+export { materialShaderSource } from './manifest-publication.js';
 export {
   createMaterialShaderProgram,
   type MaterialShaderProgram,
@@ -465,4 +466,5 @@ export {
   rayMaterialFailure,
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
-export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE, type TonemapShaderMode } from './tonemap.js';
+export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
+export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';

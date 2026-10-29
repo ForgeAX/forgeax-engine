@@ -1,16 +1,40 @@
 import type { FrameReceipt } from '@forgeax/engine-render';
 import { createBarrelDistortionMapping } from '@forgeax/engine-render';
+import { snapshotLoadTimeline } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 import {
   FORGEAX_FRAME_SUBMITTED_EVENT,
+  publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
   readBrowserFrameSubmitted,
-  resetBrowserFrameSubmitted,
+  resetBrowserFrameProgress,
   subscribeBrowserFrameSubmitted,
 } from '../browser-frame-signal';
 
 describe('publishBrowserFrameSubmitted', () => {
+  it('stores submitted and completed progress on the canvas and clears both', () => {
+    const documentElement = { dataset: {} as DOMStringMap };
+    const canvas = {
+      ownerDocument: { documentElement },
+      dispatchEvent: () => true,
+    } as unknown as HTMLCanvasElement;
+
+    publishBrowserFrameSubmitted(canvas, { frameId: 7, deviceGeneration: 2 });
+    publishBrowserFrameCompleted(canvas, {
+      frameId: 7,
+      deviceGeneration: 2,
+      presentation: 'ready',
+    });
+
+    expect(canvas.forgeaxFrameProgress?.submitted?.frameId).toBe(7);
+    expect(canvas.forgeaxFrameProgress?.completed?.frameId).toBe(7);
+    expect(documentElement.dataset).toEqual({});
+    resetBrowserFrameProgress(canvas);
+    expect(canvas.forgeaxFrameProgress).toBeUndefined();
+    expect(documentElement.dataset).toEqual({});
+  });
+
   it('keeps the current baseline internal and preserves future-only subscriptions', () => {
     const canvas = new EventTarget() as HTMLCanvasElement;
     publishBrowserFrameSubmitted(canvas, { frameId: 1, deviceGeneration: 1, worldIdentity: 'old' });
@@ -18,7 +42,7 @@ describe('publishBrowserFrameSubmitted', () => {
     const stop = subscribeBrowserFrameSubmitted(canvas, (value) => received.push(value));
     expect(received).toHaveLength(0);
     expect(readBrowserFrameSubmitted(canvas)?.worldIdentity).toBe('old');
-    resetBrowserFrameSubmitted(canvas);
+    resetBrowserFrameProgress(canvas);
     expect(readBrowserFrameSubmitted(canvas)).toBeUndefined();
     publishBrowserFrameSubmitted(canvas, { frameId: 2, deviceGeneration: 2, worldIdentity: 'new' });
     expect(readBrowserFrameSubmitted(canvas)?.worldIdentity).toBe('new');
@@ -31,13 +55,14 @@ describe('publishBrowserFrameSubmitted', () => {
     completed: Promise.resolve({ ok: true as const, value: undefined }),
   } as FrameReceipt;
 
-  it('projects Dawn canvas progress without requiring DOM event methods', () => {
+  it('retains Dawn canvas progress without requiring DOM event methods', () => {
     const documentElement = { dataset: {} as DOMStringMap };
     const canvas = { ownerDocument: { documentElement } } as HTMLCanvasElement;
 
     const submitted = Object.assign({ frameId: 7, deviceGeneration: 2 }, { receipt });
     expect(() => publishBrowserFrameSubmitted(canvas, submitted)).not.toThrow();
-    expect(documentElement.dataset.forgeaxFrameSubmitted).toBe('7');
+    expect(readBrowserFrameSubmitted(canvas)?.frameId).toBe(7);
+    expect(documentElement.dataset).toEqual({});
   });
 
   it('dispatches the browser event when the canvas supports dispatchEvent', () => {
@@ -107,5 +132,37 @@ describe('publishBrowserFrameSubmitted', () => {
       graphGeneration: 8,
     });
     expect(received).toHaveLength(1);
+  });
+});
+
+describe('load timeline frame milestones', () => {
+  it('records the first completed and first presented frame once per canvas World', () => {
+    const before = snapshotLoadTimeline().records.length;
+    const canvas = new EventTarget() as HTMLCanvasElement;
+    const complete = (frameId: number, worldIdentity: string, presentation: 'pending' | 'ready') =>
+      publishBrowserFrameCompleted(canvas, {
+        frameId,
+        deviceGeneration: 1,
+        worldIdentity,
+        presentation,
+      });
+    publishBrowserFrameSubmitted(canvas, { frameId: 1, deviceGeneration: 1, worldIdentity: 'a' });
+    complete(1, 'a', 'pending');
+    complete(2, 'a', 'pending');
+    complete(3, 'a', 'ready');
+    complete(4, 'a', 'ready');
+    // A rebuilt World starts its own milestones.
+    complete(1, 'b', 'ready');
+    const rows = snapshotLoadTimeline()
+      .records.slice(before)
+      .map((r) => [r.kind, r.name, r.detail?.frameId, r.detail?.world]);
+    expect(rows).toEqual([
+      ['frame', 'first-completed-frame', 1, 'a'],
+      ['frame', 'first-presented-frame', 3, 'a'],
+      ['frame', 'first-completed-frame', 1, 'b'],
+      ['frame', 'first-presented-frame', 1, 'b'],
+    ]);
+    const first = snapshotLoadTimeline().records[before];
+    expect(first && first.end >= first.start).toBe(true);
   });
 });

@@ -322,7 +322,15 @@ function scanFailure(operation: PackAuthoringOperation, cause: unknown): PackAut
     typeof value.hint === 'string'
       ? value.hint
       : 'repair the first source or package diagnostic, then retry',
-    { requestId: operation.requestId, cause: value.detail ?? String(cause) },
+    {
+      requestId: operation.requestId,
+      cause: {
+        ...(typeof value.code === 'string' ? { code: value.code } : {}),
+        ...(typeof value.expected === 'string' ? { expected: value.expected } : {}),
+        ...(typeof value.hint === 'string' ? { hint: value.hint } : {}),
+        detail: value.detail ?? { reason: String(cause) },
+      },
+    },
   );
 }
 
@@ -1668,229 +1676,594 @@ async function inspectAfterWrite(
   });
 }
 
-async function executeRaw(
+type OperationResult = Result<PackAuthoringOperationResult, PackAuthoringError>;
+type ConfinedSource = ConfinedPath & { readonly source: string; readonly revision: string };
+
+async function inspectParameters(
   options: FileSystemPackAuthoringOptions,
   operation: PackAuthoringOperation,
-): Promise<Result<PackAuthoringOperationResult, PackAuthoringError>> {
-  if (operation.operation === 'asset.inspect' && operation.parametersOnly) {
-    const source = await readConfined(
-      options,
-      operation,
-      operation.sourcePath ?? operation.subject,
+): Promise<OperationResult> {
+  const source = await readConfined(options, operation, operation.sourcePath ?? operation.subject);
+  if (!source.ok) return source;
+  if (!source.value.relative.endsWith('.pack.ts'))
+    return err(
+      packSourceFailure(
+        source.value.relative,
+        'parametersOnly requires a .pack.ts source; use ordinary asset.inspect for JSON Packs',
+      ),
     );
-    if (!source.ok) return source;
-    if (!source.value.relative.endsWith('.pack.ts'))
-      return err(
-        packSourceFailure(
-          source.value.relative,
-          'parametersOnly requires a .pack.ts source; use ordinary asset.inspect for JSON Packs',
-        ),
-      );
-    const declaration = readPackAuthoringDeclaration(source.value.relative, source.value.source);
-    if (!declaration.ok) return declaration;
-    return ok({
-      operation: operation.operation,
-      requestId: operation.requestId,
-      sourcePath: source.value.relative,
-      revision: declaration.value.revision,
-      packageId: declaration.value.packageId,
-      format: 'pack.ts',
-      status: 'identity',
-      parameters: projectParameters(declaration.value.parameters).map((parameter) => ({
-        ...parameter,
-        mode: typeof parameter.apply === 'object' ? 'runtime' : 'generation',
-        location: declaration.value.defaults.get(String(parameter.name))?.location,
-      })),
-    });
-  }
-  if (
-    operation.operation === 'asset.list' ||
-    operation.operation === 'asset.inspect' ||
-    operation.operation === 'asset.resolve'
-  ) {
-    const snapshot = await createSnapshot(options, operation);
-    if (!snapshot.ok) return snapshot;
-    const selected = operation.sourcePath ?? operation.subject;
-    const sourceFailure =
-      typeof selected === 'string'
-        ? snapshot.value.sourceFailures.get(resolve(options.gameRoot, selected))
-        : undefined;
-    if (sourceFailure) return err(sourceFailure);
-    if (operation.operation === 'asset.resolve')
-      return resolveAsset(options.gameRoot, snapshot.value, operation);
-    return operation.operation === 'asset.list'
-      ? ok(listAssets(snapshot.value, operation))
-      : await inspectAsset(options.gameRoot, snapshot.value, operation);
-  }
+  const declaration = readPackAuthoringDeclaration(source.value.relative, source.value.source);
+  if (!declaration.ok) return declaration;
+  return ok({
+    operation: operation.operation,
+    requestId: operation.requestId,
+    sourcePath: source.value.relative,
+    revision: declaration.value.revision,
+    packageId: declaration.value.packageId,
+    format: 'pack.ts',
+    status: 'identity',
+    parameters: projectParameters(declaration.value.parameters).map((parameter) => ({
+      ...parameter,
+      mode: typeof parameter.apply === 'object' ? 'runtime' : 'generation',
+      location: declaration.value.defaults.get(String(parameter.name))?.location,
+    })),
+  });
+}
+
+/** asset.list / asset.inspect / asset.resolve over one Source Index snapshot. */
+async function readSourceIndex(
+  options: FileSystemPackAuthoringOptions,
+  operation: PackAuthoringOperation,
+): Promise<OperationResult> {
   const snapshot = await createSnapshot(options, operation);
   if (!snapshot.ok) return snapshot;
-  if (operation.operation === 'asset.verify')
-    return verify(options.gameRoot, snapshot.value, operation);
+  const selected = operation.sourcePath ?? operation.subject;
+  const sourceFailure =
+    typeof selected === 'string'
+      ? snapshot.value.sourceFailures.get(resolve(options.gameRoot, selected))
+      : undefined;
+  if (sourceFailure) return err(sourceFailure);
+  if (operation.operation === 'asset.resolve')
+    return resolveAsset(options.gameRoot, snapshot.value, operation);
+  return operation.operation === 'asset.list'
+    ? ok(listAssets(snapshot.value, operation))
+    : await inspectAsset(options.gameRoot, snapshot.value, operation);
+}
 
-  if (operation.operation === 'asset.source.create') {
-    const path = confinedPath(
-      options.gameRoot,
-      operation.targetPath ?? operation.sourcePath,
-      operation,
+/** Rejects an occupied creation target; a missing target is the only success. */
+async function ensureNewSourceTarget(
+  path: ConfinedPath,
+  operation: PackAuthoringOperation,
+): Promise<Result<void, PackAuthoringError>> {
+  try {
+    await stat(path.absolute);
+    return err(
+      pathError(
+        'pack-source-revision-conflict',
+        operation,
+        'an unused target source path',
+        'inspect the existing source or choose another target path',
+        { targetPath: path.relative },
+        path.relative,
+      ),
     );
-    if (!path.ok) return path;
-    try {
-      await stat(path.value.absolute);
-      return err(
-        pathError(
-          'pack-source-revision-conflict',
-          operation,
-          'an unused target source path',
-          'inspect the existing source or choose another target path',
-          { targetPath: path.value.relative },
-          path.value.relative,
-        ),
-      );
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-        return err(
-          pathError(
-            'pack-source-write-failed',
-            operation,
-            'the target path to be available for atomic creation',
-            'repair the filesystem and retry',
-            { targetPath: path.value.relative, cause: String(cause) },
-          ),
-        );
-      }
-    }
-    const identity = packageIdFromOperation(snapshot.value, operation);
-    if (!identity.ok) return identity;
-    const format =
-      operation.format ?? (path.value.relative.endsWith('.pack.json') ? 'pack.json' : 'pack.ts');
-    if (
-      (format === 'pack.json' && !path.value.relative.endsWith('.pack.json')) ||
-      (format === 'pack.ts' && !path.value.relative.endsWith('.pack.ts'))
-    ) {
-      return err(
-        makeError(
-          'pack-source-path-invalid',
-          'format and target extension to agree',
-          'use a .pack.ts target for source creation or a .pack.json target for direct data',
-          { requestId: operation.requestId, format, targetPath: path.value.relative },
-        ),
-      );
-    }
-    let source: string;
-    let extra: Partial<PackAuthoringOperationResult> = { format };
-    if (format === 'pack.json') {
-      if (
-        operation.parameters !== undefined ||
-        operation.parent !== undefined ||
-        operation.parentPackageId !== undefined ||
-        operation.values !== undefined
-      ) {
-        return err(
-          makeError(
-            'pack-parameter-invalid',
-            'direct create to contain assets only',
-            'use pack.ts for a ScriptablePack source or create-instance for parent+values',
-            { requestId: operation.requestId },
-          ),
-        );
-      }
-      const assets = operation.initialAssets ?? {};
-      const parsed = parsePackSourceJson(directJson(identity.value, assets));
-      if (!parsed.ok) return err(parsed.error);
-      if (parsed.value.format !== 'direct') {
-        return err(
-          makeError(
-            'pack-parameter-invalid',
-            'direct create to produce a direct v3 Pack document',
-            'use create-instance for parent + values instead of direct assets',
-            { requestId: operation.requestId },
-          ),
-        );
-      }
-      source = `${JSON.stringify(directJson(identity.value, parsed.value.assets), null, 2)}\n`;
-    } else {
-      if (
-        operation.initialAssets !== undefined &&
-        Object.keys(operation.initialAssets).length > 0
-      ) {
-        return err(
-          makeError(
-            'pack-parameter-invalid',
-            'a pack.ts source to define its outputs in build()',
-            'use pack.json for direct assets or omit initialAssets when creating a pack.ts source',
-            { requestId: operation.requestId },
-          ),
-        );
-      }
-      if (
-        operation.parent !== undefined ||
-        operation.parentPackageId !== undefined ||
-        operation.values !== undefined
-      ) {
-        return err(
-          makeError(
-            'pack-parameter-invalid',
-            'a new pack.ts source without instance-only parent/value fields',
-            'use asset.source.instance.create for parent + values',
-            { requestId: operation.requestId },
-          ),
-        );
-      }
-      let parameters: readonly PackParameterDefinition[] | undefined;
-      if (operation.parameters !== undefined) {
-        const validated = validatePackDefinition({
-          schemaVersion: '2.0.0',
-          packageId: identity.value,
-          parameters: operation.parameters,
-          build: () => ok({}),
-        });
-        if (!validated.ok) return err(validated.error);
-        if (!('parameters' in validated.value)) {
-          return err(
-            makeError(
-              'pack-parameter-invalid',
-              'parameters to be non-empty when supplied',
-              'omit parameters for a zero-parameter Pack',
-              { requestId: operation.requestId },
-            ),
-          );
-        }
-        parameters = validated.value.parameters;
-      }
-      source = packSourceScaffold(identity.value, parameters);
-      const serialized =
-        parameters === undefined
-          ? undefined
-          : serializedParameters({
-              schemaVersion: '2.0.0',
-              packageId: identity.value,
-              parameters,
-              build: () => ok({}),
-            } as AnyScriptablePackDefinition);
-      extra = {
-        format,
-        ...(serialized === undefined ? {} : { parameters: serialized }),
-      };
-    }
-    try {
-      await atomicWrite(path.value.absolute, source);
-    } catch (cause) {
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
       return err(
         pathError(
           'pack-source-write-failed',
           operation,
-          'the new Pack source to be written atomically',
-          'repair filesystem permissions or disk capacity, then retry with a new requestId',
-          {
-            targetPath: path.value.relative,
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
+          'the target path to be available for atomic creation',
+          'repair the filesystem and retry',
+          { targetPath: path.relative, cause: String(cause) },
         ),
       );
     }
-    return inspectAfterWrite(operation, path.value, source, identity.value, extra);
   }
+  return ok(undefined);
+}
 
+async function ensureNewInstanceTarget(
+  path: ConfinedPath,
+  operation: PackAuthoringOperation,
+): Promise<Result<void, PackAuthoringError>> {
+  try {
+    await stat(path.absolute);
+    return err(
+      pathError(
+        'pack-source-revision-conflict',
+        operation,
+        'an unused instance target path',
+        'inspect the existing instance or choose another path',
+        { targetPath: path.relative },
+        path.relative,
+      ),
+    );
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return err(
+        pathError(
+          'pack-source-write-failed',
+          operation,
+          'the instance target to be writable',
+          'repair filesystem permissions and retry',
+          { targetPath: path.relative, cause: String(cause) },
+        ),
+      );
+    }
+  }
+  return ok(undefined);
+}
+
+function directCreateSource(
+  packageId: PackageId,
+  operation: PackAuthoringOperation,
+): Result<string, PackAuthoringError> {
+  if (
+    operation.parameters !== undefined ||
+    operation.parent !== undefined ||
+    operation.parentPackageId !== undefined ||
+    operation.values !== undefined
+  ) {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'direct create to contain assets only',
+        'use pack.ts for a ScriptablePack source or create-instance for parent+values',
+        { requestId: operation.requestId },
+      ),
+    );
+  }
+  const assets = operation.initialAssets ?? {};
+  const parsed = parsePackSourceJson(directJson(packageId, assets));
+  if (!parsed.ok) return err(parsed.error);
+  if (parsed.value.format !== 'direct') {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'direct create to produce a direct v3 Pack document',
+        'use create-instance for parent + values instead of direct assets',
+        { requestId: operation.requestId },
+      ),
+    );
+  }
+  return ok(`${JSON.stringify(directJson(packageId, parsed.value.assets), null, 2)}\n`);
+}
+
+/** Validates requested parameters; undefined means a zero-parameter source. */
+function scriptCreateParameters(
+  packageId: PackageId,
+  operation: PackAuthoringOperation,
+): Result<readonly PackParameterDefinition[] | undefined, PackAuthoringError> {
+  if (operation.initialAssets !== undefined && Object.keys(operation.initialAssets).length > 0) {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'a pack.ts source to define its outputs in build()',
+        'use pack.json for direct assets or omit initialAssets when creating a pack.ts source',
+        { requestId: operation.requestId },
+      ),
+    );
+  }
+  if (
+    operation.parent !== undefined ||
+    operation.parentPackageId !== undefined ||
+    operation.values !== undefined
+  ) {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'a new pack.ts source without instance-only parent/value fields',
+        'use asset.source.instance.create for parent + values',
+        { requestId: operation.requestId },
+      ),
+    );
+  }
+  if (operation.parameters === undefined) return ok(undefined);
+  const validated = validatePackDefinition({
+    schemaVersion: '2.0.0',
+    packageId,
+    parameters: operation.parameters,
+    build: () => ok({}),
+  });
+  if (!validated.ok) return err(validated.error);
+  if (!('parameters' in validated.value)) {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'parameters to be non-empty when supplied',
+        'omit parameters for a zero-parameter Pack',
+        { requestId: operation.requestId },
+      ),
+    );
+  }
+  return ok(validated.value.parameters);
+}
+
+function createdSourceFormat(
+  path: ConfinedPath,
+  operation: PackAuthoringOperation,
+): Result<'pack.json' | 'pack.ts', PackAuthoringError> {
+  const format =
+    operation.format ?? (path.relative.endsWith('.pack.json') ? 'pack.json' : 'pack.ts');
+  if (
+    (format === 'pack.json' && !path.relative.endsWith('.pack.json')) ||
+    (format === 'pack.ts' && !path.relative.endsWith('.pack.ts'))
+  ) {
+    return err(
+      makeError(
+        'pack-source-path-invalid',
+        'format and target extension to agree',
+        'use a .pack.ts target for source creation or a .pack.json target for direct data',
+        { requestId: operation.requestId, format, targetPath: path.relative },
+      ),
+    );
+  }
+  return ok(format);
+}
+
+async function createSource(
+  options: FileSystemPackAuthoringOptions,
+  snapshot: GatewaySnapshot,
+  operation: PackAuthoringOperation,
+): Promise<OperationResult> {
+  const path = confinedPath(
+    options.gameRoot,
+    operation.targetPath ?? operation.sourcePath,
+    operation,
+  );
+  if (!path.ok) return path;
+  const unused = await ensureNewSourceTarget(path.value, operation);
+  if (!unused.ok) return unused;
+  const identity = packageIdFromOperation(snapshot, operation);
+  if (!identity.ok) return identity;
+  const format = createdSourceFormat(path.value, operation);
+  if (!format.ok) return format;
+  let source: string;
+  let extra: Partial<PackAuthoringOperationResult> = { format: format.value };
+  if (format.value === 'pack.json') {
+    const direct = directCreateSource(identity.value, operation);
+    if (!direct.ok) return direct;
+    source = direct.value;
+  } else {
+    const parameters = scriptCreateParameters(identity.value, operation);
+    if (!parameters.ok) return parameters;
+    source = packSourceScaffold(identity.value, parameters.value);
+    const serialized =
+      parameters.value === undefined
+        ? undefined
+        : serializedParameters({
+            schemaVersion: '2.0.0',
+            packageId: identity.value,
+            parameters: parameters.value,
+            build: () => ok({}),
+          } as AnyScriptablePackDefinition);
+    extra = {
+      format: format.value,
+      ...(serialized === undefined ? {} : { parameters: serialized }),
+    };
+  }
+  try {
+    await atomicWrite(path.value.absolute, source);
+  } catch (cause) {
+    return err(
+      pathError(
+        'pack-source-write-failed',
+        operation,
+        'the new Pack source to be written atomically',
+        'repair filesystem permissions or disk capacity, then retry with a new requestId',
+        {
+          targetPath: path.value.relative,
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      ),
+    );
+  }
+  return inspectAfterWrite(operation, path.value, source, identity.value, extra);
+}
+
+/** The instance parent: an existing ScriptablePack source or instance with parameters. */
+function instanceParent(
+  snapshot: GatewaySnapshot,
+  operation: PackAuthoringOperation,
+): Result<PackageId, PackAuthoringError> {
+  const parentText = operation.parentPackageId ?? operation.parent;
+  if (parentText === undefined) {
+    return err(
+      makeError(
+        'pack-parent-not-found',
+        'a parent packageId for the new instance',
+        'pass parentPackageId or parent and point it at a ScriptablePack source with parameters',
+        { requestId: operation.requestId },
+      ),
+    );
+  }
+  const parentId = PackageId.parse(parentText);
+  if (!parentId.ok) {
+    return err(
+      makeError(
+        'pack-package-id-invalid',
+        'a UUID parent packageId',
+        'repair the parent package identity',
+        { requestId: operation.requestId },
+        parentText,
+      ),
+    );
+  }
+  const parent = snapshot.subjects.get(packageKey(parentId.value));
+  if (parent === undefined) {
+    return err(
+      makeError(
+        'pack-parent-not-found',
+        'the parent packageId to exist in the current Source Index',
+        'inspect the Source Index and choose a ScriptablePack parent with parameters',
+        { requestId: operation.requestId, parent: parentText },
+      ),
+    );
+  }
+  if (parent.format === 'source' && !('parameters' in parent.definition)) {
+    return err(
+      makeError(
+        'pack-parent-has-no-parameters',
+        'a ScriptablePack source with a non-empty parameter list as the parent',
+        'use asset.source.clone for a zero-parameter Pack',
+        { requestId: operation.requestId, parent: parentText },
+      ),
+    );
+  }
+  if (parent.format === 'direct') {
+    return err(
+      makeError(
+        'pack-parent-has-no-parameters',
+        'a ScriptablePack source or instance with parameters as the parent',
+        'direct Packs cannot be instance parents',
+        { requestId: operation.requestId, parent: parentText },
+      ),
+    );
+  }
+  return ok(parentId.value);
+}
+
+/** Resolves a candidate instance against the snapshot and serializes its v3 source. */
+async function instanceSource(
+  snapshot: GatewaySnapshot,
+  candidate: InstanceSubject,
+): Promise<
+  Result<
+    { readonly source: string; readonly extra: Partial<PackAuthoringOperationResult> },
+    PackAuthoringError
+  >
+> {
+  const serializedValues = jsonValue(candidate.values) as Readonly<Record<string, unknown>>;
+  const withCandidate: GatewaySnapshot = {
+    ...snapshot,
+    subjects: new Map([...snapshot.subjects, [packageKey(candidate.packageId), candidate]]),
+  };
+  const resolved = await resolveInstance(withCandidate, candidate);
+  if (!resolved.ok) return err(resolved.error);
+  const source = `${JSON.stringify(
+    {
+      schemaVersion: '3.0.0',
+      packageId: PackageId.format(candidate.packageId),
+      parent: PackageId.format(candidate.parent),
+      values: serializedValues,
+    },
+    null,
+    2,
+  )}\n`;
+  return ok({
+    source,
+    extra: {
+      format: 'instance',
+      parentPackageId: PackageId.format(candidate.parent),
+      values: serializedValues,
+      effectiveValues: jsonValue(resolved.value.values) as Readonly<Record<string, unknown>>,
+      parentChain: resolved.value.parentChain,
+    },
+  });
+}
+
+async function createInstance(
+  options: FileSystemPackAuthoringOptions,
+  snapshot: GatewaySnapshot,
+  operation: PackAuthoringOperation,
+): Promise<OperationResult> {
+  const target = confinedPath(
+    options.gameRoot,
+    operation.targetPath ?? operation.sourcePath,
+    operation,
+  );
+  if (!target.ok) return target;
+  const parent = instanceParent(snapshot, operation);
+  if (!parent.ok) return parent;
+  const unused = await ensureNewInstanceTarget(target.value, operation);
+  if (!unused.ok) return unused;
+  const identity = packageIdFromOperation(snapshot, operation);
+  if (!identity.ok) return identity;
+  const written = await instanceSource(snapshot, {
+    format: 'instance',
+    packageId: identity.value,
+    parent: parent.value,
+    values: operation.values ?? {},
+    sourcePath: target.value.absolute,
+    relativePath: target.value.relative,
+  });
+  if (!written.ok) return written;
+  try {
+    await atomicWrite(target.value.absolute, written.value.source);
+  } catch (cause) {
+    return err(
+      pathError(
+        'pack-source-write-failed',
+        operation,
+        'the new instance to be written atomically',
+        'repair filesystem permissions or disk capacity, then retry',
+        {
+          targetPath: target.value.relative,
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      ),
+    );
+  }
+  return inspectAfterWrite(
+    operation,
+    target.value,
+    written.value.source,
+    identity.value,
+    written.value.extra,
+  );
+}
+
+/** Reads the revision-checked source an in-place mutation edits. */
+async function readExpectedRevision(
+  options: FileSystemPackAuthoringOptions,
+  operation: PackAuthoringOperation,
+): Promise<Result<ConfinedSource, PackAuthoringError>> {
+  const read = await readConfined(options, operation, operation.sourcePath);
+  if (!read.ok) return read;
+  if (
+    operation.expectedRevision === undefined ||
+    operation.expectedRevision !== read.value.revision
+  ) {
+    return err(revisionConflict(operation, read.value.relative, read.value.revision));
+  }
+  return read;
+}
+
+function readInstanceDocument(
+  read: ConfinedSource,
+  operation: PackAuthoringOperation,
+): Result<{ readonly packageId: PackageId; readonly parent: PackageId }, PackAuthoringError> {
+  let json: unknown;
+  try {
+    json = JSON.parse(read.source);
+  } catch {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'a valid v3 instance JSON document',
+        'repair the source before applying values',
+        { requestId: operation.requestId, sourcePath: read.relative },
+      ),
+    );
+  }
+  const parsed = parsePackSourceJson(json);
+  if (!parsed.ok) return err(parsed.error);
+  if (parsed.value.format !== 'instance') {
+    return err(
+      makeError(
+        'pack-parameter-invalid',
+        'an instance pack.json subject',
+        'apply-values only edits parent+values instances',
+        { requestId: operation.requestId, sourcePath: read.relative },
+      ),
+    );
+  }
+  return ok({ packageId: parsed.value.packageId, parent: parsed.value.parent });
+}
+
+async function applyInstanceValues(
+  options: FileSystemPackAuthoringOptions,
+  snapshot: GatewaySnapshot,
+  operation: PackAuthoringOperation,
+): Promise<OperationResult> {
+  const read = await readExpectedRevision(options, operation);
+  if (!read.ok) return read;
+  const document = readInstanceDocument(read.value, operation);
+  if (!document.ok) return document;
+  const written = await instanceSource(snapshot, {
+    format: 'instance',
+    packageId: document.value.packageId,
+    parent: document.value.parent,
+    values: operation.values ?? {},
+    sourcePath: read.value.absolute,
+    relativePath: read.value.relative,
+  });
+  if (!written.ok) return written;
+  try {
+    await atomicWrite(read.value.absolute, written.value.source);
+  } catch (cause) {
+    return err(
+      pathError(
+        'pack-source-write-failed',
+        operation,
+        'the updated instance to be written atomically',
+        'repair filesystem permissions or disk capacity, then retry with a new requestId',
+        {
+          sourcePath: read.value.relative,
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      ),
+    );
+  }
+  return inspectAfterWrite(
+    operation,
+    read.value,
+    written.value.source,
+    document.value.packageId,
+    written.value.extra,
+  );
+}
+
+async function rebuildSource(
+  options: FileSystemPackAuthoringOptions,
+  operation: PackAuthoringOperation,
+): Promise<OperationResult> {
+  const read = await readExpectedRevision(options, operation);
+  if (!read.ok) return read;
+  const rebuilt = await options.rebuild?.(
+    read.value.relative,
+    operation.operation === 'asset.source.rebuild' ? 'rebuild' : 'cold-cook',
+  );
+  if (rebuilt === undefined) {
+    return err(
+      makeError(
+        'pack-source-mutation-unsupported',
+        'a build-owner callback for rebuild or cold-cook',
+        'connect the gateway to the project build owner before requesting a mutation',
+        { requestId: operation.requestId, sourcePath: read.value.relative },
+      ),
+    );
+  }
+  if (!rebuilt.ok) return err(rebuilt.error);
+  const refreshed = await readConfined(options, operation, operation.sourcePath);
+  if (!refreshed.ok) return refreshed;
+  const refreshedSnapshot = await createSnapshot(options, operation);
+  if (!refreshedSnapshot.ok) return refreshedSnapshot;
+  const selected = subjectFor(options.gameRoot, refreshedSnapshot.value, operation);
+  if (!selected.ok) return selected;
+  return inspectAfterWrite(
+    operation,
+    refreshed.value,
+    refreshed.value.source,
+    selected.value.packageId,
+    {
+      format: refreshed.value.relative.endsWith('.pack.json') ? 'pack.json' : 'pack.ts',
+      assets: refreshedSnapshot.value.materialized
+        .filter((asset) => asset.packageId === packageKey(selected.value.packageId))
+        .map((asset) => ({ ...asset })),
+    },
+  );
+}
+
+async function executeRaw(
+  options: FileSystemPackAuthoringOptions,
+  operation: PackAuthoringOperation,
+): Promise<OperationResult> {
+  if (operation.operation === 'asset.inspect' && operation.parametersOnly)
+    return inspectParameters(options, operation);
+  if (
+    operation.operation === 'asset.list' ||
+    operation.operation === 'asset.inspect' ||
+    operation.operation === 'asset.resolve'
+  )
+    return readSourceIndex(options, operation);
+  const snapshot = await createSnapshot(options, operation);
+  if (!snapshot.ok) return snapshot;
+  if (operation.operation === 'asset.verify')
+    return verify(options.gameRoot, snapshot.value, operation);
+  if (operation.operation === 'asset.source.create')
+    return createSource(options, snapshot.value, operation);
   if (
     operation.operation === 'asset.source.clone' ||
     operation.operation === 'asset.source.import'
@@ -1905,278 +2278,15 @@ async function executeRaw(
       ),
     );
   }
-
-  if (operation.operation === 'asset.source.instance.create') {
-    const target = confinedPath(
-      options.gameRoot,
-      operation.targetPath ?? operation.sourcePath,
-      operation,
-    );
-    if (!target.ok) return target;
-    const parentText = operation.parentPackageId ?? operation.parent;
-    if (parentText === undefined) {
-      return err(
-        makeError(
-          'pack-parent-not-found',
-          'a parent packageId for the new instance',
-          'pass parentPackageId or parent and point it at a ScriptablePack source with parameters',
-          { requestId: operation.requestId },
-        ),
-      );
-    }
-    const parentId = PackageId.parse(parentText);
-    if (!parentId.ok) {
-      return err(
-        makeError(
-          'pack-package-id-invalid',
-          'a UUID parent packageId',
-          'repair the parent package identity',
-          { requestId: operation.requestId },
-          parentText,
-        ),
-      );
-    }
-    const parent = snapshot.value.subjects.get(packageKey(parentId.value));
-    if (parent === undefined) {
-      return err(
-        makeError(
-          'pack-parent-not-found',
-          'the parent packageId to exist in the current Source Index',
-          'inspect the Source Index and choose a ScriptablePack parent with parameters',
-          { requestId: operation.requestId, parent: parentText },
-        ),
-      );
-    }
-    if (parent.format === 'source' && !('parameters' in parent.definition)) {
-      return err(
-        makeError(
-          'pack-parent-has-no-parameters',
-          'a ScriptablePack source with a non-empty parameter list as the parent',
-          'use asset.source.clone for a zero-parameter Pack',
-          { requestId: operation.requestId, parent: parentText },
-        ),
-      );
-    }
-    if (parent.format === 'direct') {
-      return err(
-        makeError(
-          'pack-parent-has-no-parameters',
-          'a ScriptablePack source or instance with parameters as the parent',
-          'direct Packs cannot be instance parents',
-          { requestId: operation.requestId, parent: parentText },
-        ),
-      );
-    }
-    try {
-      await stat(target.value.absolute);
-      return err(
-        pathError(
-          'pack-source-revision-conflict',
-          operation,
-          'an unused instance target path',
-          'inspect the existing instance or choose another path',
-          { targetPath: target.value.relative },
-          target.value.relative,
-        ),
-      );
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-        return err(
-          pathError(
-            'pack-source-write-failed',
-            operation,
-            'the instance target to be writable',
-            'repair filesystem permissions and retry',
-            { targetPath: target.value.relative, cause: String(cause) },
-          ),
-        );
-      }
-    }
-    const identity = packageIdFromOperation(snapshot.value, operation);
-    if (!identity.ok) return identity;
-    const values = operation.values ?? {};
-    const serializedValues = jsonValue(values) as Readonly<Record<string, unknown>>;
-    const candidate: InstanceSubject = {
-      format: 'instance',
-      packageId: identity.value,
-      parent: parentId.value,
-      values,
-      sourcePath: target.value.absolute,
-      relativePath: target.value.relative,
-    };
-    const withCandidate: GatewaySnapshot = {
-      ...snapshot.value,
-      subjects: new Map([...snapshot.value.subjects, [packageKey(identity.value), candidate]]),
-    };
-    const resolved = await resolveInstance(withCandidate, candidate);
-    if (!resolved.ok) return err(resolved.error);
-    const source = `${JSON.stringify(
-      {
-        schemaVersion: '3.0.0',
-        packageId: PackageId.format(identity.value),
-        parent: PackageId.format(parentId.value),
-        values: serializedValues,
-      },
-      null,
-      2,
-    )}\n`;
-    try {
-      await atomicWrite(target.value.absolute, source);
-    } catch (cause) {
-      return err(
-        pathError(
-          'pack-source-write-failed',
-          operation,
-          'the new instance to be written atomically',
-          'repair filesystem permissions or disk capacity, then retry',
-          {
-            targetPath: target.value.relative,
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
-        ),
-      );
-    }
-    return inspectAfterWrite(operation, target.value, source, identity.value, {
-      format: 'instance',
-      parentPackageId: PackageId.format(parentId.value),
-      values: serializedValues,
-      effectiveValues: jsonValue(resolved.value.values) as Readonly<Record<string, unknown>>,
-      parentChain: resolved.value.parentChain,
-    });
-  }
-
-  if (operation.operation === 'asset.source.values.apply') {
-    const read = await readConfined(options, operation, operation.sourcePath);
-    if (!read.ok) return read;
-    if (
-      operation.expectedRevision === undefined ||
-      operation.expectedRevision !== read.value.revision
-    ) {
-      return err(revisionConflict(operation, read.value.relative, read.value.revision));
-    }
-    let json: unknown;
-    try {
-      json = JSON.parse(read.value.source);
-    } catch {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'a valid v3 instance JSON document',
-          'repair the source before applying values',
-          { requestId: operation.requestId, sourcePath: read.value.relative },
-        ),
-      );
-    }
-    const parsed = parsePackSourceJson(json);
-    if (!parsed.ok) return err(parsed.error);
-    if (parsed.value.format !== 'instance') {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'an instance pack.json subject',
-          'apply-values only edits parent+values instances',
-          { requestId: operation.requestId, sourcePath: read.value.relative },
-        ),
-      );
-    }
-    const values = operation.values ?? {};
-    const serializedValues = jsonValue(values) as Readonly<Record<string, unknown>>;
-    const candidate: InstanceSubject = {
-      format: 'instance',
-      packageId: parsed.value.packageId,
-      parent: parsed.value.parent,
-      values,
-      sourcePath: read.value.absolute,
-      relativePath: read.value.relative,
-    };
-    const withCandidate: GatewaySnapshot = {
-      ...snapshot.value,
-      subjects: new Map([...snapshot.value.subjects, [packageKey(candidate.packageId), candidate]]),
-    };
-    const resolved = await resolveInstance(withCandidate, candidate);
-    if (!resolved.ok) return err(resolved.error);
-    const source = `${JSON.stringify(
-      {
-        schemaVersion: '3.0.0',
-        packageId: PackageId.format(parsed.value.packageId),
-        parent: PackageId.format(parsed.value.parent),
-        values: serializedValues,
-      },
-      null,
-      2,
-    )}\n`;
-    try {
-      await atomicWrite(read.value.absolute, source);
-    } catch (cause) {
-      return err(
-        pathError(
-          'pack-source-write-failed',
-          operation,
-          'the updated instance to be written atomically',
-          'repair filesystem permissions or disk capacity, then retry with a new requestId',
-          {
-            sourcePath: read.value.relative,
-            cause: cause instanceof Error ? cause.message : String(cause),
-          },
-        ),
-      );
-    }
-    return inspectAfterWrite(operation, read.value, source, parsed.value.packageId, {
-      format: 'instance',
-      parentPackageId: PackageId.format(parsed.value.parent),
-      values: serializedValues,
-      effectiveValues: jsonValue(resolved.value.values) as Readonly<Record<string, unknown>>,
-      parentChain: resolved.value.parentChain,
-    });
-  }
-
+  if (operation.operation === 'asset.source.instance.create')
+    return createInstance(options, snapshot.value, operation);
+  if (operation.operation === 'asset.source.values.apply')
+    return applyInstanceValues(options, snapshot.value, operation);
   if (
     operation.operation === 'asset.source.rebuild' ||
     operation.operation === 'asset.source.cold-cook'
-  ) {
-    const read = await readConfined(options, operation, operation.sourcePath);
-    if (!read.ok) return read;
-    if (
-      operation.expectedRevision === undefined ||
-      operation.expectedRevision !== read.value.revision
-    ) {
-      return err(revisionConflict(operation, read.value.relative, read.value.revision));
-    }
-    const rebuilt = await options.rebuild?.(
-      read.value.relative,
-      operation.operation === 'asset.source.rebuild' ? 'rebuild' : 'cold-cook',
-    );
-    if (rebuilt === undefined) {
-      return err(
-        makeError(
-          'pack-source-mutation-unsupported',
-          'a build-owner callback for rebuild or cold-cook',
-          'connect the gateway to the project build owner before requesting a mutation',
-          { requestId: operation.requestId, sourcePath: read.value.relative },
-        ),
-      );
-    }
-    if (!rebuilt.ok) return err(rebuilt.error);
-    const refreshed = await readConfined(options, operation, operation.sourcePath);
-    if (!refreshed.ok) return refreshed;
-    const refreshedSnapshot = await createSnapshot(options, operation);
-    if (!refreshedSnapshot.ok) return refreshedSnapshot;
-    const selected = subjectFor(options.gameRoot, refreshedSnapshot.value, operation);
-    if (!selected.ok) return selected;
-    return inspectAfterWrite(
-      operation,
-      refreshed.value,
-      refreshed.value.source,
-      selected.value.packageId,
-      {
-        format: refreshed.value.relative.endsWith('.pack.json') ? 'pack.json' : 'pack.ts',
-        assets: refreshedSnapshot.value.materialized
-          .filter((asset) => asset.packageId === packageKey(selected.value.packageId))
-          .map((asset) => ({ ...asset })),
-      },
-    );
-  }
-
+  )
+    return rebuildSource(options, operation);
   return err(
     makeError(
       'pack-parameter-invalid',

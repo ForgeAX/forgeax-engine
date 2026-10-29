@@ -1,4 +1,5 @@
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
+import { assertRenderShortSide } from '../components/camera-view';
 // Public renderer assembly boundary.
 // Backend selection and construction happen here; generation-scoped lifetime
 // and frame work live in webgpu-renderer.ts.
@@ -8,7 +9,7 @@ import { EngineEnvironmentError, loadRhiPack, type RhiBackendPack } from './back
 import type { BundlerOptions } from './bundler-contract';
 import type { RendererAssemblyImplementation } from './host-contract';
 import { toError } from './renderer-facade';
-import { tryCreateWebGPURenderer } from './webgpu-renderer';
+import { tryCreateRendererFromBackend } from './webgpu-renderer';
 
 export { disposeObservationCaptureSet } from './webgpu-renderer';
 export { particleMaterialInputVertexBuffers } from './webgpu-vertex-layouts';
@@ -48,10 +49,6 @@ void RENDER_TARGET_OWNER_CONTRACT;
 
 export type { BundlerOptions } from './bundler-contract';
 export type {
-  LayoutKind,
-  MaterialShaderBindingContract,
-  MaterialShaderManifestEntry,
-  MaterialShaderVertexInputContract,
   MeshSsboBufferWrapper,
   MeshSsboGrowController,
   MeshSsboGrowControllerInit,
@@ -59,6 +56,12 @@ export type {
   MeshSsboGrowErrorRegistry,
   MeshSsboGrowResult,
   MeshSsboState,
+} from './mesh-ssbo-grow';
+export type {
+  LayoutKind,
+  MaterialShaderBindingContract,
+  MaterialShaderManifestEntry,
+  MaterialShaderVertexInputContract,
 } from './webgpu-renderer';
 export {
   allowsUnlitPreparedFallback,
@@ -113,6 +116,7 @@ export async function createRenderer(
   bundler?: BundlerOptions,
   backend?: RhiBackendPack,
 ): Promise<RendererAssemblyImplementation> {
+  assertRenderShortSide(options?.maxRenderShortSide ?? 0);
   if (canvas === undefined || canvas === null) {
     throw new EngineEnvironmentError('renderer construction requires a canvas');
   }
@@ -124,15 +128,15 @@ export async function createRenderer(
   if (pack === undefined) {
     throw new EngineEnvironmentError('renderer backend must be injected by the runtime host');
   }
-  const webgpuOutcome = await tryCreateWebGPURenderer(
+  const outcome = await tryCreateRendererFromBackend(
     canvas as RhiCanvasTarget,
     options,
     pack,
     bundler,
   ).catch((cause: unknown) => ({ kind: 'throw' as const, error: toError(cause) }));
-  if (webgpuOutcome.kind === 'ok') return webgpuOutcome.renderer;
+  if (outcome.kind === 'ok') return outcome.renderer;
 
-  const error = webgpuOutcome.error;
+  const error = outcome.error;
   throw new EngineEnvironmentError(classifyEnvErrorReason('no usable rendering backend', error), {
     webgpuError: error,
   });

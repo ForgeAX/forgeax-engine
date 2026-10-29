@@ -2,13 +2,14 @@ import type { RhiQueue } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import { writeViewUbo } from '../record/view-ubo';
 import type { CameraSnapshot } from '../render-contract';
-import type { DirectionalLightSnapshot, ExtractedLights } from '../render-system-extract';
+import type { DirectionalLightSnapshot } from '../render-system-extract';
 import {
   createTemporalView,
   HALTON_23_8,
   resolveTemporalReset,
   type TemporalResetReason,
 } from '../temporal/view';
+import type { ViewLights } from '../world/render-lights';
 
 describe('TemporalView v1', () => {
   it('uses the fixed eight-sample Halton(2,3) sequence', () => {
@@ -89,8 +90,8 @@ describe('TemporalView v1', () => {
     });
     const resolved =
       reason === 'first-frame'
-        ? resolveTemporalReset(undefined, next)
-        : resolveTemporalReset(previous, next);
+        ? resolveTemporalReset(undefined, next.input)
+        : resolveTemporalReset(previous.input, next.input);
     expect(resolved).toBe(expected satisfies TemporalResetReason);
   });
 
@@ -146,9 +147,8 @@ describe('TemporalView v1', () => {
       directionalCount: 1,
       point: [],
       spot: [],
-      lightViewProj: undefined,
-      splitPlanes: undefined,
-    } as unknown as ExtractedLights;
+      cascades: undefined,
+    } as unknown as ViewLights;
     const buffer = {} as Parameters<typeof writeViewUbo>[1];
     const first = createTemporalView({ antialias: 'taa', width: 4, height: 4, frameIndex: 0 });
     writeViewUbo(queue, buffer, camera, light, lights, [], first);

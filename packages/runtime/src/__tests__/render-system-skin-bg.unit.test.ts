@@ -2,8 +2,8 @@
 //
 // Why this file exists:
 //   M8 wires the record stage to bind a 3-binding `pbr-skin-mesh-array-bgl`
-//   (binding 0 mesh-array UBO + binding 1 current palette UBO + binding 2
-//   previous palette UBO) at group(2) when
+//   (binding 0 mesh array + binding 1/2 actual Skin task output/address, or
+//   current/previous task windows on the uniform path) at group(2) when
 //   the per-entry skin discriminator (`entry.source.skin !== undefined`) is
 //   set. R1 of this loop discovered the prior 1-binding `pbr-mesh-bg`
 //   build path triggered every-frame BGL-mismatch device errors against
@@ -84,7 +84,7 @@ function makeMockDevice(): { device: PbrPipelineDevice; capture: MockDeviceCaptu
 }
 
 describe('feat-20260611 R2 / M8 / w29 — record-stage skin BindGroup BGL contract', () => {
-  it('(1) buildPbrSkinLayouts returns a 3-entry meshArrayBgl labeled pbr-skin-mesh-array-bgl with bindings 0 + 1 + 2 all hasDynamicOffset:true (storage path)', () => {
+  it('(1) buildPbrSkinLayouts returns a 3-entry meshArrayBgl labeled pbr-skin-mesh-array-bgl: dynamic meshes, shared Skin task output and dynamic task address (storage path)', () => {
     const { device, capture } = makeMockDevice();
     const pbr = buildPbrPipelineLayouts(device, { storageBuffer: true });
     const skin = buildPbrSkinLayouts(device, { storageBuffer: true }, pbr);
@@ -97,11 +97,11 @@ describe('feat-20260611 R2 / M8 / w29 — record-stage skin BindGroup BGL contra
     expect(skinDesc?.entries[0]?.buffer?.hasDynamicOffset).toBe(true);
     expect(skinDesc?.entries[0]?.buffer?.type).toBe('read-only-storage');
     expect(skinDesc?.entries[1]?.binding).toBe(1);
-    expect(skinDesc?.entries[1]?.buffer?.hasDynamicOffset).toBe(true);
+    expect(skinDesc?.entries[1]?.buffer?.hasDynamicOffset).toBe(false);
     expect(skinDesc?.entries[1]?.buffer?.type).toBe('read-only-storage');
     expect(skinDesc?.entries[2]?.binding).toBe(2);
     expect(skinDesc?.entries[2]?.buffer?.hasDynamicOffset).toBe(true);
-    expect(skinDesc?.entries[2]?.buffer?.type).toBe('read-only-storage');
+    expect(skinDesc?.entries[2]?.buffer?.type).toBe('uniform');
   });
 
   it('(1b) uniform fallback path: buildPbrSkinLayouts BGL bindings 0 + 1 + 2 all type=uniform', () => {

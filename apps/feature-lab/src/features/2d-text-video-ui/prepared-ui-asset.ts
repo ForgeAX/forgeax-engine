@@ -10,8 +10,9 @@ import {
 
 const HUD: UiAsset = {
   guid: 'feature-lab/2d/hud',
-  html: '<header class="bar"><span>HP</span><div class="fill"></div></header><button data-ui-action="pause">Pause</button>',
+  html: '<main class="viewport"><header class="bar"><span>HP</span><div class="fill"></div></header><button data-ui-action="pause">Pause</button></main>',
   css: [
+    '.viewport { position: relative; height: 100%; overflow: hidden; }',
     '.bar { position: absolute; left: 4%; right: 4%; top: 6%; height: 22%; display: flex; align-items: center; gap: 24px;',
     '  padding: 0 32px; background: #1c64f2; border: 6px solid #ffffff; border-radius: 18px; font: 700 64px sans-serif; color: #fff; }',
     '.fill { flex: 1; height: 50%; background: linear-gradient(90deg, #22e36b, #f7e733); border-radius: 12px; }',
@@ -66,6 +67,11 @@ export default defineFeature({
           c.equal('host is tagged with the asset guid', ui.host.dataset.uiAsset, HUD.guid);
           c.ok('host has an open ShadowRoot', ui.host.shadowRoot !== null);
           c.equal('layer becomes z-index', ui.host.style.zIndex, '7');
+          c.equal(
+            'percentage-height content fills the mounted viewport',
+            ui.host.shadowRoot?.querySelector('main')?.getBoundingClientRect().height,
+            ui.host.getBoundingClientRect().height,
+          );
           c.ok(
             'document-level CSS does not leak into the shadow content',
             document.querySelector('.bar') === null,

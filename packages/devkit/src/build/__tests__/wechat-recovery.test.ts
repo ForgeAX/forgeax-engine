@@ -10,7 +10,6 @@ import type { BlitzUi, BlitzUiOptions } from '@forgeax/engine-ui-blitz';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
-import type { ProjectFacts } from '../../types.js';
 import { prepareWechatBuild } from '../wechat.js';
 
 const { inspectUi } = (await import(
@@ -67,7 +66,15 @@ async function generatedHost() {
   const directory = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-recovery-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   await prepareWechatBuild(
-    { name: 'Native startup recovery', roots: {} } as ProjectFacts,
+    {
+      root: directory,
+      id: 'native-startup-recovery',
+      name: 'Native startup recovery',
+      roots: {},
+      assetRoots: ['assets'],
+      assetLibraries: [],
+      packageJson: { version: '1.2.3' },
+    },
     directory,
     {
       assets: new Map(),

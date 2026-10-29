@@ -21,7 +21,10 @@ function owner() {
 describe('Host-bound native work plan owner', () => {
   it('publishes and consumes the exact primary IR including arena replacement arrays', () => {
     const expected = owner();
-    const builder = createRenderFeatureNativePlanBuilder(expected);
+    const createAdmission = vi.fn(() => {
+      throw new Error('Unused admission must stay unprepared');
+    });
+    const builder = createRenderFeatureNativePlanBuilder(expected, createAdmission);
     const frame = builder.scope('frame');
     const view = builder.scope({ view: 'main' });
     expect(builder.scope('frame')).toBe(frame);
@@ -40,6 +43,7 @@ describe('Host-bound native work plan owner', () => {
     const work = [replacement, view];
     const feedback = { accepted: [1] };
     const planned = builder.finish(work, feedback);
+    expect(createAdmission).not.toHaveBeenCalled();
     expect(planned.work).toEqual([]);
     expect(planned.sourceFeedback).toBe(feedback);
     expect(planned.native).toBeDefined();

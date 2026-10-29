@@ -6,8 +6,8 @@ import { assert, expect, it, vi } from 'vitest';
 import { createRenderer } from '../assembly/factory';
 import { Camera, CameraView, Skylight } from '../components';
 import { GpuResidencyCache } from '../device/gpu-residency';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { renderPublicationTransfers } from '../publication/record';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it.each([
@@ -60,7 +60,7 @@ it.each([
     const candidate = published ? publisher.prepare(0).unwrap() : undefined;
     const drawn = (() => {
       if (candidate !== undefined)
-        return renderer.draw({ publication: structuredClone(candidate.packet) });
+        return renderer.draw({ publication: structuredClone(candidate.message) });
       assert(lease);
       return renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
     })();
@@ -69,7 +69,7 @@ it.each([
     if (drawn.value !== undefined) assert((await drawn.value.completed).ok);
     if (candidate !== undefined)
       publisher
-        .recycle(candidate.packet.revision, renderPublicationTransfers(candidate.packet))
+        .recycle(candidate.packet.revision, renderPublicationTransfers(candidate.message))
         .unwrap();
   };
   const settle = async () => {

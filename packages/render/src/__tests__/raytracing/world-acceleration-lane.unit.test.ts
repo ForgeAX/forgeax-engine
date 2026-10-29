@@ -1,14 +1,22 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { RhiCommandEncoder, RhiDevice, RhiRayQueryCaps } from '@forgeax/engine-rhi';
+import type {
+  RhiCommandEncoder,
+  RhiDevice,
+  RhiRayQueryCaps,
+  TlasInstance,
+} from '@forgeax/engine-rhi';
 import { RhiNullAdapter, type RhiNullDevice } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { addWorldAccelerationPass } from '../../raytracing/irradiance-field-graph';
 import { kernelGraphAccess } from '../../raytracing/kernel-graph-access';
 import {
+  type PreparedWorldAcceleration,
   prepareWorldAcceleration,
   selectWorldTraversal,
   WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME,
-  worldAccelerationGeometries,
+  type WorldAccelerationEdit,
+  WorldAccelerationGeometryIds,
+  worldAccelerationRoster,
 } from '../../raytracing/renderer-world-acceleration';
 import type { SdfMeshInstance } from '../../raytracing/sdf-query';
 import type { WorldAccelerationGeometry } from '../../raytracing/world-acceleration';
@@ -61,17 +69,29 @@ describe('world traversal lane selection', () => {
     });
   });
 
-  it('derives one geometry per projected geometryId', () => {
+  it('keys one geometry per mesh payload version across its instances', () => {
     const mesh = { attributes: { position: triangle(0).positions } };
-    const geometries = worldAccelerationGeometries({
-      instances: [instance(0, 0), instance(1, 0), instance(2, 1)],
-      sources: [
-        { mesh, firstInstance: 0 },
-        { mesh, firstInstance: 1 },
-        { mesh, firstInstance: 2 },
-      ] as never,
-    });
-    expect(geometries.map((geometry) => geometry.geometryId)).toEqual([0, 1]);
+    const other = { attributes: { position: triangle(0).positions } };
+    const ids = new WorldAccelerationGeometryIds();
+    const source = (m: object, assetRevision: number, firstInstance: number, count = 1) =>
+      ({
+        mesh: m,
+        assetRevision,
+        firstInstance,
+        instances: count === 1 ? undefined : { instanceCount: count },
+      }) as never;
+    const roster = worldAccelerationRoster(
+      {
+        instances: [instance(0, 0), instance(1, 0), instance(2, 1), instance(3, 1)],
+        sources: [source(mesh, 1, 0, 2), source(other, 1, 2), source(mesh, 2, 3)],
+      },
+      ids,
+    );
+    expect(roster.instances.map((i) => i.geometryId)).toEqual([0, 0, 1, 2]);
+    expect(roster.geometries.map((geometry) => geometry.geometryId)).toEqual([0, 1, 2]);
+    // The same payload version keeps its id in a later roster; a new revision does not.
+    expect(ids.id(mesh, 1)).toBe(0);
+    expect(ids.id(mesh, 3)).toBe(3);
   });
 });
 
@@ -93,15 +113,22 @@ describe('prepared world acceleration', () => {
     const frame = () => rhi.createCommandEncoder({}).unwrap();
     prepared.record(frame()).unwrap();
     prepared.commit();
+    const built = WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME;
     expect(prepared.inspect()).toEqual({
       instances: count,
       geometries: count,
-      pending: count - WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME,
+      pending: count - built,
       settled: false,
-      blasBuilt: WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME,
+      blasBuilt: built,
       tlasBuilt: 1,
       // One triangle BLAS = 36 B positions + 12 B indices; one TLAS instance = 64 B.
-      bytesBuilt: WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME * (48 + 64),
+      bytesBuilt: built * (48 + 64),
+      // Row 0 (pending count) plus one 16 B row per traced instance.
+      rowsWritten: built + 1,
+      // BLAS inputs and one 16 B face normal per built mesh, plus the written rows.
+      bytesUploaded: built * (48 + 16) + (built + 1) * 16,
+      recordsPatched: built,
+      blasReleased: 0,
     });
     prepared.record(frame()).unwrap();
     expect(prepared.settled()).toBe(false);
@@ -194,6 +221,42 @@ describe('in-place world acceleration edits', () => {
 
     lane.edit({ moved: [], removed: [{ index: 0 }], added: [] }).unwrap();
     expect(settle(rhi, made)).toMatchObject({ instances: 3, blasBuilt: 2, tlasBuilt: 4 });
+    lane.dispose();
+  });
+
+  it('keeps a BLAS when its only instance is removed and re-added in one edit', async () => {
+    const rhi = await device(true);
+    const made = prepareWorldAcceleration(rhi, { instances: [instance(0, 0)] }, [triangle(0)], {
+      instances: 4,
+      triangles: 2,
+    });
+    const lane = made.unwrap();
+    expect(settle(rhi, made)).toMatchObject({ geometries: 1, blasBuilt: 1, settled: true });
+    const geometry = triangle(0);
+    lane
+      .edit({
+        moved: [],
+        removed: [{ index: 0 }],
+        added: [
+          {
+            instance: {
+              instanceId: 5,
+              geometryId: geometry.geometryId,
+              mask: 255,
+              transform: IDENTITY,
+            },
+            geometry,
+          },
+        ],
+      })
+      .unwrap();
+    expect(settle(rhi, made)).toMatchObject({
+      instances: 1,
+      geometries: 1,
+      blasBuilt: 1,
+      blasReleased: 0,
+      settled: true,
+    });
     lane.dispose();
   });
 
@@ -296,5 +359,237 @@ describe('world acceleration graph pass', () => {
         throw new Error('unreachable');
       }).unwrap(),
     ).toEqual({});
+  });
+});
+
+describe('incremental world acceleration', () => {
+  const WIDE = {
+    maxBlasGeometryCount: 4,
+    maxBlasPrimitiveCount: 64,
+    maxTlasInstanceCount: 1 << 16,
+    maxAccelerationStructuresPerShaderStage: 1,
+  };
+  const at = (x: number) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1];
+  const GEOMETRIES = 24;
+
+  /** A Ray Query null device whose TLAS records, table rows and BLAS identities are observable. */
+  async function observed() {
+    const rhi = (await new RhiNullAdapter({ rayQuery: WIDE }).requestDevice()).unwrap();
+    const tables = new Map<unknown, Uint32Array>();
+    const records = new Map<unknown, readonly TlasInstance[]>();
+    const labels = new Map<unknown, string>();
+    const createBlas = rhi.createBlas.bind(rhi);
+    rhi.createBlas = (desc) => {
+      const made = createBlas(desc);
+      if (made.ok) labels.set(made.value, desc.label ?? '');
+      return made;
+    };
+    const queue = rhi.queue;
+    const write = queue.writeBuffer.bind(queue);
+    queue.writeBuffer = (buffer, offset, data, ...rest) => {
+      const view = data as ArrayBufferView;
+      if (view.byteLength % 4 === 0 && offset % 4 === 0) {
+        let image = tables.get(buffer);
+        const end = offset / 4 + view.byteLength / 4;
+        if (image === undefined || image.length < end) {
+          const grown = new Uint32Array(Math.max(end, (image?.length ?? 0) * 2));
+          if (image !== undefined) grown.set(image);
+          image = grown;
+          tables.set(buffer, image);
+        }
+        image.set(new Uint32Array(view.buffer, view.byteOffset, view.byteLength / 4), offset / 4);
+      }
+      return write(buffer, offset, data, ...rest);
+    };
+    const frame = () => {
+      const encoder = rhi.createCommandEncoder({}).unwrap();
+      const build = encoder.buildAccelerationStructures.bind(encoder);
+      encoder.buildAccelerationStructures = (blas, tlas) => {
+        for (const entry of tlas) records.set(entry.tlas, entry.instances.slice());
+        return build(blas, tlas);
+      };
+      return encoder;
+    };
+    /** instanceId -> geometry, mask and transform the GPU would trace; plus row 0. */
+    const traced = (lane: PreparedWorldAcceleration) => {
+      const world = lane.current();
+      const table = tables.get(world.traversalInstances) ?? new Uint32Array(4);
+      const out = new Map<number, string>();
+      for (const record of records.get(world.tlas) ?? []) {
+        const id = table[record.customIndex * 4] ?? -1;
+        out.set(
+          id,
+          JSON.stringify([labels.get(record.blas), record.mask, Array.from(record.transform)]),
+        );
+      }
+      return { pending: table[0], instances: out };
+    };
+    const settle = (lane: PreparedWorldAcceleration) => {
+      for (let frames = 0; !lane.settled(); frames++) {
+        if (frames > 64) throw new Error('world acceleration never settled');
+        lane.record(frame()).unwrap();
+        lane.track(Promise.resolve());
+        lane.commit();
+      }
+      return lane.inspect();
+    };
+    return { rhi, frame, traced, settle };
+  }
+
+  const triangleOf = (geometryId: number): WorldAccelerationGeometry => ({
+    geometryId,
+    positions: new Float32Array([0, 0, 0, 1 + geometryId, 0, 0, 0, 1, 0]),
+  });
+  const roster = (count: number) => {
+    const instances = Array.from({ length: count }, (_, id) => ({
+      instanceId: id,
+      geometryId: id % GEOMETRIES,
+      mask: 255,
+      transform: at(id),
+    }));
+    return {
+      instances,
+      geometries: Array.from({ length: GEOMETRIES }, (_, id) => triangleOf(id)),
+    };
+  };
+
+  /** CPU-side work and uploads of one edit, independent of N. */
+  async function editWork(count: number) {
+    const o = await observed();
+    const { instances, geometries } = roster(count);
+    const lane = prepareWorldAcceleration(o.rhi, { instances }, geometries, {
+      instances: count + 64,
+      triangles: 64,
+    }).unwrap();
+    let before = o.settle(lane);
+    const delta = (edit: WorldAccelerationEdit): Record<string, number> => {
+      lane.edit(edit).unwrap();
+      const after = o.settle(lane);
+      const work = Object.fromEntries(
+        (
+          [
+            'blasBuilt',
+            'tlasBuilt',
+            'rowsWritten',
+            'bytesUploaded',
+            'recordsPatched',
+            'blasReleased',
+          ] as const
+        ).map((key) => [key, after[key] - before[key]]),
+      );
+      before = after;
+      return work;
+    };
+    const D = 8;
+    const ids = Array.from({ length: D }, (_, k) => Math.floor(((k + 0.5) * count) / D));
+    const moved = delta({
+      moved: ids.map((index) => ({ index, to: at(-index) })),
+      removed: [],
+      added: [],
+    });
+    const removed = delta({ moved: [], removed: ids.map((index) => ({ index })), added: [] });
+    const added = delta({
+      moved: [],
+      removed: [],
+      added: ids.map((id) => ({
+        instance: { instanceId: count + id, geometryId: 900, mask: 255, transform: at(id) },
+        geometry: triangleOf(900),
+      })),
+    });
+    // Every instance of one mesh leaves: its BLAS is released, nothing is rebuilt.
+    const last = instances.filter(
+      (i) => i.geometryId === GEOMETRIES - 1 && !ids.includes(i.instanceId),
+    );
+    const released = delta({
+      moved: [],
+      removed: last.map((i) => ({ index: i.instanceId })),
+      added: [],
+    });
+    lane.dispose();
+    return { moved, removed, added, released, removedInstances: last.length };
+  }
+
+  it('patches only the D changed records and rows, independently of N', async () => {
+    const small = await editWork(1024);
+    const large = await editWork(8192);
+    expect(small.moved).toEqual({
+      blasBuilt: 0,
+      tlasBuilt: 1,
+      rowsWritten: 8,
+      bytesUploaded: 8 * 16,
+      recordsPatched: 8,
+      blasReleased: 0,
+    });
+    // Removals swap at most one trailing record into each vacated row.
+    expect(small.removed.recordsPatched).toBeLessThanOrEqual(8);
+    expect(small.removed.rowsWritten).toBeLessThanOrEqual(8);
+    // Adds of one new mesh build exactly one BLAS: 36 + 12 B inputs + 16 B normal.
+    expect(small.added).toMatchObject({ blasBuilt: 1, recordsPatched: 8, rowsWritten: 8 });
+    expect(small.added.bytesUploaded).toBe(36 + 12 + 16 + 8 * 16);
+    expect(small.released).toMatchObject({ blasBuilt: 0, blasReleased: 1 });
+    expect(large.moved).toEqual(small.moved);
+    expect(large.removed).toEqual(small.removed);
+    expect(large.added).toEqual(small.added);
+    // The released mesh's instance count grows with N; its own removals are its D.
+    expect(large.released.recordsPatched).toBeLessThanOrEqual(large.removedInstances);
+    expect(large.released.blasReleased).toBe(1);
+  });
+
+  it('recovers to exactly the incrementally edited state through the cold path', async () => {
+    const o = await observed();
+    const count = 512;
+    const { instances, geometries } = roster(count);
+    const lane = prepareWorldAcceleration(o.rhi, { instances }, geometries, {
+      instances: count + 64,
+      triangles: 64,
+    }).unwrap();
+    o.settle(lane);
+    const removed = new Set([3, 77, 200, 511]);
+    lane
+      .edit({
+        moved: [5, 77, 300].map((index) => ({ index, to: at(1000 + index) })),
+        removed: [...removed].map((index) => ({ index })),
+        added: [600, 601].map((instanceId) => ({
+          instance: { instanceId, geometryId: 900, mask: 7, transform: at(instanceId) },
+          geometry: triangleOf(900),
+        })),
+      })
+      .unwrap();
+    o.settle(lane);
+    const incremental = o.traced(lane);
+    expect(incremental.pending).toBe(0);
+    expect(incremental.instances.size).toBe(count - removed.size + 2);
+
+    // A failed submit: the encoded update never commits, so the next frame recovers.
+    lane.record(o.frame()).unwrap();
+    const abandoned = lane.current().tlas;
+    lane.beginFrame().unwrap();
+    expect(lane.current().tlas).not.toBe(abandoned);
+    const recovered = o.settle(lane);
+    expect(o.traced(lane)).toEqual(incremental);
+    expect(recovered).toMatchObject({ instances: incremental.instances.size, pending: 0 });
+
+    // A fresh lane over the final roster traces the identical instances.
+    const final = [
+      ...instances
+        .filter((i) => !removed.has(i.instanceId))
+        .map((i) =>
+          [5, 300].includes(i.instanceId) ? { ...i, transform: at(1000 + i.instanceId) } : i,
+        ),
+      ...[600, 601].map((instanceId) => ({
+        instanceId,
+        geometryId: 900,
+        mask: 7,
+        transform: at(instanceId),
+      })),
+    ];
+    const fresh = prepareWorldAcceleration(o.rhi, { instances: final }, [
+      ...geometries,
+      triangleOf(900),
+    ]).unwrap();
+    o.settle(fresh);
+    expect(o.traced(fresh)).toEqual(incremental);
+    lane.dispose();
+    fresh.dispose();
   });
 });

@@ -1,16 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { selectedLodLevel } from '../gpu-driven/production-raster-lod';
 import { buildGpuLodRows, selectGpuLod } from '../scene/visibility/gpu-lod';
 
 describe('GPU LOD readiness projection', () => {
-  it('uses resident physical ranges for the CPU selector fallback', () => {
-    const coverages = [1, 0.5, 0.2];
-    const middleRange = { first: 36, count: 18, baseVertex: 0 };
-
-    expect(selectedLodLevel({ coverages }, 0.1)).toBe(0);
-    expect(selectedLodLevel({ coverages, ranges: [middleRange] }, 0.1)).toBe(1);
-  });
-
   it('keeps the root ready fallback when a selected lower level is not resident', () => {
     const rows = buildGpuLodRows({
       generation: 11,

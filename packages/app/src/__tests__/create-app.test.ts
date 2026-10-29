@@ -240,6 +240,14 @@ describe('create-app.test.ts', () => {
   // writes canvas.width/height into Camera.aspect for perspective + autoAspect=true
   // cameras only.
   describe('syncCameraAspect sidecar (w10 / AC-07)', () => {
+    it('reads only aspect policy fields instead of a complete Camera snapshot', () => {
+      const world = new World();
+      world.spawn({ component: Camera, data: perspective({ fov: 1, aspect: 1 }) }).unwrap();
+      const get = vi.spyOn(world, 'get');
+      syncCameraAspect(world, 800, 400);
+      expect(get).not.toHaveBeenCalled();
+    });
+
     it('canvas resize -> perspective autoAspect=true camera aspect becomes w/h', () => {
       const world = new World();
       const cam = world

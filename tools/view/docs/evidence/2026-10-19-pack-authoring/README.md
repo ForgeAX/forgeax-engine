@@ -1,7 +1,7 @@
 # Pack authoring browser evidence
 
 Captured from the real View and Engine by
-`tools/view-plugins/integration/verify-pack-authoring.mjs` in the paired Engine
+`tools/view/scripts/verify-pack-authoring-integration.mjs` in paired Engine CI
 checkout, using sandboxed Chromium and software WebGPU. These are UI captures,
 not mockups. The probe also reads submitted frame pixels and actual World fields.
 

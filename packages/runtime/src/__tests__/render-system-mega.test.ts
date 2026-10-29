@@ -911,8 +911,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const math = (await import('@forgeax/engine-math')) as { mat4: { compose: unknown } };
       expect(typeof math.mat4.compose).toBe('function');
 
-      // Source-level guarantee: render-system.ts imports from @forgeax/engine-math
-      // (charter proposition 5 single math source).
+      // Source-level guarantee: the render-system camera projections import
+      // from @forgeax/engine-math (charter proposition 5 single math source).
       const fsId = 'node:fs';
       const pathId = 'node:path';
       const urlId = 'node:url';
@@ -934,7 +934,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         '..',
         'render',
         'src',
-        'render-system.ts',
+        'render-system-projections.ts',
       );
       const text = fs.readFileSync(renderSystemSrc, 'utf8');
       expect(text).toMatch(/@forgeax\/engine-math/);

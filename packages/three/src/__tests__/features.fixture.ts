@@ -1,5 +1,6 @@
 import type { ClippingGroup } from 'three/src/objects/ClippingGroup.js';
 import type * as ThreeCore from 'three/src/Three.Core.js';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 
 export function required<T>(value: T | null | undefined): T {
   if (value === null || value === undefined) throw new Error('Missing fixture data');
@@ -209,7 +210,11 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       group.clippingPlanes.push(new THREE.Plane(new THREE.Vector3(1, 0, 0), 0));
       group.add(
         new THREE.Mesh(
-          new THREE.SphereGeometry(1, 24, 16),
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
           new THREE.MeshBasicMaterial({ color: 0x60d0bb }),
         ),
       );
@@ -275,7 +280,11 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       scene.background = texture;
       scene.add(
         new THREE.Mesh(
-          new THREE.SphereGeometry(0.9, 32, 20),
+          new THREE.SphereGeometry(
+            0.9,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
           new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.3 }),
         ),
       );
@@ -300,7 +309,11 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
     },
     'matcap-default': (scene) => {
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(1, 32, 20),
+        new THREE.SphereGeometry(
+          1,
+          testQuality.geometry.sphereWidth,
+          testQuality.geometry.sphereHeight,
+        ),
         new THREE.MeshMatcapMaterial(),
       );
       scene.add(mesh);
@@ -344,7 +357,11 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       );
       inner.add(
         new THREE.Mesh(
-          new THREE.SphereGeometry(1, 24, 16),
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
           new THREE.MeshBasicMaterial({ color: 0x80b050, side: THREE.DoubleSide }),
         ),
       );
@@ -395,7 +412,16 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
         color: 0x60b080,
         roughness: 0.7,
       });
-      scene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), material));
+      scene.add(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
+          material,
+        ),
+      );
       const sun = new THREE.DirectionalLight(0xffffff, 3);
       sun.position.set(2, 3, 5);
       scene.add(sun);
@@ -425,7 +451,16 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
         clearcoat: 0.7,
         clearcoatRoughness: 0.4,
       });
-      scene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), material));
+      scene.add(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
+          material,
+        ),
+      );
       const sun = new THREE.DirectionalLight(0xffffff, 3);
       sun.position.set(2, 3, 5);
       scene.add(sun);
@@ -445,7 +480,16 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       );
       bumpMap.needsUpdate = true;
       const material = new THREE.MeshStandardMaterial({ color: 0x70b090, normalMap, bumpMap });
-      scene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), material));
+      scene.add(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
+          material,
+        ),
+      );
       const sun = new THREE.DirectionalLight(0xffffff, 3);
       sun.position.set(2, 3, 5);
       scene.add(sun);

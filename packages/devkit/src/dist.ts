@@ -61,13 +61,8 @@ async function filesUnder(root: string, directory = root): Promise<string[]> {
   return result;
 }
 
-export async function writeDistManifest(
-  facts: ProjectFacts,
-  base: string,
-  rootInput = resolve(facts.root, 'dist'),
-  target: NonNullable<BuildOptions['target']> = 'browser',
-  materialProfile?: BuildOptions['materialProfile'],
-): Promise<DistManifest> {
+/** Inventory the producer's current files before selecting a delivery transport. */
+export async function collectDistArtifacts(rootInput: string): Promise<DistArtifact[]> {
   const root = resolve(rootInput);
   const paths = await filesUnder(root);
   const artifacts: DistArtifact[] = [];
@@ -88,6 +83,18 @@ export async function writeDistManifest(
       )),
     );
   }
+  return artifacts;
+}
+
+export async function writeDistManifest(
+  facts: ProjectFacts,
+  base: string,
+  rootInput = resolve(facts.root, 'dist'),
+  target: NonNullable<BuildOptions['target']> = 'browser',
+  materialProfile?: BuildOptions['materialProfile'],
+): Promise<DistManifest> {
+  const root = resolve(rootInput);
+  const artifacts = await collectDistArtifacts(root);
   const manifest: DistManifest = {
     schemaVersion: '1.0.0',
     target,
@@ -183,7 +190,7 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
           error: {
             code: 'dist-artifact-mismatch',
             expected: 'artifact bytes and SHA-256 to match forgeax-dist.json',
-            hint: 'Restore the built artifact or rebuild the complete dist.',
+            hint: 'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
             detail: { path: artifact.path },
           },
         };
@@ -194,7 +201,7 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
         error: {
           code: 'dist-artifact-missing',
           expected: 'every declared dist artifact to exist',
-          hint: 'Restore the built artifact or rebuild the complete dist.',
+          hint: 'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
           detail: { path: artifact.path },
         },
       };

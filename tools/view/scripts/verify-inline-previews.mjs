@@ -1,9 +1,198 @@
 import assert from 'node:assert/strict';
 
+export const SKINNED_PREVIEW_SOURCE_KEYS = [
+  'mesh/player', 'mesh/steve',
+  'material/player-body', 'material/player-accent', 'material/player-cloth', 'material/player-signal',
+  'material/steve-skin', 'material/steve-outer',
+];
+
+export function selectSkinnedPreviewAssets(assets) {
+  return SKINNED_PREVIEW_SOURCE_KEYS.map(sourceKey => {
+    const asset = assets.find(candidate => candidate.sourceKey === sourceKey);
+    assert.ok(asset, `missing skinned preview fixture ${sourceKey}`);
+    return asset;
+  });
+}
+
+export function assertSkinnedPreviewPixels(stats, label, transparent = false) {
+  assert.ok(stats.width > 0 && stats.height > 0, `${label}: image dimensions`);
+  assert.ok(stats.covered > stats.width * stats.height * 0.005, `${label}: empty rendered subject`);
+  assert.ok(stats.colors > 4, `${label}: flat rendered subject`);
+  if (transparent) {
+    assert.ok(stats.covered < stats.width * stats.height, `${label}: transparent thumbnail background`);
+    assert.equal(stats.edgePixels, 0, `${label}: cropped thumbnail subject`);
+  } else {
+    assert.ok(stats.changed > stats.width * stats.height * 0.005, `${label}: background-only preview`);
+    assert.equal(stats.edgePixels, 0, `${label}: cropped preview subject`);
+    assert.equal(stats.opaque, stats.width * stats.height, `${label}: lost opaque preview background`);
+  }
+}
+
+async function previewPixelStats(page, png, background) {
+  return page.evaluate(async ({ source, background }) => {
+    const decode = async source => {
+      const image = new Image();
+      image.src = source;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d');
+      context.drawImage(image, 0, 0);
+      return context.getImageData(0, 0, canvas.width, canvas.height);
+    };
+    const { data, width, height } = await decode(source);
+    const reference = background ? await decode(background) : undefined;
+    if (reference && (reference.width !== width || reference.height !== height)) throw new Error('preview background extent changed');
+    let covered = 0, opaque = 0, changed = 0, edgePixels = 0;
+    const colors = new Set();
+    for (let offset = 0; offset < data.length; offset += 4) {
+      if (data[offset + 3] < 8) continue;
+      covered++;
+      if (data[offset + 3] >= 250) opaque++;
+      colors.add((data[offset] >> 3) * 1024 + (data[offset + 1] >> 3) * 32 + (data[offset + 2] >> 3));
+      const foreground = !reference || Math.abs(data[offset] - reference.data[offset]) + Math.abs(data[offset + 1] - reference.data[offset + 1]) + Math.abs(data[offset + 2] - reference.data[offset + 2]) > 32;
+      if (!foreground) continue;
+      changed++;
+      const pixel = offset / 4, x = pixel % width, y = Math.floor(pixel / width);
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) edgePixels++;
+    }
+    return { width, height, covered, opaque, changed, edgePixels, colors: colors.size };
+  }, { source: png, background });
+}
+
+async function backgroundCapture(workspace, args) {
+  const settled = async () => {
+    const deadline = Date.now() + 10_000;
+    let camera, since = Date.now(), version;
+    do {
+      camera = await workspace.getCamera(args);
+      if (!camera.committed || camera.interaction || camera.version !== version) since = Date.now();
+      version = camera.version;
+      if (camera.committed && !camera.interaction && Date.now() - since >= 150) return camera;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (Date.now() < deadline);
+    assert.fail('resource preview camera did not settle before background capture');
+  };
+  const before = await settled();
+  const displaced = structuredClone(before.camera);
+  const [x, y, z, w] = displaced.transform.quat;
+  const right = [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)];
+  displaced.transform.pos = displaced.transform.pos.map((position, axis) => position + 1000 * right[axis]);
+  const set = async camera => {
+    const current = await settled();
+    const interaction = { ...args, interactionId: `background-${crypto.randomUUID()}` };
+    await workspace.beginCamera({ ...interaction, baseVersion: current.version });
+    try {
+      await workspace.updateCamera({ ...interaction, camera });
+      await workspace.commitCamera({ ...interaction, operationId: crypto.randomUUID(), expectedVersion: current.version });
+    } catch (error) {
+      await workspace.abortCamera(interaction);
+      throw error;
+    }
+  };
+  // Translate without rotating: the infinite environment stays pixel-aligned.
+  await set(displaced);
+  try { return (await workspace.capture(args)).png; }
+  finally { await set(before.camera); }
+}
+
+/** Real game-3d assets; transparent native thumbnails falsify background-only captures. */
+export async function verifySkinnedResourcePreviews({ page, workspace, save = async () => {}, onPreview = async () => {} }) {
+  const initial = workspace.snapshot();
+  const assets = selectSkinnedPreviewAssets(initial.assets);
+  assert.ok(initial.scenePreview?.target, 'open the game-3d Scene before verifying resource previews');
+  const observations = [];
+  const backgrounds = new Map();
+  const capture = async (args, label) => {
+    const image = await workspace.capture(args);
+    assert.deepEqual(image.errors ?? [], [], `${label}: render errors`);
+    const pixels = await previewPixelStats(page, image.png, backgrounds.get(args.targetId));
+    assertSkinnedPreviewPixels(pixels, label);
+    await save(label, image.png);
+    observations.push({ label, targetId: args.targetId, frameId: image.frameId, pixels });
+  };
+  for (const asset of assets) {
+    const opened = await workspace.openAsset({ projectId: initial.project.id, guid: asset.guid, width: 512, height: 512 });
+    const preview = opened.openRequest?.preview;
+    assert.equal(preview?.asset.guid, asset.guid);
+    assert.notEqual(preview.target.targetId, initial.scenePreview.target.targetId);
+    const args = { targetId: preview.target.targetId, targetGeneration: preview.target.generation };
+    const panelId = previewPanelTestId(asset.kind);
+    const resetId = asset.kind === 'mesh' ? 'mesh-reset-view' : 'material-restore-view';
+    await page.getByTestId(panelId).waitFor({ state: 'visible' });
+    await page.waitForFunction(({ panelId, resetId }) => {
+      const panel = document.querySelector(`[data-testid="${panelId}"]`);
+      const failure = panel?.querySelector('[role="alert"]')?.textContent;
+      if (failure) throw new Error(failure);
+      const reset = panel?.querySelector(`[data-testid="${resetId}"]`);
+      return reset instanceof HTMLButtonElement && !reset.disabled;
+    }, { panelId, resetId });
+    const tree = await workspace.getSceneTree(args);
+    assert.ok(tree.nodes.some(node => node.componentNames.includes('Skin')), `${asset.sourceKey}: native Skin binding`);
+    const label = asset.sourceKey.replaceAll('/', '-');
+    const background = await backgroundCapture(workspace, args);
+    backgrounds.set(args.targetId, background);
+    await save(`${label}-background`, background);
+    await capture(args, label);
+    await onPreview({ asset, preview });
+    if (asset.kind === 'material') {
+      await workspace.invoke('preview.material.rotate', { ...args, yaw: 0.6, pitch: 0.3 });
+      for (const mesh of ['sphere', 'cylinder', 'plane', 'cube']) {
+        await workspace.invoke('preview.material.set', { ...args, mesh });
+        await capture(args, `${label}-${mesh}`);
+      }
+      await workspace.invoke('preview.material.reset', args);
+    } else {
+      await workspace.invoke('preview.display.set', { ...args, mode: 'wireframe', bounds: true });
+      assert.ok(!(await workspace.getSceneTree(args)).nodes.some(node => node.componentNames.includes('Skin')));
+      await capture(args, `${label}-wireframe`);
+      await workspace.invoke('preview.display.set', { ...args, mode: 'material', bounds: false });
+      await capture(args, `${label}-restored`);
+      const uv = await workspace.invoke('preview.display.get', { ...args, uvChannel: 0 });
+      assert.ok(uv.uv.layout.coordinates.length > 0);
+    }
+    const selected = page.locator('[data-page-id][aria-selected="true"]');
+    const id = await selected.getAttribute('data-page-id');
+    await selected.hover();
+    await page.locator(`[data-page-close="${id}"]`).click();
+    await page.getByTestId(panelId).waitFor({ state: 'detached' });
+    await assert.rejects(workspace.getSceneTree(args), error => /target-mismatch/.test(error.code));
+  }
+  const deadline = Date.now() + 180_000;
+  let thumbnails;
+  do {
+    thumbnails = (await workspace.invoke('assets.thumbnails', { projectId: initial.project.id, guids: assets.map(asset => asset.guid) })).thumbnails;
+    for (const row of thumbnails) assert.ok(!['failed', 'unsupported'].includes(row.state), JSON.stringify(row.error ?? row));
+    if (thumbnails.every(row => row.state === 'ready')) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+  for (const row of thumbnails) {
+    assert.equal(row.state, 'ready', `${row.guid}: thumbnail readiness`);
+    const pixels = await previewPixelStats(page, row.dataUrl);
+    assertSkinnedPreviewPixels(pixels, row.guid, true);
+    await save(`thumbnail-${row.guid}`, row.dataUrl);
+    observations.push({ label: `thumbnail-${row.guid}`, pixels });
+  }
+  assert.equal(workspace.snapshot().scenePreview.target.targetId, initial.scenePreview.target.targetId);
+  return observations;
+}
+
 function previewPanelTestId(kind) {
   if (kind === 'material') return 'panel-material-preview';
   if (kind === 'mesh') return 'panel-mesh-preview';
   return 'panel-texture-preview';
+}
+
+export function inlinePreviewReadyExtent({ testId, targetId }) {
+  const host = document.querySelector(`[data-testid="${testId}"] [data-forgeax-preview-panel]`);
+  const surface = host?.querySelector('canvas');
+  const dpr = Math.max(1, devicePixelRatio);
+  const width = Math.round((host?.clientWidth ?? 0) * dpr);
+  const height = Math.round((host?.clientHeight ?? 0) * dpr);
+  return width > 0 && height > 0 && surface?.dataset.forgeaxAssetPreview === targetId &&
+    surface.width === width && surface.height === height &&
+    surface.forgeaxFrameProgress?.completed?.presentation === 'ready' ? [width, height] : false;
 }
 
 export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }) {
@@ -41,30 +230,24 @@ export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }
     const tree = await workspace.getSceneTree(args);
     assert.equal(tree.worldId, preview.target.worldId);
     assert.ok(tree.nodes.length > 0);
-    const extent = await page.waitForFunction(({ testId, targetId }) => {
-      const host = document.querySelector(`[data-testid="${testId}"] [data-forgeax-preview-panel]`);
-      const surface = host?.querySelector('canvas');
-      const dpr = Math.max(1, devicePixelRatio);
-      const width = Math.round((host?.clientWidth ?? 0) * dpr);
-      const height = Math.round((host?.clientHeight ?? 0) * dpr);
-      return width > 0 && height > 0 && surface?.dataset.forgeaxAssetPreview === targetId &&
-        surface.width === width && surface.height === height ? [width, height] : false;
-    }, { testId: previewPanelTestId(asset.kind), targetId: args.targetId });
+    const extent = await page.waitForFunction(inlinePreviewReadyExtent,
+      { testId: previewPanelTestId(asset.kind), targetId: args.targetId });
     const dimensions = await extent.jsonValue();
     await extent.dispose();
-    if (asset.kind === 'mesh') {
-      // Hosting/resizing the canvas precedes the panel's initial orbit-pivot
-      // transaction. The existing Reset View control becomes available only
-      // after that initialization ends; capture must not race its draft.
-      await page.waitForFunction(() => {
-        const panel = document.querySelector('[data-testid="panel-mesh-preview"]');
+    {
+      // Both panels seed their orbit pivot after hosting/resizing the canvas.
+      // Their existing reset controls become available after that transaction;
+      // a visible canvas alone does not establish a committed camera.
+      const resetId = asset.kind === 'mesh' ? 'mesh-reset-view' : 'material-restore-view';
+      await page.waitForFunction(({ panelId, resetId }) => {
+        const panel = document.querySelector(`[data-testid="${panelId}"]`);
         const failure = panel?.querySelector('[role="alert"]')?.textContent;
         if (failure) throw new Error(failure);
-        const reset = panel?.querySelector('[data-testid="mesh-reset-view"]');
+        const reset = panel?.querySelector(`[data-testid="${resetId}"]`);
         return reset instanceof HTMLButtonElement && !reset.disabled;
-      });
+      }, { panelId: previewPanelTestId(asset.kind), resetId });
       const camera = await workspace.getCamera(args);
-      assert.equal(camera.committed, true, 'mesh preview initialization must commit before capture');
+      assert.equal(camera.committed, true, `${asset.kind} preview initialization must commit before capture`);
       assert.equal(camera.interaction, null);
     }
     const capture = await capturePreview(args, tree.worldId);

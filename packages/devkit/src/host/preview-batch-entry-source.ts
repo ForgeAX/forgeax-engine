@@ -8,7 +8,7 @@ export function previewBatchEntrySource(): string {
   return `import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { runtimeBinding, createRuntimeAssetImportTransport } from 'virtual:forgeax/pack-runtime';
 import { createApp } from '@forgeax/engine/app/browser';
-import { captureEngineWorkspaceAssetBinding, createEngineWorkspaceAppPreview, createTextureWorkspacePreview, createWorkspaceMeshDisplay, fitToolPreviewCameraToAabb, loadEngineWorkspaceMaterialSlots } from '@forgeax/engine/app';
+import { captureEngineWorkspaceAssetBinding, createEngineWorkspaceAppPreview, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, fitToolPreviewCameraToAabb, loadEngineWorkspaceMaterialSlots } from '@forgeax/engine/app';
 import { createCatalogSource, createCatalogHotSubscription } from '@forgeax/engine/assets-runtime';
 import { THUMBNAIL_PREVIEW, previewThumbnailInput, textureViewSource } from '@forgeax/engine/preview';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';

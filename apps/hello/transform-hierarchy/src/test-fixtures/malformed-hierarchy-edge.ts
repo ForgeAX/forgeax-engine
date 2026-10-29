@@ -5,9 +5,9 @@ const WORLD_INTERNAL_KEY: unique symbol = Symbol.for(
   'forgeax.ecs.worldInternal',
 ) as unknown as typeof WORLD_INTERNAL_KEY;
 
-interface MalformedRecord {
-  readonly archetypeId: number;
-  readonly archetypeRow: number;
+interface MalformedRecords {
+  readonly archetypeId: ArrayLike<number>;
+  readonly archetypeRow: ArrayLike<number>;
 }
 
 interface MalformedColumn {
@@ -33,7 +33,7 @@ interface MalformedGraph {
 }
 
 interface MalformedWorldInternal {
-  readonly getRecords: () => readonly (MalformedRecord | undefined)[];
+  readonly getRecords: () => MalformedRecords;
   readonly getGraph: () => MalformedGraph;
   readonly markComponentChanged: (entity: EntityHandle, componentId: number) => void;
 }
@@ -64,8 +64,13 @@ export function setMalformedParentEdge(
   childOf: Component,
 ): void {
   const internal = malformedInjection(world);
-  const record = internal.getRecords()[(child as number) & 0x00ffffff];
-  if (record === undefined || record.archetypeId < 0) {
+  const records = internal.getRecords();
+  const slot = (child as number) & 0x00ffffff;
+  const record = {
+    archetypeId: records.archetypeId[slot] ?? -1,
+    archetypeRow: records.archetypeRow[slot] ?? -1,
+  };
+  if (record.archetypeId < 0) {
     throw new Error(`Malformed hierarchy fixture child ${child} is not live.`);
   }
   const graph = internal.getGraph();

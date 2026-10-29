@@ -7,7 +7,7 @@ import type {
   RhiErrorListenerRegistry,
 } from '../lifecycle';
 import type { OutputColorSpaceState } from '../output-color-space';
-import type { GpuPassTimingReason } from '../record/gpu-pass-timing/errors.js';
+import type { GpuPassTimingError } from '../record/gpu-pass-timing/errors.js';
 import type {
   GpuPassTimingCapture,
   GpuPassTimingFrameIdentity,
@@ -66,7 +66,7 @@ export interface WebGPURendererInternals {
   getMaterialShaderUvSetCount?: (materialShaderId: string) => number | undefined;
   gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
   gpuPassTimingCapture?: GpuPassTimingCapture | undefined;
-  gpuPassTimingBeginReason?: GpuPassTimingReason | undefined;
+  gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
   observationCaptureOwner?: RenderPipelineObservationCaptureOwner;
   observationCaptureDomains?: readonly FrameObservationDomain[] | undefined;
   observationFrameId?: number | undefined;

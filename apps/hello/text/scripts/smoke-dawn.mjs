@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { smokeFrameBudget, emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
-// Complete 60 real Renderer submissions using the baked DejaVu Font closure.
+// Complete 60 presented Renderer submissions using the baked DejaVu Font closure.
 // Native GlyphText must remain free of generated ECS Mesh components and render
 // at least 200 visible text pixels. FALSIFY=atlas-empty removes the Font binding
-// and must fall below that threshold.
+// and must fall below that threshold. SMOKE_PIPELINE_DELAY_MS delays every async
+// pipeline completion, reproducing a slow (lavapipe) compiler on any machine.
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync } from 'node:fs';
@@ -16,6 +17,9 @@ const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 const SMOKE_MIN_FRAMES = smokeFrameBudget();
 const FALSIFY = process.env.FALSIFY ?? '';
 const REQUIRE_VISIBLE = process.env.TEXT_SMOKE_REQUIRE_VISIBLE !== '0';
+const PIPELINE_DELAY_MS = Number(process.env.SMOKE_PIPELINE_DELAY_MS ?? 0);
+// Pending frames wait on pipeline preparation; they are not presented frames.
+const READY_DEADLINE_MS = 120_000;
 
 // feat-20260615-ci-smoke-time-budget: 800x600 → 200x150 (lavapipe fragment-bound)
 const WIDTH = 200;
@@ -65,6 +69,16 @@ globalThis.navigator.gpu.requestAdapter = async (opts) => {
   adapter.requestDevice = async (desc) => {
     const dev = await originalRequestDevice(desc);
     if (!sharedDevice) sharedDevice = dev;
+    if (PIPELINE_DELAY_MS > 0) {
+      for (const name of ['createRenderPipelineAsync', 'createComputePipelineAsync']) {
+        const create = dev[name].bind(dev);
+        dev[name] = async (descriptor) => {
+          const pipeline = await create(descriptor);
+          await delay(PIPELINE_DELAY_MS);
+          return pipeline;
+        };
+      }
+    }
     return dev;
   };
   return adapter;
@@ -177,14 +191,22 @@ world.spawn(
 );
 
 let totalFrames = 0;
-for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
+let pendingFrames = 0;
+let pendingReason;
+const loopStarted = performance.now();
+while (totalFrames < SMOKE_MIN_FRAMES && performance.now() - loopStarted < READY_DEADLINE_MS) {
   world.update(1/60).unwrap();
   const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }).unwrap();
   (await draw.completed).unwrap();
-  totalFrames++;
+  if (draw.presentation === 'ready') {
+    totalFrames++;
+  } else {
+    pendingFrames++;
+    pendingReason ??= draw.presentationPendingReason;
+  }
 }
 await sharedDevice.queue.onSubmittedWorkDone();
-console.log(`[smoke] completed frames=${totalFrames}`);
+console.log(`[smoke] completed frames=${totalFrames} pendingFrames=${pendingFrames}`);
 
 const failures = [];
 
@@ -201,7 +223,9 @@ if (unexpectedConsoleErrors.length > 0) {
 
 // (d) frame count.
 if (totalFrames < SMOKE_MIN_FRAMES) {
-  failures.push(`(d) total frames=${totalFrames} < ${SMOKE_MIN_FRAMES}`);
+  failures.push(
+    `(d) presented frames=${totalFrames} < ${SMOKE_MIN_FRAMES} within ${READY_DEADLINE_MS} ms (pending=${pendingFrames}, first reason=${JSON.stringify(pendingReason)})`,
+  );
 }
 
 // GlyphText remains native authoring state; the Renderer owns its derived geometry.

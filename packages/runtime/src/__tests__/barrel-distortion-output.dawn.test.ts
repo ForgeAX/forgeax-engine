@@ -34,7 +34,7 @@ import {
   probeBarrelDistortionF32,
   readBarrelPixels,
 } from './barrel-distortion-gpu-fixture';
-import { drawPublished } from './draw-published';
+import { drawPublished, drawReady } from './draw-published';
 
 function spawnSelectionCamera(
   world: World,
@@ -500,9 +500,9 @@ describe('barrel distortion real output on Dawn', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
 
-      const drawFrame = () => {
+      const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = fixture.renderer.draw({
+        const receipt = await drawReady(fixture.renderer, {
           leases: [attached.value],
           camera: { lease: attached.value },
           environment: { lease: attached.value },
@@ -512,20 +512,20 @@ describe('barrel distortion real output on Dawn', () => {
         return receipt.value;
       };
 
-      const baselineReceipt = drawFrame();
+      const baselineReceipt = await drawFrame();
       await fixture.device.queue.onSubmittedWorkDone();
       const baseline = await readBarrelPixels(fixture.device, fixture.renderTarget);
       expect(baselineReceipt.barrelDistortion?.strength).toBe(0);
 
       setActiveCamera(world, enabledCamera as number);
-      const warpedReceipt = drawFrame();
+      const warpedReceipt = await drawFrame();
       await fixture.device.queue.onSubmittedWorkDone();
       const warped = await readBarrelPixels(fixture.device, fixture.renderTarget);
       expect(warpedReceipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       expect(countRgbDifferences(baseline, warped)).toBeGreaterThan(0);
 
       setActiveCamera(world, disabledCamera as number);
-      const retiredReceipt = drawFrame();
+      const retiredReceipt = await drawFrame();
       await fixture.device.queue.onSubmittedWorkDone();
       const retired = await readBarrelPixels(fixture.device, fixture.renderTarget);
       expect(retiredReceipt.barrelDistortion?.strength).toBe(0);
@@ -550,7 +550,7 @@ describe('barrel distortion real output on Dawn', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
       expect(world.update(1 / 60).ok).toBe(true);
-      const receipt = fixture.renderer.draw({
+      const receipt = await drawReady(fixture.renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
@@ -607,7 +607,7 @@ describe('barrel distortion real output on Dawn', () => {
       // Seed that baseline outside the moving path so every recorded edge
       // position exercises the active compute lane.
       expect(world.update(1 / 60).ok).toBe(true);
-      const baselineDraw = fixture.renderer.draw({
+      const baselineDraw = await drawReady(fixture.renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
@@ -622,7 +622,7 @@ describe('barrel distortion real output on Dawn', () => {
       for (const position of edgePositions) {
         world.set(edge, Transform, { pos: [position, 0, 0] }).unwrap();
         expect(world.update(1 / 60).ok).toBe(true);
-        const drawn = fixture.renderer.draw({
+        const drawn = await drawReady(fixture.renderer, {
           leases: [attached.value],
           camera: { lease: attached.value },
           environment: { lease: attached.value },
@@ -730,9 +730,9 @@ describe('barrel distortion real output on Dawn', () => {
       const attached = fixture.renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
-      const drawFrame = () => {
+      const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = fixture.renderer.draw({
+        const receipt = await drawReady(fixture.renderer, {
           leases: [attached.value],
           camera: { lease: attached.value },
           environment: { lease: attached.value },
@@ -742,7 +742,7 @@ describe('barrel distortion real output on Dawn', () => {
         return receipt.value;
       };
 
-      const baselineReceipt = drawFrame();
+      const baselineReceipt = await drawFrame();
       await fixture.device.queue.onSubmittedWorkDone();
       const baseline = await readBarrelPixels(fixture.device, fixture.renderTarget);
       const fog = world
@@ -764,9 +764,9 @@ describe('barrel distortion real output on Dawn', () => {
       // The volume graph is an accepted candidate with a renderer-owned
       // resource lease. The first draw admits it; the second submitted frame
       // is the observable picture that proves the retained graph was used.
-      const fogCandidateReceipt = drawFrame();
+      const fogCandidateReceipt = await drawFrame();
       await fixture.device.queue.onSubmittedWorkDone();
-      const fogReceipt = drawFrame();
+      const fogReceipt = await drawFrame();
       await fixture.device.queue.onSubmittedWorkDone();
       const fogPixels = await readBarrelPixels(fixture.device, fixture.renderTarget);
       const inspection = fixture.renderer.inspect();
@@ -829,7 +829,7 @@ describe('barrel distortion real output on Dawn', () => {
 
       const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = fixture.renderer.draw({
+        const receipt = await drawReady(fixture.renderer, {
           leases: [attached.value],
           camera: { lease: attached.value },
           environment: { lease: attached.value },
@@ -931,12 +931,7 @@ describe('barrel distortion real output on Dawn', () => {
     const fixture = await createBarrelRendererFixture();
     try {
       const drawWithLinearObservation = async (world: World) => {
-        const armed = fixture.renderer.requestObservation?.(['linear-ldr']);
-        expect(armed).toBeDefined();
-        if (armed === undefined || !armed.ok) {
-          throw new Error('Dawn FXAA edge fixture could not arm linear-LDR observation');
-        }
-        const receipt = await drawPublished(fixture.renderer, world);
+        const receipt = await drawPublished(fixture.renderer, world, ['linear-ldr']);
         expect(receipt.ok).toBe(true);
         if (!receipt.ok) throw receipt.error;
         await fixture.device.queue.onSubmittedWorkDone();
@@ -1106,7 +1101,7 @@ describe('barrel distortion real output on Dawn', () => {
       if (!attached.ok) throw attached.error;
 
       expect(world.update(1 / 60).ok).toBe(true);
-      const baselineReceipt = fixture.renderer.draw({
+      const baselineReceipt = await drawReady(fixture.renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
@@ -1124,7 +1119,7 @@ describe('barrel distortion real output on Dawn', () => {
         })
         .unwrap();
       expect(world.update(1 / 60).ok).toBe(true);
-      const warpedReceipt = fixture.renderer.draw({
+      const warpedReceipt = await drawReady(fixture.renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
@@ -1146,7 +1141,7 @@ describe('barrel distortion real output on Dawn', () => {
 
       world.removeComponent(camera, BarrelDistortion).unwrap();
       expect(world.update(1 / 60).ok).toBe(true);
-      const disabledReceipt = fixture.renderer.draw({
+      const disabledReceipt = await drawReady(fixture.renderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
@@ -1190,7 +1185,7 @@ describe('barrel distortion real output on Dawn', () => {
       expect(offCenterAttached.ok).toBe(true);
       if (!offCenterAttached.ok) throw offCenterAttached.error;
       expect(offCenterWorld.update(1 / 60).ok).toBe(true);
-      const offCenterReceipt = fixture.renderer.draw({
+      const offCenterReceipt = await drawReady(fixture.renderer, {
         leases: [offCenterAttached.value],
         camera: { lease: offCenterAttached.value },
         environment: { lease: offCenterAttached.value },

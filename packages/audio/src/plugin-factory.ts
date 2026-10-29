@@ -60,11 +60,12 @@ export function audioPlugin(): Plugin {
             fn: () => {
               const listeners = world.query({ read: [GlobalTransform], with: [AudioListener] });
               if (!listeners.ok) return;
-              for (const row of listeners.value) {
-                const transform = row.get(GlobalTransform);
-                const pose = listenerPoseFromWorldMatrix(transform.world);
+              for (const span of listeners.value.spans().unwrap()) {
+                if (span.length === 0) continue;
+                const matrix = span.get(GlobalTransform).world.subarray(0, 16);
+                const pose = listenerPoseFromWorldMatrix(matrix);
                 backend.setListenerPose(pose);
-                break;
+                return;
               }
             },
           })

@@ -1,3 +1,4 @@
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { renderFeaturePlanSignature } from '../../../render/src/features/plan';
@@ -50,7 +51,9 @@ describe('VFX raster encoder sharing', () => {
   });
 
   it('retains one graph signature while only the middle emitter visibility changes', () => {
-    const host = createRenderFeatureHost([]).unwrap();
+    const host = createRenderFeatureHost([
+      { identity: 'particles', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+    ]).unwrap();
     const source = [pass(0), pass(1), pass(2)] as const;
     const initial = { resources: [], passes: coalesceVfxRasterPasses(source, 'blended') };
     const signature = renderFeaturePlanSignature(initial);

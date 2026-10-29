@@ -2,6 +2,7 @@ import type { WorkbenchEdge, WorkbenchStage } from './types.ts';
 
 /** Left / right / bottom edge sidebars managed by one Dockview instance. */
 export const WORKBENCH_EDGES = Object.freeze(['left', 'right', 'bottom'] as const satisfies readonly WorkbenchEdge[]);
+export const PAGE_WORKBENCH_EDGES = Object.freeze(['left', 'right'] as const satisfies readonly WorkbenchEdge[]);
 
 export const EDGE_GROUP_ID = Object.freeze({
   left: 'fx-edge-left',
@@ -53,8 +54,10 @@ export function resolveTargetSides(
   width: number,
   height: number,
   active: readonly WorkbenchEdge[],
+  edges: readonly WorkbenchEdge[] = WORKBENCH_EDGES,
 ): readonly WorkbenchEdge[] {
-  const was = sideSet(active);
+  const allowed = sideSet(edges);
+  const was = sideSet(active.filter((side) => allowed.has(side)));
 
   const widthAll = was.has('left')
     ? width < WIDTH_EXIT_ALL
@@ -62,11 +65,12 @@ export function resolveTargetSides(
   const heightAll = was.has('bottom')
     ? height < HEIGHT_EXIT_ALL
     : height < HEIGHT_ENTER_ALL;
-  const allThree = widthAll && heightAll;
+  const allThree = allowed.has('left') && allowed.has('right') && allowed.has('bottom')
+    && widthAll && heightAll;
 
-  const heightTight = was.has('bottom')
+  const heightTight = allowed.has('bottom') && (was.has('bottom')
     ? height < HEIGHT_EXIT_TUCK
-    : height < HEIGHT_ENTER_TUCK;
+    : height < HEIGHT_ENTER_TUCK);
   const widthTight = was.has('left')
     ? width < WIDTH_EXIT_TUCK
     : width < WIDTH_ENTER_TUCK;
@@ -78,14 +82,14 @@ export function resolveTargetSides(
     next.add('right');
   } else {
     if (heightTight) next.add('bottom');
-    if (widthTight) {
+    if (widthTight && allowed.has('left')) {
       next.add('left');
-      next.add('right');
+      if (allowed.has('right')) next.add('right');
     }
   }
 
   const order: WorkbenchEdge[] = ['bottom', 'left', 'right'];
-  return order.filter((s) => next.has(s));
+  return order.filter((s) => allowed.has(s) && next.has(s));
 }
 
 export function targetSidesEqual(a: readonly WorkbenchEdge[], b: readonly WorkbenchEdge[]) {

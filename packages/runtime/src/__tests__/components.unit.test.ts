@@ -179,12 +179,11 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(MeshFilter).assetHandle).toBe('asset<mesh>');
     });
 
-    it('MeshRenderer has materials, lighting channels, skin bounds and pipeline preparation', () => {
+    it('MeshRenderer has materials, lighting channels and pipeline preparation', () => {
       expect(MeshRenderer.name).toBe('MeshRenderer');
       expect(componentSchema(MeshRenderer)).toEqual({
         materials: 'array<asset<material>>',
         lightingChannels: 'f64',
-        conservativeSkinBounds: 'bool',
         preparePipelines: 'bool',
       });
     });
@@ -1335,8 +1334,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
-      expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
       // Clear-color default: transparent black array [0,0,0,0] (feat-20260709 M3;
@@ -1347,9 +1346,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.autoAspect).toBe(true);
     });
 
-    it('perspective({ fov: 45, aspect: 4/3, near: 0.01, far: 1000 }) — explicit overrides, rest defaults', () => {
-      const pod = perspective({ fov: 45, aspect: 4 / 3, near: 0.01, far: 1000 });
-      expect(pod.fov).toBe(45);
+    it('perspective({ fov: Math.PI / 4, aspect: 4/3, near: 0.01, far: 1000 }) — explicit overrides, rest defaults', () => {
+      const pod = perspective({ fov: Math.PI / 4, aspect: 4 / 3, near: 0.01, far: 1000 });
+      expect(pod.fov).toBe(Math.PI / 4);
       expect(pod.aspect).toBeCloseTo(4 / 3, 6);
       expect(pod.near).toBeCloseTo(0.01, 6);
       expect(pod.far).toBe(1000);
@@ -1363,8 +1362,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.whitePoint).toBeCloseTo(4.0, 6);
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
-      expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
     });
@@ -1390,8 +1389,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(0, 6);
-      expect(pod.bloomIntensity).toBeCloseTo(1.0, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
       // Clear-color default: transparent black array [0,0,0,0] (feat-20260709 M3).
@@ -1416,7 +1415,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     });
 
     it('perspective + orthographic 32-field payload counts (32 factory Camera values)', () => {
-      const p = perspective({ fov: 60, aspect: 4 / 3 });
+      const p = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
       // Both return exactly 32 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
@@ -1515,8 +1514,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(d.historyVersion.default).toBe(0);
       expect(d.targetLayer.default).toBe(0);
       expect(d.bloom.default).toBe(0);
-      expect(d.bloomThreshold.default).toBeCloseTo(0, 6);
-      expect(d.bloomIntensity.default).toBeCloseTo(1.0, 6);
+      expect(d.bloomThreshold.default).toBeCloseTo(1, 6);
+      expect(d.bloomIntensity.default).toBeCloseTo(0.5, 6);
       expect(d.bloomSmoothWidth.default).toBeCloseTo(0.01, 6);
       expect(d.bloomRadius.default).toBeCloseTo(0, 6);
       // Clear-color default: explicit layer-2 transparent black array (feat-20260709
@@ -1560,8 +1559,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         historyVersion: 0,
         targetLayer: 0,
         bloom: 0,
-        bloomThreshold: 0,
-        bloomIntensity: 1.0,
+        bloomThreshold: 1,
+        bloomIntensity: 0.5,
         bloomSmoothWidth: 0.01,
         bloomRadius: 0,
         clearColor: new Float32Array([0, 0, 0, 0]),
@@ -1753,9 +1752,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // Covers AC-05 + AC-06 (perspective + orthographic returns with defaults).
   // Plan-strategy section 5.2 unit-test requirement + section 5.3 testing points.
   describe('perspective factory', () => {
-    it('perspective({ fov: 60, aspect: 4/3 }) returns POD with projection=0, near=0.1, far=2000', () => {
-      const pod = perspective({ fov: 60, aspect: 4 / 3 });
-      expect(pod.fov).toBe(60);
+    it('perspective({ fov: Math.PI / 3, aspect: 4/3 }) returns POD with projection=0, near=0.1, far=2000', () => {
+      const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
+      expect(pod.fov).toBe(Math.PI / 3);
       expect(pod.aspect).toBeCloseTo(4 / 3, 6);
       expect(pod.near).toBeCloseTo(0.1, 6);
       expect(pod.far).toBe(2000);
@@ -1769,9 +1768,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.whitePoint).toBeCloseTo(4.0, 6);
     });
 
-    it('perspective({ fov: 45, aspect: 16/9, near: 0.01, far: 1000 }) returns explicit overrides', () => {
-      const pod = perspective({ fov: 45, aspect: 16 / 9, near: 0.01, far: 1000 });
-      expect(pod.fov).toBe(45);
+    it('perspective({ fov: Math.PI / 4, aspect: 16/9, near: 0.01, far: 1000 }) returns explicit overrides', () => {
+      const pod = perspective({ fov: Math.PI / 4, aspect: 16 / 9, near: 0.01, far: 1000 });
+      expect(pod.fov).toBe(Math.PI / 4);
       expect(pod.aspect).toBeCloseTo(16 / 9, 6);
       expect(pod.near).toBeCloseTo(0.01, 6);
       expect(pod.far).toBe(1000);
@@ -1784,7 +1783,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     });
 
     it('perspective return value has all 32 factory Camera fields', () => {
-      const pod = perspective({ fov: 60, aspect: 4 / 3 });
+      const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
         'antialias',
@@ -1920,7 +1919,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // array added.
   //
   //   (a) `componentDefinition(MeshRenderer).defaults` is a frozen map asserting
-  //       `{ materials: [], lightingChannels: 0xffffffff, conservativeSkinBounds: false, preparePipelines: false }` (empty array routes to D-Q7 case B default
+  //       `{ materials: [], lightingChannels: 0xffffffff, preparePipelines: false }` (empty array routes to D-Q7 case B default
   //       material path).
   //
   //   (b) `world.spawn({ component: MeshRenderer, data: {} })` produces a row
@@ -1933,11 +1932,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //       compile-time error (verified via test-d.ts).
 
   describe('componentDefinition(MeshRenderer).defaults — frozen map assertion (w8)', () => {
-    it('componentDefinition(MeshRenderer).defaults retains material, lighting, bounds and preparation defaults', () => {
+    it('componentDefinition(MeshRenderer).defaults retains material, lighting and preparation defaults', () => {
       expect(componentDefinition(MeshRenderer).defaults).toEqual({
         materials: [],
         lightingChannels: 0xffffffff,
-        conservativeSkinBounds: false,
         preparePipelines: false,
       });
     });

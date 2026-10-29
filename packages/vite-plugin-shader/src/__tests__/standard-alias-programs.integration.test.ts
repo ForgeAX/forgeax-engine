@@ -177,8 +177,8 @@ describe('Standard template alias publication', () => {
         }
         expect(variant.receipt.materialRow.byteLength % MATERIAL_SCENE_ADDRESS_UNIT_BYTES).toBe(0);
         expect(variant.receipt.materialRow.fields).toEqual(expectedFields);
-        expect(variant.receipt?.skinPaletteAddress).toEqual(
-          skinned ? { group: 2, binding: 1, stride: 64 } : undefined,
+        expect(variant.receipt?.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
+          skinned,
         );
         expect(variant.receipt?.vertexInputs.some((input) => input.semantic === 'skinIndex')).toBe(
           skinned,

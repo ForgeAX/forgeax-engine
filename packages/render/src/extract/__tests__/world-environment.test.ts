@@ -1,10 +1,15 @@
-import { Disabled, World } from '@forgeax/engine-ecs';
+import { Disabled, Time, World } from '@forgeax/engine-ecs';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { CloudLayer } from '../../components/cloud-layer';
 import { DirectionalLight } from '../../components/directional-light';
+import { Fog } from '../../components/fog';
 import { PointLight } from '../../components/point-light';
-import { createWorldInternalView, prepareExtractContext } from '../../render-system-extract';
+import {
+  createWorldInternalView,
+  prepareExtractContext,
+  selectFogFrame,
+} from '../../render-system-extract';
 import { extractWorldEnvironment } from '../world-environment';
 
 function extractor(world: World) {
@@ -17,6 +22,36 @@ function extractor(world: World) {
 }
 
 describe('World environment storage matching', () => {
+  it('keeps live Fog, cloud Time and moving poses independent of older produced frames', () => {
+    const world = new World();
+    const fog = world.spawn({ component: Fog, data: { density: 0.03 } }).unwrap();
+    world.spawn({ component: CloudLayer, data: {} }).unwrap();
+    world.spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } }).unwrap();
+    const lamp = world
+      .spawn({ component: PointLight, data: {} }, { component: Transform, data: {} })
+      .unwrap();
+    const context = prepareExtractContext(world);
+    const internal = createWorldInternalView(world);
+    const extract = () => extractWorldEnvironment(world, context, internal, selectFogFrame(world));
+    world.update(1 / 60).unwrap();
+    const first = extract();
+    const firstTime = first.cloudLayer?.worldTimeSeconds;
+    expect(firstTime).toBe(world.getResource(Time).elapsed);
+    world.set(fog, Fog, { density: 0.06 }).unwrap();
+    world.update(1 / 60).unwrap();
+    world
+      .set(lamp, GlobalTransform, { world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 4, 5, 1] })
+      .unwrap();
+    const second = extract();
+    expect(second.cloudLayer?.worldTimeSeconds).toBe(world.getResource(Time).elapsed);
+    expect(second.cloudLayer?.worldTimeSeconds).toBeGreaterThan(firstTime as number);
+    expect(first.cloudLayer?.worldTimeSeconds).toBe(firstTime);
+    expect(first.environment.fog?.density).toBeCloseTo(0.03);
+    expect(second.environment.fog?.density).toBeCloseTo(0.06);
+    expect(first.lights.point[0]?.position[0]).toBe(0);
+    expect(second.lights.point[0]?.position[0]).toBe(3);
+  });
+
   it('reads current values and membership after table and archetype growth', () => {
     const world = new World();
     const { extract } = extractor(world);

@@ -360,7 +360,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         world
           .spawn(
             { component: Transform, data: { pos: [0, 0, 5] } },
-            { component: Camera, data: { fov: 60, aspect: 16 / 9 } },
+            { component: Camera, data: { fov: Math.PI / 3, aspect: 16 / 9 } },
           )
           .unwrap(),
         world

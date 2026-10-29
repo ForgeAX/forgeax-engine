@@ -326,7 +326,8 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     expect(assetEdited.generation).toBe(generation);
     expect(assetEdited.edits).toMatchObject({
       rematerializedInstances: beforeAssetEdit.rematerializedInstances,
-      projectedSources: beforeAssetEdit.projectedSources,
+      // Only the one row reading the edited material is re-admitted.
+      projectedSources: beforeAssetEdit.projectedSources + 1,
       materialRootUpdates: beforeAssetEdit.materialRootUpdates + 1,
       materialDrawVisits: beforeAssetEdit.materialDrawVisits + 6,
       materialUniformUploads: beforeAssetEdit.materialUniformUploads + 1,

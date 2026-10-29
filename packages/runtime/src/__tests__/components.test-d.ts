@@ -43,14 +43,13 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['assetHandle']>().toEqualTypeOf<AssetHandle<'mesh'>>();
   });
 
-  it('MeshRenderer data shape carries materials, lighting, bounds and pipeline preparation', () => {
+  it('MeshRenderer data shape carries materials, lighting and pipeline preparation', () => {
     type Data = ShapeOf<SchemaOf<typeof MeshRenderer>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'conservativeSkinBounds' | 'preparePipelines'
+      'materials' | 'lightingChannels' | 'preparePipelines'
     >();
     expectTypeOf<Data['materials']>().toEqualTypeOf<readonly AssetHandle<'material'>[]>();
     expectTypeOf<Data['lightingChannels']>().toEqualTypeOf<number>();
-    expectTypeOf<Data['conservativeSkinBounds']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['preparePipelines']>().toEqualTypeOf<boolean>();
   });
 
@@ -206,7 +205,7 @@ describe('w7 type-level - component name literal types are preserved', () => {
     // `switch (mat.shadingModel)` in the canonical dispatch site.
     expectTypeOf<typeof MeshRenderer.name>().toEqualTypeOf<'MeshRenderer'>();
     expectTypeOf<keyof SchemaOf<typeof MeshRenderer>>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'conservativeSkinBounds' | 'preparePipelines'
+      'materials' | 'lightingChannels' | 'preparePipelines'
     >();
   });
 

@@ -22,6 +22,8 @@ const namedImports: Readonly<Record<string, ReadonlySet<string>>> = {
   render: new Set([
     'Materials',
     'Camera',
+    'CameraView',
+    'DynamicResolution',
     'MeshFilter',
     'MeshRenderer',
     'DirectionalLight',
@@ -30,6 +32,7 @@ const namedImports: Readonly<Record<string, ReadonlySet<string>>> = {
     'perspective',
     'orthographic',
     'ANTIALIAS_FXAA',
+    'ANTIALIAS_TAA',
     'SKYBOX_MODE_CUBEMAP',
     'SkyboxBackground',
     'Skylight',

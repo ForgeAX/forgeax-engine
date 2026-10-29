@@ -7,7 +7,6 @@ import { assembleAssetRuntime, assembleRuntimePacks } from '@forgeax/engine-app'
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { FixedTime, Time, World } from '@forgeax/engine-ecs';
 import { decodeCatalogWire, type RuntimeCatalogWire } from '@forgeax/engine-pack';
-import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { Context } from '@forgeax/engine-plugin';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
@@ -44,6 +43,23 @@ type EngineWorkspaceResolverPlugin = {
     importer?: string,
   ) => Promise<unknown>;
 };
+
+function assertDynamicGeometryMeshBudgetOverrides(source: string, budget: number): void {
+  const expression = source.slice(
+    source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
+    source.indexOf('const cpuProfileRequested ='),
+  );
+  for (const [queryString, expected] of [
+    ['', budget],
+    ['forgeax-dynamic-mesh-budget-bytes=512', 512],
+    ['forgeax-dynamic-mesh-budget-bytes=0', 0],
+  ] as const)
+    expect(
+      runInNewContext(`${expression}\ndynamicGeometryMeshBudgetBytes`, {
+        query: new URLSearchParams(queryString),
+      }),
+    ).toBe(expected);
+}
 
 function hasPluginNamed(plugins: readonly unknown[] | undefined, name: string): boolean {
   return (plugins ?? []).some(
@@ -156,6 +172,7 @@ describe('standalone host', () => {
         renderPipelines: [],
         computePipelines: [],
       };
+      const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: 'background' }] };
       const time = {
         fixedDeltaSeconds: 1 / 20,
         maxStepsPerUpdate: 2,
@@ -178,9 +195,13 @@ describe('standalone host', () => {
                   module: { specifier: './build.ts' },
                   config: {
                     dynamicGeometryMeshBudgetBytes: budget,
+                    assetBudgetBytes: budget * 16,
                     standardProfile,
                     pipelineLibrary,
+                    backgroundPipelineLibrary,
                     time,
+                    renderTaskYield: 'features',
+                    wechat: { maxRenderShortSide: 480 },
                   },
                 },
               },
@@ -191,17 +212,21 @@ describe('standalone host', () => {
           const config = await createViteConfig(facts.value, command);
           try {
             const source = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
-            const expression = source.slice(
-              source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
-              source.indexOf('const cpuProfileRequested ='),
-            );
+            // A WeChat quality profile must not change the browser/desktop host.
+            expect(source).not.toContain('maxRenderShortSide:');
+            // The page realm reads the catalog through its one installed source.
+            expect(source).not.toContain('configurePackIndex(');
+            assertDynamicGeometryMeshBudgetOverrides(source, budget);
+            // The project default selects cooperative draws; the query still overrides it.
+            const taskYield = source.match(/^const renderTaskYield = .*;$/m)?.[0];
+            expect(taskYield).toBeDefined();
             for (const [queryString, expected] of [
-              ['', budget],
-              ['forgeax-dynamic-mesh-budget-bytes=512', 512],
-              ['forgeax-dynamic-mesh-budget-bytes=0', 0],
+              ['', 'features'],
+              ['forgeax-render-task-yield=none', 'none'],
+              ['forgeax-render-task-yield=completion', 'completion'],
             ] as const)
               expect(
-                runInNewContext(`${expression}\ndynamicGeometryMeshBudgetBytes`, {
+                runInNewContext(`${taskYield}\nrenderTaskYield`, {
                   query: new URLSearchParams(queryString),
                 }),
               ).toBe(expected);
@@ -211,6 +236,15 @@ describe('standalone host', () => {
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
+            expect(
+              call.split(
+                '...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),',
+              ),
+            ).toHaveLength(3);
+            // Both placements receive the stub selected by ?forgeax-gpu-stub=1.
+            expect(call.split('...(gpuStub === undefined ? {} : { gpuStub }),')).toHaveLength(3);
+            // Both execution placements receive the admitted AssetRegistry content budget.
+            expect(call.split(`assetBudgetBytes: ${budget * 16},`)).toHaveLength(3);
             expect(call.split(`time: ${JSON.stringify(time)},`)).toHaveLength(3);
             const appCall = (
               await transformWithOxc(
@@ -232,6 +266,8 @@ describe('standalone host', () => {
                   animation: {},
                   dynamicGeometryMeshBudgetBytes: budget,
                   pipelineLibrary,
+                  backgroundPipelineLibrary,
+                  gpuStub: undefined,
                   executionWorkers: {},
                   programDeliveryChannel: 'test',
                   isolateVfxViewGraph: false,
@@ -285,6 +321,23 @@ describe('standalone host', () => {
             expect(source.indexOf('await fetch(pipelineLibraryUrl)')).toBeLessThan(
               source.indexOf('const result = await createApp('),
             );
+            // The background library is a separate asset whose fetch starts before
+            // the blocking startup fetch and never fails the App.
+            expect(
+              JSON.parse(
+                await readFile(
+                  resolve(config.root ?? '', 'background-pipeline-library.json'),
+                  'utf8',
+                ),
+              ),
+            ).toEqual(backgroundPipelineLibrary);
+            expect(source).toContain(
+              "import backgroundPipelineLibraryUrl from './background-pipeline-library.json?url'",
+            );
+            expect(source.indexOf('fetch(backgroundPipelineLibraryUrl)')).toBeLessThan(
+              source.indexOf('await fetch(pipelineLibraryUrl)'),
+            );
+            expect(source).toContain('.catch((cause) => {');
             // Execute the generated renderer-realm hook, including failure propagation.
             const bootstrap = await readFile(
               resolve(config.root ?? '', 'execution-bootstrap.ts'),
@@ -734,10 +787,29 @@ describe('standalone host', () => {
   });
 
   it('owns canonical project and build DDC roots', () => {
-    expect(devKitDdcRoots('/workspace/game')).toEqual({
-      buildCacheRoot: resolve('/workspace/game', '.forgeax/ddc/build-cache'),
-      projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
-    });
+    vi.stubEnv('FORGEAX_BUILD_CACHE_DIR', '');
+    try {
+      expect(devKitDdcRoots('/workspace/game')).toEqual({
+        buildCacheRoot: resolve('/workspace/game', '.forgeax/ddc/build-cache'),
+        projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
+        identityRoot: resolve('/workspace/game'),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('shares only the build cache when FORGEAX_BUILD_CACHE_DIR selects a machine root', () => {
+    vi.stubEnv('FORGEAX_BUILD_CACHE_DIR', '/machine/build-cache');
+    try {
+      expect(devKitDdcRoots('/workspace/game')).toEqual({
+        buildCacheRoot: resolve('/machine/build-cache'),
+        projectDdcRoot: resolve('/workspace/game', '.forgeax/ddc/v2'),
+        identityRoot: resolve('/workspace/game'),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('resolves Engine workspace packages for external projects without installed links', async () => {
@@ -779,65 +851,6 @@ describe('standalone host', () => {
       const guid = await resolver.resolveId.call(context, '@forgeax/engine-pack/guid', importer);
       expect(String(app)).toMatch(/packages[\\/]app[\\/]dist[\\/]index\.mjs$/);
       expect(String(guid)).toMatch(/packages[\\/]pack[\\/]dist[\\/]guid\.mjs$/);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('materializes only missing Engine builtin mesh descriptors for standalone projects', async () => {
-    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-builtins-'));
-    try {
-      await mkdir(resolve(root, 'assets'));
-      const cube = BUILTIN_MESH_ASSETS.find((asset) => asset.geometry === 'procedural-cube');
-      expect(cube).toBeDefined();
-      if (cube === undefined) return;
-      await Promise.all([
-        writeFile(
-          resolve(root, 'forge.json'),
-          `${JSON.stringify({
-            id: 'builtin-game',
-            name: 'Builtin Game',
-            schemaVersion: '3.0.0',
-            roots: {},
-          })}\n`,
-        ),
-        writeFile(resolve(root, 'package.json'), '{"name":"builtin-game"}\n'),
-        writeFile(resolve(root, 'main.ts'), 'export default () => undefined;\n'),
-        writeFile(
-          resolve(root, 'assets/authored.pack.json'),
-          `${JSON.stringify({
-            schemaVersion: '2.0.0',
-            kind: 'internal-text-package',
-            assets: [
-              {
-                guid: cube.guid,
-                kind: 'mesh',
-                payload: { geometry: 'procedural-cube' },
-                refs: [],
-                artifacts: {},
-              },
-            ],
-          })}\n`,
-        ),
-      ]);
-      const facts = await readProjectFacts(root);
-      expect(facts.ok).toBe(true);
-      if (!facts.ok) return;
-      await createViteConfig(facts.value, 'build');
-      const generated = JSON.parse(
-        await readFile(resolve(root, '.forgeax/generated/engine-builtins.pack.json'), 'utf8'),
-      ) as {
-        readonly assets: readonly {
-          readonly guid: string;
-          readonly payload: { readonly geometry: string };
-        }[];
-      };
-      const generatedGuids = generated.assets.map((asset) => asset.guid.toLowerCase());
-      expect(generatedGuids).not.toContain(cube.guid.toLowerCase());
-      expect(generatedGuids).toHaveLength(BUILTIN_MESH_ASSETS.length - 1);
-      expect(generated.assets.map((asset) => asset.payload.geometry)).toContain(
-        'procedural-sphere',
-      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -932,11 +945,6 @@ describe('standalone host', () => {
       const sources = await discoverPluginAssets(facts.value);
       await sources.sourceSnapshot.digest(dependency);
       const config = await createViteConfig(facts.value, 'serve', '/', { initialSources: sources });
-      // The Pack compiler can observe Engine builtins while preparing a real game.
-      // Use that same retained snapshot and its native observation method here.
-      await sources.sourceSnapshot.digest(
-        resolve(String(config.root), 'engine-builtins.pack.json'),
-      );
       const plugins = config.plugins as import('vite').Plugin[];
       const session = plugins.find(
         (plugin) => plugin.name === 'forgeax:project-session',
@@ -951,9 +959,6 @@ describe('standalone host', () => {
       const before = await readLiveProjectInputs(root, paths);
       await server.close();
       server = undefined;
-      await expect(
-        readFile(resolve(String(config.root), 'engine-builtins.pack.json')),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readLiveProjectInputs(root, paths)).toBe(before);
       await writeFile(dependency, 'export const value = 200;');
       expect(await readLiveProjectInputs(root, paths)).not.toBe(before);
@@ -1509,7 +1514,7 @@ describe('standalone host', () => {
     unbound.startup.destroy();
 
     page.startup.prepare();
-    expect(page.loadingStatus.textContent).toBe('Preparing scene…');
+    expect(page.loadingStatus.textContent).toBe('Waiting for the first frame');
     page.canvas.dispatch('forgeax:frame-submitted', {
       detail: { frameId: 2, deviceGeneration: 1, worldIdentity: 'session-a' },
     });
@@ -1523,17 +1528,18 @@ describe('standalone host', () => {
     });
     expect(page.loading.attributes.get('aria-hidden')).toBe('true');
     expect(page.loading.attributes.get('data-fading')).toBe('true');
-    expect(inputStates.at(-1)).toBe(false);
+    expect(inputStates.at(-1)).toBe(true);
     const staleFade = page.history.find((entry) => entry.delay === 150)?.callback;
     expect(staleFade).toBeDefined();
 
     page.startup.bindSession('session-b');
     expect(page.loading.style.display).toBe('grid');
     expect(page.loading.attributes.get('aria-hidden')).toBe('false');
+    expect(inputStates.at(-1)).toBe(false);
     staleFade?.();
     expect(page.loading.style.display).toBe('grid');
     page.startup.prepare();
-    expect(page.loadingStatus.textContent).toBe('Preparing scene…');
+    expect(page.loadingStatus.textContent).toBe('Waiting for the first frame');
 
     page.canvas.dispatch('forgeax:frame-submitted', {
       detail: { frameId: 3, deviceGeneration: 2, worldIdentity: 'session-b' },
@@ -1703,7 +1709,7 @@ describe('standalone host', () => {
     expect(play.loading.style.display).not.toBe('none');
     play.startup.bindSession('play-world');
     play.startup.prepare();
-    expect(play.loadingStatus.textContent).toBe('Preparing scene…');
+    expect(play.loadingStatus.textContent).toBe('Waiting for the first frame');
     play.canvas.dispatch('forgeax:frame-submitted', {
       detail: { worldIdentity: 'play-world', deviceGeneration: 0, frameId: 1 },
     });
@@ -1799,28 +1805,86 @@ describe('standalone host', () => {
         storageBuffer: false,
       };
       const rendererLimits = { maxStorageBuffersPerShaderStage: 0 };
-      const inspected = runInNewContext(
-        `${generated.slice(inspectionStart, inspectionEnd)}\nexposeGameInspection(app); globalThis.__forgeaxGameInspection.renderer();`,
-        {
-          app: {
-            renderer: {
-              inspect: () => ({
-                state: 'alive',
-                frame: rendererFrame,
-                capabilities: rendererCapabilities,
-                limits: rendererLimits,
-              }),
-            },
-            execution: { report: () => executionReport },
-            lastError,
+      const errorListeners: Array<(error: unknown) => void> = [];
+      const consoleWarnings: string[] = [];
+      const inspectionContext = {
+        app: {
+          renderer: {
+            inspect: () => ({
+              state: 'alive',
+              frame: rendererFrame,
+              capabilities: rendererCapabilities,
+              limits: rendererLimits,
+            }),
+          },
+          execution: { report: () => executionReport },
+          lastError,
+          onError: (listener: (error: unknown) => void) => {
+            errorListeners.push(listener);
+            return () => undefined;
           },
         },
+        console: { warn: (message: string) => consoleWarnings.push(message) },
+      };
+      const inspectionSource = generated
+        .slice(inspectionStart, inspectionEnd)
+        .replaceAll('import.meta.env.DEV', 'true');
+      const inspected = runInNewContext(
+        `${inspectionSource}\nexposeGameInspection(app); globalThis.__forgeaxGameInspection.renderer();`,
+        inspectionContext,
       );
       expect(inspected.frame).toBe(rendererFrame);
       expect(inspected.capabilities).toBe(rendererCapabilities);
       expect(inspected.limits).toBe(rendererLimits);
       expect(inspected.execution).toBe(executionReport);
       expect(inspected.lastError).toBe(lastError);
+      expect(inspected.rendererError).toBeNull();
+
+      // Renderer errors: the latest one with its frame and count, logged once per
+      // distinct error, named by its innermost coded cause. A Render Worker error
+      // arrives inside app-system-update-failed and a GPU error inside
+      // device-operation-failed; App-level errors are not renderer errors.
+      const submitHint =
+        'GPU validation: [Buffer "gpu-scene-material-table"] used in submit while destroyed';
+      const submitFailed = { code: 'queue-submit-failed', expected: 'valid', hint: submitHint };
+      const fire = (error: unknown) => {
+        for (const listener of errorListeners) listener(error);
+      };
+      fire({ code: 'app-pointer-lock-failed', hint: 'refused' });
+      fire({ code: 'app-system-update-failed', detail: { cause: new Error('game system') } });
+      expect(
+        runInNewContext('__forgeaxGameInspection.renderer().rendererError', inspectionContext),
+      ).toBeNull();
+      fire(submitFailed);
+      executionReport.frame.completed = 5;
+      fire({
+        code: 'app-system-update-failed',
+        detail: {
+          cause: {
+            code: 'device-operation-failed',
+            hint: 'inspect renderer state and the structured cause',
+            detail: { operation: 'renderer-event', cause: submitFailed },
+          },
+        },
+      });
+      executionReport.frame.completed = 9;
+      expect(
+        JSON.parse(
+          runInNewContext(
+            'JSON.stringify(__forgeaxGameInspection.renderer().rendererError)',
+            inspectionContext,
+          ),
+        ),
+      ).toEqual({
+        code: 'queue-submit-failed',
+        message: submitHint,
+        frame: 5,
+        framesAgo: 4,
+        count: 2,
+      });
+      expect(consoleWarnings).toEqual([
+        `[forgeax] renderer error queue-submit-failed at frame 2: ${submitHint} (logged once; __forgeaxGameInspection.renderer().rendererError counts repeats)`,
+      ]);
       const installLine = generated
         .split('\n')
         .find((line) => line.includes('exposeGameInspection(app as App)'));

@@ -86,5 +86,3 @@ export type ReplicationPacket =
   | ReplicationAckPacket
   | ReplicationApplicationPacket
   | ReplicationRejectionPacket;
-
-export type ReplicationDataPacketKind = ReplicationDataPacket['kind'];

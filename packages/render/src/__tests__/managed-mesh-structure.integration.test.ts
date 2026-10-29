@@ -7,9 +7,9 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import { PersistentRenderScene } from '../scene/render-scene';
@@ -51,8 +51,12 @@ it.each([
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       upserts += packet.upserts.length;
-      const result = scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const result = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return result;
     }
     return scene.extractComposition(
@@ -63,7 +67,7 @@ it.each([
         if (request === 'full') upserts += 1000;
         else if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) upserts += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           cull: 'none',
           renderables: request,
         });

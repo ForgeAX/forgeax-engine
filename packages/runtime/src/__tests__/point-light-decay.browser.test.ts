@@ -19,6 +19,7 @@ import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { collectWebGpuValidationErrors } from './webgpu-validation.fixture';
@@ -167,8 +168,8 @@ it.each([
         const packet =
           prepared === undefined
             ? undefined
-            : structuredClone(prepared.packet, {
-                transfer: renderPublicationTransfers(prepared.packet),
+            : structuredClone(prepared.message, {
+                transfer: renderPublicationTransfers(prepared.message),
               });
         prepared?.accept();
         try {
@@ -242,7 +243,7 @@ it.each([
           (pixels[32 * 64 + 31] ?? 0) +
           (pixels[32 * 64 + 32] ?? 0)) /
         4;
-      await save(`${mode}-${renderPath}-${frames}.rhitape`, tape.bytes);
+      await save(`${mode}-${renderPath}-${frames}.rhitape`, compactTape(tape).bytes);
       return {
         luminance,
         history,

@@ -169,7 +169,7 @@ it('prepares only authored ShadowCaster passes through validated module readines
   f.acceptMaterials();
   Object.assign(f.entry.source, { pipelinePreparation: [f.authoredPass, shadow] });
   const lookup = vi.fn().mockReturnValue(null);
-  Object.assign(f.c.runtime, { getMaterialShaderPipeline: lookup });
+  Object.assign(f.c.runtime, { getMaterialShaderPipelineEntry: lookup });
   try {
     prepareShadowMaterialPipelines(f.c, true, () => false);
     expect(lookup).toHaveBeenCalledTimes(1);
@@ -178,7 +178,7 @@ it('prepares only authored ShadowCaster passes through validated module readines
     expect(lookup.mock.calls[0]?.[18]).toBe('vertex');
     expect(f.c.frameState.pipelinePreparationPending).toBe(true);
     f.c.frameState.pipelinePreparationPending = false;
-    lookup.mockReturnValue(f.pipeline);
+    lookup.mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
     prepareShadowMaterialPipelines(f.c, true, () => false);
     expect(f.c.frameState.pipelinePreparationPending).toBe(false);
     expect(f.entry.source.authorVisible).toBe(false);

@@ -10,8 +10,6 @@ export const TONEMAP_SHADER_MODE = {
   reinhard: 7,
 } as const;
 
-export type TonemapShaderMode = (typeof TONEMAP_SHADER_MODE)[keyof typeof TONEMAP_SHADER_MODE];
-
 /**
  * Byte layout of the built-in `TonemapParams` uniform (tonemap.wgsl). The
  * extract provider packs exposure/whitePoint/mode, the Output Transform pass

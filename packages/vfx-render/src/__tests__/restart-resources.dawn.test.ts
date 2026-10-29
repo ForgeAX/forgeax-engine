@@ -17,8 +17,8 @@ import { expect, it } from 'vitest';
 import type { RenderFeatureExecutionFrame } from '../../../render/src/features/frame-execution';
 import type { RenderFeaturePlanExecutionPass } from '../../../render/src/features/host';
 import {
-  freezeRenderFeaturePlan,
   renderFeaturePlanSignature,
+  validateRenderFeaturePlan,
 } from '../../../render/src/features/plan';
 import {
   createRenderFeatureGpuWorkOwner,
@@ -132,8 +132,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     emitter: required(references.get(program)),
     programFingerprint: required(references.get(program)).fingerprint,
     reset: phaseTick === 0,
-    fixedDelta: 1 / 60,
-    initialFixedDelta: 1 / 60,
+    delta: 1 / 60,
+    initialDelta: 1 / 60,
+    elapsed: (phaseTick + 1) / 60,
     phaseTick,
     tick: phaseTick,
     seed,
@@ -230,7 +231,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       )
       .unwrap();
     const work = required(plan.work.find((work) => work.scope === 'frame'));
-    freezeRenderFeaturePlan(current.identity, work, []).unwrap();
+    validateRenderFeaturePlan(current.identity, work, []).unwrap();
     const session = gpu.beginFeature(current.identity, generation);
     const programs = new Map<string, RenderFeatureGpuProgramRef>();
     const buffers = new Map<
@@ -381,20 +382,31 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     try {
       const encoder = device.createCommandEncoder().unwrap();
       let begins = 0;
-      const encodedBindings: unknown[] = [];
+      const encodedDispatchBindings: unknown[] = [];
       const observed = new Proxy(encoder, {
         get(target, key) {
           if (key === 'beginComputePass')
             return (...args: Parameters<typeof encoder.beginComputePass>) => {
               begins++;
               const pass = target.beginComputePass(...args);
+              let boundGroup: unknown;
               return new Proxy(pass, {
                 get(target, key) {
                   if (key === 'setBindGroup')
                     return (...args: Parameters<typeof target.setBindGroup>) => {
                       if (fail) throw new Error('Reject after encoded reset');
-                      encodedBindings.push(args[1]);
+                      boundGroup = args[1];
                       return target.setBindGroup(...args);
+                    };
+                  if (key === 'dispatchWorkgroups')
+                    return (...args: Parameters<typeof target.dispatchWorkgroups>) => {
+                      encodedDispatchBindings.push(boundGroup);
+                      return target.dispatchWorkgroups(...args);
+                    };
+                  if (key === 'dispatchWorkgroupsIndirect')
+                    return (...args: Parameters<typeof target.dispatchWorkgroupsIndirect>) => {
+                      encodedDispatchBindings.push(boundGroup);
+                      return target.dispatchWorkgroupsIndirect(...args);
                     };
                   const value = Reflect.get(target, key);
                   return typeof value === 'function' ? value.bind(target) : value;
@@ -416,7 +428,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         return begins;
       }
       result.unwrap();
-      expect(encodedBindings).toEqual(
+      expect(encodedDispatchBindings).toEqual(
         prepared.passes
           .filter((pass) => pass.enabled !== false)
           .flatMap(

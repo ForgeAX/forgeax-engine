@@ -68,8 +68,8 @@ export interface AudioState {
     readonly pendingReads: number;
     readonly underruns: number;
   };
-  readonly contextState: 'running' | 'suspended' | 'closed';
-  readonly activeSourceCount: number;
+  readonly contextState: 'running' | 'suspended' | 'closed' | 'unavailable';
+  readonly activeSourceCount: number | null;
   readonly lastError: AudioError | null;
 }
 
@@ -106,6 +106,6 @@ export interface AudioBackend {
   setSourcePose(entityId: number, pose: AudioSourcePose): void;
   setListenerPose(pose: AudioListenerPose): void;
   getState(): AudioState;
-  getActiveSourceCount(): number;
+  getActiveSourceCount(): number | null;
   destroy(): void;
 }

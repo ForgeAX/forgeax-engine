@@ -1,4 +1,5 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 // feat-20260623 M2 w11+w12 — SceneInstance to SceneAsset POD collection + pack
 // serialization (plan-strategy D-1: pure-data collector).
 //
@@ -284,11 +285,16 @@ function collectKeyedSceneAsset(
       for (const row of queryResult.value) {
         const stateResult = worldGetSceneInstanceState(world, row.entity);
         if (!stateResult.ok) continue;
-        const rowValue = row.get(SceneInstance) as unknown as { mapping: ArrayLike<number> };
+        const mapping = readRenderArrayView(
+          world,
+          row.entity,
+          SceneInstance,
+          'mapping',
+        ) as Uint32Array;
         stateInfos.push({
           root: row.entity as number,
           state: stateResult.value as unknown as CollectorSceneState,
-          mapping: Uint32Array.from(rowValue.mapping as ArrayLike<number>),
+          mapping: mapping,
         });
       }
     }
@@ -801,6 +807,628 @@ export function serializeSceneAssetToPack(
 // rootsToSceneAsset — with M2 mount-collapse
 // ═══════════════════════════════════════════════════════════════════════════════
 
+type MemberOrigin = { anchorRaw: number; memberLocalId: number };
+type NonRootAnchor = { entityRaw: number; sourceGuid: string; totalSlots: number };
+type CollectError = SceneCollectEntityRefOutOfClosureError | SceneCollectAssetGuidUnresolvedError;
+
+/** The BFS closure of the roots and how each entity in it is classified. */
+interface CollectClosure {
+  readonly visited: Set<number>;
+  readonly rootRawSet: ReadonlySet<number>;
+  /** Surviving SceneInstance anchors; inner anchors are folded away. */
+  readonly anchorEntities: Set<number>;
+  /** Every anchor in the closure, including folded ones, by raw handle. */
+  readonly anchorsSorted: readonly number[];
+  /** Instance members, keyed by raw handle; its key set is the member set. */
+  readonly memberOrigin: Map<number, MemberOrigin>;
+  readonly childOf: EcsComponent | undefined;
+}
+
+/** Owned/mount slot layout of the collected scene. */
+interface CollectLayout {
+  readonly ownedEntities: readonly number[];
+  readonly entityToLocalId: ReadonlyMap<number, number>;
+  /** anchorRaw -> carrierRaw for absorbed mount carriers. */
+  readonly carrierForAnchor: ReadonlyMap<number, number>;
+  /** carrierRaw -> anchorRaw for absorbed mount carriers. */
+  readonly carrierToAnchor: ReadonlyMap<number, number>;
+  /** Mount i belongs to nonRootAnchors[i]; its localId is ownedCount + i. */
+  readonly mountIndexByAnchor: ReadonlyMap<number, number>;
+}
+
+function parentRawOf(
+  world: World,
+  childOf: EcsComponent | undefined,
+  raw: number,
+): number | undefined {
+  if (childOf === undefined) return undefined;
+  const parent = world.get(raw as EntityHandle, childOf as EcsComponent<string>);
+  return parent.ok
+    ? ((parent.value as Record<string, unknown>).parent as number | undefined)
+    : undefined;
+}
+
+function claimMember(
+  closure: CollectClosure,
+  memberRaw: number,
+  anchorRaw: number,
+  memberLocalId: number,
+): void {
+  const { visited, anchorEntities, memberOrigin } = closure;
+  if (visited.has(memberRaw) && !anchorEntities.has(memberRaw) && !memberOrigin.has(memberRaw)) {
+    memberOrigin.set(memberRaw, { anchorRaw, memberLocalId });
+  }
+}
+
+// Classify members for non-root anchors; the key set is the member set.
+function classifyAnchorMembers(world: World, closure: CollectClosure): void {
+  for (const er of closure.anchorsSorted) {
+    if (closure.rootRawSet.has(er)) continue; // root anchor: don't classify members
+    const sr = worldGetSceneInstanceState(world, er as EntityHandle);
+    if (!sr.ok) continue;
+    const retainedState = sr.value as unknown as CollectorSceneState;
+    for (const [me, lid] of retainedState.entityToLocalId) {
+      claimMember(closure, me as number, er, lid as unknown as number);
+    }
+    // Mount carriers are structural and therefore absent from
+    // `entityToLocalId`, but the parent instance still exposes them through
+    // `bindings` and its keyed slot map. Include those slots so a nested
+    // instance is folded into its owning child scene rather than emitted as a
+    // second top-level instance.
+    for (const [key, member] of retainedState.bindings) {
+      const localId = [...retainedState.keyByLocalId.entries()].find(
+        ([, value]) => sceneEntityAddressKey(value) === key,
+      )?.[0];
+      if (localId !== undefined) claimMember(closure, member as number, er, localId);
+    }
+  }
+}
+
+// A nested synthetic SceneInstance root is structural too. Its carrier is
+// already claimed by the parent instance above; fold the anchor into that
+// same member origin before allocating parent mounts.
+function foldNestedAnchors(world: World, closure: CollectClosure): void {
+  const { anchorEntities, memberOrigin, rootRawSet } = closure;
+  for (const anchorRaw of [...anchorEntities]) {
+    if (rootRawSet.has(anchorRaw) || memberOrigin.has(anchorRaw)) continue;
+    const carrierRaw = parentRawOf(world, closure.childOf, anchorRaw);
+    const origin = carrierRaw === undefined ? undefined : memberOrigin.get(carrierRaw);
+    if (origin !== undefined) memberOrigin.set(anchorRaw, origin);
+  }
+  // Remove inner anchors (members of outer anchors).
+  for (const er of anchorEntities) {
+    if (memberOrigin.has(er) && !rootRawSet.has(er)) anchorEntities.delete(er);
+  }
+}
+
+/** The member slot of `mappedRaw` in the first surviving non-root anchor that maps it. */
+function survivingMemberOrigin(
+  world: World,
+  closure: CollectClosure,
+  mappedRaw: number,
+): MemberOrigin | undefined {
+  for (const anchor of closure.anchorEntities) {
+    if (closure.rootRawSet.has(anchor)) continue;
+    const instance = world.get(anchor as EntityHandle, SceneInstance);
+    if (!instance.ok) continue;
+    const slot = Array.from(instance.value.mapping).indexOf(mappedRaw);
+    if (slot < 0) continue;
+    return { anchorRaw: anchor, memberLocalId: slot };
+  }
+  return undefined;
+}
+
+// Inner instance members must use the surviving outer mount's slot window.
+// Their original anchor has just been folded away.
+function rebaseFoldedMembers(world: World, closure: CollectClosure): void {
+  for (const [raw, origin] of closure.memberOrigin) {
+    if (closure.anchorEntities.has(origin.anchorRaw)) continue;
+    const original = world.get(origin.anchorRaw as EntityHandle, SceneInstance);
+    const mappedRaw = original.ok ? original.value.mapping[origin.memberLocalId] : raw;
+    if (mappedRaw === undefined) continue;
+    const rebased = survivingMemberOrigin(world, closure, mappedRaw);
+    if (rebased !== undefined) closure.memberOrigin.set(raw, rebased);
+  }
+}
+
+// ── Steps 1 and 1.5: BFS closure, then mount-collapse anchor classification ──
+function classifyCollectClosure(world: World, roots: readonly EntityHandle[]): CollectClosure {
+  const visited = new Set<number>();
+  for (const root of roots) collectSubtree(world, root, visited);
+  const rootRawSet = new Set<number>();
+  for (const r of roots) rootRawSet.add(r as number);
+  const anchorEntities = new Set<number>();
+  for (const er of visited) {
+    if (world.get(er as EntityHandle, SceneInstance).ok) anchorEntities.add(er);
+  }
+  // D-7 (feat-20260707) ordering robustness: the first-wins loops below
+  // (memberEntities claim + carrier absorption) resolve ties by iteration
+  // order. Iterating the anchorEntities Set directly ties the outcome to BFS
+  // insertion order — deterministic within one run but fragile to Node/VM
+  // changes. Sort by raw handle so "which anchor claims a shared member / a
+  // shared carrier" is a deterministic function of the SceneAsset (§3.2
+  // fixed-point premise: collect output must be a pure function of the graph).
+  const anchorsSorted = [...anchorEntities].sort((a, b) => a - b);
+  const closure: CollectClosure = {
+    visited,
+    rootRawSet,
+    anchorEntities,
+    anchorsSorted,
+    memberOrigin: new Map(),
+    childOf: world.components.resolve('ChildOf'),
+  };
+  classifyAnchorMembers(world, closure);
+  foldNestedAnchors(world, closure);
+  rebaseFoldedMembers(world, closure);
+  return closure;
+}
+
+const MOUNT_CARRIER_COMPONENTS = new Set([
+  'Transform',
+  'GlobalTransform',
+  'Children',
+  'ChildOf',
+  'Entity',
+]);
+
+/** Whether `p` carries only the structural components `_spawnMountEntity` leaves. */
+function hasOnlyCarrierComponents(world: World, p: number): boolean {
+  for (const [compName, compToken] of world.components.entries()) {
+    if (MOUNT_CARRIER_COMPONENTS.has(compName)) continue;
+    if (world.get(p as EntityHandle, compToken as EcsComponent<string>).ok) return false;
+  }
+  return true;
+}
+
+/** Whether `anchorRaw` is the sole visited child of `p` (true when `p` lists no children). */
+function hasSoleVisitedChild(
+  world: World,
+  closure: CollectClosure,
+  p: number,
+  anchorRaw: number,
+): boolean {
+  const childrenTk = world.components.resolve('Children');
+  if (!childrenTk) return true;
+  const cr = world.get(p as EntityHandle, childrenTk as EcsComponent<string>);
+  if (!cr.ok) return true;
+  const kids = (cr.value as { entities?: ArrayLike<number> }).entities;
+  if (!kids) return true;
+  let visitedKidCount = 0;
+  let sawAnchor = false;
+  for (let i = 0; i < kids.length; i++) {
+    const k = kids[i] as number;
+    if (!closure.visited.has(k)) continue;
+    visitedKidCount += 1;
+    if (k === anchorRaw) sawAnchor = true;
+  }
+  return sawAnchor && visitedKidCount === 1;
+}
+
+function isMountCarrier(
+  world: World,
+  closure: CollectClosure,
+  p: number,
+  anchorRaw: number,
+): boolean {
+  if (closure.rootRawSet.has(p)) return false;
+  if (closure.anchorEntities.has(p) || closure.memberOrigin.has(p)) return false;
+  if (!closure.visited.has(p)) return false;
+  return hasOnlyCarrierComponents(world, p) && hasSoleVisitedChild(world, closure, p, anchorRaw);
+}
+
+// ── Step 1.75: Mount-carrier absorption ──
+//
+// worldInstantiateScene materialises each mounts[] entry as a plain "mount
+// entity" (`_spawnMountEntity` output: mount.components + a default Transform,
+// but NO SceneInstance) whose child is the mounted scene's synthetic root (the
+// real anchor, which DOES carry SceneInstance). So a `mounts[{parent: W}]`
+// whose parent W is an OWNED entity comes back on reload as the live chain
+//     W (owned) -> carrier (plain mount entity) -> anchor (SceneInstance).
+// The carrier IS the re-materialised mount slot. If collect keeps it as an
+// owned entity (it has no SceneInstance, so Step 2 would), the next serialize→
+// reload inserts ANOTHER carrier under it, growing one nameless ghost node per
+// save→reload cycle — unbounded (the editor "Add to Scene → save → reopen →
+// #N" regression). Existing pure-mount round-trips don't hit this because they
+// use `mount.parent === undefined` (mount attaches to the synthetic root,
+// which is stripped, so no owned carrier survives).
+//
+// Fix: recognise a carrier and fold it back into its mount. A carrier is the
+// ChildOf-parent P of a non-root anchor A where P is a pure mount slot: not a
+// root, not itself an anchor/member, carries no authored identity (only the
+// structural Transform/Children/ChildOf/Entity that _spawnMountEntity leaves),
+// and its sole visited child is A. The mount for A then takes P's slot:
+// mount.parent = P's ChildOf parent, and any ref to P resolves to the mount.
+function absorbMountCarriers(
+  world: World,
+  closure: CollectClosure,
+): { carrierForAnchor: Map<number, number>; carrierToAnchor: Map<number, number> } {
+  const carrierForAnchor = new Map<number, number>();
+  const carrierToAnchor = new Map<number, number>();
+  // Deterministic order (D-7): a carrier shared by two anchors is claimed by
+  // the lowest-handle anchor regardless of Set iteration order.
+  for (const anchorRaw of closure.anchorsSorted) {
+    if (!closure.anchorEntities.has(anchorRaw)) continue; // pruned inner anchor
+    if (closure.rootRawSet.has(anchorRaw)) continue;
+    const pRaw = parentRawOf(world, closure.childOf, anchorRaw);
+    if (pRaw === undefined) continue;
+    if (!carrierToAnchor.has(pRaw) && isMountCarrier(world, closure, pRaw, anchorRaw)) {
+      carrierForAnchor.set(anchorRaw, pRaw);
+      carrierToAnchor.set(pRaw, anchorRaw);
+    }
+  }
+  return { carrierForAnchor, carrierToAnchor };
+}
+
+// ── Step 2: Filter owned ──
+function ownedEntitiesOf(
+  orderedEntities: readonly number[],
+  closure: CollectClosure,
+  carrierToAnchor: ReadonlyMap<number, number>,
+): number[] {
+  const ownedEntities: number[] = [];
+  for (const er of orderedEntities) {
+    if (carrierToAnchor.has(er)) continue; // absorbed into its mount
+    // A root SceneInstance is the transient synthetic anchor returned by
+    // instantiate(). Its mapped members are authored entities; the anchor
+    // itself has no durable declaration and must not be minted as `entity-0`
+    // during collect, otherwise each collect/reload cycle adds another root.
+    if (closure.rootRawSet.has(er) && closure.anchorEntities.has(er)) continue;
+    if (!closure.anchorEntities.has(er) && !closure.memberOrigin.has(er)) {
+      ownedEntities.push(er);
+    }
+  }
+  return ownedEntities;
+}
+
+function resolveNonRootAnchor(
+  registry: SceneAssetGuidLookup,
+  world: World,
+  er: number,
+): Result<NonRootAnchor, SceneCollectAssetGuidUnresolvedError> {
+  const sh = worldGetSceneAssetForInstance(world, er as EntityHandle);
+  if (!sh.ok)
+    return err(
+      new SceneCollectAssetGuidUnresolvedError(
+        'SceneInstance.source',
+        sh.error as unknown as number,
+      ),
+    );
+  const pr = runtimeAssets(world.assets).resolveAsset<SceneAsset>(
+    sh.value as unknown as Handle<string, 'shared'>,
+  );
+  if (!pr.ok)
+    return err(
+      new SceneCollectAssetGuidUnresolvedError(
+        'SceneInstance.source',
+        sh.value as unknown as number,
+      ),
+    );
+  const g = registry.guidOf(sh.value);
+  if (g === undefined)
+    return err(
+      new SceneCollectAssetGuidUnresolvedError(
+        'SceneInstance.source',
+        sh.value as unknown as number,
+      ),
+    );
+  const sr = worldGetSceneInstanceState(world, er as EntityHandle);
+  if (!sr.ok) return err(new SceneCollectAssetGuidUnresolvedError('SceneInstance.source', 'state'));
+  return ok({ entityRaw: er, sourceGuid: g, totalSlots: sr.value.totalSlots });
+}
+
+// Build non-root anchor info + resolve GUIDs, sorted by BFS order.
+function resolveNonRootAnchors(
+  registry: SceneAssetGuidLookup,
+  world: World,
+  closure: CollectClosure,
+  orderedEntities: readonly number[],
+): Result<NonRootAnchor[], SceneCollectAssetGuidUnresolvedError> {
+  const nonRootAnchors: NonRootAnchor[] = [];
+  for (const er of closure.anchorEntities) {
+    if (closure.rootRawSet.has(er)) continue;
+    const anchor = resolveNonRootAnchor(registry, world, er);
+    if (!anchor.ok) return anchor;
+    nonRootAnchors.push(anchor.value);
+  }
+  const bfsIdx = new Map<number, number>();
+  for (let i = 0; i < orderedEntities.length; i++) {
+    if (orderedEntities[i] !== undefined) bfsIdx.set(orderedEntities[i] as number, i);
+  }
+  nonRootAnchors.sort((a, b) => (bfsIdx.get(a.entityRaw) ?? 0) - (bfsIdx.get(b.entityRaw) ?? 0));
+  return ok(nonRootAnchors);
+}
+
+function mountParentLocalId(
+  world: World,
+  closure: CollectClosure,
+  layout: CollectLayout,
+  anchorRaw: number,
+): number | undefined {
+  const carrierRaw = layout.carrierForAnchor.get(anchorRaw);
+  const pRaw = parentRawOf(world, closure.childOf, carrierRaw ?? anchorRaw);
+  if (pRaw === undefined) return undefined;
+  const owned = layout.entityToLocalId.get(pRaw);
+  if (owned !== undefined) return owned;
+  const mo = closure.memberOrigin.get(pRaw);
+  const ai = mo === undefined ? undefined : layout.mountIndexByAnchor.get(mo.anchorRaw);
+  return ai === undefined ? undefined : layout.ownedEntities.length + ai;
+}
+
+function carrierMountComponents(
+  world: World,
+  carrierRaw: number | undefined,
+): SceneInstanceMount['components'] | undefined {
+  const transformTk = world.components.resolve('Transform');
+  if (carrierRaw === undefined || !transformTk) return undefined;
+  const tr = world.get(carrierRaw as EntityHandle, transformTk as EcsComponent<string>);
+  if (!tr.ok) return undefined;
+  return {
+    Transform: Object.fromEntries(
+      Object.entries(tr.value as Record<string, unknown>).map(([key, value]) => [
+        key,
+        _isArrayLike(value) ? _normalizeArray(value) : value,
+      ]),
+    ),
+  } as SceneInstanceMount['components'];
+}
+
+// ── M5 (w20 + w21): fold runtime-authored overrides into this mount ──
+// foldMountOverrides emits child-namespace localIds in the LIVE handle
+// domain; rebase each into the parent namespace (memberFirst + childLocalId)
+// and reverse-lookup shared-field handles to GUID strings (two-state
+// NULL-sentinel). Unresolvable handle -> SceneCollectAssetGuidUnresolvedError
+// (D-2 fail-fast, no silent drop).
+function rebasedMountOverrides(
+  world: World,
+  registry: SceneAssetGuidLookup,
+  anchorRaw: number,
+  memberFirst: number,
+): Result<MountOverride[] | undefined, SceneCollectAssetGuidUnresolvedError> {
+  const foldStateRes = worldGetSceneInstanceState(world, anchorRaw as EntityHandle);
+  if (!foldStateRes.ok) return ok(undefined);
+  const rawOverrides = foldMountOverrides(world, foldStateRes.value);
+  if (rawOverrides.length === 0) return ok(undefined);
+  const mountOverrides: MountOverride[] = [];
+  for (const ov of rawOverrides) {
+    const convRes = _serializeOverrideValueHandles(world, registry, ov);
+    if (!convRes.ok) return convRes;
+    mountOverrides.push({
+      ...ov,
+      localId: (memberFirst + (ov.localId as unknown as number)) as LocalEntityId,
+      value: convRes.value,
+    });
+  }
+  return ok(mountOverrides);
+}
+
+// ── Step 3: Allocate mount windows ──
+function allocateMounts(
+  world: World,
+  registry: SceneAssetGuidLookup,
+  closure: CollectClosure,
+  layout: CollectLayout,
+  nonRootAnchors: readonly NonRootAnchor[],
+): Result<SceneInstanceMount[], SceneCollectAssetGuidUnresolvedError> {
+  const ownedCount = layout.ownedEntities.length;
+  const outMounts: SceneInstanceMount[] = [];
+  let nextMF = ownedCount + nonRootAnchors.length;
+  for (const a of nonRootAnchors) {
+    // When a mount carrier was absorbed (Step 1.75), the mount takes the
+    // carrier's slot: resolve the ChildOf parent from the CARRIER (the anchor's
+    // own parent IS the carrier, which no longer exists as an owned entity), and
+    // carry the carrier's Transform as mount.components so placement round-trips.
+    const mp = mountParentLocalId(world, closure, layout, a.entityRaw);
+    const mountComponents = carrierMountComponents(world, layout.carrierForAnchor.get(a.entityRaw));
+    const mountOverrides = rebasedMountOverrides(world, registry, a.entityRaw, nextMF);
+    if (!mountOverrides.ok) return mountOverrides;
+    const mount: SceneInstanceMount = {
+      localId: (ownedCount + outMounts.length) as LocalEntityId,
+      source: a.sourceGuid,
+      memberFirst: nextMF as LocalEntityId,
+      memberCount: a.totalSlots,
+      ...(mp !== undefined ? { parent: mp as LocalEntityId } : {}),
+      ...(mountComponents !== undefined ? { components: mountComponents } : {}),
+      ...(mountOverrides.value !== undefined && mountOverrides.value.length > 0
+        ? { overrides: mountOverrides.value }
+        : {}),
+    };
+    outMounts.push(mount);
+    nextMF += a.totalSlots;
+  }
+  return ok(outMounts);
+}
+
+/** Collected localId of a live entity reference, or undefined when it leaves the closure. */
+function resolveCollectedLocalId(
+  closure: CollectClosure,
+  layout: CollectLayout,
+  outMounts: readonly SceneInstanceMount[],
+  t: number,
+): number | undefined {
+  const ol = layout.entityToLocalId.get(t);
+  if (ol !== undefined) return ol;
+  const ownedCount = layout.ownedEntities.length;
+  // An absorbed mount carrier resolves to its mount's localId (the mount took
+  // the carrier's slot in Step 1.75), so refs to the carrier — e.g. the
+  // wrapper's Children list — point at the mount rather than dangle.
+  const mountIndex = layout.mountIndexByAnchor.get(layout.carrierToAnchor.get(t) ?? t);
+  if (mountIndex !== undefined) return ownedCount + mountIndex;
+  const mo = closure.memberOrigin.get(t);
+  const owner = mo === undefined ? undefined : layout.mountIndexByAnchor.get(mo.anchorRaw);
+  const ownerMount = owner === undefined ? undefined : outMounts[owner];
+  return mo === undefined || ownerMount === undefined
+    ? undefined
+    : (ownerMount.memberFirst as number) + mo.memberLocalId;
+}
+
+/** Shared state of the Step 4 row builder for one collect call. */
+interface RowCollector {
+  readonly world: World;
+  readonly registry: SceneAssetGuidLookup;
+  readonly closure: CollectClosure;
+  readonly layout: CollectLayout;
+  readonly outMounts: readonly SceneInstanceMount[];
+}
+
+function remapEntityArrayField(
+  rows: RowCollector,
+  entityRaw: number,
+  fieldName: string,
+  rawValue: unknown,
+): Result<number[], SceneCollectEntityRefOutOfClosureError> {
+  const arr = _isArrayLike(rawValue) ? _normalizeArray(rawValue) : (rawValue as unknown[]);
+  const mapped: number[] = [];
+  for (const elem of arr) {
+    const lid2 = resolveCollectedLocalId(rows.closure, rows.layout, rows.outMounts, elem as number);
+    if (lid2 === undefined) {
+      return err(new SceneCollectEntityRefOutOfClosureError(entityRaw, fieldName, elem as number));
+    }
+    mapped.push(lid2);
+  }
+  return ok(mapped);
+}
+
+/** Remapped entity field value; `undefined` omits the field. */
+function remapEntityField(
+  rows: RowCollector,
+  entityRaw: number,
+  fieldName: string,
+  isArray: boolean,
+  rawValue: unknown,
+): Result<number | number[] | undefined, SceneCollectEntityRefOutOfClosureError> {
+  // The synthetic root anchor is transient and is intentionally omitted
+  // from the authored entity map. A member's implicit ChildOf edge to
+  // that anchor has no authored counterpart, so omit that one edge
+  // before the keyed remap instead of reporting a false out-of-closure
+  // reference.
+  if (
+    !isArray &&
+    typeof rawValue === 'number' &&
+    rows.closure.rootRawSet.has(rawValue) &&
+    rows.closure.anchorEntities.has(rawValue)
+  ) {
+    return ok(undefined);
+  }
+  // Entity / array<entity> field — use shared kernel for remap
+  if (isArray) return remapEntityArrayField(rows, entityRaw, fieldName, rawValue);
+  // A nullable entity field uses the ECS null sentinel and is omitted
+  // from the scene payload just like a null shared handle. It is not
+  // an out-of-closure reference.
+  if (rawValue === null) return ok(undefined);
+  const lid2 = resolveCollectedLocalId(
+    rows.closure,
+    rows.layout,
+    rows.outMounts,
+    rawValue as number,
+  );
+  if (lid2 === undefined) {
+    return err(
+      new SceneCollectEntityRefOutOfClosureError(entityRaw, fieldName, rawValue as number),
+    );
+  }
+  return ok(lid2);
+}
+
+/** Serialized plain or shared field value; `undefined` omits the field. */
+function serializeValueField(
+  rows: RowCollector,
+  fieldType: string | undefined,
+  fieldName: string,
+  rawValue: unknown,
+): Result<unknown, SceneCollectAssetGuidUnresolvedError> {
+  // Plain or shared<T> field. A shared field reverse-looks-up handle(s) to GUID(s) via the shared
+  // kernel (same two-state NULL-sentinel the M5 override serializer uses).
+  // scalar handle 0 -> undefined => omit the field (deserialize restores
+  // the slot-0 default; emitting 0 would be misread as refs index 0 by
+  // parseScenePayload HANDLE_FIELD_NAMES). array handle 0 -> positional 0
+  // kept (paired SoA alignment, e.g. AnimationPlayer.clips = [h,0,0,0]).
+  // AnimationPlayer.graph (asset<animation-graph> scalar, M4/w31) is
+  // handled generically here — no special case needed.
+  const normalized = _isArrayLike(rawValue) ? _normalizeArray(rawValue) : rawValue;
+  const sharedClass = classifyFieldSchema(fieldType);
+  // Plain value field — pass through.
+  if (sharedClass === undefined) return ok(normalized);
+  const conv = _serializeSharedFieldValue(
+    rows.world,
+    rows.registry,
+    sharedClass,
+    normalized,
+    fieldName,
+  );
+  if (!conv.ok) return conv;
+  if (sharedClass.scalar && conv.value === undefined) return ok(undefined); // NULL sentinel -> omit
+  return ok(conv.value);
+}
+
+/** Collected fields of one component row, or undefined when the row is skipped. */
+function collectComponentRow(
+  rows: RowCollector,
+  entityRaw: number,
+  compName: string,
+  comp: EcsComponent,
+): Result<Record<string, unknown> | undefined, CollectError> {
+  const collectProfile = SCENE_COLLECT_PROFILE;
+  const definition = componentDefinition(comp);
+  if (!collectProfile.includeComponent(compName, definition.policy.transient === true))
+    return ok(undefined);
+  if (rows.closure.rootRawSet.has(entityRaw) && compName === 'ChildOf') return ok(undefined);
+  const valRes = rows.world.get(entityRaw as EntityHandle, comp as EcsComponent<string>);
+  if (!valRes.ok) return ok(undefined);
+  const val = valRes.value as Record<string, unknown>;
+  const schema = componentSchema(comp);
+  const schemaKeys = Object.keys(schema);
+  // Empty-schema components are authored marker components, not absent
+  // state. Preserve their presence through scene-pack round-trips (for
+  // example AudioListener); transient markers have already been excluded
+  // above and therefore remain derived-only by declaration.
+  if (schemaKeys.length === 0) return ok({});
+  const fieldValues: Record<string, unknown> = {};
+  for (const fieldName of schemaKeys) {
+    const rawValue = val[fieldName];
+    if (rawValue === undefined) continue;
+    // Field-level transient skip (D-5): a field declared `transient: true`
+    // is derived/reconstructable and excluded from serialization, just as a
+    // transient component (L554) is. Generic — reads the reflection flag for
+    // any component/field; no hardcoded component or field name.
+    if (
+      !collectProfile.includeField(
+        compName,
+        fieldName,
+        definition.fields[fieldName]?.transient === true,
+      )
+    )
+      continue;
+    const entityKind = classifyEntityField(comp, fieldName);
+    const converted =
+      entityKind === null
+        ? serializeValueField(rows, schema[fieldName], fieldName, rawValue)
+        : remapEntityField(rows, entityRaw, fieldName, entityKind.isArray, rawValue);
+    if (!converted.ok) return converted;
+    if (converted.value === undefined) continue;
+    fieldValues[fieldName] = converted.value;
+  }
+  return ok(Object.keys(fieldValues).length > 0 ? fieldValues : undefined);
+}
+
+// ── Step 4: Build SceneEntity rows ──
+function collectOwnedRows(rows: RowCollector): Result<LegacyCollectedEntity[], CollectError> {
+  const registeredComps = rows.world.components.entries();
+  const ownedEntities = rows.layout.ownedEntities;
+  const legacyEntities: LegacyCollectedEntity[] = [];
+  for (let lid = 0; lid < ownedEntities.length; lid++) {
+    const entityRaw = ownedEntities[lid];
+    if (entityRaw === undefined) continue;
+    const components: Record<string, Record<string, unknown>> = {};
+    for (const [compName, comp] of registeredComps) {
+      const row = collectComponentRow(rows, entityRaw, compName, comp);
+      if (!row.ok) return row;
+      if (row.value !== undefined) components[compName] = row.value;
+    }
+    legacyEntities.push({ localId: lid, components });
+  }
+  return ok(legacyEntities);
+}
+
 /**
  * Collect a forest of entity subtrees into a self-contained SceneAsset.
  *
@@ -813,482 +1441,49 @@ export function rootsToSceneAsset(
   registry: SceneAssetGuidLookup,
   world: World,
   roots: EntityHandle[],
-): Result<
-  SceneAsset,
-  SceneCollectEntityRefOutOfClosureError | SceneCollectAssetGuidUnresolvedError
-> {
-  const collectProfile = SCENE_COLLECT_PROFILE;
-  // ── Step 1: BFS closure ──
-  const visited = new Set<number>();
-  for (const root of roots) collectSubtree(world, root, visited);
-  if (visited.size === 0) return ok({ kind: 'scene', entities: {} });
-
-  const rootRawSet = new Set<number>();
-  for (const r of roots) rootRawSet.add(r as number);
-
-  // ── Step 1.5: Mount-collapse — identify anchors ──
-  const anchorEntities = new Set<number>();
-  for (const er of visited) {
-    if (world.get(er as EntityHandle, SceneInstance).ok) anchorEntities.add(er);
-  }
-
-  // D-7 (feat-20260707) ordering robustness: the first-wins loops below
-  // (memberEntities claim + carrier absorption) resolve ties by iteration
-  // order. Iterating the anchorEntities Set directly ties the outcome to BFS
-  // insertion order — deterministic within one run but fragile to Node/VM
-  // changes. Sort by raw handle so "which anchor claims a shared member / a
-  // shared carrier" is a deterministic function of the SceneAsset (§3.2
-  // fixed-point premise: collect output must be a pure function of the graph).
-  const anchorsSorted = [...anchorEntities].sort((a, b) => a - b);
-
-  // Classify members for non-root anchors; the key set is the member set.
-  const memberOrigin = new Map<number, { anchorRaw: number; memberLocalId: number }>();
-  for (const er of anchorsSorted) {
-    if (rootRawSet.has(er)) continue; // root anchor: don't classify members
-    const sr = worldGetSceneInstanceState(world, er as EntityHandle);
-    if (!sr.ok) continue;
-    const retainedState = sr.value as unknown as CollectorSceneState;
-    for (const [me, lid] of retainedState.entityToLocalId) {
-      const mr = me as number;
-      if (visited.has(mr) && !anchorEntities.has(mr) && !memberOrigin.has(mr)) {
-        memberOrigin.set(mr, { anchorRaw: er, memberLocalId: lid as unknown as number });
-      }
-    }
-    // Mount carriers are structural and therefore absent from
-    // `entityToLocalId`, but the parent instance still exposes them through
-    // `bindings` and its keyed slot map. Include those slots so a nested
-    // instance is folded into its owning child scene rather than emitted as a
-    // second top-level instance.
-    for (const [key, member] of retainedState.bindings) {
-      const mr = member as number;
-      const localId = [...retainedState.keyByLocalId.entries()].find(
-        ([, value]) => sceneEntityAddressKey(value) === key,
-      )?.[0];
-      if (
-        localId !== undefined &&
-        visited.has(mr) &&
-        !anchorEntities.has(mr) &&
-        !memberOrigin.has(mr)
-      ) {
-        memberOrigin.set(mr, { anchorRaw: er, memberLocalId: localId });
-      }
-    }
-  }
-
-  // A nested synthetic SceneInstance root is structural too. Its carrier is
-  // already claimed by the parent instance above; fold the anchor into that
-  // same member origin before allocating parent mounts.
-  const childOf = world.components.resolve('ChildOf');
-  const parentRawOf = (raw: number): number | undefined => {
-    if (childOf === undefined) return undefined;
-    const parent = world.get(raw as EntityHandle, childOf as EcsComponent<string>);
-    return parent.ok
-      ? ((parent.value as Record<string, unknown>).parent as number | undefined)
-      : undefined;
-  };
-  for (const anchorRaw of [...anchorEntities]) {
-    if (rootRawSet.has(anchorRaw) || memberOrigin.has(anchorRaw)) continue;
-    const carrierRaw = parentRawOf(anchorRaw);
-    const origin = carrierRaw === undefined ? undefined : memberOrigin.get(carrierRaw);
-    if (origin !== undefined) memberOrigin.set(anchorRaw, origin);
-  }
-
-  // Remove inner anchors (members of outer anchors).
-  for (const er of anchorEntities) {
-    if (memberOrigin.has(er) && !rootRawSet.has(er)) anchorEntities.delete(er);
-  }
-
-  // Inner instance members must use the surviving outer mount's slot window.
-  // Their original anchor has just been folded away.
-  for (const [raw, origin] of memberOrigin) {
-    if (anchorEntities.has(origin.anchorRaw)) continue;
-    const original = world.get(origin.anchorRaw as EntityHandle, SceneInstance);
-    const mappedRaw = original.ok ? original.value.mapping[origin.memberLocalId] : raw;
-    for (const anchor of anchorEntities) {
-      if (rootRawSet.has(anchor)) continue;
-      const instance = world.get(anchor as EntityHandle, SceneInstance);
-      if (!instance.ok || mappedRaw === undefined) continue;
-      const slot = Array.from(instance.value.mapping).indexOf(mappedRaw);
-      if (slot < 0) continue;
-      memberOrigin.set(raw, { anchorRaw: anchor, memberLocalId: slot });
-      break;
-    }
-  }
-
-  // ── Step 1.75: Mount-carrier absorption ──
-  //
-  // worldInstantiateScene materialises each mounts[] entry as a plain "mount
-  // entity" (`_spawnMountEntity` output: mount.components + a default Transform,
-  // but NO SceneInstance) whose child is the mounted scene's synthetic root (the
-  // real anchor, which DOES carry SceneInstance). So a `mounts[{parent: W}]`
-  // whose parent W is an OWNED entity comes back on reload as the live chain
-  //     W (owned) -> carrier (plain mount entity) -> anchor (SceneInstance).
-  // The carrier IS the re-materialised mount slot. If collect keeps it as an
-  // owned entity (it has no SceneInstance, so Step 2 would), the next serialize→
-  // reload inserts ANOTHER carrier under it, growing one nameless ghost node per
-  // save→reload cycle — unbounded (the editor "Add to Scene → save → reopen →
-  // #N" regression). Existing pure-mount round-trips don't hit this because they
-  // use `mount.parent === undefined` (mount attaches to the synthetic root,
-  // which is stripped, so no owned carrier survives).
-  //
-  // Fix: recognise a carrier and fold it back into its mount. A carrier is the
-  // ChildOf-parent P of a non-root anchor A where P is a pure mount slot: not a
-  // root, not itself an anchor/member, carries no authored identity (only the
-  // structural Transform/Children/ChildOf/Entity that _spawnMountEntity leaves),
-  // and its sole visited child is A. The mount for A then takes P's slot:
-  // mount.parent = P's ChildOf parent, and any ref to P resolves to the mount.
-  const childrenTk0 = world.components.resolve('Children');
-  const carrierAllowed = new Set(['Transform', 'GlobalTransform', 'Children', 'ChildOf', 'Entity']);
-  const carrierForAnchor = new Map<number, number>(); // anchorRaw -> carrierRaw
-  const carrierToAnchor = new Map<number, number>(); // carrierRaw -> anchorRaw
-  const isMountCarrier = (p: number, anchorRaw: number): boolean => {
-    if (rootRawSet.has(p)) return false;
-    if (anchorEntities.has(p) || memberOrigin.has(p)) return false;
-    if (!visited.has(p)) return false;
-    for (const [compName, compToken] of world.components.entries()) {
-      if (carrierAllowed.has(compName)) continue;
-      if (world.get(p as EntityHandle, compToken as EcsComponent<string>).ok) return false;
-    }
-    if (childrenTk0) {
-      const cr = world.get(p as EntityHandle, childrenTk0 as EcsComponent<string>);
-      if (cr.ok) {
-        const kids = (cr.value as { entities?: ArrayLike<number> }).entities;
-        if (kids) {
-          let visitedKidCount = 0;
-          let sawAnchor = false;
-          for (let i = 0; i < kids.length; i++) {
-            const k = kids[i] as number;
-            if (!visited.has(k)) continue;
-            visitedKidCount += 1;
-            if (k === anchorRaw) sawAnchor = true;
-          }
-          if (!sawAnchor || visitedKidCount !== 1) return false;
-        }
-      }
-    }
-    return true;
-  };
-  // Deterministic order (D-7): a carrier shared by two anchors is claimed by
-  // the lowest-handle anchor regardless of Set iteration order.
-  for (const anchorRaw of anchorsSorted) {
-    if (!anchorEntities.has(anchorRaw)) continue; // pruned inner anchor
-    if (rootRawSet.has(anchorRaw)) continue;
-    const pRaw = parentRawOf(anchorRaw);
-    if (pRaw === undefined) continue;
-    if (!carrierToAnchor.has(pRaw) && isMountCarrier(pRaw, anchorRaw)) {
-      carrierForAnchor.set(anchorRaw, pRaw);
-      carrierToAnchor.set(pRaw, anchorRaw);
-    }
-  }
-
-  // ── Step 2: Filter owned & build mounts for non-root anchors ──
-  const orderedEntities = [...visited];
-  const ownedEntities: number[] = [];
-  for (const er of orderedEntities) {
-    if (carrierToAnchor.has(er)) continue; // absorbed into its mount
-    // A root SceneInstance is the transient synthetic anchor returned by
-    // instantiate(). Its mapped members are authored entities; the anchor
-    // itself has no durable declaration and must not be minted as `entity-0`
-    // during collect, otherwise each collect/reload cycle adds another root.
-    if (rootRawSet.has(er) && anchorEntities.has(er)) continue;
-    if (!anchorEntities.has(er) && !memberOrigin.has(er)) {
-      ownedEntities.push(er);
-    }
-  }
-
+): Result<SceneAsset, CollectError> {
+  const closure = classifyCollectClosure(world, roots);
+  if (closure.visited.size === 0) return ok({ kind: 'scene', entities: {} });
+  const { carrierForAnchor, carrierToAnchor } = absorbMountCarriers(world, closure);
+  const orderedEntities = [...closure.visited];
+  const ownedEntities = ownedEntitiesOf(orderedEntities, closure, carrierToAnchor);
   const entityToLocalId = new Map<number, number>();
   for (let i = 0; i < ownedEntities.length; i++) {
     const e = ownedEntities[i];
     if (e !== undefined) entityToLocalId.set(e, i);
   }
-
-  // Build non-root anchor info + resolve GUIDs.
-  const nonRootAnchors: Array<{ entityRaw: number; sourceGuid: string; totalSlots: number }> = [];
-  for (const er of anchorEntities) {
-    if (rootRawSet.has(er)) continue;
-    const sh = worldGetSceneAssetForInstance(world, er as EntityHandle);
-    if (!sh.ok)
-      return err(
-        new SceneCollectAssetGuidUnresolvedError(
-          'SceneInstance.source',
-          sh.error as unknown as number,
-        ),
-      );
-    const pr = runtimeAssets(world.assets).resolveAsset<SceneAsset>(
-      sh.value as unknown as Handle<string, 'shared'>,
-    );
-    if (!pr.ok)
-      return err(
-        new SceneCollectAssetGuidUnresolvedError(
-          'SceneInstance.source',
-          sh.value as unknown as number,
-        ),
-      );
-    const g = registry.guidOf(sh.value);
-    if (g === undefined)
-      return err(
-        new SceneCollectAssetGuidUnresolvedError(
-          'SceneInstance.source',
-          sh.value as unknown as number,
-        ),
-      );
-    const sr = worldGetSceneInstanceState(world, er as EntityHandle);
-    if (!sr.ok)
-      return err(new SceneCollectAssetGuidUnresolvedError('SceneInstance.source', 'state'));
-    nonRootAnchors.push({ entityRaw: er, sourceGuid: g, totalSlots: sr.value.totalSlots });
-  }
-
-  // Sort by BFS order.
-  const bfsIdx = new Map<number, number>();
-  for (let i = 0; i < orderedEntities.length; i++) {
-    if (orderedEntities[i] !== undefined) bfsIdx.set(orderedEntities[i] as number, i);
-  }
-  nonRootAnchors.sort((a, b) => (bfsIdx.get(a.entityRaw) ?? 0) - (bfsIdx.get(b.entityRaw) ?? 0));
-  // Mount i belongs to nonRootAnchors[i]; its localId is ownedCount + i.
+  const nonRootAnchors = resolveNonRootAnchors(registry, world, closure, orderedEntities);
+  if (!nonRootAnchors.ok) return nonRootAnchors;
   const mountIndexByAnchor = new Map<number, number>();
-  for (const [index, anchor] of nonRootAnchors.entries()) {
+  for (const [index, anchor] of nonRootAnchors.value.entries()) {
     mountIndexByAnchor.set(anchor.entityRaw, index);
   }
-
-  // ── Step 3: Allocate mount windows ──
-  const ownedCount = ownedEntities.length;
-  const outMounts: SceneInstanceMount[] = [];
-  let nextMF = ownedCount + nonRootAnchors.length;
-  const transformTk = world.components.resolve('Transform');
-  for (const a of nonRootAnchors) {
-    // When a mount carrier was absorbed (Step 1.75), the mount takes the
-    // carrier's slot: resolve the ChildOf parent from the CARRIER (the anchor's
-    // own parent IS the carrier, which no longer exists as an owned entity), and
-    // carry the carrier's Transform as mount.components so placement round-trips.
-    const carrierRaw = carrierForAnchor.get(a.entityRaw);
-    const pRaw = parentRawOf(carrierRaw ?? a.entityRaw);
-    let mp: number | undefined;
-    if (pRaw !== undefined) {
-      mp = entityToLocalId.get(pRaw);
-      if (mp === undefined) {
-        const mo = memberOrigin.get(pRaw);
-        const ai = mo === undefined ? undefined : mountIndexByAnchor.get(mo.anchorRaw);
-        if (ai !== undefined) mp = ownedCount + ai;
-      }
-    }
-    let mountComponents: SceneInstanceMount['components'] | undefined;
-    if (carrierRaw !== undefined && transformTk) {
-      const tr = world.get(carrierRaw as EntityHandle, transformTk as EcsComponent<string>);
-      if (tr.ok) {
-        mountComponents = {
-          Transform: Object.fromEntries(
-            Object.entries(tr.value as Record<string, unknown>).map(([key, value]) => [
-              key,
-              _isArrayLike(value) ? _normalizeArray(value) : value,
-            ]),
-          ),
-        } as SceneInstanceMount['components'];
-      }
-    }
-    // ── M5 (w20 + w21): fold runtime-authored overrides into this mount ──
-    // foldMountOverrides emits child-namespace localIds in the LIVE handle
-    // domain; rebase each into the parent namespace (memberFirst + childLocalId)
-    // and reverse-lookup shared-field handles to GUID strings (two-state
-    // NULL-sentinel). Unresolvable handle -> SceneCollectAssetGuidUnresolvedError
-    // (D-2 fail-fast, no silent drop).
-    const memberFirst0 = nextMF;
-    let mountOverrides: MountOverride[] | undefined;
-    const foldStateRes = worldGetSceneInstanceState(world, a.entityRaw as EntityHandle);
-    if (foldStateRes.ok) {
-      const rawOverrides = foldMountOverrides(world, foldStateRes.value);
-      if (rawOverrides.length > 0) {
-        mountOverrides = [];
-        for (const ov of rawOverrides) {
-          const convRes = _serializeOverrideValueHandles(world, registry, ov);
-          if (!convRes.ok) return convRes;
-          mountOverrides.push({
-            ...ov,
-            localId: (memberFirst0 + (ov.localId as unknown as number)) as LocalEntityId,
-            value: convRes.value,
-          });
-        }
-      }
-    }
-
-    const mount: SceneInstanceMount = {
-      localId: (ownedCount + outMounts.length) as LocalEntityId,
-      source: a.sourceGuid,
-      memberFirst: nextMF as LocalEntityId,
-      memberCount: a.totalSlots,
-      ...(mp !== undefined ? { parent: mp as LocalEntityId } : {}),
-      ...(mountComponents !== undefined ? { components: mountComponents } : {}),
-      ...(mountOverrides !== undefined && mountOverrides.length > 0
-        ? { overrides: mountOverrides }
-        : {}),
-    };
-    outMounts.push(mount);
-    nextMF += a.totalSlots;
-  }
-
-  // Entity ref resolution helper.
-  function _rlid(t: number): number | undefined {
-    const ol = entityToLocalId.get(t);
-    if (ol !== undefined) return ol;
-    // An absorbed mount carrier resolves to its mount's localId (the mount took
-    // the carrier's slot in Step 1.75), so refs to the carrier — e.g. the
-    // wrapper's Children list — point at the mount rather than dangle.
-    const mountIndex = mountIndexByAnchor.get(carrierToAnchor.get(t) ?? t);
-    if (mountIndex !== undefined) return ownedCount + mountIndex;
-    const mo = memberOrigin.get(t);
-    const owner = mo === undefined ? undefined : mountIndexByAnchor.get(mo.anchorRaw);
-    const ownerMount = owner === undefined ? undefined : outMounts[owner];
-    return mo === undefined || ownerMount === undefined
-      ? undefined
-      : (ownerMount.memberFirst as number) + mo.memberLocalId;
-  }
-
-  // ── Step 4: Build SceneEntity rows ──
-  const registeredComps = world.components.entries();
-  const legacyEntities: Array<{
-    localId: number;
-    components: Record<string, Record<string, unknown>>;
-  }> = [];
-
-  for (let lid = 0; lid < ownedEntities.length; lid++) {
-    const entityRaw = ownedEntities[lid];
-    if (entityRaw === undefined) continue;
-    const entity = entityRaw as EntityHandle;
-    const components: Record<string, Record<string, unknown>> = {};
-    const isRoot = rootRawSet.has(entityRaw);
-
-    for (const [compName, comp] of registeredComps) {
-      const definition = componentDefinition(comp);
-      if (!collectProfile.includeComponent(compName, definition.policy.transient === true))
-        continue;
-      if (isRoot && compName === 'ChildOf') continue;
-
-      const valRes = world.get(entity, comp as EcsComponent<string>);
-      if (!valRes.ok) continue;
-
-      const val = valRes.value as Record<string, unknown>;
-
-      const schema = componentSchema(comp);
-      const schemaKeys = Object.keys(schema);
-      // Empty-schema components are authored marker components, not absent
-      // state. Preserve their presence through scene-pack round-trips (for
-      // example AudioListener); transient markers have already been excluded
-      // above and therefore remain derived-only by declaration.
-      if (schemaKeys.length === 0) {
-        components[compName] = {};
-        continue;
-      }
-
-      const fieldValues: Record<string, unknown> = {};
-
-      for (const fieldName of schemaKeys) {
-        const rawValue = val[fieldName];
-        if (rawValue === undefined) continue;
-
-        // Field-level transient skip (D-5): a field declared `transient: true`
-        // is derived/reconstructable and excluded from serialization, just as a
-        // transient component (L554) is. Generic — reads the reflection flag for
-        // any component/field; no hardcoded component or field name.
-        if (
-          !collectProfile.includeField(
-            compName,
-            fieldName,
-            definition.fields[fieldName]?.transient === true,
-          )
-        )
-          continue;
-
-        const entityKind = classifyEntityField(comp as EcsComponent, fieldName);
-        if (entityKind !== null) {
-          // The synthetic root anchor is transient and is intentionally omitted
-          // from the authored entity map. A member's implicit ChildOf edge to
-          // that anchor has no authored counterpart, so omit that one edge
-          // before the keyed remap instead of reporting a false out-of-closure
-          // reference.
-          if (
-            !entityKind.isArray &&
-            typeof rawValue === 'number' &&
-            rootRawSet.has(rawValue) &&
-            anchorEntities.has(rawValue)
-          ) {
-            continue;
-          }
-          // Entity / array<entity> field — use shared kernel for remap
-          if (entityKind.isArray) {
-            const arr = _isArrayLike(rawValue)
-              ? _normalizeArray(rawValue)
-              : (rawValue as unknown[]);
-            const mapped: number[] = [];
-            for (const elem of arr) {
-              const lid2 = _rlid(elem as number);
-              if (lid2 === undefined) {
-                return err(
-                  new SceneCollectEntityRefOutOfClosureError(entityRaw, fieldName, elem as number),
-                );
-              }
-              mapped.push(lid2);
-            }
-            fieldValues[fieldName] = mapped;
-          } else {
-            // A nullable entity field uses the ECS null sentinel and is omitted
-            // from the scene payload just like a null shared handle. It is not
-            // an out-of-closure reference.
-            if (rawValue === null) continue;
-            const lid2 = _rlid(rawValue as number);
-            if (lid2 === undefined) {
-              return err(
-                new SceneCollectEntityRefOutOfClosureError(
-                  entityRaw,
-                  fieldName,
-                  rawValue as number,
-                ),
-              );
-            }
-            fieldValues[fieldName] = lid2;
-          }
-        } else {
-          // Plain or shared<T> field. A shared field reverse-looks-up handle(s) to GUID(s) via the shared
-          // kernel (same two-state NULL-sentinel the M5 override serializer uses).
-          // scalar handle 0 -> undefined => omit the field (deserialize restores
-          // the slot-0 default; emitting 0 would be misread as refs index 0 by
-          // parseScenePayload HANDLE_FIELD_NAMES). array handle 0 -> positional 0
-          // kept (paired SoA alignment, e.g. AnimationPlayer.clips = [h,0,0,0]).
-          // AnimationPlayer.graph (asset<animation-graph> scalar, M4/w31) is
-          // handled generically here — no special case needed.
-          const normalized = _isArrayLike(rawValue) ? _normalizeArray(rawValue) : rawValue;
-          const sharedClass = classifyFieldSchema(schema[fieldName]);
-          if (sharedClass === undefined) {
-            // Plain value field — pass through.
-            fieldValues[fieldName] = normalized;
-            continue;
-          }
-          const conv = _serializeSharedFieldValue(
-            world,
-            registry,
-            sharedClass,
-            normalized,
-            fieldName,
-          );
-          if (!conv.ok) return conv;
-          if (sharedClass.scalar && conv.value === undefined) continue; // NULL sentinel -> omit
-          fieldValues[fieldName] = conv.value;
-        }
-      }
-
-      if (Object.keys(fieldValues).length > 0) components[compName] = fieldValues;
-    }
-
-    legacyEntities.push({ localId: lid, components });
-  }
-
+  const layout: CollectLayout = {
+    ownedEntities,
+    entityToLocalId,
+    carrierForAnchor,
+    carrierToAnchor,
+    mountIndexByAnchor,
+  };
+  const outMounts = allocateMounts(world, registry, closure, layout, nonRootAnchors.value);
+  if (!outMounts.ok) return outMounts;
+  const legacyEntities = collectOwnedRows({
+    world,
+    registry,
+    closure,
+    layout,
+    outMounts: outMounts.value,
+  });
+  if (!legacyEntities.ok) return legacyEntities;
   return collectKeyedSceneAsset(
     world,
     registry,
     roots,
-    visited,
+    closure.visited,
     ownedEntities,
-    legacyEntities,
-    outMounts,
-    nonRootAnchors,
-    memberOrigin,
+    legacyEntities.value,
+    outMounts.value,
+    nonRootAnchors.value,
+    closure.memberOrigin,
   );
 }

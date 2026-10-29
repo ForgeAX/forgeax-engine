@@ -115,6 +115,91 @@ describe('Engine workspace public runtime', () => {
     }
   });
 
+  it('publishes bounds as the target.pick default and forwards explicit triangle granularity', async () => {
+    const { app, assets } = fixtureApp();
+    const project = { id: '/pick', root: '/pick' };
+    const target = {
+      targetId: 'pick-target',
+      sessionId: 'pick-session',
+      worldId: app.world.identity,
+      headed: true as const,
+      width: 320,
+      height: 240,
+    };
+    const pick = vi.fn(({ granularity = 'bounds' }: { granularity?: 'bounds' | 'triangle' }) => ({
+      targetId: target.targetId,
+      frameId: 12,
+      entityId: 'pick-target:rear-cube',
+      granularity,
+    }));
+    const provider = createEngineWorkspaceProvider({
+      openProjectSession: () => ({
+        project,
+        app,
+        assets,
+        target,
+        openPreview: () => ({
+          target,
+          tools: { pick },
+          getCamera: () => ({ camera: {}, version: 0 }),
+        }),
+      }),
+    });
+    const runtime = createEngineWorkspaceRuntime(provider);
+    const api = createToolApi();
+    api.registerProvider({
+      providerId: 'workspace',
+      sourceId: 'engine',
+      realm: 'host',
+      tools: createEngineWorkspaceTools(runtime),
+    });
+
+    try {
+      await runtime.openProject({ root: project.root });
+      const currentProject = runtime.project;
+      if (!currentProject) throw new Error('Expected the opened workspace project');
+      const preview = await runtime.openPreview({
+        project: currentProject.project,
+        projectHandle: currentProject.handle,
+        asset: { guid: SCENE_GUID, kind: 'scene' },
+        width: target.width,
+        height: target.height,
+      });
+      const identity = { targetId: target.targetId, targetGeneration: preview.target.generation };
+      const call = async (granularity?: 'bounds' | 'triangle') => {
+        const terminal = await api.run(
+          'engine.target.pick',
+          {
+            ...identity,
+            x: 160,
+            y: 120,
+            ...(granularity === undefined ? {} : { granularity }),
+          },
+          { sourceId: 'engine' },
+        ).terminal;
+        expect(terminal.outcome).toBe('succeeded');
+        return terminal.result;
+      };
+
+      const bounds = await call();
+      const triangle = await call('triangle');
+      expect(bounds).toMatchObject({ entityId: 'pick-target:rear-cube', granularity: 'bounds' });
+      expect(triangle).toMatchObject({
+        entityId: 'pick-target:rear-cube',
+        granularity: 'triangle',
+      });
+      expect(pick).toHaveBeenNthCalledWith(1, { x: 160, y: 120 });
+      expect(pick).toHaveBeenNthCalledWith(2, { x: 160, y: 120, granularity: 'triangle' });
+      expect(
+        api.list().find((record) => record.descriptor.id === 'engine.target.pick')?.descriptor
+          .inputSchema,
+      ).toMatchObject({ properties: { granularity: { enum: ['bounds', 'triangle'] } } });
+    } finally {
+      await api.dispose();
+      await runtime.dispose();
+    }
+  });
+
   it('forwards 100 draft edits without publishing full workspace state', async () => {
     const { app, assets } = fixtureApp();
     const runtime = createEngineWorkspaceRuntime(

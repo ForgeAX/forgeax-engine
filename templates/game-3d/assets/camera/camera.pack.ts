@@ -12,21 +12,36 @@ const CAMERA_DISTANCE = 6.5;
 const CAMERA_TARGET_HEIGHT = 0.5;
 const CAMERA_FOLLOW = 10;
 
+/** Compare the values the f32 Transform columns would actually store. */
+function sameCameraPose(
+  current: { readonly pos: ArrayLike<number>; readonly quat: ArrayLike<number> },
+  position: ArrayLike<number>,
+  rotation: ArrayLike<number>,
+): boolean {
+  for (let index = 0; index < 3; index += 1)
+    if (!Object.is(current.pos[index], Math.fround(position[index] as number))) return false;
+  for (let index = 0; index < 4; index += 1)
+    if (!Object.is(current.quat[index], Math.fround(rotation[index] as number)))
+      return false;
+  return true;
+}
+
 export const camera: Plugin = {
   name: 'game-3d/camera',
   inject: ['world', 'gameHost', 'game3dPlayer', 'gameScene'],
   apply(ctx) {
+    const world = ctx.world;
     const host = ctx.gameHost;
     if (host === undefined) throw new Error('game-3d/camera requires the App-owned GameHost');
     const playerService = ctx.game3dPlayer as Game3dPlayerService | undefined;
     if (playerService === undefined)
       throw new Error('game-3d/camera requires the game-3d/player service');
     const player = playerService.entity;
-    const camera = resolveGameEntity(ctx.world, ctx.gameScene, 'camera');
+    const camera = resolveGameEntity(world, ctx.gameScene, 'camera');
     ctx.effect(function* () {
       host.setPointerLockAllowed?.(true);
       yield () => host.setPointerLockAllowed?.(false);
-      ctx.world
+      world
         .addSystem(Update, {
           name: 'game-3d-camera',
           after: [FixedUpdate, 'game-3d-player-input'],
@@ -34,8 +49,8 @@ export const camera: Plugin = {
           queries: [],
           fn: () => {
             const input = playerService.readInput();
-            const dt = ctx.world.getResource(Time).delta;
-            const playerMatrix = readPresentationWorldMatrix(ctx.world, player);
+            const dt = world.getResource(Time).delta;
+            const playerMatrix = readPresentationWorldMatrix(world, player);
             if (playerMatrix === undefined) throw new Error('game-3d/camera requires the player presentation pose');
             const rig = playerService.readRig();
             const look = integratePointerLook(rig.yaw, rig.pitch, input.lookX, input.lookY);
@@ -48,12 +63,15 @@ export const camera: Plugin = {
             ] as const;
             const position = orbitPosition(focus, look.yaw, look.pitch, CAMERA_DISTANCE);
             const rotation = quat.fromLookAt(quat.create(), position, focus, [0, 1, 0]);
-            ctx.world
-              .set(camera, Transform, {
-                pos: position,
-                quat: [rotation[0] ?? 0, rotation[1] ?? 0, rotation[2] ?? 0, rotation[3] ?? 1],
-              })
-              .unwrap();
+            const currentPose = world.get(camera, Transform);
+            if (!currentPose.ok || !sameCameraPose(currentPose.value, position, rotation)) {
+              world
+                .set(camera, Transform, {
+                  pos: position,
+                  quat: [rotation[0] ?? 0, rotation[1] ?? 0, rotation[2] ?? 0, rotation[3] ?? 1],
+                })
+                .unwrap();
+            }
             playerService.updateRig({
               yaw: look.yaw,
               pitch: look.pitch,
@@ -64,7 +82,7 @@ export const camera: Plugin = {
           },
         })
         .unwrap();
-      yield () => ctx.world.removeSystem(Update, 'game-3d-camera').unwrap();
+      yield () => world.removeSystem(Update, 'game-3d-camera').unwrap();
     }, 'game-3d/camera');
   },
 };

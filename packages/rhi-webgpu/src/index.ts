@@ -208,14 +208,15 @@ function createRawShaderModule(
       ]),
     );
   }
-  const rayQueryGate = validateRayQueryShader(device.caps.rayQuery, desc.code);
-  if (!rayQueryGate.ok) return rayQueryGate;
-  const mirrored: { label?: string; code: string } = { code: desc.code };
-  if ('label' in desc && desc.label !== undefined) mirrored.label = desc.label;
+
   try {
     const library = pipelineLibraryFor(device);
     if (library === undefined) throw new Error('WebGPU device pipeline library is unavailable');
-    return ok(library.createShaderModule(mirrored as GPUShaderModuleDescriptor));
+    const known = library.findShaderModule(desc);
+    if (known !== undefined) return ok(known);
+    const gate = validateRayQueryShader(device.caps.rayQuery, desc.code);
+    if (!gate.ok) return gate;
+    return ok(library.createShaderModule(desc as GPUShaderModuleDescriptor));
   } catch (e) {
     // The synchronous part of a real-device createShaderModule rarely throws
     // (spec: errors are surfaced asynchronously through getCompilationInfo);
@@ -378,9 +379,16 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike): RhiAdapter {
   };
 }
 
+const DEFAULT_BROWSER_ADAPTER_OPTIONS: RequestAdapterOptions = Object.freeze({
+  powerPreference: 'high-performance',
+});
+
 /** Request an ambient browser adapter. Explicit native/test providers use
  * `requestAdapterFrom`; both return the same RHI adapter and device path.
- * The compatible surface is unused by browser WebGPU. */
+ * The compatible surface is unused by browser WebGPU. Without caller options
+ * the request prefers `'high-performance'`, so dual-GPU laptops pick the
+ * discrete GPU instead of the browser's power-saving default; explicit options
+ * (including `{}`) pass through unchanged. */
 export async function requestAdapter(
   opts?: RequestAdapterOptions | undefined,
   _compatibleSurface?: RhiCanvasTarget | undefined,
@@ -389,7 +397,7 @@ export async function requestAdapter(
     typeof globalThis !== 'undefined'
       ? (globalThis as { navigator?: Navigator }).navigator?.gpu
       : undefined;
-  return requestAdapterFrom(ambient, opts);
+  return requestAdapterFrom(ambient, opts ?? DEFAULT_BROWSER_ADAPTER_OPTIONS);
 }
 
 /**
@@ -563,7 +571,14 @@ export type {
 // Re-export Result factories + RhiError class as values (the rhi-webgpu
 // top-level surface stays single-import for both type-only and runtime
 // consumption).
-export { err, ok, RhiError as RhiErrorClass } from '@forgeax/engine-rhi';
+export { err, ok, RhiError as RhiErrorClass, validateRayQueryShader } from '@forgeax/engine-rhi';
+export {
+  RHI_COMMAND_COUNT_KEYS,
+  type RhiCommandCountKey,
+  type RhiCommandCounts,
+  readRhiCommandCounts,
+  subtractRhiCommandCounts,
+} from './command-counts';
 // feat-20260511-rhi-spec-realign-aggressive D-VD2 (Round 2) — re-export the
 // `_internal_getRawDevice` reverse lookup. Re-introduces the M4-removed escape
 // hatch for the sole engine consumer that needs to register the spec
@@ -593,3 +608,12 @@ export { _internal_getRawDevice, disposeDevice } from './device';
 // explicit failure + proposition 5 consistent abstraction across both
 // browser-direct and rhi-wgpu wasm dual paths).
 export { translateErrorEventToRhiError } from './internal/error-translation';
+// Engine-owned per-frame diagnostics only; not a stable public API.
+export { webGpuPipelineCreationCount } from './pipeline-library';
+export {
+  captureWebGpuStubProfile,
+  DEFAULT_WEBGPU_STUB_PROFILE,
+  installedWebGpuStub,
+  installWebGpuStub,
+  type WebGpuStubProfile,
+} from './stub';

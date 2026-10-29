@@ -74,7 +74,6 @@ export function sdkProjectInstallArgs(store: string | undefined): string[] {
     'install',
     '--frozen-lockfile',
     '--ignore-scripts',
-    '--config.pm-on-fail=ignore',
     '--side-effects-cache=true',
     '--child-concurrency=1',
   ];
@@ -87,7 +86,6 @@ function sdkBootstrapInstallArgs(store: string | undefined): string[] {
   const common = [
     'install',
     '--frozen-lockfile',
-    '--config.pm-on-fail=ignore',
     '--child-concurrency=1',
     '--side-effects-cache=true',
   ];
@@ -96,7 +94,7 @@ function sdkBootstrapInstallArgs(store: string | undefined): string[] {
     : [...common, '--offline', '--config.trust-lockfile=true', '--store-dir', store];
 }
 
-export const MINIMUM_SUPPORTED_PNPM = '12.10.1';
+export const MINIMUM_SUPPORTED_PNPM = '12.15.0';
 
 export function pnpmVersionAtLeast(version: string, minimum: string): boolean {
   const parse = (value: string): [number, number, number] | undefined => {
@@ -128,7 +126,7 @@ async function currentPnpm(): Promise<CommandResult<string>> {
     return commandFailure(
       'pnpm-unavailable',
       `pnpm ${sdkPnpmRequirement(MINIMUM_SUPPORTED_PNPM)} to be available on PATH`,
-      'Install or activate pnpm 12.10.1 or newer in the pnpm 12 line, then rerun forgeax project init from the SDK root.',
+      `Install or activate pnpm ${MINIMUM_SUPPORTED_PNPM} or newer in the pnpm 12 line, then rerun forgeax project init from the SDK root.`,
       { reason: cause instanceof Error ? cause.message : String(cause) },
     );
   }

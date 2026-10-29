@@ -12,15 +12,27 @@ export function createRemoteBundler(allow) {
     if (activeReads === 4) await new Promise((resolve) => waitingReads.push(resolve));
     else activeReads++;
     try {
-      const response = await fetch(url, {
-        headers: { accept: 'text/javascript' },
-        signal: AbortSignal.timeout(30000),
-      }).catch((cause) => {
-        throw new Error(`Vite source fetch failed: ${url.origin}${url.pathname}`, { cause });
-      });
-      if (!response.ok)
-        throw new Error(`Vite source HTTP ${response.status}: ${url.pathname}`);
-      return await response.text();
+      const signal = AbortSignal.timeout(30000);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const response = await fetch(url, {
+            headers: { accept: 'text/javascript' },
+            signal,
+          });
+          if (!response.ok)
+            throw new Error(`Vite source HTTP ${response.status}: ${url.pathname}`);
+          return await response.text();
+        } catch (cause) {
+          // Vite can close a source connection during startup. Replay only an
+          // incomplete GET, once, within the original read deadline and slot.
+          if (
+            attempt === 0 &&
+            !signal.aborted &&
+            ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(cause?.cause?.code)
+          ) continue;
+          throw new Error(`Vite source fetch failed: ${url.origin}${url.pathname}`, { cause });
+        }
+      }
     } finally {
       const next = waitingReads.shift();
       if (next) next();

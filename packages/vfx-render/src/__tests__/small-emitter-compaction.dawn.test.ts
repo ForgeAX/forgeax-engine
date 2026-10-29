@@ -86,7 +86,9 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
         )
         .unwrap().program.fingerprint,
       reset: tick === 0,
-      fixedDelta: 1 / 60,
+      delta: 1 / 60,
+      initialDelta: 1 / 60,
+      elapsed: (tick + 1) / 60,
       phaseTick: tick,
       tick,
       seed: 7,

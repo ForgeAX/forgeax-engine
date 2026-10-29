@@ -2,6 +2,7 @@ import {
   type ImportContext,
   ImportError,
   type ImportedArtifactBody,
+  type ImporterCapabilities,
   type ImportResult,
 } from '@forgeax/engine-types';
 import type { UiAsset } from '../asset.js';
@@ -79,10 +80,16 @@ export function importUiSource(source: UiSource): ImportResult<UiAsset> {
 }
 export function createUiImporter(): {
   readonly key: 'ui';
+  readonly capabilities: ImporterCapabilities;
   import(context: ImportContext): Promise<ImportResult<UiAsset>>;
 } {
   return {
     key: 'ui',
+    capabilities: {
+      sourceFormats: [
+        { extensions: ['.ui.html'], kind: 'ui', sourceKey: 'ui:document', importSettings: {} },
+      ],
+    },
     async import(context) {
       const source = await context.readSource();
       if (!source.ok) return importFailure(`unable to read UI source: ${String(source.error)}`);

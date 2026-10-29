@@ -3,7 +3,7 @@ import type { DirectionalShadowQuality } from '../components/directional-shadow-
 import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import { type CapsuleShadowSubmission, capsuleShadowParticipates } from './inspection';
 import { WORLD_CAPSULE_STRIDE } from './world-capsules';
@@ -81,6 +81,9 @@ export function buildCapsuleShadowFrame(
   coneHalfAngle: number,
   width: number,
   height: number,
+  demand: NonNullable<
+    import('../record/render-context').RenderSystemRuntime['demandCapsuleShadow']
+  >,
 ): CapsuleShadowFrame {
   const lx = -(lightDirection[0] ?? 0);
   const ly = -(lightDirection[1] ?? -1);
@@ -91,8 +94,8 @@ export function buildCapsuleShadowFrame(
   const cy = camera.position[1] ?? 0;
   const cz = camera.position[2] ?? 0;
   const candidates: Candidate[] = [];
-  for (const source of renderables) {
-    const state = source.capsuleShadow;
+  for (const source of sparseRowsOf(renderables, 'capsule')) {
+    const state = demand(source);
     if (state?.status !== 'ready' || !capsuleShadowParticipates(source, materials)) continue;
     for (let offset = 0; offset < state.capsules.length; offset += WORLD_CAPSULE_STRIDE) {
       const c = state.capsules;
@@ -123,9 +126,9 @@ export function buildCapsuleShadowFrame(
   const tilesX = Math.ceil(width / CAPSULE_TILE_SIZE);
   const tilesY = Math.ceil(height / CAPSULE_TILE_SIZE);
   const tileTotal = tilesX * tilesY;
-  const projection = computeProjectionMatrix(camera);
+  const projection = computeProjectionMatrix(camera, mat4.create());
   const viewProjection = mat4.create();
-  mat4.multiply(viewProjection, projection, computeViewMatrix(camera));
+  mat4.multiply(viewProjection, projection, computeViewMatrix(camera, mat4.create()));
   const rects = new Int32Array(kept * 4);
   const counts = new Uint16Array(tileTotal);
   const spread = Math.tan(coneHalfAngle);

@@ -24,7 +24,7 @@ do not skip digest checks or prune capability variants to make a manifest smalle
 
 ## Color-lighting parity handoff
 
-When the parity report names a shader or output-domain divergence, start at the [parity README](../../apps/parity/color-lighting/README.md) and use the [status recovery map](../../apps/parity/color-lighting/status-index.md) to select the owner. Compare the same `SceneCase` and `CaseReport`; a source-name match without independent producer evidence is not a pass.
+When the parity report names a shader or output-domain divergence, start at the [parity README](../../apps/parity/color-lighting/README.md) and use the status recovery map to select the owner. Compare the same `SceneCase` and `CaseReport`; a source-name match without independent producer evidence is not a pass.
 
 ## Route
 
@@ -155,3 +155,32 @@ the expanded builder result.
 - Asset catalog and pack roots: [`forgeax-engine-assets`](../forgeax-engine-assets/SKILL.md)
 - Shader package: [`packages/shader/README.md`](../../packages/shader/README.md)
 - Migration: `docs/material-asset-migration.md`
+
+## Runtime source ownership
+
+`MaterialShaderProgram` owns immutable CPU facts and a `sourceReference`; `.source`
+borrows complete WGSL from its immutable source owner. Runtime raw strings remain
+whole: never rebuild a fragment pool while receiving a library or material.
+Build-produced manifest references and their integrity checks remain supported.
+Registry lookup indexes the same program,
+without a separate facts cache. Managed module factories preserve this source owner
+so prewarm/runtime hits do not expand or hash it again. Full descriptor/state equality
+and device-local native completion still govern pipeline reuse.
+
+Registry `sourceLimits` bounds new dynamic source bytes and registration/schema/module
+alias slots, including failed schema retention. Fixed startup/background source inputs
+are a closed constructor snapshot under finite input safety, not a runtime static flag.
+Fork/adoption preserve used allowance; rejected admission leaves previous artifacts
+usable. Use `sourceInspection()` and the [Shader README](../../packages/shader/README.md)
+for the actual ownership and defaults; source quotas are not GPU/VRAM capacities.
+
+## Cooked material CPU preparation
+
+Cooked programs enter ShaderRegistry through `installMaterialArtifactBytes` with
+verified byte digests, schemas and ABI/read metadata. Inspect availability with
+`materialArtifactDeclaration` or `materialShaderIdentifiers`; an ordinary
+`materialArtifact` / `findMaterialArtifact` lookup prepares that selected WGSL.
+Keep Worker publication and device recovery on declaration/adoption paths so they
+do not decode every variant. Source-dependent validation still runs before a
+prepared program is returned. Artifact loading/decompression and GPU compilation
+retain their existing timing; this route adds no runtime compiler.

@@ -155,6 +155,9 @@ it('reuses one Standard material cook across Pack publication generations', asyn
     const reused = validateCookedMaterialRecord(
       (secondAsset.payload as { cooked: unknown }).cooked,
     ).unwrap();
+    // A hit rebinds the stored record without validating it again; the record
+    // it publishes is exactly the validated form.
+    expect((secondAsset.payload as { cooked: unknown }).cooked).toEqual(reused);
     expect(original.publicationGeneration).toBe(1);
     expect(reused.publicationGeneration).toBe(7);
     expect(reused.receipt.identity.cookGeneration).toBe(7);

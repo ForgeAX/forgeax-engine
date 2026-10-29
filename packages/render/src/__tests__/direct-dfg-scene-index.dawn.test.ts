@@ -248,10 +248,13 @@ it.each([
               return poison;
             })
           : worlds;
+      const transformWords = new Uint32Array(transformBytes.buffer);
+      const previousWord = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousIndex') / 4;
       for (const [index, world] of [identity, ...rootWorlds].entries()) {
         const offset = (index * GPU_SCENE_LAYOUTS.transform.stride) / 4;
         transformBytes.set(world, offset);
-        transformBytes.set(world, offset + 16);
+        // Every stamp matches row 0, so each row is its own previous pose.
+        transformWords[offset + previousWord] = index;
       }
       device.queue.writeBuffer(bufferAt(2, 0), 0, transformBytes);
       const primitive = new Uint32Array((GPU_SCENE_LAYOUTS.primitive.stride * 2) / 4);
@@ -266,32 +269,35 @@ it.each([
         ] = 0xffffffff;
         const instance = (i * GPU_SCENE_LAYOUTS.instance.stride) / 4;
         instances[instance] = i;
-        instances[
-          instance + gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.instance, 'customDataStart') / 4
-        ] = geometry === 'skinned' ? ([4, 8][i] ?? 0) : 0;
       }
       device.queue.writeBuffer(bufferAt(3, 6), 0, primitive);
       device.queue.writeBuffer(bufferAt(3, 0), 0, instances);
       if (geometry === 'skinned') {
-        for (const binding of [1, 2]) {
-          // Candidate2/3, Instance0/1 and palette4/8 never alias. Every wrong
-          // palette address remains a valid matrix, but moves geometry out of view.
-          const poses = Array.from({ length: 10 }, () => {
-            const poison = [...identity];
-            poison[12] = 20;
-            return poison;
-          });
-          for (const [index, paletteRow] of [4, 8].entries()) {
-            const world = worlds[index];
-            const previousDelta = [0.2, -0.3][index];
-            if (world === undefined || previousDelta === undefined)
-              throw new Error('Missing Skin pose');
-            const pose = [...world];
-            if (binding === 2) pose[12] = (pose[12] ?? 0) - previousDelta;
-            poses[paletteRow] = pose;
-          }
-          device.queue.writeBuffer(bufferAt(2, binding), 0, new Float32Array(poses.flat()));
+        // Storage Skin task ABI: candidate -> hash slot -> descriptor -> paired
+        // current/previous joints. Visible rows name candidates 2 and 3; every
+        // unused row holds a valid poison matrix that moves geometry out of view.
+        const rows = new Uint32Array(32 * 4);
+        const floats = new Float32Array(rows.buffer);
+        const poison = [...identity];
+        poison[12] = 20;
+        for (let row = 0; row < 32; row += 4) floats.set(poison, row * 4);
+        const descriptorBase = 4;
+        for (const [index, candidate] of [2, 3].entries()) {
+          const world = worlds[index];
+          const previousDelta = [0.2, -0.3][index];
+          if (world === undefined || previousDelta === undefined)
+            throw new Error('Missing Skin pose');
+          const base = 8 + index * 8;
+          rows.set([index, 0, 0, 0], candidate * 4);
+          rows.set([candidate + 1, 1, base, 3], (descriptorBase + index) * 4);
+          floats.set(world, base * 4);
+          const previous = [...world];
+          previous[12] = (previous[12] ?? 0) - previousDelta;
+          floats.set(previous, (base + 4) * 4);
         }
+        for (const candidate of [0, 1]) rows.set([0xffffffff, 0, 0, 0], candidate * 4);
+        device.queue.writeBuffer(bufferAt(2, 1), 0, rows);
+        device.queue.writeBuffer(bufferAt(2, 2), 0, new Uint32Array([0, descriptorBase, 0, 0]));
       }
       const vertex = new Float32Array(3 * 20);
       for (const [i, position] of [

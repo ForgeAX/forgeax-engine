@@ -14,7 +14,7 @@ export function featureResourceKey(scope: RenderFeatureWorkScope, name: string):
   return JSON.stringify([featureScopeKey(scope), name]);
 }
 
-interface FeatureWorkResources {
+export interface FeatureWorkResources {
   readonly work: RenderFeatureWork;
   readonly closure: RenderFeatureWorkPlan;
   readonly native?: true;
@@ -22,10 +22,13 @@ interface FeatureWorkResources {
   readonly resources: readonly RenderFeatureResourceDeclaration[];
 }
 
+const NO_WORK_RESOURCES: readonly FeatureWorkResources[] = Object.freeze([]);
+
 /** Resolve only local and shared names. Cross-view reads have no lookup route. */
 export function resolveFeatureWorkResources(
   works: readonly RenderFeatureWork[],
 ): readonly FeatureWorkResources[] {
+  if (works.length === 0) return NO_WORK_RESOURCES;
   const scopes = new Set<string>();
   const shared = works.find((work) => work.scope === 'frame')?.resources ?? [];
   const sharedByName = new Map(shared.map((resource) => [resource.name, resource]));

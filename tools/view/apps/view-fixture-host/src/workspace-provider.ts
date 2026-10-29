@@ -7,7 +7,7 @@ import type {
 import { EngineWorkspaceError } from '@forgeax/engine/app';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import { PackAuthoringDraft, type PackDraftDocument } from '@forgeax/engine-pack/source';
-import { ASSETS, SCENE_TARGET_ID, INSPECTIONS, PROJECT, PROJECT_ROOT, SCENE_NODES } from './scenarios/default.ts';
+import { ASSETS, FIXTURE_SESSION_ID, SCENE_TARGET_ID, INSPECTIONS, PROJECT, PROJECT_ROOT, SCENE_NODES } from './scenarios/default.ts';
 
 const MESH_FACTS: Record<string, { vertexCount: number; triangleCount: number }> = {
   'geometry/box': { vertexCount: 24, triangleCount: 12 },
@@ -36,7 +36,7 @@ export function createFixtureWorkspaceProvider(): EngineWorkspaceProvider {
   const drafts = new Map<string, { document: PackDraftDocument; draft: PackAuthoringDraft<number> }>();
   let nextDraftId = 0;
   const target: EngineWorkspaceTarget = {
-    targetId: SCENE_TARGET_ID, sessionId: 'fixture-session', worldId: 'fixture-world',
+    targetId: SCENE_TARGET_ID, sessionId: FIXTURE_SESSION_ID, worldId: 'fixture-world',
     generation: 1, headed: true, width: 1280, height: 720,
   };
   const handle = Object.freeze({ projectId: PROJECT.id });
@@ -70,6 +70,14 @@ export function createFixtureWorkspaceProvider(): EngineWorkspaceProvider {
             { name: 'tint', type: 'color', default: [0.24, 0.68, 0.57, 1], path: ['parameters', 'tint'], apply: { asset: source.sourceKey ?? '', path: ['tint'] } },
             { name: 'enabled', type: 'bool', default: true, path: ['parameters', 'enabled'], apply: { asset: source.sourceKey ?? '', path: ['enabled'] } },
             { name: 'intensity', type: 'f32', default: 1.25, minimum: 0, maximum: 4, path: ['parameters', 'intensity'], apply: { asset: source.sourceKey ?? '', path: ['intensity'] } },
+            ...(source.sourceKey === 'scene/showcase' ? [
+              { name: 'groundColor', type: 'color' as const, default: [0.36, 0.52, 0.28, 1], path: ['parameters', 'groundColor'], apply: { asset: 'material/ground', path: ['color'] } },
+              { name: 'groundRoughness', type: 'f32' as const, default: 0.65, minimum: 0, maximum: 1, path: ['parameters', 'groundRoughness'], apply: { asset: 'material/ground', path: ['roughness'] } },
+              { name: 'groundScale', type: 'f32' as const, default: 1, minimum: 0.1, maximum: 8, path: ['parameters', 'groundScale'], apply: { asset: 'mesh/ground', path: ['scale'] } },
+              { name: 'groundVisible', type: 'bool' as const, default: true, path: ['parameters', 'groundVisible'], apply: { asset: 'mesh/ground', path: ['visible'] } },
+              { name: 'playerColor', type: 'color' as const, default: [0.78, 0.34, 0.2, 1], path: ['parameters', 'playerColor'], apply: { asset: 'material/player', path: ['color'] } },
+              { name: 'playerMetallic', type: 'f32' as const, default: 0.2, minimum: 0, maximum: 1, path: ['parameters', 'playerMetallic'], apply: { asset: 'material/player', path: ['metallic'] } },
+            ] : []),
           ],
         };
         const draft = new PackAuthoringDraft(`fixture-draft-${++nextDraftId}`, document, {

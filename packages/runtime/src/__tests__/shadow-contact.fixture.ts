@@ -14,13 +14,15 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import { assert, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { createRenderer } from '../createRenderer';
+import { browserRendererFixture } from './browser-renderer.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const filters = ['pcf1', 'pcf3', 'pcf5', 'pcssHigh'] as const;
 
 export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSize: 1024 | 2048) {
+  const canvasSize = 640;
+  const rendererFor = browserRendererFixture(canvasSize);
   it.each(
     filters.map((filter) => ({ filter, scene, mapSize })),
   )('keeps $scene $filter/$mapSize shadows attached without shadowing unobstructed ground', async ({
@@ -36,20 +38,11 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
     // tie in Chrome/lavapipe. Keep the near-field sweep asymmetric so the
     // oracle exercises camera motion without depending on that raster boundary.
     const cameraPositions = small ? ([1.2, 1.03, 0.8] as const) : ([14, 12, 10] as const);
-    // Read back the backing store rather than the clipped iframe viewport. CI's
-    // 320x180 outer browser can crop an element screenshot, which would remap
-    // the projected receiver samples and turn a valid contact shadow into a
-    // false detachment. `toDataURL` preserves the 640px backing image.
-    const canvasSize = 640;
-    const canvas = document.createElement('canvas');
-    canvas.width = canvasSize;
-    canvas.height = canvasSize;
+    // Snapshot the full backing store. Chromium's direct canvas copy can read
+    // a stale presented surface; the synchronous PNG snapshot is authoritative.
+    const { canvas, renderer } = await rendererFor();
     canvas.style.width = `${canvasSize}px`;
     canvas.style.height = `${canvasSize}px`;
-    document.body.append(canvas);
-    const renderer = (
-      await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' })
-    ).unwrap();
     const world = new World();
     const context = await createWorldContext(world, [scenePlugin()]);
     const material = testAssets(world)
@@ -109,6 +102,9 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
       )
       .unwrap();
     const lease = renderValue(renderer.attach(world));
+    const output = new OffscreenCanvas(canvasSize, canvasSize);
+    const ctx = output.getContext('2d', { willReadFrequently: true });
+    assert(ctx);
     const capture = async (_label: string) => {
       for (let frame = 0; frame < 3; frame++) {
         world.update(1 / 60).unwrap();
@@ -124,9 +120,7 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
       const dataUrl = canvas.toDataURL('image/png');
       const bytes = Uint8Array.from(atob(dataUrl.split(',', 2)[1] ?? ''), (c) => c.charCodeAt(0));
       const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
-      const output = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const ctx = output.getContext('2d');
-      assert(ctx);
+      ctx.clearRect(0, 0, output.width, output.height);
       ctx.drawImage(bitmap, 0, 0);
       bitmap.close();
       return ctx.getImageData(0, 0, output.width, output.height);
@@ -219,9 +213,11 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
         expect(Math.min(...clearRatios)).toBeGreaterThan(0.95);
       }
     } finally {
-      await renderer.dispose();
+      lease.dispose();
       await context.fiber.dispose();
-      canvas.remove();
+      testAssets(world).release(floor).unwrap();
+      testAssets(world).release(column).unwrap();
+      testAssets(world).release(material).unwrap();
     }
   }, 120000);
 }

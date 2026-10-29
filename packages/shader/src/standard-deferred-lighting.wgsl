@@ -218,8 +218,9 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
     albedo.a, roughness, response.rgb, dielectricSpecular, albedo.rgb, skylight, irradianceMap, linearSampler,
     prefilterMap, linearSampler, brdfLut, skylightPrefilterMap, sh, localBlend);
   var screenAo = 1.0;
+  // The AO producer already applied the intensity exponent before filtering.
   if (params.lanes.x > 0.0) {
-    screenAo = pow(clamp(textureSampleLevel(screenOcclusion, linearSampler, uv, 0.0).r, 0.0, 1.0), params.lanes.x);
+    screenAo = clamp(textureSampleLevel(screenOcclusion, linearSampler, uv, 0.0).r, 0.0, 1.0);
   }
   let ao = response.a * screenAo;
   let viewZ = sceneViewZ(view.worldViewProj * vec4<f32>(position, 1.0), view.temporalProjection);

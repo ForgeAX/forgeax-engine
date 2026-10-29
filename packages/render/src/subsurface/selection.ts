@@ -1,6 +1,6 @@
 import type { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { MaterialFrame } from '../scene/material-dispatch';
 
 export type SubsurfaceDemand = number | 'invalid-values' | 'invalid-surface' | 'missing-material';
 
@@ -31,6 +31,8 @@ function profile(material: MaterialSnapshot | undefined): SubsurfaceDemand {
   return key;
 }
 
+const EMPTY_MATERIALS = new MaterialFrame(undefined);
+
 /** Membership comes from actual culling; later adoption visits changed shared assets only. */
 export class SubsurfaceSelection {
   private readonly members = new Map<MaterialResource, SubsurfaceDemand>();
@@ -39,12 +41,18 @@ export class SubsurfaceSelection {
   private distinct = 0;
 
   add(source: Pick<RenderableSnapshot, 'material' | 'materials'>, materials: MaterialFrame): void {
-    for (const resource of source.materials.length === 0 ? [source.material] : source.materials) {
-      if (this.members.has(resource)) continue;
-      const value = profile(materials.get(resource)?.snapshot);
-      this.members.set(resource, value);
-      this.adjust(value, 1);
-    }
+    // Runs per renderable each frame: no one-element array for the default slot.
+    const slots = source.materials;
+    if (slots.length === 0) this.addMember(source.material, materials);
+    for (let index = 0; index < slots.length; index++)
+      this.addMember(slots[index] as MaterialResource, materials);
+  }
+
+  private addMember(resource: MaterialResource, materials: MaterialFrame): void {
+    if (this.members.has(resource)) return;
+    const value = profile(materials.get(resource)?.snapshot);
+    this.members.set(resource, value);
+    this.adjust(value, 1);
   }
 
   adopt(materials: MaterialFrame): void {
@@ -61,6 +69,28 @@ export class SubsurfaceSelection {
         this.adjust(value, 1);
         this.members.set(resource, value);
       });
+    this.frame = materials;
+  }
+
+  /**
+   * Membership of every accepted material, maintained from frame changes. The
+   * GPU lane admits all owned rows, so its demand is material-wide.
+   */
+  trackAll(materials: MaterialFrame): void {
+    if (this.frame === materials) return;
+    materials.changesSince(this.frame ?? EMPTY_MATERIALS, (before, after) => {
+      const resource = (after ?? before)?.resource;
+      if (resource === undefined) return;
+      const old = this.members.get(resource);
+      if (old !== undefined) {
+        this.adjust(old, -1);
+        this.members.delete(resource);
+      }
+      if (after === undefined) return;
+      const value = profile(after.snapshot);
+      this.members.set(resource, value);
+      this.adjust(value, 1);
+    });
     this.frame = materials;
   }
 

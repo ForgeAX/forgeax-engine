@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DdcEntryStore, DdcLifecycle, ddcOutputDigest } from '@forgeax/engine-ddc';
+import { DdcEntryStore, DdcLifecycle, DdcStoreError, ddcOutputDigest } from '@forgeax/engine-ddc';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   commitImportPublication,
@@ -204,6 +204,96 @@ describe('source package publication concurrency', () => {
       ok: false,
       error: { code: 'source-package-ddc-failed', detail: 'DDC lifecycle commit returned stale' },
     });
+    if (!result.ok) {
+      expect(result.error.hint).toContain('retry');
+      expect(result.error.hint).not.toContain('discard');
+      expect(result.error.diagnostic.detail.ddcCommitResult).toBe('stale');
+      expect(result.error.diagnostic.detail.ddcError).toBeUndefined();
+    }
+  });
+
+  it('retains the lease failure and retry guidance when the published entry is valid', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
+    roots.push(root);
+    const staged = await stageImportPublication(input(root));
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const expiredAt = staged.candidate.ddc.lease.expiresAt + 1;
+    vi.spyOn(Date, 'now').mockReturnValue(expiredAt);
+
+    const result = await commitImportPublication(staged.candidate);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'source-package-ddc-failed',
+        hint: 'discard the stale commit and acquire a new lease',
+        diagnostic: {
+          detail: {
+            reason: 'cook lease expired before commit fencing',
+            ddcError: {
+              code: 'ddc-lease-expired',
+              lease: staged.candidate.ddc.lease.attempt,
+              owner: 'engine-ddc',
+              recoveryActions: [{ kind: 'release-lease' }, { kind: 'retry' }],
+            },
+          },
+        },
+      },
+    });
+    expect(await new DdcEntryStore(root).read(KEY)).not.toBeNull();
+  });
+
+  it('keeps an immutable conflict diagnostic and the verified existing entry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
+    roots.push(root);
+    const first = await stageImportPublication(input(root));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(await commitImportPublication(first.candidate)).toMatchObject({ ok: true });
+    const existing = await new DdcEntryStore(root).read(KEY);
+    const competing = await stageImportPublication({
+      ...input(root),
+      pack: { schemaVersion: '2.0.0', assets: [{ guid: GUID, payload: { value: 'different' } }] },
+    });
+    expect(competing.ok).toBe(true);
+    if (!competing.ok) return;
+
+    const result = await commitImportPublication(competing.candidate);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        hint: 'keep the verified entry and reject the competing publication',
+        diagnostic: { detail: { ddcError: { code: 'ddc-entry-conflict' } } },
+      },
+    });
+    expect(await new DdcEntryStore(root).read(KEY)).toEqual(existing);
+  });
+
+  it('retains staging recovery evidence without exposing host-only targets', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
+    roots.push(root);
+    const failure = new DdcStoreError({
+      code: 'ddc-entry-invalid',
+      detail: 'entry integrity mismatch',
+      hostPath: '/private/cache/entry',
+      recoveryActions: [
+        { kind: 'cold-rebuild', executable: true, exactTarget: '/private/cache/entry' },
+      ],
+    });
+    vi.spyOn(DdcEntryStore.prototype, 'stage').mockRejectedValueOnce(failure);
+
+    const result = await stageImportPublication(input(root));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        hint: failure.hint,
+        diagnostic: { detail: { reason: failure.detail, ddcError: failure.toBrowserProjection() } },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('/private/cache/entry');
   });
 
   it('persists concurrent equivalent transports without sharing a temporary path', async () => {
@@ -495,7 +585,7 @@ describe('source package publication concurrency', () => {
   ] as const)('rejects $label before advancing the DDC head', async ({ pack, artifacts, body }) => {
     for (const wire of [false, true]) {
       const publishedPack = wire
-        ? { schemaVersion: 'pack-material-programs/1', pack, programs: [] }
+        ? { schemaVersion: 'pack-material-programs/2', pack, programs: [], abis: [] }
         : pack;
       const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
       roots.push(root);

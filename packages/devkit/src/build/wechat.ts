@@ -1,10 +1,10 @@
 import {
+  cp,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   realpath,
-  rename,
   rm,
   stat,
   writeFile,
@@ -14,9 +14,13 @@ import { dirname, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { brotliCompress, constants } from 'node:zlib';
+import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
+import { prepareDist } from '../delivery-dist.js';
+import { collectDistArtifacts } from '../dist.js';
 import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
+import { type HostVersions, hostVersions } from '../host/versions.js';
 import type { DevKitAppOptions } from '../plugin-build.js';
 import type { BuildOptions, ProjectFacts } from '../types.js';
 import { type PluginSourceInventory, pluginAssetClosure } from './plugin-assets.js';
@@ -44,7 +48,15 @@ export async function prepareWechatBuild(
   const native = resolve(staging, 'wgpu');
   await writeFile(
     resolve(generated, 'wechat-main.ts'),
-    wechatHostSource(facts, native, process.env.FORGEAX_ENGINE_RHI_DEBUG === '1', appOptions),
+    wechatHostSource(
+      facts,
+      native,
+      process.env.FORGEAX_ENGINE_RHI_DEBUG === '1',
+      appOptions,
+      process.env.FORGEAX_WECHAT_CPU_PROFILE === '1',
+      process.env.FORGEAX_WECHAT_FRAME_TRACE === '1',
+      await hostVersions(facts),
+    ),
   );
   await writeFile(resolve(generated, 'wechat-game.ts'), wechatGameSource(physics, facts));
   await writeFile(
@@ -197,8 +209,30 @@ export async function writeWechatProject(
   await mkdir(outDir, { recursive: true });
   const entries = await readdir(outDir);
   const payload = resolve(outDir, 'payload');
-  await mkdir(payload);
-  for (const entry of entries) await rename(resolve(outDir, entry), resolve(payload, entry));
+  const player = await prepareDist(
+    outDir,
+    {
+      schemaVersion: '1.0.0',
+      target: 'wechat',
+      project: { id: facts.id, name: facts.name },
+      base: options.base ?? '/',
+      runtime: { packIndexUrl: 'pack-index.json', shaderManifestUrl: 'shaders/manifest.json' },
+      artifacts: await collectDistArtifacts(outDir),
+    },
+    // Native Brotli shares repeated WGSL across Bundle entries. Inner zstd
+    // obscures that repetition and increases the deployed package size.
+    { compressDocuments: false, compressEntries: false },
+  );
+  try {
+    await mkdir(payload);
+    await cp(player.root, payload, {
+      recursive: true,
+      filter: (source) => source !== resolve(player.root, 'forgeax-dist.json'),
+    });
+    for (const entry of entries) await rm(resolve(outDir, entry), { recursive: true });
+  } finally {
+    await rm(player.root, { recursive: true, force: true });
+  }
   const compress = promisify(brotliCompress);
   const resources: string[] = [];
   async function publish(directory: string): Promise<void> {
@@ -225,10 +259,33 @@ export async function writeWechatProject(
   await Promise.all([
     writeFile(
       resolve(outDir, 'game.js'),
-      `const inspection = { phase: 'subpackage-loading', error: undefined, renderer: () => ({ state: 'initializing', phase: inspection.phase, lastError: inspection.error }) };
+      `const packageLoad = { events: 0, progressAvailable: false };
+const inspection = { phase: 'subpackage-loading', error: undefined, renderer: () => ({ state: 'initializing', phase: inspection.phase, lastError: inspection.error, packageLoad: { ...packageLoad } }) };
 globalThis.__forgeaxGameInspection = inspection;
 console.info('[forgeax.wechat.startup]', 'subpackage-loading');
-wx.loadSubpackage({ name: 'payload', success() { if (inspection.phase === 'subpackage-loading') inspection.phase = 'subpackage-loaded'; console.info('[forgeax.wechat.startup]', 'subpackage-loaded'); }, fail(error) { inspection.phase = 'failed'; inspection.error = error; console.error('ForgeaX package failed', error); wx.showModal({ title: 'Unable to load', content: error.errMsg || String(error), showCancel: false }); } });\n`,
+const task = wx.loadSubpackage({ name: 'payload', success() { if (inspection.phase === 'subpackage-loading') inspection.phase = 'subpackage-loaded'; console.info('[forgeax.wechat.startup]', 'subpackage-loaded'); }, fail(error) {
+  const nativeMessage = error && error.errMsg;
+  const message = typeof nativeMessage === 'string' ? nativeMessage : String(error);
+  inspection.phase = 'failed';
+  inspection.error = { operation: 'wx.loadSubpackage', name: 'payload', message, cause: error };
+  console.error('ForgeaX package failed', error);
+  wx.showModal({ title: 'Unable to load', content: message, showCancel: false });
+} });
+try {
+  packageLoad.progressAvailable = !!task && typeof task.onProgressUpdate === 'function';
+  if (packageLoad.progressAvailable && inspection.phase === 'subpackage-loading') task.onProgressUpdate(event => {
+    if (inspection.phase !== 'subpackage-loading') return;
+    packageLoad.events++;
+    packageLoad.lastProgressAt = Date.now();
+    try {
+      for (const key of ['progress', 'totalBytesWritten', 'totalBytesExpectedToWrite']) {
+        const value = event && event[key];
+        if (Number.isSafeInteger(value) && value >= 0 && (key !== 'progress' || value <= 100)) packageLoad[key] = value;
+        else packageLoad.invalidFields = (packageLoad.invalidFields || 0) + 1;
+      }
+    } catch (error) { packageLoad.observerError = String(error).slice(0, 512); }
+  });
+} catch (error) { packageLoad.observerError = String(error).slice(0, 512); }\n`,
     ),
     writeFile(
       resolve(outDir, 'game.json'),
@@ -287,7 +344,11 @@ export function wechatHostSource(
   native: string,
   rhiDebug = false,
   appOptions: DevKitAppOptions = {},
+  cpuProfile = false,
+  frameTrace = false,
+  versions?: HostVersions,
 ): string {
+  const loadingLabels = resolveLoadProgressLabels(appOptions.loadingLabels);
   return `import { createWechatPlatform, createWechatWasmHost, createWechatWgpuHost, createWechatInputBackend, createWechatAudioBackend, createWechatPackageFetcher } from '@forgeax/engine/platform-wechat';
 import { createBlitzUi, gpuShaders } from '@forgeax/engine/ui-blitz';
 import { inspectUi } from '@forgeax/engine/ui';
@@ -296,7 +357,9 @@ import * as nativeWgpu from ${JSON.stringify(resolve(native, 'wgpu-native.mjs'))
 import { constructRuntimeRendererHost } from '@forgeax/engine/runtime/internal/renderer-host';
 import { createApp, inputPlugin, canvasAspectPlugin } from '@forgeax/engine/app';
 ${rhiDebug ? "import { attachRecorder } from '@forgeax/engine/rhi-debug';\nimport { createRhiCapture, createRhiInstrumentation } from '@forgeax/engine/app';\nimport { createShaderModule, createShaderModuleImmediate } from '@forgeax/engine/rhi-wgpu';" : ''}
+${cpuProfile ? "import { createProfiler } from '@forgeax/engine/profiler';" : ''}
 import { World } from '@forgeax/engine/ecs';
+import { inspectPluginFiber } from '@forgeax/engine/plugin';
 import { inputBackendPlugin } from '@forgeax/engine/input';
 import { audioBackendPlugin, audioPlugin } from '@forgeax/engine/audio';
 import { createCatalogSource } from '@forgeax/engine/assets-runtime';
@@ -330,6 +393,73 @@ async function boot(identity, reload) {
   let presented = 0;
   let lastCompletion;
   let phase;
+  const profiler = ${cpuProfile ? 'createProfiler()' : 'undefined'};
+  ${
+    frameTrace
+      ? `let frameReceiptTrace;
+  let frameCaptureSequence = 0;
+  const frameTraceStatistics = values => {
+    if (values.length === 0) return { count: 0, mean: null, p50: null, p95: null, p99: null, max: null };
+    const sorted = values.slice().sort((a, b) => a - b);
+    const percentile = fraction => sorted[Math.floor((sorted.length - 1) * fraction)];
+    return { count: values.length, mean: values.reduce((sum, value) => sum + value, 0) / values.length,
+      p50: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99), max: sorted[sorted.length - 1] };
+  };
+  const frameTraceState = () => {
+    const capture = frameReceiptTrace;
+    if (capture === undefined) return { status: 'not-started' };
+    const events = capture.events;
+    const intervals = events.slice(1).map((event, index) => event.completedAtMs - events[index].completedAtMs);
+    const submitToCompletion = events.flatMap(event => event.submitToCompletionMs === undefined ? [] : [event.submitToCompletionMs]);
+    const ready = events.filter(event => event.presentation === 'ready');
+    const worldIdentities = Array.from(new Set(events.map(event => event.worldIdentity).filter(Boolean)));
+    const deviceGenerations = Array.from(new Set(events.map(event => event.deviceGeneration)));
+    const first = events[0];
+    const last = events[events.length - 1];
+    const elapsedMs = first === undefined || last === undefined ? null : last.completedAtMs - first.completedAtMs;
+    const complete = !capture.active && events.length === capture.frameLimit;
+    const completionSilenceMs = wx.getPerformance().now() - (last?.completedAtMs ?? capture.startedAtMs);
+    const status = capture.active
+      ? completionSilenceMs > 1000 ? 'stalled' : 'capturing'
+      : complete ? 'complete' : 'incomplete';
+    return { status,
+      captureId: capture.captureId, frameLimit: capture.frameLimit, sampleCount: events.length,
+      droppedCount: capture.droppedCount, readyCount: ready.length, startedAtMs: capture.startedAtMs,
+      finishedAtMs: capture.finishedAtMs ?? null, elapsedMs, completionSilenceMs,
+      stopReason: capture.stopReason ?? null,
+      completedFps: elapsedMs !== null && elapsedMs > 0 && events.length > 1 ? (events.length - 1) * 1000 / elapsedMs : null,
+      readyFps: ready.length === events.length && elapsedMs !== null && elapsedMs > 0 && ready.length > 1
+        ? (ready.length - 1) * 1000 / elapsedMs : null,
+      frameIntervalMs: frameTraceStatistics(intervals), submitToCompletionMs: frameTraceStatistics(submitToCompletion),
+      worldIdentities, deviceGenerations,
+      submissionMatchCount: submitToCompletion.length };
+  };
+  const recordFrameSubmission = detail => {
+    const capture = frameReceiptTrace;
+    if (capture?.active !== true) return;
+    if (capture.submittedAtMs.size >= 4) {
+      capture.submittedAtMs.delete(capture.submittedAtMs.keys().next().value);
+      capture.droppedCount++;
+    }
+    capture.submittedAtMs.set(detail.frameId, wx.getPerformance().now());
+  };
+  const recordFrameCompletion = detail => {
+    const capture = frameReceiptTrace;
+    if (capture?.active !== true) return;
+    const completedAtMs = wx.getPerformance().now();
+    const submittedAtMs = capture.submittedAtMs.get(detail.frameId);
+    capture.submittedAtMs.delete(detail.frameId);
+    const event = { frameId: detail.frameId, deviceGeneration: detail.deviceGeneration,
+      presentation: detail.presentation, worldIdentity: detail.worldIdentity,
+      completedAtMs, ...(submittedAtMs === undefined ? {} : { submitToCompletionMs: completedAtMs - submittedAtMs }) };
+    capture.events.push(event);
+    if (capture.events.length >= capture.frameLimit) {
+      capture.active = false;
+      capture.finishedAtMs = completedAtMs;
+    }
+  };`
+      : ''
+  }
   ${gameProjectionSource}
   const advance = next => {
     if (phase === next) return;
@@ -351,8 +481,47 @@ async function boot(identity, reload) {
       if (entry?.kind !== 'read') throw new Error('forgeax: game read projection not found ' + id);
       return entry.definition.read();
     }, assets: () => graphics?.assets.inspect(), world: () => app?.world.inspect(),
-    runtimePacks: () => app?.pluginContext.runtimePacks?.producer.inspect(), renderer: () => ({ ...(app?.renderer.inspect() ?? { state: 'initializing' }),
-    generation: identity, phase, completed, presented,
+    plugins: () => {
+      const fibers = [];
+      if (app === undefined) return { fibers, status: 'not-started' };
+      for (const runtime of app.pluginContext.registry.values()) {
+        for (const fiber of runtime.fibers) {
+          if (fibers.length >= 128) return { fibers, truncated: true };
+          fibers.push(inspectPluginFiber(fiber));
+        }
+      }
+      return { fibers, truncated: false };
+    },
+    runtimePacks: () => app?.pluginContext.runtimePacks?.producer.inspect(),
+    ${
+      cpuProfile
+        ? `profileStart: () => {
+      const started = profiler.startCapture({ frameLimit: 180, eventLimit: 16384 });
+      return started.ok ? { ok: true, captureId: profiler.activeCaptureId() } : { ok: false, error: started.error };
+    }, profileState: () => ({ activeCaptureId: profiler.activeCaptureId(), latest: profiler.latestCapture() }),`
+        : ''
+    }
+    ${
+      frameTrace
+        ? `frameReceiptTraceStart: () => {
+      if (phase !== 'ready') return { ok: false, error: 'scene-not-ready' };
+      if (frameReceiptTrace?.active === true) return { ok: false, error: 'capture-active', captureId: frameReceiptTrace.captureId };
+      const captureId = identity + '-receipt-' + (++frameCaptureSequence);
+      frameReceiptTrace = { captureId, active: true, frameLimit: 600, events: [], submittedAtMs: new Map(),
+        droppedCount: 0, startedAtMs: wx.getPerformance().now(), finishedAtMs: undefined };
+      return { ok: true, captureId, frameLimit: frameReceiptTrace.frameLimit, clock: 'wx.getPerformance().now' };
+    }, frameReceiptTraceStop: () => {
+      const capture = frameReceiptTrace;
+      if (capture?.active !== true) return { ok: false, error: 'capture-not-active', state: frameTraceState() };
+      capture.active = false;
+      capture.stopReason = 'operator';
+      capture.finishedAtMs = wx.getPerformance().now();
+      return { ok: true, state: frameTraceState() };
+    }, frameReceiptTraceState: frameTraceState,`
+        : ''
+    }
+    renderer: () => ({ ...(app?.renderer.inspect() ?? { state: 'initializing' }),
+    generation: identity, phase, completed, presented, execution: app?.execution.report(),
     lastCompletion: lastCompletion === undefined ? undefined : { ...lastCompletion }, startupError, lastError: app?.lastError }) };
   globalThis.__forgeaxGameInspection = inspection;
   releases.push(() => { if (startupError === undefined && globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection; });
@@ -388,7 +557,7 @@ async function boot(identity, reload) {
   releases.push(() => uiLifetime.abort());
   ui = await createBlitzUi({
     wasm: uiWasm ??= createWechatWasmHost(native, 'payload/wasm/ui.wasm.br').unwrap(),
-    html: ${JSON.stringify(hostStartupDocument(facts.name).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
+    html: ${JSON.stringify(hostStartupDocument(facts.name, loadingLabels, versions).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
     width: canvas.width, height: canvas.height, pixelRatio: display.pixelRatio,
     font: new Uint8Array(await (await fetcher('https://forgeax.package/ui-fonts/files/noto-sans-sc-latin-wght-normal.woff2')).arrayBuffer()),
     fontFamily: 'Noto Sans SC Variable',
@@ -401,7 +570,7 @@ async function boot(identity, reload) {
   const host = { document: ui.document, events: ui.document, surface: () => canvas,
     now: () => platform.now().unwrap(), visible: () => platform.visible(),
     reducedMotion: false, reload };
-  startup = ${hostStartupScript(true, 'host')};
+  startup = ${hostStartupScript(true, 'host', loadingLabels)};
   const input = createWechatInputBackend(wx, platform, { ui: ui.input, keyboard: wx,
     onError: error => console.warn('ForgeaX native input failed', error) }).unwrap();
   releases.push(() => input.detach());
@@ -423,8 +592,12 @@ async function boot(identity, reload) {
     ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
     features: [gameVfx.feature],
     dynamicGeometryMeshBudgetBytes: ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)},
+    assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},
     pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
+    backgroundPipelineLibrary: ${JSON.stringify(appOptions.backgroundPipelineLibrary)},
     standardProfile: ${JSON.stringify(appOptions.standardProfile)},
+    maxRenderShortSide: ${JSON.stringify(appOptions.wechat?.maxRenderShortSide ?? 720)},
+    ${cpuProfile ? 'profiler,' : ''}
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
   }, { ...forgeaxBundlerAdapter(), shaderManifestUrl: 'https://forgeax.package/shaders/manifest.json', readShaderManifest: async url => (await fetcher(url)).text() }));
   releases.push(() => graphics.renderer.dispose());
@@ -435,13 +608,19 @@ async function boot(identity, reload) {
   advance('app');
   app = (await createApp({ platform, renderer: graphics.renderer, world, assets: graphics.assets, assetCatalog: catalog,
     ${rhiDebug ? 'rhiCapture,' : ''}
+    ${cpuProfile ? 'profiler,' : ''}
     drawSource: () => game !== undefined && startupError === undefined ? undefined : null,
     pluginPrograms: enginePrograms('wechat-' + identity, 'engine', identity),
     runtimePacks: { scopeId: runtimeBinding.scopeId, imports, programHost },
     plugins: [inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin],
-    onFrameSubmitted: detail => { if (!closed && generation === identity) startup.submitted(detail); },
+    onFrameSubmitted: detail => {
+      if (closed || generation !== identity) return;
+      ${frameTrace ? 'recordFrameSubmission(detail);' : ''}
+      startup.submitted(detail);
+    },
     onFrameCompleted: detail => {
       if (closed || generation !== identity) return;
+      ${frameTrace ? 'recordFrameCompletion(detail);' : ''}
       completed += 1; lastCompletion = detail;
       if (game !== undefined && detail.presentation === 'ready') {
         presented += 1;
@@ -498,6 +677,7 @@ async function boot(identity, reload) {
 }
 
 function wechatGameSource(physics: readonly ('2' | '3')[], facts: ProjectFacts): string {
+  const startupTimeout = JSON.stringify(facts.startupTimeoutMs ?? null);
   return `import { activateExecutionRoot, gameHostPlugin } from '@forgeax/engine/app';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { scenePlugin } from '@forgeax/engine/scene';
@@ -534,12 +714,12 @@ export async function activate({ app, graphics, ui, canvas, gameProjection, gene
   for (const plugin of [renderComponentsPlugin(), scenePlugin(), skinningPlugin(), animationPlugin(), statePlugin(), gameHostPlugin({ app, assets, canvas,
     drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
     renderer: app.renderer, port: channel.port1, uiRoot: ui.document.querySelector('#game-ui'), gameProjection,
-    startupTimeoutMs: ${JSON.stringify(facts.startupTimeoutMs)},
+    startupTimeoutMs: ${startupTimeout},
     controlMode: { read: () => 'touch', subscribe: () => () => {} },
     setPointerLockAllowed: () => {},
   })]) { const fiber = app.pluginContext.plugin(plugin); fibers.push(fiber); await fiber.await(); }
   if (engineRoot !== null) {
-    const mounted = await activateExecutionRoot(app.pluginContext, { guid: engineRoot }, { signal: lifetime.signal, timeoutMs: ${JSON.stringify(facts.startupTimeoutMs)} });
+    const mounted = await activateExecutionRoot(app.pluginContext, { guid: engineRoot }, { signal: lifetime.signal, timeoutMs: ${startupTimeout} });
     fibers.push(mounted.fiber);
   }
   if (frontendRoot !== null && active()) {
@@ -552,7 +732,7 @@ export async function activate({ app, graphics, ui, canvas, gameProjection, gene
       ctx.provide('pluginPrograms', frontendPrograms('wechat-' + generation, 'frontend', generation));
     } });
     fibers.push(provider); await provider.await();
-    const mounted = await activateExecutionRoot(frontend, { guid: frontendRoot }, { signal: lifetime.signal, timeoutMs: ${JSON.stringify(facts.startupTimeoutMs)} });
+    const mounted = await activateExecutionRoot(frontend, { guid: frontendRoot }, { signal: lifetime.signal, timeoutMs: ${startupTimeout} });
     fibers.push(mounted.fiber);
   }
   return { dispose: cleanup };

@@ -8,8 +8,8 @@ import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { samplerContribution } from '../assets/asset-decoders';
 import { CAMERA_PROJECTION_ORTHOGRAPHIC, Camera, MeshFilter, MeshRenderer } from '../components';
 import { GlyphText } from '../components/glyph-text';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 
 /** Font and atlas edits reach native Glyph drawing through local and serialized publications. */
 export async function verifyRuntimeGlyph(mode: 'local' | 'worker', url: string) {
@@ -138,7 +138,7 @@ export async function verifyRuntimeGlyph(mode: 'local' | 'worker', url: string) 
         candidate?.accept();
         const request =
           packet !== undefined
-            ? { publication: packet }
+            ? { publication: encodeRenderPublication(packet) }
             : (() => {
                 assert(lease);
                 return { leases: [lease], camera: { lease }, environment: { lease } };
@@ -152,7 +152,9 @@ export async function verifyRuntimeGlyph(mode: 'local' | 'worker', url: string) 
         const complete = await receipt.completed;
         assert(complete.ok);
         if (packet !== undefined)
-          publisher?.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+          publisher
+            ?.recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+            .unwrap();
         return receipt;
       });
       readyFrames++;

@@ -1,5 +1,7 @@
 # @forgeax/engine-types
 
+`ImporterCapabilities.sourceFormats` declares producer-owned single-output source extensions, output kind, semantic sourceKey and default settings. Tool adapters consume these facts without maintaining a second format registry. `PackSchemaDiagnostic` preserves optional AJV keyword, schemaPath and params alongside its path/message.
+
 `AssetError` and `ImageErrorImpl` construct the shared asset error envelopes.
 `imageError(detail, expected?)` preserves correlated code/detail types; consumers
 can state their own precondition while sharing the error identity and hints.
@@ -9,6 +11,18 @@ payload, while a supplied table (including `[]`) belongs to indexed wire values.
 The Pack v2 wire envelope still requires its `refs` array. Catalog retains this
 producer fact so Scene binding can distinguish World handles from reference
 indexes using the destination World's component schema.
+
+`ShaderSource` retains immutable source text without runtime fragmentation.
+`matches(text)` compares exact UTF-16 content across supplied fragments without
+joining or hashing, but can scan the complete text. The device reuses its source
+owner for unchanged labeled raw-string requests; unlabeled strings still require
+content hashing. Prefer `source.descriptor(label)` when an admitted owner already
+exists: it bypasses text matching and reuses the owner's lazy identity. Changed
+content invalidates the module and pending completion. `read()` returns full text.
+Synchronous contract SHA-256 uses Node native crypto when its builtin loader is
+available; browsers and other carriers retain portable SHA-256. Both hash the
+same full UTF-8 text, including replacement of unpaired surrogates. Native
+hashing avoids a full encoded copy and JavaScript compression rounds.
 
 Material programs declare their resource interface with `program.bindings`.
 Omission selects `render-material`; WGSL identifiers never select an interface.
@@ -255,10 +269,10 @@ Main entry: types plus pure functions over them (e.g. `Result` helpers, `isTrian
 
 | Category | Exports | Description |
 |:--|:--|:--|
-| GPUFlagsConstant alias | `BufferUsageFlags` / `TextureUsageFlags` / `MapModeFlags` / `ShaderStageFlags` / `ColorWriteFlags` | TS side collapses to `number`; runtime values provided by `@webgpu/types` injected globals |
-| Enum alias pass-through | `TextureFormat` / `AddressMode` / `FilterMode` / `CompareFunction` / `PrimitiveTopology` / others | `@webgpu/types` namespace literal union pass-through |
+| Enum alias pass-through | `TextureFormat` / `AddressMode` / `FilterMode` / `CompareFunction` / `PrimitiveTopology` | `@webgpu/types` namespace literal union pass-through |
 | Pass-based material types | `ParamSchemaEntry` / `MaterialAsset` / `MaterialPass` | ParamSchema entry shape + MaterialAsset with passes[] + pass descriptor; see MaterialAsset section below |
 | Managed asset contracts | `AssetHandle` / `AssetKind` / `AssetDecoderContribution` / `AssetError` | Runtime identity, kind-owned source admission and structured failures; see [`assets-runtime`](../assets-runtime/README.md) |
+| Load timeline | `markLoadTimeline` / `beginLoadTimeline` / `recordLoadTimeline` / `collectLoadTimeline` / `snapshotLoadTimeline` / `LoadTimelineRecord` | Default-on bounded per-realm load records collected across realms; see load timeline |
 | Remote error model | `RemoteErrorCode` / `RemoteError` | 5-member closed union (script-syntax-error / script-runtime-error / server-startup-failed / server-not-running / eval-result-not-serializable) + structured interface/detail; runtime class lives in `@forgeax/engine-remote/errors` (`implements RemoteError`); see [`@forgeax/engine-remote` README](../remote/README.md) for the full error model |
 
 ### Asset producer contract
@@ -555,7 +569,7 @@ Full interface source (SSOT): [`src/material/asset.ts`](./src/material/asset.ts)
 ## Relationship with `@webgpu/types`
 
 - **Dependency**: `@webgpu/types ^0.1.69` (version lock strategy detailed in repo root `AGENTS.md`).
-- **Shape alignment**: All numeric aliases (`BufferUsageFlags` etc.) strictly correspond to `GPUFlagsConstant` namespace -- TS side collapses to `number`, runtime values defined by W3C CR 3.6.
+- **Shape alignment**: Each alias is the `@webgpu/types` literal union it names; flag and size values stay the W3C globals (`GPUBufferUsage` etc.) with no forgeax alias.
 - **No redefinition**: This package never writes `export const BufferUsage = { MAP_READ: 0x0001, ... }`.
 - **Intentional differences**: None (this package only alias pass-through, zero shape divergence).
 

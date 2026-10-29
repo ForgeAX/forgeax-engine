@@ -345,35 +345,9 @@ describe('normalizePnpmStore', () => {
     await expect(readFile(join(store, 'index.db-shm'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('removes empty sideEffects metadata whose deps key is not reproducible', async () => {
-    const { root, path } = await writeIndex('empty.json', {
-      checkedAt: 123,
-      name: '@forgeax/engine-fbx',
-      sideEffects: { 'darwin;arm64;node26;deps=volatile': {} },
-    });
-
-    await normalizePnpmStore(root);
-
-    await expect(readFile(path, 'utf8')).resolves.toBe(
-      '{"checkedAt":0,"name":"@forgeax/engine-fbx"}\n',
-    );
-  });
-
-  it('keeps sideEffects metadata when it carries installed files', async () => {
-    const { root, path } = await writeIndex('non-empty.json', {
-      name: 'esbuild',
-      sideEffects: {
-        'darwin;arm64;node26;deps=stable': {
-          added: { 'bin/esbuild': { checkedAt: 123, mode: 493 } },
-        },
-      },
-    });
-
-    await normalizePnpmStore(root);
-
-    await expect(readFile(path, 'utf8')).resolves.toBe(
-      '{"name":"esbuild","sideEffects":{"darwin;arm64;node26;deps=stable":{"added":{"bin/esbuild":{"checkedAt":0,"mode":493}}}}}\n',
-    );
+  it('rejects a legacy JSON store instead of adapting it', async () => {
+    const { root } = await writeIndex('legacy.json', { name: 'legacy-store' });
+    await expect(normalizePnpmStore(root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 
@@ -548,9 +522,15 @@ describe('waitForNpmPublications', () => {
         });
       }
       if (url.endsWith('/dist-tags')) return Response.json({ latest: item.version });
+      if (url.endsWith('/%40forgeax%2Fengine-sdk')) {
+        expect(init.headers?.accept).toBe('application/vnd.npm.install-v1+json');
+        return Response.json({
+          versions: round === 1 ? {} : { [item.version]: { dist: { integrity: item.integrity } } },
+        });
+      }
       if (init.method === 'GET') {
-        return new Response(round === 1 ? null : 'sealed-bytes', {
-          status: round === 1 ? 404 : 200,
+        return new Response(round === 2 ? null : 'sealed-bytes', {
+          status: round === 2 ? 404 : 200,
         });
       }
       throw new Error(`unexpected fetch: ${url}`);
@@ -570,7 +550,7 @@ describe('waitForNpmPublications', () => {
         },
       }),
     ).resolves.toEqual({ verified: 1, tag: 'latest' });
-    expect(round).toBe(2);
+    expect(round).toBe(3);
     expect(progress).toEqual([
       {
         elapsedMs: 0,
@@ -582,9 +562,15 @@ describe('waitForNpmPublications', () => {
         elapsedMs: 10,
         tag: 'latest',
         verified: 0,
+        pending: [{ name: item.name, reason: 'install-metadata-version-missing' }],
+      },
+      {
+        elapsedMs: 20,
+        tag: 'latest',
+        verified: 0,
         pending: [{ name: item.name, reason: 'tarball-http-404' }],
       },
-      { elapsedMs: 20, tag: 'latest', verified: 1, pending: [] },
+      { elapsedMs: 30, tag: 'latest', verified: 1, pending: [] },
     ]);
   });
 
@@ -598,6 +584,8 @@ describe('waitForNpmPublications', () => {
     const fetchImpl = async (input) => {
       if (String(input).endsWith('/dist-tags'))
         throw new Error('tag query before immutable visibility');
+      if (String(input).endsWith('/%40forgeax%2Fengine'))
+        return Response.json({ versions: { '1.2.3': { dist: { integrity: item.integrity } } } });
       return String(input).endsWith('/archive.tgz')
         ? new Response(corrupt ? 'corrupt' : 'sealed')
         : Response.json({
@@ -661,7 +649,7 @@ describe('canonical kit output override', () => {
     );
   });
 
-  it('uses the generated canonical fallback in a public SDK checkout without asset submodules', async () => {
+  it('generates the default environment independently of bundled or private sky files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-public-canonical-kit-test-'));
     tempRoots.push(root);
     const checkout = join(root, 'checkout');
@@ -703,6 +691,12 @@ describe('canonical kit output override', () => {
     const markedOutput = join(root, 'marked-public-output');
     await build(markedOutput);
     expect(await readFile(join(markedOutput, 'sky.hdr'))).toEqual(publicBytes);
+    await rm(marker);
+    await writeFile(join(packageKit, 'sky.hdr'), 'previous library HDR must not be selected\n');
+    const localOutput = join(root, 'local-output');
+    await build(localOutput);
+    expect(await readFile(join(localOutput, 'sky.hdr'))).toEqual(publicBytes);
+    expect(publicBytes.byteLength).toBeLessThan(4096);
   });
 });
 
@@ -852,8 +846,14 @@ describe('SDK verifier template contract', () => {
     );
     expect(manifest.forgeax).not.toHaveProperty('assets');
     const host = await readFile(join(repositoryRoot, 'packages/devkit/src/host.ts'), 'utf8');
-    expect(host).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
-    expect(host).toContain('  createUiImporter(),');
+    const importers = await readFile(
+      join(repositoryRoot, 'packages/devkit/src/importers.ts'),
+      'utf8',
+    );
+    expect(host).toContain("import { DEFAULT_IMPORTERS } from './importers.js';");
+    expect(host).toContain('importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers]');
+    expect(importers).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
+    expect(importers).toContain('  createUiImporter(),');
     const html = await readFile(
       join(repositoryRoot, 'templates/game-3d/assets/guide.ui.html'),
       'utf8',
@@ -1061,7 +1061,7 @@ describe('SDK verifier template contract', () => {
     expect(frameDiagnostics).toContain('values.length < MAX_DIAGNOSTIC_ITEMS');
     expect(frameDiagnostics).toContain('value.slice(-DIAGNOSTIC_TEXT_LIMIT)');
     expect(frameDiagnostics).toContain("document.querySelector('#forgeax-fatal')");
-    expect(frameDiagnostics).toContain('forgeaxFrameSubmitted');
+    expect(frameDiagnostics).toContain('forgeaxFrameProgress');
     expect(frameDiagnostics).toContain('__forgeaxGameInspection');
     expect(frameDiagnostics).toContain('serverOutput: diagnostics.serverOutput()');
     expect(source).toContain(
@@ -1105,6 +1105,12 @@ describe('SDK verifier template contract', () => {
     expect(candidateWorkflow).not.toContain('FORGEAX_BROWSER_CI_LIGHTWEIGHT');
     expect(candidateWorkflow).not.toContain('quick');
     expect(promotionWorkflow).toContain('candidate_run_id:');
+    // An rc Promotion prepares its stable Candidate beside rc publication, and
+    // only an explicit stable Promotion fast-forwards `stable`.
+    expect(promotionWorkflow).toMatch(/prepare-stable-candidate:\n {4}needs: resolve-candidate\n/);
+    expect(promotionWorkflow).toContain('actions/workflows/sdk-release-candidate.yml/dispatches');
+    expect(promotionWorkflow).toContain(`git push origin "\${SOURCE_SHA}:refs/heads/stable"`);
+    expect(promotionWorkflow).not.toMatch(/git push (--force|-f)/);
     expect(promotionWorkflow).toContain('sdk-candidate.mjs verify');
     expect(promotionWorkflow).toContain('--candidate "$RUNNER_TEMP/sdk-candidate"');
     expect(promotionWorkflow).toContain('NPM_CONFIG_LOGLEVEL: error');

@@ -4,11 +4,13 @@ import { basename, dirname, resolve } from 'node:path';
 import { startVitest } from 'vitest/node';
 import { createZip } from './archive.js';
 import type { PluginSourceInventory } from './build/plugin-assets.js';
+import { prepareDist, retainPlayerDist } from './delivery-dist.js';
+import { readDeliverySource } from './delivery-identity.js';
 import { verifyDist } from './dist.js';
+import { engineStatusCommand } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { buildProject, startDevProjectWithHost, startPreviewProjectWithHost } from './host.js';
 import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from './package-documents.js';
-import { preparePlayerDist } from './player-dist.js';
 import { commandError, readProjectFacts } from './project.js';
 import {
   bundleSingleHtmlEntry,
@@ -68,27 +70,15 @@ export { sdkInstallCommand } from './sdk-install.js';
 export { shaderCheckCommand } from './shader-check.js';
 export { skillInstallCommand, skillVerifyCommand } from './skill-install.js';
 
-import {
-  type RhiDebugOperationContext,
-  type RhiDebugOperationInput,
-  type RhiDebugOperationName,
-  type RhiDebugOperationOutput,
-  runRhiDebugOperation,
-} from './rhi-debug/operations.js';
 import type {
   BuildOptions,
   CommandResult,
+  PackageFormat,
   PackageOptions,
+  PreviewOptions,
   ProjectCommandOptions,
+  ProjectFacts,
 } from './types.js';
-
-export function runRhiDebugCommand(
-  name: RhiDebugOperationName,
-  input: RhiDebugOperationInput,
-  context: RhiDebugOperationContext,
-): Promise<CommandResult<RhiDebugOperationOutput>> {
-  return runRhiDebugOperation(name, input, context);
-}
 
 export async function buildCommand(
   options: BuildOptions = {},
@@ -106,23 +96,30 @@ function releaseSlug(name: string): string {
   return slug.length > 0 ? slug : 'forgeax-game';
 }
 
-export async function packageCommand(
-  options: PackageOptions = {},
-): Promise<CommandResult<unknown>> {
-  const facts = await readProjectFacts(options.root);
-  if (!facts.ok) return facts;
+function shellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function packageOutput(
+  facts: ProjectFacts,
+  options: PackageOptions,
+): CommandResult<{
+  readonly format: PackageFormat;
+  readonly output: string;
+  readonly distRoot: string;
+}> {
   const format = options.format ?? 'web-zip';
   if (format !== 'web-zip' && format !== 'single-html') return packageFormatError(String(format));
   const defaultOutput =
     format === 'single-html'
-      ? `release/${releaseSlug(facts.value.name)}-offline.html`
-      : `release/${releaseSlug(facts.value.name)}-web.zip`;
-  const output = resolve(facts.value.root, options.output ?? defaultOutput);
+      ? `release/${releaseSlug(facts.name)}-offline.html`
+      : `release/${releaseSlug(facts.name)}-web.zip`;
+  const output = resolve(facts.root, options.output ?? defaultOutput);
   const expectedSuffix = format === 'single-html' ? '.html' : '.zip';
   if (!output.toLowerCase().endsWith(expectedSuffix)) {
     return packageOutputError(output, format);
   }
-  const distRoot = resolve(facts.value.root, 'dist');
+  const distRoot = resolve(facts.root, 'dist');
   if (isFilesystemPathWithin(distRoot, output)) {
     return {
       ok: false,
@@ -134,9 +131,23 @@ export async function packageCommand(
       },
     };
   }
+  return { ok: true, value: { format, output, distRoot } };
+}
+
+export async function packageCommand(
+  options: PackageOptions = {},
+): Promise<CommandResult<unknown>> {
+  const facts = await readProjectFacts(options.root);
+  if (!facts.ok) return facts;
+  const planned = packageOutput(facts.value, options);
+  if (!planned.ok) return planned;
+  const { format, output, distRoot } = planned.value;
   const packageDocuments =
     format === 'web-zip' ? await readGamePackageDocuments(facts.value.root) : undefined;
   if (packageDocuments !== undefined && !packageDocuments.ok) return packageDocuments;
+  const source = await readDeliverySource(facts.value.root);
+  const engine = await engineStatusCommand({ root: facts.value.root });
+  if (!engine.ok) return engine;
   const built = await buildCommand({
     root: facts.value.root,
     base: './',
@@ -151,7 +162,12 @@ export async function packageCommand(
   const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
   let playerRoot: string | undefined;
   try {
-    const player = await preparePlayerDist(distRoot, verified.value);
+    const player = await prepareDist(distRoot, verified.value, {
+      compressDocuments: format === 'web-zip' && options.compress !== false,
+      ...(format === 'web-zip'
+        ? { outputParent: resolve(facts.value.root, '.forgeax/player') }
+        : {}),
+    });
     playerRoot = player.root;
     if (format === 'single-html') {
       const indexHtml = await readFile(resolve(player.root, 'index.html'), 'utf8');
@@ -176,7 +192,21 @@ export async function packageCommand(
       ...(packageDocuments?.ok === true ? packageDocuments.value : []),
     ]);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
-    const manifestBytes = await readFile(resolve(player.root, 'forgeax-dist.json'));
+    const finalSource = await readDeliverySource(facts.value.root);
+    if (JSON.stringify(source) !== JSON.stringify(finalSource)) {
+      return {
+        ok: false,
+        error: {
+          code: 'package-source-changed',
+          expected: 'the source identity to remain fixed during packaging',
+          hint: 'Finish source edits and rerun packaging from one stable source tree.',
+          detail: { before: source, after: finalSource },
+        },
+      };
+    }
+    const retained = await retainPlayerDist(player.root, facts.value.root);
+    if (!retained.ok) return retained;
+    const { root: servedDirectory, manifestSha256: distManifestSha256 } = retained.value;
     await mkdir(dirname(archive), { recursive: true });
     await writeFile(temporaryArchive, bytes);
     await writeFile(temporaryChecksum, `${sha256}  ${basename(archive)}\n`);
@@ -191,6 +221,9 @@ export async function packageCommand(
         project: verified.value.project,
         base: verified.value.base,
         engine: {
+          mode: engine.value.mode,
+          version: engine.value.resolved.version,
+          runtimeDigest: engine.value.workspace?.digest ?? null,
           delivery: 'bundled-runtime',
           wasm: verified.value.artifacts.some((artifact) => artifact.path.endsWith('.wasm')),
         },
@@ -199,9 +232,20 @@ export async function packageCommand(
         bundles: player.bundles,
         documents: [...GAME_PACKAGE_DOCUMENT_PATHS],
         checksumPath,
-        distManifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+        distManifestSha256,
+        source,
+        delivery: { type: 'player', servedDirectory, diagnosticDirectory: distRoot },
         run: {
-          local: 'forgeax project preview',
+          local: `forgeax project preview --root ${shellArgument(facts.value.root)} --dist ${shellArgument(servedDirectory)}`,
+          localArgv: [
+            'forgeax',
+            'project',
+            'preview',
+            '--root',
+            facts.value.root,
+            '--dist',
+            servedDirectory,
+          ],
           shared: 'upload the ZIP to an HTTPS static or HTML-game host and share its URL',
         },
       },
@@ -224,7 +268,7 @@ export async function devCommand(
 }
 
 export async function previewCommand(
-  options: ProjectCommandOptions = {},
+  options: PreviewOptions = {},
 ): Promise<CommandResult<unknown>> {
   return startPreviewProjectWithHost(options);
 }

@@ -24,9 +24,18 @@ try {
     }).catch((error) => { evidence.failedResponses.push({ url: response.url(), error: String(error) }); }));
   });
   const frames = async (count) => {
-    const start = await page.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted) || 0);
-    await page.waitForFunction((end) => Number(document.documentElement.dataset.forgeaxFrameSubmitted) >= end, start + count, { timeout: 90000 });
-    return { start, end: await page.evaluate(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted)) };
+    const start = await page.evaluate(
+      () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
+    );
+    await page.waitForFunction(
+      (end) => (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= end,
+      start + count,
+      { timeout: 90_000 },
+    );
+    const end = await page.evaluate(
+      () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
+    );
+    return { start, end };
   };
   const capture = async (name) => {
     const file = resolve(output, `${name}.png`);

@@ -27,13 +27,13 @@ describe('animation target source boundary', () => {
     expect(source).toContain('AnimationTargetId');
   });
 
-  it('keeps Skin joints limited to palette and post-spawn joint wiring', () => {
+  it('keeps Skin joints limited to static render membership and post-spawn joint wiring', () => {
     const evaluator = readFileSync(
       new URL('../systems/advance-animation-player.ts', import.meta.url),
       'utf8',
     );
-    const palette = readFileSync(
-      new URL('../../../render/src/systems/skin-palette-allocator.ts', import.meta.url),
+    const membership = readFileSync(
+      new URL('../../../render/src/render-system-extract-tail.ts', import.meta.url),
       'utf8',
     );
     const jointWiring = readFileSync(
@@ -42,7 +42,11 @@ describe('animation target source boundary', () => {
     );
 
     expect(evaluator).not.toMatch(/\bSkin\.joints\b|world\.get\([^)]*,\s*Skin\b/);
-    expect(palette).toContain('Skin.joints');
+    expect(membership).toContain(
+      "const skinJoints = readRenderArrayView(scope.world, entity, read.skinComponent, 'joints');",
+    );
+    expect(membership).not.toMatch(/row\.get\(skinComponent\)|world\.get\([^)]*,\s*Skin\b/);
+    expect(membership).toContain('joints: Object.freeze(Array.from(skinJoints, Number))');
     expect(jointWiring).toContain('Skin');
     expect(jointWiring).toContain('joints');
   });

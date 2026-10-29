@@ -23,12 +23,12 @@ import { MINIMUM_SUPPORTED_PNPM, pnpmVersionAtLeast } from '../sdk-bootstrap.js'
 
 describe('pnpm support range', () => {
   it('accepts current pnpm 12 releases while rejecting older, other-major, and prerelease versions', () => {
-    expect(pnpmVersionAtLeast('12.10.1', MINIMUM_SUPPORTED_PNPM)).toBe(true);
-    expect(pnpmVersionAtLeast('12.10.2', MINIMUM_SUPPORTED_PNPM)).toBe(true);
-    expect(pnpmVersionAtLeast('12.10.0', MINIMUM_SUPPORTED_PNPM)).toBe(false);
+    expect(pnpmVersionAtLeast('12.15.0', MINIMUM_SUPPORTED_PNPM)).toBe(true);
+    expect(pnpmVersionAtLeast('12.15.1', MINIMUM_SUPPORTED_PNPM)).toBe(true);
+    expect(pnpmVersionAtLeast('12.14.0', MINIMUM_SUPPORTED_PNPM)).toBe(false);
     expect(pnpmVersionAtLeast('11.28.2', MINIMUM_SUPPORTED_PNPM)).toBe(false);
     expect(pnpmVersionAtLeast('13.0.0', MINIMUM_SUPPORTED_PNPM)).toBe(false);
-    expect(pnpmVersionAtLeast('12.11.0-rc.1', MINIMUM_SUPPORTED_PNPM)).toBe(false);
+    expect(pnpmVersionAtLeast('12.15.1-rc.1', MINIMUM_SUPPORTED_PNPM)).toBe(false);
   });
 });
 
@@ -67,11 +67,11 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(
     resolve(root, 'sdk-manifest.json'),
     `${JSON.stringify({
-      schemaVersion: '1.9.0',
+      schemaVersion: '1.11.0',
       viewCommit: 'view-test',
       sdkVersion: '0.0.0-test',
       engineCommit: 'test',
-      requirements: { node: '>=22.13.0', pnpm: '12.10.1', pnpmStoreFormat: 'v11' },
+      requirements: { node: '>=22.13.0', pnpm: '12.15.0', pnpmStoreFormat: 'v11' },
       capabilities: [],
       packages: [],
       templates: [
@@ -95,7 +95,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
       schemaVersion: '2.0.0',
       sdkVersion: '0.0.0-test',
       engineCommit: 'test',
-      pnpm: '12.10.1',
+      pnpm: '12.15.0',
       node: process.versions.node,
       platform: process.platform,
       arch: process.arch,
@@ -123,7 +123,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(resolve(template, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
   await writeFile(
     resolve(template, 'pnpm-workspace.yaml'),
-    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: warn\nenableGlobalVirtualStore: false\n",
+    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: install\nfrozenLockfile: true\nenableGlobalVirtualStore: false\n",
   );
   await writeFile(resolve(template, '.npmrc'), 'public-hoist-pattern[]=@forgeax/engine-*\n');
   await writeFile(
@@ -144,7 +144,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(resolve(fullTemplate, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
   await writeFile(
     resolve(fullTemplate, 'pnpm-workspace.yaml'),
-    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: warn\nenableGlobalVirtualStore: false\n",
+    "allowBuilds:\n  esbuild: true\nminimumReleaseAgeExclude:\n  - '@forgeax/*'\ntrustLockfile: true\nverifyDepsBeforeRun: install\nfrozenLockfile: true\nenableGlobalVirtualStore: false\n",
   );
   const pnpm = resolve(bin, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
   const pnpmScript = resolve(bin, 'pnpm.mjs');
@@ -155,7 +155,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
       "import { access, mkdir, realpath, writeFile } from 'node:fs/promises';",
       "import { resolve } from 'node:path';",
       'const args = process.argv.slice(2);',
-      "if (args[0] === '--version') { process.stdout.write('12.10.1\\n'); process.exit(0); }",
+      "if (args[0] === '--version') { process.stdout.write('12.15.0\\n'); process.exit(0); }",
       'const state = process.env.FORGEAX_TEST_INSTALL_STATE;',
       "if (!state) throw new Error('missing FORGEAX_TEST_INSTALL_STATE');",
       "await writeFile(state + '.args', args.join('\\n') + '\\n');",
@@ -253,7 +253,7 @@ async function writeWorkspaceInstallState(
   await mkdir(virtualStore, { recursive: true });
   await writeFile(
     resolve(nodeModules, '.modules.yaml'),
-    `packageManager: pnpm@12.10.1\nvirtualStoreDir: ${JSON.stringify(virtualStore)}\nvirtualStoreDirMaxLength: 60\n`,
+    `packageManager: pnpm@12.15.0\nvirtualStoreDir: ${JSON.stringify(virtualStore)}\nvirtualStoreDirMaxLength: 60\n`,
   );
   await writeFile(
     resolve(virtualStore, 'lock.yaml'),
@@ -301,7 +301,7 @@ async function localDoctorFixture(engineVersion = '1.0.0'): Promise<{
   );
   await writeFile(
     resolve(sdk.root, 'package.json'),
-    '{"name":"doctor-test-workspace","private":true,"packageManager":"pnpm@12.10.1"}\n',
+    '{"name":"doctor-test-workspace","private":true,"packageManager":"pnpm@12.15.0"}\n',
   );
   await writeFile(
     resolve(sdk.root, 'pnpm-lock.yaml'),
@@ -490,7 +490,7 @@ describe('newCommand', () => {
           'utf8',
         ),
       ) as { readonly packageManager?: unknown };
-      expect(packageJson.packageManager).toBe('pnpm@12.10.1');
+      expect(packageJson.packageManager).toBe('pnpm@12.15.0');
     }
   });
 
@@ -556,13 +556,13 @@ describe('newCommand', () => {
         schemaVersion: '2.0.0',
         sdkVersion: '0.0.0-test',
         engineCommit: 'test',
-        pnpm: '12.10.1',
+        pnpm: '12.15.0',
       }),
     );
     expect(await readFile(`${sdk.installState}.args`, 'utf8')).toContain(
       '--side-effects-cache=true\n',
     );
-    expect(await readFile(`${sdk.installState}.args`, 'utf8')).toContain(
+    expect(await readFile(`${sdk.installState}.args`, 'utf8')).not.toContain(
       '--config.pm-on-fail=ignore\n',
     );
   });
@@ -621,7 +621,8 @@ describe('newCommand', () => {
       allowBuilds: { esbuild: true },
       minimumReleaseAgeExclude: ['@forgeax/*'],
       trustLockfile: true,
-      verifyDepsBeforeRun: 'warn',
+      verifyDepsBeforeRun: 'install',
+      frozenLockfile: true,
       enableGlobalVirtualStore: false,
       storeDir: await realpath(resolve(sdk.root, 'store', 'pnpm')),
     });
@@ -641,7 +642,7 @@ describe('newCommand', () => {
     expect(await readFile(`${sdk.installState}.args`, 'utf8')).toContain(
       '--side-effects-cache=true\n',
     );
-    expect(await readFile(`${sdk.installState}.args`, 'utf8')).toContain(
+    expect(await readFile(`${sdk.installState}.args`, 'utf8')).not.toContain(
       '--config.pm-on-fail=ignore\n',
     );
     expect(await readFile(`${sdk.installState}.args`, 'utf8')).toContain(
@@ -730,13 +731,14 @@ describe('newCommand', () => {
     expect(await readFile(sdk.installState, 'utf8')).toBe('');
     expect(await readFile(`${sdk.installState}.ci`, 'utf8')).toBe('true\n');
     expect(JSON.parse(await readFile(initFiles.package, 'utf8')).packageManager).toBe(
-      'pnpm@12.10.1',
+      'pnpm@12.15.0',
     );
     expect(parse(await readFile(resolve(initRoot, 'pnpm-workspace.yaml'), 'utf8'))).toEqual({
       allowBuilds: { esbuild: true },
       minimumReleaseAgeExclude: ['@forgeax/*'],
       trustLockfile: true,
-      verifyDepsBeforeRun: 'warn',
+      verifyDepsBeforeRun: 'install',
+      frozenLockfile: true,
       enableGlobalVirtualStore: false,
       storeDir: await realpath(resolve(sdk.root, 'store', 'pnpm')),
     });
@@ -1175,7 +1177,7 @@ describe('doctorCommand', () => {
 
     if (environmentDocument !== 'single') {
       const environment =
-        "lockfileVersion: '9.0'\nimporters:\n  .:\n    configDependencies: {}\n    packageManagerDependencies:\n      pnpm: {specifier: 12.10.1, version: 12.10.1}\n";
+        "lockfileVersion: '9.0'\nimporters:\n  .:\n    configDependencies: {}\n    packageManagerDependencies:\n      pnpm: {specifier: 12.15.0, version: 12.15.0}\n";
       const combined = `---\r\n${environment.replace(/\n/g, '\r\n')}---\r\n${lock}`;
       if (environmentDocument !== 'virtual-store')
         await writeFile(resolve(sdk.root, 'pnpm-lock.yaml'), combined);
@@ -1295,14 +1297,14 @@ describe('doctorCommand', () => {
     const sdk = await sdkFixture(false);
     await writeFile(
       resolve(sdk.template, 'package.json'),
-      '{"name":"game","version":"0.0.0","packageManager":"pnpm@12.10.1"}\n',
+      '{"name":"game","version":"0.0.0","packageManager":"pnpm@12.15.0"}\n',
     );
     const argsPath = `${sdk.installState}.corepack-args`;
     const corepack = resolve(sdk.bin, process.platform === 'win32' ? 'corepack.cmd' : 'corepack');
     const corepackScript = resolve(sdk.bin, 'corepack-fixture.mjs');
     await writeFile(
       corepackScript,
-      `import { writeFile } from 'node:fs/promises';\nawait writeFile(${JSON.stringify(argsPath)}, process.argv.slice(2).join('\\n') + '\\n');\nprocess.stdout.write('12.10.1\\n');\n`,
+      `import { writeFile } from 'node:fs/promises';\nawait writeFile(${JSON.stringify(argsPath)}, process.argv.slice(2).join('\\n') + '\\n');\nprocess.stdout.write('12.15.0\\n');\n`,
     );
     if (process.platform === 'win32') {
       await writeFile(corepack, `@echo off\r\n"${process.execPath}" "${corepackScript}" %*\r\n`);
@@ -1317,7 +1319,7 @@ describe('doctorCommand', () => {
 
     const result = await doctorCommand({ root: sdk.template });
 
-    expect(result).toMatchObject({ ok: true, value: { pnpm: '12.10.1' } });
+    expect(result).toMatchObject({ ok: true, value: { pnpm: '12.15.0' } });
     expect(await readFile(argsPath, 'utf8')).toBe('pnpm\n--version\n');
   });
 });

@@ -42,14 +42,15 @@ async function createFixture(version = '1.2.3') {
     version,
   );
   await createArchive(join(root, 'npm'), '@forgeax/engine-sdk', version);
-  await createArchive(join(root, 'npm', 'packages'), '@forgeax/view', version);
+  const sdkArchive = join(root, `forgeax-sdk-v${version}.zip`);
+  await writeFile(sdkArchive, 'sealed SDK archive bytes');
   const gates = [];
   for (const name of ['npm-consumer', 'archive-browser', 'reproducibility', 'collision']) {
     const path = join(root, `${name}.json`);
     await writeFile(path, `${JSON.stringify({ ok: true, status: 'passed', durationMs: 7 })}\n`);
     gates.push(`${name}=${path}`);
   }
-  return { root, engineArchive, gates };
+  return { root, engineArchive, sdkArchive, gates };
 }
 
 afterEach(async () => {
@@ -117,13 +118,20 @@ describe('sealed SDK candidates', () => {
     });
     expect(candidate.npmPackages.map(({ name }) => name)).toEqual([
       '@forgeax/engine',
-      '@forgeax/view',
       '@forgeax/engine-sdk',
     ]);
     expect(candidate.artifacts.map(({ path }) => path)).toContain('sdk-verify-result.json');
     await expect(
       validateCandidate({ candidateRoot: root, expectedVersion: '1.2.3' }),
     ).resolves.toMatchObject({ candidateId: `1.2.3-${'a'.repeat(12)}` });
+  });
+
+  it('rejects a separately published View instead of sealing a third product', async () => {
+    const { root, gates } = await createFixture();
+    await createArchive(join(root, 'npm', 'packages'), '@forgeax/view', '1.2.3');
+    await expect(
+      sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates }),
+    ).rejects.toThrow('sdk-candidate-npm-roster-foreign');
   });
 
   it('rejects focused package publication units before sealing', async () => {
@@ -142,6 +150,49 @@ describe('sealed SDK candidates', () => {
     await expect(validateCandidate({ candidateRoot: root })).rejects.toThrow(
       'sdk-candidate-artifact-mismatch',
     );
+  });
+
+  it('lets npm-only consumers omit exactly the sealed SDK archive', async () => {
+    const { root, sdkArchive, gates } = await createFixture();
+    await sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates });
+    await rm(sdkArchive);
+
+    await expect(validateCandidate({ candidateRoot: root })).rejects.toThrow(
+      'sdk-candidate-unmanifested-artifact',
+    );
+    await expect(
+      validateCandidate({ candidateRoot: root, withoutArchive: true }),
+    ).resolves.toMatchObject({ sdkVersion: '1.2.3' });
+  });
+
+  it('still requires every other sealed byte without the archive', async () => {
+    const { root, engineArchive, sdkArchive, gates } = await createFixture();
+    await sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates });
+    await rm(sdkArchive);
+    await rm(engineArchive);
+
+    await expect(validateCandidate({ candidateRoot: root, withoutArchive: true })).rejects.toThrow(
+      'sdk-candidate-unmanifested-artifact',
+    );
+  });
+
+  it('verifies a present archive even when npm-only validation allows its absence', async () => {
+    const { root, sdkArchive, gates } = await createFixture();
+    await sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates });
+    await writeFile(sdkArchive, 'tampered');
+
+    await expect(validateCandidate({ candidateRoot: root, withoutArchive: true })).rejects.toThrow(
+      'sdk-candidate-artifact-mismatch',
+    );
+  });
+
+  it('rejects a seal that does not record the SDK archive', async () => {
+    const { root, sdkArchive, gates } = await createFixture();
+    await rm(sdkArchive);
+
+    await expect(
+      sealCandidate({ candidateRoot: root, sourceWorkflowRunId: 12345, gateSpecs: gates }),
+    ).rejects.toThrow('sdk-candidate-archive-unmanifested');
   });
 
   it('rejects a changed View source pin after sealing', async () => {

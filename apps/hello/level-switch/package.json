@@ -99,7 +99,7 @@
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
-    "vite": "8.0.16",
+    "vite": "8.3.5",
     "@forgeax/engine-dawn-node": "workspace:*",
     "@webgpu/types": "^0.1.74"
   }

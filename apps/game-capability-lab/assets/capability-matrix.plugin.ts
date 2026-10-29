@@ -1,5 +1,5 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { joinPluginFiber, type Plugin } from '@forgeax/engine-plugin';
 import { worldDespawnScene } from '@forgeax/engine-scene';
 import type { SceneAsset } from '@forgeax/engine-types';
@@ -29,7 +29,7 @@ const sceneOwner = {
 export default {
   name: "capability-lab",
   apply(ctx, config) {
-    ctx.plugin(physicsPlugin("rapier-3d"));
+    ctx.plugin(physics3d);
     ctx.plugin(sceneOwner, config);
   },
 } satisfies Plugin.Object<{ readonly scene: string }>;

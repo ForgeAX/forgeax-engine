@@ -1,7 +1,10 @@
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
-import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import type { PreparedBatch } from '../gpu-driven/production-raster-prepare';
+import {
+  observeShadowArtifacts,
+  type ShadowArtifactObservations,
+} from '../gpu-driven/production-raster-support';
 
 function batch(program = 'static-caster', generation = 1): PreparedBatch {
   const artifact = {
@@ -24,16 +27,11 @@ function batch(program = 'static-caster', generation = 1): PreparedBatch {
 }
 
 function observer() {
-  const production = Object.create(GpuDrivenProduction.prototype) as {
-    observedShadowArtifacts: ReadonlyMap<string, string | undefined>;
-    observeShadowArtifacts(
-      batches: readonly PreparedBatch[],
-      artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
-    ): ReadonlyMap<string, string | undefined>;
+  let observed: ShadowArtifactObservations = new Map();
+  return (batches: readonly PreparedBatch[]) => {
+    observed = observeShadowArtifacts(observed, batches);
+    return observed;
   };
-  production.observedShadowArtifacts = new Map();
-  return (batches: readonly PreparedBatch[]) =>
-    production.observeShadowArtifacts(batches, undefined);
 }
 
 describe('shadow program publication observation', () => {
@@ -54,5 +52,18 @@ describe('shadow program publication observation', () => {
     const generation = observe([batch('changed-shadow-wgsl', 2)]);
     expect(generation).not.toBe(replacement);
     expect(observe([])).not.toBe(generation);
+  });
+
+  it('captures scalar facts independently of later edits to the same artifact', () => {
+    const observe = observer();
+    const caster = batch();
+    const first = observe([caster]);
+    const receipt = caster.artifact?.receipt as { generation: number };
+    receipt.generation += 1;
+    const changed = observe([caster]);
+    expect(changed).not.toBe(first);
+    expect(observe([caster])).toBe(changed);
+    receipt.generation -= 1;
+    expect(observe([caster])).not.toBe(changed);
   });
 });

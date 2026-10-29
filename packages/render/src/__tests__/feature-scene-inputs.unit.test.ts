@@ -5,7 +5,7 @@ import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createFeatureSceneInputs } from '../assembly/feature-scene-inputs';
 import { type FrameRecording, submitFrameRecordings } from '../assembly/frame-recording';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import {
   type RenderFeatureWorkPlan,
   renderFeaturePlanSignatureEvidenceMatches,
@@ -92,7 +92,9 @@ function simulationFeature(): RenderFeature<undefined> {
 
 describe('Renderer scene inputs', () => {
   it('keeps signature evidence valid when an explicit camera changes across plan revisions', () => {
-    const host = createRenderFeatureHost([]).unwrap();
+    const host = createRenderFeatureHost([
+      { identity: 'particles', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+    ]).unwrap();
     const makePlan = (size: number): RenderFeatureWorkPlan => ({
       resources: [
         { kind: 'scene-depth', name: 'depth', camera: camera() },
@@ -145,8 +147,8 @@ describe('Renderer scene inputs', () => {
     expect(work.physical.sampledDepth).toBe(true);
     const actual = mat4.multiply(
       mat4.create(),
-      computeProjectionMatrix(work.faceCamera),
-      computeViewMatrix(work.faceCamera),
+      computeProjectionMatrix(work.faceCamera, mat4.create()),
+      computeViewMatrix(work.faceCamera, mat4.create()),
     );
     actual.forEach((value, index) => {
       expect(value).toBeCloseTo(input.camera.viewProjection[index] ?? 0);
@@ -185,8 +187,7 @@ describe('Renderer scene inputs', () => {
     expect(nextDestroyed).not.toHaveBeenCalled();
     f.owner.begin(3);
     f.owner.complete(true);
-    await Promise.resolve();
-    expect(nextDestroyed).toHaveBeenCalled();
+    await vi.waitFor(() => expect(nextDestroyed).toHaveBeenCalled());
     f.owner.dispose();
   });
 
@@ -235,7 +236,7 @@ describe('Renderer scene inputs', () => {
       prepareBindings: failed,
     }));
     f.owner.begin(1);
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       {
         identity: 'left',
         render: true,
@@ -349,9 +350,8 @@ describe('Renderer scene inputs', () => {
         },
         captures: {
           snapshots: [],
-          auxiliary: [],
           exclusive: false,
-          accept: (_work, _auxiliary, scene) => {
+          accept: (_work, scene) => {
             captures = scene;
           },
         },

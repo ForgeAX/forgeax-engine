@@ -1,15 +1,20 @@
-import { EmptyState, InspectorForm, PanelHeader } from '@forgeax/view-components';
+import { EmptyState, InspectorForm, PanelHeader, inspectorFormGroupsFromInspection, usePanelVisible } from '@forgeax/view-components';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from '../i18n/useTranslation';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { ResourceAssetActionResolver } from '@forgeax/view-workspace-core/frontend-contract';
-import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
+import { VIEW_WORKSPACE_TAB_ID, type WorkspaceInspection } from '@forgeax/view-workspace-core/contract';
 import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspection-presentation';
 import { selectWorkspaceResourcePreview, selectWorkspaceResourceSubject } from '@forgeax/view-workspace-core/resource-open';
 import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import { RESOURCE_KINDS } from '../identity.ts';
 import './material.css';
 import { boundPreviewInspection } from '@forgeax/view-workspace-core/preview-facts';
+import { resourceAssetName } from '@forgeax/view-workspace-core/page-title';
+import { materialReferenceScope, materialTextureReferences } from '../texture-references.ts';
+import { MaterialTextureReferences } from './MaterialTextureReferences';
+
+const inactive = () => () => {};
 
 export function MaterialPanel(props: { client?: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   return <MaterialPropertiesPanel {...props} />;
@@ -35,9 +40,11 @@ export function MaterialPropertiesPanel({
 
 function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
   const { t } = useTranslation();
+  const visible = usePanelVisible();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
+  useEffect(() => () => reader.dispose(), [reader]);
   const workspace = useSyncExternalStore(
-    reader.subscribe,
+    visible ? reader.subscribe : inactive,
     () => reader.getSnapshot(),
     () => reader.getSnapshot(),
   );
@@ -45,32 +52,29 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
   const projectId = workspace?.project?.id;
   const preview = selectWorkspaceResourcePreview(workspace, subject?.guid);
   const binding = preview?.assetBinding;
-  const [inspection, setInspection] = useState<Record<string, unknown> | null>(null);
-  const [failed, setFailed] = useState(false);
+  const scope = materialReferenceScope(workspace);
+  const [inspection, setInspection] = useState<{ scope: string; value: WorkspaceInspection | null } | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!subject?.guid || !projectId || binding) {
-      setInspection(null);
-      setFailed(false);
-      return undefined;
-    }
-    const controller = createWorkspaceObservation(reader, state => state?.project?.id === projectId && selectWorkspaceResourceSubject(state, RESOURCE_KINDS)?.guid === subject.guid && !selectWorkspaceResourcePreview(state, subject.guid)?.assetBinding);
+    if (!visible || !scope || !subject?.guid || !projectId || binding) return;
+    const controller = createWorkspaceObservation(reader, state => materialReferenceScope(state) === scope);
     void client.inspectAsset(subject.guid, {
       projectId,
       tabId: VIEW_WORKSPACE_TAB_ID,
       signal: controller.signal,
     }).then((result: unknown) => {
       if (controller.signal.aborted) return;
-      setInspection(unwrapWorkspaceInspection(result));
-      setFailed(false);
+      setInspection({ scope, value: unwrapWorkspaceInspection(result) as WorkspaceInspection | null });
+      setFailed(null);
     }).catch(() => {
       if (!controller.signal.aborted) {
         setInspection(null);
-        setFailed(true);
+        setFailed(scope);
       }
     });
     return () => controller.dispose();
-  }, [client, reader, subject?.guid, projectId, binding]);
+  }, [client, reader, scope, visible]);
 
   if (!subject) {
     return (
@@ -79,17 +83,29 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
       </div>
     );
   }
-  if (failed && !binding) {
+  if (failed === scope && !binding) {
     return (
       <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties">
         <EmptyState title={t('material.unavailable')} description={t('material.inspectFailed')} />
       </div>
     );
   }
+  const inspected = inspection?.scope === scope ? inspection.value : null;
+  const displayed = binding ? boundPreviewInspection(subject, binding) : inspected;
+  const groups = inspectorFormGroupsFromInspection(displayed ?? { guid: subject.guid, asset: subject }, { identityTitle: t('material.facts') });
+  const passesIndex = groups.findIndex(group => group.key === 'meta.passes');
+  const splitAt = passesIndex < 0 ? Math.min(1, groups.length) : passesIndex;
+  const name = resourceAssetName(subject) ?? subject.guid;
   return (
     <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties" data-view-readonly="true">
-      <PanelHeader start={<span><strong>{String(subject.name ?? subject.guid)}</strong></span>} />
-      <InspectorForm assetActions={assetActions} inspection={binding ? boundPreviewInspection(subject, binding) : inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('material.facts')} />
+      <PanelHeader start={<span className="material-properties-name" title={name}><strong>{name}</strong></span>} />
+      <div className="material-properties-body">
+        <InspectorForm assetActions={assetActions} groups={groups.slice(0, splitAt)} />
+        <MaterialTextureReferences client={client} reader={reader} workspace={workspace}
+          references={materialTextureReferences(workspace, inspected)} loading={!binding && !inspected}
+          assetActions={assetActions} />
+        <InspectorForm assetActions={assetActions} groups={groups.slice(splitAt)} />
+      </div>
     </div>
   );
 }

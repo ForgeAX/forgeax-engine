@@ -39,7 +39,7 @@ function pointsInput(
 ): PointsLinesAdmissionInput {
   return {
     entity: 7,
-    points: { sizePx: 4, shape: 0 },
+    points: { size: 4, shape: 0 },
     mesh: mesh('point-list', 3),
     material: unlitMaterial,
     ...overrides,
@@ -91,7 +91,7 @@ describe('Points and Lines admission', () => {
 
   it('rejects component conflicts and invalid numeric styles before topology', () => {
     const conflict = admitPointsLines(pointsInput({ lines: { width: 1 } }));
-    const invalidSize = admitPointsLines(pointsInput({ points: { sizePx: Number.NaN, shape: 0 } }));
+    const invalidSize = admitPointsLines(pointsInput({ points: { size: Number.NaN, shape: 0 } }));
     const invalidWidth = admitPointsLines(linesInput({ lines: { width: 0 } }));
 
     expectRefusal(conflict, 'points-lines-invalid-style', {
@@ -102,7 +102,7 @@ describe('Points and Lines admission', () => {
     expectRefusal(invalidSize, 'points-lines-invalid-style', {
       entity: 7,
       component: 'Points',
-      field: 'sizePx',
+      field: 'size',
       value: Number.NaN,
     });
     expectRefusal(invalidWidth, 'points-lines-invalid-style', {
@@ -111,6 +111,21 @@ describe('Points and Lines admission', () => {
       field: 'width',
       value: 0,
     });
+  });
+
+  it('admits world-sized soft sprites and refuses unknown size units', () => {
+    const soft = admitPointsLines(pointsInput({ points: { size: 0.2, sizeUnits: 1, shape: 2 } }));
+    expect(soft.ok && soft.value).toMatchObject({
+      component: 'Points',
+      size: 0.2,
+      sizeUnits: 'world',
+      shape: 'soft',
+    });
+    expectRefusal(
+      admitPointsLines(pointsInput({ points: { size: 1, sizeUnits: 7 } })),
+      'points-lines-invalid-style',
+      { entity: 7, component: 'Points', field: 'sizeUnits', value: 7 },
+    );
   });
 
   it('decodes line width units and caps, refusing unknown labels', () => {
@@ -196,9 +211,9 @@ describe('Points and Lines admission', () => {
       new PointsLinesInvalidStyleError({
         entity: 1,
         component: 'Points',
-        field: 'sizePx',
+        field: 'size',
         value: -1,
-        expected: 'finite sizePx > 0',
+        expected: 'finite size > 0',
       }),
       new PointsLinesTopologyMismatchError({
         entity: 1,

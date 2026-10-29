@@ -1,4 +1,6 @@
+import { Hash } from 'node:crypto';
 import { err, ok, type Result, RhiError, type ShaderModule } from '@forgeax/engine-rhi';
+import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import {
@@ -12,6 +14,120 @@ const variant = (key: string, source = key) => ({
   definesKey: key,
   defines: {},
   composedWgsl: source,
+});
+
+it('reuses admitted source across string retries, cached hits and same-label replacement', () => {
+  const hash = vi.spyOn(Hash.prototype, 'update');
+  const descriptor = vi.spyOn(ShaderSource.prototype, 'descriptor');
+  const module = {} as ShaderModule;
+  const compile = vi.fn(() => ok(module));
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    undefined,
+    compile,
+    'immediate',
+  );
+  const code = '// repeated immutable source\n'.repeat(1024);
+  try {
+    for (let frame = 0; frame < 256; frame++)
+      expect(adapter.createShaderModule({ code, label: 'stable-source' })).toEqual(ok(module));
+    expect(hash).toHaveBeenCalledTimes(1);
+    expect(compile).toHaveBeenCalledTimes(1);
+    expect(descriptor).toHaveBeenCalledTimes(1);
+    // A same-length content change must still retire the cached module.
+    const changed = code.replace('repeated', 'replaced');
+    expect(changed.length).toBe(code.length);
+    expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
+      ok(module),
+    );
+    expect(hash).toHaveBeenCalledTimes(2);
+    expect(compile).toHaveBeenCalledTimes(2);
+    adapter.invalidateModule('stable-source');
+    expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
+      ok(module),
+    );
+    expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
+      ok(module),
+    );
+    expect(hash).toHaveBeenCalledTimes(3);
+    expect(compile).toHaveBeenCalledTimes(3);
+  } finally {
+    adapter.dispose();
+    descriptor.mockRestore();
+    hash.mockRestore();
+  }
+});
+
+it('reuses source admission while the async module is pending', async () => {
+  const hash = vi.spyOn(Hash.prototype, 'update');
+  const module = {} as ShaderModule;
+  let complete: ((result: Result<ShaderModule, RhiError>) => void) | undefined;
+  const compile = vi.fn(
+    () =>
+      new Promise<Result<ShaderModule, RhiError>>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    compile,
+    undefined,
+  );
+  try {
+    for (let frame = 0; frame < 256; frame++)
+      expect(adapter.createShaderModule({ code: 'pending source', label: 'pending' }).ok).toBe(
+        false,
+      );
+    expect(hash).toHaveBeenCalledTimes(1);
+    expect(compile).toHaveBeenCalledTimes(1);
+    complete?.(ok(module));
+    await Promise.resolve();
+    expect(adapter.createShaderModule({ code: 'pending source', label: 'pending' })).toEqual(
+      ok(module),
+    );
+    expect(hash).toHaveBeenCalledTimes(1);
+  } finally {
+    adapter.dispose();
+    hash.mockRestore();
+  }
+});
+
+it.each([
+  { path: 'labeled raw text', labeled: true, owned: false, hashes: 1, scans: 255 },
+  { path: 'unlabeled raw text', labeled: false, owned: false, hashes: 256, scans: 0 },
+  { path: 'labeled source owner', labeled: true, owned: true, hashes: 1, scans: 0 },
+  { path: 'unlabeled source owner', labeled: false, owned: true, hashes: 1, scans: 0 },
+])('bounds hashing and matching for $path', ({ labeled, owned, hashes, scans }) => {
+  // Observe actual Node digests, independently of the portable UTF-8 encoder.
+  const hash = vi.spyOn(Hash.prototype, 'update');
+  const match = vi.spyOn(ShaderSource.prototype, 'matches');
+  const code = '// exact source hash counter\n'.repeat(1024);
+  const source = new ShaderSource([code]);
+  const module = {} as ShaderModule;
+  const compile = vi.fn(() => ok(module));
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    undefined,
+    compile,
+    'immediate',
+  );
+  try {
+    for (let retry = 0; retry < 256; retry++) {
+      const label = labeled ? 'hash-counter' : undefined;
+      const desc = owned ? source.descriptor(label) : { code, label };
+      expect(adapter.createShaderModule(desc)).toEqual(ok(module));
+    }
+    expect(hash.mock.calls.filter(([input]) => input === code)).toHaveLength(hashes);
+    expect(match).toHaveBeenCalledTimes(scans);
+    expect(compile).toHaveBeenCalledTimes(1);
+  } finally {
+    adapter.dispose();
+    match.mockRestore();
+    hash.mockRestore();
+  }
 });
 
 describe('material prewarm candidate lifetime', () => {
@@ -112,8 +228,8 @@ describe('recovery variant admission', () => {
       undefined,
       undefined,
     );
-    adapter.seedModule('module-material#drawn', module);
-    adapter.seedModule('module-material#unused', module);
+    adapter.seedModule('module-material#drawn', module, '');
+    adapter.seedModule('module-material#unused', module, '');
     expect(adapter.hasModule('module-material#drawn')).toBe(false);
     expect(adapter.createShaderModule({ code: '', label: 'module-material#drawn' })).toEqual(
       ok(module),
@@ -168,14 +284,15 @@ describe('pending material module request lifetime', () => {
     const desc = { code: 'first source', label: 'replaced-module' };
     const first = adapter.createShaderModule(desc);
     adapter.invalidateModule(desc.label);
-    const second = adapter.createShaderModule({ ...desc, code: 'replacement source' });
+    const replacement = { ...desc, code: 'replacement source' };
+    const second = adapter.createShaderModule(replacement);
     expect(first.ok).toBe(false);
     expect(second.ok).toBe(false);
     if (first.ok || second.ok) throw Error('Expected pending requests');
     expect(second.error).not.toBe(first.error);
     complete[0]?.(ok({ old: true } as unknown as ShaderModule));
     await Promise.resolve();
-    expect(adapter.createShaderModule(desc)).toEqual(err(second.error));
+    expect(adapter.createShaderModule(replacement)).toEqual(err(second.error));
     expect(adapter.hasModule(desc.label)).toBe(false);
     const terminal = new RhiError({
       code: 'shader-compile-failed',
@@ -184,7 +301,7 @@ describe('pending material module request lifetime', () => {
     });
     complete[1]?.(err(terminal));
     await Promise.resolve();
-    expect(adapter.createShaderModule(desc)).toEqual(err(terminal));
+    expect(adapter.createShaderModule(replacement)).toEqual(err(terminal));
     adapter.invalidateModule(desc.label);
     const third = adapter.createShaderModule(desc);
     expect(third.ok).toBe(false);
@@ -192,6 +309,31 @@ describe('pending material module request lifetime', () => {
     expect(third.error).not.toBe(second.error);
     expect(third.error).not.toBe(terminal);
     expect(compile).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects a seed alias when its first request carries different source', () => {
+    const { adapter, compile } = fixture();
+    adapter.seedModule('reused-label', {} as ShaderModule, 'old source');
+    expect(adapter.createShaderModule({ label: 'reused-label', code: 'new source' }).ok).toBe(
+      false,
+    );
+    expect(compile).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires seeded and pending modules with their device generation', async () => {
+    const { adapter, complete, compile } = fixture();
+    const descriptor = { code: 'source', label: 'generation-module' };
+    adapter.createShaderModule(descriptor);
+    const seeded = {} as ShaderModule;
+    adapter.seedModule(descriptor.label, seeded, descriptor.code);
+    complete[0]?.(ok({ stale: true } as unknown as ShaderModule));
+    await Promise.resolve();
+    expect(adapter.createShaderModule(descriptor)).toEqual(ok(seeded));
+    adapter.dispose();
+    adapter.seedModule(descriptor.label, seeded, descriptor.code);
+    expect(adapter.hasModule(descriptor.label)).toBe(false);
+    expect(adapter.createShaderModule(descriptor).ok).toBe(false);
+    expect(compile).toHaveBeenCalledTimes(1);
   });
 
   it('isolates device adapters and keeps seeded modules ready during pending compilation', async () => {
@@ -203,7 +345,7 @@ describe('pending material module request lifetime', () => {
     if (a.ok || b.ok) throw Error('Expected independent pending requests');
     expect(a.error).not.toBe(b.error);
     const seeded = {} as ShaderModule;
-    first.adapter.seedModule(desc.label, seeded);
+    first.adapter.seedModule(desc.label, seeded, desc.code);
     expect(first.adapter.createShaderModule(desc)).toEqual(ok(seeded));
     expect(second.adapter.createShaderModule(desc)).toEqual(err(b.error));
     expect(first.compile).toHaveBeenCalledTimes(1);
@@ -298,4 +440,30 @@ describe('boot variant selection', () => {
       }
     }
   });
+});
+
+it('does not let a reused label alias changed source or accept a stale completion', async () => {
+  const completions: ((result: ReturnType<typeof ok<ShaderModule>>) => void)[] = [];
+  const compile = vi.fn(
+    () => new Promise<ReturnType<typeof ok<ShaderModule>>>((resolve) => completions.push(resolve)),
+  );
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    compile,
+    undefined,
+  );
+  const old = adapter.createShaderModule({ code: 'old source', label: 'shared-label' });
+  const next = adapter.createShaderModule({ code: 'new source', label: 'shared-label' });
+  expect(compile).toHaveBeenCalledTimes(2);
+  if (old.ok || next.ok) throw new Error('Expected separate pending source requests');
+  completions[0]?.(ok({} as ShaderModule));
+  await Promise.resolve();
+  expect(adapter.createShaderModule({ code: 'new source', label: 'shared-label' })).toEqual(next);
+  const module = {} as ShaderModule;
+  completions[1]?.(ok(module));
+  await Promise.resolve();
+  expect(adapter.createShaderModule({ code: 'new source', label: 'shared-label' })).toEqual(
+    ok(module),
+  );
 });

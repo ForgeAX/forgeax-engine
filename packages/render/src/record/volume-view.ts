@@ -25,8 +25,12 @@ export function volumetricFogForView(
   if (sources.some((source) => source.status !== 'available' || source.fog === undefined))
     return fog;
   if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) return fog;
-  const view = computeViewMatrix(camera);
-  const projection = mat4.multiply(mat4.create(), computeProjectionMatrix(camera), view);
+  const view = computeViewMatrix(camera, mat4.create());
+  const projection = mat4.multiply(
+    mat4.create(),
+    computeProjectionMatrix(camera, mat4.create()),
+    view,
+  );
   if (!projection.every(Number.isFinite) || !view.every(Number.isFinite)) return fog;
   // Two internal pixels conservatively cover TAA's subpixel jitter and the
   // volume resolve boundary. Keep the complete original set if any owner can

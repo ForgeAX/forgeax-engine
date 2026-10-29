@@ -135,8 +135,14 @@ export class DynamicResolutionController {
     return this.#extent;
   }
 
-  commit(extent: RenderExtent | undefined, rasterRows: number): void {
+  commit(extent: RenderExtent | undefined, rows: number | (() => number)): void {
     const parameters = this.#parameters;
+    if (parameters === undefined) {
+      this.#rasterRows = undefined;
+      this.#extent = extent;
+      return;
+    }
+    const rasterRows = typeof rows === 'function' ? rows() : rows;
     if (
       parameters !== undefined &&
       parameters.minScale < parameters.maxScale &&

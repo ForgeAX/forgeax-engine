@@ -110,7 +110,7 @@ it('matches direct native pixels for 60 frames across uploads, ranges, attachmen
         view,
         material,
         mesh,
-        skin: false,
+        meshOffsets: [0],
         materialOffset: frame < 45 ? 0 : 256,
         vertex,
         index,

@@ -9,7 +9,9 @@ import { preparedSnapshot } from './gpu-driven-production-fixture';
 it('queries shared geometry/material identity without expanding its consumers', () => {
   const source = preparedSnapshot(1, 3);
   const topology = new BatchTopology();
-  topology.rebuild([{ slot: 0, generation: 0, worldId: 0, entityKey: 1, snapshot: source }]);
+  topology.rebuild([
+    { slot: 0, generation: 0, version: 0, worldId: 0, entityKey: 1, snapshot: source },
+  ]);
   const owned = new GpuDrawSelection(topology.query(topology.sourcePlan(), undefined).batches);
   expect(owned.ownsAll(source)).toBe(true);
   expect(owned.ownsAll({ ...source, entityKey: 99 })).toBe(true);
@@ -30,7 +32,9 @@ it('keeps sparse source draw indices and partial GPU ownership', () => {
   if (first === undefined) throw new Error('Missing source geometry');
   const sparse = { ...source, gpuDrivenDraws: [{ ...first, drawItemIndex: 7 }] };
   const topology = new BatchTopology();
-  topology.rebuild([{ slot: 0, generation: 0, worldId: 0, entityKey: 1, snapshot: sparse }]);
+  topology.rebuild([
+    { slot: 0, generation: 0, version: 0, worldId: 0, entityKey: 1, snapshot: sparse },
+  ]);
   const owned = new GpuDrawSelection(topology.query(topology.sourcePlan(), undefined).batches);
   expect(owned.has(sparse, 7)).toBe(true);
   expect(owned.has(sparse, 0)).toBe(false);
@@ -50,6 +54,7 @@ it('projects visibility from scene slots with independent state during nested ev
   const slots: RenderSceneSlot[] = [1, 33].map((slot, index) => ({
     slot,
     generation: 0,
+    version: 0,
     worldId: 0,
     entityKey: 10 + index,
     snapshot: { ...source, entityKey: 10 + index },

@@ -170,7 +170,7 @@ it('enters slow Reload, reads fatal diagnostics and restores the ordinary guide 
   failed.startup.bindSession('world-failed');
   failed.startup.prepare();
   expect(failed.ui.document.querySelector('#forgeax-loading-status')?.textContent).toBe(
-    'Preparing scene…',
+    'Waiting for the first frame',
   );
   const failure = {
     code: 'plugin-startup-failed',
@@ -185,16 +185,22 @@ it('enters slow Reload, reads fatal diagnostics and restores the ordinary guide 
   const fatalReload = required(
     failed.ui.document.querySelector<HTMLElement>('#forgeax-fatal-reload'),
   );
+  const fatalCopy = required(failed.ui.document.querySelector<HTMLElement>('#forgeax-fatal-copy'));
+  const diagnostics = required(
+    failed.ui.document.querySelector<HTMLElement>('#forgeax-fatal-diagnostics'),
+  );
   const details = required(failed.ui.document.querySelector<HTMLElement>('#forgeax-fatal-details'));
-  const summary = required(failed.ui.document.querySelector<HTMLElement>('summary'));
   expect(failed.ui.document.activeElement).toBe(fatalReload);
   expect(failed.inputEnabled()).toBe(false);
   expect(details.textContent).toContain('plugin-startup-failed');
   expect(details.textContent).not.toContain('secondary failure');
+  expect(failed.ui.document.querySelector('details')).toBeNull();
+  expect(failed.ui.document.querySelector('summary')).toBeNull();
+  expect(diagnostics.getBoundingClientRect().height).toBeGreaterThan(0);
   failed.key('Tab', true);
-  expect(failed.ui.document.activeElement).toBe(summary);
-  failed.key('Enter');
-  expect(summary.parentElement?.hasAttribute('open')).toBe(true);
+  expect(failed.ui.document.activeElement).toBe(details);
+  failed.key('Tab', true);
+  expect(failed.ui.document.activeElement).toBe(fatalCopy);
   expect(details.scrollHeight).toBeGreaterThan(details.clientHeight);
   const rect = details.getBoundingClientRect();
   failed.ui.input.wheel({
@@ -226,10 +232,18 @@ it('enters slow Reload, reads fatal diagnostics and restores the ordinary guide 
   const ready = { ...pending, frameId: 2, presentation: 'ready' };
   recovered.startup.submitted(ready);
   recovered.startup.enter(ready);
-  expect(recovered.inputEnabled()).toBe(false);
-  expect(recovered.gameUi.inert).toBe(true);
+  expect(recovered.inputEnabled()).toBe(true);
+  expect(recovered.gameUi.inert).toBe(false);
+  expect(recovered.ui.document.querySelector<HTMLElement>('#forgeax-loading')?.inert).toBe(true);
+  recovered.key('Tab');
+  expect(recovered.background.activeElement).not.toBeNull();
+  recovered.toggle.focus();
+  recovered.key('Enter');
+  expect(recovered.toggle.getAttribute('aria-expanded')).toBe('true');
+  recovered.key('Enter');
+  expect(recovered.toggle.getAttribute('aria-expanded')).toBe('false');
   advance(149);
-  expect(recovered.inputEnabled()).toBe(false);
+  expect(recovered.inputEnabled()).toBe(true);
   advance(1);
   expect(recovered.inputEnabled()).toBe(true);
   expect(recovered.gameUi.inert).toBe(false);

@@ -14,6 +14,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
+import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { getOrCreateFromChain } from './record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './record/render-context';
 import type { RenderPipelineFrame } from './render-pipeline';
@@ -54,14 +55,14 @@ export function computePipelineError(stage: string): RhiError {
  */
 export function createComputeState(
   frame: RenderGraphFrame,
-  source: string,
+  source: string | ShaderSource,
   label: string,
   entries: readonly unknown[],
   entryPoint: string,
 ): ComputeState {
   const factory = (frame as RenderPipelineFrame).runtime?.shaderModuleFactory;
   if (factory === undefined) throw computePipelineError(`${label} shader module`);
-  const module = factory.createShaderModule({ code: source, label });
+  const module = factory.createShaderModule(shaderSourceDescriptor(source, label));
   if (!module.ok) throw module.error;
   const device = (frame as RenderPipelineFrame).runtime.device;
   return createComputeStateForModule(device, module.value, label, entries, entryPoint);

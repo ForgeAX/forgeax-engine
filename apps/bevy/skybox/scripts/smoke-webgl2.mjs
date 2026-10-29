@@ -83,7 +83,7 @@ try {
     timeout: 15_000,
   });
   await page.waitForFunction(
-    (minimumFrames) => Number(document.documentElement.dataset.forgeaxFrameCompleted ?? 0) >= minimumFrames,
+    (minimumFrames) => (document.querySelector('canvas')?.forgeaxFrameProgress?.completed?.frameId ?? 0) >= minimumFrames,
     FRAME_COUNT,
     { timeout: 45_000, polling: 100 },
   );
@@ -124,7 +124,7 @@ try {
       navigatorGpu: navigator.gpu !== undefined,
       adapterAvailable,
       webgl2: canvas instanceof HTMLCanvasElement && canvas.getContext('webgl2') !== null,
-      frames: Number(document.documentElement.dataset.forgeaxFrameCompleted ?? 0),
+      frames: canvas?.forgeaxFrameProgress?.completed?.frameId ?? 0,
       canvas: canvas instanceof HTMLCanvasElement
         ? { width: canvas.width, height: canvas.height }
         : null,

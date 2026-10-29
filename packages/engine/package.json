@@ -25,7 +25,6 @@
   "files": [
     "dist",
     "README.md",
-    "RELEASING.md",
     "LICENSE"
   ],
   "scripts": {
@@ -39,6 +38,7 @@
     "@forgeax/engine-audio": "workspace:*",
     "@forgeax/engine-audio-webaudio": "workspace:*",
     "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-content": "workspace:*",
     "@forgeax/engine-dawn-node": "workspace:*",
     "@forgeax/engine-ddc": "workspace:*",
     "@forgeax/engine-debug-draw": "workspace:*",

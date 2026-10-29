@@ -11,6 +11,35 @@ import { connectViewWorkspace, startViewHostServer } from '../packages/view-work
 import { ViewWorkspaceClient, workspaceBrowserEndpoint } from '../packages/view-workspace-core/src/client.ts';
 import { VIEW_WORKSPACE_SERVICES } from '../packages/view-workspace-core/src/contract.ts';
 
+test('UV layout queries preserve exact target, channel and cancellation without updating workspace state', async () => {
+  const owner = createHostTransport();
+  const requests = [];
+  let release;
+  owner.register(VIEW_WORKSPACE_SERVICES.call, ({ payload: request }) => {
+    requests.push(request);
+    if (request.args.uvChannel === 3) return new Promise(resolve => { release = resolve; });
+    return { mode: 'material', collision: false, bounds: false, uv: { channels: [0, 3] } };
+  });
+  const transport = owner.connect({ kind: 'frontend', sourceId: 'view-frontend' });
+  const client = new ViewWorkspaceClient({ transport, clientId: 'uv-test', token: 'test-token' });
+  const states = [];
+  const remove = client.subscribe(state => states.push(state));
+  try {
+    const signal = new AbortController();
+    const pending = client.getPreviewDisplay({ targetId: 'mesh-target', targetGeneration: 7, uvChannel: 3, signal: signal.signal, reportError: false });
+    const rejected = assert.rejects(pending);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests.at(-1).operation, 'preview.display.get');
+    assert.deepEqual(requests.at(-1).args, { targetId: 'mesh-target', targetGeneration: 7, tabId: undefined, uvChannel: 3 });
+    signal.abort();
+    await rejected;
+    release?.({ uv: { channels: [0, 3], layout: { channel: 3 } } });
+    await client.getPreviewDisplay({ targetId: 'mesh-target', targetGeneration: 7 });
+    assert.equal('uvChannel' in requests.at(-1).args, false);
+    assert.equal(states.length, 0);
+  } finally { remove(); owner.close(); }
+});
+
 test('workspace API owns a resident frontend connection with no CLI authority', async () => {
   const host = await createBackendHost();
   const transport = host.transport;

@@ -6,7 +6,7 @@ import { testPlatform } from './platform-fixture';
 //   - AC-02: physics + audio plugins register the expected world system set
 //     (physics tick systems + 'PhysicsWorld' resource; audio-tick).
 //   - A failing plugin activation surfaces as an AppError with its cause.
-//   - physicsPlugin's async apply completes BEFORE createApp resolves
+//   - physics3d's async apply completes BEFORE createApp resolves
 //     (no post-resolve timing gap -- app.physics is populated immediately).
 //
 // Environment: the assemble form is driven with a renderer stub (no WebGPU),
@@ -30,7 +30,7 @@ import {
 } from '@forgeax/engine-audio';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, inputBackendPlugin } from '@forgeax/engine-input';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import type { Context, Plugin } from '@forgeax/engine-plugin';
 import type { Renderer } from '@forgeax/engine-render';
 import { scenePlugin } from '@forgeax/engine-scene';
@@ -136,11 +136,11 @@ describe('createApp plugin runner -- physics + audio system set (AC-02)', () => 
     expect(world.hasResource(AUDIO_ENGINE_RESOURCE_KEY)).toBe(false);
   });
 
-  it('physicsPlugin inserts PhysicsWorld + registers physics systems on success', {
+  it('physics3d inserts PhysicsWorld + registers physics systems on success', {
     skip: !rapierAvailable,
   }, async () => {
     const world = new World();
-    const ctx = await createWorldContext(world, [physicsPlugin('rapier-3d')]);
+    const ctx = await createWorldContext(world, [physics3d]);
     expect(world.hasResource('PhysicsWorld')).toBe(true);
     // AC-02: physics registers its three-phase tick systems. Assert the
     // expected system names are present (plan-strategy section 5.2
@@ -247,16 +247,16 @@ describe('createApp plugin runner -- physics async timing (AC-06)', () => {
       platform: testPlatform(),
       renderer: makeRendererStub(),
       world: new World(),
-      plugins: [physicsPlugin('rapier-3d')],
+      plugins: [physics3d],
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Because Context.plugin awaits physicsPlugin's async apply before createApp
+    // Because Context.plugin awaits physics3d's async apply before createApp
     // resolves, the 'PhysicsWorld' resource is already present -- app.physics
     // reads it back synchronously with no post-resolve fire-and-forget gap.
     expect(result.value.physics).toBeDefined();
     // Verify the resource is present in the World (not just on the App handle,
-    // confirming the physicsPlugin build fully populated it before resolve).
+    // confirming the physics3d build fully populated it before resolve).
     expect(result.value.world.hasResource('PhysicsWorld')).toBe(true);
     await result.value.dispose();
   });

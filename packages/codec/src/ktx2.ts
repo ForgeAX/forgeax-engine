@@ -116,7 +116,7 @@ export function ktx2ColorSpace(parsed: Ktx2Parsed): 'srgb' | 'linear' | undefine
 // Internal helpers — little-endian reads
 // ---------------------------------------------------------------------------
 
-const TD = new TextDecoder();
+let textDecoder: TextDecoder | undefined;
 
 function readU32(bytes: Uint8Array, byteOffset: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(byteOffset, true);
@@ -247,7 +247,8 @@ function parseKv(bytes: Uint8Array): Ktx2KvEntry[] {
     // Key is NUL-terminated UTF-8
     let nulIdx = raw.indexOf(0);
     if (nulIdx === -1) nulIdx = raw.length;
-    const key = TD.decode(raw.slice(0, nulIdx));
+    textDecoder ??= new TextDecoder();
+    const key = textDecoder.decode(raw.slice(0, nulIdx));
     const value = raw.slice(nulIdx + 1);
 
     entries.push({ key, value });

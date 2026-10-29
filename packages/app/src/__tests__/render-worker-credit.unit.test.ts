@@ -1,9 +1,16 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { type DynamicGeometryCandidate, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import {
+  type DynamicGeometryCandidate,
+  MeshFilter,
+  MeshRenderer,
+  renderPublicationTransfers,
+} from '@forgeax/engine-render';
+import { renderPublicationTiming } from '@forgeax/engine-render/internal';
 import { Transform } from '@forgeax/engine-scene';
 import { DEFAULT_UNLIT_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderSource } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
 import type {
   EngineToHostMessage,
@@ -69,7 +76,7 @@ class CreditWorker {
 }
 afterEach(() => vi.unstubAllGlobals());
 
-async function programTransportFixture() {
+async function programTransportFixture(post: (message: EngineToHostMessage) => void = () => {}) {
   vi.stubGlobal('Worker', CreditWorker);
   const shaders = new ShaderRegistry({ manifestUrl: undefined });
   shaders.installMaterialArtifact('test::candidate-program', {
@@ -90,7 +97,7 @@ async function programTransportFixture() {
       bootstrapUrl: '',
       workers: workerSelection({ render: true, kernels: false }),
     },
-    () => {},
+    post,
   );
   const previous = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const mesh = createBoxGeometry(2, 2, 2).unwrap();
@@ -138,8 +145,130 @@ async function programTransportFixture() {
       identity: worker.init?.identity,
       result: { ok: true, deviceGeneration },
     });
-  return { source, worker, prepare, waitRequest, ready };
+  return { source, worker, prepare, waitRequest, ready, world, canvas };
 }
+
+it.each([
+  'confirmed',
+  'cleanup-error',
+  'timeout',
+  'dispose',
+] as const)('requires a successful retirement ACK before recovering device loss with resident meshes: %s', async (retirement) => {
+  const messages: EngineToHostMessage[] = [];
+  const f = await programTransportFixture((message) => messages.push(message));
+  try {
+    const prepared = f.prepare();
+    const request = await f.waitRequest(0);
+    f.ready(request.requestId);
+    const candidate = (await prepared).unwrap();
+    const worldIdentity = f.world.identity;
+    messages.length = 0;
+    const terminate = vi.spyOn(f.worker, 'terminate');
+    const send = f.worker.postMessage.bind(f.worker);
+    const retirements: RenderWorkerInput[] = [];
+    vi.spyOn(f.worker, 'postMessage').mockImplementation((message, transfer) => {
+      if (message.kind === 'dispose') retirements.push(message);
+      else send(message, transfer);
+    });
+    vi.useFakeTimers();
+    f.worker.emit({
+      kind: 'failed',
+      stage: 'draw',
+      recoverable: true,
+      renderer: { state: 'device-lost' },
+      error: {
+        code: 'device-operation-failed',
+        expected: 'a live GPU device',
+        hint: 'replace the lost device',
+        detail: { operation: 'complete-frame', cause: { code: 'device-lost' } },
+      },
+    });
+    expect(retirements).toEqual([{ kind: 'dispose' }]);
+    expect(f.source.hasPublicationCapacity).toBe(false);
+    expect(f.source.dynamicGeometry.isDynamicGeometryCurrent(candidate)).toBe(false);
+    expect(terminate).not.toHaveBeenCalled();
+    expect(messages).toEqual([]);
+    const disposing = retirement === 'dispose' ? f.source.dispose() : undefined;
+    expect(retirements).toHaveLength(1);
+
+    if (retirement === 'timeout') await vi.advanceTimersByTimeAsync(5_001);
+    else {
+      f.worker.emit({
+        kind: 'disposed',
+        ...(retirement === 'cleanup-error' ? { error: { code: 'cleanup-failed' } } : {}),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    if (disposing !== undefined) {
+      await disposing;
+      expect(messages).toEqual([]);
+      expect(f.source.hasPublicationCapacity).toBe(false);
+      expect(f.worker.controls.some((message) => message.kind === 'mesh-release')).toBe(false);
+    } else if (retirement === 'confirmed') {
+      expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 }));
+      expect(messages.some((message) => message.kind === 'fault')).toBe(false);
+      await f.source.replace(2, f.canvas);
+      expect(f.source.hasPublicationCapacity).toBe(true);
+      expect(f.world.identity).toBe(worldIdentity);
+      expect(f.source.dynamicGeometry.isDynamicGeometryCurrent(candidate)).toBe(false);
+    } else {
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          kind: 'fault',
+          retryable: false,
+          detail: expect.objectContaining({ meshReleaseUnconfirmed: true }),
+        }),
+      );
+      expect(messages.some((message) => message.kind === 'render-lost')).toBe(false);
+    }
+  } finally {
+    vi.useRealTimers();
+    await f.source.dispose();
+  }
+});
+
+it('cancels pending mesh preparation without faulting the World after confirmed Worker retirement', async () => {
+  const messages: EngineToHostMessage[] = [];
+  const f = await programTransportFixture((message) => messages.push(message));
+  try {
+    const pending = f.prepare().catch((unexpected) => ({ unexpected }));
+    await f.waitRequest(0);
+    f.worker.emit({
+      kind: 'failed',
+      stage: 'draw',
+      recoverable: true,
+      renderer: { state: 'device-lost' },
+      error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
+    });
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 })),
+    );
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: 'dynamic-geometry-gpu-not-ready' },
+    });
+    expect(f.source.dynamicGeometry.dynamicGeometryFault(f.world)).toBeUndefined();
+    await f.source.replace(2, f.canvas);
+    const replacement = CreditWorker.current;
+    const prepared = f.prepare();
+    await vi.waitFor(() =>
+      expect(replacement.controls.some((message) => message.kind === 'mesh-prepare')).toBe(true),
+    );
+    const request = replacement.controls.find((message) => message.kind === 'mesh-prepare');
+    if (request?.kind !== 'mesh-prepare') throw new Error('Missing replacement preparation');
+    replacement.emit({
+      kind: 'mesh-ready',
+      requestId: request.requestId,
+      identity: replacement.init?.identity,
+      result: { ok: true, deviceGeneration: 7 },
+    });
+    expect((await prepared).ok).toBe(true);
+    expect(f.source.dynamicGeometry.dynamicGeometryFault(f.world)).toBeUndefined();
+    expect(messages.some((message) => message.kind === 'fault')).toBe(false);
+  } finally {
+    await f.source.dispose();
+  }
+});
 
 it('sends first candidate programs until valid preparation ACK, then reuses publication program knowledge', async () => {
   const f = await programTransportFixture();
@@ -153,8 +282,15 @@ it('sends first candidate programs until valid preparation ACK, then reuses publ
     expect(b.input.pipelinePreparation?.programs).toEqual(programs);
     f.ready(a.requestId);
     expect((await first).ok).toBe(true);
+    const read = vi.spyOn(ShaderSource.prototype, 'read');
     const next = f.prepare();
-    const c = await f.waitRequest(2);
+    let c: Awaited<ReturnType<typeof f.waitRequest>>;
+    try {
+      c = await f.waitRequest(2);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
     expect(c.input.pipelinePreparation?.programs).toEqual([]);
     expect(f.worker.packets).toHaveLength(0);
     f.ready(b.requestId);
@@ -317,17 +453,12 @@ it('publishes geometry without a global temporal reset and faults paired recover
     );
     const draw = worker.packets[0];
     if (draw === undefined) throw new Error('missing publication');
-    expect(draw.publication.temporalReset).toBe(false);
+    expect(renderPublicationTiming(draw.publication).temporalReset).toBe(false);
     world.update(1 / 60).unwrap();
     worker.emit({
       kind: 'completed',
       revision: draw.publication.revision,
-      buffers: [
-        draw.publication.upserts.buffer,
-        draw.publication.removed.buffer,
-        draw.publication.transformEntities.buffer,
-        draw.publication.transforms.buffer,
-      ],
+      buffers: renderPublicationTransfers(draw.publication),
       frame: {
         kind: 'frame-complete',
         worldIdentity: world.identity,
@@ -432,12 +563,7 @@ it.each([
     const draw = worker.packets.shift();
     if (draw === undefined) throw new Error('No publication');
     const p = draw.publication;
-    const buffers = [
-      p.upserts.buffer,
-      p.removed.buffer,
-      p.transformEntities.buffer,
-      p.transforms.buffer,
-    ];
+    const buffers = renderPublicationTransfers(p);
     worker.emit({
       kind: 'completed',
       revision: p.revision,
@@ -459,7 +585,7 @@ it.each([
     expect(worker.packets.map((packet) => packet.frameId)).toEqual(
       Array.from({ length: capacity }, (_, index) => index + 1),
     );
-    expect(worker.packets[1]?.publication.temporalReset).toBe(true);
+    expect(renderPublicationTiming(packetAt(worker, 1).publication).temporalReset).toBe(true);
     expect(() => source.publish({ ...frame, frameId: capacity + 1 }, capacity)).toThrow();
     if (duplicateReady) {
       const clearDeadline = vi.spyOn(globalThis, 'clearTimeout');
@@ -486,10 +612,92 @@ it.each([
     expect(worker.packets.map((packet) => packet.frameId)).toEqual(
       Array.from({ length: capacity }, (_, index) => index + 2),
     );
-    expect(worker.packets[1]?.publication.temporalReset).toBe(false);
+    expect(renderPublicationTiming(packetAt(worker, 1).publication).temporalReset).toBe(false);
     complete();
     source.publish({ ...frame, frameId: capacity + 2 }, capacity + 1);
-    expect(worker.packets[1]?.publication.temporalReset).toBe(false);
+    expect(renderPublicationTiming(packetAt(worker, 1).publication).temporalReset).toBe(false);
+  } finally {
+    await source.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('keeps publication admission pending across render loss (full: %s)', async (full) => {
+  vi.stubGlobal('Worker', CreditWorker);
+  const world = new World();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const canvas = {} as OffscreenCanvas;
+  const messages: EngineToHostMessage[] = [];
+  const source = new SourceRenderWorker(
+    world,
+    assets,
+    {
+      kind: 'init',
+      canvas,
+      startupTimeoutMs: 90_000,
+      bootstrapUrl: '',
+      workers: workerSelection({ engine: true, render: true, kernels: false }),
+    },
+    (message) => messages.push(message),
+  );
+  const frame: ExecutionFrameMessage = {
+    kind: 'frame',
+    worldIdentity: world.identity,
+    frameId: 1,
+    deltaSeconds: 1 / 60,
+    canvasWidth: 32,
+    canvasHeight: 32,
+    inputSample: {
+      downKeys: new Set(),
+      upKeys: new Set(),
+      buttons: [false, false, false],
+      movementX: 0,
+      movementY: 0,
+      wheelDelta: 0,
+      focused: true,
+      pointerLocked: false,
+    },
+  };
+  try {
+    await source.start(canvas);
+    const previous = CreditWorker.current;
+    if (full) {
+      source.publish(frame, 0);
+      source.publish({ ...frame, frameId: 2 }, 1 / 60);
+    }
+    let admitted = false;
+    const admission = source.waitForPublicationCapacity().then(() => {
+      admitted = true;
+    });
+    // Loss either invalidates a resolved readiness wait or releases a full queue.
+    previous.emit({
+      kind: 'failed',
+      recoverable: true,
+      stage: 'draw',
+      error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+    expect(source.hasPublicationCapacity).toBe(false);
+    expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 }));
+    await source.replace(2, canvas);
+    await admission;
+    expect(admitted).toBe(true);
+    world.update(1 / 60).unwrap();
+    source.publish({ ...frame, frameId: 3 }, 2 / 60);
+    expect(CreditWorker.current).not.toBe(previous);
+    expect(CreditWorker.current.packets).toHaveLength(1);
+    expect(CreditWorker.current.packets[0]?.publication.epoch).toBe(2);
+    expect(world.identity).toBe(frame.worldIdentity);
+    source.publish({ ...frame, frameId: 4 }, 3 / 60);
+    const pending = source.waitForPublicationCapacity();
+    await source.dispose();
+    expect(await pending).toBe(false);
   } finally {
     await source.dispose();
   }
@@ -579,12 +787,7 @@ it.each([
   worker.emit({
     kind: 'completed',
     revision: publication.revision,
-    buffers: [
-      publication.upserts.buffer,
-      publication.removed.buffer,
-      publication.transformEntities.buffer,
-      publication.transforms.buffer,
-    ],
+    buffers: renderPublicationTransfers(publication),
     gpuPassTiming: observation,
     frame: {
       kind: 'frame-complete',
@@ -601,20 +804,10 @@ it.each([
     },
   });
   expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation });
-  expect(messages).toContainEqual(
-    expect.objectContaining({
-      kind: 'render-complete',
-      frame: expect.objectContaining({
-        frameId: 7,
-        presentation: 'pending',
-        presentationPendingReason: {
-          code: 'scene-pipeline-preparation',
-          pass: 'fs_gbuffer',
-          shader: 'test::opaque',
-        },
-      }),
-    }),
-  );
+  // Render notices bypass the Engine; it only hands the Host the session port.
+  expect(messages.some((message) => message.kind === 'render-complete')).toBe(false);
+  expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-host-port', epoch: 1 }));
+  expect(worker.init?.hostPort).toBeDefined();
   await source.dispose();
 });
 
@@ -746,6 +939,61 @@ it('uses the App startup budget for child initialization and still bounds a stal
   } finally {
     await source.dispose();
     vi.useRealTimers();
+  }
+});
+
+it('forwards the startup pipeline libraries only with the start that supplies them', async () => {
+  vi.stubGlobal('Worker', CreditWorker);
+  const world = new World();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const canvas = {} as OffscreenCanvas;
+  const pipelineLibrary = {
+    version: 1 as const,
+    backend: 'webgpu' as const,
+    shaders: [],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  };
+  const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: '// background' }] };
+  for (const resupplied of [undefined, pipelineLibrary]) {
+    const source = new SourceRenderWorker(
+      world,
+      assets,
+      {
+        kind: 'init',
+        canvas,
+        bootstrapUrl: '',
+        workers: workerSelection({ engine: true, render: true, kernels: false }),
+        startupTimeoutMs: 90_000,
+      },
+      () => {},
+    );
+    try {
+      await source.start(canvas, pipelineLibrary, backgroundPipelineLibrary);
+      expect(CreditWorker.current.init?.pipelineLibrary).toEqual(pipelineLibrary);
+      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toEqual(
+        backgroundPipelineLibrary,
+      );
+      const lost = CreditWorker.current;
+      lost.emit({
+        kind: 'failed',
+        recoverable: true,
+        stage: 'draw',
+        error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
+      });
+      // Replacement carries only what the Host supplies with it; nothing was retained.
+      const background = resupplied === undefined ? undefined : backgroundPipelineLibrary;
+      await source.replace(2, canvas, resupplied, background);
+      expect(CreditWorker.current).not.toBe(lost);
+      expect(CreditWorker.current.init?.pipelineLibrary).toEqual(resupplied);
+      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toEqual(background);
+    } finally {
+      await source.dispose();
+    }
   }
 });
 
@@ -963,6 +1211,12 @@ const inspectedFacts = {
   frame: { frameId: 7, deviceGeneration: 0 },
   extraOwnerFacts: { preserved: true },
 };
+function packetAt(worker: CreditWorker, index: number) {
+  const packet = worker.packets[index];
+  if (packet === undefined) throw new Error(`missing publication ${index}`);
+  return packet;
+}
+
 function inspectionReply(request: Extract<RenderWorkerInput, { kind: 'inspect' }>) {
   return {
     kind: 'inspect-result',
@@ -981,6 +1235,26 @@ it('rejects before-ready inspection without starting a child or drawing', async 
   const { source } = await inspectionOwner();
   try {
     expect(await source.inspectRenderer()).toMatchObject({ ok: false });
+  } finally {
+    await source.dispose();
+  }
+});
+it('carries selected inspection fields to the child without adding frame work', async () => {
+  const { source, canvas } = await inspectionOwner();
+  await source.start(canvas);
+  const worker = CreditWorker.current;
+  try {
+    const pending = source.inspectRenderer({
+      fields: ['frame', 'pipelineLibrary'],
+      runtimeRequests: true,
+    });
+    const request = inspectionRequest(worker);
+    expect(request.fields).toEqual(['frame', 'pipelineLibrary']);
+    expect(request.runtimeRequests).toBe(true);
+    const value = { frame: inspectedFacts.frame, pipelineLibrary: undefined };
+    worker.emit({ ...inspectionReply(request), result: { ok: true, value } });
+    expect(await pending).toEqual({ ok: true, value });
+    expect(worker.packets).toEqual([]);
   } finally {
     await source.dispose();
   }

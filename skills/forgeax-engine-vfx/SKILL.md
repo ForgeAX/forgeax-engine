@@ -5,6 +5,20 @@ description: ForgeaX code-first GPU VFX authoring, cooking, playback, and render
 
 # ForgeaX VFX
 
+## Choose the path first
+
+| Effect | Path |
+|:--|:--|
+| Rain, snow, sparks, bubbles, dust or sandstorm, fire, smoke, magic motes; up to a few thousand particles per field; behaviour written in game TypeScript | `Points` sprites on a `point-list` mesh, moved with `writeRange` each frame (particles-core). No shader, no cook. |
+| Tens of thousands of particles, GPU scene collision, force fields, ribbons, trails, beams, mesh particles, event sub-emitters | Cooked GPU VFX below. |
+
+`Points` take a world (`sizeUnits: world`) or pixel size, square, circle or `soft`
+(radial glow) sprites, per-point `color` (alpha fades) and `uv1.x` size streams, the
+material texture across each sprite and the material's blend and depth-write state.
+That covers Three.js `Points`/`PointsMaterial` effects; do not fake particles with pools
+of small meshes. Switch to the GPU path when the CPU loop or its per-frame upload shows
+up in a profile, or when the behaviour needs GPU-side data.
+
 ## Render happy path
 
 VFX is a producer of a closed `RenderFeaturePlan` in the single
@@ -18,10 +32,27 @@ Use one path:
 1. Author schema-v3 emitter metadata with `program: { module }`, required fixed bounds, schedule, and renderer GUIDs.
 2. Author `vfx_spawn` and `vfx_update` in WGSL; import `forgeax_vfx::prelude` and shared shader modules with `#import`.
 3. Cook with `createParticleCodeNativeCooker(modules)`; publish payload and `particle-effect/program.json` atomically.
-4. Create one `createVfxRuntimeHost({ camera })`, attach each `{ world, assets }`, and register `host.feature` with the Renderer.
+4. Ordinary DevKit games already install one VFX assembly per execution realm; consume that owner. For explicit standalone assembly, create one `createVfxRuntimeHost({ camera })`, attach each `{ world, assets }`, and register `host.feature` through the owning App/Renderer assembly. Do not add a second host to an SDK game.
 5. Load by GUID with `loadVfxGpuEffect`, allocate a shared `ParticleEffectAsset` ref, and spawn `ParticleEffectPlayer`.
 
 Read [`packages/vfx/README.md`](../../packages/vfx/README.md) for the author ABI and lifecycle, [`packages/vfx-compiler/README.md`](../../packages/vfx-compiler/README.md) for reflection and cook errors, and [`packages/vfx-render/README.md`](../../packages/vfx-render/README.md) for GPU/render ownership.
+
+One-shot bursts (sparks, hit flashes, an enemy dissipating; Three.js additive
+`Points`/`Sprite`, Godot `GPUParticles3D.one_shot`) need no extra API: give the
+emitter `schedule: { rate: 0, bursts: [{ time: 0, count }] }` and a billboard
+renderer with `blend: 'additive'`, then spawn one `ParticleEffectPlayer` per burst
+(a distinct `seed` varies it) and despawn it after the last scheduled birth plus its particle tail. Reused effects retain their authored burst times, looping and local transform conventions; an asset name does not imply a single short flash. Inspect the timeline before adapting it, and keep gameplay hit feedback synchronous. Authorized source or parameter adaptation may change schedules and recook them while retaining stable identity and provenance.
+The complete files are recipe 5 of the
+effects cookbook.
+
+Players advance once per World frame: the `vfx-gpu-runtime` Update system runs
+after `FixedUpdate` and steps each simulating player by `Time.delta` times its
+`timeScale`, so particles move at render rate. Bound hitches with
+`TimePolicy.maxDeltaSeconds`; do not add a VFX-side step clock. Each intent
+records `delta`, `initialDelta` and cycle `elapsed`; device recovery replays the
+same dispatch count and cycle time over even steps.
+Presentation retirement must use the same frame time and `timeScale` as playback.
+A fixed-tick counter does not measure VFX progress when fixed work is dropped.
 
 Every particle topology fogs at its own depth through the shared
 `translucent_fog`; alpha blending adds in-scattering and additive blending only

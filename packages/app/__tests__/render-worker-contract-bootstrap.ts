@@ -4,6 +4,10 @@ import { ok } from '@forgeax/engine-types';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
 import baseEntry from './render-worker-bootstrap';
 
+function holdUntilGate<T>(completion: Promise<T>, gate: Promise<void>): Promise<T> {
+  return Promise.all([completion, gate]).then(([result]) => result);
+}
+
 const entry: ExecutionBootstrapEntry = async (data) => {
   const options = data as { stallMs?: number; cleanupMs?: number; cleanupChannel?: string; fail?: boolean; holdFirstCompletion?: boolean };
   const base = await baseEntry(1);
@@ -49,9 +53,19 @@ const entry: ExecutionBootstrapEntry = async (data) => {
         });
         if (!first || (!options.stallMs && !options.holdFirstCompletion)) return result;
         first = false;
-        const gate = options.holdFirstCompletion ? firstCompletion : new Promise((resolve) => setTimeout(resolve, options.stallMs));
-        const completed = Promise.all([receipt.completed, gate]).then(([result]) => result);
-        return ok({ ...result.value, completed });
+        const gate = options.holdFirstCompletion
+          ? firstCompletion
+          : new Promise<void>((resolve) => setTimeout(resolve, options.stallMs));
+        const completed = holdUntilGate(receipt.completed, gate);
+        const creditCompleted =
+          receipt.creditCompleted === undefined
+            ? undefined
+            : holdUntilGate(receipt.creditCompleted, gate);
+        return ok({
+          ...result.value,
+          completed,
+          ...(creditCompleted === undefined ? {} : { creditCompleted }),
+        });
       };
     },
     plugins: [...(base.plugins ?? []), {

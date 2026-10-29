@@ -15,6 +15,10 @@ export async function captureDevPluginPrograms(
 ) {
   const environment = server.environments.client;
   if (!environment) throw new TypeError('browser plugin capture requires a client environment');
+  // init starts the native scan without awaiting it. Freeze only after that
+  // scan discovers the shared dependency graph and its optimized module URLs.
+  await environment.depsOptimizer?.init();
+  await environment.depsOptimizer?.scanProcessing;
   const base = server.config.base;
   const local = (url: string) => (url.startsWith(base) ? `/${url.slice(base.length)}` : url);
   const responses = new Map<string, string>();

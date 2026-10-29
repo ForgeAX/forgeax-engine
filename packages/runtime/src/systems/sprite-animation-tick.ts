@@ -148,7 +148,13 @@ function collectAnimEntities(world: World): EntityHandle[] {
   const queryResult = world.query({ with: [SpriteAnimation] });
   if (!queryResult.ok) return [];
   const entities: EntityHandle[] = [];
-  for (const row of queryResult.value) entities.push(row.entity);
+  for (const querySpan of queryResult.value.spans().unwrap()) {
+    const queryEntities = querySpan.entities;
+    for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+      const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+      entities.push(queriedEntity);
+    }
+  }
   return entities;
 }
 

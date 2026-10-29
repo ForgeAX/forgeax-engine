@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureThree } from '../../../src/main';
+import type { SceneCase } from '../../../src/contracts/types';
+import { captureThree, createForgeaxCaptureSession } from '../../../src/main';
 
 interface AlphaCaptureDiagnostics {
   readonly caseId: string;
@@ -63,9 +64,21 @@ describe('material alpha browser final-display readback', () => {
 
   it('closes all seven required alpha cases through the focused real-browser seam', async () => {
     document.body.innerHTML = '<canvas id="forgeax"></canvas><canvas id="three"></canvas>';
-    for (const caseId of REQUIRED_ALPHA_CASE_IDS) {
-      const capture = await window.__colorLightingParitySingle?.(caseId);
-      expect(capture?.error, `${caseId} browser capture`).toBeUndefined();
+    const fixtures = Object.values(import.meta.glob('../*.json', {
+      eager: true,
+      import: 'default',
+    }) as Record<string, SceneCase>);
+    const session = await createForgeaxCaptureSession(explicitCase as unknown as SceneCase);
+    try {
+      for (const caseId of REQUIRED_ALPHA_CASE_IDS) {
+        const fixture = fixtures.find((entry) => entry.caseId === caseId);
+        if (fixture === undefined) throw new Error(`Missing alpha fixture: ${caseId}`);
+        // The same producer still validates every first ready picture. Its
+        // session detaches each fresh World before admitting the next case.
+        await expect(session.capture(fixture), `${caseId} browser capture`).resolves.toHaveProperty('final');
+      }
+    } finally {
+      await session.dispose();
     }
   }, 120_000);
 });

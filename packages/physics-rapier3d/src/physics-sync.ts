@@ -1,6 +1,7 @@
 import type { Component, EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
-import { defineSystem, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
-import type { StateProjection } from '@forgeax/engine-ecs/projection';
+import { Disabled, defineSystem, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { type DerivedRangeWriter, getDerivedWriter } from '@forgeax/engine-ecs/internal';
+import { readRenderArrayView, type StateProjection } from '@forgeax/engine-ecs/projection';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import {
   CharacterController,
@@ -15,7 +16,7 @@ import {
   rigidBodyTypeFromF32,
   snapshotCollider,
 } from '@forgeax/engine-physics';
-import { ChildOf } from '@forgeax/engine-scene';
+import { ChildOf, type Transform } from '@forgeax/engine-scene';
 import type { RapierPhysicsWorld3D } from './rapier-physics-world-3d.js';
 
 export interface PhysicsTransform3D {
@@ -100,7 +101,7 @@ export function sameColliderScale(
   );
 }
 
-function hasReadableWorldPose(world: Float32Array | undefined): world is Float32Array {
+function hasReadableWorldPose(world: ArrayLike<number> | undefined): world is ArrayLike<number> {
   return world !== undefined && world.length >= 16;
 }
 
@@ -117,110 +118,128 @@ export function physicsRowIsStatic(row: PhysicsSyncQueryRow): boolean {
   return rigidBody !== undefined && rigidBodyTypeFromF32(rigidBody.type) === 'static';
 }
 
+function readPhysicsTransform(
+  row: PhysicsSyncQueryRow,
+  state: PhysicsSyncState,
+): PhysicsTransform3D | undefined {
+  // Root TRS is already world-space; a parented row consumes Scene's matrix.
+  const worldPose = row.has(ChildOf)
+    ? readRenderArrayView(state.world, row.entity, state.globalTransformComponent, 'world')
+    : undefined;
+  let position: ArrayLike<number> | undefined;
+  let rotation: ArrayLike<number> | undefined;
+  let scale: ArrayLike<number> | undefined;
+  if (hasReadableWorldPose(worldPose)) {
+    poseScratchWorld.set(worldPose);
+    mat4.decompose(poseScratchPosition, poseScratchRotation, poseScratchScale, poseScratchWorld);
+    position = poseScratchPosition;
+    rotation = poseScratchRotation;
+    scale = poseScratchScale;
+  } else {
+    position = readRenderArrayView(state.world, row.entity, state.transformComponent, 'pos');
+    rotation = readRenderArrayView(state.world, row.entity, state.transformComponent, 'quat');
+    scale = readRenderArrayView(state.world, row.entity, state.transformComponent, 'scale');
+  }
+  if (position === undefined || rotation === undefined || scale === undefined) return undefined;
+  return {
+    position: { x: position[0] ?? 0, y: position[1] ?? 0, z: position[2] ?? 0 },
+    rotation: {
+      x: rotation[0] ?? 0,
+      y: rotation[1] ?? 0,
+      z: rotation[2] ?? 0,
+      w: rotation[3] ?? 1,
+    },
+    scale: { x: scale[0] ?? 1, y: scale[1] ?? 1, z: scale[2] ?? 1 },
+  };
+}
+
+function readRigidBodyConfig(
+  row: PhysicsSyncQueryRow,
+  state: PhysicsSyncState,
+  previous: PhysicsSyncDescriptor | undefined,
+): PhysicsSyncDescriptor['rigidBody'] {
+  // Membership is separate from surviving-value evidence: removals are structural.
+  if (row.has(RigidBody)) {
+    if (previous !== undefined && !state.projection.changed(row.entity, RigidBody))
+      return previous.rigidBody;
+    const data = row.get(RigidBody) as
+      | {
+          readonly type: number;
+          readonly mass: number;
+          readonly linearDamping: number;
+          readonly angularDamping: number;
+          readonly gravityScale: number;
+          readonly ccdEnabled: number | boolean;
+          readonly lockRotation?: boolean;
+          readonly additionalSolverIterations?: number;
+        }
+      | undefined;
+    if (data !== undefined)
+      return {
+        type: data.type,
+        mass: data.mass,
+        linearDamping: data.linearDamping,
+        angularDamping: data.angularDamping,
+        gravityScale: data.gravityScale,
+        ccdEnabled: Number(data.ccdEnabled),
+        lockRotation: Boolean(data.lockRotation),
+        additionalSolverIterations: data.additionalSolverIterations ?? 0,
+      };
+  }
+  return {
+    type: RigidBodyTypeValue.static,
+    mass: 0,
+    linearDamping: 0,
+    angularDamping: 0,
+    gravityScale: 1,
+    ccdEnabled: 0,
+    lockRotation: false,
+  };
+}
+
+function readColliderConfig(
+  row: PhysicsSyncQueryRow,
+  state: PhysicsSyncState,
+  previous: PhysicsSyncDescriptor | undefined,
+): ColliderSnapshot | undefined {
+  if (!row.has(Collider)) return undefined;
+  if (previous?.collider !== undefined && !state.projection.changed(row.entity, Collider))
+    return previous.collider;
+  const data = row.get(Collider) as ColliderData | undefined;
+  return data === undefined ? undefined : snapshotCollider(data);
+}
+
+function readCharacterControllerOffset(
+  row: PhysicsSyncQueryRow,
+  state: PhysicsSyncState,
+  previous: PhysicsSyncDescriptor | undefined,
+): number | undefined {
+  if (
+    previous?.hasCharacterController === true &&
+    !state.projection.changed(row.entity, CharacterController)
+  )
+    return previous.characterControllerOffset;
+  return (row.get(CharacterController) as { readonly offset: number } | undefined)?.offset;
+}
+
 export function readPhysicsSyncDescriptor(
   row: PhysicsSyncQueryRow,
-  transformComponent: Component,
-  globalTransformComponent: Component,
+  state: PhysicsSyncState,
+  previous: PhysicsSyncDescriptor | undefined,
 ): PhysicsSyncDescriptor | undefined {
-  const transformData = row.get(transformComponent) as
-    | {
-        readonly pos: Float32Array;
-        readonly quat: Float32Array;
-        readonly scale: Float32Array;
-      }
-    | undefined;
-  const globalTransformData = row.get(globalTransformComponent) as
-    | { readonly world: Float32Array }
-    | undefined;
-  const colliderData = (row.has(Collider) ? row.get(Collider) : undefined) as
-    | ColliderData
-    | undefined;
-  if (transformData === undefined || (colliderData === undefined && !row.has(RigidBody)))
-    return undefined;
-
-  // Root-local TRS is already a world pose. A ChildOf row, however, must use
-  // Scene's derived GlobalTransform world matrix. Matrix contents cannot be a
-  // validity sentinel: a legitimate parent/local composition can resolve to
-  // identity.
-  const useWorldPose = row.has(ChildOf) && hasReadableWorldPose(globalTransformData?.world);
-  if (useWorldPose) {
-    poseScratchWorld.set(globalTransformData.world);
-    mat4.decompose(poseScratchPosition, poseScratchRotation, poseScratchScale, poseScratchWorld);
-  } else {
-    poseScratchPosition[0] = transformData.pos[0] ?? 0;
-    poseScratchPosition[1] = transformData.pos[1] ?? 0;
-    poseScratchPosition[2] = transformData.pos[2] ?? 0;
-    poseScratchRotation[0] = transformData.quat[0] ?? 0;
-    poseScratchRotation[1] = transformData.quat[1] ?? 0;
-    poseScratchRotation[2] = transformData.quat[2] ?? 0;
-    poseScratchRotation[3] = transformData.quat[3] ?? 1;
-    poseScratchScale[0] = transformData.scale[0] ?? 1;
-    poseScratchScale[1] = transformData.scale[1] ?? 1;
-    poseScratchScale[2] = transformData.scale[2] ?? 1;
-  }
-
-  const rigidBodyData = row.has(RigidBody)
-    ? (row.get(RigidBody) as
-        | {
-            readonly type: number;
-            readonly mass: number;
-            readonly linearDamping: number;
-            readonly angularDamping: number;
-            readonly gravityScale: number;
-            readonly ccdEnabled: number | boolean;
-            readonly lockRotation?: boolean;
-            readonly additionalSolverIterations?: number;
-          }
-        | undefined)
-    : undefined;
-  const characterControllerData = row.has(CharacterController)
-    ? (row.get(CharacterController) as { readonly offset: number } | undefined)
-    : undefined;
-
+  if (!row.has(Collider) && !row.has(RigidBody)) return undefined;
+  const transform = readPhysicsTransform(row, state);
+  if (transform === undefined) return undefined;
+  const hasCharacterController = row.has(CharacterController);
   return {
     entity: row.entity,
-    transform: {
-      position: {
-        x: poseScratchPosition[0] ?? 0,
-        y: poseScratchPosition[1] ?? 0,
-        z: poseScratchPosition[2] ?? 0,
-      },
-      rotation: {
-        x: poseScratchRotation[0] ?? 0,
-        y: poseScratchRotation[1] ?? 0,
-        z: poseScratchRotation[2] ?? 0,
-        w: poseScratchRotation[3] ?? 1,
-      },
-      scale: {
-        x: poseScratchScale[0] ?? 1,
-        y: poseScratchScale[1] ?? 1,
-        z: poseScratchScale[2] ?? 1,
-      },
-    },
-    rigidBody:
-      rigidBodyData === undefined
-        ? {
-            type: RigidBodyTypeValue.static,
-            mass: 0,
-            linearDamping: 0,
-            angularDamping: 0,
-            gravityScale: 1,
-            ccdEnabled: 0,
-            lockRotation: false,
-          }
-        : {
-            type: rigidBodyData.type,
-            mass: rigidBodyData.mass,
-            linearDamping: rigidBodyData.linearDamping,
-            angularDamping: rigidBodyData.angularDamping,
-            gravityScale: rigidBodyData.gravityScale,
-            ccdEnabled: Number(rigidBodyData.ccdEnabled),
-            lockRotation: Boolean(rigidBodyData.lockRotation),
-            additionalSolverIterations: rigidBodyData.additionalSolverIterations ?? 0,
-          },
-    collider: colliderData === undefined ? undefined : snapshotCollider(colliderData),
-    hasCharacterController: row.has(CharacterController),
-    characterControllerOffset: characterControllerData?.offset,
+    transform,
+    rigidBody: readRigidBodyConfig(row, state, previous),
+    collider: readColliderConfig(row, state, previous),
+    hasCharacterController,
+    characterControllerOffset: hasCharacterController
+      ? readCharacterControllerOffset(row, state, previous)
+      : undefined,
   };
 }
 
@@ -299,7 +318,7 @@ export const PhysicsStepSimulation: SystemHandle<readonly []> = defineSystem({
  * `physicsWriteback` system token (M2 — full resource-ification, D-4).
  *
  * After physicsStepSimulation — call pw.writebackDynamicBodies() and write
- * positions back to ECS Transform (resolved via the global registry, D-3).
+ * exact poses through the ECS numeric write fence into the World-local Transform.
  */
 export const PhysicsWriteback: SystemHandle<readonly []> = defineSystem({
   name: PHYSICS_WRITEBACK,
@@ -316,39 +335,107 @@ export const PhysicsWriteback: SystemHandle<readonly []> = defineSystem({
     }
 
     const results = pw.writebackDynamicBodies();
-    for (const r of results) {
-      const entity = r.entity as EntityHandle;
-      const pos = [r.pos.x, r.pos.y, r.pos.z];
-      const quat = [r.rotation.x, r.rotation.y, r.rotation.z, r.rotation.w];
-      if (transformPoseEquals(world, entity, transformComponent, pos, quat)) continue;
-      world.set(entity, transformComponent, { pos, quat });
+    if (results.length === 0) return;
+    let state = poseWriters.get(world);
+    if (state === undefined || state.component !== transformComponent) {
+      state = {
+        component: transformComponent,
+        active: createPoseWriter(world, transformComponent, false),
+        unmatched: [],
+      };
+      poseWriters.set(world, state);
+    }
+    const unmatched = state.unmatched;
+    unmatched.length = 0;
+    try {
+      publishPoses(state.active, results, unmatched);
+      // Ordinary queries omit Disabled. Preserve pending poses for native
+      // derived bodies that still exist while their ECS entity is disabled.
+      if (unmatched.length > 0) {
+        state.disabled ??= createPoseWriter(world, transformComponent, true);
+        publishPoses(state.disabled, unmatched);
+      }
+    } finally {
+      unmatched.length = 0;
     }
   },
 });
 
-/**
- * Skipping a bit-identical write keeps an unchanged pose out of `changed`
- * filters, so downstream transform propagation stays O(moving bodies).
- */
-function transformPoseEquals(
-  world: World,
-  entity: EntityHandle,
-  transform: Component,
-  pos: readonly number[],
-  quat: readonly number[],
-): boolean {
-  const current = world.get(entity, transform);
-  if (!current.ok) return false;
-  const value = current.value as unknown as { pos?: ArrayLike<number>; quat?: ArrayLike<number> };
-  return f32ArrayEquals(value.pos, pos) && f32ArrayEquals(value.quat, quat);
+type BodyPose = ReturnType<RapierPhysicsWorld3D['writebackDynamicBodies']>[number];
+interface PoseWriter {
+  readonly writer: DerivedRangeWriter<never, typeof Transform>;
+  readonly cursor: { bindingIndex: number; row: number };
+  readonly touched: number[];
+}
+interface PoseWriters {
+  readonly component: Component;
+  readonly active: PoseWriter;
+  disabled?: PoseWriter;
+  readonly unmatched: BodyPose[];
+}
+const poseWriters = new WeakMap<World, PoseWriters>();
+
+function createPoseWriter(world: World, component: Component, disabled: boolean): PoseWriter {
+  const transform = component as typeof Transform;
+  const query = world
+    .query({ write: [transform], ...(disabled ? { with: [Disabled] } : {}) })
+    .unwrap();
+  return {
+    writer: getDerivedWriter(query, transform).unwrap(),
+    cursor: { bindingIndex: 0, row: 0 },
+    touched: [],
+  };
 }
 
-function f32ArrayEquals(stored: ArrayLike<number> | undefined, next: readonly number[]): boolean {
-  if (stored === undefined || stored.length !== next.length) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (stored[index] !== Math.fround(next[index] as number)) return false;
+/** Commit exact f32 poses and publish only changed rows through the ECS fence. */
+function publishPoses(state: PoseWriter, poses: readonly BodyPose[], unmatched?: BodyPose[]): void {
+  const { writer, cursor, touched } = state;
+  touched.length = 0;
+  try {
+    writer
+      .writeRows(touched, () => {
+        for (const pose of poses) {
+          if (!writer.locateEntity(pose.entity as EntityHandle, cursor)) {
+            unmatched?.push(pose);
+            continue;
+          }
+          const columns = writer.bindings[cursor.bindingIndex]?.write;
+          if (columns === undefined) continue;
+          const pos = columns.pos,
+            rotation = columns.quat;
+          const p = cursor.row * 3,
+            q = cursor.row * 4;
+          const x = Math.fround(pose.pos.x),
+            y = Math.fround(pose.pos.y),
+            z = Math.fround(pose.pos.z);
+          const rx = Math.fround(pose.rotation.x),
+            ry = Math.fround(pose.rotation.y);
+          const rz = Math.fround(pose.rotation.z),
+            rw = Math.fround(pose.rotation.w);
+          if (
+            pos[p] === x &&
+            pos[p + 1] === y &&
+            pos[p + 2] === z &&
+            rotation[q] === rx &&
+            rotation[q + 1] === ry &&
+            rotation[q + 2] === rz &&
+            rotation[q + 3] === rw
+          )
+            continue;
+          pos[p] = x;
+          pos[p + 1] = y;
+          pos[p + 2] = z;
+          rotation[q] = rx;
+          rotation[q + 1] = ry;
+          rotation[q + 2] = rz;
+          rotation[q + 3] = rw;
+          touched.push(cursor.bindingIndex, cursor.row);
+        }
+      })
+      .unwrap();
+  } finally {
+    touched.length = 0;
   }
-  return true;
 }
 
 /**
@@ -425,6 +512,7 @@ export function registerPhysicsSystems(world: World): () => void {
     } catch {
       // PhysicsWorld may already have been removed as part of outer teardown.
     }
+    poseWriters.delete(world);
     releaseComponents();
   };
 }

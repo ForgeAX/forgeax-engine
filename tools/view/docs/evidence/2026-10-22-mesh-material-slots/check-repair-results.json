@@ -1,0 +1,98 @@
+{
+  "viewBase": "275c9e365d16838cd26e60e37ab51c1b343eb105",
+  "localEngine": "284f102afad1c3d33527064ecc0b84b11262e2e9",
+  "ciEngine": "635e6bce68445fc4a22c9fa9dbd8a92b5c9fa778",
+  "unitTests": {
+    "passed": 613,
+    "failed": 0,
+    "skipped": 0
+  },
+  "game3d": {
+    "passed": true,
+    "boundary": "game-3d-hierarchy-and-control",
+    "entities": 33,
+    "worldId": "world-b98b830b-5af6-43d3-9fcd-314ab1c8de99-1",
+    "workload": {
+      "runtimeViewport": {
+        "width": 1000,
+        "height": 700
+      },
+      "gameViewport": {
+        "width": 1000,
+        "height": 700
+      },
+      "sceneFrames": 60,
+      "resourceCycles": 2
+    }
+  },
+  "runtime": [
+    {
+      "case": "js/live",
+      "completedSceneFrames": 60,
+      "requiredSceneFrames": 60,
+      "resourceCycles": [
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        },
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        }
+      ],
+      "errors": [],
+      "boundary": "actual Engine backend and View UI; live JS/TS admission, native plugin, parameter replacement, consumer publication and geometry, downloaded source restoration and Scene references; software GPU"
+    },
+    {
+      "case": "js/cold",
+      "completedSceneFrames": 60,
+      "requiredSceneFrames": 60,
+      "resourceCycles": [
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        },
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        }
+      ],
+      "errors": [],
+      "boundary": "fresh backend, App and browser; only a persisted source snapshot supplied after startup; native plugin, Mesh and Scene; software GPU"
+    },
+    {
+      "case": "ts/live",
+      "completedSceneFrames": 60,
+      "requiredSceneFrames": 60,
+      "resourceCycles": [
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        },
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        }
+      ],
+      "errors": [],
+      "boundary": "actual Engine backend and View UI; live JS/TS admission, native plugin, parameter replacement, consumer publication and geometry, downloaded source restoration and Scene references; software GPU"
+    },
+    {
+      "case": "ts/cold",
+      "completedSceneFrames": 60,
+      "requiredSceneFrames": 60,
+      "resourceCycles": [
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        },
+        {
+          "releasedBuffers": 0,
+          "releasedTextures": 0
+        }
+      ],
+      "errors": [],
+      "boundary": "fresh backend, App and browser; only a persisted source snapshot supplied after startup; native plugin, Mesh and Scene; software GPU"
+    }
+  ]
+}

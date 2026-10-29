@@ -151,11 +151,7 @@ function makeLights(): MockObj {
     directionalCount: 0,
     point: [],
     spot: [],
-    lightViewProj: undefined,
-    splitPlanes: undefined,
-    cascadeCount: undefined,
     cascadeBlendWidth: undefined,
-    cascadeBlend: undefined,
     csmShadowMapView: undefined,
     csmShadowAtlasSlot: undefined,
     csmShadowSplitCount: undefined,
@@ -164,8 +160,9 @@ function makeLights(): MockObj {
     shadowMapSize: 0,
     depthBias: 0,
     normalBias: 0,
-    directionalShadowQuality: undefined,
     pointShadow: [],
+    cascades: undefined,
+    shadowViews: [],
   };
 }
 

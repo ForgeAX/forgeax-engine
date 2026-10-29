@@ -1,12 +1,13 @@
 import type { Texture } from '@forgeax/engine-rhi';
 import type { ShadowViewIdentity } from '../gpu-driven/shadow-views';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import type { ExtractedLights, PointShadowSnapshot } from '../render-system-extract';
+import type { PointShadowSnapshot } from '../render-system-extract';
+import type { ViewLights } from '../world/render-lights';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 export function shadowUpdatePolicy(
   identity: ShadowViewIdentity,
-  lights: ExtractedLights,
+  lights: ViewLights,
   worlds: readonly RenderResourceScope[],
   effectiveShadowMapSize: number | undefined,
   effectiveSpotShadowMapSize: number | undefined,
@@ -51,5 +52,48 @@ export function shadowUpdatePolicy(
             Math.round(size * Math.min(1, 1 / aspect)),
           ] as const,
         }),
+  };
+}
+
+/** One recording's light facts are shared by every cascade, face and layer. */
+export function createShadowUpdatePolicy(
+  lights: ViewLights,
+  worlds: readonly RenderResourceScope[],
+  effectiveShadowMapSize: number | undefined,
+  effectiveSpotShadowMapSize: number | undefined,
+  pointShadowTarget: () => Texture | undefined,
+): NonNullable<_InternalRenderPipelineContext['shadowUpdatePolicy']> {
+  type Policy = ReturnType<typeof shadowUpdatePolicy>;
+  let directional: Policy;
+  let directionalRead = false;
+  let point: Map<number, Policy> | undefined;
+  let spot: Map<number, Policy> | undefined;
+  const read = (identity: ShadowViewIdentity): Policy =>
+    shadowUpdatePolicy(
+      identity,
+      lights,
+      worlds,
+      effectiveShadowMapSize,
+      effectiveSpotShadowMapSize,
+      pointShadowTarget(),
+    );
+  return (identity) => {
+    if (identity.kind === 'directional') {
+      if (!directionalRead) {
+        directional = read(identity);
+        directionalRead = true;
+      }
+      return directional;
+    }
+    let cache: Map<number, Policy>;
+    if (identity.kind === 'point') {
+      point ??= new Map();
+      cache = point;
+    } else {
+      spot ??= new Map();
+      cache = spot;
+    }
+    if (!cache.has(identity.index)) cache.set(identity.index, read(identity));
+    return cache.get(identity.index);
   };
 }

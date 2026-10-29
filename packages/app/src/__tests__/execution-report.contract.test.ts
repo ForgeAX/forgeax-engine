@@ -38,12 +38,69 @@ describe('ExecutionReport contract', () => {
     expect(report.performance.kernelWaitMs).toBeNull();
     expect(report.audio).toEqual({
       owner: 'host',
-      contextState: 'suspended',
-      activeSourceCount: 0,
+      contextState: 'unavailable',
+      activeSourceCount: null,
       lastError: null,
     });
     expect(report.fault).toBeNull();
     expect(isExecutionReport(report)).toBe(true);
+  });
+
+  it('accepts Host preparation receipts and rejects fabricated availability', () => {
+    const report = createExecutionReport(
+      capabilities(),
+      selectExecutionWorkers({ capabilities: capabilities() }).unwrap(),
+    );
+    expect(
+      isExecutionReport({
+        ...report,
+        audio: {
+          ...report.audio,
+          preparation: { requestId: 'prepare-1', status: 'ready', sourceCount: 1 },
+        },
+      }),
+    ).toBe(true);
+    expect(isExecutionReport({ ...report, audio: { ...report.audio, activeSourceCount: 0 } })).toBe(
+      false,
+    );
+    expect(
+      isExecutionReport({ ...report, audio: { ...report.audio, contextState: 'running' } }),
+    ).toBe(false);
+  });
+
+  it('rejects unknown audio errors and undeclared preparation failure fields', () => {
+    const report = createExecutionReport(
+      capabilities(),
+      selectExecutionWorkers({ capabilities: capabilities() }).unwrap(),
+    );
+    const failure = {
+      code: 'decode-failed',
+      expected: 'decodable bytes',
+      hint: 'repair the clip',
+      detail: { code: 'decode-failed', reason: 'invalid bytes' },
+    };
+    const preparation = {
+      requestId: 'failed-prepare',
+      status: 'rejected',
+      sourceCount: 1,
+      failure,
+    };
+    expect(isExecutionReport({ ...report, audio: { ...report.audio, preparation } })).toBe(true);
+    expect(
+      isExecutionReport({
+        ...report,
+        audio: {
+          ...report.audio,
+          preparation: { ...preparation, failure: { ...failure, undeclared: true } },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isExecutionReport({
+        ...report,
+        audio: { ...report.audio, lastError: { ...failure, code: 'unknown-code' } },
+      }),
+    ).toBe(false);
   });
 
   it('rejects missing and extra schema fields', () => {

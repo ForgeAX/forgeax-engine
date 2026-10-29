@@ -41,7 +41,9 @@ async function fixture() {
   Object.assign(f.context.runtime, { prepareMaterialShaderPipeline: prepare });
   const views = [0, 1, 2].map((index) => ({ identity: { kind: 'directional' as const, index } }));
   if (f.context.gpuDrivenShadowViews === undefined) throw Error('missing view pool');
-  Object.assign(f.context.gpuDrivenShadowViews, { inspect: () => views });
+  Object.assign(f.context.gpuDrivenShadowViews, {
+    activeIdentities: () => views.map((view) => view.identity),
+  });
   const maps = views.map(
     () => new Map(f.projections) as unknown as Map<number, GpuDrivenShadowBatchProjection>,
   );
@@ -51,13 +53,14 @@ async function fixture() {
   return { ...f, maps, prepare, pipeline, dispose: () => device.destroyBuffer(buffer).unwrap() };
 }
 
-it('prepares each exact batch once across three cascades, and starts fresh next frame', async () => {
+it('prepares each exact request once across batches and cascades, and starts fresh next frame', async () => {
   const f = await fixture();
   try {
+    // All 64 batches of the three cascades share one set of request facts.
     prepareShadowMaterialPipelines(f.context, true);
-    expect(f.prepare).toHaveBeenCalledTimes(64);
+    expect(f.prepare).toHaveBeenCalledTimes(1);
     prepareShadowMaterialPipelines(f.context, true);
-    expect(f.prepare).toHaveBeenCalledTimes(128);
+    expect(f.prepare).toHaveBeenCalledTimes(2);
     expect(f.context.frameState.pipelinePreparationPending).not.toBe(true);
   } finally {
     f.dispose();
@@ -76,7 +79,7 @@ it('retains every raw factory call and retries all pending requests', async () =
     f.prepare.mockClear().mockReturnValue(f.pipeline);
     f.context.frameState.pipelinePreparationPending = false;
     prepareShadowMaterialPipelines(f.context, true);
-    expect(f.prepare).toHaveBeenCalledTimes(64);
+    expect(f.prepare).toHaveBeenCalledTimes(1);
     expect(f.context.frameState.pipelinePreparationPending).toBe(false);
   } finally {
     f.dispose();
@@ -153,8 +156,9 @@ it.each([
     }
     map.set(first.batchId, changed);
     prepareShadowMaterialPipelines(f.context, true);
-    // A/B/A must revisit A after the second view changes the same address.
-    expect(f.prepare).toHaveBeenCalledTimes(66);
+    // A/B/A must revisit A after the second view changes the same address;
+    // the indexed first batch is its own request beside the other 63.
+    expect(f.prepare).toHaveBeenCalledTimes(change === 'index-format' ? 4 : 3);
   } finally {
     f.dispose();
   }
@@ -170,7 +174,7 @@ it('propagates native preparation failures and does not retain success into a la
     expect(() => prepareShadowMaterialPipelines(f.context, true)).toThrow(failure);
     f.prepare.mockClear();
     prepareShadowMaterialPipelines(f.context, true);
-    expect(f.prepare).toHaveBeenCalledTimes(64);
+    expect(f.prepare).toHaveBeenCalledTimes(1);
   } finally {
     f.dispose();
   }
@@ -198,7 +202,7 @@ it.each([
       }),
     });
     prepareShadowMaterialPipelines(f.context, true);
-    expect(f.prepare).toHaveBeenCalledTimes(66);
+    expect(f.prepare).toHaveBeenCalledTimes(3);
   } finally {
     f.dispose();
   }
@@ -209,9 +213,9 @@ it('keeps point reflection distinct from a coincident directional batch address'
   try {
     if (f.context.gpuDrivenShadowViews === undefined) throw Error('missing view pool');
     Object.assign(f.context.gpuDrivenShadowViews, {
-      inspect: () => [
-        { identity: { kind: 'directional', index: 0 } },
-        { identity: { kind: 'point', index: 0 } },
+      activeIdentities: () => [
+        { kind: 'directional', index: 0 },
+        { kind: 'point', index: 0 },
       ],
     });
     const projections = f.maps[0];
@@ -223,9 +227,9 @@ it('keeps point reflection distinct from a coincident directional batch address'
       ]),
     });
     prepareShadowMaterialPipelines(f.context, true);
-    expect(f.prepare).toHaveBeenCalledTimes(128);
+    expect(f.prepare).toHaveBeenCalledTimes(2);
     expect(f.prepare.mock.calls[0]?.[2]?.frontFace).not.toEqual(
-      f.prepare.mock.calls[64]?.[2]?.frontFace,
+      f.prepare.mock.calls[1]?.[2]?.frontFace,
     );
   } finally {
     f.dispose();
@@ -239,7 +243,7 @@ it('prepares only graph-demanded views while raw callers keep every request', as
     expect(f.prepare).not.toHaveBeenCalled();
     expect(f.context.frameState.pipelinePreparationPending).not.toBe(true);
     prepareShadowMaterialPipelines(f.context, true, (_frame, identity) => identity.index === 1);
-    expect(f.prepare).toHaveBeenCalledTimes(64);
+    expect(f.prepare).toHaveBeenCalledTimes(1);
     f.prepare.mockClear();
     prepareShadowMaterialPipelines(f.context, false, () => false);
     expect(f.prepare).toHaveBeenCalledTimes(192);

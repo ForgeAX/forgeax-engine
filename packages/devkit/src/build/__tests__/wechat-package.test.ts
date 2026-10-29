@@ -18,7 +18,15 @@ it.each([
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-app-options-'));
   try {
     await prepareWechatBuild(
-      { name: 'Native App options', roots: {} } as ProjectFacts,
+      {
+        root,
+        id: 'native-app-options',
+        name: 'Native App options',
+        roots: {},
+        assetRoots: ['assets'],
+        assetLibraries: [],
+        packageJson: { version: '1.2.3' },
+      },
       root,
       {
         assets: new Map(),
@@ -30,6 +38,7 @@ it.each([
       budget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: budget, time },
     );
     const source = await readFile(resolve(root, 'wechat-main.ts'), 'utf8');
+    expect(source).toContain('Game 1.2.3 | Engine ');
     const call = source.slice(
       source.indexOf('graphics = value(await constructRuntimeRendererHost('),
       source.indexOf('releases.push(() => graphics.renderer.dispose());'),
@@ -99,6 +108,40 @@ it('publishes one subpackage with unchanged local JavaScript and lossless packag
     const bootstrap = await readFile(resolve(root, 'game.js'), 'utf8');
     expect(bootstrap).toContain('wx.loadSubpackage');
     expect(bootstrap).not.toContain('require(');
+    let progress: ((event: object) => void) | undefined;
+    let loaded: (() => void) | undefined;
+    const startup = runInNewContext(`${bootstrap}; globalThis.__forgeaxGameInspection`, {
+      wx: {
+        loadSubpackage: (options: { success(): void }) => {
+          loaded = options.success;
+          return {
+            onProgressUpdate: (callback: (event: object) => void) => {
+              progress = callback;
+            },
+          };
+        },
+      },
+      console: { info() {} },
+    });
+    expect(progress).toBeTypeOf('function');
+    progress?.({ progress: 25, totalBytesWritten: 100, totalBytesExpectedToWrite: 400 });
+    expect(startup.renderer().packageLoad).toMatchObject({
+      progressAvailable: true,
+      events: 1,
+      progress: 25,
+      totalBytesWritten: 100,
+      totalBytesExpectedToWrite: 400,
+    });
+    progress?.({ progress: NaN, totalBytesWritten: -1, totalBytesExpectedToWrite: '400' });
+    expect(startup.renderer().packageLoad).toMatchObject({
+      events: 2,
+      progress: 25,
+      invalidFields: 3,
+    });
+    loaded?.();
+    progress?.({ progress: 100, totalBytesWritten: 400, totalBytesExpectedToWrite: 400 });
+    expect(startup.renderer().phase).toBe('subpackage-loaded');
+    expect(startup.renderer().packageLoad.events).toBe(2);
     expect(JSON.parse(await readFile(resolve(root, 'game.json'), 'utf8')).subpackages).toEqual([
       { name: 'payload', root: 'payload/' },
     ]);

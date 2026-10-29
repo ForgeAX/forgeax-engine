@@ -1,4 +1,6 @@
 import {
+  type BatchReadRequest,
+  type BatchReadResults,
   type BufferRecordLayout,
   type BufferRecords,
   buildFrameModel,
@@ -10,6 +12,7 @@ import {
   replayDeviceRequest,
   tapeDigest,
   type V7RhiCallEvent,
+  type WorkEntry,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
@@ -19,6 +22,62 @@ import { CHANNEL_EPSILON, CHANNEL_SIZE } from './lighting-channels.fixture';
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('missing channel replay record');
   return value;
+}
+
+/** The actual draw owns its first-instance source, including indirect GPU output. */
+function firstInstanceRead(draw: V7RhiCallEvent, workIndex: number): number | BatchReadRequest {
+  if (draw.kind === 'draw' || draw.kind === 'drawIndexed') return draw.firstInstance;
+  if (draw.kind === 'drawIndirect' || draw.kind === 'drawIndexedIndirect') {
+    return {
+      resourceId: draw.indirectBufferHandleId,
+      workIndex,
+      subresource: {
+        offset: draw.indirectOffset + (draw.kind === 'drawIndexedIndirect' ? 16 : 12),
+        size: 4,
+      },
+    };
+  }
+  throw new Error(`selected geometry work is not a draw: ${draw.kind}`);
+}
+
+/** Read the GPU address tables once, then follow their pointers on the CPU. */
+function channelAddresses(geometry: WorkEntry, draw: V7RhiCallEvent) {
+  const visibleItems = geometry.bindings.find(
+    (binding) => binding.groupIndex === 3 && binding.binding === 2,
+  );
+  const instances = geometry.bindings.find(
+    (binding) => binding.groupIndex === 3 && binding.binding === 0,
+  );
+  if (visibleItems?.resourceId == null || instances?.resourceId == null)
+    throw new Error('missing selected draw GPU scene address bindings');
+  const firstInstance = firstInstanceRead(draw, geometry.workIndex);
+  return {
+    requests: [
+      { resourceId: visibleItems.resourceId, workIndex: geometry.workIndex },
+      { resourceId: instances.resourceId, workIndex: geometry.workIndex },
+      ...(typeof firstInstance === 'number' ? [] : [firstInstance]),
+    ],
+    primitiveIndex(reads: BatchReadResults): number {
+      const wordAt = (slot: number, offset: number): number => {
+        const read = required(reads[slot]).unwrap();
+        expect(read.provenance.selectedWorkIndex).toBe(geometry.workIndex);
+        return new DataView(
+          read.bytes.buffer,
+          read.bytes.byteOffset,
+          read.bytes.byteLength,
+        ).getUint32(offset, true);
+      };
+      const first = typeof firstInstance === 'number' ? firstInstance : wordAt(2, 0);
+      const instance = wordAt(
+        0,
+        (visibleItems.bufferOffset ?? 0) + (visibleItems.dynamicOffset ?? 0) + first * 16,
+      );
+      return wordAt(
+        1,
+        (instances.bufferOffset ?? 0) + (instances.dynamicOffset ?? 0) + instance * 16,
+      );
+    },
+  };
 }
 
 /** Inspect the actual integer carriers and selected-work HDR on a fresh device. */
@@ -91,57 +150,41 @@ export async function verifyChannelReplay(
     if (view?.resourceId == null || lightTable?.resourceId == null || receiver?.resourceId == null)
       throw new Error('missing channel carrier binding');
     const viewOffset = (view.bufferOffset ?? 0) + (view.dynamicOffset ?? 0);
-    let primitiveIndex = 0;
-    if (primitive !== undefined) {
-      const visibleItems = geometry.bindings.find(
-        (binding) => binding.groupIndex === 3 && binding.binding === 2,
-      );
-      const instances = geometry.bindings.find(
-        (binding) => binding.groupIndex === 3 && binding.binding === 0,
-      );
-      if (visibleItems?.resourceId == null || instances?.resourceId == null)
-        throw new Error('missing selected draw GPU scene address bindings');
-      const wordAt = async (resourceId: string, offset: number): Promise<number> => {
-        const reads = (
-          await replay.readAtWorks([
-            {
-              resourceId,
-              workIndex: geometry.workIndex,
-              subresource: { offset, size: 4 },
-            },
-          ])
-        ).unwrap();
-        const read = required(reads[0]).unwrap();
-        expect(read.provenance.selectedWorkIndex).toBe(geometry.workIndex);
-        return new DataView(
-          read.bytes.buffer,
-          read.bytes.byteOffset,
-          read.bytes.byteLength,
-        ).getUint32(0, true);
-      };
-      const draw = required(decoded.events[geometry.eventIndex]);
-      let firstInstance: number;
-      if (draw.kind === 'draw' || draw.kind === 'drawIndexed') {
-        firstInstance = draw.firstInstance;
-      } else if (draw.kind === 'drawIndirect' || draw.kind === 'drawIndexedIndirect') {
-        firstInstance = await wordAt(
-          draw.indirectBufferHandleId,
-          draw.indirectOffset + (draw.kind === 'drawIndexedIndirect' ? 16 : 12),
-        );
-      } else {
-        throw new Error(`selected geometry work is not a draw: ${draw.kind}`);
-      }
-      // Follow the submitted draw's visible item to its instance and physical
-      // primitive row. Source slot zero is not a GPU allocation contract.
-      const instanceIndex = await wordAt(
-        visibleItems.resourceId,
-        (visibleItems.bufferOffset ?? 0) + (visibleItems.dynamicOffset ?? 0) + firstInstance * 16,
-      );
-      primitiveIndex = await wordAt(
-        instances.resourceId,
-        (instances.bufferOffset ?? 0) + (instances.dynamicOffset ?? 0) + instanceIndex * 16,
-      );
-    }
+    const addresses =
+      primitive === undefined
+        ? undefined
+        : channelAddresses(geometry, required(decoded.events[geometry.eventIndex]));
+    const receiverAttachment = deferred ? geometry.attachments?.colorViewHandleIds[5] : undefined;
+    if (deferred && receiverAttachment == null)
+      throw new Error('missing receiver geometry attachment');
+    const hdrAttachment = lighting.attachments?.colorViewHandleIds[0];
+    if (hdrAttachment == null) throw new Error('missing selected-work HDR attachment');
+    await progress(`${name}:inspect-carrier-batch`);
+    // Read this small fixture's address tables with its carriers in one replay.
+    // Resolve the indirect -> visible item -> instance -> primitive chain from
+    // those exact post-work bytes instead of replaying the frame for each word.
+    const reads = (
+      await replay.readAtWorks([
+        {
+          resourceId: view.resourceId,
+          workIndex: geometry.workIndex,
+          subresource: { offset: 0, size: viewOffset + 80 },
+        },
+        {
+          resourceId: lightTable.resourceId,
+          workIndex: lighting.workIndex,
+          subresource: { offset: 0, size: 96 * 3 },
+        },
+        { resourceId: receiver.resourceId, workIndex: geometry.workIndex },
+        ...(receiverAttachment == null
+          ? []
+          : [{ resourceId: receiverAttachment, workIndex: geometry.workIndex }]),
+        { resourceId: hdrAttachment, workIndex: lighting.workIndex },
+        ...(addresses?.requests ?? []),
+      ])
+    ).unwrap();
+    const primitiveIndex =
+      addresses?.primitiveIndex(reads.slice(receiverAttachment == null ? 4 : 5)) ?? 0;
     const receiverOffset =
       (receiver.bufferOffset ?? 0) +
       (receiver.dynamicOffset ?? 0) +
@@ -155,7 +198,7 @@ export async function verifyChannelReplay(
       },
       { stride: 96, fields: [{ name: 'channels', type: 'u32', offset: 80, components: 1 }] },
       {
-        stride: receiverOffset + 4,
+        stride: required(reads[2]).unwrap().bytes.byteLength,
         fields: [{ name: 'receiverChannels', type: 'u32', offset: receiverOffset, components: 1 }],
       },
     ];
@@ -164,27 +207,6 @@ export async function verifyChannelReplay(
       { resourceId: lightTable.resourceId, workIndex: lighting.workIndex, count: 3 },
       { resourceId: receiver.resourceId, workIndex: geometry.workIndex, count: 1 },
     ];
-    const receiverAttachment = deferred ? geometry.attachments?.colorViewHandleIds[5] : undefined;
-    if (deferred && receiverAttachment == null)
-      throw new Error('missing receiver geometry attachment');
-    const hdrAttachment = lighting.attachments?.colorViewHandleIds[0];
-    if (hdrAttachment == null) throw new Error('missing selected-work HDR attachment');
-    await progress(`${name}:inspect-carrier-batch`);
-    // The existing batch owner replays equal/ascending works once. Each read
-    // retains its original selected-work provenance and exact byte range.
-    const reads = (
-      await replay.readAtWorks([
-        ...carrierReads.map((read, index) => ({
-          resourceId: read.resourceId,
-          workIndex: read.workIndex,
-          subresource: { offset: 0, size: required(layouts[index]).stride * read.count },
-        })),
-        ...(receiverAttachment == null
-          ? []
-          : [{ resourceId: receiverAttachment, workIndex: geometry.workIndex }]),
-        { resourceId: hdrAttachment, workIndex: lighting.workIndex },
-      ])
-    ).unwrap();
     const image = required(reads[receiverAttachment == null ? 3 : 4]).unwrap();
     expect(image.format).toBe('rgba16float');
     expect(image.width).toBe(CHANNEL_SIZE);

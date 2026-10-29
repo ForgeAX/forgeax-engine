@@ -12,7 +12,7 @@ import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
  * App.input), the detach callable, and a cleanup() funnel that the
  * frame-loop / app-stop / device-lost paths share (R-4).
  */
-interface InputAttachHandle {
+export interface InputAttachHandle {
   /** Browser backend decorated with the owner-scoped synthetic input lease. */
   readonly backend: CompositeInputBackend;
   cleanup(): void;

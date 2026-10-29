@@ -29,6 +29,7 @@ import {
 } from './resource';
 import {
   buildSchedule,
+  currentScheduleRevision,
   runSchedule,
   type Schedule,
   type SystemDescriptor,
@@ -38,7 +39,13 @@ import {
   removeSystem as scheduleRemoveSystem,
   replaceSystem as scheduleReplaceSystem,
 } from './schedule';
-import { FixedUpdate, isScheduleToken, type ScheduleToken, Update } from './schedule-token';
+import {
+  FixedUpdate,
+  isDomainSchedule,
+  isScheduleToken,
+  type ScheduleToken,
+  Update,
+} from './schedule-token';
 import type { ArchetypeGraph } from './storage/archetype-graph';
 import { FIXED_TIME_RESOURCE_KEY, type MutableFixedTimeResource, TIME_RESOURCE_KEY } from './time';
 import type {
@@ -149,6 +156,19 @@ function validateScheduleReferences(
   token: ScheduleToken,
   schedule: Schedule,
 ): ScheduleScopeMismatchError | undefined {
+  // References only change with registration, which advances the revision.
+  const revision = currentScheduleRevision();
+  if (schedule.validatedRevision === revision) return undefined;
+  const mismatch = scheduleReferenceMismatch(world, token, schedule);
+  if (mismatch === undefined) schedule.validatedRevision = revision;
+  return mismatch;
+}
+
+function scheduleReferenceMismatch(
+  world: World,
+  token: ScheduleToken,
+  schedule: Schedule,
+): ScheduleScopeMismatchError | undefined {
   for (const record of schedule.systems.values()) {
     for (const reference of [
       ...(record.descriptor.before ?? []),
@@ -186,12 +206,39 @@ function runFixed(
   }
   let steps = 0;
   const accumulated = accumulator.value;
+  if (fixed.catchUp === 'merged') {
+    let owed = 0;
+    while (accumulated >= (owed + 1) * fixed.delta && owed < fixed.maxStepsPerUpdate) owed += 1;
+    if (owed > 0) {
+      // One schedule pass simulates every owed step: systems read the merged
+      // delta, the tick advances once, and the base delta is restored after.
+      const base = fixed.delta;
+      const span = owed * base;
+      accumulator.value = Math.round((accumulated - span) * 1e12) / 1e12;
+      fixed.overstep = accumulator.value;
+      fixed.tick += 1;
+      fixed.stepDelta = span;
+      fixed.delta = span;
+      try {
+        runSchedule(fixedSchedule, world);
+      } finally {
+        fixed.delta = base;
+      }
+      steps = owed;
+    }
+  }
+  // Compare against the original total, not a repeatedly rounded remainder:
   // Compare against the original total, not a repeatedly rounded remainder:
   // at 60 Hz, rounding 0.05 - delta twice otherwise loses the third tick.
-  while (accumulated >= (steps + 1) * fixed.delta && steps < fixed.maxStepsPerUpdate) {
+  while (
+    fixed.catchUp === 'substeps' &&
+    accumulated >= (steps + 1) * fixed.delta &&
+    steps < fixed.maxStepsPerUpdate
+  ) {
     accumulator.value = Math.round((accumulated - (steps + 1) * fixed.delta) * 1e12) / 1e12;
     fixed.overstep = accumulator.value;
     fixed.tick += 1;
+    fixed.stepDelta = fixed.delta;
     runSchedule(fixedSchedule, world);
     steps += 1;
   }
@@ -300,6 +347,46 @@ export function worldUpdate(
   }
   world[worldInternal].setFixedAccumulator(accumulator.value);
   fixed.overstep = accumulator.value;
+  return ok(undefined);
+}
+
+export function worldRun(
+  world: World,
+  token: ScheduleToken,
+): Result<
+  void,
+  | ScheduleScopeMismatchError
+  | WorldPoisonedError
+  | CommandFailedError
+  | SystemFailedError
+  | CyclicDependencyError
+  | SharedKernelFailureError
+> {
+  const poisoned = worldPoisonedError(world.execution);
+  if (poisoned !== undefined) return err(poisoned);
+  if (!isDomainSchedule(token)) return scopeError(token, Update);
+  const schedule = world[worldInternal].getSchedule(token) as Schedule;
+  const mismatch = validateScheduleReferences(world, token, schedule);
+  if (mismatch) return err(mismatch);
+  try {
+    runSchedule(schedule, world);
+  } catch (error) {
+    if (
+      error instanceof CommandFailedError ||
+      error instanceof SystemFailedError ||
+      error instanceof CyclicDependencyError ||
+      error instanceof SharedKernelFailureError
+    )
+      return err(error);
+    world[worldInternal].poisonExecution({
+      code: 'shared-kernel-failed',
+      kernelName: `schedule:${token.name}`,
+      cause: error,
+      partialWrite: true,
+      retryable: false,
+    });
+    return err(new SystemFailedError('<schedule>', token.name, error));
+  }
   return ok(undefined);
 }
 

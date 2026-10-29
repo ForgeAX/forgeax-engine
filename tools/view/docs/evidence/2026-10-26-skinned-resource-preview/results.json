@@ -1,0 +1,668 @@
+{
+  "passed": true,
+  "sdkMatchesSelectedEngine": true,
+  "engineCommit": "94b4eef8f7a1826245d3846063d96b15796705ac",
+  "engineDiff": "tools/view | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+  "project": "game-3d",
+  "observations": [
+    {
+      "label": "mesh-player",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:42ae1ebe-29d1-4ea2-8a1f-4f964c1f5c90",
+      "frameId": 55,
+      "pixels": {
+        "width": 1034,
+        "height": 862,
+        "covered": 891308,
+        "opaque": 891308,
+        "changed": 82914,
+        "edgePixels": 0,
+        "colors": 248
+      }
+    },
+    {
+      "label": "mesh-player-wireframe",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:42ae1ebe-29d1-4ea2-8a1f-4f964c1f5c90",
+      "frameId": 78,
+      "pixels": {
+        "width": 1034,
+        "height": 862,
+        "covered": 891308,
+        "opaque": 891308,
+        "changed": 48158,
+        "edgePixels": 0,
+        "colors": 104
+      }
+    },
+    {
+      "label": "mesh-player-restored",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:42ae1ebe-29d1-4ea2-8a1f-4f964c1f5c90",
+      "frameId": 93,
+      "pixels": {
+        "width": 1034,
+        "height": 862,
+        "covered": 891308,
+        "opaque": 891308,
+        "changed": 82914,
+        "edgePixels": 0,
+        "colors": 248
+      }
+    },
+    {
+      "label": "mesh-steve",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:e3b819e4-97e0-4e84-add8-703ee752ff84",
+      "frameId": 62,
+      "pixels": {
+        "width": 1034,
+        "height": 862,
+        "covered": 891308,
+        "opaque": 891308,
+        "changed": 129464,
+        "edgePixels": 0,
+        "colors": 183
+      }
+    },
+    {
+      "label": "mesh-steve-wireframe",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:e3b819e4-97e0-4e84-add8-703ee752ff84",
+      "frameId": 80,
+      "pixels": {
+        "width": 1034,
+        "height": 862,
+        "covered": 891308,
+        "opaque": 891308,
+        "changed": 25022,
+        "edgePixels": 0,
+        "colors": 103
+      }
+    },
+    {
+      "label": "mesh-steve-restored",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:e3b819e4-97e0-4e84-add8-703ee752ff84",
+      "frameId": 97,
+      "pixels": {
+        "width": 1034,
+        "height": 862,
+        "covered": 891308,
+        "opaque": 891308,
+        "changed": 129464,
+        "edgePixels": 0,
+        "colors": 183
+      }
+    },
+    {
+      "label": "material-player-body",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:1886bbf6-5046-4768-a00a-1e5f02112dbb",
+      "frameId": 41,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 96033,
+        "edgePixels": 0,
+        "colors": 170
+      }
+    },
+    {
+      "label": "material-player-body-sphere",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:1886bbf6-5046-4768-a00a-1e5f02112dbb",
+      "frameId": 59,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 95989,
+        "edgePixels": 0,
+        "colors": 169
+      }
+    },
+    {
+      "label": "material-player-body-cylinder",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:1886bbf6-5046-4768-a00a-1e5f02112dbb",
+      "frameId": 73,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 64558,
+        "edgePixels": 0,
+        "colors": 114
+      }
+    },
+    {
+      "label": "material-player-body-plane",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:1886bbf6-5046-4768-a00a-1e5f02112dbb",
+      "frameId": 86,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 63911,
+        "edgePixels": 0,
+        "colors": 102
+      }
+    },
+    {
+      "label": "material-player-body-cube",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:1886bbf6-5046-4768-a00a-1e5f02112dbb",
+      "frameId": 102,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 60817,
+        "edgePixels": 0,
+        "colors": 103
+      }
+    },
+    {
+      "label": "material-player-accent",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:fb349002-3105-406d-b35b-32ddfcbe95be",
+      "frameId": 40,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 129858,
+        "edgePixels": 0,
+        "colors": 175
+      }
+    },
+    {
+      "label": "material-player-accent-sphere",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:fb349002-3105-406d-b35b-32ddfcbe95be",
+      "frameId": 53,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 129770,
+        "edgePixels": 0,
+        "colors": 175
+      }
+    },
+    {
+      "label": "material-player-accent-cylinder",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:fb349002-3105-406d-b35b-32ddfcbe95be",
+      "frameId": 62,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 96249,
+        "edgePixels": 0,
+        "colors": 139
+      }
+    },
+    {
+      "label": "material-player-accent-plane",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:fb349002-3105-406d-b35b-32ddfcbe95be",
+      "frameId": 74,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 63911,
+        "edgePixels": 0,
+        "colors": 103
+      }
+    },
+    {
+      "label": "material-player-accent-cube",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:fb349002-3105-406d-b35b-32ddfcbe95be",
+      "frameId": 86,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 87209,
+        "edgePixels": 0,
+        "colors": 111
+      }
+    },
+    {
+      "label": "material-player-cloth",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:090e5eef-f7b7-4152-bd16-2c7f2159c554",
+      "frameId": 36,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 129858,
+        "edgePixels": 0,
+        "colors": 253
+      }
+    },
+    {
+      "label": "material-player-cloth-sphere",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:090e5eef-f7b7-4152-bd16-2c7f2159c554",
+      "frameId": 50,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 129770,
+        "edgePixels": 0,
+        "colors": 253
+      }
+    },
+    {
+      "label": "material-player-cloth-cylinder",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:090e5eef-f7b7-4152-bd16-2c7f2159c554",
+      "frameId": 62,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 96249,
+        "edgePixels": 0,
+        "colors": 147
+      }
+    },
+    {
+      "label": "material-player-cloth-plane",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:090e5eef-f7b7-4152-bd16-2c7f2159c554",
+      "frameId": 82,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 63911,
+        "edgePixels": 0,
+        "colors": 104
+      }
+    },
+    {
+      "label": "material-player-cloth-cube",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:090e5eef-f7b7-4152-bd16-2c7f2159c554",
+      "frameId": 95,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 87209,
+        "edgePixels": 0,
+        "colors": 110
+      }
+    },
+    {
+      "label": "material-player-signal",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:54716a15-6464-464c-8548-531ee00ea157",
+      "frameId": 42,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 129858,
+        "edgePixels": 0,
+        "colors": 468
+      }
+    },
+    {
+      "label": "material-player-signal-sphere",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:54716a15-6464-464c-8548-531ee00ea157",
+      "frameId": 70,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 129770,
+        "edgePixels": 0,
+        "colors": 469
+      }
+    },
+    {
+      "label": "material-player-signal-cylinder",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:54716a15-6464-464c-8548-531ee00ea157",
+      "frameId": 85,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 96249,
+        "edgePixels": 0,
+        "colors": 176
+      }
+    },
+    {
+      "label": "material-player-signal-plane",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:54716a15-6464-464c-8548-531ee00ea157",
+      "frameId": 100,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 63911,
+        "edgePixels": 0,
+        "colors": 105
+      }
+    },
+    {
+      "label": "material-player-signal-cube",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:54716a15-6464-464c-8548-531ee00ea157",
+      "frameId": 115,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 87209,
+        "edgePixels": 0,
+        "colors": 115
+      }
+    },
+    {
+      "label": "material-steve-skin",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:661c9510-34c1-4b29-8642-c016b132e23e",
+      "frameId": 40,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 63620,
+        "edgePixels": 0,
+        "colors": 371
+      }
+    },
+    {
+      "label": "material-steve-skin-sphere",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:661c9510-34c1-4b29-8642-c016b132e23e",
+      "frameId": 51,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 74596,
+        "edgePixels": 0,
+        "colors": 342
+      }
+    },
+    {
+      "label": "material-steve-skin-cylinder",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:661c9510-34c1-4b29-8642-c016b132e23e",
+      "frameId": 61,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 25302,
+        "edgePixels": 0,
+        "colors": 341
+      }
+    },
+    {
+      "label": "material-steve-skin-plane",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:661c9510-34c1-4b29-8642-c016b132e23e",
+      "frameId": 70,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 30154,
+        "edgePixels": 0,
+        "colors": 221
+      }
+    },
+    {
+      "label": "material-steve-skin-cube",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:661c9510-34c1-4b29-8642-c016b132e23e",
+      "frameId": 79,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 37547,
+        "edgePixels": 0,
+        "colors": 367
+      }
+    },
+    {
+      "label": "material-steve-outer",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:75425c31-f6d4-4397-870d-edf053fe68dc",
+      "frameId": 35,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 63620,
+        "edgePixels": 0,
+        "colors": 371
+      }
+    },
+    {
+      "label": "material-steve-outer-sphere",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:75425c31-f6d4-4397-870d-edf053fe68dc",
+      "frameId": 48,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 74596,
+        "edgePixels": 0,
+        "colors": 342
+      }
+    },
+    {
+      "label": "material-steve-outer-cylinder",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:75425c31-f6d4-4397-870d-edf053fe68dc",
+      "frameId": 62,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 25302,
+        "edgePixels": 0,
+        "colors": 341
+      }
+    },
+    {
+      "label": "material-steve-outer-plane",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:75425c31-f6d4-4397-870d-edf053fe68dc",
+      "frameId": 74,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 30154,
+        "edgePixels": 0,
+        "colors": 221
+      }
+    },
+    {
+      "label": "material-steve-outer-cube",
+      "targetId": "target-5db5e906-36da-4186-9910-56d7ae278514:preview:75425c31-f6d4-4397-870d-edf053fe68dc",
+      "frameId": 86,
+      "pixels": {
+        "width": 1037,
+        "height": 862,
+        "covered": 893894,
+        "opaque": 893894,
+        "changed": 37547,
+        "edgePixels": 0,
+        "colors": 367
+      }
+    },
+    {
+      "label": "thumbnail-68903716-4867-5019-8f4e-cb0b30d7b90a",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 1950,
+        "opaque": 1950,
+        "changed": 1950,
+        "edgePixels": 0,
+        "colors": 53
+      }
+    },
+    {
+      "label": "thumbnail-9faa791c-dea0-56ba-a699-27f7ed95ada7",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 2958,
+        "opaque": 2958,
+        "changed": 2958,
+        "edgePixels": 0,
+        "colors": 76
+      }
+    },
+    {
+      "label": "thumbnail-3a9e17fe-5eb4-503d-8c4e-ee547d9d8854",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 2800,
+        "opaque": 2800,
+        "changed": 2800,
+        "edgePixels": 0,
+        "colors": 24
+      }
+    },
+    {
+      "label": "thumbnail-a16e1af8-2b13-55a4-a9fe-b622aacf43f8",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 2800,
+        "opaque": 2800,
+        "changed": 2800,
+        "edgePixels": 0,
+        "colors": 27
+      }
+    },
+    {
+      "label": "thumbnail-2dd64ec0-85a4-5bae-a817-b97212c4ef5d",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 2800,
+        "opaque": 2800,
+        "changed": 2800,
+        "edgePixels": 0,
+        "colors": 65
+      }
+    },
+    {
+      "label": "thumbnail-1f6d5b22-2577-5bad-9c21-25f8769e24ed",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 2800,
+        "opaque": 2800,
+        "changed": 2800,
+        "edgePixels": 0,
+        "colors": 80
+      }
+    },
+    {
+      "label": "thumbnail-99f7a6ca-70e1-5228-a784-fb29c252598f",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 1387,
+        "opaque": 1387,
+        "changed": 1387,
+        "edgePixels": 0,
+        "colors": 116
+      }
+    },
+    {
+      "label": "thumbnail-0d5ea0a7-dcda-5884-a653-8fe28071ed1a",
+      "pixels": {
+        "width": 128,
+        "height": 128,
+        "covered": 1387,
+        "opaque": 1387,
+        "changed": 1387,
+        "edgePixels": 0,
+        "colors": 116
+      }
+    },
+    {
+      "label": "play",
+      "completed": {
+        "frameId": 61,
+        "deviceGeneration": 0,
+        "presentation": "ready",
+        "barrelDistortion": {
+          "width": 788,
+          "height": 892,
+          "aspect": 0.8834080717488789,
+          "strength": 0,
+          "centerX": 0.5,
+          "centerY": 0.5,
+          "radiusSquared": 1.7804098212310724,
+          "camera": {
+            "projection": "perspective",
+            "far": 2000,
+            "viewMatrix": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              0.9396926760673523,
+              0.34202009439468384,
+              0,
+              0,
+              -0.34202009439468384,
+              0.9396926760673523,
+              0,
+              0,
+              1.1614843606948853,
+              -13.952170372009277,
+              1
+            ],
+            "projectionMatrix": [
+              2.7328405380249023,
+              0,
+              0,
+              0,
+              0,
+              2.4142134189605713,
+              0,
+              0,
+              0,
+              0,
+              0.00005000250166631304,
+              -1,
+              0,
+              0,
+              0.10000500082969666,
+              0
+            ]
+          }
+        },
+        "worldIdentity": "world-45690fc8-3744-4104-96ad-8cbdb1faf314-1"
+      }
+    }
+  ],
+  "errors": []
+}

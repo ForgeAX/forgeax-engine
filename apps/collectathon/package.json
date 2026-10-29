@@ -70,7 +70,7 @@
     "@forgeax/engine-shader-compiler": "workspace:*",
     "@types/node": "^25.8.0",
     "@webgpu/types": "^0.1.74",
-    "vite": "8.0.16",
+    "vite": "8.3.5",
     "@forgeax/engine-dawn-node": "workspace:*"
   }
 }

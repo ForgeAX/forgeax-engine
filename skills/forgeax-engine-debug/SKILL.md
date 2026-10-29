@@ -12,10 +12,91 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For Browser/Dawn fixture overhead, audit both reachable source graphs, including
+conditional shadow flags. Inspect actual shadow resources and replay queue work
+before reducing a fixture. Keep performance/precision profiles, independent
+publication and falsifier devices, selected-work provenance and every frame.
+Follow the [CI fixture budgets](../../scripts/ci/README.md#test-work-and-cost-regression-checks)
+and [native replay owners](../../scripts/ci/README.md#dawn-gates).
+
+For an independent-run SDK UI color mismatch, inspect the retained PNG and the
+status footer at the actual CI viewport before assigning a Renderer cause.
+A full version can wrap into an authored UI color oracle. Preserve exact color
+and solid-patch assertions while reserving the fixture's minimum UI height;
+follow [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
+
+For instrumented global-probe partial-write recovery timeouts, keep the complete
+file in the existing exclusive GI coverage child rather than competing with broad
+DevKit coverage. For a Dawn lane cancellation, compare completed ordinary children
+and complete native-owner costs across all four lanes before adjusting owner
+reservations. Preserve cases, pixels and original deadlines. Interrupted or
+cancelled owners supply no completion sample; include skipped files in their
+completed ordinary child's process overhead. Follow
+[GI coverage and material publication](../../scripts/ci/README.md#gi-coverage-and-material-publication).
+An interrupted later owner does not invalidate an earlier successful ordinary
+child. Refresh its measured file costs in `scripts/ci/dawn-file-seconds.json`
+while retaining larger inherited forecasts and the complete native roster.
+
+For slow material-publication fixtures, retain validated artifact byte views until
+the publication owner performs JSON encoding. A preliminary JSON roundtrip makes
+the publication digest traverse every byte as an ordinary numeric array. Preserve
+the real source/decode/adopt path and its artifact-integrity checks.
+
+For material-parity timeouts, inspect binary comparison overhead before changing
+compiler concurrency or deadlines. Keep exact byte and metadata equality,
+concurrent cooks, diagnostics and crash recovery.
+
+For declared-material publication timeouts in an already exclusive coverage
+child, check whether a file-wide spy setting disabled the normal Node material
+Worker route. Only Naga call-count cases need the observing realm. Keep every
+authored material, real cook, publication assertion and original deadline; see
+the [coverage guide](../../scripts/ci/README.md#coverage-execution).
+
+For Bun portability source-scan timeouts, compare visible CPUs with the admitted
+cgroup CPU/memory budget. The canary uses `resolve-vitest-workers.mjs` through the
+existing runner CPU-affinity owner; preserve its complete Math/ECS roster,
+source-scan negative controls and original deadlines. See the
+[CI recovery route](../../scripts/ci/README.md#failure-recovery).
+
+For SDK bootstrap or publication failures, compare the actual Node, npm and pnpm
+versions with `.nvmrc`, `.npm-version` and `.pnpm-version` in the
+[CI guide](../../scripts/ci/README.md). PR, Candidate and Promotion use the same
+toolchain. Repair the owning operation while retaining sealed source, version
+and immutable package bytes.
+
+For cookbook missing-export diagnostics, repair the independently owned Harness
+recipes and compile the full cookbook against the current Engine. Then update
+the explicit Preflight documentation pin through the [input contract](../../scripts/ci/README.md#independently-owned-documentation-inputs).
+
+For a Pack draft that retains a source-declaration error after repair, compare
+the source digest with the draft revision. Explicit reopen uses Pack's serialized
+source refresh and preserves edits; verify the native authoring recovery gate
+before changing View waits or runtime parameter controls.
+
+For Render's `No test suite found` on managed-asset benchmark `.test.mjs` files,
+run their native `node:test` owner in `primary-pnpm`; the Render Vitest project
+must retain its source tests and exclude only those benchmark contracts.
+See [CI reproduction](../../scripts/ci/README.md).
+
+For an empty-frame smoke result, compare the sampled coordinates with the full
+GPU readback before assigning a Renderer fault. A visible subject can lie outside
+two background probes. Keep the actual pixel threshold and lifecycle controls.
+Full local Smoke also needs the selected fixture producers; follow
+[CI reproduction](../../scripts/ci/README.md) for the LOD input directory.
+
+For native UI control failures, inspect the paired snapshots in `artifacts/ui-*/` before assigning a layout cause. Verify the UI WASM provenance and browser version, and use the Host platform's native edit modifier. Reproduce the exact file through CI Focus Browser with the `ci` profile; preserve geometry, pixel and lifecycle assertions. See [failure recovery](../../scripts/ci/README.md#failure-recovery).
+
 For a Browser measured-roster coverage failure, refresh missing file costs from
 completed successful exact-child observations through [Browser gates](../../scripts/ci/README.md#browser-gates).
 Keep the 85% floor, inherited costs and retained cases; skipped or interrupted
 work does not establish a measured cost.
+
+For opposite native-UI geometry failures on different runners, compare their
+actual Chrome versions before changing the portable owner again. Host reuse and
+cached installation must both satisfy the existing
+[Browser version policy](../../scripts/ci/README.md#browser-gates). Preserve the
+original native assertions; repair stale toolchain admission rather than
+alternating implementations or retrying until a compatible runner is selected.
 
 For Three browser group timeouts, compare each complete native/reference/replay
 journey with its planner weight. Shadow/filter mutations, manual-update replay, loading, material-output,
@@ -33,16 +114,31 @@ groups after run `39457755532` exhausted its original process bound beside a
 long GPU group. Keep its measured receipt, cases, pixels and deadlines intact.
 
 For View texture channels, source mip/slice or environment projection failures,
-run `tools/view-plugins/integration/verify-texture-preview.mjs` and inspect its
+run `tools/view/scripts/verify-texture-preview-integration.mjs` and inspect its
 PNG/pixel evidence under `artifacts/texture-preview`. It uses the real browser
 Pack path and the existing exact-target capture. One-level Equirect sources do
 not expose Renderer-owned IBL roughness mips. Follow RHI Debug first for an
 unexplained rendering failure; see the [View texture gate](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
 
+For View UV layouts or material primitive/navigation failures, run
+`tools/view/scripts/verify-resource-preview-lifecycle.mjs` and inspect its UV and
+material PNGs plus exact target diagnostics. The maintained workspace shard owns
+this real-browser journey. A script syntax error routes to the View probe owner;
+preserve its runtime assertions while repairing startup. Follow RHI Debug first
+for unexplained rendered output.
+
 For a blank MCP View with React error #527, run its emitted frontend startup gate
 through the View contracts owner. The MCP builder resolves React and React DOM
 from View's installed dependencies; inspect that owner before changing startup
 deadlines. Continue through the full game-3d/Play/Stop gate after repair.
+
+For a View shard reaching its job deadline, inspect emitted stage seconds before
+changing a timeout. Keep Game 3D's stdio and native workspace journeys together
+in its own lane; contracts/plugin/TS share another. Preserve complete JS/TS
+live/cold chains, four actual jobs and all assertions; see the
+[Engine/View integration roster](../../scripts/ci/README.md#failure-recovery).
+An artifact-only transport failure requires a same-source rerun, not a weaker
+success aggregate.
 
 For a View startup Host disconnect, read the failed probe's Backend diagnostics
 under `artifacts/view-integration/<probe>/` before assigning a renderer cause.
@@ -58,6 +154,11 @@ frames and preserve metric producer failures through the required aggregate.
 For Bevy input tails that stop before release, use the existing ready-receipt
 frame driver; RAF callbacks are not completed App frames. Preserve authored
 simulation horizons when reducing ECS fixture submissions.
+
+For native template movement timeouts after Runtime Vase regeneration, inspect
+the producer/recovery render boundary before changing input waits. The shared
+probe requires its original submitted prefix to complete ready, including
+recovery; CPU adoption and submitted-only frames do not qualify the picture.
 For Bloom device-loss recovery with an empty pre-loss graph, inspect completed
 `ready` receipts before triggering the crash. Submitted warming frames and HUD
 pixels do not establish a rendered scene. Follow the Bloom recovery gate in the
@@ -74,12 +175,41 @@ and retain the checkout warning and original install error.
 An independent nested checkout can have an embedded `.git` directory and no
 root submodule config. Prove its exact historical gitlink from the local HEAD
 reflog before pruning; preserve unrelated repositories and changed commits.
+For repeated native fixture startup, compare actual device requests and replay
+submissions before changing placement. Follow [native fixture workload budgets](../../scripts/ci/README.md#native-fixture-workload-budgets): reuse renderer/device preparation across independent World/asset owners, retain constrained/publication hosts and fresh falsifiers, and restore redundant work as a failing control. Never bind one asset registry to multiple Worlds. Alpha Hash keeps its cold live hosts and batches only replay work; aggregate counters still check every original texel. Furnace readiness must belong to the current ready receipt, and multiview GI reuses staging storage while retaining every frame and owned readback snapshot.
+
 For a Dawn overall job cancellation with passing groups, compare complete group
 costs, ordinary-file backfill and lane headroom in `dawn-gate-roster.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
 while preserving the full roster, native process isolation and existing deadlines.
+Compare complete child costs with their placement forecasts before changing lane
+membership; refresh stale file and owner costs first, then replay ordinary
+backfill. Keep an interrupted owner at its inherited forecast.
+Check serial Dawn's Mesa worker count against the admitted heavy CPU budget;
+CI and Dawn Focus use eight workers, while concurrent Browser processes retain
+four each. Preserve capacity admission and the single native Vitest worker.
+For Bevy Skybox's missing Chrome Beta after a passing Dawn smoke, repair the
+fleet's browser preparation through the shared installation action. Its composite
+smoke retains the real WebGL2 journey; see [failure recovery](../../scripts/ci/README.md#failure-recovery).
+For guide-form input scroll-width mismatches, compare native client widths and
+outer rectangles before assigning layout overflow. Follow the UI owner's
+[control parity contract](../../packages/ui-blitz/README.md#ownership-and-observable-behavior);
+retain ancestor extents, external geometry and the complete input journey.
+Check newly discovered files against the same cost table: its largest-file
+fallback can reserve minutes for a short new test. Admit costs only from complete
+successful children, retain process overhead and larger inherited forecasts, and
+exclude interrupted owner tails before running the final full matrix. Distribute
+ordinary-process overhead across emitted skipped files too; a missing file result
+keeps its inherited forecast. When all
+groups complete but one job exceeds its envelope, a complete owner can move from
+a lane with measured headroom to the overrun lane; replay ordinary-file backfill
+for all four lanes before keeping that placement.
 
 For Linux software validation, use `pnpm ci:graphics setup` and the
 [isolated graphics contract](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
+For a native Rust GPU-owner crash, retain the failed process evidence and use
+the workflow's serial test entry, matching the upstream GPU suites. Preserve
+the complete target roster and required Ray Query admission; SIGSEGV is not
+an artifact transport failure or a passing GPU result.
 The pinned official archive snapshot retains package bytes after moving mirrors
 remove old releases; retain download/hash errors rather than bypassing setup.
 
@@ -128,6 +258,15 @@ process-tree cleanup and its actual TCP regression, and never terminate
 unrelated Node processes. For Import
 sidecar `EPERM`, compare the actual destination bytes: only an equivalent
 publication succeeds; mismatches retain the structured failure and rollback.
+For a View integration owner failure, use CI Focus `kind=view` with its exact
+`run-view-integration.mjs --list-groups` name (for example `game3d`). This retains
+the complete owner, real transport and capture assertions; a focused pass still
+cannot replace complete final-head CI. Preserve CLI timeout failures even when
+a fallback page screenshot is healthy.
+For a full Browser gate failure that passes CI Focus, select `browser_profile=ci`
+in the maintained workflow before attributing the difference to renderer code.
+Its default local workload differs from the full gate; keep the original
+lifecycle, pixel assertions and deadlines. See the [CI guide](../../scripts/ci/README.md).
 For SSR recovery compilation near its 20-second deadline, inspect the actual
 pipeline labels and admitted specs. Standard uses the material cache and exact
 LKG recovery requests; do not reintroduce the generic bootstrap matrix or widen
@@ -215,15 +354,37 @@ and the external-texture file. Refresh their existing Browser cost-table entries
 from complete successful children, including startup/cleanup, so normal grouping
 does not recreate the timeout. Label local timing separately from CI receipts;
 retain the 120-second case and 300-second process deadlines.
-For a Dawn lane canceled at the job deadline, inspect complete process receipts
-and exact file rosters before refreshing `dawn-file-seconds.json`. An interrupted
+For a Dawn lane canceled at the job deadline, inspect complete process receipts,
+exact file rosters and the GitHub job annotation: even a native `PASS` can exceed the job budget
+during cleanup. Preserve the failed gate and use completed children only for cost
+observations; final-head CI must still pass after a placement refresh.
+Refresh only `dawn-file-seconds.json` placement forecasts. An interrupted
 owner contributes no completion sample. Keep the four-lane sequencer and original
 native deadlines; a cost refresh alone is not proof of a faster complete gate.
+When the admitted worker-count policy changes, replace stale placement costs
+with complete receipts from the current policy. Keep the prior estimate for any
+interrupted owner, and require the complete final-head CI gate after recalculating.
 For a cold Preview capture interrupted by Vite `full-reload`, inspect optimizer
 logs for late dependencies. A literal dynamic import remains eligible for Vite
 pretransform even with `@vite-ignore`; Node-only transports must load only on
 their native execution path. Preserve native remote-server and real cold-browser
 regressions when correcting that boundary.
+For the learn-render 4.10 MSAA paired proof, a cold Vite optimizer scan followed
+by the app's 30-second `page.goto` timeout has one signature-bound retry through
+the [Browser gate guide](../../scripts/ci/README.md#failure-recovery). Keep the
+real OFF/ON captures and P2 assertions on both attempts; a repeated timeout stays
+red.
+For Play startup `ERR_OUTDATED_OPTIMIZED_DEP`, check the frozen plugin graph's
+preparation order. Vite optimizer `init()` starts its scan asynchronously;
+plugin capture must await that initial scan before freezing module URLs. Keep
+the cold-start Play, same-project lock, cache-reuse and renderer-failure checks.
+Check the scan's entry set too: declared Runtime Pack secondary exports can
+introduce dependencies outside App's main graph. Resolve those entries through
+the executing client before optimization; retain native Engine module identity.
+For paired replay work-index divergence, compare each consumer's selection
+against the tape's swapchain provenance and trailing probe work. The shared
+application selector owns both defaults and explicit work-index transport;
+retain the same-artifact, backend and pixel oracles.
 
 For Dawn partition roster drift, compare actual Vitest titles with the
 case-sensitive patterns in `scripts/ci/run-dawn-partitions.mjs`. VFX depth's
@@ -246,6 +407,22 @@ For Snake late-join `ACK retry budget exhausted`, follow
 [multiplayer startup and baseline ACK admission](../../scripts/ci/README.md#multiplayer-startup-and-baseline-ack-admission).
 Keep initial polling with the World receive system and reproduce delayed Host
 activation on the real browser path without expanding the game ACK budget.
+
+## Cold compiler and graphics admission
+
+For clearcoat publication timeouts in `declared-standard-material.integration.test.ts`,
+use the existing exclusive coverage file owner in
+[CI operations](../../scripts/ci/README.md). Keep all material/compiler assertions
+and original test deadlines; verify the file has one owner and no competing
+instrumented child before changing runtime code. Ordinary publication checks
+use the existing storage-WebGPU profile and file-owned cooker; the independent
+cold composition/cache contracts retain all portable backends. Verify actual
+program selections and the instrumented coverage path before claiming recovery.
+
+For a Three render/reference/replay timeout, retain its complete fresh Browser
+process and exclusive runner admission. Verify the native, reference and replay
+journeys at their existing frame counts and deadlines; do not relax pixel or
+capture assertions to absorb competing graphics work.
 
 ## Rendering: RHI Debug first
 
@@ -283,6 +460,11 @@ integration. SDK ZIP/npm groups and their receipt aggregate must likewise match
 the four consumers. When native owner arrays are shortened, map retained cost
 samples by their original files before assigning the new numeric group labels. Preserve original native, pixel, lifecycle and seed identity
 checks; a selector failure before execution is not a backend failure.
+
+For `[function-complexity]` or `[dependency-vulnerabilities]` failures, follow
+[source quality ratchets](../../scripts/ci/README.md#source-quality-ratchets): split the
+named function by owner or upgrade the owning dependency declaration; accept a
+baseline increase only with a reviewed reason.
 
 For CI code reduction, follow [CI code ownership](../../scripts/ci/README.md#ci-code-ownership).
 A sudden roster or fixture-cost increase after a merge may restore retired work.
@@ -358,6 +540,11 @@ alongside the replay before attributing the entire delay to runner variation.
 A completed ordinary process from a cancelled job remains a cost observation;
 the interrupted owner and unstarted tail do not. Verify complete file identity
 when a process-start line is absent before admitting an emitted file set.
+For a native worker exit, compare the selected ordinary roster with emitted
+file results to identify the missing owner. Verify its complete capture/replay
+test in a fresh process, then use the existing isolated-owner route when shared
+native lifetime is implicated. Keep every file, assertion and original deadline;
+the failed process supplies no completed cost sample.
 When a completed file within an interrupted owner already exceeds that owner's
 reservation, the old forecast is disproven even though no new complete duration
 exists. The CI guide documents a reservation estimate using that file's slowdown
@@ -470,7 +657,10 @@ shared Dawn owner before the receipt. Verify both the real 60-frame smoke and
 Missing outputs require [source build or verified producer artifacts](../../scripts/ci/README.md#cross-platform-host-build-inputs).
 CI artifact consumers restore and verify first; only a real source-build miss
 provisions the wgpu, Rapier, Blitz UI and Codec owners through the shared
-preparation Action. A clean
+preparation Action. For SDK Candidate UI contract failures, inspect parsed YAML
+conditions for both the verified shared-artifact branch and source fallback;
+retain receiver cleanup, source/byte verification and preparation-before-build.
+A clean
 worktree needs pinned submodules before frozen installation. A retained assets
 `shallow.lock` routes to `prepare-assets-checkout.mjs`: only an exclusive matching
 Actions workspace may recover a lock older than the current source checkout.
@@ -479,6 +669,14 @@ Native payloads must pass their source/recipe and byte checks. CI Focus prepares
 Engine build even for browser selectors. Chromium always runs sandboxed. Use
 the local GPU lease and existing process cleanup rather than adding retries,
 longer deadlines or per-test scheduler exceptions.
+For Rapier cache misses, compare `build-rapier-native.mjs <2d|3d> --key` with
+the cache entry and `--verify`; the producer content key owns the input closure.
+For a Rapier post-step upload stall after successful verification, inspect the
+verified payload cache and follow [Build inputs](../../scripts/ci/README.md#build-inputs).
+Rapier reuses that payload across runs; it does not upload a second Cargo target archive.
+For fetch 401/exit 128, inspect URL-matched checkout HTTP configuration: temporary
+Git repositories receive it through `git-http-environment.mjs` and the existing
+bounded fetch. Never print or persist the authorization header.
 For simultaneous input-preparation failures, inspect the core producer first.
 Its upload must succeed before fanout. The shared `prepare-ci-inputs` Action
 verifies restored bytes before provisioning wgpu/Rapier for a genuine source miss.
@@ -680,8 +878,17 @@ resources before reducing a smoke fixture. CI uses bounded native batches and
 the shared [test workload](../../scripts/test/render-quality.json) and
 [project reducer](../../scripts/test/reduce-test-project.mjs) for ordinary fixtures.
 Check captured dimensions when a scene omits quality fields: shared test reduction
-must also bound engine defaults. Keep explicit overrides for quality/capacity
-owners, complete assertions and the original deadlines.
+must also bound engine defaults. Follow literal `new URL` Worker bootstraps
+when auditing fixture quality; an ordinary geometry fixture must declare its
+shadow map and cascade workload too. Include the existing DevKit runtime-browser
+companion: Node filenames can own real Playwright drawing buffers. Keep explicit overrides for quality/capacity
+owners, complete assertions and the original deadlines. For native replay cost,
+check whether individual reads reset and replay the same GPU prefix. Batch
+independent selected-work reads while retaining exact provenance, intermediate
+bytes and fresh devices for independent falsifiers.
+For Nested Discard cost, retain its shared ordinary pixel assembly and bounded
+shadow declaration. Temporal captures and replays stay independently owned; the
+fixture's actual device and shadow inspections guard those boundaries.
 
 For native Host failures, follow the CI guide's
 [build-input](../../scripts/ci/README.md#cross-platform-host-build-inputs),
@@ -707,35 +914,37 @@ change. Localized ordinary README files remain permitted.
 
 | Symptom | Likely cause | Reference |
 |:--|:--|:--|
-| Textured demo shows a white square without texture or lighting gradient | Texture paramValues contain unresolved GUID strings instead of Handles. | [White textures](references/assets-and-ci.md#white-textures) |
-| spawn-data-unknown-field or invisible/gray entities | Misspelled/stale data field, such as MeshRenderer.material instead of materials. | [Spawn fields](references/assets-and-ci.md#misspelled-spawn-data-fields) |
-| register MaterialAsset reports shader not registered | Stale shader identifier in pack.json. | [Shader identifiers](references/assets-and-ci.md#stale-shader-identifiers) |
-| CI fails despite all assertions passing | Unhandled rejection during teardown sets exit 1. | [Exit status](references/assets-and-ci.md#passing-assertions-with-exit-1) |
-| Fresh worktree alone fails with ENOENT/unresolved package | Submodule initialization or build missing. | [Worktree setup](references/assets-and-ci.md#fresh-worktree-environment-failures) |
-| Texture disappears after warm HMR | vite-plugin-pack DDC loses sourcePath or writes to source tree. | [Pack HMR](references/assets-and-ci.md#vite-plugin-pack-ddc-hot-reload) |
-| Windows-only failures or CRLF diffs | Missing LF attributes or path-separator handling. | [Windows](references/assets-and-ci.md#windows-compatibility) |
-| Upside-down cubemap | Redundant V-flip in skybox.wgsl. | [Skybox V-flip](references/lighting-and-materials.md#skybox-v-flip) |
-| All CSM shadows fully lit despite valid matrices and running cascades | Negative viewZ compared to positive splitPlanes selects the near cascade; distant projections leave the tile and return 1.0. | [CSM depth sign](references/lighting-and-materials.md#csm-shadows-fully-lit) |
-| Meshes do not cast shadows although castShadow is enabled | Hand-authored materials omit ShadowCaster and never enter the shadow depth pass. | [ShadowCaster](references/lighting-and-materials.md#missing-directional-shadows-castshadow-and-shadowcaster) |
-| Standard material black during cold startup or without IBL | Asynchronous Skylight cubemap is the only ambient source. | [Ambient readiness](references/lighting-and-materials.md#ambient-black-until-ibl-loads) |
-| Multi-mesh glTF nodes bind every mesh's materials | Bridge fails to filter by meshIndex. | [glTF materials](references/lighting-and-materials.md#gltf-bridge-mixes-mesh-materials) |
-| pbr-skin pipeline fails with missing binding/vertex slot 5 | Skin shader reuses standard PBR layout; JOINTS_0/WEIGHTS_0 are not uploaded. | [Skin pipeline](references/skinning-and-fbx.md#pbr-skin-pipeline-build-fail) |
-| Browser skin black but Dawn passes; VBO 768 instead of 1152 bytes | Break in parser, bridge, mesh-loader, render-data, pipeline context, or extraction. | [Attribute chain](references/skinning-and-fbx.md#skin-vertex-attribute-chain) |
-| hello-skin dev Fox black with asset-not-imported while smoke passes | Missing build/submodule or sibling using the port. | [Fox dev loading](references/skinning-and-fbx.md#fox-development-loading-asset-not-imported) |
-| Skin remains in bind pose while clip/world matrices advance | Palette allocator/dynamic-offset/extract wiring, MAX_JOINTS overflow, or async instantiation before SkinAsset registration. Skin.joints.length=0 and JointCountMismatchError identify the latter; e5e68b35 added SceneAsset.skinGuids and fail-fast skin-asset-unresolved. | [Static skin](references/skinning-and-fbx.md#skin-entity-stays-static) |
-| Distorted/flipped FBX skin animation in historical SDK implementation | Removed binding.cc misread Euler degrees as quaternions and sampled one axis; ufbx bridge.c uses ufbx_evaluate_transform. | [Historical FBX deformation](references/skinning-and-fbx.md#historical-fbx-skin-deformation) |
-| FBX parity snapshot fails | bridge.c drift in axis conversion, material classification, node filtering, or animation extraction. | [FBX parity](references/skinning-and-fbx.md#fbx-parity-snapshot-differences) |
-| FBX WASM ENOENT | Contributor checkout lacks generated pkg payloads. | [FBX WASM](references/skinning-and-fbx.md#missing-fbx-wasm-payload) |
-| FBX WASM initializes in browser but fails in Node | ENVIRONMENT flags or Node version mismatch. | [Node WASM](references/skinning-and-fbx.md#fbx-node-wasm-initialization-failure) |
-| SkinPaletteOverflowError needs=16384 cap=16320 at first frame | MAX_JOINTS=256 exceeds the pbr-skin group-2 binding-1 capacity established by PR #361. | [Palette overflow](references/skinning-and-fbx.md#skinpaletteoverflowerror-needs-16384-b-exceeds-16320-b) |
-| Edge adapter-unavailable and black output | Browser settings disable hardware GL. | [Edge configuration](references/backends-and-ci.md#edge-webgpu-disabled) |
-| Startup/release reports only WebGPU, adapter-unavailable, or object Object | Flattened diagnostics or only one backend channel observed; insufficient to declare the machine unsupported. | [Capability diagnosis](references/backends-and-ci.md#webgpu-messages-do-not-decide-whole-machine-support) |
-| WebGL2 fallback validation panic: storage/uniform mismatch or VIEW_FORMATS | Missing capability gates in variant keys, graph viewFormats, or texture reinterpretation. | [Fallback gates](references/backends-and-ci.md#wgpu-wasm-webgl2-fallback-cap-gates) |
-| WebKit reports mesh SSBO ceiling 0 B and black scene | Downlevel defaults report maxStorageBufferBindingSize=0, incorrectly consumed as a real ceiling. | [SSBO ceiling](references/webkit-and-lifetimes.md#webkit-mesh-ssbo-ceiling-0) |
-| WebKit black/GPU loss after submit without onError | wgpu error-sink failures never reach JS. | [Submit errors](references/webkit-and-lifetimes.md#webkit-black-output-after-submit) |
-| WebKit probe panics Surface does not exist while hello-triangle works | Probe main returns after a finite loop without retaining Renderer; GC finalizes the WASM Surface. | [Probe lifetime](references/webkit-and-lifetimes.md#webkit-probe-renderer-gc-finalize) |
+| CPU profiling needed on a Linux/CI host without a GPU; `requestAdapter()` returns null or only a software adapter | No usable GPU; software WebGPU would spend the measured CPU on emulation. | [WebGPU stub](../forgeax-engine-rhi/SKILL.md#webgpu-stub-cpu-diagnostics-without-gpu-work) |
+| Textured demo shows a white square without texture or lighting gradient | Texture paramValues contain unresolved GUID strings instead of Handles. | White textures |
+| spawn-data-unknown-field or invisible/gray entities | Misspelled/stale data field, such as MeshRenderer.material instead of materials. | Spawn fields |
+| register MaterialAsset reports shader not registered | Stale shader identifier in pack.json. | Shader identifiers |
+| CI fails despite all assertions passing | Unhandled rejection during teardown sets exit 1. | Exit status |
+| Fresh worktree alone fails with ENOENT/unresolved package | Submodule initialization or build missing. | Worktree setup |
+| Texture disappears after warm HMR | vite-plugin-pack DDC loses sourcePath or writes to source tree. | Pack HMR |
+| Windows-only failures or CRLF diffs | Missing LF attributes or path-separator handling. | Windows |
+| Upside-down cubemap | Redundant V-flip in skybox.wgsl. | Skybox V-flip |
+| All CSM shadows fully lit despite valid matrices and running cascades | Negative viewZ compared to positive splitPlanes selects the near cascade; distant projections leave the tile and return 1.0. | CSM depth sign |
+| Meshes do not cast shadows although castShadow is enabled | Hand-authored materials omit ShadowCaster and never enter the shadow depth pass. | ShadowCaster |
+| Standard material black during cold startup or without IBL | Asynchronous Skylight cubemap is the only ambient source. | Ambient readiness |
+| Multi-mesh glTF nodes bind every mesh's materials | Bridge fails to filter by meshIndex. | glTF materials |
+| One mesh missing while the rest of the frame renders; onError `rhi-descriptor-invalid` names a missing `@location(N)` | The material's vertex stage reads an attribute the mesh layout lacks; the renderer skips that draw instead of creating an invalid pipeline. Author the attribute (MeshBuilder completes normal/uv/tangent for triangle lists) or use a material that does not read it. | `packages/render/src/vertex-input-guard.ts` |
+| pbr-skin pipeline fails with missing binding/vertex slot 5 | Skin shader reuses standard PBR layout; JOINTS_0/WEIGHTS_0 are not uploaded. | Skin pipeline |
+| Browser skin black but Dawn passes; VBO 768 instead of 1152 bytes | Break in parser, bridge, mesh-loader, render-data, pipeline context, or extraction. | Attribute chain |
+| hello-skin dev Fox black with asset-not-imported while smoke passes | Missing build/submodule or sibling using the port. | Fox dev loading |
+| Skin remains in bind pose while clip/world matrices advance | Palette allocator/dynamic-offset/extract wiring, MAX_JOINTS overflow, or async instantiation before SkinAsset registration. Skin.joints.length=0 and JointCountMismatchError identify the latter; e5e68b35 added SceneAsset.skinGuids and fail-fast skin-asset-unresolved. | Static skin |
+| Distorted/flipped FBX skin animation in historical SDK implementation | Removed binding.cc misread Euler degrees as quaternions and sampled one axis; ufbx bridge.c uses ufbx_evaluate_transform. | Historical FBX deformation |
+| FBX parity snapshot fails | bridge.c drift in axis conversion, material classification, node filtering, or animation extraction. | FBX parity |
+| FBX WASM ENOENT | Contributor checkout lacks generated pkg payloads. | FBX WASM |
+| FBX WASM initializes in browser but fails in Node | ENVIRONMENT flags or Node version mismatch. | Node WASM |
+| SkinPaletteOverflowError needs=16384 cap=16320 at first frame | MAX_JOINTS=256 exceeds the pbr-skin group-2 binding-1 capacity established by PR #361. | Palette overflow |
+| Edge adapter-unavailable and black output | Browser settings disable hardware GL. | Edge configuration |
+| Startup/release reports only WebGPU, adapter-unavailable, or object Object | Flattened diagnostics or only one backend channel observed; insufficient to declare the machine unsupported. | Capability diagnosis |
+| WebGL2 fallback validation panic: storage/uniform mismatch or VIEW_FORMATS | Missing capability gates in variant keys, graph viewFormats, or texture reinterpretation. | Fallback gates |
+| WebKit reports mesh SSBO ceiling 0 B and black scene | Downlevel defaults report maxStorageBufferBindingSize=0, incorrectly consumed as a real ceiling. | SSBO ceiling |
+| WebKit black/GPU loss after submit without onError | wgpu error-sink failures never reach JS. | Submit errors |
+| WebKit probe panics Surface does not exist while hello-triangle works | Probe main returns after a finite loop without retaining Renderer; GC finalizes the WASM Surface. | Probe lifetime |
 | CI job, cache or skip behavior differs from old troubleshooting notes | Workflow layout has changed; verify the failing commit before applying historical advice | [CI operating guide](../../scripts/ci/README.md) |
-| GPU buffer/texture/cubemap counts grow throughout long sessions | Missing symmetric release in store eviction, instance buffers, transient resize, or handle-keyed WeakMaps. | [Resource growth](references/webkit-and-lifetimes.md#monotonic-gpu-resource-growth) |
+| GPU buffer/texture/cubemap counts grow throughout long sessions | Missing symmetric release in store eviction, instance buffers, transient resize, or handle-keyed WeakMaps. | Resource growth |
 
 Open the relevant linked recipe; verify its hypothesis against the current
 failing frame or process. Package contracts remain the design authority.

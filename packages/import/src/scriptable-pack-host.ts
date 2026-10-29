@@ -8,7 +8,6 @@ import {
   packageTransportRevision,
   resolveAssetSource,
 } from '@forgeax/engine-pack/build';
-import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
 import { AssetGuid, PackageId, type PackageId as PackageIdType } from '@forgeax/engine-pack/guid';
 import {
   type NativeCookDraft,
@@ -93,6 +92,8 @@ export interface ScriptablePackProductionOptions {
   readonly sources: readonly ScriptablePackInput[];
   /** Optional immutable Pack-product DDC root, independent of runtime publication scope. */
   readonly buildCacheRoot?: string;
+  /** Project root that Pack-product cache keys spell source paths relative to. */
+  readonly cacheIdentityRoot?: string;
   readonly declaredExternalOutputs?: readonly ScriptablePackStagedOutput[];
   readonly assetSource?: ScriptablePackAssetSnapshotSource;
   /** Build-time producers used for custom or otherwise uncooked asset rows. */
@@ -236,8 +237,10 @@ export async function declaredPackExternalOutputs(
         },
       });
       if (!prepared.ok) throw prepared.error;
+      // Content reads receive the producer payload; the finalized transport payload
+      // omits data that its artifacts carry.
       const cookedByGuid = new Map(
-        prepared.value.finalized.pack.assets.map((asset) => [asset.guid.toLowerCase(), asset]),
+        prepared.value.product.product.assets.map((asset) => [asset.guid.toLowerCase(), asset]),
       );
       for (const asset of projected.assets) {
         if (!required.has(asset.guid.toLowerCase())) continue;
@@ -255,7 +258,7 @@ export async function declaredPackExternalOutputs(
         outputs.push({
           guid: parsedGuid.value,
           sourceKey: asset.sourceKey,
-          asset: { kind: cooked.kind, ...cooked.payload } as Asset,
+          asset: { kind: cooked.kind, ...(cooked.payload as Record<string, unknown>) } as Asset,
         });
       }
       continue;
@@ -630,15 +633,66 @@ function directAssetForProducer(asset: DirectPackAssetProjection): Asset {
   return (normalizeMeshPayload(payload, asset.refs) ?? payload) as Asset;
 }
 
+/** Cook only opted-in siblings together; drain each bounded batch before returning a failure. */
+async function cookDirectPackDrafts(
+  input: DirectPackTransportInput,
+  registry: NativeCookerRegistry,
+): Promise<Result<readonly NativeCookDraft[], unknown>> {
+  const assets = input.projected.assets.filter(
+    (asset) => isScriptablePackAssetKind(asset.kind) && registry.get(asset.kind) !== undefined,
+  );
+  const drafts: NativeCookDraft[] = [];
+  const parallel = (index: number): boolean => {
+    const asset = assets[index];
+    return asset !== undefined && registry.get(asset.kind)?.concurrency === 'parallel';
+  };
+  for (let index = 0; index < assets.length; ) {
+    let end = index + 1;
+    if (parallel(index)) {
+      while (end < Math.min(index + 4, assets.length) && parallel(end)) end++;
+    }
+    const batch = assets.slice(index, end);
+    const results = await Promise.all(
+      batch.map(async (asset) => ({
+        asset,
+        draft: await registry.runDraft(asset.kind, {
+          guid: asset.guid,
+          source: nativeCookSource(asset),
+          sourceKey: asset.sourceKey,
+          sourcePath: input.sourcePath,
+          refs: asset.refs,
+        }),
+      })),
+    );
+    for (const { asset, draft } of results) {
+      if (!draft.ok) return err(draft.error);
+      if (draft.value.guid.toLowerCase() !== asset.guid.toLowerCase()) {
+        return err({
+          code: 'pack-parameter-invalid',
+          expected: 'a direct Pack cooker to preserve the derived AssetGuid',
+          hint: 'repair the native cooker output GUID and rebuild the direct Pack',
+          detail: {
+            sourcePath: input.sourcePath,
+            sourceKey: asset.sourceKey,
+            expectedGuid: asset.guid,
+            actualGuid: draft.value.guid,
+          },
+        });
+      }
+      drafts.push(draft.value);
+    }
+    index = end;
+  }
+  return ok(drafts);
+}
+
 /** Cook one direct v3 Pack through the same producer/finalizer seam as pack.ts. */
 export async function prepareDirectPackTransport(
   input: DirectPackTransportInput,
 ): Promise<Result<DirectPackTransport, unknown>> {
   const localGuids = new Set(input.projected.assets.map((asset) => asset.guid.toLowerCase()));
   const availableGuids = new Set(
-    [...(input.availableGuids ?? []), ...BUILTIN_MESH_ASSETS.map((asset) => asset.guid)].filter(
-      (guid) => !localGuids.has(guid.toLowerCase()),
-    ),
+    [...(input.availableGuids ?? [])].filter((guid) => !localGuids.has(guid.toLowerCase())),
   );
   const directArtifacts = input.projected.assets.find(
     (asset) => asset.artifacts !== undefined && Object.keys(asset.artifacts).length > 0,
@@ -655,38 +709,17 @@ export async function prepareDirectPackTransport(
   if (!packageId.ok) return err(packageId.error);
   const cookerRegistry = new NativeCookerRegistry();
   for (const cooker of input.cookers ?? []) cookerRegistry.register(cooker);
-  const nativeDrafts = new Map<string, NativeCookDraft>();
-  const nativeFingerprints = new Map<string, string>();
-  for (const asset of input.projected.assets) {
-    if (!isScriptablePackAssetKind(asset.kind)) continue;
-    if (cookerRegistry.get(asset.kind) === undefined) continue;
-    const draft = await cookerRegistry.runDraft(asset.kind, {
-      guid: asset.guid,
-      // Direct v3 entries keep `kind` at the entry boundary. Reattach it for
-      // producer contracts such as MaterialAsset, whose payload is otherwise
-      // intentionally allowed to omit the discriminant.
-      source: nativeCookSource(asset),
-      sourceKey: asset.sourceKey,
-      sourcePath: input.sourcePath,
-      refs: asset.refs,
-    });
-    if (!draft.ok) return err(draft.error);
-    if (draft.value.guid.toLowerCase() !== asset.guid.toLowerCase()) {
-      return err({
-        code: 'pack-parameter-invalid',
-        expected: 'a direct Pack cooker to preserve the derived AssetGuid',
-        hint: 'repair the native cooker output GUID and rebuild the direct Pack',
-        detail: {
-          sourcePath: input.sourcePath,
-          sourceKey: asset.sourceKey,
-          expectedGuid: asset.guid,
-          actualGuid: draft.value.guid,
-        },
-      });
-    }
-    nativeDrafts.set(asset.guid.toLowerCase(), draft.value);
-    nativeFingerprints.set(asset.sourceKey, draft.value.inputFingerprint);
-  }
+  const cookedDrafts = await cookDirectPackDrafts(input, cookerRegistry);
+  if (!cookedDrafts.ok) return cookedDrafts;
+  const nativeDrafts = new Map(
+    cookedDrafts.value.map((draft) => [draft.guid.toLowerCase(), draft]),
+  );
+  const nativeFingerprints = new Map(
+    input.projected.assets.flatMap((asset) => {
+      const draft = nativeDrafts.get(asset.guid.toLowerCase());
+      return draft === undefined ? [] : [[asset.sourceKey, draft.inputFingerprint] as const];
+    }),
+  );
   const unsupported = input.projected.assets.filter(
     (asset) => !isScriptablePackAssetKind(asset.kind),
   );
@@ -1006,6 +1039,9 @@ export async function produceScriptablePackProducts(
       ? undefined
       : await createScriptablePackProductCache({
           root: options.buildCacheRoot,
+          ...(options.cacheIdentityRoot === undefined
+            ? {}
+            : { identityRoot: options.cacheIdentityRoot }),
           outputVersions: outputs.versions(),
           cookers: options.cookers ?? [],
         });

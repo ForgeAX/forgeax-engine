@@ -9,17 +9,17 @@
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/view": "workspace:*",
     "@modelcontextprotocol/server": "2.3.1",
-    "zod": "^4.2.0",
+    "zod": "^4.6.7",
     "@forgeax/engine-tool-runtime": "workspace:*",
     "@modelcontextprotocol/ext-apps": "1.7.5",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@openai/mcp-extensions": "0.1.0",
     "@forgeax/engine-host": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
-    "ws": "^8.21.0",
-    "vite": "8.0.16",
+    "ws": "^8.22.0",
+    "vite": "8.3.5",
     "typescript": "6.0.3",
-    "esbuild": "0.27.7"
+    "esbuild": "0.28.2"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",

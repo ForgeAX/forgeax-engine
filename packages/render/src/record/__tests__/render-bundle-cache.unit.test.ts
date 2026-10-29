@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   RenderBundleCache,
   type RenderBundleCounters,
+  retireSceneRenderBundleCache,
   type SceneRenderBundleState,
   sceneRenderBundleCache,
 } from '../render-bundle-cache';
@@ -584,6 +585,42 @@ describe('scene pass render bundle cache', () => {
     expect(directFrames.at(-1)).toBeLessThan(100);
   });
 
+  it('replays unchanged bins after an earlier bin gains or loses whole segments', async () => {
+    const d = await device();
+    const observer = observeCommands(d);
+    const cache = new RenderBundleCache({ colorFormats: [] });
+    const group = d
+      .createBindGroup({ layout: d.createBindGroupLayout({ entries: [] }).unwrap(), entries: [] })
+      .unwrap();
+    // Three bins (pipeline + material group), each drawn as one run of rows.
+    const bins = [0, 1, 2].map((bin) => ({
+      pipeline: d.createRenderPipeline({} as RenderPipelineDescriptor).unwrap(),
+      vertex: buffer(d),
+      rows: Array.from({ length: 300 }, (_, row) => bin * 1_000 + row),
+    }));
+    const record = (target: RhiRenderPassEncoder) => {
+      for (const bin of bins) {
+        target.setPipeline(bin.pipeline);
+        target.setVertexBuffer(0, bin.vertex);
+        for (const row of bin.rows) {
+          target.setBindGroup(2, group, [row * 256]);
+          target.draw(3);
+        }
+      }
+    };
+    for (let frame = 0; frame < 3; frame++)
+      expect(observer.frame(cache, record)).toEqual(observer.frame(undefined, record));
+    const unchanged = 6; // Bins 1 and 2: 128 + 128 + 44 draws each.
+    for (const edit of ['grow', 'shrink'] as const) {
+      // Bin 0 crosses a 128-draw boundary, changing its segment count.
+      if (edit === 'grow') bins[0]?.rows.unshift(...Array.from({ length: 100 }, (_, i) => 900 + i));
+      else bins[0]?.rows.splice(0, 200);
+      const counters = { hits: 0, misses: 0 };
+      expect(observer.frame(cache, record, counters)).toEqual(observer.frame(undefined, record));
+      expect(counters.hits).toBeGreaterThanOrEqual(unchanged);
+    }
+  });
+
   it('keeps stable batches bundled while another batch changes', async () => {
     const d = await device();
     const pipelines = [0, 1, 2].map(() => {
@@ -992,6 +1029,23 @@ describe('view-owned scene command retention', () => {
     state.frameNumber = 2;
     sceneRenderBundleCache(state, 'main', descriptor);
     expect(state.renderBundleCaches?.passes.has('removed')).toBe(false);
+  });
+
+  it('retires CPU commands during GPU-only frames and admits fresh CPU work later', () => {
+    const state: SceneRenderBundleState = { frameNumber: 0 };
+    const descriptor = { colorFormats: [] };
+    retireSceneRenderBundleCache(state, 'main');
+    expect(state.renderBundleCaches).toBeUndefined();
+    const old = sceneRenderBundleCache(state, 'main', descriptor);
+    sceneRenderBundleCache(state, 'removed', descriptor);
+    state.frameNumber = 1;
+    retireSceneRenderBundleCache(state, 'main');
+    state.frameNumber = 2;
+    retireSceneRenderBundleCache(state, 'main');
+    expect(state.renderBundleCaches?.passes.size).toBe(0);
+    const current = sceneRenderBundleCache(state, 'main', descriptor);
+    expect(current).not.toBe(old);
+    expect(sceneRenderBundleCache(state, 'main', descriptor)).toBe(current);
   });
 
   it('compares iterable color attachments and retains a consumed replacement descriptor', () => {

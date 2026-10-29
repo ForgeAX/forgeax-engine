@@ -75,6 +75,51 @@ function meshSurfaceAreaAndSignedVolume(mesh: MeshAsset): {
   return { area, signedVolume };
 }
 
+/** Position-welded edge census: boundary/non-manifold edge counts and orientation consistency. */
+function weldedEdgeCensus(mesh: MeshAsset): {
+  readonly boundary: number;
+  readonly nonManifold: number;
+  readonly consistentlyOriented: boolean;
+} {
+  const position = mesh.attributes.position;
+  const indices = mesh.indices;
+  if (!(position instanceof Float32Array) || indices === undefined)
+    throw new Error('procedural mesh lacks indexed position data');
+  const weld = new Map<string, number>();
+  const id = (vertex: number): number => {
+    const key = `${position[vertex * 3]},${position[vertex * 3 + 1]},${position[vertex * 3 + 2]}`;
+    let value = weld.get(key);
+    if (value === undefined) {
+      value = weld.size;
+      weld.set(key, value);
+    }
+    return value;
+  };
+  const directed = new Map<string, number>();
+  const undirected = new Map<string, number>();
+  for (let i = 0; i < indices.length; i += 3) {
+    const tri = [0, 1, 2].map((k) => id(indices[i + k] as number));
+    for (let k = 0; k < 3; k++) {
+      const a = tri[k] as number;
+      const b = tri[(k + 1) % 3] as number;
+      directed.set(`${a}>${b}`, (directed.get(`${a}>${b}`) ?? 0) + 1);
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      undirected.set(key, (undirected.get(key) ?? 0) + 1);
+    }
+  }
+  let boundary = 0;
+  let nonManifold = 0;
+  for (const count of undirected.values()) {
+    if (count === 1) boundary++;
+    else if (count !== 2) nonManifold++;
+  }
+  return {
+    boundary,
+    nonManifold,
+    consistentlyOriented: [...directed.values()].every((count) => count === 1),
+  };
+}
+
 describe('reusable procedural geometry', () => {
   it('triangulates and extrudes a concave contour with normals, UVs, and bounds', () => {
     const result = createExtrusionGeometry(
@@ -127,7 +172,7 @@ describe('reusable procedural geometry', () => {
     );
     expect(sweep.ok).toBe(true);
     expect(revolution.ok).toBe(true);
-    if (sweep.ok) expect(sweep.value.indices?.length).toBe(2 * 8 * 6);
+    if (sweep.ok) expect(sweep.value.indices?.length).toBe(2 * 8 * 6 + 2 * 8 * 3);
     if (revolution.ok) expect(revolution.value.indices?.length).toBe(2 * 8 * 6);
   });
 
@@ -189,13 +234,17 @@ describe('reusable procedural geometry', () => {
     if (!sweep.ok) return;
     const sweepMetrics = meshSurfaceAreaAndSignedVolume(sweep.value);
     const expectedLateralArea = 2 * segments * radius * Math.sin(Math.PI / segments) * height;
-    expect(sweepMetrics.area).toBeCloseTo(expectedLateralArea, 5);
+    // Default caps close the prism: two regular-polygon areas and an enclosed volume.
+    const capArea = (segments / 2) * radius * radius * Math.sin((2 * Math.PI) / segments);
+    expect(sweepMetrics.area).toBeCloseTo(expectedLateralArea + 2 * capArea, 5);
+    expect(sweepMetrics.signedVolume).toBeCloseTo(capArea * height, 5);
     const position = sweep.value.attributes.position;
     const normal = sweep.value.attributes.normal;
     expect(position).toBeInstanceOf(Float32Array);
     expect(normal).toBeInstanceOf(Float32Array);
     if (!(position instanceof Float32Array) || !(normal instanceof Float32Array)) return;
     for (let vertex = 0; vertex < position.length / 3; vertex += 1) {
+      if (Math.abs(Math.abs(normal[vertex * 3 + 1] as number) - 1) < 1e-6) continue; // cap
       const x = position[vertex * 3] as number;
       const z = position[vertex * 3 + 2] as number;
       const length = Math.hypot(x, z);
@@ -219,6 +268,85 @@ describe('reusable procedural geometry', () => {
       expectedLateralArea,
       5,
     );
+  });
+
+  it('caps open circular sweeps into a watertight, outward-oriented solid', () => {
+    const path: [number, number, number][] = [
+      [0, 0, 0],
+      [0.3, 0.5, 0],
+      [0, 1, 0.2],
+      [-0.3, 1.3, 0],
+    ];
+    const capped = createSweepGeometry(path, 0.12, 12);
+    const open = createSweepGeometry(path, 0.12, 12, { capped: false });
+    expect(capped.ok && open.ok).toBe(true);
+    if (!capped.ok || !open.ok) return;
+    expect(weldedEdgeCensus(capped.value)).toEqual({
+      boundary: 0,
+      nonManifold: 0,
+      consistentlyOriented: true,
+    });
+    expect(weldedEdgeCensus(open.value).boundary).toBe(2 * 12);
+    expect(open.value.indices?.length).toBe(3 * 12 * 6);
+    expect(capped.value.indices?.length).toBe(3 * 12 * 6 + 2 * 12 * 3);
+    expectTriangleWinding(capped.value);
+    expect(meshSurfaceAreaAndSignedVolume(capped.value).signedVolume).toBeGreaterThan(0);
+
+    const { position, normal, uv, tangent } = capped.value.attributes;
+    if (
+      !(position instanceof Float32Array) ||
+      !(normal instanceof Float32Array) ||
+      !(uv instanceof Float32Array) ||
+      !(tangent instanceof Float32Array)
+    )
+      throw new Error('capped sweep lacks canonical attributes');
+    type V3 = readonly [number, number, number];
+    const at = (array: Float32Array, offset: number): V3 => [
+      array[offset] as number,
+      array[offset + 1] as number,
+      array[offset + 2] as number,
+    ];
+    const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const unitDelta = (from: V3, to: V3): V3 => {
+      const d: V3 = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+      const length = Math.hypot(...d);
+      return [d[0] / length, d[1] / length, d[2] / length];
+    };
+    const startOut = unitDelta(path[1] as V3, path[0] as V3);
+    const endOut = unitDelta(path[2] as V3, path[3] as V3);
+    let startCap = 0;
+    let endCap = 0;
+    for (let v = 0; v < position.length / 3; v++) {
+      const n = at(normal, v * 3);
+      const t = at(tangent, v * 4);
+      expect(Math.hypot(...n)).toBeCloseTo(1, 5);
+      expect(Math.hypot(...t)).toBeCloseTo(1, 4);
+      expect(Math.abs(dot(n, t))).toBeLessThan(1e-4);
+      expect(Math.abs(tangent[v * 4 + 3] as number)).toBe(1);
+      const u = uv[v * 2] as number;
+      const w = uv[v * 2 + 1] as number;
+      expect(u >= 0 && u <= 1 && w >= 0 && w <= 1).toBe(true);
+      if (dot(n, startOut) > 1 - 1e-5) startCap++;
+      if (dot(n, endOut) > 1 - 1e-5) endCap++;
+    }
+    // Each cap: one centre plus a duplicated ring (segments + 1 including the seam).
+    expect(startCap).toBe(12 + 2);
+    expect(endCap).toBe(12 + 2);
+  });
+
+  it('omits caps on a closed sweep path', () => {
+    const loop: [number, number, number][] = [
+      [0, 0, 0],
+      [1, 0, 0],
+      [1, 0, 1],
+      [0, 0, 0],
+    ];
+    const closed = createSweepGeometry(loop, 0.1, 8);
+    const explicit = createSweepGeometry(loop, 0.1, 8, { capped: true });
+    expect(closed.ok && explicit.ok).toBe(true);
+    if (!closed.ok || !explicit.ok) return;
+    expect(closed.value.indices?.length).toBe(3 * 8 * 6);
+    expect(explicit.value.indices?.length).toBe(3 * 8 * 6);
   });
 
   it('rejects malformed contours and degenerate paths before mesh creation', () => {

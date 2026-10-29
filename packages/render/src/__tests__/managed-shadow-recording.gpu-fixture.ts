@@ -14,7 +14,7 @@ import { GpuBuffer } from '../gpu-resource';
 import { createSkylightFallback } from '../ibl/skylight-bind-group';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
-import { directDrawRows } from '../record/direct-draws';
+import { DirectDrawPhase } from '../record/direct-draw-phase';
 import { prepareDirectionalShadowCache } from '../record/directional-shadow-cache';
 import { buildDispatchPlan } from '../record/fold-buckets';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -33,11 +33,13 @@ import {
   MATERIAL_UNIFORM_BYTES,
 } from '../record/render-context';
 import { recordShadowCasterDraws } from '../record/shadow-pass';
+import { SkinTasks } from '../record/skin-tasks';
 import type { DispatchEntry, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import { nativeDeviceFixture } from './native-device-fixture';
+import { skinTaskFixture } from './skin-task-fixture';
 
 // Real residual recording and dynamic material offsets, not a PBR lighting surrogate.
 // The depth witness also makes two wrong-but-equal empty images fail independently.
@@ -287,7 +289,13 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
     topology.rebuild(scene.slotsSnapshot());
     const pipelineRequests: unknown[][] = [];
     const context = {
-      shadowCasterBounds: (source: RenderableSnapshot) => scene.cullingWorldBounds(source),
+      shadowCasterBounds: (
+        source: RenderableSnapshot,
+        out: import('@forgeax/engine-math').box3.Box3,
+      ) => {
+        const slot = scene.slot(source.worldId, source.entityKey);
+        return slot !== undefined && scene.writeCullingWorldBoundsAt(slot, out);
+      },
       dispatch,
       validatedOrdered: rows,
       materialSlotIndices: [[0], [1]],
@@ -299,6 +307,13 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
         getMaterialShaderPipeline: (...args: unknown[]) => {
           pipelineRequests.push(args);
           return args[18] === 'vs_second' ? secondPipeline : pipeline;
+        },
+        getMaterialShaderPipelineEntry: (...args: unknown[]) => {
+          pipelineRequests.push(args);
+          return {
+            pipeline: args[18] === 'vs_second' ? secondPipeline : pipeline,
+            group2Contract: 'mesh',
+          };
         },
         getParamSchema: () => [],
         getMaterialBindGroupLayout: () => materialLayout,
@@ -341,6 +356,9 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
       materialDispatch,
       topology,
       pipeline,
+      viewLayout,
+      materialLayout,
+      instanceLayout,
       viewGroup,
       meshGroup,
       target,
@@ -366,6 +384,7 @@ async function depth(
   geometry = false,
   passKind = 'forward',
   retained = false,
+  selectedDispatch?: _InternalRenderPipelineContext['dispatch'],
 ) {
   const encoder = f.device.createCommandEncoder().unwrap();
   if (!retained) {
@@ -384,13 +403,6 @@ async function depth(
       recordGeometryDraws(
         {
           ...c,
-          runtime: {
-            ...c.runtime,
-            getMaterialShaderPipelineEntry: () => ({
-              pipeline: f.pipeline,
-              group2Contract: 'mesh',
-            }),
-          },
           dispatchCounts: { unlit: 0 },
           viewBindGroup: f.viewGroup,
         },
@@ -404,6 +416,7 @@ async function depth(
           defined(c.materialBgAssemblyCache.get(c.world.identity, material.materialHandle, SHADER))
             .bindGroup,
         passKind,
+        selectedDispatch,
       );
     } else {
       recordShadowCasterDraws(
@@ -749,8 +762,8 @@ export async function verifyManagedShadowRecording(): Promise<void> {
         nativePlan.batches.map((batch) => [defined(batch.binding), row.mesh]),
       );
       const routeRows = (rightDirect: boolean) =>
-        directDrawRows(
-          {
+        new DirectDrawPhase().sync({
+          scene: {
             plan: {
               ...nativePlan,
               batches: nativePlan.batches.map((batch) =>
@@ -768,15 +781,19 @@ export async function verifyManagedShadowRecording(): Promise<void> {
             drawSnapshotAt: nativeScene.drawSnapshotAt,
             unbatchedSlots: nativeTopology.unbatchedSlots,
           },
-          (binding) =>
+          selection: [],
+          select: (binding) =>
             rightDirect && binding.drawItemIndex === 2 ? right.source.material.snapshot : undefined,
-          nativeMeshes,
-          [c.world],
-          'shadow',
-          () => {
+          meshes: nativeMeshes,
+          worlds: [c.world],
+          shadow: true,
+          materials: undefined,
+          prepareUnbatched: () => {
             throw new Error('no unbatched geometry');
           },
-        );
+          viewDraws: [],
+          lod: (rows) => rows,
+        }).rows;
       expect(sample(await depth(f, { ...multi, validatedOrdered: routeRows(true) }, 0))).toEqual([
         0, 0.75,
       ]);
@@ -922,9 +939,11 @@ export async function verifyManagedShadowCache(
   const reads = new ShadowMeshReads(changes);
   reads.add(changes.create());
   const lights = {
-    cascadeCount: 1,
-    lightViewProj: [new Float32Array(16)],
-    directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+    cascades: {
+      cascadeCount: 1,
+      lightViewProj: [new Float32Array(16)],
+      directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+    },
   } as const;
   const c = { ...f.context, materialFrame: defined(f.context.materialFrame) };
   const first = defined(c.validatedOrdered[0]);
@@ -953,8 +972,7 @@ export async function verifyManagedShadowCache(
           meshDraws: f.scene,
           renderables: c.validatedOrdered.map((row) => row.source),
           dispatch: [],
-          prepareDrawDispatch: () => [],
-          worldBoundsOf: () => undefined,
+          worldBoundsOf: () => false,
         },
       );
       pixels = await depth(
@@ -1082,9 +1100,11 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
       [world].map(worldRenderResources),
       [lease],
       {
-        cascadeCount: 1,
-        lightViewProj: retained,
-        directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+        cascades: {
+          cascadeCount: 1,
+          lightViewProj: retained,
+          directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+        },
       } as never,
       512,
       { reads, epoch: changes.epoch, change: 'quiet' },
@@ -1100,8 +1120,7 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
         meshDraws: f.scene,
         renderables: c.validatedOrdered.map((row) => row.source),
         dispatch: [],
-        prepareDrawDispatch: () => [],
-        worldBoundsOf: () => undefined,
+        worldBoundsOf: () => false,
       },
     );
     const pixels = await depth(
@@ -1140,6 +1159,160 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
     reads.release();
     changes.reset();
     lease.dispose();
+    f.close();
+  }
+}
+
+/** Same residual recorder and native layouts; missing pose may omit only the Skin Pass. */
+export async function verifyMixedSkinPassRecording(): Promise<void> {
+  const f = await fixture(),
+    shared = skinTaskFixture(),
+    tasks = new SkinTasks(f.device, true);
+  try {
+    const skinLayout = f.device
+      .createBindGroupLayout({
+        entries: [
+          {
+            binding: 0,
+            visibility: 1,
+            buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 64 },
+          },
+          { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+          {
+            binding: 2,
+            visibility: 1,
+            buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 16 },
+          },
+        ],
+      })
+      .unwrap();
+    const layout = f.device
+      .createPipelineLayout({
+        bindGroupLayouts: [f.viewLayout, f.materialLayout, skinLayout, f.instanceLayout],
+      })
+      .unwrap();
+    const code = SHADOW_CACHE_WITNESS.replace(
+      '@vertex fn vs_second',
+      `
+@group(2) @binding(1) var<storage, read> taskOutput: array<vec4<u32>>;
+@group(2) @binding(2) var<uniform> taskAddress: vec4<u32>;
+@vertex fn vs_second`,
+    ).replace(
+      'let world = mesh.world * vec4<f32>(p, 1.0);\n  return vec4<f32>(world.xy +',
+      `let descriptor = taskOutput[taskAddress.y + taskOutput[taskAddress.x + taskAddress.z].x];
+  let base = descriptor.z;
+  let pose = mat4x4<f32>(bitcast<vec4<f32>>(taskOutput[base]), bitcast<vec4<f32>>(taskOutput[base + 1u]), bitcast<vec4<f32>>(taskOutput[base + 2u]), bitcast<vec4<f32>>(taskOutput[base + 3u]));
+  let world = pose * vec4<f32>(p, 1.0);
+  return vec4<f32>(world.xy +`,
+    );
+    const module = (await rhi.createShaderModule(f.device, { code })).unwrap();
+    const skinPipeline = f.device
+      .createRenderPipeline({
+        layout,
+        vertex: {
+          module,
+          entryPoint: 'vs_second',
+          buffers: [
+            {
+              arrayStride: 12,
+              attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+            },
+          ],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
+      })
+      .unwrap();
+    const left = defined(f.context.validatedOrdered[0]);
+    const demand = () => tasks.demand(shared.first);
+    shared.frames.discardFrame();
+    shared.matrix[12] = 0.5;
+    shared.skin.joint(0, 19, shared.matrix);
+    for (const missing of [false, true]) {
+      if (missing) shared.skin.joint(0, 19, undefined);
+      const frame = defined(shared.frames.prepareFrame(shared.scene.slotsSnapshot()));
+      tasks.begin(frame);
+      for (const reverse of [false, true]) {
+        const passes = [
+          {
+            name: 'rigid',
+            program: { module: SHADER, vertexEntry: 'vs_witness' },
+            renderState: { tags: { LightMode: 'ShadowCaster' } },
+          },
+          {
+            name: 'skin',
+            program: { module: SHADER, vertexEntry: 'vs_second' },
+            renderState: { tags: { LightMode: 'ShadowCaster' } },
+          },
+        ];
+        if (reverse) passes.reverse();
+        const material = new MaterialResource({
+          ...left.source.material.snapshot,
+          passes,
+          materialProgramKeys: { rigid: SHADER, skin: SHADER },
+        });
+        const c = {
+          ...f.context,
+          validatedOrdered: [
+            {
+              ...left,
+              source: {
+                ...left.source,
+                skinBinding: shared.first.snapshot.skinBinding,
+                material,
+                materials: [material],
+              },
+            },
+          ],
+          dispatch: passes.map((pass, passIndex) => ({
+            ...defined(f.context.dispatch.at(0)),
+            renderableIndex: 0,
+            passIndex,
+            vertexEntry: pass.program.vertexEntry,
+          })),
+          materialFrame: new MaterialDispatch().materials().with(material),
+          materialSlots: [material.snapshot],
+          materialSlotIndices: [[0]],
+          pipelineState: { ...f.context.pipelineState, pbrSkinMeshBindGroupLayout: skinLayout },
+          runtime: {
+            ...f.context.runtime,
+            demandSkinTask: demand,
+            getMaterialShaderPipelineEntry: (...args: unknown[]) => ({
+              pipeline: args[18] === 'vs_second' ? skinPipeline : f.pipeline,
+              group2Contract: args[18] === 'vs_second' ? ('skin' as const) : ('mesh' as const),
+            }),
+          },
+        } as _InternalRenderPipelineContext;
+        for (const geometry of [false, true]) {
+          const pixels = await depth(
+            f,
+            c,
+            0,
+            undefined,
+            false,
+            undefined,
+            geometry,
+            'forward',
+            false,
+            c.dispatch,
+          );
+          expect(
+            pixels[8 * ROW_FLOATS + 8],
+            `main=${geometry} missing=${missing} reverse=${reverse}`,
+          ).toBe(0.25);
+          expect(
+            pixels[4 * ROW_FLOATS + 24],
+            `main=${geometry} missing=${missing} reverse=${reverse}`,
+          ).toBe(missing ? 0 : 0.375);
+        }
+      }
+      await tasks.complete();
+      shared.frames.discardFrame();
+    }
+    expect(await f.native.popErrorScope()).toBeNull();
+  } finally {
+    await tasks.dispose();
+    shared.dispose();
     f.close();
   }
 }

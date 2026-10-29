@@ -8,11 +8,14 @@ import {
 
 const ownerSource = readFileSync(new URL('../ibl/skylight-bind-group.ts', import.meta.url), 'utf8');
 const consumerSources = [
-  '../assembly/webgpu-ready.ts',
+  '../assembly/webgpu-ready-resources.ts',
   '../assembly/layered-texture-fallback.ts',
   '../ssao-buffers.ts',
 ].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'));
-const rendererSource = consumerSources[0] as string;
+const rendererSource = readFileSync(
+  new URL('../assembly/webgpu-ready.ts', import.meta.url),
+  'utf8',
+);
 
 describe('fallback texture row-stride owner', () => {
   it('keeps every 1x1 fallback upload path on one owner', () => {
@@ -43,16 +46,14 @@ describe('fallback texture row-stride owner', () => {
   });
 
   it('uploads an exactly neutral normal instead of treating 128/255 as one half', () => {
-    const creation = rendererSource.slice(
-      rendererSource.indexOf('const fallbackNormalTextureDescriptor ='),
-      rendererSource.indexOf('const fallbackNormalTextureViewResult ='),
-    );
+    const start = rendererSource.indexOf('const fallbackNormalTexel =');
+    const viewStart = rendererSource.indexOf('const fallbackNormalTextureView =');
+    const creation = rendererSource.slice(start, rendererSource.indexOf(');', viewStart));
     expect(creation).toContain("'rgba16float'");
-    const start = creation.indexOf('const fallbackNormalTexel =');
-    const end = creation.indexOf('const fallbackNormalWriteResult =');
+    const end = creation.indexOf('const fallbackNormalTextureView =');
     // Execute the actual owner payload construction; do not duplicate its bytes.
     const texel = new Function(
-      `${creation.slice(start, end)}; return fallbackNormalTexel;`,
+      `${creation.slice(0, end)}; return fallbackNormalTexel;`,
     )() as Uint16Array;
     expect(Array.from(texel)).toEqual([0x3800, 0x3800, 0x3c00, 0x3c00]);
   });

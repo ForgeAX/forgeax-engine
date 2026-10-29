@@ -283,53 +283,74 @@ function workPipeline(
   };
 }
 
-export function buildFrameModel(tape: V7Tape): FrameModel {
-  const index = buildTapeIndex(tape);
-  const events = tape.events;
+type BindGroupEvent = Extract<RhiCallEvent, { kind: 'createBindGroup' }>;
+type BindGroupLayoutEvent = Extract<RhiCallEvent, { kind: 'createBindGroupLayout' }>;
+type TapeIndex = ReturnType<typeof buildTapeIndex>;
+
+function renderPassAttachments(
+  pass: TapePassEntry,
+  begin: Extract<RhiCallEvent, { kind: 'beginRenderPass' }>,
+): FramePass {
+  const color: string[] = [];
+  const resolve: (string | null)[] = [];
+  const slices: (number | null)[] = [];
+  const descriptors = Array.from(begin.desc.colorAttachments);
+  for (const [slot, id] of begin.colorAttachmentViewHandleIds.entries()) {
+    if (typeof id !== 'string') continue;
+    color.push(id);
+    resolve.push(begin.colorAttachmentResolveTargetHandleIds?.[slot] ?? null);
+    const depthSlice = descriptors[slot]?.depthSlice;
+    slices.push(typeof depthSlice === 'number' ? depthSlice : null);
+  }
+  return {
+    ...emptyFramePass(pass),
+    colorAttachmentViewHandleIds: color,
+    colorAttachmentResolveViewHandleIds: resolve,
+    colorAttachmentDepthSlices: slices,
+    depthStencilViewHandleId: begin.depthStencilViewHandleId ?? null,
+  };
+}
+
+function emptyFramePass(pass: TapePassEntry): FramePass {
+  return {
+    passIndex: pass.passIndex,
+    kind: pass.kind,
+    beginEventIndex: pass.beginEventIndex,
+    endEventIndex: pass.endEventIndex ?? null,
+    workIndices: pass.workIndices,
+    commandIndices: [],
+    colorAttachmentViewHandleIds: [],
+    colorAttachmentResolveViewHandleIds: [],
+    colorAttachmentDepthSlices: [],
+    depthStencilViewHandleId: null,
+  };
+}
+
+/** Attachment views per pass, keyed by pass index; only render passes bind attachments. */
+function passAttachments(
+  index: TapeIndex,
+  events: readonly RhiCallEvent[],
+): Map<number, FramePass> {
+  const byPass = new Map<number, FramePass>();
+  for (const pass of index.passes) {
+    const begin = events[pass.beginEventIndex];
+    byPass.set(
+      pass.passIndex,
+      begin?.kind === 'beginRenderPass' ? renderPassAttachments(pass, begin) : emptyFramePass(pass),
+    );
+  }
+  return byPass;
+}
+
+function frameCommands(
+  index: TapeIndex,
+  events: readonly RhiCallEvent[],
+): { readonly commands: CommandEntry[]; readonly passCommandIndices: number[][] } {
   const passCommandIndices = index.passes.map(() => [] as number[]);
   const commands: CommandEntry[] = [];
   const groupPath: string[] = [];
-  const currentPassByEvent = index.passIndexByEvent;
-  const passAttachmentByIndex = new Map<number, FramePass>();
-
-  for (const pass of index.passes) {
-    passAttachmentByIndex.set(pass.passIndex, {
-      passIndex: pass.passIndex,
-      kind: pass.kind,
-      beginEventIndex: pass.beginEventIndex,
-      endEventIndex: pass.endEventIndex ?? null,
-      workIndices: pass.workIndices,
-      commandIndices: [],
-      colorAttachmentViewHandleIds: [],
-      colorAttachmentResolveViewHandleIds: [],
-      colorAttachmentDepthSlices: [],
-      depthStencilViewHandleId: null,
-    });
-    const begin = events[pass.beginEventIndex];
-    if (begin?.kind === 'beginRenderPass') {
-      const attachment = passAttachmentByIndex.get(pass.passIndex);
-      if (attachment !== undefined) {
-        const color: string[] = [];
-        const resolve: (string | null)[] = [];
-        const slices: (number | null)[] = [];
-        const descriptors = Array.from(begin.desc.colorAttachments);
-        for (const [slot, id] of begin.colorAttachmentViewHandleIds.entries()) {
-          if (typeof id !== 'string') continue;
-          color.push(id);
-          resolve.push(begin.colorAttachmentResolveTargetHandleIds?.[slot] ?? null);
-          const depthSlice = descriptors[slot]?.depthSlice;
-          slices.push(typeof depthSlice === 'number' ? depthSlice : null);
-        }
-        attachment.colorAttachmentViewHandleIds = color;
-        attachment.colorAttachmentResolveViewHandleIds = resolve;
-        attachment.colorAttachmentDepthSlices = slices;
-        attachment.depthStencilViewHandleId = begin.depthStencilViewHandleId ?? null;
-      }
-    }
-  }
-
   for (const [eventIndex, event] of events.entries()) {
-    const passIndex = currentPassByEvent[eventIndex] ?? -1;
+    const passIndex = index.passIndexByEvent[eventIndex] ?? -1;
     const isPush = event.kind === 'pushDebugGroup' || event.kind === 'passPushDebugGroup';
     const isPop = event.kind === 'popDebugGroup' || event.kind === 'passPopDebugGroup';
     const group = isPush ? [...groupPath, event.groupLabel] : [...groupPath];
@@ -352,223 +373,334 @@ export function buildFrameModel(tape: V7Tape): FrameModel {
     if (isPush) groupPath.push(event.groupLabel);
     if (isPop) groupPath.pop();
   }
+  return { commands, passCommandIndices };
+}
 
-  const pipelineEvents = new Map<string, PipelineEvent>();
-  const shaderEvents = new Map<string, ShaderEvent>();
-  const bindGroups = new Map<string, Extract<RhiCallEvent, { kind: 'createBindGroup' }>>();
-  const bindGroupLayouts = new Map<
-    string,
-    Extract<RhiCallEvent, { kind: 'createBindGroupLayout' }>
-  >();
-  const resourceRecords = new Map<string, ResourceEntry>();
-  const workByEvent = new Map<number, number>();
-  for (const work of index.works) workByEvent.set(work.eventIndex, work.workIndex);
+/** Bootstrap creates and in-frame creates feed the same handle indexes. */
+class CreatedHandleIndex {
+  readonly pipelines = new Map<string, PipelineEvent>();
+  readonly shaders = new Map<string, ShaderEvent>();
+  readonly bindGroups = new Map<string, BindGroupEvent>();
+  readonly bindGroupLayouts = new Map<string, BindGroupLayoutEvent>();
 
-  // Bootstrap creates and in-frame creates feed the same handle indexes.
-  const indexCreateEvent = (event: RhiCallEvent): void => {
+  add(event: RhiCallEvent): void {
     if (event.kind === 'createRenderPipeline' || event.kind === 'createComputePipeline')
-      pipelineEvents.set(event.handleId, event);
-    if (event.kind === 'createShaderModule') shaderEvents.set(event.handleId, event);
-    if (event.kind === 'createBindGroup') bindGroups.set(event.handleId, event);
-    if (event.kind === 'createBindGroupLayout') bindGroupLayouts.set(event.handleId, event);
-  };
+      this.pipelines.set(event.handleId, event);
+    if (event.kind === 'createShaderModule') this.shaders.set(event.handleId, event);
+    if (event.kind === 'createBindGroup') this.bindGroups.set(event.handleId, event);
+    if (event.kind === 'createBindGroupLayout') this.bindGroupLayouts.set(event.handleId, event);
+  }
 
-  const tlasStates = new Map<string, WorkAccelerationStructure>();
-  const indexTlasCreate = (event: RhiCallEvent): void => {
-    if (event.kind !== 'createTlas') return;
-    tlasStates.set(
-      event.handleId,
-      tlasState(event.handleId, event.desc.label ?? null, event.build?.instances),
-    );
-  };
+  layoutOf(bindGroup: BindGroupEvent | undefined): BindGroupLayoutEvent | undefined {
+    return bindGroup === undefined
+      ? undefined
+      : this.bindGroupLayouts.get(bindGroup.layoutHandleId);
+  }
+}
 
+/** TLAS build state as of the event cursor; bootstrap creates seed it. */
+class TlasStates {
+  readonly states = new Map<string, WorkAccelerationStructure>();
+
+  apply(event: RhiCallEvent): void {
+    if (event.kind === 'createTlas') {
+      this.states.set(
+        event.handleId,
+        tlasState(event.handleId, event.desc.label ?? null, event.build?.instances),
+      );
+    }
+    if (event.kind === 'buildAccelerationStructures')
+      for (const { tlasHandleId, instances } of event.tlas)
+        this.states.set(
+          tlasHandleId,
+          tlasState(tlasHandleId, this.states.get(tlasHandleId)?.label ?? null, instances),
+        );
+  }
+}
+
+function unavailableResource(
+  resourceId: string,
+  kind: string,
+  origin: ResourceEntry['origin'],
+  createEventIndex: number | null,
+  descriptor: JsonValue,
+): ResourceEntry {
+  return {
+    resourceId,
+    kind,
+    origin,
+    createEventIndex,
+    destroyEventIndex: null,
+    descriptor,
+    consumers: [],
+    lifecycle: { state: 'unavailable', byteEstimate: null },
+  };
+}
+
+function frameResources(
+  tape: V7Tape,
+  handles: CreatedHandleIndex,
+  tlas: TlasStates,
+): Map<string, ResourceEntry> {
+  const resources = new Map<string, ResourceEntry>();
   for (const bootstrap of tape.bootstrap) {
     // Strict v7 decoding validates each bootstrap create record against the same
     // RhiCallEvent union before FrameModel construction.
     const create = bootstrap.create as unknown as RhiCallEvent;
-    indexCreateEvent(create);
-    indexTlasCreate(create);
-    resourceRecords.set(bootstrap.handleId, {
-      resourceId: bootstrap.handleId,
-      kind: bootstrap.kind,
-      origin: 'bootstrap',
-      createEventIndex: null,
-      destroyEventIndex: null,
-      descriptor: jsonValue(bootstrap.create),
-      consumers: [],
-      lifecycle: { state: 'unavailable', byteEstimate: null },
-    });
+    handles.add(create);
+    tlas.apply(create);
+    resources.set(
+      bootstrap.handleId,
+      unavailableResource(
+        bootstrap.handleId,
+        bootstrap.kind,
+        'bootstrap',
+        null,
+        jsonValue(bootstrap.create),
+      ),
+    );
   }
-  for (const [eventIndex, event] of events.entries()) {
-    indexCreateEvent(event);
+  for (const [eventIndex, event] of tape.events.entries()) {
+    handles.add(event);
     const kind = resourceKindForEvent(event.kind);
     if (kind === undefined) continue;
-    for (const handleId of createdHandles(event)) {
-      resourceRecords.set(handleId, {
-        resourceId: handleId,
-        kind,
-        origin: 'frame',
-        createEventIndex: eventIndex,
-        destroyEventIndex: null,
-        descriptor: eventDescriptor(event),
-        consumers: [],
-        lifecycle: { state: 'unavailable', byteEstimate: null },
-      });
-    }
+    for (const handleId of createdHandles(event))
+      resources.set(
+        handleId,
+        unavailableResource(handleId, kind, 'frame', eventIndex, eventDescriptor(event)),
+      );
   }
+  return resources;
+}
 
-  const lifecycle = buildResourceLifecycle(tape);
+function applyResourceLifecycle(
+  resources: Map<string, ResourceEntry>,
+  lifecycle: ResourceLifecycleSummary,
+): void {
   for (const record of lifecycle.resources) {
-    const resource = resourceRecords.get(record.handleId);
+    const resource = resources.get(record.handleId);
     if (resource === undefined) continue;
-    resourceRecords.set(record.handleId, {
+    resources.set(record.handleId, {
       ...resource,
       destroyEventIndex: record.destroyedEventIndex ?? null,
       lifecycle: { state: record.state, byteEstimate: record.byteEstimate },
     });
   }
+}
+
+function appendConsumer(
+  resources: ReadonlyMap<string, ResourceEntry>,
+  resourceId: string,
+  consumer: ResourceConsumer,
+): void {
+  const resource = resources.get(resourceId);
+  if (resource !== undefined) resource.consumers = [...resource.consumers, consumer];
+}
+
+function recordConsumers(
+  resources: ReadonlyMap<string, ResourceEntry>,
+  index: TapeIndex,
+  events: readonly RhiCallEvent[],
+): void {
+  const workByEvent = new Map<number, number>();
+  for (const work of index.works) workByEvent.set(work.eventIndex, work.workIndex);
   for (const [eventIndex, event] of events.entries()) {
     const workIndex = workByEvent.get(eventIndex) ?? null;
     const access = handleAccess(event);
-    for (const resourceId of access.read) {
-      const resource = resourceRecords.get(resourceId);
-      if (resource !== undefined)
-        resource.consumers = [...resource.consumers, { eventIndex, workIndex, access: 'read' }];
-    }
-    for (const resourceId of access.written) {
-      const resource = resourceRecords.get(resourceId);
-      if (resource !== undefined)
-        resource.consumers = [...resource.consumers, { eventIndex, workIndex, access: 'write' }];
-    }
+    for (const resourceId of access.read)
+      appendConsumer(resources, resourceId, { eventIndex, workIndex, access: 'read' });
+    for (const resourceId of access.written)
+      appendConsumer(resources, resourceId, { eventIndex, workIndex, access: 'write' });
   }
+}
 
-  const works: WorkEntry[] = [];
-  const currentPipeline = new Map<string, string>();
-  const currentVertexBuffers = new Map<
-    string,
-    Map<number, { bufferHandleId: string; offset: number; size: number | null }>
-  >();
-  const currentIndexBuffers = new Map<string, WorkEntry['indexBuffer']>();
-  const currentBindGroups = new Map<
-    string,
-    Map<number, { bindGroupId: string; dynamicOffsets: readonly number[] }>
-  >();
-  const workByEventEntry = new Map(index.works.map((work) => [work.eventIndex, work]));
-  for (const [eventIndex, event] of events.entries()) {
-    if (event === undefined) continue;
-    indexTlasCreate(event);
-    if (event.kind === 'buildAccelerationStructures')
-      for (const { tlasHandleId, instances } of event.tlas)
-        tlasStates.set(
-          tlasHandleId,
-          tlasState(tlasHandleId, tlasStates.get(tlasHandleId)?.label ?? null, instances),
-        );
-    const passHandleId = 'passHandleId' in event ? event.passHandleId : '';
+interface BoundBindGroup {
+  readonly bindGroupId: string;
+  readonly dynamicOffsets: readonly number[];
+}
+
+interface BoundVertexBuffer {
+  readonly bufferHandleId: string;
+  readonly offset: number;
+  readonly size: number | null;
+}
+
+/** Pipeline, vertex/index buffers and bind groups currently set on each pass encoder. */
+class PassBindingState {
+  readonly #pipeline = new Map<string, string>();
+  readonly #vertexBuffers = new Map<string, Map<number, BoundVertexBuffer>>();
+  readonly #indexBuffers = new Map<string, WorkEntry['indexBuffer']>();
+  readonly #bindGroups = new Map<string, Map<number, BoundBindGroup>>();
+
+  apply(event: RhiCallEvent, passHandleId: string): void {
     if (event.kind === 'resetRenderState') {
-      currentPipeline.delete(passHandleId);
-      currentVertexBuffers.delete(passHandleId);
-      currentIndexBuffers.delete(passHandleId);
-      currentBindGroups.delete(passHandleId);
+      this.#pipeline.delete(passHandleId);
+      this.#vertexBuffers.delete(passHandleId);
+      this.#indexBuffers.delete(passHandleId);
+      this.#bindGroups.delete(passHandleId);
     }
     if (event.kind === 'setPipeline' || event.kind === 'setComputePipeline')
-      currentPipeline.set(passHandleId, event.pipelineHandleId);
+      this.#pipeline.set(passHandleId, event.pipelineHandleId);
     if (event.kind === 'setVertexBuffer') {
-      const buffers = currentVertexBuffers.get(passHandleId) ?? new Map();
+      const buffers = this.#vertexBuffers.get(passHandleId) ?? new Map();
       buffers.set(event.slot, {
         bufferHandleId: event.bufferHandleId,
         offset: event.offset ?? 0,
         size: event.size ?? null,
       });
-      currentVertexBuffers.set(passHandleId, buffers);
+      this.#vertexBuffers.set(passHandleId, buffers);
     }
     if (event.kind === 'setIndexBuffer')
-      currentIndexBuffers.set(passHandleId, {
+      this.#indexBuffers.set(passHandleId, {
         bufferHandleId: event.bufferHandleId,
         format: event.format,
         offset: event.offset ?? 0,
         size: event.size ?? null,
       });
     if (event.kind === 'setBindGroup') {
-      const groups = currentBindGroups.get(passHandleId) ?? new Map();
+      const groups = this.#bindGroups.get(passHandleId) ?? new Map();
       groups.set(event.index, {
         bindGroupId: event.bindGroupHandleId,
         dynamicOffsets: event.dynamicOffsets ?? [],
       });
-      currentBindGroups.set(passHandleId, groups);
+      this.#bindGroups.set(passHandleId, groups);
     }
+  }
+
+  pipeline(passHandleId: string): string | undefined {
+    return this.#pipeline.get(passHandleId);
+  }
+
+  bindGroups(passHandleId: string): ReadonlyMap<number, BoundBindGroup> {
+    return this.#bindGroups.get(passHandleId) ?? new Map();
+  }
+
+  vertexBuffers(passHandleId: string): WorkEntry['vertexBuffers'] {
+    return [...(this.#vertexBuffers.get(passHandleId)?.entries() ?? [])].map(([slot, buffer]) => ({
+      slot,
+      ...buffer,
+    }));
+  }
+
+  indexBuffer(passHandleId: string): WorkEntry['indexBuffer'] {
+    return this.#indexBuffers.get(passHandleId) ?? null;
+  }
+}
+
+function workBindings(
+  groups: ReadonlyMap<number, BoundBindGroup>,
+  pipeline: WorkPipeline,
+  handles: CreatedHandleIndex,
+  tlasStates: ReadonlyMap<string, WorkAccelerationStructure>,
+): WorkBinding[] {
+  const bindings: WorkBinding[] = [];
+  let declared: ReadonlyMap<string, BindingAccess> | undefined;
+  for (const [groupIndex, { bindGroupId, dynamicOffsets }] of groups) {
+    const bindGroup = handles.bindGroups.get(bindGroupId);
+    const layout = handles.layoutOf(bindGroup);
+    const dynamicOffsetByBinding = dynamicOffsetsByBinding(layout, dynamicOffsets);
+    for (const [entryIndex, resourceId] of bindGroup?.resourceHandleIds.entries() ?? []) {
+      const entry = bindGroup?.entries[entryIndex];
+      bindings.push({
+        groupIndex,
+        binding: entry?.binding ?? entryIndex,
+        bindGroupId,
+        resourceId: resourceId ?? null,
+        resourceKind: entry?.resourceKind ?? null,
+        bufferOffset: entry?.bufferOffset ?? null,
+        bufferSize: entry?.bufferSize ?? null,
+        dynamicOffset: dynamicOffsetByBinding.get(entry?.binding ?? entryIndex) ?? null,
+        access: bindingAccess(layout, entry?.binding ?? entryIndex, () => {
+          declared ??= wgslBindingAccess(pipeline.shaders.map((shader) => shader.source));
+          return declared.get(`${groupIndex}:${entry?.binding ?? entryIndex}`);
+        }),
+        ...accelerationStructureBinding(entry?.resourceKind, resourceId, tlasStates),
+      });
+    }
+  }
+  return bindings;
+}
+
+function workAttachments(attachment: FramePass | undefined): WorkEntry['attachments'] {
+  if (attachment === undefined) return null;
+  return {
+    colorViewHandleIds: attachment.colorAttachmentViewHandleIds,
+    colorResolveViewHandleIds: attachment.colorAttachmentResolveViewHandleIds,
+    colorDepthSlices: attachment.colorAttachmentDepthSlices,
+    depthStencilViewHandleId: attachment.depthStencilViewHandleId,
+  };
+}
+
+function frameWorks(
+  index: TapeIndex,
+  events: readonly RhiCallEvent[],
+  commands: readonly CommandEntry[],
+  handles: CreatedHandleIndex,
+  tlas: TlasStates,
+  attachments: ReadonlyMap<number, FramePass>,
+): WorkEntry[] {
+  const works: WorkEntry[] = [];
+  const state = new PassBindingState();
+  const workByEventEntry = new Map(index.works.map((work) => [work.eventIndex, work]));
+  for (const [eventIndex, event] of events.entries()) {
+    if (event === undefined) continue;
+    tlas.apply(event);
+    const passHandleId = 'passHandleId' in event ? event.passHandleId : '';
+    state.apply(event, passHandleId);
     if (!isWorkEvent(event.kind)) continue;
     const work = workByEventEntry.get(eventIndex);
     if (work === undefined) continue;
-    const pipelineId = currentPipeline.get(passHandleId);
-    const groups = currentBindGroups.get(passHandleId) ?? new Map();
-    const bindings: WorkBinding[] = [];
-    const pipeline = workPipeline(pipelineId, pipelineEvents, shaderEvents);
-    let declared: ReadonlyMap<string, BindingAccess> | undefined;
-    for (const [groupIndex, { bindGroupId, dynamicOffsets }] of groups) {
-      const bindGroup = bindGroups.get(bindGroupId);
-      const layout =
-        bindGroup === undefined ? undefined : bindGroupLayouts.get(bindGroup.layoutHandleId);
-      const dynamicOffsetByBinding = dynamicOffsetsByBinding(layout, dynamicOffsets);
-      for (const [entryIndex, resourceId] of bindGroup?.resourceHandleIds.entries() ?? []) {
-        const entry = bindGroup?.entries[entryIndex];
-        bindings.push({
-          groupIndex,
-          binding: entry?.binding ?? entryIndex,
-          bindGroupId,
-          resourceId: resourceId ?? null,
-          resourceKind: entry?.resourceKind ?? null,
-          bufferOffset: entry?.bufferOffset ?? null,
-          bufferSize: entry?.bufferSize ?? null,
-          dynamicOffset: dynamicOffsetByBinding.get(entry?.binding ?? entryIndex) ?? null,
-          access: bindingAccess(layout, entry?.binding ?? entryIndex, () => {
-            declared ??= wgslBindingAccess(pipeline.shaders.map((shader) => shader.source));
-            return declared.get(`${groupIndex}:${entry?.binding ?? entryIndex}`);
-          }),
-          ...accelerationStructureBinding(entry?.resourceKind, resourceId, tlasStates),
-        });
-      }
-    }
-    const attachment = passAttachmentByIndex.get(work.passIndex);
+    const pipeline = workPipeline(state.pipeline(passHandleId), handles.pipelines, handles.shaders);
     works.push({
       ...work,
       commandIndex: commands.findIndex((command) => command.eventIndex === work.eventIndex),
       drawCall: eventDescriptor(event),
       pipeline,
-      bindings,
-      vertexBuffers: [...(currentVertexBuffers.get(passHandleId)?.entries() ?? [])].map(
-        ([slot, buffer]) => ({ slot, ...buffer }),
-      ),
-      indexBuffer: currentIndexBuffers.get(passHandleId) ?? null,
-      attachments:
-        attachment === undefined
-          ? null
-          : {
-              colorViewHandleIds: attachment.colorAttachmentViewHandleIds,
-              colorResolveViewHandleIds: attachment.colorAttachmentResolveViewHandleIds,
-              colorDepthSlices: attachment.colorAttachmentDepthSlices,
-              depthStencilViewHandleId: attachment.depthStencilViewHandleId,
-            },
+      bindings: workBindings(state.bindGroups(passHandleId), pipeline, handles, tlas.states),
+      vertexBuffers: state.vertexBuffers(passHandleId),
+      indexBuffer: state.indexBuffer(passHandleId),
+      attachments: workAttachments(attachments.get(work.passIndex)),
     });
   }
+  return works;
+}
 
-  const passes = index.passes.map((pass) => ({
+function framePass(
+  pass: TapePassEntry,
+  attachment: FramePass | undefined,
+  commandIndices: readonly number[] | undefined,
+): FramePass {
+  return {
     ...pass,
     endEventIndex: pass.endEventIndex ?? null,
-    commandIndices: passCommandIndices[pass.passIndex] ?? [],
-    colorAttachmentViewHandleIds:
-      passAttachmentByIndex.get(pass.passIndex)?.colorAttachmentViewHandleIds ?? [],
-    colorAttachmentResolveViewHandleIds:
-      passAttachmentByIndex.get(pass.passIndex)?.colorAttachmentResolveViewHandleIds ?? [],
-    colorAttachmentDepthSlices:
-      passAttachmentByIndex.get(pass.passIndex)?.colorAttachmentDepthSlices ?? [],
-    depthStencilViewHandleId:
-      passAttachmentByIndex.get(pass.passIndex)?.depthStencilViewHandleId ?? null,
-  }));
+    commandIndices: commandIndices ?? [],
+    colorAttachmentViewHandleIds: attachment?.colorAttachmentViewHandleIds ?? [],
+    colorAttachmentResolveViewHandleIds: attachment?.colorAttachmentResolveViewHandleIds ?? [],
+    colorAttachmentDepthSlices: attachment?.colorAttachmentDepthSlices ?? [],
+    depthStencilViewHandleId: attachment?.depthStencilViewHandleId ?? null,
+  };
+}
+
+export function buildFrameModel(tape: V7Tape): FrameModel {
+  const index = buildTapeIndex(tape);
+  const events = tape.events;
+  const attachments = passAttachments(index, events);
+  const { commands, passCommandIndices } = frameCommands(index, events);
+  const handles = new CreatedHandleIndex();
+  const tlas = new TlasStates();
+  const resources = frameResources(tape, handles, tlas);
+  const lifecycle = buildResourceLifecycle(tape);
+  applyResourceLifecycle(resources, lifecycle);
+  recordConsumers(resources, index, events);
+  const works = frameWorks(index, events, commands, handles, tlas, attachments);
+  const passes = index.passes.map((pass) =>
+    framePass(pass, attachments.get(pass.passIndex), passCommandIndices[pass.passIndex]),
+  );
   return {
     unseededResources: unseededResources(tape),
     commands,
     passes,
-    resources: [...resourceRecords.values()],
+    resources: [...resources.values()],
     resourceLifecycle: lifecycle,
     works,
   };

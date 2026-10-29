@@ -13,6 +13,7 @@ const posed = (scene: ReturnType<typeof skinScene>) =>
     scene.entity,
     scene.mesh,
     scene.mesh.attributes.position as Float32Array,
+    new Float32Array((scene.mesh.attributes.position as Float32Array).length),
   );
 
 describe('posed skin geometry', () => {

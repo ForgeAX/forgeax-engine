@@ -25,6 +25,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { type SaveEvidence, unwrap } from './specular-aa.fixture';
 
@@ -222,13 +223,23 @@ async function drawUntilIblActive(
   for (let attempt = 0; attempt < 300; attempt++) {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const active = renderer.inspect().iblBinding?.active === 'active';
-    if (active && observeHdr) unwrap(renderer.requestObservation?.(['linear-hdr']));
+    if (observeHdr) unwrap(renderer.requestObservation?.(['linear-hdr']));
     const receipt = unwrap(
       renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
     );
     unwrap(await receipt.completed);
-    if (active) return receipt;
+    const binding = renderer.inspect().iblBinding;
+    const active =
+      binding?.active === 'active' && binding.deviceGeneration === receipt.deviceGeneration;
+    const domains = receipt.observationDomains;
+    if (
+      active &&
+      receipt.presentation === 'ready' &&
+      (!observeHdr || domains?.includes('linear-hdr') === true)
+    )
+      return receipt;
+    if (observeHdr && domains !== undefined && domains.length > 0)
+      unwrap(await renderer.observe(receipt, { include: domains }));
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error('IBL publication did not become active within 300 frames');
@@ -292,7 +303,7 @@ export async function replayFurnace(
     await drawUntilIblActive(renderer, world, lease, false);
     (await recorder.frameBoundary()).unwrap();
     const encoded = (await capture).unwrap();
-    save('forward.rhitape', encoded.bytes);
+    save('forward.rhitape', compactTape(encoded).bytes);
     const tape = decodeTape(encoded.bytes).unwrap();
     const model = buildFrameModel(tape);
     const fragment = (work: WorkEntry) =>
@@ -325,7 +336,10 @@ export async function replayFurnace(
     };
     const compensated = await read(tape);
     const falsifier = withSingleScatter(tape, fragment(target)?.moduleHandleId);
-    save('single-scatter.falsifier.rhitape', encodeTape(falsifier).unwrap());
+    save(
+      'single-scatter.falsifier.rhitape',
+      encodeTape(falsifier, { compression: 'gzip' }).unwrap(),
+    );
     const single = await read(falsifier);
     return {
       digest: encoded.digest,

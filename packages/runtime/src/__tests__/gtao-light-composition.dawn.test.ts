@@ -22,11 +22,45 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { RESPONSE_SIZE, renderWorldResponse } from './skylight-response.fixture';
 import { unwrap } from './specular-aa.fixture';
 
-function contactWorld(environment: boolean, direct: boolean, directLightingStrength?: number) {
+const STRAIGHT_ALPHA_BLEND = {
+  color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+} as const;
+
+function contactWorld(
+  environment: boolean,
+  direct: boolean,
+  directLightingStrength?: number,
+  forwardOverlay = false,
+) {
   const world = new World();
   const material = testAssets(world)
     .create(Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], metallic: 0, roughness: 1 }))
     .unwrap();
+  // A blended film just above the floor is shaded by the Forward pass and
+  // samples the floor's screen AO; it must receive the same single exponent.
+  if (forwardOverlay) {
+    const film = testAssets(world)
+      .create(
+        Materials.standard({
+          baseColor: [0.5, 0.5, 0.5, 0.9],
+          metallic: 0,
+          roughness: 1,
+          renderState: { blend: STRAIGHT_ALPHA_BLEND, depthWriteEnabled: false },
+        }),
+      )
+      .unwrap();
+    const mesh = testAssets(world)
+      .create(createBoxGeometry(20, 20, 0.001).unwrap())
+      .unwrap();
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, -3.995] } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [film] } },
+      )
+      .unwrap();
+  }
   for (const [width, height, depth, z] of [
     [20, 20, 0.01, -4.005],
     [1.4, 1.4, 0.2, -3.9],
@@ -74,7 +108,51 @@ function contactWorld(environment: boolean, direct: boolean, directLightingStren
   return world;
 }
 
-it('GTAO weights environment once and leaves direct lighting unchanged by default', async () => {
+/** Median effective exponent of intensity 3 relative to intensity 1 over occluded pixels. */
+async function expectSingleIntensityExponent(
+  renderer: Parameters<typeof renderWorldResponse>[0],
+  directory: string,
+  lane: 'deferred' | 'forward-overlay',
+) {
+  const forwardOverlay = lane === 'forward-overlay';
+  const response = async (ssao: false | { readonly intensity: number }) => {
+    unwrap(
+      renderer.setProfile({
+        ...renderer.inspect().profile,
+        ssao: ssao === false ? false : { algorithm: 'gtao', quality: 'high', ...ssao },
+      }),
+    );
+    return renderWorldResponse(
+      renderer,
+      contactWorld(true, false, undefined, forwardOverlay),
+      'deferred',
+    );
+  };
+  const open = await response(false);
+  const once = await response({ intensity: 1 });
+  const cubed = await response({ intensity: 3 });
+  const exponents: number[] = [];
+  for (let i = 0; i < open.length; i += 3) {
+    const pixel = i / 3;
+    const x = pixel % RESPONSE_SIZE;
+    const y = Math.floor(pixel / RESPONSE_SIZE);
+    if (x < 16 || y < 16 || x >= RESPONSE_SIZE - 16 || y >= RESPONSE_SIZE - 16) continue;
+    const visibility = (once[i] ?? NaN) / (open[i] ?? NaN);
+    if (visibility < 0.9 && visibility > 0.05)
+      exponents.push(Math.log((cubed[i] ?? NaN) / (open[i] ?? NaN)) / Math.log(visibility));
+  }
+  exponents.sort((a, b) => a - b);
+  const medianExponent = exponents[exponents.length >> 1] ?? NaN;
+  writeFileSync(
+    `${directory}/intensity-${lane}.json`,
+    JSON.stringify({ medianExponent, samples: exponents.length }),
+  );
+  expect(exponents.length, lane).toBeGreaterThan(50);
+  expect(medianExponent, lane).toBeGreaterThan(2.5);
+  expect(medianExponent, lane).toBeLessThan(3.5);
+}
+
+it('GTAO weights environment once with one intensity exponent and leaves direct lighting unchanged by default', async () => {
   const path = 'deferred';
   const surface = offscreenCanvas(RESPONSE_SIZE);
   const renderer = unwrap(
@@ -148,6 +226,11 @@ it('GTAO weights environment once and leaves direct lighting unchanged by defaul
       );
     }
     expect(optedInError).toBeLessThan(0.003);
+    // Intensity is one exponent on raw visibility, applied by the AO producer
+    // (Three r184 GTAONode). Deferred lighting and Forward-shaded surfaces in
+    // the same frame must not raise it again: intensity 3 is visibility^3.
+    await expectSingleIntensityExponent(renderer, directory, 'deferred');
+    await expectSingleIntensityExponent(renderer, directory, 'forward-overlay');
   } finally {
     unwrap(await renderer.dispose());
     surface.destroy();

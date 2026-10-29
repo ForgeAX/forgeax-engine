@@ -64,8 +64,8 @@ function snapshot(overrides: Partial<CameraSnapshot> = {}): CameraSnapshot {
 function projectNdcX(camera: CameraSnapshot, point: readonly [number, number, number]): number {
   const clip = mat4.multiply(
     mat4.create(),
-    cameraLensProjection(camera),
-    computeViewMatrix(camera),
+    cameraLensProjection(camera, mat4.create()),
+    computeViewMatrix(camera, mat4.create()),
   );
   const [x, y, z] = point;
   const cx = (clip[0] ?? 0) * x + (clip[4] ?? 0) * y + (clip[8] ?? 0) * z + (clip[12] ?? 0);
@@ -99,7 +99,7 @@ describe('StereoCamera projection', () => {
         }),
         eye,
       );
-      const projection = cameraLensProjection(camera);
+      const projection = cameraLensProjection(camera, mat4.create());
       const mono = mat4.perspectiveReverseZ(
         mat4.create(),
         input.fov,
@@ -139,9 +139,10 @@ describe('StereoCamera projection', () => {
     const base = snapshot();
     const offset = [0.3, -0.2] as const;
     for (const side of ['left', 'right'] as const) {
-      const centered = cameraLensProjection(stereoEyeCamera(base, side));
+      const centered = cameraLensProjection(stereoEyeCamera(base, side), mat4.create());
       const shifted = cameraLensProjection(
         stereoEyeCamera({ ...base, projectionOffset: offset }, side),
+        mat4.create(),
       );
       expect((shifted[8] ?? 0) - (centered[8] ?? 0)).toBeCloseTo(-offset[0]);
       expect((shifted[9] ?? 0) - (centered[9] ?? 0)).toBeCloseTo(-offset[1]);
@@ -174,7 +175,10 @@ describe('StereoCamera projection', () => {
     );
     // +0 and -0 shifts are the same GPU value.
     const matrix = (camera: CameraSnapshot | undefined) =>
-      Array.from(cameraLensProjection(camera as CameraSnapshot), (value) => value + 0);
+      Array.from(
+        cameraLensProjection(camera as CameraSnapshot, mat4.create()),
+        (value) => value + 0,
+      );
     expect(matrix(left)).toEqual(matrix(right));
     expect(Array.from(left?.world ?? [])).toEqual(Array.from(right?.world ?? []));
   });
@@ -190,24 +194,24 @@ describe('StereoCamera layout', () => {
   it('splits the outer CameraView rectangle', () => {
     const outer = [0.2, 0.1, 0.6, 0.8];
     const round = (v: Float32Array) => Array.from(v, (x) => Math.round(x * 1e6) / 1e6);
-    expect(round(stereoEyeViewport(outer, stereo('side-by-side'), 'left'))).toEqual([
-      0.2, 0.1, 0.3, 0.8,
-    ]);
-    expect(round(stereoEyeViewport(outer, stereo('side-by-side'), 'right'))).toEqual([
-      0.5, 0.1, 0.3, 0.8,
-    ]);
-    expect(round(stereoEyeViewport(outer, stereo('top-bottom'), 'left'))).toEqual([
-      0.2, 0.1, 0.6, 0.4,
-    ]);
-    expect(round(stereoEyeViewport(outer, stereo('top-bottom'), 'right'))).toEqual([
-      0.2, 0.5, 0.6, 0.4,
-    ]);
-    expect(round(stereoEyeViewport(outer, stereo('side-by-side', true), 'left'))).toEqual([
-      0.5, 0.1, 0.3, 0.8,
-    ]);
-    expect(round(stereoEyeViewport(outer, stereo('anaglyph'), 'right'))).toEqual(
-      round(new Float32Array(outer)),
-    );
+    expect(
+      round(stereoEyeViewport(outer, stereo('side-by-side'), 'left', new Float32Array(4))),
+    ).toEqual([0.2, 0.1, 0.3, 0.8]);
+    expect(
+      round(stereoEyeViewport(outer, stereo('side-by-side'), 'right', new Float32Array(4))),
+    ).toEqual([0.5, 0.1, 0.3, 0.8]);
+    expect(
+      round(stereoEyeViewport(outer, stereo('top-bottom'), 'left', new Float32Array(4))),
+    ).toEqual([0.2, 0.1, 0.6, 0.4]);
+    expect(
+      round(stereoEyeViewport(outer, stereo('top-bottom'), 'right', new Float32Array(4))),
+    ).toEqual([0.2, 0.5, 0.6, 0.4]);
+    expect(
+      round(stereoEyeViewport(outer, stereo('side-by-side', true), 'left', new Float32Array(4))),
+    ).toEqual([0.5, 0.1, 0.3, 0.8]);
+    expect(
+      round(stereoEyeViewport(outer, stereo('anaglyph'), 'right', new Float32Array(4))),
+    ).toEqual(round(new Float32Array(outer)));
   });
 
   it('derives the eye physical aspect before the off-axis term', () => {

@@ -20,6 +20,16 @@ const project = defineProject({
   root: rootDir,
   cacheDir: resolve(browserProcessCacheDir(rootDir, process.pid), 'host'),
   plugins: [pcmRangeFixture()],
+  // The audio spatial Worker discovers these pnpm-nested dependencies only
+  // after its test starts unless the Browser optimizer preloads their owners.
+  optimizeDeps: {
+    include: [
+      '@forgeax/engine-pack > acorn',
+      '@forgeax/engine-geometry > earcut',
+      '@forgeax/engine-assets-runtime > @forgeax/engine-codec > fzstd',
+      '@forgeax/engine-assets-runtime > @forgeax/engine-codec > @hpcc-js/wasm-zstd',
+    ],
+  },
   server: {
     watch: { ignored: ['**/.forgeax-harness/**'] },
     fs: { allow: [rootDir] },
@@ -30,7 +40,7 @@ const project = defineProject({
     passWithNoTests: false,
     teardownTimeout: 500,
     include,
-    setupFiles: ['config/browser-host-guard.mjs'],
+    setupFiles: ['config/browser-host-guard.mjs', 'config/browser-work-guard.mjs'],
     fileParallelism: false,
     maxWorkers: 1,
     deps: { optimizer: { client: { enabled: false } } },

@@ -13,13 +13,13 @@ const lifecycleFrames = 60;
 describe.skipIf(!browserReady)('GPU-driven View Browser WebGPU', () => {
   it('culls edited geometry and displacement through fixed shared descriptors', async () => {
     const evidence = await runSharedGeometryCullEvidence();
-    expect(evidence.geometryUpload).toBe(4 * 1024 + 28);
+    expect(evidence.geometryUpload).toBe(4 * 1024 + 32);
     expect(evidence.frames.map((frame) => frame.visible)).toEqual([0, 1024, 0, 1024, 0]);
     expect(evidence.frames[0]?.sharedInputUploadBytes).toBeGreaterThan(0);
     expect(evidence.frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([
-      4 * 1024 + 28,
+      4 * 1024 + 32,
       0,
-      4 * 1024 + 8,
+      4 * 1024 + 12,
       0,
     ]);
   });

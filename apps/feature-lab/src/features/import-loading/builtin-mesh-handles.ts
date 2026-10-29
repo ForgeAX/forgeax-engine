@@ -16,7 +16,7 @@ const COLORS = [
 
 export default defineFeature({
   title: 'Code-created primitive assets',
-  catalog: 'Builtin mesh handles',
+  catalog: 'Primitive mesh factories',
   kind: 'visual',
   summary:
     'Six geometry factories create ordinary runtime mesh assets; the host owns their identity, contents and lifetime.',

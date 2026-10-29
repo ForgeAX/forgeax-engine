@@ -139,9 +139,9 @@ instance creation. Commented WGSL declarations and imports are excluded from
 layout and Data Interface discovery. When Custom is present, both hooks receive a pointer to that
 record; the managed shell writes it on spawn and persists it across update
 ticks. Renderer semantics are explicit source-to-Core/Custom mappings rather
-than field-name guesses. Material WGSL may declare particle inputs with a
-comment such as `// forgeax-vfx-particle-input heat: f32 fragment lane=0`;
-the cooked material reflection and VFX compiler perform the name/type/lane
+than field-name guesses. A material declares particle inputs in
+`MaterialAsset.particleInputs` (name, type, visibility, lane); the cooked
+material artifact carries them and the VFX compiler performs the name/type/lane
 match.
 
 Within one cook, identical complete shader source and imports share one validated
@@ -164,6 +164,7 @@ source rather than emitter ID, and distinct source is compiled independently.
 | MIME | `application/vnd.forgeax.vfx-program+json` |
 | Fingerprint | SHA-256 of canonical program bytes |
 | Reflection | hooks, composed imports, resources, entry points, bind-group layouts |
+| Ownership | the only published program copy; Pack projection drops `payload.program`, and the loader validates `programFingerprint` against these bytes |
 
 `reflectVfxRendererV3` returns topology, capacity, semantic mappings, material
 inputs, Standard Mesh lighting/shadow intent, and resource identity that the

@@ -38,3 +38,26 @@ it('preserves all static canonical attributes through import and export', () => 
     1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1,
   ]);
 });
+
+it('exports only the attributes the source mesh authored', () => {
+  const mesh = {
+    kind: 'mesh' as const,
+    vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    indices: Uint16Array.of(0, 1, 2),
+    attributes: { position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) },
+    aabb: Float32Array.of(0, 0, 0, 1, 1, 0),
+    submeshes: [
+      {
+        indexOffset: 0,
+        indexCount: 3,
+        vertexCount: 3,
+        topology: 'triangle-list' as const,
+        materialSlot: 0,
+      },
+    ],
+    materialSlots: [{ slotName: 'Default' }],
+  };
+  const output = exportObject([{ name: 'positions only', mesh }], false).unwrap().children[0];
+  if (!(output instanceof Mesh)) throw new Error('missing output mesh');
+  expect(Object.keys(output.geometry.attributes)).toEqual(['position']);
+});

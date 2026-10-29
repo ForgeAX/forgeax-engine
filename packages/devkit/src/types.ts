@@ -21,6 +21,12 @@ export type CommandResult<T> =
       readonly artifacts?: readonly ArtifactRef[];
     };
 
+/** One forge.json `assetLibraries` entry and the read-only asset directory it mounts. */
+export interface ProjectAssetLibrary {
+  readonly specifier: string;
+  readonly root: string;
+}
+
 export interface ProjectFacts {
   readonly root: string;
   readonly id: string;
@@ -28,7 +34,10 @@ export interface ProjectFacts {
   readonly roots: GameProjectRoots;
   readonly startupTimeoutMs?: number | null;
   readonly frameTimeoutMs?: number | null;
+  /** `package.json#forgeax.pointShadows`: build Standard shaders with the point-shadow lane. */
+  readonly pointShadows?: true;
   readonly assetRoots: readonly string[];
+  readonly assetLibraries: readonly ProjectAssetLibrary[];
   readonly packageJson: Readonly<Record<string, unknown>>;
 }
 
@@ -36,6 +45,11 @@ export interface ProjectCommandOptions {
   readonly root?: string;
   readonly json?: boolean;
   readonly port?: number;
+}
+
+export interface PreviewOptions extends ProjectCommandOptions {
+  /** Verify and serve this exact distribution instead of the diagnostic dist. */
+  readonly dist?: string;
 }
 
 export interface ProjectPortOptions {
@@ -64,6 +78,8 @@ export interface NewOptions extends ProjectCommandOptions {
 }
 
 export interface BuildOptions extends ProjectCommandOptions {
+  /** Project-relative HTML head fragment included before distribution sealing. */
+  readonly htmlHead?: string;
   /** Validation-only storage-capable WebGPU raster programs; omitted publishes portable variants. */
   readonly materialProfile?: 'webgpu-storage';
   readonly target?: 'browser' | 'wechat' | 'tauri';
@@ -80,6 +96,8 @@ export interface BuildOptions extends ProjectCommandOptions {
 export interface PackageOptions extends ProjectCommandOptions {
   readonly output?: string;
   readonly format?: PackageFormat;
+  /** Store large Web ZIP JSON documents zstd-compressed; `false` keeps plain JSON. Defaults to true. */
+  readonly compress?: boolean;
 }
 
 export type PackageFormat = 'web-zip' | 'single-html';

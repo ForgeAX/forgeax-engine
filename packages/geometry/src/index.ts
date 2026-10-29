@@ -17,7 +17,6 @@ export { decodeMeshBinary, normalizeMeshPayload } from './assets/mesh-binary';
 export { meshAssetContribution, meshAssetDecoder, meshAssetKind } from './assets/mesh-decoder';
 export {
   createPrimitiveMesh,
-  createProceduralMesh,
   type PrimitiveMeshKind,
 } from './assets/primitive-mesh';
 export { type UnpackedMeshBin, unpackMeshBin } from './assets/unpack-mesh-bin';
@@ -97,6 +96,13 @@ export {
 } from './mesh-material-slots';
 export { createPlaneGeometry } from './plane';
 export {
+  createDodecahedronGeometry,
+  createIcosahedronGeometry,
+  createOctahedronGeometry,
+  createTetrahedronGeometry,
+  type PolyhedronOptions,
+} from './polyhedron';
+export {
   createRevolutionGeometry,
   createSweepGeometry,
   type Vec2Point,
@@ -130,6 +136,7 @@ export {
   type VertexLayoutProjectionAttribute,
   type VertexLayoutProjectionMaskError,
 } from './vertex-attribute-layout';
+export { type WithVertexColorsOptions, withVertexColor, withVertexColors } from './vertex-color';
 export {
   buildVisibilityDistanceField,
   visibilityDistanceFieldSourceDigest,

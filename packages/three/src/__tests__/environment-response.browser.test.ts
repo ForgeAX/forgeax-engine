@@ -1,5 +1,6 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect, it } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
 import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
@@ -17,7 +18,14 @@ it('matches dielectric and metallic environment response across the full metalne
   environment.needsUpdate = true;
   scene.environment = scene.background = environment;
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1.3, 48, 24), material);
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(
+      1.3,
+      testQuality.geometry.sphereWidth,
+      testQuality.geometry.sphereHeight,
+    ),
+    material,
+  );
   scene.add(mesh);
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = SIZE;

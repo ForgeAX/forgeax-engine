@@ -139,7 +139,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     configureRuntimeAssetCatalog(assets, runtimeBinding);
 
     const unlitMatGuid = AssetGuid.parse('008e4f75-e7a3-4715-b05b-b93a9ec12074');
-    const cubeGuid = AssetGuid.parse('cbe42beb-8975-5096-b3a1-3dda4cb4c077');
+    const cubeGuid = AssetGuid.parse('ea110435-6e3a-5c6a-8475-bec8573c0640');
     const innerCubeGuid = AssetGuid.parse('f47ac10b-58cc-4372-a567-0e02b2c3d479');
     const outerSceneGuid = AssetGuid.parse('d07a7b8e-9c12-4f6b-a8e1-3d4f5a6b7c8d');
     if (!unlitMatGuid.ok || !cubeGuid.ok || !innerCubeGuid.ok || !outerSceneGuid.ok) {
@@ -192,7 +192,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     const baselinePair = makePair(innerSource, outerSource);
     const camera = world.spawn(
       { component: Transform, data: { pos: [0, 1.5, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-      { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
+      { component: Camera, data: { fov: Math.PI / 3, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
     );
     if (!camera.ok) throw camera.error;
 

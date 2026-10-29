@@ -4,6 +4,7 @@ import {
 } from '@forgeax/engine-geometry';
 import { err, ok } from '@forgeax/engine-rhi';
 import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import { PointShapeValue, PointSizeUnitsValue } from '../components/points';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import { PointsLinesMaterialUnsupportedError } from '../errors/render';
 import {
@@ -18,9 +19,8 @@ import type {
   PointsLinesRecordSubmission,
   RenderSystemInternals,
 } from '../record/render-context';
-import type { RecoveryPointsLinesCandidate } from '../recovery/types';
 import { admitPointsLines } from './admission';
-import { PointsLinesExpansionCache } from './expansion-cache';
+import { PointsLinesExpansionCache, pointsLinesSourceSlot } from './expansion-cache';
 import type { PointsLinesInspection, PointsLinesSourceError } from './inspection';
 import { inspectPointsLines } from './inspection';
 import {
@@ -65,74 +65,6 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
 
   prepare(entry: ValidatedRenderable, clustered: boolean): PointsLinesRecordSubmission | undefined {
     return this.prepareWithMaps(entry, clustered, this.internals, this.preparations, this.active);
-  }
-
-  prepareRecoveryCandidate(
-    entries: readonly ValidatedRenderable[],
-    clustered: boolean,
-    runtime: RenderSystemInternals,
-  ): RecoveryPointsLinesCandidate | undefined {
-    const stagedPreparations = new Map<string, PointsLinesPreparationAdapter>();
-    const stagedInspections = new Map<string, PointsLinesInspection>();
-    let pointEntryCount = 0;
-    try {
-      for (const entry of entries) {
-        const snapshot = entry.source.pointsLines;
-        if (snapshot?.component === undefined) continue;
-        pointEntryCount += 1;
-        const prepared = this.prepareWithMaps(
-          entry,
-          clustered,
-          runtime,
-          stagedPreparations,
-          stagedInspections,
-        );
-        if (prepared === undefined) {
-          throw new Error(
-            `recovery Points/Lines preparation failed for ${snapshot.worldId}:${snapshot.entityKey}`,
-          );
-        }
-      }
-    } catch (cause) {
-      for (const preparation of stagedPreparations.values()) {
-        preparation.resetForDeviceLoss();
-      }
-      throw cause;
-    }
-    if (pointEntryCount === 0) return undefined;
-
-    let released = false;
-    let published = false;
-    const candidate: RecoveryPointsLinesCandidate = {
-      createRecoveryRoot: (scope) => ({
-        kind: 'buffer',
-        create: () => {
-          if (!scope.isAlive() || released) {
-            throw new Error('Points/Lines recovery candidate scope is not active.');
-          }
-          return candidate;
-        },
-        cleanup: () => candidate.release(),
-      }),
-      publish: () => {
-        if (released || published) return;
-        this.preparations.clear();
-        for (const [key, preparation] of stagedPreparations) {
-          this.preparations.set(key, preparation);
-        }
-        published = true;
-      },
-      release: () => {
-        if (released || published) return;
-        released = true;
-        for (const preparation of stagedPreparations.values()) {
-          preparation.resetForDeviceLoss();
-        }
-        stagedPreparations.clear();
-        stagedInspections.clear();
-      },
-    };
-    return candidate;
   }
 
   private prepareWithMaps(
@@ -181,8 +113,9 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
       ...(snapshot.style?.kind === 'points'
         ? {
             points: {
-              sizePx: snapshot.style.sizePx,
-              shape: snapshot.style.shape === 'circle' ? 1 : 0,
+              size: snapshot.style.size,
+              sizeUnits: PointSizeUnitsValue[snapshot.style.sizeUnits],
+              shape: PointShapeValue[snapshot.style.shape],
             },
           }
         : { lines: snapshot.style ?? {} }),
@@ -198,7 +131,8 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
           ? 'point-list'
           : 'line-list';
     const geometryKey = this.cache.getOrCreate(snapshot, meshResult.value).key;
-    const prepKey = `${geometryKey}:${lane}:${backend}`;
+    // One preparation per source slot: a newer generation rewrites its buffers.
+    const prepKey = `${pointsLinesSourceSlot(snapshot)}:${lane}:${backend}`;
     let preparation = preparations.get(prepKey);
     if (preparation === undefined) {
       preparation = this.createPreparation(runtime, geometryKey, lane, backend);

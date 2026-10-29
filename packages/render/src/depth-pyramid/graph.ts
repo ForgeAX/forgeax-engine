@@ -1,19 +1,23 @@
 import type {
   GraphBuffer,
+  GraphResourceResolver,
   GraphTexture,
   GraphTextureView,
   RenderGraphBuilder,
   RenderGraphError,
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
+import type { BindGroup } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import {
-  computeBindGroup,
+  type ComputeState,
   computePipelineError,
   resolvedGraphBuffer,
   resolvedGraphView,
 } from '../compute-graph-state';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
+import { bindGroupChainLeaf2, bindGroupChainLeaf3, rememberBindGroup } from '../record/mesh-ssbo';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import {
@@ -38,6 +42,73 @@ const REDUCTION_NAMES: Readonly<
   closest: { graph: 'depth-pyramid', entry: '' },
   furthest: { graph: 'occlusion-depth-pyramid', entry: '_furthest' },
 };
+
+/** Each reduction consumes exactly two views; assemble descriptors only on a miss. */
+function reductionBindGroup(
+  frame: RenderGraphFrame,
+  state: ComputeState,
+  resources: GraphResourceResolver,
+  source: GraphTextureView,
+  target: GraphTextureView,
+): BindGroup {
+  const sourceView = resolvedGraphView(resources, source);
+  const targetView = resolvedGraphView(resources, target);
+  const leaf = bindGroupChainLeaf2(state.bindGroups, sourceView, targetView);
+  const cached = leaf.get(state.label);
+  if (cached !== undefined) return cached;
+  const group = (frame as RenderPipelineFrame).runtime.device
+    .createBindGroup({
+      layout: state.layout,
+      entries: [
+        { binding: 0, resource: { kind: 'textureView', value: sourceView } },
+        { binding: 1, resource: { kind: 'textureView', value: targetView } },
+      ],
+    })
+    .unwrap();
+  return rememberBindGroup(
+    leaf,
+    state.label,
+    group,
+    (frame as _InternalRenderPipelineContext).bindGroupCounts,
+  );
+}
+
+/** Seed keys use the same physical-resource chain as computeBindGroup. */
+function seedBindGroup(
+  frame: RenderGraphFrame,
+  state: ComputeState,
+  resources: GraphResourceResolver,
+  depth: GraphTextureView,
+  target: GraphTextureView,
+  view: GraphBuffer,
+  multisampled: boolean,
+): BindGroup {
+  const sourceView = resolvedGraphView(resources, depth);
+  const targetView = resolvedGraphView(resources, target);
+  const buffer = resolvedGraphBuffer(resources, view);
+  // Preserve canonical producer observation before entering the cache.
+  const device = (frame as RenderPipelineFrame).runtime.device;
+  const root = state.bindGroups;
+  const label = state.label;
+  const counts = (frame as _InternalRenderPipelineContext).bindGroupCounts;
+  const leaf = bindGroupChainLeaf3(root, sourceView, targetView, buffer);
+  const cached = leaf.get(label);
+  if (cached !== undefined) return cached;
+  const group = device
+    .createBindGroup({
+      layout: state.layout,
+      entries: [
+        {
+          binding: multisampled ? SEED_MULTISAMPLED_BINDING : 0,
+          resource: { kind: 'textureView', value: sourceView },
+        },
+        { binding: 1, resource: { kind: 'textureView', value: targetView } },
+        { binding: 2, resource: { kind: 'buffer', value: { buffer, size: VIEW_UNIFORM_BYTES } } },
+      ],
+    })
+    .unwrap();
+  return rememberBindGroup(leaf, label, group, counts);
+}
 
 /** One view's closest-depth hierarchy, built once and read by every consumer. */
 export interface DepthPyramid {
@@ -113,10 +184,23 @@ const REDUCE_ENTRIES = [
   },
 ] as const;
 
+/** This module owns the complete plain-data layout trees. */
+function freezeDepthLayout<T>(value: T): T {
+  if (typeof value !== 'object' || value === null) return value;
+  for (const child of Object.values(value)) freezeDepthLayout(child);
+  return Object.freeze(value);
+}
+
+const PROGRAM_LAYOUTS = new Map<readonly unknown[], string>();
+for (const entries of [SEED_ENTRIES, SEED_MULTISAMPLED_ENTRIES, REDUCE_ENTRIES]) {
+  freezeDepthLayout(entries);
+  PROGRAM_LAYOUTS.set(entries, JSON.stringify(entries));
+}
+
 function shaderSource(
   frame: RenderGraphFrame,
   stage: keyof NonNullable<RenderPipelineFrame['depthPyramidShaders']>,
-): string | undefined {
+): string | import('@forgeax/engine-types').ShaderSource | undefined {
   return (frame as RenderPipelineFrame).depthPyramidShaders?.[stage];
 }
 
@@ -202,7 +286,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const { depth, view } = input;
   const mip0 = pyramid.levels[0] as GraphTextureView;
   const passNames: string[] = [];
-  const program = createDepthPyramidProgramResolver();
+  const program = createDepthPyramidProgramResolver(PROGRAM_LAYOUTS);
 
   const seeded = graph.addComputePass(seedPass, {
     accesses: [
@@ -229,23 +313,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
       pass.setPipeline(seedState.pipeline);
       pass.setBindGroup(
         0,
-        computeBindGroup(frame, seedState, [
-          {
-            binding: multisampled ? SEED_MULTISAMPLED_BINDING : 0,
-            resource: { kind: 'textureView', value: resolvedGraphView(resources, depth) },
-          },
-          {
-            binding: 1,
-            resource: { kind: 'textureView', value: resolvedGraphView(resources, mip0) },
-          },
-          {
-            binding: 2,
-            resource: {
-              kind: 'buffer',
-              value: { buffer: resolvedGraphBuffer(resources, view), size: VIEW_UNIFORM_BYTES },
-            },
-          },
-        ]),
+        seedBindGroup(frame, seedState, resources, depth, mip0, view, multisampled),
       );
       pass.dispatchWorkgroups(
         Math.ceil(pyramid.plan.extent.width / 8),
@@ -289,16 +357,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
             throw computePipelineError('depth pyramid mip chain');
           pass.setBindGroup(
             0,
-            computeBindGroup(frame, reduceState, [
-              {
-                binding: 0,
-                resource: { kind: 'textureView', value: resolvedGraphView(resources, sourceLevel) },
-              },
-              {
-                binding: 1,
-                resource: { kind: 'textureView', value: resolvedGraphView(resources, target) },
-              },
-            ]),
+            reductionBindGroup(frame, reduceState, resources, sourceLevel, target),
           );
           pass.dispatchWorkgroups(Math.ceil(extent.width / 8), Math.ceil(extent.height / 8), 1);
         }

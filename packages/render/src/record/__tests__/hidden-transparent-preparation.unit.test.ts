@@ -1,7 +1,7 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { FORWARD_PASS_SELECTOR } from '../../systems/pass-selector';
-import { prepareMainPassPipelines } from '../main-pass';
+import { encodeMainPass, prepareMainPassPipelines } from '../main-pass';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
 
 async function fixture() {
@@ -86,6 +86,42 @@ it('does no work for an unrelated or excluded material lane', async () => {
     f.prepare();
     expect(lookup).not.toHaveBeenCalled();
     expect(encoder).not.toHaveBeenCalled();
+    expect(f.receipts).toEqual([]);
+  } finally {
+    f.dispose();
+  }
+});
+it('encodes a preparation-only lane without binding a missing frame view group', async () => {
+  const f = await fixture();
+  const texture = f.device
+    .createTexture({ size: { width: 1, height: 1 }, format: 'rgba16float', usage: 0x10 })
+    .unwrap();
+  const view = f.device.createTextureView(texture, {}).unwrap();
+  const encoder = f.device.createCommandEncoder().unwrap();
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view, loadOp: 'load', storeOp: 'store' }],
+  });
+  const bind = vi.spyOn(pass, 'setBindGroup');
+  try {
+    // No validated rows: the frame builds no view group for this lane.
+    const sampler = f.device.createSampler().unwrap();
+    const buffer = f.device.createBuffer({ size: 64, usage: 0x48 }).unwrap();
+    Object.assign(f.c.pipelineState, {
+      colorAttachmentFormat: 'rgba16float',
+      skylightFallback: {
+        irradianceView: view,
+        prefilterView: view,
+        brdfLutView: view,
+        sampler,
+        intensityBuffer: buffer,
+      },
+    });
+    Object.assign(f.c, { viewBindGroup: null, dispatch: [], skylightCount: 0 });
+    encodeMainPass(f.c, pass, FORWARD_PASS_SELECTOR, {
+      recordMode: 'translucent-before-transmission',
+      transparentDepthWrite: true,
+    });
+    expect(bind.mock.calls.filter(([index]) => index === 0)).toEqual([]);
     expect(f.receipts).toEqual([]);
   } finally {
     f.dispose();

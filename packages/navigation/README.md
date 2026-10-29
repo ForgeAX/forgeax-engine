@@ -51,18 +51,18 @@ if (!result.ok) throw result.error;
 | `mesh.project(point, maxDistance, maxPolygons?)` | Euclidean XYZ projection with an explicit distance limit and bounded BVH work; layers remain distinct. |
 | `mesh.ground(point, maxHeight, maxPolygons?)` | Vertical sampling at the exact XZ, including slopes. A missing column is a projection failure. |
 | `mesh.findPath(start, goal, { maxProjection, maxVisited?, maxPolygons? })` | Bounded polygon-graph route and XZ string pulling within its selected corridor. Points and polygon roster are owned outputs. No partial success; no global continuous shortest-path promise. |
-| `navigationCharacterPlugin(handle, avoidanceOptions?)` | Holds one managed `AssetHandle<'navigation-mesh'>` from `world.assets`, installs Scene/navigation and physics vocabulary, and contributes one physical motor. Install `physicsPlugin('rapier-3d')` independently. |
+| `navigationCharacterPlugin(handle, avoidanceOptions?)` | Holds one managed `AssetHandle<'navigation-mesh'>` from `world.assets`, installs Scene/navigation and physics vocabulary, and contributes one physical motor. Install `physics3d` independently. |
 | `setNavigationTarget(world, entity, feetTarget, options)` | Synchronously adopts the current asset, validates capsule clearance, and queries from propagated pose. Failed assignment retains the old route. Feet targets and speed use world units; queries do not require Physics to be ready. |
 | `setNavigationMesh(world, handle)` | Returns a `Result` after preparing and replacing the installed plugin's active binding. Wrong-owner, stale or invalid references preserve the previous binding. Old routes cancel before their next motor execution; explicitly retarget afterward. |
 
 ```ts
 import { NavigationCharacter, NavigationAgent,
   navigationCharacterPlugin, setNavigationTarget } from '@forgeax/engine/navigation';
-import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue,
-  physicsPlugin } from '@forgeax/engine/physics';
+import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine/physics';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { Transform } from '@forgeax/engine/scene';
 const mesh = (await app.assets.load(navigationGuid, 'navigation-mesh')).unwrap();
-await app.pluginContext.plugin(physicsPlugin('rapier-3d'));
+await app.pluginContext.plugin(physics3d);
 await app.pluginContext.plugin(navigationCharacterPlugin(mesh));
 app.assets.release(mesh).unwrap(); // The plugin holds its own reference.
 const actor = app.world.spawn(
@@ -206,5 +206,5 @@ construction, query p95 below 50 ms, and 1000-agent full-World update p95 below 
 Set `FORGEAX_NAVIGATION_BENCH_OUTPUT` to an absolute JSON path in an existing
 output directory to retain independent runs. Receipts include resolved runtime
 module URLs and SHA256; the source hash alone does not identify rebuilt upstream
-owners such as ECS. See [validation evidence](VALIDATION.md) for observed budgets
+owners such as ECS. See validation evidence for observed budgets
 and the remaining full-delivery gates.

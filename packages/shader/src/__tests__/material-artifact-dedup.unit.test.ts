@@ -115,4 +115,43 @@ describe('material artifact deduplication', () => {
     structuredClone(incoming.buffer, { transfer: [incoming.buffer] });
     expect(registry.register({ key: first.key, bytes: incoming }).unwrap()).toBe(first);
   });
+
+  it('keeps identity-shared bytes and ABIs equal while still reporting each conflict', () => {
+    const registry = new MaterialArtifactRegistry();
+    const bytes = new Uint8Array(1024).fill(5);
+    const abi = Object.freeze({ receiptIdentity: 'shared', fields: Object.freeze(['a']) });
+    const paramSchema = Object.freeze([]);
+    const first = { key: 'key-identity', bytes, metadata: { paramSchema, abi, receipt: abi } };
+    registry.register(first).unwrap();
+    expect(
+      registry.register({ key: first.key, bytes, metadata: { paramSchema, abi, receipt: abi } }),
+    ).toEqual({ ok: true, value: first });
+    expect(
+      registry.register({
+        key: first.key,
+        bytes,
+        metadata: { paramSchema: [{ name: 'tint' }], abi, receipt: abi },
+      }),
+    ).toMatchObject({ ok: false, error: { detail: { dimension: 'param-schema' } } });
+    expect(
+      registry.register({
+        key: first.key,
+        bytes,
+        metadata: { paramSchema, abi, receipt: { receiptIdentity: 'other' } },
+      }),
+    ).toMatchObject({ ok: false, error: { detail: { dimension: 'receipt' } } });
+    const changed = bytes.slice();
+    changed[1000] = 6;
+    expect(
+      registry.register({ key: first.key, bytes: changed, metadata: first.metadata }),
+    ).toMatchObject({ ok: false, error: { detail: { dimension: 'bytes' } } });
+    // Distinct but equal schema and receipt values remain equal.
+    expect(
+      registry.register({
+        key: first.key,
+        bytes: bytes.slice(),
+        metadata: { paramSchema: [], abi: { ...abi }, receipt: { ...abi } },
+      }),
+    ).toEqual({ ok: true, value: first });
+  });
 });

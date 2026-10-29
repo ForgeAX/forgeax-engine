@@ -8,6 +8,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
+import { shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { createAtmosphereBackgroundGroup, createAtmosphereBackgroundLayout } from './background';
 import { atmosphereVisibilityGroup, atmosphereVisibilityLayout } from './visibility';
@@ -46,7 +47,7 @@ export function recordAtmosphereCaptureBackground(
         hint: 'rebuild the engine shader manifest',
       });
     const module = factory
-      .createShaderModule({ code: source, label: 'atmosphere_background' })
+      .createShaderModule(shaderSourceDescriptor(source, 'atmosphere_background'))
       .unwrap();
     const layout = createAtmosphereBackgroundLayout(device);
     const pipeline = device

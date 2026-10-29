@@ -263,8 +263,12 @@ intact. See the complete
 
 ## Standard profile recovery
 
-The host exposes one `forgeax::standard` profile. `lightCount` is one of
-`1 | 32 | 256`, `renderPath` is `forward | deferred`, and local finite lights
+The host exposes one `forgeax::standard` profile. `lightCount` is the local-light
+budget, one of `1 | 32 | 256` (default 256, the cluster maximum; the cluster
+buffers are sized for 256 at every budget, so the default costs no memory), and a
+frame over budget returns `standard-light-budget-exceeded`. Change it with
+`renderer.setProfile({ ...renderer.inspect().profile, lightCount })`.
+`renderPath` is `forward | deferred`, and local finite lights
 are always prepared for the shared Cluster transport. Invalid profile input
 returns `standard-profile-invalid` with `expected`, `hint`, and `detail`; the
 failed transaction keeps the last-known-good profile and device generation.
@@ -421,12 +425,22 @@ owner or controller.
 ### Browser backend selection and diagnosis
 
 The default browser path prefers native WebGPU and can retry through the
-`wgpu`/WebGL2 downlevel backend. Consequently, a native-channel
+`wgpu`/WebGL2 downlevel backend at most once. Without `navigator.gpu`, it
+selects WebGL2 directly and never retries that same backend. An explicitly
+injected RHI is authoritative and does not trigger automatic fallback.
+Consequently, a native-channel
 `adapter-unavailable` error means only that `navigator.gpu.requestAdapter()` did
 not produce an adapter; it is not a verdict that the machine cannot run the
 game. A thrown `requestAdapter()` failure is reported separately as
 `webgpu-runtime-error` with the original name/message in `detail.error`, while a
-literal `null` remains `adapter-unavailable`.
+literal `null` remains `adapter-unavailable`. Both outcomes can select the
+WebGL2 fallback; unrelated runtime, shader, and asset failures do not.
+
+When both attempts fail, `EngineEnvironmentError.detail.webgpuError` and
+`.wgpuError` retain their respective causes, including WASM initialization or
+transport failure. The message labels both attempted backends. Missing WebGPU
+alone does not establish that a WebView cannot run the game. Verify the actual
+host with both backend paths, completed frames, and pixel readback.
 
 Always diagnose the final structured error rather than matching the word
 “WebGPU”. Inspect `.code`, `.expected`, `.hint`, and nested backend causes. Asset,

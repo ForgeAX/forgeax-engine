@@ -34,12 +34,20 @@ describe('SSR GPU dispatch Browser WebGPU probe', () => {
   // also includes cold software-driver compilation and completed readbacks;
   // its bounded 60-second execution allowance is not a frame-performance gate.
   it('reprojects history and reconstructs perspective and orthographic view distance', async () => {
-    expect(await runSsrReprojectionProbe(device, sources.temporal)).toEqual([
+    expect(
+      await runSsrReprojectionProbe(
+        device,
+        typeof sources.temporal === 'string' ? sources.temporal : sources.temporal.read(),
+      ),
+    ).toEqual([
       [0.5, 0.5, 0.375, 0.5625],
       [0.5, 0.5, 0.375, 0.5625],
       [0.5, 0.5, 0.375, 0.5625],
     ]);
-    for (const distances of await runSsrViewDistanceProbe(device, sources.trace)) {
+    for (const distances of await runSsrViewDistanceProbe(
+      device,
+      typeof sources.trace === 'string' ? sources.trace : sources.trace.read(),
+    )) {
       expect(distances[0]).toBeCloseTo(6.58, 4);
       expect(distances[1]).toBeCloseTo(12, 4);
     }

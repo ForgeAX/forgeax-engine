@@ -20,11 +20,8 @@ import {
   adoptFieldEdit,
   diffFieldEdit,
   type FieldEdit,
-  type FieldSourceSlots,
   fieldEditState,
-  fieldInputsUnchanged,
   fieldOutsideEmpty,
-  fieldSourceSlots,
 } from './field-edit';
 import { globalSdfEditBox, packGlobalSdfEditBox } from './global-sdf';
 import { createGlobalSdfTexture, GLOBAL_SDF_TEXTURE_WGSL } from './global-sdf-texture';
@@ -73,11 +70,13 @@ import {
   selectWorldTraversal,
   WORLD_ACCELERATION_TRIANGLE_HEADROOM,
   type WorldAccelerationEdit,
+  WorldAccelerationGeometryIds,
   type WorldAccelerationInspection,
   type WorldTraversalFallback,
-  worldAccelerationGeometries,
+  worldAccelerationGeometry,
+  worldAccelerationRoster,
 } from './renderer-world-acceleration';
-import { projectSceneFields } from './scene-field-projection';
+import { SceneFieldRows } from './scene-field-projection';
 import type { WorldTraversal } from './world-traversal';
 
 type Kernel = Extract<ReturnType<typeof createIrradianceFieldKernel>, { ok: true }>['value'];
@@ -285,8 +284,8 @@ export interface PreparedIrradianceField {
     readonly relightTiles: number;
   };
   readonly residency: CardResidency | undefined;
-  /** Field source slots as of {@link revision}. */
-  sourceSlots: FieldSourceSlots;
+  /** {@link SceneFieldRows.revision} this field's roster last adopted. */
+  fieldRevision: number;
   editStats(): Omit<IrradianceFieldEditStats, 'skippedProjections' | 'projectedSources'>;
   adoptMaterials(
     frame: NonNullable<PersistentGpuDrivenState['retained']>['materials'],
@@ -321,6 +320,8 @@ export class RendererIrradianceField {
   #submitted = 0;
   #skippedProjections = 0;
   #projectedSources = 0;
+  /** The field roster, kept current from scene row changes for every generation. */
+  readonly #fieldRows = new SceneFieldRows();
   #lights: Uint8Array = new Uint8Array(IRRADIANCE_FIELD_LIGHTS_BYTES);
   #lightCount = 0;
 
@@ -544,61 +545,31 @@ export class RendererIrradianceField {
     const materialsChanged = field.retained.materials !== retained.materials;
     if (materialsChanged && !field.adoptMaterials(retained.materials, field.retained.materials))
       return false;
-    if (
-      sameScene &&
-      field.retained.slots === retained.slots &&
-      field.retained.meshes === retained.meshes
-    ) {
-      field.revision = revision;
-      field.retained = retained;
-      this.#skippedProjections++;
-      return true;
-    }
-    if (
-      sameScene &&
-      field.retained.materials === retained.materials &&
-      field.retained.meshes === retained.meshes &&
-      field.retained.revision - field.revision === retained.revision - revision &&
-      fieldInputsUnchanged(
-        field.sourceSlots,
-        input.scene.scene.changedSlotsSince(field.revision),
-        input.scene.slotAt,
-        (records) => {
-          this.#projectedSources += records.length;
-          if (!retained.isSourceCurrent()) return true;
-          const projected = projectSceneFields(
-            records,
-            input.worlds,
-            input.profile.field.region,
-            input.runtime.assets,
-            retained,
-          );
-          return !projected.ok || !retained.isSourceCurrent() || projected.value.sources.length > 0;
-        },
-      )
-    ) {
-      field.revision = revision;
-      field.retained = retained;
-      this.#skippedProjections++;
-      return true;
-    }
     if (!retained.isSourceCurrent()) return false;
-    const projected = projectSceneFields(
-      retained.slots,
+    // Only changed scene rows are re-admitted; an unchanged roster skips the edit diff.
+    const visits = this.#fieldRows.visits;
+    const projected = this.#fieldRows.changes(
+      retained,
       input.worlds,
       input.profile.field.region,
       input.runtime.assets,
-      retained,
     );
-    this.#projectedSources += retained.slots.length;
+    this.#projectedSources += this.#fieldRows.visits - visits;
     if (!projected.ok || !retained.isSourceCurrent()) return false;
-    const edit = diffFieldEdit(field.editState, projected.value.sources, projected.value.instances);
+    if (field.fieldRevision === this.#fieldRows.revision) {
+      field.revision = revision;
+      field.retained = retained;
+      this.#skippedProjections++;
+      return true;
+    }
+    const edit = diffFieldEdit(field.editState, projected.value);
     const applied = field.edit(edit);
     if (applied === 'rebuild') return false;
     if (applied === 'applied') {
       field.revision = revision;
       field.retained = retained;
-      field.sourceSlots = fieldSourceSlots(projected.value.sources);
+      field.fieldRevision = this.#fieldRows.revision;
+      this.#fieldRows.acceptChanges(field.fieldRevision);
     }
     return true;
   }
@@ -664,6 +635,7 @@ export class RendererIrradianceField {
       },
       true,
       input.focus,
+      this.#fieldRows,
     );
     const owned: Buffer[] = [];
     let extent: IrradianceFieldExtent | undefined;
@@ -731,18 +703,19 @@ export class RendererIrradianceField {
         .writeBuffer(buffers.field.buffer, 0, packIrradianceFieldUniform(plan, clipmap.windows()))
         .unwrap();
       this.#key = this.#signature();
-      const geometries = worldAccelerationGeometries(region);
+      const accelerationIds = new WorldAccelerationGeometryIds();
+      const roster = worldAccelerationRoster(region, accelerationIds);
       const selection = selectWorldTraversal(
         device.caps.rayQuery,
         region.instances.length,
-        geometries,
+        roster.geometries,
       );
       const traversal = selection.traversal;
       if (traversal === 'ray-query')
         acceleration = prepareWorldAcceleration(
           device,
-          region,
-          geometries,
+          roster,
+          roster.geometries,
           region.headroom === undefined
             ? undefined
             : {
@@ -833,6 +806,7 @@ export class RendererIrradianceField {
         priorityProbes: 0,
       };
       const editState = fieldEditState(region.sources, region.instances);
+      this.#fieldRows.acceptChanges(region.fieldRevision);
       const residency =
         capture.residency === undefined
           ? undefined
@@ -1020,7 +994,7 @@ export class RendererIrradianceField {
           captureTiles: captureSchedule.limit,
           relightTiles: Math.min(relight, captureSchedule.tiles),
         }),
-        sourceSlots: fieldSourceSlots(region.sources),
+        fieldRevision: region.fieldRevision,
         pendingMaterialCapture: () => captureSchedule.pendingWork,
         adoptAsset: (scope, change) => {
           const work = capture.adoptAsset(scope, change.handle, change.revision);
@@ -1113,18 +1087,18 @@ export class RendererIrradianceField {
               const added: WorldAccelerationEdit['added'][number][] = [];
               for (const [i, add] of edit.added.entries()) {
                 const row = written.added[i];
-                const geometryId = region.headroom?.geometryIds.get(add.source.mesh);
-                const positions = add.source.mesh.attributes.position;
-                if (row === undefined || geometryId === undefined) return 'rebuild';
-                if (!(positions instanceof Float32Array)) return 'rebuild';
+                // BLAS identity is the mesh payload version: a revised mesh builds anew,
+                // and the old BLAS is released with its last instance.
+                const geometry = worldAccelerationGeometry(add.source, accelerationIds);
+                if (row === undefined || geometry === undefined) return 'rebuild';
                 added.push({
                   instance: {
                     instanceId: row,
-                    geometryId,
+                    geometryId: geometry.geometryId,
                     mask: add.instance.mask,
                     transform: add.instance.transform,
                   },
-                  geometry: { geometryId, positions, indices: add.source.mesh.indices },
+                  geometry,
                 });
               }
               if (!acceleration.edit({ moved: edit.moved, removed: edit.removed, added }).ok)

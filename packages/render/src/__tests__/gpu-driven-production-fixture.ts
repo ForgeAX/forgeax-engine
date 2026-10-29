@@ -21,6 +21,7 @@ import {
 import { MaterialResource } from '../material-resource';
 import type { PipelineState } from '../record/render-context';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { SceneSlots } from '../scene/scene-slots';
 
@@ -90,7 +91,7 @@ export function preparedPbrSnapshot(
         uvSets: receipt.uvSets,
         vertexInputs: receipt.vertexInputs,
         alphaMask: receipt.alphaMask,
-        skinPaletteAddress: receipt.skinPaletteAddress,
+
         topology: draw.topology,
         indexed: draw.kind === 'indexed',
         first: draw.first,
@@ -297,7 +298,7 @@ export function admitGpuFixture(
     if (mesh !== undefined) meshes.set(`${slot.worldId}:${slot.snapshot.assetHandle}`, mesh);
   }
   const slotOwner = new SceneSlots();
-  for (const slot of slots) slotOwner.set(slot.slot, slot);
+  for (const slot of slots) setSceneRow(slotOwner, slot.slot, slot);
   const slotFrame = slotOwner.capture();
   const selected =
     input.batchExecutions === undefined

@@ -84,6 +84,20 @@ materializing full component objects for joints and detached Children snapshots.
 TRS views returned by public World.get already borrow their current column bytes;
 this optimization does not claim to remove a byte copy from those TRS fields.
 
+Continuously moving fixed histories reuse the previous pose settled by
+before-capture. After-capture reads the final source pose without copying the
+same previous pose again; a stopped writer still receives its final settlement.
+
+```sh
+node packages/scene/bench/presentation.mjs
+```
+
+> [!NOTE]
+> This opt-in CPU benchmark requires `process.threadCpuUsage` and verifies four
+> fixed steps per update. It reports phase wall time and thread CPU separately,
+> with moving and stopped pose digests for equivalent-work comparisons. It does
+> not qualify browser FPS.
+
 ## Keyed SceneAsset authoring
 
 `SceneAsset` is authored as ordinary data. The key in `entities` is the only
@@ -291,7 +305,7 @@ sees both sides of each contract detects it:
 |:--|:--|:--|
 | `mobility-static-moved` | `scenePlugin` Update system | A `static` entity's `Transform` changes after the frame that declared it |
 | `mobility-invalid-kind` | Renderer source systems | `stationary` on an entity with `MeshFilter` |
-| `mobility-physics-conflict` | `physicsPlugin` | `static` with `RigidBody` type `dynamic` or `kinematic` |
+| `mobility-physics-conflict` | `physics backend plugin` | `static` with `RigidBody` type `dynamic` or `kinematic` |
 
 Diagnostics never change behaviour: a moved static entity still propagates and
 renders correctly. Repair by declaring `MobilityKindValue.movable` (or removing

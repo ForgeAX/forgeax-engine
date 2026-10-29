@@ -15,6 +15,114 @@ import { publishWorkspaceAssets } from './workspace-asset-fixture';
 const guid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('workspace browser plugin lifecycle', () => {
+  it('forwards optional UV channel reads to the exact live resource owner', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const app = {
+      world,
+      assets,
+      renderer: { inspect: () => ({ state: 'alive', frame: { frameId: 1 } }) },
+      execution: { report: () => ({ world: { identity: world.identity } }) },
+      observation: createAppObservation(world, {} as never, { report: () => ({}) }),
+      start: () => ({ unwrap() {} }),
+      resume: () => ({ unwrap() {} }),
+      pause: () => ({ unwrap() {} }),
+      onError: () => () => {},
+    } as unknown as App;
+    const events = new EventTarget();
+    const document = {
+      documentElement: { dataset: {}, removeAttribute() {} },
+      defaultView: { devicePixelRatio: 1, addEventListener() {}, removeEventListener() {} },
+    };
+    const canvas = {
+      dataset: {},
+      style: {},
+      width: 400,
+      height: 300,
+      clientWidth: 400,
+      clientHeight: 300,
+      ownerDocument: document,
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 300 }),
+      addEventListener: events.addEventListener.bind(events),
+      removeEventListener: events.removeEventListener.bind(events),
+    } as unknown as HTMLCanvasElement;
+    const listeners = new Set<(value: unknown) => void>();
+    const replies = new Map<string, (value: Record<string, unknown>) => void>();
+    const get = vi.fn(() => ({
+      mode: 'material' as const,
+      collision: false,
+      bounds: false,
+      capabilities: { wireframe: false, collision: false, bounds: false },
+      uv: { channels: [0, 3] },
+    }));
+    const context = await createWorldContext(world);
+    let id = 0;
+    const command = (operation: string, input: unknown) => {
+      const requestId = String(++id);
+      const response = new Promise<Record<string, unknown>>((resolve) =>
+        replies.set(requestId, resolve),
+      );
+      for (const listener of listeners)
+        listener({ kind: 'command', id: requestId, sessionId: 'session', operation, input });
+      return response;
+    };
+    try {
+      const fiber = context.plugin(engineWorkspaceBrowserPlugin, {
+        app,
+        canvas,
+        project: { id: 'project', root: '/project' },
+        target: {
+          targetId: 'target',
+          sessionId: 'session',
+          worldId: world.identity,
+          headed: true,
+          width: 400,
+          height: 300,
+          url: 'http://localhost/',
+        },
+        initialAsset: { guid, kind: 'mesh' },
+        transport: {
+          request: async (_service, payload) => {
+            const value = payload as Record<string, unknown>;
+            replies.get(String(value.id))?.(value);
+            return {};
+          },
+          subscribe: (_topic, listener) => {
+            listeners.add(listener);
+            return () => {
+              listeners.delete(listener);
+            };
+          },
+        },
+        openResourcePreview: async () => ({ close: async () => {}, display: { get, set: get } }),
+      });
+      await fiber.await();
+      expect(
+        await command('preview.display.get', {
+          targetId: 'target',
+          previewOwner: 'target',
+          uvChannel: 3,
+        }),
+      ).toMatchObject({ kind: 'result', value: { uv: { channels: [0, 3] } } });
+      expect(get).toHaveBeenLastCalledWith({ uvChannel: 3 });
+      await command('preview.display.get', { targetId: 'target', previewOwner: 'target' });
+      expect(get).toHaveBeenLastCalledWith(undefined);
+      const before = get.mock.calls.length;
+      await command('preview.display.get', {
+        targetId: 'target',
+        previewOwner: 'retired',
+        uvChannel: 0,
+      });
+      expect(get).toHaveBeenCalledTimes(before);
+      await fiber.dispose();
+      expect(listeners.size).toBe(0);
+    } finally {
+      await context.fiber.dispose();
+      assets.dispose();
+    }
+  });
+
   it('dispatches actual World tools and revokes its handler and borrowed preview through the Fiber', async () => {
     const assets = new AssetRegistry();
     const world = new World({ assets });
@@ -325,11 +433,18 @@ describe('workspace browser plugin lifecycle', () => {
           expect(failures).toEqual([]);
           pickSpy.mockRejectedValueOnce(new Error('async-pick-failure'));
           expect(
-            await command('target.pick', { x: 10, y: 10, targetId: 'target', previewOwner }),
+            await command('target.pick', {
+              x: 10,
+              y: 10,
+              granularity: 'triangle',
+              targetId: 'target',
+              previewOwner,
+            }),
           ).toMatchObject({
             ok: false,
             error: { code: 'engine-workspace-browser-failure', hint: 'async-pick-failure' },
           });
+          expect(pickSpy).toHaveBeenLastCalledWith({ x: 10, y: 10, granularity: 'triangle' });
           expect(failures).toEqual([]);
           expect(pickErrors).toEqual([]);
           expect(picked).toEqual([]);

@@ -76,11 +76,32 @@ export function createPackAuthoringContributions(
 ): readonly ToolContribution<unknown, unknown>[] {
   // Retain the gateway's request-id deduplication for this client, but activate
   // its producer only when an authoring operation executes.
-  let gateway:
-    | Promise<
-        ReturnType<typeof import('@forgeax/engine-pack/build').createFileSystemPackAuthoringGateway>
-      >
-    | undefined;
+  type PackGateway = ReturnType<
+    typeof import('@forgeax/engine-pack/build').createFileSystemPackAuthoringGateway
+  >;
+  let gateway: Promise<import('../types.js').CommandResult<PackGateway>> | undefined;
+  async function getGateway() {
+    if (gateway === undefined)
+      gateway = (async () => {
+        const { readProjectFacts } = await import('../project.js');
+        const facts = await readProjectFacts(projectRoot);
+        if (!facts.ok) return facts;
+        const { createFileSystemPackAuthoringGateway } = await import('@forgeax/engine-pack/build');
+        return {
+          ok: true as const,
+          value: createFileSystemPackAuthoringGateway({
+            gameRoot: facts.value.root,
+            scanRoots: facts.value.assetRoots,
+            transfer: async (operation) =>
+              (await import('../source-transfer.js')).transferPackOperation(projectRoot, operation),
+          }),
+        };
+      })();
+    const pending = gateway;
+    const initialized = await pending;
+    if (!initialized.ok && gateway === pending) gateway = undefined;
+    return initialized;
+  }
   return packAuthoringToolDescriptors.map(
     (descriptor) =>
       defineTool(
@@ -137,18 +158,9 @@ export function createPackAuthoringContributions(
             }
             return result.value;
           }
-          gateway ??= import('@forgeax/engine-pack/build').then(
-            ({ createFileSystemPackAuthoringGateway }) =>
-              createFileSystemPackAuthoringGateway({
-                gameRoot: projectRoot,
-                transfer: async (operation) =>
-                  (await import('../source-transfer.js')).transferPackOperation(
-                    projectRoot,
-                    operation,
-                  ),
-              }),
-          );
-          const result = await (await gateway).execute({ ...operation, operation: id });
+          const initialized = await getGateway();
+          if (!initialized.ok) return commandFailure(initialized.error);
+          const result = await initialized.value.execute({ ...operation, operation: id });
           return result.ok ? result.value : commandFailure(result.error);
         },
       ) as unknown as ToolContribution<unknown, unknown>,

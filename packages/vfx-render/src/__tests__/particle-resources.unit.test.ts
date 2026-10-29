@@ -359,6 +359,11 @@ describe('particle renderer blend defaults', () => {
       depthWriteEnabled: true,
     });
     const authored = { cullMode: 'front' as const, depthWriteEnabled: false };
-    expect(particleRendererRenderState('billboard', 'additive', authored)).toBe(authored);
+    const state = particleRendererRenderState('billboard', 'additive', authored);
+    expect(state).toStrictEqual(authored);
+    // A Worker-cloned copy of the same authored content keeps one state object.
+    expect(particleRendererRenderState('billboard', 'additive', structuredClone(authored))).toBe(
+      state,
+    );
   });
 });

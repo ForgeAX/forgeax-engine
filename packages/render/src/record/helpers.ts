@@ -18,12 +18,38 @@ export function variantSetFromDefines(
   defines: Readonly<Record<string, string>> | undefined,
 ): string | undefined {
   if (defines === undefined) return undefined;
+  // Published pass defines are immutable records: fold each once instead of
+  // per draw. A shallow field check still observes an in-place edit.
+  const cached = variantSets.get(defines);
+  if (cached !== undefined && sameDefines(defines, cached.copy)) return cached.value;
   const entries = Object.entries(defines);
-  if (entries.length === 0) return undefined;
-  return entries
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([name, value]) => `${name}=${value}`)
-    .join('+');
+  const value =
+    entries.length === 0
+      ? undefined
+      : entries
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([name, value]) => `${name}=${value}`)
+          .join('+');
+  variantSets.set(defines, { copy: { ...defines }, value });
+  return value;
+}
+
+const variantSets = new WeakMap<
+  Readonly<Record<string, string>>,
+  { readonly copy: Readonly<Record<string, string>>; readonly value: string | undefined }
+>();
+
+function sameDefines(
+  defines: Readonly<Record<string, string>>,
+  copy: Readonly<Record<string, string>>,
+): boolean {
+  let count = 0;
+  for (const key in defines) {
+    count++;
+    if (defines[key] !== copy[key]) return false;
+  }
+  for (const _ in copy) count--;
+  return count === 0;
 }
 
 /** Prepare both authored image sources; a shared image is projected once. */
@@ -188,20 +214,41 @@ export function isLitMaterialSnapshot(material: MaterialSnapshot): boolean {
   return isStandardPbrMaterialShader(material.materialShaderId);
 }
 
-export function computeViewMatrix(camera: CameraSnapshot): Mat4 {
+export function computeViewMatrix(camera: CameraSnapshot, out: Mat4): Mat4 {
   // feat-20260601 D-3: view = invert(camera world mat4). The camera's resolved
   // world mat4 (propagateTransforms output) is read straight off the snapshot;
   // no recompose from decomposed TRS.
-  const cameraFromWorld = mat4.create();
-  mat4.invert(cameraFromWorld, camera.world);
-  return cameraFromWorld;
+  return mat4.invert(out, camera.world);
 }
 
-export function computeProjectionMatrix(camera: CameraSnapshot): Mat4 {
+export function computeProjectionMatrix(camera: CameraSnapshot, out: Mat4): Mat4 {
   if (camera.captureProjection !== undefined) {
-    const projection = mat4.create();
-    projection.set(camera.captureProjection);
+    const projection = out;
+    const captured = camera.captureProjection;
+    projection.set(captured);
+    projection.fill(0, captured.length);
     return projection;
   }
-  return cameraLensProjection(camera);
+  return cameraLensProjection(camera, out);
+}
+
+function createViewProjectionScratch() {
+  return { projection: mat4.create(), view: mat4.create() };
+}
+let viewProjectionScratch: ReturnType<typeof createViewProjectionScratch> | undefined;
+let buildingViewProjection = false;
+
+/** Write the camera product while keeping its intermediate matrices private. */
+export function computeViewProjectionMatrix(camera: CameraSnapshot, out: Mat4): Mat4 {
+  const wasBuilding = buildingViewProjection;
+  buildingViewProjection = true;
+  try {
+    viewProjectionScratch ??= createViewProjectionScratch();
+    const scratch = wasBuilding ? createViewProjectionScratch() : viewProjectionScratch;
+    const projection = computeProjectionMatrix(camera, scratch.projection);
+    const view = computeViewMatrix(camera, scratch.view);
+    return mat4.multiply(out, projection, view);
+  } finally {
+    buildingViewProjection = wasBuilding;
+  }
 }

@@ -6,17 +6,17 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
-import { createSkinPaletteOwner } from '../../assembly/skin-palette-owner';
 import { samplerContribution } from '../../assets/asset-decoders';
 import { Instances, MeshFilter, MeshRenderer } from '../../components';
 import { GlyphText } from '../../components/glyph-text';
 import { InstanceProjectionStore } from '../../instances';
 import { Materials } from '../../materials';
+import { SkinTasks } from '../../record/skin-tasks';
 import { PersistentRenderScene } from '../../scene/render-scene';
-import { renderPublicationTransfers } from '../contract';
 import { preparePublicationGeometry } from '../prepare-geometry';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing expected render projection');
@@ -46,18 +46,22 @@ function fixture() {
   const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   const identity = { source: 'derived-geometry', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
-  const receiver = new RenderPublicationReceiver(identity);
-  const scene = new PersistentRenderScene({ assets });
   const instances = new InstanceProjectionStore();
-  const publish = (palette?: ReturnType<typeof createSkinPaletteOwner>) => {
+  const receiver = new RenderPublicationReceiver(identity, undefined, (prepared) =>
+    preparePublicationGeometry(prepared, assets, instances),
+  );
+  const scene = new PersistentRenderScene({ assets });
+  const publish = () => {
     world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const received = receiver.accept(packet).unwrap();
-    const prepared = preparePublicationGeometry(received, scene, palette, assets, instances);
-    const frame = scene.consumePublication(prepared);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const frame = scene.consumePublication(
+      receiver.accept(encodeRenderPublication(packet)).unwrap(),
+    );
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, frame };
   };
   const spawn = () =>
@@ -166,9 +170,9 @@ it('retains instance history on pose edits and retires it across removal and top
 it.each([
   true,
   false,
-])('keeps untouched skin palettes and reclaims removed slices (storage=%s)', async (storage) => {
+])('keeps untouched Skin membership and resolves current tasks after removal/restoration (storage=%s)', async (storage) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const palette = createSkinPaletteOwner(device, storage);
+  const tasks = new SkinTasks(device, storage);
   const f = fixture();
   const skinMaterial = f.assets
     .create({
@@ -195,28 +199,49 @@ it.each([
       })
       .unwrap();
   }
-  const initial = f.publish(palette).frame;
-  const one = required(initial.renderables.find((row) => row.entityKey === first)?.skin);
-  const two = required(initial.renderables.find((row) => row.entityKey === second)?.skin);
-  expect(one).toBeDefined();
-  expect(two).toBeDefined();
-  f.world.removeComponent(first, Skin).unwrap();
-  const removed = f.publish(palette).frame;
-  expect(removed.renderables.find((row) => row.entityKey === first)?.skin).toBeUndefined();
-  expect(removed.renderables.find((row) => row.entityKey === second)?.skin?.fence).toBe(two.fence);
-  f.world.set(joint, Transform, { pos: [1, 0, 0] }).unwrap();
-  const moved = required(
-    f.publish(palette).frame.renderables.find((row) => row.entityKey === second)?.skin,
-  );
-  expect(moved.fence).toBe(two.fence);
-  expect(moved.uploadBytes).toBe(64);
-  f.world
-    .addComponent(first, { component: Skin, data: { skeleton, joints: new Uint32Array([joint]) } })
-    .unwrap();
-  const restored = required(
-    f.publish(palette).frame.renderables.find((row) => row.entityKey === first)?.skin,
-  );
-  expect(restored.fence).not.toBe(one.fence);
-  f.publisher.dispose();
-  palette.dispose();
+  try {
+    const initial = f.publish().frame;
+    const one = required(initial.renderables.find((row) => row.entityKey === first)?.skinBinding);
+    const two = required(initial.renderables.find((row) => row.entityKey === second)?.skinBinding);
+    const initialFrame = required(f.scene.skinRecordingFrame());
+    tasks.begin(initialFrame);
+    // Each one-joint demand uploads one current and one previous matrix.
+    expect(tasks.demand(required(f.scene.compositionSlot(0, first)))).toBeDefined();
+    expect(tasks.paletteUploadBytes).toBe(128);
+    expect(tasks.demand(required(f.scene.compositionSlot(0, second)))).toBeDefined();
+    expect(tasks.paletteUploadBytes).toBe(256);
+    await tasks.complete();
+    f.world.removeComponent(first, Skin).unwrap();
+    f.world.set(first, MeshRenderer, { materials: [] }).unwrap();
+    const removed = f.publish().frame;
+    expect(removed.renderables.find((row) => row.entityKey === first)?.skinBinding).toBeUndefined();
+    expect(removed.renderables.find((row) => row.entityKey === second)?.skinBinding).toBe(two);
+    f.world.set(joint, Transform, { pos: [1, 0, 0] }).unwrap();
+    const moved = f.publish();
+    expect(moved.packet.upserts).toHaveLength(0);
+    expect([...moved.packet.transformEntities]).toEqual([Number(joint)]);
+    expect(moved.frame.renderables.find((row) => row.entityKey === second)?.skinBinding).toBe(two);
+    const frame = required(f.scene.skinRecordingFrame()),
+      slot = required(f.scene.compositionSlot(0, second));
+    tasks.begin(frame);
+    required(tasks.demand(slot));
+    expect(tasks.paletteUploadBytes).toBe(128);
+    await tasks.complete();
+    f.world
+      .addComponent(first, {
+        component: Skin,
+        data: { skeleton, joints: new Uint32Array([joint]) },
+      })
+      .unwrap();
+    f.world.set(first, MeshRenderer, { materials: [skinMaterial] }).unwrap();
+    const restored = f.publish().frame;
+    expect(restored.renderables.find((row) => row.entityKey === first)?.skinBinding).toEqual(one);
+    expect(restored.renderables.find((row) => row.entityKey === second)?.skinBinding).toBe(two);
+  } finally {
+    await tasks.dispose();
+    f.scene.dispose();
+    f.instances.dispose();
+    f.receiver.dispose();
+    f.publisher.dispose();
+  }
 });

@@ -134,7 +134,7 @@ describe('generated Worker startup URLs', () => {
         expect(captured.bundler.shaderManifestUrl).toBe(manifestUrl);
         expect(captured.bundler.importTransport).toBeUndefined();
         expect(captured.options.execution.bootstrap.href).toBe(
-          new URL('execution-bootstrap.js', moduleUrl).href,
+          new URL('execution-bootstrap.ts', moduleUrl).href,
         );
         expect(captured.options.execution.assetCatalog.url).toBe(
           new URL('pack-index.json', documentUrl).href,

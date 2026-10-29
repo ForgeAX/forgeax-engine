@@ -12,6 +12,18 @@ description: >-
 > shader/material edits or broad instrumentation. Capture the real failing frame
 > and use GPU work and resource evidence to choose the repair owner. A concrete
 > startup, asset, or schema error can go directly to its named owner.
+>
+> Use it only for an observed rendering failure. It is not a delivery or acceptance
+> step: when the screenshot and `dev verify` pass, record no tape.
+>
+> When `rhi inspect`/`rhi read` return `replay-backend-unavailable` (for example no
+> native replay on the host), keep the tape and `rhi summary` structure, then continue
+> with live evidence (`dev capture` screenshots, `dev eval` state, debug draw) on the
+> real backend. Do not retry replay or block delivery on it.
+
+| Symptom | First check |
+|:--|:--|
+| White/transparent canvas, HUD fine | `rendererError` in `dev capture --json` or the `project play` report (also `__forgeaxGameInspection.renderer().rendererError`): a GPU validation/submit error rejects every frame's submit, so capture the frame and inspect the resource the message names. |
 
 The package contract is [`packages/rhi-debug/README.md`](../../packages/rhi-debug/README.md).
 In an installed game, read `node_modules/@forgeax/engine-rhi-debug/README.md`

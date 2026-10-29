@@ -1,5 +1,4 @@
 import type { MeshLodLevel, PrimitiveTopology } from '@forgeax/engine-types';
-import { isFiniteBounds3 } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { BatchTopologyInspection } from '../inspection-types';
 import { isReflectedTransform } from '../material-render-state';
@@ -8,6 +7,8 @@ import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
+import { FrameSet } from '../scene/frame-set';
+import type { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame } from '../scene/mesh-frame';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
 import { projectedHeight as measureProjectedHeight } from '../scene/visibility/lod-selector';
@@ -17,6 +18,12 @@ import { BatchSources, MemberCandidates } from './batch-members';
 import { inheritTaskHeaders } from './fixed-task-plan';
 import { MeshBatchProjection } from './mesh-batches';
 import type { PreparedGpuDrivenDraw } from './prepared-draw';
+import {
+  type RowMaterialGroup,
+  RowMaterialMembers,
+  rowMaterialResource,
+  rowMaterialSlot,
+} from './row-materials';
 
 export type { BatchTopologyInspection } from '../inspection-types';
 
@@ -37,6 +44,10 @@ export interface GpuDrivenBatchBinding {
   readonly material: MaterialResource;
   readonly geometry: BatchGeometry;
   readonly drawItemIndex: number;
+  /** Members deform by their GPU Scene morph row in the vertex stage and draw LOD0. */
+  readonly morph?: true;
+  /** Group of a row-material binding; it owns the rows of every material it holds. */
+  readonly rowGroup?: RowMaterialGroup;
 }
 
 export interface GpuDrivenBatchKey {
@@ -51,6 +62,8 @@ export interface GpuDrivenBatchKey {
   readonly topology: PrimitiveTopology;
   /** Model parity splits raster work without changing authored material state. */
   readonly reflected?: boolean;
+  /** Morphed members share the Mesh stream; only their LOD0 policy differs. */
+  readonly morph?: true;
   readonly pipelineClass: string;
   readonly materialResourceClass: string;
   /** Stable producer-owned identity; topology never derives this from a shader name. */
@@ -61,6 +74,8 @@ export interface GpuDrivenBatchKey {
   readonly admission?: 'opaque' | 'alpha-mask';
   /** Graph lane that owns this material after the G-buffer projection. */
   readonly materialPass?: 'deferred' | 'forward-only';
+  /** Members read their material through their own GPU Scene row, not the batch binding. */
+  readonly rowMaterial?: true;
 }
 
 export interface GpuDrivenCandidate {
@@ -204,20 +219,12 @@ export interface SubmissionCandidateMembership {
   readonly byPrimitiveIndex: ReadonlyMap<number, readonly SubmissionCandidateMembershipEntry[]>;
 }
 
-export interface SubmissionMembershipWork {
-  membershipBuilds: number;
-  membershipCandidateScans: number;
-}
-
 export function buildSubmissionCandidateMembership(
   source: SubmissionPlan,
-  work?: SubmissionMembershipWork,
 ): SubmissionCandidateMembership {
-  if (work !== undefined) work.membershipBuilds++;
   const mutable = new Map<number, SubmissionCandidateMembershipEntry[]>();
   for (const batch of source.batches) {
     for (const candidate of batch.candidates) {
-      if (work !== undefined) work.membershipCandidateScans++;
       const entries = mutable.get(candidate.primitiveIndex) ?? [];
       entries.push({ batch, candidate });
       mutable.set(candidate.primitiveIndex, entries);
@@ -271,7 +278,9 @@ interface MutableBatch {
   readonly generation: number;
   readonly key: GpuDrivenBatchKey;
   members: MemberCandidates;
-  readonly binding: GpuDrivenBatchBinding;
+  binding: GpuDrivenBatchBinding;
+  /** A row-material batch moved its binding to another held material. */
+  bindingChanged: boolean;
   readonly lod: GpuDrivenBatchLod | undefined;
   contentEpoch: number;
 }
@@ -286,9 +295,7 @@ export interface EligibleGpuDrivenDraw {
 
 interface MembershipDraw {
   readonly sourceDrawIndex: number;
-  readonly key: GpuDrivenBatchKey;
   readonly batchText: string;
-  readonly lod: GpuDrivenBatchLod | undefined;
 }
 
 interface MembershipProjection {
@@ -296,12 +303,151 @@ interface MembershipProjection {
   readonly draws: readonly MembershipDraw[];
 }
 
-function eligibleDraws(slot: RenderSceneSlot): readonly EligibleGpuDrivenDraw[] {
+/**
+ * Slot-indexed batch membership. Equal projections are one shared interned
+ * value, so rows of one template hold a reference rather than their own
+ * descriptor, key and batch text.
+ */
+class MembershipColumn {
+  private readonly bySlot: (MembershipProjection | undefined)[] = [];
+  private readonly interned = new Map<
+    string,
+    { readonly projection: MembershipProjection; holders: number }
+  >();
+  private readonly keys = new WeakMap<MembershipProjection, string>();
+  /** Bulk admission sets many rows from one shared projection; reuse its key. */
+  private recent:
+    | {
+        readonly input: MembershipProjection;
+        readonly key: string;
+        readonly shared: { readonly projection: MembershipProjection; holders: number };
+      }
+    | undefined;
+
+  get(slot: number): MembershipProjection | undefined {
+    return this.bySlot[slot];
+  }
+
+  set(slot: number, projection: MembershipProjection): void {
+    const recent = this.recent;
+    let shared =
+      recent !== undefined &&
+      recent.input === projection &&
+      this.interned.get(recent.key) === recent.shared
+        ? recent.shared
+        : undefined;
+    if (shared !== undefined) {
+      shared.holders++;
+      this.delete(slot);
+      this.bySlot[slot] = shared.projection;
+      return;
+    }
+    let key = '';
+    for (const draw of projection.draws)
+      key += `${draw.sourceDrawIndex}\u0000${draw.batchText}\u0001`;
+    key += projection.instanceCount;
+    shared = this.interned.get(key);
+    if (shared === undefined) {
+      const frozen = Object.freeze({
+        instanceCount: projection.instanceCount,
+        draws: Object.freeze(projection.draws.map((draw) => Object.freeze({ ...draw }))),
+      });
+      shared = { projection: frozen, holders: 0 };
+      this.interned.set(key, shared);
+      this.keys.set(frozen, key);
+    }
+    shared.holders++;
+    this.recent = { input: projection, key, shared };
+    this.delete(slot);
+    this.bySlot[slot] = shared.projection;
+  }
+
+  delete(slot: number): void {
+    const previous = this.bySlot[slot];
+    if (previous === undefined) return;
+    this.bySlot[slot] = undefined;
+    const key = this.keys.get(previous);
+    const shared = key === undefined ? undefined : this.interned.get(key);
+    if (shared !== undefined && --shared.holders === 0 && key !== undefined)
+      this.interned.delete(key);
+  }
+
+  clear(): void {
+    this.recent = undefined;
+    this.bySlot.length = 0;
+    this.interned.clear();
+  }
+}
+
+/**
+ * Rows of one interned content share every field reference this projection
+ * reads, so consecutive admissions of one template reuse the previous row's
+ * frozen draws instead of rebuilding keys and binding records per row.
+ */
+let recentEligible:
+  | {
+      readonly snapshot: RenderableSnapshot;
+      readonly reflected: boolean;
+      readonly rowGroup: RowMaterialGroup | undefined;
+      readonly draws: readonly EligibleGpuDrivenDraw[];
+    }
+  | undefined;
+let recentMembership:
+  | { readonly draws: readonly EligibleGpuDrivenDraw[]; readonly projection: MembershipProjection }
+  | undefined;
+
+function sameEligibleInputs(a: RenderableSnapshot, b: RenderableSnapshot): boolean {
+  return (
+    a.assetHandle === b.assetHandle &&
+    a.gpuDrivenDraws === b.gpuDrivenDraws &&
+    a.material === b.material &&
+    a.materials === b.materials &&
+    a.materialOverrides === b.materialOverrides &&
+    a.materialBindingSources === b.materialBindingSources &&
+    a.worldId === b.worldId &&
+    a.lods === b.lods &&
+    a.lodHysteresis === b.lodHysteresis &&
+    a.authorVisible === b.authorVisible &&
+    a.skinBinding === b.skinBinding &&
+    (a.localAabb === undefined) === (b.localAabb === undefined) &&
+    a.morph === undefined &&
+    b.morph === undefined &&
+    a.instances === undefined &&
+    b.instances === undefined &&
+    a.spriteInstances === undefined &&
+    b.spriteInstances === undefined
+  );
+}
+
+function eligibleDraws(
+  slot: RenderSceneSlot,
+  rows: Pick<RowMaterialMembers<object, unknown>, 'group'>,
+): readonly EligibleGpuDrivenDraw[] {
   const snapshot = slot.snapshot;
+  const reflected = isReflectedTransform(snapshot.transform.world);
+  const rowGroup = rows.group(snapshot);
+  const recent = recentEligible;
+  if (
+    recent !== undefined &&
+    recent.reflected === reflected &&
+    recent.rowGroup === rowGroup &&
+    sameEligibleInputs(recent.snapshot, snapshot)
+  )
+    return recent.draws;
+  const draws = eligibleDrawsUncached(snapshot, rowGroup);
+  recentEligible = { snapshot, reflected, rowGroup, draws };
+  return draws;
+}
+
+function eligibleDrawsUncached(
+  snapshot: RenderableSnapshot,
+  rowGroup: RowMaterialGroup | undefined,
+): readonly EligibleGpuDrivenDraw[] {
   // Authored hiding removes raster demand; per-view culling retains membership.
   // Explicit candidate preparation consumes eligibleGpuDrivenDraws directly.
   if (snapshot.authorVisible === false) return [];
-  const draws = eligibleGpuDrivenDraws(snapshot);
+  const rowClass = rowGroup?.text;
+  const draws = rowMaterialDraws(eligibleGpuDrivenDraws(snapshot), snapshot, rowGroup);
   const first = draws[0];
   if (first === undefined) return [];
   const source: MeshBatchSource = Object.freeze({
@@ -323,41 +469,57 @@ function eligibleDraws(slot: RenderSceneSlot): readonly EligibleGpuDrivenDraw[] 
       key: {
         ...first.key,
         drawItemIndex: 0,
-        materialResourceClass: JSON.stringify([
-          // Hand-authored recorder sources may omit the authored table.
-          ...(snapshot.materialOverrides === undefined
-            ? [
-                getOpaqueResourceIdentity(source.material),
-                snapshot.materials.map(getOpaqueResourceIdentity),
-                snapshot.materialBindingSources,
-              ]
-            : []),
-          (source.materialOverrides ?? []).map((resource) =>
-            resource === undefined ? 0 : getOpaqueResourceIdentity(resource),
-          ),
-        ]),
+        ...(rowClass === undefined ? {} : { rowMaterial: true as const }),
+        materialResourceClass:
+          rowClass ??
+          JSON.stringify([
+            // Hand-authored recorder sources may omit the authored table.
+            ...(snapshot.materialOverrides === undefined
+              ? [
+                  getOpaqueResourceIdentity(source.material),
+                  snapshot.materials.map(getOpaqueResourceIdentity),
+                  snapshot.materialBindingSources,
+                ]
+              : []),
+            (source.materialOverrides ?? []).map((resource) =>
+              resource === undefined ? 0 : getOpaqueResourceIdentity(resource),
+            ),
+          ]),
       },
     },
   ];
 }
 
+/**
+ * Executions of a row-material row that read each member's own material slot:
+ * every slot of an explicit table, or slot 0 of a one-entry override (other
+ * slots are the shared Mesh defaults).
+ */
+function rowMaterialDraws(
+  draws: readonly EligibleGpuDrivenDraw[],
+  snapshot: RenderableSnapshot,
+  rowGroup: RowMaterialGroup | undefined,
+): readonly EligibleGpuDrivenDraw[] {
+  if (rowGroup === undefined) return draws;
+  return draws.map((draw) =>
+    rowMaterialSlot(snapshot, draw.key.materialSlot)
+      ? {
+          ...draw,
+          binding: { ...draw.binding, rowGroup },
+          key: { ...draw.key, rowMaterial: true as const, materialResourceClass: rowGroup.text },
+        }
+      : draw,
+  );
+}
+
 export function gpuDrivenGeometryEligible(snapshot: RenderableSnapshot): boolean {
   if (
     snapshot.instances?.instanceCount === 0 ||
-    snapshot.localAabb === undefined ||
-    snapshot.morph !== undefined ||
+    (snapshot.localAabb === undefined && snapshot.skinBinding === undefined) ||
     snapshot.spriteInstances !== undefined
   )
     return false;
-  const skin = snapshot.skin;
-  return (
-    skin === undefined ||
-    (skin.storageOrUniform === 'storage' &&
-      Number.isInteger(skin.customDataStart) &&
-      skin.customDataStart >= 0 &&
-      skin.buffer !== undefined &&
-      isFiniteBounds3(skin.bounds))
-  );
+  return true;
 }
 
 /** Binding admission reads geometry and instance facts, never material content. */
@@ -368,6 +530,8 @@ export function eligibleGpuDrivenDraws(
   const draws = snapshot.gpuDrivenDraws;
   if (draws === undefined || draws.length === 0 || !gpuDrivenGeometryEligible(snapshot)) return [];
   const reflected = isReflectedTransform(snapshot.transform.world);
+  // Morphed rows deform LOD0 vertices by their own GPU Scene weights.
+  const morph = snapshot.morph !== undefined;
   const result: EligibleGpuDrivenDraw[] = [];
   for (let compactIndex = 0; compactIndex < draws.length; compactIndex++) {
     const draw = draws[compactIndex];
@@ -382,12 +546,13 @@ export function eligibleGpuDrivenDraws(
       binding: Object.freeze({
         worldId: snapshot.worldId,
         assetHandle: snapshot.assetHandle,
-        ...(snapshot.lods === undefined
+        ...(snapshot.lods === undefined || morph
           ? {}
           : { lods: Object.freeze(snapshot.lods.map((lod) => lod.mesh)) }),
         material,
         geometry,
         drawItemIndex,
+        ...(morph ? { morph } : {}),
       }),
       key: {
         drawItemIndex,
@@ -400,10 +565,11 @@ export function eligibleGpuDrivenDraws(
         materialSlot: draw.materialSlot,
         topology: draw.topology,
         ...(reflected ? { reflected } : {}),
+        ...(morph ? { morph } : {}),
         pipelineClass: `${geometry.receipt.identity}|${geometry.deformation}`,
         materialResourceClass: resourceIdentity,
       },
-      ...drawLod(draw, snapshot),
+      ...(morph ? {} : drawLod(draw, snapshot)),
     });
   }
   return result;
@@ -448,16 +614,31 @@ function batchText(key: GpuDrivenBatchKey, lod: GpuDrivenBatchLod | undefined): 
 
 function membershipProjection(
   slot: RenderSceneSlot,
-  draws = eligibleDraws(slot),
+  draws: readonly EligibleGpuDrivenDraw[],
 ): MembershipProjection {
   const instanceCount = slot.snapshot.instances?.instanceCount ?? 1;
   if (!Number.isSafeInteger(instanceCount) || instanceCount < 0)
     throw new RangeError('GPU batch instanceCount must be a non-negative safe integer');
+  const recent = recentMembership;
+  if (
+    recent !== undefined &&
+    recent.draws === draws &&
+    recent.projection.instanceCount === instanceCount
+  )
+    return recent.projection;
+  const projection = membershipProjectionUncached(instanceCount, draws);
+  recentMembership = { draws, projection };
+  return projection;
+}
+
+function membershipProjectionUncached(
+  instanceCount: number,
+  draws: readonly EligibleGpuDrivenDraw[],
+): MembershipProjection {
   return {
     instanceCount,
     draws: draws.map((draw) => ({
       sourceDrawIndex: draw.sourceDrawIndex,
-      key: draw.key,
       batchText:
         draw.binding.source?.materialOverrides === undefined
           ? batchText(draw.key, draw.lod)
@@ -466,8 +647,8 @@ function membershipProjection(
               draw.binding.assetHandle,
               draw.binding.geometry.deformation,
               draw.key.materialResourceClass,
+              draw.key.morph === true,
             ]),
-      lod: draw.lod,
     })),
   };
 }
@@ -552,9 +733,10 @@ export class BatchTopology {
   private readonly batches = new Map<string, MutableBatch>();
   private sources = new BatchSources();
   private readonly changedBatches = new Set<MutableBatch>();
-  private readonly membershipByPrimitive = new Map<number, MembershipProjection>();
-  private readonly ineligiblePrimitives = new Set<number>();
-  private unbatchedSnapshot: readonly number[] | undefined;
+  private readonly membershipByPrimitive = new MembershipColumn();
+  /** Geometry rows without native batch membership; a fixed set diffs against earlier frames. */
+  private unbatched = new FrameSet();
+  private readonly rowMaterials = new RowMaterialMembers<MutableBatch, GpuDrivenBatchBinding>();
   private readonly generationByBatchId: number[] = [];
   private readonly freeBatchIds: number[] = [];
   private health: 'ready' | { readonly cause: unknown } = 'ready';
@@ -578,8 +760,8 @@ export class BatchTopology {
       this.sources = new BatchSources();
       this.changedBatches.clear();
       this.membershipByPrimitive.clear();
-      this.ineligiblePrimitives.clear();
-      this.unbatchedSnapshot = undefined;
+      this.unbatched = new FrameSet();
+      this.rowMaterials.clear();
       // Every id becomes free with its generation retained, so a rebuilt batch
       // never repeats a published `(batchId, generation)` with other contents.
       this.freeBatchIds.length = 0;
@@ -627,50 +809,9 @@ export class BatchTopology {
         }
       }
       for (const update of membershipUpdates.values()) {
-        const { slot } = update;
-        const eligible = eligibleDraws(slot);
-        const next = membershipProjection(slot, eligible);
-        // The projection is one descriptor per eligible source draw; candidate
-        // identities are derived from the stable ordinal and are not stored as
-        // N per-instance comparison records.
-        this.membershipAllocations += next.draws.length;
-        const previous = this.membershipByPrimitive.get(slot.slot);
-        this.membershipChecks += 1;
-        const topologyStable =
-          previous !== undefined &&
-          previous.draws.length === next.draws.length &&
-          previous.draws.every((membership, index) => {
-            const candidate = next.draws[index];
-            return (
-              candidate !== undefined &&
-              membership.sourceDrawIndex === candidate.sourceDrawIndex &&
-              membership.batchText === candidate.batchText
-            );
-          });
-        if (!topologyStable) {
-          const removedChanged = this.remove(slot.slot);
-          const addedChanged = this.add(slot, eligible, next);
-          changed = removedChanged || addedChanged || changed;
-          topologyChanged = removedChanged || addedChanged || topologyChanged;
-          continue;
-        }
-        if (previous.instanceCount !== next.instanceCount) {
-          for (const membership of previous.draws) {
-            const batch = this.batches.get(membership.batchText);
-            const entry = batch?.members.get(slot.slot);
-            if (batch === undefined || entry === undefined)
-              throw new Error('Missing retained batch membership');
-            const member = Object.freeze({ ...entry.member, instanceCount: next.instanceCount });
-            batch.members = batch.members.with(member);
-            this.candidateRemoves += Math.max(0, previous.instanceCount - next.instanceCount);
-            this.candidateAdds += Math.max(0, next.instanceCount - previous.instanceCount);
-            batch.contentEpoch++;
-            this.changedBatches.add(batch);
-          }
-          changed = true;
-          topologyChanged = true;
-        }
-        this.membershipByPrimitive.set(slot.slot, next);
+        const moved = this.updateMembership(update.slot, update.content);
+        changed = moved !== 'none' || changed;
+        topologyChanged = moved === 'topology' || topologyChanged;
       }
       for (const slot of delta.createdSlots) {
         const addedChanged = this.add(slot);
@@ -678,6 +819,116 @@ export class BatchTopology {
         topologyChanged = addedChanged || topologyChanged;
       }
       if (topologyChanged) {
+        this.revision += 1;
+        this.patches += 1;
+        this.cachedPlan = undefined;
+      }
+      return changed;
+    } catch (cause) {
+      this.fail(cause);
+    }
+  }
+
+  /** Re-project one slot's membership; a stable projection patches its members in place. */
+  private updateMembership(
+    slot: RenderSceneSlot,
+    content: boolean,
+  ): 'none' | 'content' | 'topology' {
+    const eligible = eligibleDraws(slot, this.rowMaterials);
+    const next = membershipProjection(slot, eligible);
+    // The projection is one descriptor per eligible source draw; candidate
+    // identities are derived from the stable ordinal and are not stored as
+    // N per-instance comparison records.
+    this.membershipAllocations += next.draws.length;
+    const previous = this.membershipByPrimitive.get(slot.slot);
+    this.membershipChecks += 1;
+    const topologyStable =
+      previous !== undefined &&
+      previous.draws.length === next.draws.length &&
+      previous.draws.every((membership, index) => {
+        const candidate = next.draws[index];
+        return (
+          candidate !== undefined &&
+          membership.sourceDrawIndex === candidate.sourceDrawIndex &&
+          membership.batchText === candidate.batchText
+        );
+      });
+    if (!topologyStable) {
+      const removedChanged = this.remove(slot.slot);
+      const addedChanged = this.add(slot, eligible, next);
+      return removedChanged || addedChanged ? 'topology' : 'none';
+    }
+    if (content) this.contentPatches += 1;
+    const retargeted = this.retargetRowMaterial(slot, next);
+    if (previous.instanceCount !== next.instanceCount) {
+      for (const membership of previous.draws) {
+        const batch = this.batches.get(membership.batchText);
+        const member = batch?.members.get(slot.slot);
+        if (batch === undefined || member === undefined)
+          throw new Error('Missing retained batch membership');
+        batch.members = batch.members.with({ ...member, instanceCount: next.instanceCount });
+        this.candidateRemoves += Math.max(0, previous.instanceCount - next.instanceCount);
+        this.candidateAdds += Math.max(0, next.instanceCount - previous.instanceCount);
+        batch.contentEpoch++;
+        this.changedBatches.add(batch);
+      }
+      this.membershipByPrimitive.set(slot.slot, next);
+      return 'topology';
+    }
+    this.membershipByPrimitive.set(slot.slot, next);
+    return retargeted ? 'topology' : 'none';
+  }
+
+  /**
+   * A stable row-material row may still address another material of the same
+   * class. Its per-material membership follows, and the batch binding moves
+   * when its material lost the last member.
+   */
+  private retargetRowMaterial(slot: RenderSceneSlot, projection: MembershipProjection): boolean {
+    const material = rowMaterialResource(slot.snapshot);
+    if (material === undefined || this.rowMaterials.materialOf(slot.slot) === material)
+      return false;
+    const draw = eligibleDraws(slot, this.rowMaterials)[0];
+    const batch =
+      projection.draws[0] === undefined
+        ? undefined
+        : this.batches.get(projection.draws[0].batchText);
+    if (draw === undefined || batch === undefined || batch.key.rowMaterial !== true) return false;
+    const binding = this.rowMaterials.retarget(
+      batch,
+      slot.slot,
+      slot.snapshot,
+      draw.binding,
+      draw.key.materialResourceClass,
+    );
+    return binding !== undefined && this.rebind(batch, binding);
+  }
+
+  private rebind(batch: MutableBatch, binding: GpuDrivenBatchBinding): boolean {
+    if (batch.members.memberCount === 0) return false;
+    batch.binding = binding;
+    batch.bindingChanged = true;
+    batch.contentEpoch++;
+    this.changedBatches.add(batch);
+    return true;
+  }
+
+  /**
+   * Adopt the accepted material frame. Only rows whose material changed batch
+   * class move; numeric edits stay in the GPU Scene material row.
+   */
+  adoptMaterials(
+    materials: MaterialFrame,
+    slotAt: (slot: number) => RenderSceneSlot | undefined,
+  ): boolean {
+    if (this.health !== 'ready') throw this.health.cause;
+    try {
+      let changed = false;
+      for (const index of this.rowMaterials.adopt(materials)) {
+        const slot = slotAt(index);
+        if (slot !== undefined && this.updateMembership(slot, false) === 'topology') changed = true;
+      }
+      if (changed) {
         this.revision += 1;
         this.patches += 1;
         this.cachedPlan = undefined;
@@ -715,10 +966,14 @@ export class BatchTopology {
   }
 
   /** Actual execution owns draw expansion and physical output-window lifetime. */
-  query(source: SubmissionPlan, meshes: MeshFrame | undefined): SubmissionPlan {
+  query(
+    source: SubmissionPlan,
+    meshes: MeshFrame | undefined,
+    materials?: MaterialFrame,
+  ): SubmissionPlan {
     if (this.health !== 'ready') throw this.health.cause;
     try {
-      return this.meshBatches.query(source, meshes);
+      return this.meshBatches.query(source, meshes, materials);
     } catch (cause) {
       this.fail(cause);
     }
@@ -726,17 +981,21 @@ export class BatchTopology {
 
   /** Maintained by geometry changes; material adoption never inspects primitives. */
   get completeGeometry(): boolean {
-    return this.ineligiblePrimitives.size === 0;
+    return this.unbatched.size === 0;
   }
 
   /** Geometry-only roster. Its publication changes independently of GPU batch membership. */
-  get unbatchedSlots(): readonly number[] {
-    this.unbatchedSnapshot ??= Object.freeze([...this.ineligiblePrimitives]);
-    return this.unbatchedSnapshot;
+  get unbatchedSlots(): FrameSet {
+    return this.unbatched;
   }
 
   revisionValue(): number {
     return this.revision;
+  }
+
+  /** A same-handle mesh content patch keeps every draw fact; only content epochs change. */
+  recordContentPatch(): void {
+    this.contentPatches += 1;
   }
 
   inspect(): BatchTopologyInspection {
@@ -749,7 +1008,7 @@ export class BatchTopology {
       candidateCount,
       rebuilds: this.rebuilds,
       patches: this.patches,
-      ineligible: this.ineligiblePrimitives.size,
+      ineligible: this.unbatched.size,
       contentPatches: this.contentPatches,
       planBuilds: this.planBuilds,
       batchesRebuilt: this.batchesRebuilt,
@@ -767,15 +1026,14 @@ export class BatchTopology {
 
   private add(
     slot: RenderSceneSlot,
-    draws = eligibleDraws(slot),
+    draws = eligibleDraws(slot, this.rowMaterials),
     projection?: MembershipProjection,
   ): boolean {
     if (draws.length === 0) {
-      if (!this.ineligiblePrimitives.has(slot.slot)) this.unbatchedSnapshot = undefined;
-      this.ineligiblePrimitives.add(slot.slot);
+      this.unbatched = this.unbatched.with(slot.slot);
       return false;
     }
-    if (this.ineligiblePrimitives.delete(slot.slot)) this.unbatchedSnapshot = undefined;
+    this.unbatched = this.unbatched.without(slot.slot);
     const memberships = projection ?? membershipProjection(slot, draws);
     const instanceCount = memberships.instanceCount;
     if (projection === undefined) this.membershipAllocations += memberships.draws.length;
@@ -797,22 +1055,29 @@ export class BatchTopology {
           key: Object.freeze(draw.key),
           members: new MemberCandidates(),
           binding: draw.binding,
+          bindingChanged: false,
           lod: draw.lod,
           contentEpoch: 0,
         };
         this.batches.set(text, batch);
       }
+      if (draw.key.rowMaterial === true)
+        this.rowMaterials.add(
+          batch,
+          slot.slot,
+          slot.snapshot,
+          draw.binding,
+          draw.key.materialResourceClass,
+        );
       const previousCount = batch.members.length;
       batch.contentEpoch += instanceCount - (previousCount === 0 ? 1 : 0);
-      const member = Object.freeze({
+      batch.members = batch.members.with({
         primitiveIndex: slot.slot,
         generation: slot.generation,
         entityKey: slot.snapshot.entityKey,
         drawItemIndex: draw.sourceDrawIndex,
         instanceCount,
       });
-      // Recreate and compatibility moves admit from an empty page root.
-      batch.members = batch.members.with(member);
       this.candidateAdds += instanceCount;
       this.changedBatches.add(batch);
     }
@@ -828,7 +1093,7 @@ export class BatchTopology {
 
   private publish(batch: MutableBatch): void {
     const candidates = batch.members;
-    if (this.sources.get(batch.batchId) !== undefined) {
+    if (this.sources.get(batch.batchId) !== undefined && !batch.bindingChanged) {
       this.sources = this.sources.withMembers(batch.batchId, candidates, batch.contentEpoch);
       this.batchesRebuilt++;
       return;
@@ -846,12 +1111,13 @@ export class BatchTopology {
       ...(batch.lod === undefined ? {} : { lod: batch.lod }),
       contentEpoch: batch.contentEpoch,
     });
+    batch.bindingChanged = false;
     this.sources = this.sources.with(published);
     this.batchesRebuilt++;
   }
 
   private remove(primitiveIndex: number): boolean {
-    if (this.ineligiblePrimitives.delete(primitiveIndex)) this.unbatchedSnapshot = undefined;
+    this.unbatched = this.unbatched.without(primitiveIndex);
     const memberships = this.membershipByPrimitive.get(primitiveIndex);
     this.membershipByPrimitive.delete(primitiveIndex);
     if (memberships === undefined) return false;
@@ -859,6 +1125,8 @@ export class BatchTopology {
       const batch = this.batches.get(membership.batchText);
       if (batch === undefined) continue;
       batch.members = batch.members.without(primitiveIndex);
+      const binding = this.rowMaterials.remove(batch, primitiveIndex);
+      if (binding !== undefined) this.rebind(batch, binding);
       batch.contentEpoch += memberships.instanceCount;
       this.candidateRemoves += memberships.instanceCount;
       if (batch.members.memberCount === 0) {

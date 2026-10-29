@@ -17,6 +17,7 @@ function makeRegistry(includeMaterials = false): AssetRegistry {
     shaderRegistry: {
       getMaterialShaderManifest: vi.fn().mockReturnValue(undefined),
       findMaterialArtifact: vi.fn().mockReturnValue({ ok: false, error: new Error('mock') }),
+      materialArtifact: vi.fn().mockReturnValue(undefined),
       getPipeline: vi.fn().mockReturnValue(undefined),
       installMaterialArtifact: vi.fn(),
       inspect: vi.fn().mockReturnValue({ materialShaders: [] }),

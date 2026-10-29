@@ -9,7 +9,7 @@ import {
 import { computeTangentVec4 } from './tangent';
 import { packInterleavedVertexAttributes } from './vertex-attribute-layout';
 
-interface PrimitiveAttributes {
+export interface PrimitiveAttributes {
   readonly position: Float32Array;
   readonly normal: Float32Array;
   readonly uv: Float32Array;

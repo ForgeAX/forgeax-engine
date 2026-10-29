@@ -308,11 +308,8 @@ export function installMaterialReadyShaders(
     return parameter;
   });
   const entries = readiness.record.programs.map((program) => {
-    const source = new TextDecoder().decode(program.artifact.bytes);
-    if (source.length === 0)
-      throw new Error(
-        `MaterialReady ${readiness.record.guid} contains an empty shader program ${program.specializationKey}`,
-      );
+    if (program.artifact.bytes.byteLength === 0)
+      throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const pass = readiness.record.resolved.passes.find((pass) =>
       program.selections.some((selection) => selection.pass === pass.name),
     );
@@ -327,45 +324,28 @@ export function installMaterialReadyShaders(
         ...(abi === undefined ? {} : { abi, receipt: abi }),
       }),
     };
-    return { artifact, source, ...(abi === undefined ? {} : { abi }) };
+    return {
+      artifact,
+      input: {
+        bytes: artifact.bytes,
+        digest: program.artifact.digest,
+        paramSchema,
+        ...(abi === undefined ? {} : { receipt: abi }),
+      },
+    };
   });
   const validation = new MaterialArtifactRegistry();
-  for (const { artifact, source, abi } of entries) {
+  for (const { artifact, input } of entries) {
     const previous = artifactRegistry.get(artifact.key);
     if (previous !== undefined) validation.register(previous).unwrap();
     const checked = validation.register(artifact);
     if (!checked.ok) throw conflictError(checked.error);
-    const shader = shaderRegistry.findMaterialArtifact(artifact.key);
-    if (
-      shader.ok &&
-      (shader.value.source !== source ||
-        JSON.stringify(shader.value.paramSchema) !== JSON.stringify(paramSchema) ||
-        JSON.stringify(shader.value.receipt) !== JSON.stringify(abi))
-    ) {
-      throw conflictError({
-        code: 'material-artifact-conflict',
-        expected: 'one immutable source, interface, and ABI receipt per program key',
-        hint: 're-cook the conflicting program',
-        detail: {
-          key: artifact.key,
-          dimension:
-            shader.value.source !== source
-              ? 'bytes'
-              : JSON.stringify(shader.value.paramSchema) !== JSON.stringify(paramSchema)
-                ? 'param-schema'
-                : 'receipt',
-        },
-      });
-    }
+    const accepted = shaderRegistry.validateMaterialArtifactBytes(artifact.key, input);
+    if (!accepted.ok) throw conflictError(accepted.error);
   }
-  for (const { artifact, source, abi } of entries) {
+  for (const { artifact, input } of entries) {
     artifactRegistry.register(artifact).unwrap();
-    if (!shaderRegistry.findMaterialArtifact(artifact.key).ok)
-      shaderRegistry.installMaterialArtifact(artifact.key, {
-        source,
-        paramSchema,
-        ...(abi === undefined ? {} : { receipt: abi }),
-      });
+    shaderRegistry.installMaterialArtifactBytes(artifact.key, input);
   }
   return projectMaterialRecord(readiness.record);
 }

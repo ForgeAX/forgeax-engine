@@ -56,7 +56,7 @@ async function cookedTick(input: unknown): Promise<VfxTickFixture> {
 }
 
 describe('GPU VFX public host', () => {
-  it('owns loader and FixedUpdate attachment without exposing simulation internals', async () => {
+  it('owns loader and Update attachment without exposing simulation internals', async () => {
     const assets = new AssetRegistry();
     const world = new World({ assets });
 
@@ -124,10 +124,22 @@ describe('GPU VFX public host', () => {
     });
     expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
 
+    const beforeFirstPlayback = host.feature.plan(
+      { worlds: [], frameNumber: 0 } as never,
+      { targets: [], caps: {}, frame: { frameNumber: 0 }, generation: 1 } as never,
+    );
+    expect(beforeFirstPlayback).toMatchObject({
+      ok: true,
+      value: { work: [{ scope: 'frame', resources: [], passes: [] }] },
+    });
+    host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 0 } as never);
+    expect(host.feature.inspect()).toMatchObject({ frameNumber: 0, dispatches: 0 });
+
     const intent = await cookedTick({
       player: world.spawn().unwrap(),
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
+      delta: 1 / 60,
+      initialDelta: 1 / 60,
+      elapsed: 1 / 60,
       phaseTick: 0,
       seed: 1,
       playCycle: 0,
@@ -265,10 +277,7 @@ describe('GPU VFX public host', () => {
     expect(emptyPlan).toMatchObject({
       ok: true,
       value: {
-        work: [
-          { scope: 'frame', passes: [] },
-          { scope: { view: 'main' }, passes: [] },
-        ],
+        work: [{ scope: 'frame', passes: [], resources: [] }],
       },
     });
     host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 2 } as never);
@@ -414,8 +423,9 @@ describe('GPU VFX public host', () => {
         },
         programFingerprint: id,
         reset: true,
-        fixedDelta: 1 / 60,
-        initialFixedDelta: 1 / 60,
+        delta: 1 / 60,
+        initialDelta: 1 / 60,
+        elapsed: 1 / 60,
         phaseTick: 0,
         tick: 0,
         seed: 1,
@@ -697,8 +707,9 @@ describe('GPU VFX public host', () => {
         },
         programFingerprint: 'masked-program',
         reset: tick === 0,
-        fixedDelta: 1 / 60,
-        initialFixedDelta: 1 / 60,
+        delta: 1 / 60,
+        initialDelta: 1 / 60,
+        elapsed: (tick + 7 + 1) / 60,
         phaseTick: tick + 7,
         tick,
         seed: 1,
@@ -811,8 +822,9 @@ describe('GPU VFX public host', () => {
         },
         programFingerprint: `${id}-program`,
         reset,
-        fixedDelta: 1 / 60,
-        initialFixedDelta: 1 / 60,
+        delta: 1 / 60,
+        initialDelta: 1 / 60,
+        elapsed: (sequence + 1) / 60,
         phaseTick: sequence,
         tick: sequence,
         seed: 1,
@@ -953,8 +965,9 @@ describe('GPU VFX public host', () => {
         },
         programFingerprint: `${id}-program`,
         reset,
-        fixedDelta: 1 / 60,
-        initialFixedDelta: 1 / 60,
+        delta: 1 / 60,
+        initialDelta: 1 / 60,
+        elapsed: (sequence + 1) / 60,
         phaseTick: sequence,
         tick: sequence,
         seed: 1,
@@ -1251,8 +1264,9 @@ describe('GPU VFX public host', () => {
       },
       programFingerprint: 'paused-reset-program',
       reset: true,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
+      delta: 1 / 60,
+      initialDelta: 1 / 60,
+      elapsed: 1 / 60,
       phaseTick: 0,
       tick: 1,
       seed: 2,
@@ -1374,8 +1388,9 @@ describe('GPU VFX public host', () => {
         },
         programFingerprint: id,
         reset,
-        fixedDelta: 1 / 60,
-        initialFixedDelta: 1 / 60,
+        delta: 1 / 60,
+        initialDelta: 1 / 60,
+        elapsed: (sequence + 1) / 60,
         phaseTick: sequence,
         tick: sequence,
         seed: 1,
@@ -1571,7 +1586,7 @@ describe('GPU VFX public host', () => {
     await host.detachWorld({ world });
   });
 
-  it('writes trail history once per fixed tick before the final projection', async () => {
+  it('writes trail history once per tick before the final projection', async () => {
     const world = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
     const camera = {
@@ -1625,8 +1640,9 @@ describe('GPU VFX public host', () => {
         },
         programFingerprint: 'trail-program',
         reset,
-        fixedDelta: 1 / 60,
-        initialFixedDelta: 1 / 60,
+        delta: 1 / 60,
+        initialDelta: 1 / 60,
+        elapsed: (sequence + 1) / 60,
         phaseTick: sequence,
         tick: sequence,
         seed: 1,
@@ -1850,7 +1866,7 @@ describe('GPU VFX public host', () => {
       },
     });
     feature.onFrameSubmitted?.({ worlds: [], frameNumber: 1 } as never);
-    // The reset was discovered after FixedUpdate while the emitter was
+    // The reset was discovered after the VFX update while the emitter was
     // culled, so it remains queued rather than being acknowledged as a fake
     // GPU state.
     expect(runtime.snapshot().length).toBeGreaterThan(0);
@@ -1966,7 +1982,7 @@ describe('GPU VFX public host', () => {
     feature.onFrameAborted?.({ ...next, frameNumber: 4 });
   });
 
-  it('retains committed particles for render frames without a fixed tick', async () => {
+  it('retains committed particles for render frames without a tick', async () => {
     const world = new World({ assets: new AssetRegistry() });
     const viewProjection = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     const camera = {
@@ -2045,7 +2061,7 @@ describe('GPU VFX public host', () => {
     submit(1);
     expect(runtime.snapshot()).toHaveLength(0);
 
-    // A render-only frame has no new FixedUpdate intent, but the committed
+    // A render-only frame has no new update intent, but the committed
     // particle buffer must still be projected and drawn.
     const retained = plan(2);
     expect(retained?.ok).toBe(true);

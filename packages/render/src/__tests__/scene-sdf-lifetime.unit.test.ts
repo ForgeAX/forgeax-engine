@@ -25,6 +25,8 @@ async function fixture() {
   const module = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const scope = {};
   let revision = 0;
+  // A replaced composition is a source change; a revision alone may change no collision row.
+  let identity = {};
   const internals = {
     device,
     assets: { catalogEpoch: 0 },
@@ -33,7 +35,7 @@ async function fixture() {
   const source = () => ({
     scopes: [scope] as never,
     retained: {
-      identity: scope,
+      identity,
       revision,
       worlds: [scope],
       slots: [],
@@ -55,7 +57,17 @@ async function fixture() {
       maxFieldBytes: 1024,
     },
   };
-  return { device, internals, owner, source, request, changeSource: () => revision++ };
+  return {
+    device,
+    internals,
+    owner,
+    source,
+    request,
+    changeSource: () => {
+      revision++;
+      identity = {};
+    },
+  };
 }
 
 it('preserves only fields belonging to failed consumers and retires unrelated fields', async () => {

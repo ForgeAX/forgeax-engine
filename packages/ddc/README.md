@@ -13,7 +13,7 @@ The public entry point exports the following owners:
 
 | Surface | Public exports | Purpose |
 |---|---|---|
-| Layout | `resolveBuildDdcLayout`, `resolveDdcLayout` | Resolve explicit build and project roots into the v2 child layout |
+| Layout | `resolveDdcLayout` | Resolve explicit build and project roots into the v2 child layout |
 | Status | `serializeDdcStatus`, `projectDdcStatusForBrowser` | Produce a versioned status envelope and a path-free browser projection |
 | Storage | `DdcEntryStore`, `ddcOutputDigest` | Stage, validate, publish, inspect, list, and remove immutable entries |
 | Lifecycle | `DdcLifecycle`, `withDdcLock` | Allocate generation, fence leases, CAS heads, and recover failures |
@@ -71,7 +71,6 @@ The canonical project root is `<gameDir>/.forgeax/ddc/v2`. The build root is an 
 
 | Call shape | Required root | Intended use | Missing-root behavior |
 |---|---|---|---|
-| `resolveBuildDdcLayout({ buildCacheRoot })` | `buildCacheRoot` | Build-only object reuse | Closed absolute-root failure |
 | `resolveDdcLayout({ buildCacheRoot, projectDdcRoot })` | Both roots | Serve, publication, fixed bind, and rebind | `ddc-project-root-required` |
 | `createRuntimeScope(projectDdcRoot, scopeId)` | Project root | Scope hash plus original metadata | `ddc-scope-mismatch` |
 

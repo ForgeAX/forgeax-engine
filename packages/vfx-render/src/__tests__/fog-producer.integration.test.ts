@@ -36,10 +36,14 @@ describe('VFX fog composition contract', () => {
       fileURLToPath(new URL('../feature/camera.ts', import.meta.url)),
       'utf8',
     );
+    const visibility = readFileSync(
+      fileURLToPath(new URL('../feature/emitter-visibility.ts', import.meta.url)),
+      'utf8',
+    );
     expect(feature).toContain('requiredCapabilities');
     expect(feature).toContain('identity: IDENTITY');
     expect(feature).not.toMatch(/fog(?:History|Texture|Registry)/i);
-    expect(feature).toContain('worldCenter');
+    expect(visibility).toContain('worldCenter');
     expect(camera).toContain('position');
     expect(camera).toContain('viewProjection');
   });

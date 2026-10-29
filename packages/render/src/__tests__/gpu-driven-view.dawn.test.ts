@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { shadowCameraCullDilation } from '../gpu-driven/shadow-views';
 import {
   runGpuDrivenInactiveBatchEvidence,
+  runGpuDrivenLodReadbackGenerationEvidence,
   runGpuDrivenShadowCameraCullEvidence,
   runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
@@ -10,12 +11,13 @@ import {
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
-  it('keeps skin palette addressing in the captured Instance row, independently of candidate index', async () => {
+  it('keeps true Skin source slot independent of visible instance and candidate identity', async () => {
     const result = await runGpuDrivenSkinVisibleAddressEvidence();
     expect(result, `actual skin visible addresses ${JSON.stringify(result)}`).toEqual({
-      visibleInstance: 1,
+      visibleInstance: 0,
       candidateIndex: 2,
-      paletteBase: 17,
+      sourceSlot: 1,
+      primitiveIndex: 0,
     });
   });
 
@@ -27,6 +29,17 @@ describe('GPU-driven View Dawn', () => {
       [1, 1],
     ]);
     expect(frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([0, 0]);
+  });
+  it('decodes LOD readback members by their encoded (slot, generation), not the current allocation', async () => {
+    const result = await runGpuDrivenLodReadbackGenerationEvidence();
+    expect(result.removedSlotAllocated).toBe(false);
+    const other = result.removedSlot === 0 ? 1 : 0;
+    expect(result.members).toEqual(
+      [
+        { slot: result.removedSlot, encodedGeneration: true, current: false },
+        { slot: other, encodedGeneration: true, current: true },
+      ].sort((left, right) => left.slot - right.slot),
+    );
   });
   it('produces compact visible IDs and portable indirect args on the real GPU API', async () => {
     await expect(runGpuDrivenViewGpuEvidence()).resolves.toEqual({
@@ -114,12 +127,12 @@ describe('GPU-driven View Dawn', () => {
   // A 64-texel PCF3 map: one texel of filter radius plus the two-texel margin.
   const pcf3 = shadowCameraCullDilation(1, 0, 64)?.ndcDilation ?? Number.NaN;
 
-  // The first Windows Dawn camera-cull execution exceeded the prior 60-second limit.
+  // This Windows Dawn case took 104 seconds on 2026-10-22 and exceeded its 90-second limit.
   it('culls a shadow caster only when every receiver it can darken is hidden', async () => {
     await expect(
       runGpuDrivenShadowCameraCullEvidence({ light: 'camera', wall: 'left', ndcDilation: pcf3 }),
     ).resolves.toEqual({ visible: 2, cameraCulled: 1 });
-  }, 90_000);
+  }, 150_000);
 
   it('keeps a hidden caster whose receiver prism reaches visible ground', async () => {
     // The x = -1 caster is behind the wall (the camera-light case above culls

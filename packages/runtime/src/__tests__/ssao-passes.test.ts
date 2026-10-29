@@ -198,6 +198,7 @@ function makeDispatchSpyCtx(
     getColorTargetTexture: vi.fn((_name: string) => mockHdrDepthTexture),
   };
 
+  const outputTarget = { texture: {}, view: { __swap: true } };
   const ctx = {
     runtime,
     assets: { get: vi.fn(), register: vi.fn() },
@@ -209,11 +210,10 @@ function makeDispatchSpyCtx(
         return passEncoder;
       }),
     },
-    view: { __swap: true },
+    outputTarget: () => outputTarget,
     clear: [0, 0, 0, 1],
     targetW: 800,
     targetH: 600,
-    currentTexture: {},
     // Identity world + perspective projection so computeViewMatrix /
     // computeProjectionMatrix return a sane mat4 (the test only cares that
     // writeBuffer fires once with the right intensity slot, not the matrix
@@ -698,6 +698,7 @@ function makePostProcessRecordCtx(): {
   pass: RhiRenderPassEncoder;
   bindGroupCreates: PostProcessBindGroupCreate[];
 } {
+  const outputTarget = { texture: { label: 'swapchain' }, view: { label: 'swapchain-view' } };
   const bindGroupCreates: PostProcessBindGroupCreate[] = [];
   const pass = {
     setPipeline: vi.fn(),
@@ -781,7 +782,7 @@ function makePostProcessRecordCtx(): {
     msaaActive: false,
     targetW: 800,
     targetH: 600,
-    currentTexture: { label: 'swapchain' },
+    outputTarget: () => outputTarget,
   } as unknown as _InternalRenderPipelineContext;
   return { ctx, pass: pass as unknown as RhiRenderPassEncoder, bindGroupCreates };
 }

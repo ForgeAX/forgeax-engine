@@ -1,8 +1,54 @@
-import { RhiError } from '@forgeax/engine-rhi';
-import { err } from '@forgeax/engine-types';
+import { Hash } from 'node:crypto';
+import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
+import { err, ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import { DeviceScope } from '../device/device-scope';
+import { RhiErrorListenerRegistry } from '../lifecycle';
 import { colorStageFixture } from './color-stage-device-lifetime.fixture';
+
+it('retains the admitted source descriptor with the existing program across graph replacement', async () => {
+  const f = await colorStageFixture();
+  const matches = vi.spyOn(ShaderSource.prototype, 'matches');
+  const hash = vi.spyOn(Hash.prototype, 'update');
+  const compile = vi.fn(
+    (_device: RhiDevice, descriptor: Parameters<typeof f.factory.createShaderModule>[0]) =>
+      f.factory.createShaderModule(descriptor),
+  );
+  const adapter = makeShaderDeviceAdapter(
+    f.device,
+    new RhiErrorListenerRegistry(),
+    undefined,
+    compile,
+    'immediate',
+  );
+  const modules = vi.fn(adapter.createShaderModule);
+  const factory = { createShaderModule: modules };
+  try {
+    const first = await f.draw({ factory });
+    const descriptor = modules.mock.calls[0]?.[0];
+    if (descriptor?.label === undefined) throw Error('Expected a labeled source descriptor');
+    expect(shaderSourceForDescriptor(descriptor)).toBeDefined();
+    for (let frame = 0; frame < 16; frame++) await f.draw({ factory, width: 16 });
+    expect(modules).toHaveBeenCalledTimes(17);
+    for (const [request] of modules.mock.calls) expect(request).toBe(descriptor);
+    expect(matches).not.toHaveBeenCalled();
+    expect(hash.mock.calls.filter(([input]) => input === descriptor?.code)).toHaveLength(1);
+    expect(compile).toHaveBeenCalledTimes(1);
+    // Invalidation still reaches the factory using the same immutable CPU source.
+    f.invalidateModules();
+    adapter.invalidateModule(descriptor.label);
+    expect((await f.draw({ factory })).pipeline).not.toBe(first.pipeline);
+    expect(modules.mock.calls.at(-1)?.[0]).toBe(descriptor);
+    await f.draw({ factory, strength: 0.5 });
+    expect(modules.mock.calls.at(-1)?.[0]).not.toBe(descriptor);
+  } finally {
+    adapter.dispose();
+    hash.mockRestore();
+    matches.mockRestore();
+    f.scope.retire();
+  }
+});
 
 it('reuses LUT programs across graph replacement and resize while binding current views', async () => {
   const f = await colorStageFixture();

@@ -21,16 +21,16 @@ export default defineFeature({
     const centered = box2.fromCenter(box2.create(), [10, 10], [2, 1]);
     checks.equal('fromCenter extents', Array.from(centered), [8, 9, 12, 11]);
 
-    const r = ray2.create(undefined, [-5, 0], [1, 0]);
+    const r = ray2.create(new Float32Array(5), [-5, 0], [1, 0]);
     const toBox = ray2.rayAabbIntersects(r, box);
     checks.ok('ray hits box', toBox.hit);
     checks.near('ray-box entry t = 4', toBox.t, 4);
     const toCircle = ray2.rayCircleIntersects(r, circle);
     checks.ok('ray hits circle', toCircle.hit);
     checks.near('ray-circle entry t = 7', toCircle.t, 7);
-    const short = ray2.create(undefined, [-5, 0], [1, 0], 3);
+    const short = ray2.create(new Float32Array(5), [-5, 0], [1, 0], 3);
     checks.ok('max distance clips the hit', !ray2.rayAabbIntersects(short, box).hit);
-    const diagonal = ray2.create(undefined, [0, 0], [3, 4]);
+    const diagonal = ray2.create(new Float32Array(5), [0, 0], [3, 4]);
     checks.near(
       'direction is normalized',
       ray2.getDirection(vec2.create(), diagonal)[0] as number,

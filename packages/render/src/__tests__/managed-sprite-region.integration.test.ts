@@ -7,9 +7,9 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { DEFAULT_SPRITE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { assert, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer, SpriteRegionOverride } from '../components';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
 import { buildDispatchPlan } from '../record/fold-buckets';
 import { extractFrames } from '../render-system-extract-tail';
@@ -83,9 +83,11 @@ it.each([
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       upserts += packet.upserts.length;
-      const accepted = receiver.accept(packet).unwrap();
+      const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
       const frame = scene.consumePublication(accepted);
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return frame;
     }
     return scene.extractComposition(
@@ -96,7 +98,7 @@ it.each([
         if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
         else if (request === 'full') extractions += 128;
-        return extractFrames([world], owner, assets, undefined, caches, {
+        return extractFrames([world], owner, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,

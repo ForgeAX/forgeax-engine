@@ -111,28 +111,17 @@ function pairs(rows, enterKind, returnKind) {
   return { result, incomplete: malformed || pending !== null };
 }
 
-export function analyzeCompletionTiming(capture, { lateMs = 2 } = {}) {
-  if (!finite(lateMs) || lateMs < 0) return invalid(['invalid-lateness-threshold']);
-  const error = validateEvents(
-    capture,
-    'forgeax-phone-completion-timing/1',
-    completionKinds,
-    65536,
+function hasValidCompletionEvents(events) {
+  return events.every(
+    (row) =>
+      integer(row.ticket) &&
+      integer(row.timer) &&
+      (row.value === null || finite(row.value)) &&
+      (row.scheduledAtMs === null || finite(row.scheduledAtMs)),
   );
-  if (error) return invalid([error]);
-  for (const row of capture.events) {
-    if (
-      !integer(row.ticket) ||
-      !integer(row.timer) ||
-      !(row.value === null || finite(row.value)) ||
-      !(row.scheduledAtMs === null || finite(row.scheduledAtMs))
-    )
-      return invalid(['invalid-completion-event']);
-  }
-  const c = capture.coverage,
-    o = capture.overflow;
-  const errors = [];
-  if (
+}
+function hasIncompleteObservationCoverage(c, o) {
+  return (
     !c ||
     !o ||
     o.dropped !== 0 ||
@@ -149,100 +138,155 @@ export function analyzeCompletionTiming(capture, { lateMs = 2 } = {}) {
     c.restored !== true ||
     c.armed !== true ||
     (c.abiErrors ?? 0) !== 0
-  )
-    errors.push('incomplete-observation-coverage');
+  );
+}
+function analyzeCompletionTimer(timer, timerRows) {
+  const schedule = timerRows.filter((row) => row.kind === 'timer-schedule');
+  const fire = timerRows.filter((row) => row.kind === 'timer-fire');
+  const returned = timerRows.filter((row) => row.kind === 'timer-return');
+  const complete =
+    timer > 0 &&
+    schedule.length === 1 &&
+    fire.length === 1 &&
+    returned.length === 1 &&
+    [0, 1].includes(schedule[0].value) &&
+    fire[0].value === schedule[0].value &&
+    fire[0].scheduledAtMs === schedule[0].atMs &&
+    schedule[0].atMs <= fire[0].atMs &&
+    fire[0].atMs <= returned[0].atMs;
+  return {
+    timer,
+    boundaryIncomplete: !complete,
+    actualDelayMs: complete ? fire[0].atMs - schedule[0].atMs : null,
+    excessDelayMs: complete ? fire[0].atMs - schedule[0].atMs - schedule[0].value : null,
+  };
+}
+// One ticket's driver lifecycle: request, native polls, delivery, release and its timers.
+function ticketLifecycle(rows) {
+  const polls = rows.filter((row) => row.kind === 'poll-return');
+  const timers = [];
+  for (const [timer, timerRows] of groups(
+    rows.filter((row) => row.kind.startsWith('timer-')),
+    'timer',
+  ))
+    timers.push(analyzeCompletionTimer(timer, timerRows));
+  return {
+    starts: rows.filter((row) => row.kind === 'request-start'),
+    returns: rows.filter((row) => row.kind === 'request-return'),
+    pollPairs: pairs(rows, 'poll-enter', 'poll-return'),
+    polls,
+    ready: polls.find((row) => row.value === 1),
+    resolved: rows.filter((row) => row.kind === 'driver-resolved'),
+    free: rows.filter((row) => row.kind === 'free'),
+    timers,
+  };
+}
+function isLifecycleBoundaryIncomplete({
+  starts,
+  returns,
+  ready,
+  resolved,
+  free,
+  pollPairs,
+  timers,
+}) {
+  return (
+    starts.length !== 1 ||
+    returns.length !== 1 ||
+    !ready ||
+    resolved.length !== 1 ||
+    free.length !== 1 ||
+    pollPairs.incomplete ||
+    !timers.length ||
+    timers.some((row) => row.boundaryIncomplete) ||
+    (starts.length === 1 && returns.length === 1 && starts[0].atMs > returns[0].atMs) ||
+    (ready && resolved.length === 1 && ready.atMs > resolved[0].atMs)
+  );
+}
+function readyToDriverResolvedMs(ready, resolved) {
+  return ready && resolved.length === 1 && ready.atMs <= resolved[0].atMs
+    ? resolved[0].atMs - ready.atMs
+    : null;
+}
+function analyzeCompletionTicket(ticket, rows, lateMs) {
+  const lifecycle = ticketLifecycle(rows);
+  const { polls, ready, resolved, pollPairs, timers } = lifecycle;
+  const unknownPollCount = polls.filter((row) => row.value !== 0 && row.value !== 1).length;
+  const rejected = rows.some(
+    (row) => row.kind === 'driver-rejected' || row.kind === 'native-throw',
+  );
+  const boundaryIncomplete = isLifecycleBoundaryIncomplete(lifecycle);
+  const lateTimers = timers.filter(
+    (row) => row.excessDelayMs !== null && row.excessDelayMs > lateMs,
+  );
+  const clientWait = pairs(rows, 'client-wait-enter', 'client-wait-return');
+  return {
+    ticket,
+    boundaryIncomplete,
+    unknownPollCount,
+    rejected,
+    incompleteTimerIds: timers.filter((row) => row.boundaryIncomplete).map((row) => row.timer),
+    falsePollCount: polls.filter((row) => row.value === 0).length,
+    pollCount: polls.length,
+    lateTimerCount: lateTimers.length,
+    maxTimerExcessMs: Math.max(0, ...lateTimers.map((row) => row.excessDelayMs)),
+    readyToDriverResolvedMs: readyToDriverResolvedMs(ready, resolved),
+    rawSyncImportReturnValues: rows
+      .filter((row) => row.kind === 'sync-query-return')
+      .map((row) => row.value),
+    rawSyncImportQualification:
+      'Uninterpreted import returns; wasm-bindgen may return externref indices.',
+    zeroTimeoutWaitsTimedOut: clientWait.result.filter(
+      (row) => row.enter.value === 0 && row.returned.value === 0x911b,
+    ).length,
+    signals: {
+      timerLate: lateTimers.length > 0,
+      nativePendingObserved: polls.some((row) => row.value === 0),
+      orderedDeliveryDelayed:
+        !!ready && resolved.length === 1 && resolved[0].atMs - ready.atMs > lateMs,
+      rejected,
+    },
+    polls: pollPairs.result.map((row) => ({
+      result: row.returned.value,
+      elapsedMs: row.returned.atMs - row.enter.atMs,
+    })),
+    timers,
+  };
+}
+function summarizeCompleteTickets(tickets, complete) {
+  return {
+    tickets: tickets.length,
+    completeTickets: complete.length,
+    boundaryTickets: tickets.length - complete.length,
+    timerLate: complete.filter((row) => row.signals.timerLate).length,
+    nativePending: complete.filter((row) => row.signals.nativePendingObserved).length,
+    orderedDeliveryDelayed: complete.filter((row) => row.signals.orderedDeliveryDelayed).length,
+    nativePoll: stats(complete.flatMap((row) => row.polls.map((poll) => poll.elapsedMs))),
+    timerExcess: stats(complete.flatMap((row) => row.timers.map((timer) => timer.excessDelayMs))),
+    readyToDriverResolved: stats(complete.map((row) => row.readyToDriverResolvedMs)),
+  };
+}
+
+export function analyzeCompletionTiming(capture, { lateMs = 2 } = {}) {
+  if (!finite(lateMs) || lateMs < 0) return invalid(['invalid-lateness-threshold']);
+  const error = validateEvents(
+    capture,
+    'forgeax-phone-completion-timing/1',
+    completionKinds,
+    65536,
+  );
+  if (error) return invalid([error]);
+  if (!hasValidCompletionEvents(capture.events)) return invalid(['invalid-completion-event']);
+  const c = capture.coverage,
+    o = capture.overflow;
+  const errors = [];
+  if (hasIncompleteObservationCoverage(c, o)) errors.push('incomplete-observation-coverage');
   const tickets = [];
   for (const [ticket, rows] of groups(
     capture.events.filter((row) => row.ticket > 0),
     'ticket',
-  )) {
-    const starts = rows.filter((row) => row.kind === 'request-start');
-    const returns = rows.filter((row) => row.kind === 'request-return');
-    const pollPairs = pairs(rows, 'poll-enter', 'poll-return');
-    const polls = rows.filter((row) => row.kind === 'poll-return');
-    const ready = polls.find((row) => row.value === 1);
-    const resolved = rows.filter((row) => row.kind === 'driver-resolved');
-    const free = rows.filter((row) => row.kind === 'free');
-    const timers = [];
-    for (const [timer, timerRows] of groups(
-      rows.filter((row) => row.kind.startsWith('timer-')),
-      'timer',
-    )) {
-      const schedule = timerRows.filter((row) => row.kind === 'timer-schedule');
-      const fire = timerRows.filter((row) => row.kind === 'timer-fire');
-      const returned = timerRows.filter((row) => row.kind === 'timer-return');
-      const complete =
-        timer > 0 &&
-        schedule.length === 1 &&
-        fire.length === 1 &&
-        returned.length === 1 &&
-        [0, 1].includes(schedule[0].value) &&
-        fire[0].value === schedule[0].value &&
-        fire[0].scheduledAtMs === schedule[0].atMs &&
-        schedule[0].atMs <= fire[0].atMs &&
-        fire[0].atMs <= returned[0].atMs;
-      timers.push({
-        timer,
-        boundaryIncomplete: !complete,
-        actualDelayMs: complete ? fire[0].atMs - schedule[0].atMs : null,
-        excessDelayMs: complete ? fire[0].atMs - schedule[0].atMs - schedule[0].value : null,
-      });
-    }
-    const unknownPollCount = polls.filter((row) => row.value !== 0 && row.value !== 1).length;
-    const rejected = rows.some(
-      (row) => row.kind === 'driver-rejected' || row.kind === 'native-throw',
-    );
-    const boundaryIncomplete =
-      starts.length !== 1 ||
-      returns.length !== 1 ||
-      !ready ||
-      resolved.length !== 1 ||
-      free.length !== 1 ||
-      pollPairs.incomplete ||
-      !timers.length ||
-      timers.some((row) => row.boundaryIncomplete) ||
-      (starts.length === 1 && returns.length === 1 && starts[0].atMs > returns[0].atMs) ||
-      (ready && resolved.length === 1 && ready.atMs > resolved[0].atMs);
-    const lateTimers = timers.filter(
-      (row) => row.excessDelayMs !== null && row.excessDelayMs > lateMs,
-    );
-    const clientWait = pairs(rows, 'client-wait-enter', 'client-wait-return');
-    tickets.push({
-      ticket,
-      boundaryIncomplete,
-      unknownPollCount,
-      rejected,
-      incompleteTimerIds: timers.filter((row) => row.boundaryIncomplete).map((row) => row.timer),
-      falsePollCount: polls.filter((row) => row.value === 0).length,
-      pollCount: polls.length,
-      lateTimerCount: lateTimers.length,
-      maxTimerExcessMs: Math.max(0, ...lateTimers.map((row) => row.excessDelayMs)),
-      readyToDriverResolvedMs:
-        ready && resolved.length === 1 && ready.atMs <= resolved[0].atMs
-          ? resolved[0].atMs - ready.atMs
-          : null,
-      rawSyncImportReturnValues: rows
-        .filter((row) => row.kind === 'sync-query-return')
-        .map((row) => row.value),
-      rawSyncImportQualification:
-        'Uninterpreted import returns; wasm-bindgen may return externref indices.',
-      zeroTimeoutWaitsTimedOut: clientWait.result.filter(
-        (row) => row.enter.value === 0 && row.returned.value === 0x911b,
-      ).length,
-      signals: {
-        timerLate: lateTimers.length > 0,
-        nativePendingObserved: polls.some((row) => row.value === 0),
-        orderedDeliveryDelayed:
-          !!ready && resolved.length === 1 && resolved[0].atMs - ready.atMs > lateMs,
-        rejected,
-      },
-      polls: pollPairs.result.map((row) => ({
-        result: row.returned.value,
-        elapsedMs: row.returned.atMs - row.enter.atMs,
-      })),
-      timers,
-    });
-  }
+  ))
+    tickets.push(analyzeCompletionTicket(ticket, rows, lateMs));
   if (!tickets.length) errors.push('no-observed-driver-tickets');
   if (tickets.some((row) => row.unknownPollCount)) errors.push('unknown-native-poll-abi');
   if (tickets.some((row) => row.rejected)) errors.push('native-driver-failed');
@@ -261,22 +305,7 @@ export function analyzeCompletionTiming(capture, { lateMs = 2 } = {}) {
     coverage: c,
     droppedEvents: o?.dropped ?? null,
     tickets,
-    summary: completeCoverage
-      ? {
-          tickets: tickets.length,
-          completeTickets: complete.length,
-          boundaryTickets: tickets.length - complete.length,
-          timerLate: complete.filter((row) => row.signals.timerLate).length,
-          nativePending: complete.filter((row) => row.signals.nativePendingObserved).length,
-          orderedDeliveryDelayed: complete.filter((row) => row.signals.orderedDeliveryDelayed)
-            .length,
-          nativePoll: stats(complete.flatMap((row) => row.polls.map((poll) => poll.elapsedMs))),
-          timerExcess: stats(
-            complete.flatMap((row) => row.timers.map((timer) => timer.excessDelayMs)),
-          ),
-          readyToDriverResolved: stats(complete.map((row) => row.readyToDriverResolvedMs)),
-        }
-      : null,
+    summary: completeCoverage ? summarizeCompleteTickets(tickets, complete) : null,
   };
 }
 

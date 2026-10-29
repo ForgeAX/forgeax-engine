@@ -21,12 +21,15 @@ function assertPortableResources(context: Rolldown.PluginContext, chunk: Rolldow
 /** Archive the player's own transformed graph, without reevaluating its bootstrap. */
 export class BrowserPluginProgramArchive {
   readonly entries = new Map<string, string>();
+  /** Emitted entry chunks, keyed by selected export module. */
   private readonly chunks = new Map<string, string>();
+  /** Every module of the program graph; group membership decides their output chunks. */
+  private readonly modules = new Set<string>();
   private readonly rendered = new Map<string, string>();
   private readonly groups = new Map<string, string>();
 
   recordRendered(code: string, chunk: Rolldown.RenderedChunk): void {
-    if (Object.keys(chunk.modules).some((id) => this.chunks.has(id)))
+    if (Object.keys(chunk.modules).some((id) => this.modules.has(id)))
       this.rendered.set(chunk.fileName, code);
   }
 
@@ -39,7 +42,64 @@ export class BrowserPluginProgramArchive {
       .digest('hex');
   }
 
+  /** Modules the incremental walk has examined; their parse facts never change. */
+  private readonly walked = new Set<string>();
+  /** Reachable modules that Rolldown has not parsed yet. */
+  private readonly waiting = new Set<string>();
+  private readonly parsed = new Set<string>();
+
+  private admit(context: Rolldown.PluginContext, id: string, entries: ReadonlySet<string>): void {
+    this.modules.add(id);
+    // Only selected exports need a strict, addressable chunk. Interior modules
+    // join their reachability group, which keeps shared project modules out of
+    // the page bootstrap and gives page, plugins and tool executors one URL.
+    if (entries.has(id) && !this.chunks.has(id))
+      this.chunks.set(
+        id,
+        context.emitFile({
+          type: 'chunk',
+          id,
+          name: `program-${createHash('sha256').update(id).digest('hex').slice(0, 16)}`,
+          preserveSignature: 'strict',
+        }),
+      );
+  }
+
+  /**
+   * moduleParsed form of {@link preserveModules}. A module's parse facts are
+   * final once parsed, so each one is examined once, when it is both reachable
+   * and parsed, instead of re-walking the whole program graph per parsed module.
+   */
+  preserveParsedModule(context: Rolldown.PluginContext, parsedId: string): void {
+    const parsed = normalizePath(parsedId);
+    this.parsed.add(parsed);
+    const entries = new Set([...this.entries.values()].map(normalizePath));
+    const visit = (input: string) => {
+      const id = normalizePath(input);
+      if (this.walked.has(id)) return;
+      if (!this.parsed.has(id)) {
+        this.waiting.add(id);
+        return;
+      }
+      this.waiting.delete(id);
+      const info = context.getModuleInfo(id);
+      if (!info) {
+        this.waiting.add(id);
+        return;
+      }
+      this.walked.add(id);
+      if (info.meta[engineCapabilityMeta]) return;
+      this.admit(context, id, entries);
+      for (const dependency of [...info.importedIds, ...info.dynamicallyImportedIds])
+        visit(dependency);
+    };
+    for (const id of this.entries.values()) visit(id);
+    if (this.waiting.has(parsed)) visit(parsed);
+  }
+
+  /** Complete walk of the program graph from every selected export. */
   preserveModules(context: Rolldown.PluginContext): void {
+    const entries = new Set([...this.entries.values()].map(normalizePath));
     const visited = new Set<string>();
     const visit = (input: string) => {
       const id = normalizePath(input);
@@ -47,18 +107,7 @@ export class BrowserPluginProgramArchive {
       visited.add(id);
       const info = context.getModuleInfo(id);
       if (!info || info.code === null || info.meta[engineCapabilityMeta]) return;
-      // Strict entries keep shared project modules out of the page bootstrap,
-      // retaining the same native URL for page, plugins and their tool executors.
-      if (!this.chunks.has(id))
-        this.chunks.set(
-          id,
-          context.emitFile({
-            type: 'chunk',
-            id,
-            name: `program-${createHash('sha256').update(id).digest('hex').slice(0, 16)}`,
-            preserveSignature: 'strict',
-          }),
-        );
+      this.admit(context, id, entries);
       for (const dependency of [...info.importedIds, ...info.dynamicallyImportedIds])
         visit(dependency);
     };
@@ -71,7 +120,7 @@ export class BrowserPluginProgramArchive {
     for (const id of context.getModuleIds()) {
       const info = context.getModuleInfo(id);
       if (!info) continue;
-      if (info.isEntry && !this.chunks.has(normalizePath(id))) roots.add(id);
+      if (info.isEntry && !this.modules.has(normalizePath(id))) roots.add(id);
       for (const dependency of info.dynamicallyImportedIds) roots.add(dependency);
     }
     const memberships = new Map<string, string[]>();
@@ -82,7 +131,7 @@ export class BrowserPluginProgramArchive {
         seen.add(id);
         const info = context.getModuleInfo(id);
         if (!info || info.meta[engineCapabilityMeta]) return;
-        if (this.chunks.has(normalizePath(id))) {
+        if (this.modules.has(normalizePath(id))) {
           const entries = memberships.get(id) ?? [];
           entries.push(root);
           memberships.set(id, entries);

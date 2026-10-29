@@ -3,7 +3,7 @@ import {
   createFullscreenRenderFeature,
   fullscreenRenderFeatureDeclaration,
 } from '../features/fullscreen';
-import { freezeRenderFeaturePlan } from '../features/plan';
+import { validateRenderFeaturePlan } from '../features/plan';
 import {
   postProcessShaderEntrySignature,
   postProcessShaderModuleLabel,
@@ -33,13 +33,17 @@ describe('fullscreen RenderFeature plan', () => {
     const signature = postProcessShaderEntrySignature(entry);
     expect(signature.length).toBeLessThan(256);
     const scan = vi.spyOn(String.prototype, 'charCodeAt');
+    const serialize = vi.spyOn(JSON, 'stringify');
     try {
       for (let frame = 0; frame < 300; frame += 1) {
         expect(postProcessShaderEntrySignature(entry)).toBe(signature);
       }
       expect(scan).not.toHaveBeenCalled();
+      // Unchanged declarations reuse the derived string itself.
+      expect(serialize).not.toHaveBeenCalled();
     } finally {
       scan.mockRestore();
+      serialize.mockRestore();
     }
   });
 
@@ -96,7 +100,7 @@ describe('fullscreen RenderFeature plan', () => {
     const plannedWork = planned.value.work[0];
     if (plannedWork === undefined) throw new Error('planned work missing');
     expect(
-      freezeRenderFeaturePlan(feature.identity, plannedWork, [
+      validateRenderFeaturePlan(feature.identity, plannedWork, [
         { name: 'scene-color', kind: 'color', format: 'rgba16float', sampleCount: 1 },
       ]).ok,
     ).toBe(true);

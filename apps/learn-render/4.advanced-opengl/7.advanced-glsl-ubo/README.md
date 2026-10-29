@@ -48,7 +48,7 @@ The `View` struct layout (784 B std140, `packages/shader/src/common.wgsl:17-52,1
 
 **Host-side lifecycle** (all engine-internal, zero user code):
 
-1. **Allocation**: the renderer allocates the uniform buffer with `VIEW_UBO_BYTES = 784` during setup (`packages/render/src/assembly/factory.ts`).
+1. **Allocation**: the renderer allocates the uniform buffer during setup, sized by `VIEW_UNIFORM_BUFFER_SIZE` (`packages/render/src/record/view-ubo.ts`).
 2. **Per-frame write**: `view-ubo.ts` reads the extracted `Camera` + `DirectionalLight` state and builds the 196-float payload (`packages/render/src/record/view-ubo.ts`).
 3. **Binding**: Every pipeline layout declares `@group(0) @binding(0) var<uniform> view : View`; the engine binds this buffer once and all material shaders (`pbr.wgsl`, `unlit.wgsl`, etc.) reference it via `forgeax_view::common` naga_oil import.
 

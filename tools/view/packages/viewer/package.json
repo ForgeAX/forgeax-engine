@@ -47,13 +47,14 @@
     "lucide-react": "^0.460.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "@forgeax/view-plugin-history": "workspace:*"
+    "@forgeax/view-plugin-history": "workspace:*",
+    "@forgeax/view-plugin-parameters": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^4.7.0",
-    "vite": "8.0.10"
+    "@vitejs/plugin-react": "^6.0.3",
+    "vite": "8.3.5"
   },
   "forgeax": {
     "metrics": {

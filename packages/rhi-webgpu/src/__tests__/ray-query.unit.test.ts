@@ -156,3 +156,57 @@ describe('native Ray Query extension lifecycle through RHI', () => {
     expect(destroy).toHaveBeenCalledTimes(2);
   });
 });
+
+it.each([
+  1024, 8192,
+])('borrows the validated TLAS roster without N instance wrappers at N=%i', async (count) => {
+  const adapter = await createMockGpu().requestAdapter();
+  if (adapter === null) throw new Error('mock adapter');
+  const raw = await adapter.requestDevice();
+  const nativeBuild = vi.fn();
+  const createEncoder = raw.createCommandEncoder.bind(raw);
+  Object.assign(raw.limits, {
+    maxBlasGeometryCount: 4,
+    maxBlasPrimitiveCount: 1024,
+    maxTlasInstanceCount: count,
+    maxAccelerationStructuresPerShaderStage: 1,
+  });
+  Object.assign(raw, {
+    features: new Set(['wgpu-ray-query']),
+    createBlas: () => ({ destroy() {} }),
+    createTlas: () => ({ destroy() {} }),
+    createCommandEncoder: () =>
+      Object.assign(createEncoder(), { buildAccelerationStructures: nativeBuild }),
+  });
+  const device = makeRhiDevice(raw as unknown as GPUDevice).device;
+  const vertices = device.createBuffer({ size: 36, usage: BLAS_INPUT_BUFFER_USAGE }).unwrap();
+  const blas = device
+    .createBlas({ geometries: [{ vertexFormat: 'float32x3', vertexCount: 3 }] })
+    .unwrap();
+  const tlas = device.createTlas({ maxInstances: count }).unwrap();
+  const instances = Array.from({ length: count }, (_, customIndex) => ({
+    blas,
+    transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+    customIndex,
+    mask: 255,
+  }));
+  const roster = [{ tlas, instances }];
+  const encoder = device.createCommandEncoder().unwrap();
+  encoder
+    .buildAccelerationStructures(
+      [{ blas, geometries: [{ vertexBuffer: vertices, vertexStride: 12 }] }],
+      roster,
+    )
+    .unwrap();
+  expect(nativeBuild.mock.calls[0]?.[1]).toBe(roster);
+  // The same mutable descriptor remains borrowed for the synchronous raw call;
+  // validation and native encoding still run for each build, including an edited row.
+  const first = instances[0];
+  if (first === undefined) throw new Error('fixture instance');
+  instances[0] = { ...first, mask: 3 };
+  encoder.buildAccelerationStructures([], roster).unwrap();
+  expect(nativeBuild.mock.calls[1]?.[1]).toBe(roster);
+  expect(nativeBuild.mock.calls[1]?.[1][0].instances).toBe(instances);
+  device.destroyTlas(tlas).unwrap();
+  device.destroyBlas(blas).unwrap();
+});

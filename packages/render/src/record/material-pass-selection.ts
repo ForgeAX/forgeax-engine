@@ -6,6 +6,8 @@ import { standardTransmissionValue } from '../transmission/projection';
 
 export type MaterialRecordMode =
   | 'opaque'
+  | 'opaque-fogged'
+  | 'opaque-unfogged'
   | 'transmission'
   | 'transparent'
   | 'translucent-before-transmission'
@@ -32,7 +34,10 @@ export function matchesRecordMode(material: MaterialSnapshot, mode: MaterialReco
   if (mode === 'transmission') return transmission;
   if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual')
     return material.transparent === true && !transmission && !medium;
-  return !transmission && material.transparent !== true && !medium;
+  const opaque = !transmission && material.transparent !== true && !medium;
+  if (mode === 'opaque-fogged') return opaque && material.renderState?.fog !== false;
+  if (mode === 'opaque-unfogged') return opaque && material.renderState?.fog === false;
+  return opaque;
 }
 
 /** Select one shared material before expanding any of its draw members. */
@@ -45,11 +50,19 @@ export function materialMatchesPass(
   if (mode !== undefined && !matchesRecordMode(material.snapshot, mode)) return false;
   if (mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color')
     return true;
-  return (
-    (selector === undefined || material.passes.some((pass) => matchPass(pass.tags, selector))) &&
-    (excludeSelector === undefined ||
-      !material.passes.some((pass) => matchPass(pass.tags, excludeSelector)))
-  );
+  if (selector !== undefined) {
+    let selected = false;
+    for (const pass of material.passes) {
+      if (matchPass(pass.tags, selector)) {
+        selected = true;
+        break;
+      }
+    }
+    if (!selected) return false;
+  }
+  if (excludeSelector !== undefined)
+    for (const pass of material.passes) if (matchPass(pass.tags, excludeSelector)) return false;
+  return true;
 }
 
 /** Resolve the fixed material table already uploaded for this draw. */

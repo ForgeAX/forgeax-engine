@@ -55,17 +55,12 @@ import { featureCases } from './features.fixture';
 
 describe('Three source to native World', () => {
   const featureAssets = new AssetRegistry();
-  let featureProjection: SceneProjection;
-  beforeAll(async () => {
+  let featureProjection: SceneProjection | undefined;
+  beforeAll(() => {
     installDefaultAssetDecoders(featureAssets);
-    featureProjection = new SceneProjection(
-      featureAssets,
-      undefined,
-      await prepareMaterialPrograms(featureAssets),
-    );
   });
   afterAll(() => {
-    featureProjection.dispose();
+    featureProjection?.dispose();
     featureAssets.dispose();
   });
   it.each(Object.entries(featureCases({ ...ThreeCore, ClippingGroup })))(
@@ -73,6 +68,12 @@ describe('Three source to native World', () => {
     { timeout: 120000 },
     async (_name, populate) => {
       const assets = featureAssets;
+      // Cooked program admission belongs to the existing bounded async case.
+      featureProjection ??= new SceneProjection(
+        featureAssets,
+        undefined,
+        await prepareMaterialPrograms(featureAssets),
+      );
       const projection = featureProjection;
       const scene = new Scene(),
         camera = new PerspectiveCamera(50, 1, 0.1, 100);

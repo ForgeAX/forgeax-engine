@@ -49,7 +49,10 @@ export class TreeFrame<T> extends FrameListBase<T> {
     }
     return undefined;
   }
-  *[Symbol.iterator](): Generator<T> {
-    for (const node of nodes(this.root)) yield node.value;
+  /** Immutable roots are read many times per frame; flatten each at most once. */
+  #values: readonly T[] | undefined;
+  [Symbol.iterator](): IterableIterator<T> {
+    this.#values ??= Array.from(nodes(this.root), (node) => node.value);
+    return this.#values[Symbol.iterator]();
   }
 }

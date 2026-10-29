@@ -128,26 +128,161 @@ export function extractEntryResourceHandle(entry: {
 // Object-only terminal marker keeps a shorter resource chain from colliding
 // with a longer chain that shares the same prefix.
 const BIND_GROUP_CHAIN_LEAF_KEY: object = {};
+const BYTE_RANGE_LEAF_KEY = {};
+const SKIN_RANGE_LEAF_KEY = {};
 
-function bindGroupChainLeaf(
-  root: WeakMap<object, unknown>,
-  handles: readonly object[],
-): Map<string, BindGroup> {
-  let node = root;
-  for (const h of handles) {
-    let next = node.get(h) as WeakMap<object, unknown> | undefined;
-    if (next === undefined) {
-      next = new WeakMap();
-      node.set(h, next);
-    }
-    node = next;
+function bindGroupChainNode(root: WeakMap<object, unknown>, key: object): WeakMap<object, unknown> {
+  let next = root.get(key) as WeakMap<object, unknown> | undefined;
+  if (next === undefined) {
+    next = new WeakMap();
+    root.set(key, next);
   }
+  return next;
+}
+
+function bindGroupVariantMap(node: WeakMap<object, unknown>): Map<string, BindGroup> {
   let leaf = node.get(BIND_GROUP_CHAIN_LEAF_KEY) as Map<string, BindGroup> | undefined;
   if (leaf === undefined) {
     leaf = new Map();
     node.set(BIND_GROUP_CHAIN_LEAF_KEY, leaf);
   }
   return leaf;
+}
+
+/** Variant map at the end of a handle chain; see `getOrCreateFromChain`. */
+export function bindGroupChainLeaf(
+  root: WeakMap<object, unknown>,
+  handles: readonly object[],
+): Map<string, BindGroup> {
+  let node = root;
+  for (let index = 0; index < handles.length; index++)
+    node = bindGroupChainNode(node, handles[index] as object);
+  return bindGroupVariantMap(node);
+}
+
+/** Fixed compute domains share the generic cache namespace without key arrays. */
+export function bindGroupChainLeaf2(
+  root: WeakMap<object, unknown>,
+  a: object,
+  b: object,
+): Map<string, BindGroup> {
+  return bindGroupVariantMap(bindGroupChainNode(bindGroupChainNode(root, a), b));
+}
+
+export function bindGroupChainLeaf3(
+  root: WeakMap<object, unknown>,
+  a: object,
+  b: object,
+  c: object,
+): Map<string, BindGroup> {
+  const node = bindGroupChainNode(bindGroupChainNode(root, a), b);
+  return bindGroupVariantMap(bindGroupChainNode(node, c));
+}
+
+/** Fixed four-handle domain, without a temporary key array. */
+export function bindGroupChainLeaf4(
+  root: WeakMap<object, unknown>,
+  a: object,
+  b: object,
+  c: object,
+  d: object,
+): Map<string, BindGroup> {
+  let node = bindGroupChainNode(root, a);
+  node = bindGroupChainNode(node, b);
+  node = bindGroupChainNode(node, c);
+  node = bindGroupChainNode(node, d);
+  return bindGroupVariantMap(node);
+}
+
+/** Fixed six-handle domain, sharing the same variable-depth cache and marker. */
+export function bindGroupChainLeaf6(
+  root: WeakMap<object, unknown>,
+  a: object,
+  b: object,
+  c: object,
+  d: object,
+  e: object,
+  f: object,
+): Map<string, BindGroup> {
+  let node = bindGroupChainNode(root, a);
+  node = bindGroupChainNode(node, b);
+  node = bindGroupChainNode(node, c);
+  node = bindGroupChainNode(node, d);
+  node = bindGroupChainNode(node, e);
+  node = bindGroupChainNode(node, f);
+  return bindGroupVariantMap(node);
+}
+
+/** Numeric ranges belong to the same physical-resource cache as their groups. */
+export function bindGroupByteRangeLeaf4(
+  root: WeakMap<object, unknown>,
+  a: object,
+  b: object,
+  c: object,
+  d: object,
+): Map<number, BindGroup> {
+  let node = bindGroupChainNode(root, a);
+  node = bindGroupChainNode(node, b);
+  node = bindGroupChainNode(node, c);
+  node = bindGroupChainNode(node, d);
+  let leaf = node.get(BYTE_RANGE_LEAF_KEY) as Map<number, BindGroup> | undefined;
+  if (leaf === undefined) {
+    leaf = new Map();
+    node.set(BYTE_RANGE_LEAF_KEY, leaf);
+  }
+  return leaf;
+}
+
+type SkinRangeGroups = Map<number, Map<number, Map<number, BindGroup>>>;
+
+/** The final map is keyed by auxiliary bytes; no composed string is retained. */
+export function bindGroupSkinRangeLeaf6(
+  root: WeakMap<object, unknown>,
+  a: object,
+  b: object,
+  c: object,
+  d: object,
+  e: object,
+  f: object,
+  meshBytes: number,
+  dataBytes: number,
+): Map<number, BindGroup> {
+  let node = bindGroupChainNode(root, a);
+  node = bindGroupChainNode(node, b);
+  node = bindGroupChainNode(node, c);
+  node = bindGroupChainNode(node, d);
+  node = bindGroupChainNode(node, e);
+  node = bindGroupChainNode(node, f);
+  let ranges = node.get(SKIN_RANGE_LEAF_KEY) as SkinRangeGroups | undefined;
+  if (ranges === undefined) {
+    ranges = new Map();
+    node.set(SKIN_RANGE_LEAF_KEY, ranges);
+  }
+  let mesh = ranges.get(meshBytes);
+  if (mesh === undefined) {
+    mesh = new Map();
+    ranges.set(meshBytes, mesh);
+  }
+  let data = mesh.get(dataBytes);
+  if (data === undefined) {
+    data = new Map();
+    mesh.set(dataBytes, data);
+  }
+  return data;
+}
+
+/** Publish a successfully created group and account for its one native creation. */
+export function rememberBindGroup<Key extends string | number>(
+  leaf: Map<Key, BindGroup>,
+  variant: Key,
+  group: BindGroup,
+  counts: { createBindGroup: number; keys: string[] },
+  label: string = String(variant),
+): BindGroup {
+  counts.createBindGroup += 1;
+  counts.keys.push(label);
+  leaf.set(variant, group);
+  return group;
 }
 
 /**
@@ -175,10 +310,7 @@ export function getOrCreateFromChain(
   const hit = leaf.get(variant);
   if (hit !== undefined) return hit;
   const bg = factory();
-  counts.createBindGroup += 1;
-  counts.keys.push(variant);
-  leaf.set(variant, bg);
-  return bg;
+  return rememberBindGroup(leaf, variant, bg, counts);
 }
 
 /**
@@ -198,9 +330,7 @@ export function getOrCreateFromChainResult<E>(
   if (hit !== undefined) return ok(hit);
   const created = factory();
   if (!created.ok) return created;
-  counts.createBindGroup += 1;
-  counts.keys.push(variant);
-  leaf.set(variant, created.value);
+  rememberBindGroup(leaf, variant, created.value, counts);
   return created;
 }
 
@@ -603,7 +733,9 @@ export function uploadMeshSsboBatch(
   visibleSurfaceBases?: ReadonlyMap<number, number>,
   storageBuffer = true,
 ): number {
-  for (const [index, entry] of main.entries()) {
+  let nextIndex = 0;
+  for (const entry of main) {
+    const index = nextIndex++;
     stageMeshDraw(meshStorageBuffer, entry, false, visibleSurfaceBases, storageBuffer);
     if (foldDispatchPlan?.headBuckets.has(index))
       stageMeshDraw(meshStorageBuffer, entry, true, visibleSurfaceBases, storageBuffer);

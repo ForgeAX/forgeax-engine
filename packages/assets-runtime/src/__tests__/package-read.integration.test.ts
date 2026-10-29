@@ -1,6 +1,6 @@
 import { createServer, type ServerResponse } from 'node:http';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import { type CatalogEntry, ok } from '@forgeax/engine-types';
+import { type CatalogEntry, ok, snapshotLoadTimeline } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry.js';
@@ -150,4 +150,54 @@ it('never retries an aborted read', async () => {
     ok: false,
     error: { observed: 'AbortError: aborted', attempts: 1, malformed: false },
   });
+});
+
+it('records each completed package read and asset decode on the load timeline', async () => {
+  const before = snapshotLoadTimeline().records.length;
+  const { result } = await loadPack(['reset-body']);
+  expect(result.ok).toBe(true);
+  const rows = snapshotLoadTimeline().records.slice(before);
+  const pack = rows.find((r) => r.kind === 'fetch' && r.name.endsWith('/value.pack.json'));
+  // One record for the recovered read; the interrupted first attempt is in `attempts`.
+  expect(pack?.detail).toMatchObject({ attempts: 2 });
+  expect(pack?.end).toBeGreaterThanOrEqual(pack?.start ?? Number.POSITIVE_INFINITY);
+  expect(rows).toContainEqual(
+    expect.objectContaining({
+      kind: 'decode',
+      name: GUID,
+      detail: { stage: 'asset', kind: kind.kind, ok: true },
+    }),
+  );
+  const bytes = new TextEncoder().encode('payload');
+  const read = await readPackage(
+    async () => new Response(bytes, { headers: { 'content-length': String(bytes.length) } }),
+    'memory://artifact.bin',
+    bytesOf,
+  );
+  expect(read.ok).toBe(true);
+  expect(snapshotLoadTimeline().records.at(-1)).toMatchObject({
+    kind: 'fetch',
+    name: 'memory://artifact.bin',
+    bytes: bytes.length,
+    detail: { attempts: 1, contentLength: bytes.length },
+  });
+  // Fetchers without a headers object (tests, native hosts) still read and record.
+  const headerless = await readPackage(
+    async () =>
+      ({
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => bytes.buffer,
+        json: async () => null,
+        text: async () => '',
+      }) as unknown as Response,
+    'memory://headerless.bin',
+    bytesOf,
+  );
+  expect(headerless.ok).toBe(true);
+  expect(snapshotLoadTimeline().records.at(-1)).toMatchObject({
+    name: 'memory://headerless.bin',
+    detail: { attempts: 1 },
+  });
+  expect(snapshotLoadTimeline().records.at(-1)?.detail).not.toHaveProperty('contentLength');
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { projectedHeightForCandidate } from '../gpu-driven/batch-topology';
-import { selectedLodLevel } from '../gpu-driven/production-raster-lod';
+import { selectLod } from '../scene/visibility/lod-selector';
 import { equivalentOriginProjectionCases } from './lod-projection-harness';
 
 describe('ordinary mesh LOD origin invariance', () => {
@@ -17,16 +17,17 @@ describe('ordinary mesh LOD origin invariance', () => {
       const shifted = height(pair.shifted);
       expect(baseline).toBeGreaterThan(0.3);
       expect(shifted).toBeCloseTo(baseline, 6);
-      const lod = {
-        coverages: [1, 0.3, 0.08],
-        ranges: [
-          { first: 0, count: 36, baseVertex: 0 },
-          { first: 36, count: 36, baseVertex: 0 },
-        ],
-        hysteresis: 0.08,
-      };
-      expect(selectedLodLevel(lod, baseline)).toBe(0);
-      expect(selectedLodLevel(lod, shifted)).toBe(0);
+      const level = (projectedHeight: number) =>
+        selectLod({
+          levels: [{ screenCoverage: 0.3 }, { screenCoverage: 0.08 }],
+          projectedHeight,
+          previousLevel: 0,
+          hysteresis: 0.08,
+          ready: [true, true, true],
+          historyValid: false,
+        }).level;
+      expect(level(baseline)).toBe(0);
+      expect(level(shifted)).toBe(0);
     }
   });
 });

@@ -18,6 +18,21 @@ describe('engine declaration graph', () => {
   });
 
   it.each([
+    'animation',
+    'navigation',
+  ])('builds the physical test backend before cold %s declarations', (name) => {
+    const directory = resolve(engineRoot, 'packages', name);
+    const manifest = JSON.parse(readFileSync(resolve(directory, 'package.json'), 'utf8'));
+    const config = JSON.parse(readFileSync(resolve(directory, 'tsconfig.json'), 'utf8')) as {
+      references?: Array<{ path: string }>;
+    };
+    expect(manifest.devDependencies['@forgeax/engine-physics-rapier3d']).toBe('workspace:*');
+    expect(config.references?.map((reference) => resolve(directory, reference.path))).toContain(
+      resolve(engineRoot, 'packages/physics-rapier3d'),
+    );
+  });
+
+  it.each([
     'npc',
     'ecs',
     'runtime',

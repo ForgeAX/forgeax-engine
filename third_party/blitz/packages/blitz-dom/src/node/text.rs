@@ -151,10 +151,9 @@ impl TextInputData {
             offset = caret_start;
         }
 
-        // Never scroll past the content, and never scroll into negative space. The content
-        // extent includes the caret so that a caret at the very end remains fully visible
-        // (its rendered width extends slightly past the text).
-        let max_offset = (content.max(caret_end) - viewport).max(0.0);
+        // Caret reveal shares the CSSOM/editor scroll range. Its stroke must not
+        // create an extra scrollable column beyond the text's actual extent.
+        let max_offset = (content - viewport).max(0.0);
         self.scroll_offset = offset.clamp(0.0, max_offset);
     }
 

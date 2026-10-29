@@ -13,7 +13,7 @@ import { expect, it } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 
-it('discards a prepared recovery graph after its probe fails and recovers on retry', async () => {
+it('discards a replacement device after its execution probe fails and recovers on retry', async () => {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 64;
   document.body.append(canvas);
@@ -32,9 +32,8 @@ it('discards a prepared recovery graph after its probe fails and recovers on ret
             const createBuffer = device.createBuffer.bind(device);
             device.createBuffer = (descriptor) => {
               const result = createBuffer(descriptor);
-              // Persistent projection tables have explicit candidate ownership.
-              // Fixed bootstrap buffers belong to the backend device lifetime.
-              if (result.ok && descriptor.label?.startsWith('gpu-scene-')) {
+              // The device probe owns its readback until the candidate is accepted or discarded.
+              if (result.ok && descriptor.label === 'renderer-recovery-device-probe.readback') {
                 const key = `${descriptor.label ?? 'buffer'}:${++bufferCount}`;
                 candidateBuffers.set(result.value, key);
               }
@@ -48,13 +47,13 @@ it('discards a prepared recovery graph after its probe fails and recovers on ret
             };
             const createEncoder = device.createCommandEncoder.bind(device);
             device.createCommandEncoder = (descriptor) => {
-              if (descriptor?.label === 'renderer-recovery-graph-probe.encoder') {
+              if (descriptor?.label === 'renderer-recovery-device-probe.encoder') {
                 rejectedProbe = true;
                 return err(
                   new RhiError({
                     code: 'webgpu-runtime-error',
                     expected: 'the candidate device probe encoder to be available',
-                    hint: 'injected candidate probe failure after graph preparation',
+                    hint: 'injected candidate probe failure after readback preparation',
                   }),
                 );
               }
@@ -127,7 +126,7 @@ it('discards a prepared recovery graph after its probe fails and recovers on ret
     expect(JSON.stringify(failed.error)).toContain('injected candidate probe failure');
     expect(JSON.stringify(failed.error)).not.toContain('read only property');
     expect(renderer.state()).toBe('device-lost');
-    expect(bufferCount).toBeGreaterThan(0);
+    expect(bufferCount).toBe(1);
     expect([...candidateBuffers.values()]).toEqual([]);
     const recovered = await renderer.recover();
     expect(recovered.ok, recovered.ok ? '' : JSON.stringify(recovered.error)).toBe(true);

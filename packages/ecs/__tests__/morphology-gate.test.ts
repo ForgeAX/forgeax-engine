@@ -21,6 +21,7 @@ import { Update } from '../src/schedule-token';
 // Concurrent tests may create and retire generated projects in that scratch.
 
 import {
+  type Dirent,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -54,16 +55,16 @@ const SKIP_DIRS = new Set([
 const SELF = fileURLToPath(import.meta.url);
 
 function listSources(dir: string, out: string[]): void {
-  let entries: string[];
+  let entries: Dirent[];
   try {
-    entries = readdirSync(dir);
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return;
   }
-  for (const e of entries) {
-    if (e.startsWith('.') || SKIP_DIRS.has(e)) continue;
-    const p = join(dir, e);
-    const st = statSync(p);
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
+    const p = join(dir, entry.name);
+    const st = entry.isSymbolicLink() ? statSync(p) : entry;
     if (st.isDirectory()) listSources(p, out);
     else if (/\.(ts|mjs)$/.test(p) && !p.endsWith('.d.ts') && p !== SELF) out.push(p);
   }
@@ -106,7 +107,9 @@ function collectCallbacks(): { all: Callback[]; violations: Callback[] } {
   const all: Callback[] = [];
   const violations: Callback[] = [];
   for (const file of files) {
-    const src = stripComments(readFileSync(file, 'utf8'));
+    const source = readFileSync(file, 'utf8');
+    if (!source.includes('addSystem') && !source.includes('defineSystem')) continue;
+    const src = stripComments(source);
     let m: RegExpExecArray | null;
     CALL_SITE.lastIndex = 0;
     while ((m = CALL_SITE.exec(src)) !== null) {
@@ -117,13 +120,14 @@ function collectCallbacks(): { all: Callback[]; violations: Callback[] } {
       const fnMatch = FN_PARAM.exec(literal);
       if (fnMatch === null) continue; // fn is a token reference, not an inline callback
       const params = (fnMatch[1] ?? '').trim();
-      const first = params
-        .split(',')[0]
-        ?.trim()
-        .replace(/:.*$/, '')
-        .replace(/^\.\.\./, '')
-        .replace(/^async\s+/, '')
-        .trim() ?? '';
+      const first =
+        params
+          .split(',')[0]
+          ?.trim()
+          .replace(/:.*$/, '')
+          .replace(/^\.\.\./, '')
+          .replace(/^async\s+/, '')
+          .trim() ?? '';
       const rel = relative(repoRoot, file);
       const cb: Callback = { file: rel, params, first };
       all.push(cb);
@@ -159,15 +163,11 @@ describe('morphology-gate.test.ts (AC-14)', () => {
     }
   });
 
-  it('finds the migrated addSystem/defineSystem fn callbacks (gate is wired)', () => {
-    const { all } = collectCallbacks();
+  it('finds migrated callbacks and rejects residual 2-param shapes (AC-14)', () => {
+    const { all, violations } = collectCallbacks();
     // Sanity: the engine + demos define many inline systems. If this drops to
     // ~0 the scanner stopped matching call sites and the gate would be vacuous.
     expect(all.length).toBeGreaterThan(50);
-  }, 30_000);
-
-  it('AC-14: zero residual 2-param-shape fn callbacks (first param must be world/_world or absent)', () => {
-    const { violations } = collectCallbacks();
     const report = violations
       .map((v) => `  ${v.file}: fn(${v.params}) -- first param "${v.first}" misbinds to world`)
       .join('\n');

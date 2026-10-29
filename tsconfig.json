@@ -102,6 +102,9 @@
       "path": "./packages/preview"
     },
     {
+      "path": "./packages/content"
+    },
+    {
       "path": "./packages/plugin"
     },
     {

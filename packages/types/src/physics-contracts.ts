@@ -28,7 +28,7 @@
  * | `'invalid-body-config'` | mass <= 0 for dynamic bodies, or other validation failure. |
  * | `'body-not-found'` | entity handle resolved to no Rapier rigid body (no RigidBody spawned or handle was freed). |
  * | `'collider-not-found'` | entity handle resolved to no Rapier collider (no Collider spawned or handle was freed). |
- * | `'backend-not-registered'` | PhysicsWorld resource missing from World; use createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] }) or manual registration. |
+ * | `'backend-not-registered'` | PhysicsWorld resource missing from World; use createApp(canvas, { plugins: [physics3d] }) or manual registration. |
  * | `'controller-requires-kinematic'` | moveAndSlide() called on a non-kinematic body. |
  */
 export type PhysicsErrorCode = PhysicsErrorDetail['code'];
@@ -136,7 +136,7 @@ export type PhysicsErrorDetail =
  *     case 'invalid-body-config':         return 'ensure mass > 0 for dynamic bodies';
  *     case 'body-not-found':              return 'ensure RigidBody was spawned before use';
  *     case 'collider-not-found':          return 'ensure Collider was spawned before use';
- *     case 'backend-not-registered':      return 'use createApp(canvas, { plugins: [physicsPlugin(...)] })';
+ *     case 'backend-not-registered':      return 'use createApp(canvas, { plugins: [the selected physics backend plugin] })';
  *     case 'controller-requires-kinematic': return 'set RigidBody.type to kinematic';
  *   }
  * }
@@ -187,7 +187,7 @@ export const PHYSICS_ERROR_HINTS: Readonly<Record<PhysicsErrorCode, string>> = {
   'collider-not-found':
     'the entity handle did not resolve to a Rapier collider; ensure Collider was spawned before calling physics APIs',
   'backend-not-registered':
-    "PhysicsWorld resource not found; use createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] }) or manually register a backend",
+    'PhysicsWorld resource not found; use createApp(canvas, { plugins: [physics3d] }) or manually register a backend',
   'controller-requires-kinematic':
     "moveAndSlide requires a kinematic RigidBody; set the entity's RigidBody.type to 'kinematic'",
 };

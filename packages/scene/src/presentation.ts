@@ -183,7 +183,10 @@ function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 |
     cursor = parent(world, cursor) as EntityHandle | undefined;
   }
   const fixed = world.getResource(FixedTime);
-  const alpha = Math.max(0, Math.min(1, fixed.overstep / fixed.delta));
+  // Render one base step behind simulation. A merged catch-up spans
+  // stepDelta between the captured poses, so offset into that wider interval.
+  const span = Math.max(fixed.delta, fixed.stepDelta ?? fixed.delta);
+  const alpha = Math.max(0, Math.min(1, (fixed.overstep + span - fixed.delta) / span));
   for (let index = path.length - 1; index >= 0; index -= 1) {
     const node = path[index];
     if (node === undefined) continue;
@@ -278,46 +281,65 @@ function capture(world: World, state: Presentation, before: boolean): void {
     state.captures.clear();
   }
   const batch = state.source.read();
-  for (const index of batch.indices) state.captures.add(index);
-  for (const index of before ? batch.indices : state.captures) {
-    const entity = state.source.entity(index);
-    const previous = state.members.get(index);
-    if (previous !== undefined && previous !== entity) {
-      state.history.delete(previous);
-      state.moving.delete(previous);
-      state.members.delete(index);
-    }
-    if (entity === undefined) continue;
-    if (
-      !world.hasComponent(entity, TransformInterpolation) ||
-      !world.hasComponent(entity, Transform)
-    ) {
-      state.history.delete(entity);
-      state.moving.delete(entity);
-      state.members.delete(index);
-      continue;
-    }
-    let history = state.history.get(entity);
-    const fresh = history === undefined;
-    history ??= { previous: pose(), current: pose(), parent: undefined, tick };
-    if (!before && !fresh) copyPose(history.current, history.previous);
-    if (before || fresh || state.source.changed(entity, Transform))
-      readPose(world, entity, history.current);
-    const nextParent = parent(world, entity);
-    // Writes between fixed ticks and reparenting are author discontinuities,
-    // not a blend from an obsolete local frame. New fixed writers retain the
-    // accepted prior pose even after many entirely stationary ticks.
-    if (before || fresh || nextParent !== history.parent)
-      copyPose(history.current, history.previous);
-    if (!before || fresh) history.parent = nextParent;
-    history.tick = tick;
-    state.history.set(entity, history);
-    state.members.set(index, entity);
-    if (!before && !samePose(history.previous, history.current)) state.moving.add(entity);
-  }
+  // Indexed and callback iteration: capture runs once per tick, where a for-of
+  // over the mixed Array/Set source would allocate an iterator result per index.
+  const indices = batch.indices;
+  for (let cursor = 0; cursor < indices.length; cursor++)
+    state.captures.add(indices[cursor] as number);
+  if (before)
+    for (let cursor = 0; cursor < indices.length; cursor++)
+      captureMember(world, state, indices[cursor] as number, before, tick);
+  else
+    state.captures.forEach((index) => {
+      captureMember(world, state, index, before, tick);
+    });
   batch.accept();
   if (!before) state.captures.clear();
   state.version += 1;
+}
+
+/** Capture one projected source index into its interpolation history. */
+function captureMember(
+  world: World,
+  state: Presentation,
+  index: number,
+  before: boolean,
+  tick: number,
+): void {
+  const entity = state.source.entity(index);
+  const previous = state.members.get(index);
+  if (previous !== undefined && previous !== entity) {
+    state.history.delete(previous);
+    state.moving.delete(previous);
+    state.members.delete(index);
+  }
+  if (entity === undefined) return;
+  if (
+    !world.hasComponent(entity, TransformInterpolation) ||
+    !world.hasComponent(entity, Transform)
+  ) {
+    state.history.delete(entity);
+    state.moving.delete(entity);
+    state.members.delete(index);
+    return;
+  }
+  let history = state.history.get(entity);
+  const fresh = history === undefined;
+  history ??= { previous: pose(), current: pose(), parent: undefined, tick };
+  // Before-capture already settled the accepted current pose into previous.
+  // Preserve that snapshot while reading the fixed writer's final pose.
+  if (before || fresh || state.source.changed(entity, Transform))
+    readPose(world, entity, history.current);
+  const nextParent = parent(world, entity);
+  // Writes between fixed ticks and reparenting are author discontinuities,
+  // not a blend from an obsolete local frame. New fixed writers retain the
+  // accepted prior pose even after many entirely stationary ticks.
+  if (before || fresh || nextParent !== history.parent) copyPose(history.current, history.previous);
+  if (!before || fresh) history.parent = nextParent;
+  history.tick = tick;
+  state.history.set(entity, history);
+  state.members.set(index, entity);
+  if (!before && !samePose(history.previous, history.current)) state.moving.add(entity);
 }
 
 /** Called by the existing Update propagation owner, after simulation matrices settle. */

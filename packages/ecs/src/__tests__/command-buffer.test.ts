@@ -20,6 +20,25 @@ const { source: CommandChildOf, target: CommandChildren } = defineRelationship({
 });
 
 describe('CommandBuffer terminal lifecycle', () => {
+  it('keeps concurrent buffers independent when one aborts its pending entities', () => {
+    const world = new World();
+    const aborted = createCommandBuffer(world);
+    const committed = createCommandBuffer(world);
+    const cancelled = aborted.spawn({ component: CommandPosition, data: { x: 1 } });
+    const accepted = committed.spawn({ component: CommandPosition, data: { x: 2 } });
+
+    aborted.abort();
+    expect(committed.status).toBe('open');
+    expect(committed.isDeferred(accepted)).toBe(true);
+    flushCommands(committed, world);
+
+    expect(aborted.status).toBe('aborted');
+    expect(committed.status).toBe('committed');
+    expect(world.get(cancelled, CommandPosition).ok).toBe(false);
+    expect(world.get(accepted, CommandPosition).unwrap().x).toBe(2);
+    expect(world.execution.health).toBe('healthy');
+  });
+
   it('commits after a successful drain and rejects later writes', () => {
     const world = new World();
     const buffer = createCommandBuffer(world);

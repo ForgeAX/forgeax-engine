@@ -38,6 +38,7 @@
 // dawn project default 5s vitest timeout.
 
 import { shaderManifestUrl } from '../../../../../../packages/runtime/src/__tests__/shader-manifest-url.fixture';
+import { drawReadyFrame } from '../../../../../../scripts/test/ready-render-frame.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -256,12 +257,14 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
     );
 
     world.update().unwrap();
-    const drawn = renderer.draw({
+    // GPU-lane PSO preparation may hold early submissions pending; read the
+    // first ready picture of this exact World snapshot.
+    const drawn = await drawReadyFrame(renderer, {
       leases: [worldAttachment1.value],
       camera: { lease: worldAttachment1.value },
       environment: { lease: worldAttachment1.value },
     });
-    expect(drawn.ok).toBe(true);
+    expect(drawn.presentation).toBe('ready');
 
     const device = sharedDevice;
     expect(device).toBeDefined();

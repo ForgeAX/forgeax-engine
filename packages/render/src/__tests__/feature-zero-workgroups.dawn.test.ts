@@ -5,7 +5,7 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import type { RenderFeatureExecutionFrame } from '../features/frame-execution';
 import { createRenderFeatureHost } from '../features/host';
-import { freezeRenderFeaturePlan, type RenderFeatureWorkPlan } from '../features/plan';
+import { type RenderFeatureWorkPlan, validateRenderFeaturePlan } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { RenderFeatureComputeGraphProjection } from '../features/render-graph-compute';
 
@@ -24,7 +24,9 @@ it('reuses one compiled graph for current zero/nonzero XYZ counts and preserves 
     getDevice: () => device,
     getShaderModuleFactory: () => ({ createShaderModule: () => ok(shader) }),
   });
-  const host = createRenderFeatureHost([]).unwrap();
+  const host = createRenderFeatureHost([
+    { identity: 'counts', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+  ]).unwrap();
   const session = owner.beginFeature('counts', 0);
   const programDeclaration = {
     wgsl: code,
@@ -95,7 +97,8 @@ it('reuses one compiled graph for current zero/nonzero XYZ counts and preserves 
   const counts = [[1], [0], [1], [0, 2, 3], [2, 0, 3], [2, 3, 0], [2], [2, 3], [2, 3, 4]] as const;
   try {
     for (const currentCounts of counts) {
-      const currentPlan = freezeRenderFeaturePlan('counts', plan(currentCounts)).unwrap();
+      const currentPlan = plan(currentCounts);
+      validateRenderFeaturePlan('counts', currentPlan).unwrap();
       const next = host.recordPlanSignature?.('counts', currentPlan);
       if (next === undefined) throw new Error('Missing signature owner');
       signature ??= next;

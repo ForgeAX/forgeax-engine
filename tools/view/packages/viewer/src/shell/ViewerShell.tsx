@@ -1,13 +1,23 @@
-import type { PanelClaim as SlotClaim, SlotRegistry, PageType, PageHost, PresentationOwner, PresentationSnapshot } from '@forgeax/view-workspace-core/frontend-contract';
+import type { PanelClaim as SlotClaim, SlotRegistry, PageType, PageHost, PanelPlacement, PresentationOwner, PresentationSnapshot } from '@forgeax/view-workspace-core/frontend-contract';
 import type { PageResourceOpenRequest as ResourceOpenRequest } from '@forgeax/view-workspace-core/frontend-contract';
 import type { createViewPageTypeRegistry } from '../host/page-registry.ts';
 import type { createViewPanelHost } from '../host/panel-bridge.ts';
 type PageRegistry = ReturnType<typeof createViewPageTypeRegistry>;
-type PanelPresentation = { pageType: string; reveal(slot: string): boolean; read(): PresentationSnapshot['panels'] };
+type PanelPresentation = {
+  pageType: string;
+  reveal(slot: string): boolean;
+  dismissUnpinnedEdge(slot: string): boolean;
+  read(): PresentationSnapshot['panels'];
+  returnSharedHomePanels(): Promise<void>;
+};
+type ShellPanelPresentation = Pick<PanelPresentation, 'reveal' | 'read'> & { isVisible(slot: string): boolean };
+type ReadPanelPlacement = (api: DockviewApi | null, panelId: string) => PanelPlacement;
 import {
   DockviewReact,
+  getPanelData,
   themeAbyss,
   type DockviewApi,
+  type DockviewDidDropEvent,
   type DockviewReadyEvent,
   type GetTabContextMenuItemsParams,
   type IDockviewDefaultTabProps,
@@ -24,6 +34,7 @@ import {
 } from '@forgeax/view-components';
 import { Monitor, Moon, Sun } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
 import 'dockview/dist/styles/dockview.css';
 
 import { useTheme } from '@forgeax/view-components/theme';
@@ -48,7 +59,20 @@ import {
 import { reportWorkspaceCommandError } from '@forgeax/view-workspace-core/command-error';
 import { VIEW_PAGE_TYPES, workspaceError } from '@forgeax/view-workspace-core/contract';
 import { logResourceOpen, summarizeResourceAsset } from '@forgeax/view-workspace-core/resource-open';
-import { claimsForPage, refreshDockPanelTitles, reconcileDockPanels } from './panel-reconciler.ts';
+import { claimsForPage, panelLayoutSignature, refreshDockPanelTitles, reconcileDockPanels } from './panel-reconciler.ts';
+import {
+  bottomEdgeGroup,
+  canTransferPanelBetweenDocks,
+  ensureGridGroup,
+  panelPlacementFor,
+  panelPositionForDrop,
+  shellBottomPosition,
+  shellHomeClaimForPanel,
+  transferDockPanel,
+  transferSourceFor,
+  type DockviewInstance,
+  type DockviewOwner,
+} from './panel-transfer.ts';
 import { installEdgeDrawer, type EdgeDrawerController } from './workbench-layout/edge-drawer.ts';
 import {
   EDGE_PIN_CLASS,
@@ -58,7 +82,8 @@ import {
   type EdgePinScope,
 } from './workbench-layout/edge-pin-store.ts';
 import { useWorkbenchSidebar } from './workbench-layout/use-workbench-sidebar';
-import { installUeDockDrag, isUeDragging } from './ue-drag/controller';
+import { installUeDockDrag, isUeDragging, type UeDragOptions } from './ue-drag/controller';
+import { PAGE_WORKBENCH_EDGES } from './workbench-layout/constants.ts';
 import type { HostConnection } from './HostConnectionIndicator';
 import {
   HeaderConnectionStatus,
@@ -70,6 +95,24 @@ import { WorkspaceCommandErrorHost } from './WorkspaceCommandErrorHost';
 
 const EMPTY_CLAIMS: readonly SlotClaim[] = [];
 const EMPTY_PAGE_TYPES: readonly PageType[] = [];
+type ViewPage = PageTabItem & { pageType: PageType };
+
+function trackPanelTransfer(pending: Map<string, Promise<void>>, id: string, start: () => Promise<boolean>, onChange: () => void) {
+  let finish!: () => void;
+  const settled = new Promise<void>(resolve => { finish = resolve; });
+  pending.set(id, settled);
+  onChange();
+  let transfer: Promise<boolean>;
+  try { transfer = start(); }
+  catch (error) { transfer = Promise.reject(error); }
+  void transfer.then(finish, finish).then(() => {
+    if (pending.get(id) === settled) {
+      pending.delete(id);
+      onChange();
+    }
+  });
+  return transfer;
+}
 
 function createPageId(typeId: string) {
   return `${typeId}-${crypto.randomUUID()}`;
@@ -79,10 +122,13 @@ function pageIdFor(pageType: PageType) {
   return pageType.singleton ? `page-${pageType.typeId}` : createPageId(pageType.typeId);
 }
 
-function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType) => string) {
-  const [pages, setPages] = useState<PageTabItem[]>([]);
+function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType) => string, pageRegistry: PageRegistry, beforeClosePage?: (pageId: string) => Promise<void>) {
+  const [pages, setPages] = useState<ViewPage[]>([]);
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const userSelectedPage = useRef(false);
+  const closeRequests = useRef(new Map<string, Promise<void>>());
+  const closeLifetime = useMemo(() => new AbortController(), []);
+  useEffect(() => () => closeLifetime.abort(), [closeLifetime]);
   const typesById = useMemo(
     () => new Map(pageTypes.map((pageType) => [pageType.typeId, pageType])),
     [pageTypes],
@@ -90,12 +136,12 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
 
   useEffect(() => {
     setPages((current) => {
-      const next = current
-        .filter((page) => typesById.has(page.typeId))
-        .map((page) => {
-          const pageType = typesById.get(page.typeId)!;
-          return { ...page, title: titleFor(pageType), closable: pageType.closable };
-        });
+      const next = current.map((page) => {
+        const pageType = typesById.get(page.typeId);
+        return pageType && !closeRequests.current.has(page.id)
+          ? { ...page, pageType, title: titleFor(pageType), closable: pageType.closable }
+          : page;
+      });
       for (const pageType of pageTypes) {
         if (pageType.initial && !next.some((page) => page.typeId === pageType.typeId)) {
           const page = {
@@ -103,6 +149,7 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
             title: titleFor(pageType),
             typeId: pageType.typeId,
             closable: pageType.closable,
+            pageType,
           };
           const index = next.findIndex((existing) => {
             const type = typesById.get(existing.typeId);
@@ -136,20 +183,29 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
 
   const currentTypes = useRef(typesById);
   currentTypes.current = typesById;
-  const closeRequests = useRef(new Map<string, Promise<void>>());
-  const closeLifetime = useMemo(() => new AbortController(), []);
-  useEffect(() => () => closeLifetime.abort(), [closeLifetime]);
-  const closePage = useCallback((pageId: string, signal = closeLifetime.signal): Promise<void> => {
+  const closePage = useCallback((pageId: string, signal = closeLifetime.signal, force = false): Promise<void> => {
     const pending = closeRequests.current.get(pageId);
     if (pending) return pending;
     const page = pages.find(entry => entry.id === pageId);
-    if (!page || page.closable === false) return Promise.resolve();
-    const controller = typesById.get(page.typeId)?.controller;
+    if (!page || !force && page.closable === false) return Promise.resolve();
+    const pageType = typesById.get(page.typeId);
+    const controller = pageType?.controller;
     const completion = (async () => {
       signal.throwIfAborted();
-      await controller?.beforeClose?.(signal);
+      if (pageType) {
+        await pageRegistry.beforeClose(page.typeId, signal);
+        await controller?.beforeClose?.(signal);
+      }
+      await beforeClosePage?.(pageId);
       signal.throwIfAborted();
-      if (currentTypes.current.get(page.typeId)?.controller !== controller) throw new DOMException('Page controller changed while closing', 'AbortError');
+      const currentType = currentTypes.current.get(page.typeId);
+      if (force && !pageType) {
+        if (currentType) {
+          throw new DOMException('Page type was re-registered while retiring', 'AbortError');
+        }
+      } else if (currentType?.controller !== controller) {
+        throw new DOMException('Page controller changed while closing', 'AbortError');
+      }
       userSelectedPage.current = true;
       flushSync(() => setPages(current => {
         const index = current.findIndex(entry => entry.id === pageId);
@@ -160,7 +216,15 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
     })().finally(() => { closeRequests.current.delete(pageId); });
     closeRequests.current.set(pageId, completion);
     return completion;
-  }, [closeLifetime, pages, typesById]);
+  }, [beforeClosePage, closeLifetime, pageRegistry, pages, typesById]);
+  useEffect(() => {
+    for (const page of pages) {
+      if (typesById.has(page.typeId)) continue;
+      void closePage(page.id, closeLifetime.signal, true).catch(error => {
+        if (!closeLifetime.signal.aborted) reportWorkspaceCommandError(error, { operation: 'view.page.retire' });
+      });
+    }
+  }, [closeLifetime, closePage, pages, typesById]);
   const closeMany = useCallback(async (ids: readonly string[]) => {
     const results = await Promise.allSettled(ids.map(id => closePage(id)));
     for (const result of results) if (result.status === 'rejected') reportWorkspaceCommandError(result.reason);
@@ -206,7 +270,7 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
     const id = plan.pageId ?? pageIdFor(pageType);
     setPages((current) => [
       ...current,
-      { id, title: titleFor(pageType), typeId, closable: pageType.closable },
+      { id, title: titleFor(pageType), typeId, closable: pageType.closable, pageType },
     ]);
     setActivePageId(id);
   }, [pages, titleFor, typesById]);
@@ -230,7 +294,7 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
 }
 type DockPanelParams = {
   id: string;
-  attach: (id: string) => void;
+  attach: (id: string, anchor?: HTMLElement) => void;
   titleKey?: string;
   closable?: boolean;
 };
@@ -328,12 +392,14 @@ function getPageTypesSnapshot(registry: PageRegistry): readonly PageType[] {
 
 function DockSlot({ params }: IDockviewPanelProps<DockPanelParams>) {
   const id = params.id;
+  const anchorRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
-    params.attach(id);
+    if (anchorRef.current) params.attach(id, anchorRef.current);
   }, [id, params]);
   return (
     <div className="fx-view-dock-panel">
       <div
+        ref={anchorRef}
         id={slotElementId(id)}
         className="fx-view-slot-mount"
         data-forgeax-view-slot={id}
@@ -378,6 +444,12 @@ function DockPageWorkbench({
   hideWhenInactive,
   responsiveAutoTuck,
   registerPanelPresentation,
+  registerDockview,
+  returnSharedHomePanels,
+  readPanelPlacement,
+  preservePanelIds,
+  resolveDropDock,
+  onCrossDockDrop,
 }: {
   pageId: string;
   pageTypeId: string;
@@ -389,6 +461,12 @@ function DockPageWorkbench({
   hideWhenInactive: boolean;
   responsiveAutoTuck: boolean;
   registerPanelPresentation?: (pageId: string, presentation: PanelPresentation) => () => void;
+  registerDockview?: (api: DockviewApi, owner: DockviewOwner, host?: HTMLElement) => () => void;
+  returnSharedHomePanels: (api: DockviewApi) => Promise<void>;
+  readPanelPlacement: ReadPanelPlacement;
+  preservePanelIds: Pick<ReadonlySet<string>, 'has'>;
+  resolveDropDock: NonNullable<UeDragOptions['resolveDropDock']>;
+  onCrossDockDrop: NonNullable<UeDragOptions['onCrossDockDrop']>;
 }) {
   const { t } = useTranslation();
   const apiRef = useRef<DockviewApi | null>(null);
@@ -412,18 +490,36 @@ function DockPageWorkbench({
       if (panel.api.location.type === 'edge') edgeDrawerRef.current?.revealPanel(slot);
       return true;
     },
+    dismissUnpinnedEdge(slot) {
+      const panel = apiRef.current?.getPanel(slot);
+      const drawer = edgeDrawerRef.current;
+      if (!panel || panel.api.location.type !== 'edge' || drawer?.getOpenPanelId() !== slot) return false;
+      if (pinScopeRef.current?.pinnedIn(panel.group.id) === slot) return false;
+      drawer.forceClose();
+      return true;
+    },
     read: () => claims.map(claim => {
       const panel = apiRef.current?.getPanel(claim.id);
       const visible = panel?.api.location.type === 'edge'
         ? edgeDrawerRef.current?.getOpenPanelId() === claim.id : panel?.api.isVisible === true;
       return { id: claim.id, title: titleForClaim(claim), mounted: !!panel,
         visible: active && visible, active: active && panel?.api.isActive === true,
-        placement: panel?.api.location.type ?? 'unmounted' };
+        placement: readPanelPlacement(apiRef.current, claim.id) };
     }),
-  }), [active, claims, pageId, pageTypeId, registerPanelPresentation, titleForClaim]);
+    returnSharedHomePanels: () => {
+      const api = apiRef.current;
+      return api ? returnSharedHomePanels(api) : Promise.resolve();
+    },
+  }), [active, claims, pageId, pageTypeId, readPanelPlacement, registerPanelPresentation, returnSharedHomePanels, titleForClaim]);
   const [dockReadyRevision, setDockReadyRevision] = useState(0);
   const [presentationReady, setPresentationReady] = useState(0);
+  const [panelTopologyRevision, setPanelTopologyRevision] = useState(0);
+  const panelLayoutSignatureRef = useRef<string | null>(null);
   const [dockExtent, setDockExtent] = useState({ width: 0, height: 0 });
+  const primaryPanelIds = useMemo(
+    () => new Set(claims.filter(claim => 'dock' in claim.layout && claim.layout.dock === 'fill').map(claim => claim.id)),
+    [claims],
+  );
   const sidebar = useWorkbenchSidebar({
     workbenchRef,
     dockHostRef,
@@ -431,7 +527,10 @@ function DockPageWorkbench({
     layoutReady,
     presentationReady,
     edgeDrawerRef,
+    primaryPanelIds,
+    panelTopologyRevision,
     responsiveAutoTuck,
+    edges: PAGE_WORKBENCH_EDGES,
   });
   const panelClosableById = useMemo(() => {
     const map = new Map<string, boolean>();
@@ -442,6 +541,7 @@ function DockPageWorkbench({
   }, [claims]);
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;
+    ensureGridGroup(event.api);
     ueDragDisposeRef.current?.();
     edgeDrawerRef.current?.dispose();
     edgeDrawerRef.current = null;
@@ -453,6 +553,32 @@ function DockPageWorkbench({
     setDockReadyRevision((revision) => revision + 1);
     setPresentationReady(0);
   }, []);
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return undefined;
+    return registerDockview?.(api, { kind: 'page', pageId, pageType: pageTypeId }, dockHostRef.current ?? undefined);
+  }, [dockReadyRevision, pageId, pageTypeId, registerDockview]);
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return undefined;
+    let frame = 0;
+    const attachActive = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const id = api.activePanel?.id;
+        const panel = id ? api.getPanel(id) : undefined;
+        const anchor = panel && [...panel.group.element.querySelectorAll<HTMLElement>('[data-forgeax-view-slot]')]
+          .find(node => node.dataset.forgeaxViewSlot === id);
+        if (id && anchor && getClaimsSnapshot(slotRegistry).some(claim => claim.id === id)) slotRegistry.resolve(id, anchor);
+      });
+    };
+    const subscription = api.onDidActivePanelChange(attachActive);
+    attachActive();
+    return () => {
+      cancelAnimationFrame(frame);
+      subscription.dispose();
+    };
+  }, [dockReadyRevision, slotRegistry]);
   useLayoutEffect(() => {
     if (!layoutReady) return undefined;
     const element = dockHostRef.current ?? workbenchRef.current;
@@ -539,33 +665,25 @@ function DockPageWorkbench({
     // Initial fractional sizes need a real presentation extent. Existing
     // panels keep their user layout when an inactive page becomes visible.
     if (availableWidth > 0 && availableHeight > 0) api.layout(availableWidth, availableHeight);
-    const hadContentBrowser = Boolean(api.getPanel('content-browser'));
     reconcileDockPanels(api, claims, {
       titleFor: titleForClaim,
-      attach: (id: string) => {
-        if (getClaimsSnapshot(slotRegistry).some((claim) => claim.id === id)) slotRegistry.resolve(id);
+      preservePanelIds,
+      attach: (id: string, anchor?: HTMLElement) => {
+        if (getClaimsSnapshot(slotRegistry).some((claim) => claim.id === id)) slotRegistry.resolve(id, anchor);
       },
       availableWidth,
       availableHeight,
     });
     if (!edgeDrawerRef.current && api.panels.length > 0 && dockHostRef.current) {
-      const edgeDrawer = installEdgeDrawer(api, dockHostRef.current);
+      const edgeDrawer = installEdgeDrawer(api, dockHostRef.current, { edges: PAGE_WORKBENCH_EDGES });
       edgeDrawerRef.current = edgeDrawer;
       willDropRef.current = edgeDrawer.onWillDrop;
       ueDragDisposeRef.current = installUeDockDrag(api, dockHostRef.current, {
         closeEdgeDrawer: () => edgeDrawerRef.current?.forceClose(),
+        edges: PAGE_WORKBENCH_EDGES,
+        resolveDropDock,
+        onCrossDockDrop,
       });
-    }
-    if (!hadContentBrowser) {
-      const panel = api.getPanel('content-browser');
-      const bottom = api.groups.find((group) => group.api.location.type === 'edge' && group.api.location.position === 'bottom');
-      if (panel && bottom) {
-        panel.api.moveTo({ group: bottom, position: 'center' });
-        bottom.element.classList.remove('fx-edge-empty');
-        api.setEdgeGroupVisible?.('bottom', true);
-        bottom.api.collapse?.();
-        edgeDrawerRef.current?.refreshBottomSpan();
-      }
     }
     for (const claim of claims) {
       if (claim.dockTitleHidden !== true) continue;
@@ -576,7 +694,12 @@ function DockPageWorkbench({
     if (availableWidth > 0 && availableHeight > 0 && claims.length > 0) {
       setPresentationReady((generation) => (generation === 0 ? 1 : generation));
     }
-  }, [active, claims, dockExtent.height, dockExtent.width, dockReadyRevision, layoutReady, sidebar.applyNow, slotRegistry, titleForClaim]);
+    const nextPanelLayoutSignature = panelLayoutSignature(claims);
+    if (panelLayoutSignatureRef.current !== nextPanelLayoutSignature) {
+      panelLayoutSignatureRef.current = nextPanelLayoutSignature;
+      setPanelTopologyRevision((revision) => revision + 1);
+    }
+  }, [active, claims, dockExtent.height, dockExtent.width, dockReadyRevision, layoutReady, onCrossDockDrop, resolveDropDock, sidebar.applyNow, slotRegistry, titleForClaim]);
   useLayoutEffect(() => {
     if (!layoutReady) return;
     const api = apiRef.current;
@@ -630,6 +753,182 @@ function DockPageWorkbench({
   );
 }
 
+function ShellBottomDock({
+  claims,
+  allClaims,
+  slotRegistry,
+  titleForClaim,
+  registerDockview,
+  registerPresentation,
+  readPanelPlacement,
+  preservePanelIds,
+  canDropIntoEmptyEdge,
+  onDragOver,
+  onDrop,
+  resolveDropDock,
+  onCrossDockDrop,
+}: {
+  claims: SlotClaim[];
+  allClaims: readonly SlotClaim[];
+  slotRegistry: SlotRegistry;
+  titleForClaim: (claim: SlotClaim) => string;
+  registerDockview: (api: DockviewApi, owner: DockviewOwner, host?: HTMLElement) => () => void;
+  registerPresentation: (presentation: ShellPanelPresentation) => () => void;
+  readPanelPlacement: ReadPanelPlacement;
+  preservePanelIds: Pick<ReadonlySet<string>, 'has'>;
+  canDropIntoEmptyEdge: () => boolean;
+  onDragOver: (event: ReactDragEvent<HTMLElement>) => void;
+  onDrop: (event: ReactDragEvent<HTMLElement>) => void;
+  resolveDropDock: NonNullable<UeDragOptions['resolveDropDock']>;
+  onCrossDockDrop: NonNullable<UeDragOptions['onCrossDockDrop']>;
+}) {
+  const { t } = useTranslation();
+  const apiRef = useRef<DockviewApi | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const edgeDrawerRef = useRef<EdgeDrawerController | null>(null);
+  const ueDragDisposeRef = useRef<(() => void) | null>(null);
+  const [ready, setReady] = useState(false);
+  const [readyRevision, setReadyRevision] = useState(0);
+  const [extent, setExtent] = useState({ width: 0, height: 0 });
+  const [dropTargetActive, setDropTargetActive] = useState(false);
+
+  const onReady = useCallback((event: DockviewReadyEvent) => {
+    apiRef.current = event.api;
+    edgeDrawerRef.current?.dispose();
+    ueDragDisposeRef.current?.();
+    ueDragDisposeRef.current = null;
+    edgeDrawerRef.current = hostRef.current
+      ? installEdgeDrawer(event.api, hostRef.current, { edges: ['bottom'] })
+      : null;
+    if (hostRef.current) {
+      ueDragDisposeRef.current = installUeDockDrag(event.api, hostRef.current, {
+        closeEdgeDrawer: () => edgeDrawerRef.current?.forceClose(),
+        edges: ['bottom'],
+        resolveDropDock,
+        onCrossDockDrop,
+      });
+    }
+    setReady(true);
+    setReadyRevision(revision => revision + 1);
+  }, [onCrossDockDrop, resolveDropDock]);
+
+  useEffect(() => () => {
+    ueDragDisposeRef.current?.();
+    ueDragDisposeRef.current = null;
+    edgeDrawerRef.current?.dispose();
+    edgeDrawerRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!ready || !api) return undefined;
+    return registerDockview(api, { kind: 'shell-bottom' }, hostRef.current ?? undefined);
+  }, [ready, readyRevision, registerDockview]);
+
+  useLayoutEffect(() => {
+    const isVisible = (slot: string) => {
+      const panel = apiRef.current?.getPanel(slot);
+      return panel?.api.location.type === 'edge'
+        ? edgeDrawerRef.current?.getOpenPanelId() === slot
+        : panel?.api.isVisible === true;
+    };
+    return registerPresentation({
+      reveal: slot => edgeDrawerRef.current?.revealPanel(slot) ?? false,
+      isVisible,
+      read: () => claims.map(claim => {
+        const panel = apiRef.current?.getPanel(claim.id);
+        return {
+          id: claim.id,
+          title: titleForClaim(claim),
+          mounted: !!panel,
+          visible: isVisible(claim.id),
+          active: panel?.api.isActive === true,
+          placement: readPanelPlacement(apiRef.current, claim.id),
+        };
+      }),
+    });
+  }, [claims, readPanelPlacement, registerPresentation, titleForClaim]);
+
+  useLayoutEffect(() => {
+    if (!ready || !hostRef.current || typeof ResizeObserver === 'undefined') return undefined;
+    const host = hostRef.current;
+    const measure = () => {
+      const rect = host.getBoundingClientRect();
+      setExtent({ width: Math.round(rect.width), height: Math.round(rect.height) });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [ready]);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!ready || !api) return;
+    const width = extent.width || hostRef.current?.clientWidth || 0;
+    const height = extent.height || hostRef.current?.clientHeight || 0;
+    if (width > 0 && height > 0) api.layout(width, height);
+    reconcileDockPanels(api, claims, {
+      titleFor: titleForClaim,
+      preservePanelIds,
+      shellBottom: true,
+      attach: (id, anchor) => {
+        if (getClaimsSnapshot(slotRegistry).some(claim => claim.id === id)) slotRegistry.resolve(id, anchor);
+      },
+      availableWidth: width,
+      availableHeight: height,
+    });
+    edgeDrawerRef.current?.refreshBottomSpan();
+  }, [claims, extent.height, extent.width, ready, readyRevision, slotRegistry, titleForClaim]);
+
+  useEffect(() => {
+    const documentObject = globalThis.document;
+    if (!ready || !documentObject) return undefined;
+    const updateDropTarget = () => {
+      const active = canDropIntoEmptyEdge();
+      setDropTargetActive(current => current === active ? current : active);
+    };
+    const clearDropTarget = () => setDropTargetActive(false);
+    documentObject.addEventListener('dragover', updateDropTarget, true);
+    documentObject.addEventListener('dragend', clearDropTarget, true);
+    documentObject.addEventListener('drop', clearDropTarget, true);
+    return () => {
+      documentObject.removeEventListener('dragover', updateDropTarget, true);
+      documentObject.removeEventListener('dragend', clearDropTarget, true);
+      documentObject.removeEventListener('drop', clearDropTarget, true);
+    };
+  }, [canDropIntoEmptyEdge, ready, readyRevision]);
+
+  const getTabContextMenuItems = useCallback((params: GetTabContextMenuItemsParams) => {
+    const claim = allClaims.find(row => row.id === params.panel.id);
+    return claim?.closable === false ? [] : [{ label: t('view.dock.close'), action: () => params.panel.api.close() }];
+  }, [allClaims, t]);
+
+  return (
+    <div className="fx-view-shell-bottom" data-drop-active={dropTargetActive}>
+      <div ref={hostRef} className="fx-view-dockview-host fx-view-shell-bottom__host">
+        <DockviewReact
+          className="fx-view-dockview"
+          theme={{ ...themeAbyss, name: 'forgeax-view-abyss', gap: 6, edgeGroupCollapsedSize: 32 }}
+          components={{ slot: DockSlot }}
+          defaultTabComponent={ForgeaxDockTab}
+          onReady={onReady}
+          onWillDrop={event => edgeDrawerRef.current?.onWillDrop(event) ?? true}
+          getTabContextMenuItems={getTabContextMenuItems}
+          disableFloatingGroups={false}
+          hideBorders
+        />
+      </div>
+      <div
+        className="fx-view-shell-bottom__drop-target"
+        aria-hidden="true"
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+      />
+    </div>
+  );
+}
+
 export function ViewerShell({
   slotRegistry,
   pageRegistry,
@@ -673,10 +972,34 @@ export function ViewerShell({
     [pageTypes],
   );
   const pageTitleRevision = useSyncExternalStore(subscribeTitles, getTitleRevision, getTitleRevision);
+  const panelPresentations = useRef(new Map<string, PanelPresentation>());
+  const shellPanelPresentation = useRef<ShellPanelPresentation | undefined>(undefined);
+  const dockviewInstances = useRef(new Map<string, DockviewInstance>());
+  const pendingPanelTransferCompletions = useRef(new Map<string, Promise<void>>());
+  const [dockviewRevision, setDockviewRevision] = useState(0);
+  const claimsRef = useRef(claims);
+  claimsRef.current = claims;
+  const startPanelTransfer = useCallback((options: Parameters<typeof transferDockPanel>[0]) =>
+    trackPanelTransfer(
+      pendingPanelTransferCompletions.current,
+      options.id,
+      () => transferDockPanel(options),
+      () => setDockviewRevision(revision => revision + 1),
+    ), []);
   const titleForPageType = useCallback(
-    (pageType: PageType) => resolvePageTypeTitle(pageType, t),
+    (pageType: PageType) => {
+      const title = resolvePageTypeTitle(pageType, t);
+      const resource = pageType.controller?.getResource?.();
+      if (pageType.typeId === 'scene' || !resource || !('asset' in resource)) return title;
+      const kindKey = `view.pages.${resource.asset.kind}`;
+      const kindLabel = t(kindKey);
+      return `[${kindLabel === kindKey ? resource.asset.kind : kindLabel}]${title}`;
+    },
     [pageTitleRevision, t],
   );
+  const beforeClosePage = useCallback(async (pageId: string) => {
+    await panelPresentations.current.get(pageId)?.returnSharedHomePanels();
+  }, []);
   const {
     pages,
     activePageId,
@@ -687,33 +1010,57 @@ export function ViewerShell({
     closeToRight,
     reorderPages,
     openPage,
-  } = useViewPages(pageTypes, titleForPageType);
+  } = useViewPages(pageTypes, titleForPageType, pageRegistry, beforeClosePage);
   const openPageRef = useRef(openPage);
   openPageRef.current = openPage;
-  const panelPresentations = useRef(new Map<string, PanelPresentation>());
   const registerPanelPresentation = useCallback((pageId: string, presentation: PanelPresentation) => {
     panelPresentations.current.set(pageId, presentation);
     return () => { if (panelPresentations.current.get(pageId) === presentation) panelPresentations.current.delete(pageId); };
   }, []);
+  const registerShellPanelPresentation = useCallback((presentation: ShellPanelPresentation) => {
+    shellPanelPresentation.current = presentation;
+    return () => { if (shellPanelPresentation.current === presentation) shellPanelPresentation.current = undefined; };
+  }, []);
   useEffect(() => panelHost?.setRevealer(async (slot, signal) => {
     if (signal?.aborted) return false;
-    const claim = claims.find(item => item.id === slot);
+    const claim = claimsRef.current.find(item => item.id === slot);
     if (!claim) return false;
-    const existing = pages.find(page => page.id === activePageId && page.typeId === claim.pageType) ?? pages.find(page => page.typeId === claim.pageType);
+    const mounted = [...dockviewInstances.current.values()].find(instance => instance.api.getPanel(slot));
+    if (mounted?.owner.kind === 'shell-bottom') {
+      return shellPanelPresentation.current?.reveal(slot) ?? false;
+    }
+    const targetPageId = mounted?.owner.kind === 'page' ? mounted.owner.pageId : undefined;
+    const targetPageType = mounted?.owner.kind === 'page' ? mounted.owner.pageType
+      : claim.home.kind === 'page' ? claim.home.pageType : undefined;
+    if (!targetPageType) {
+      for (let attempt = 0; attempt < 80; attempt++) {
+        if (signal?.aborted) return false;
+        if (shellPanelPresentation.current?.reveal(slot)) return true;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return false;
+    }
+    const existing = targetPageId
+      ? pages.find(page => page.id === targetPageId)
+      : pages.find(page => page.id === activePageId && page.typeId === targetPageType) ?? pages.find(page => page.typeId === targetPageType);
     if (existing) selectLocalPage(existing.id);
-    else openPageRef.current(claim.pageType);
-    await onSelectPageType?.(claim.pageType, signal);
-    // The Scene page and Dock are registered after its frontend modules mount.
-    // A reveal from another initial page must wait for that real registration.
+    else openPageRef.current(targetPageType);
+    await onSelectPageType?.(targetPageType, signal);
     for (let attempt = 0; attempt < 80; attempt++) {
       if (signal?.aborted) return false;
       const presentation = existing ? panelPresentations.current.get(existing.id)
-        : [...panelPresentations.current.values()].find(owner => owner.pageType === claim.pageType);
+        : [...panelPresentations.current.values()].find(owner => owner.pageType === targetPageType);
       if (presentation?.reveal(slot)) return true;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     return false;
-  }), [activePageId, claims, onSelectPageType, pages, panelHost, selectLocalPage]);
+  }), [activePageId, onSelectPageType, pages, panelHost, selectLocalPage]);
+  useEffect(() => panelHost?.setEdgeDismisser(slot => {
+    for (const presentation of panelPresentations.current.values()) {
+      if (presentation.dismissUnpinnedEdge(slot)) return true;
+    }
+    return false;
+  }), [panelHost]);
   const pageTypesRef = useRef(pageTypes);
   pageTypesRef.current = pageTypes;
   const handledOpenRequest = useRef<{ requestId: string; sequence: number; ok: boolean } | null>(null);
@@ -790,7 +1137,30 @@ export function ViewerShell({
         return { id: page.id, typeId: page.typeId, title: page.title, closable: page.closable !== false, ...(resource ? { resource } : {}) };
       }),
       pageTypes: pageTypes.map(type => ({ typeId: type.typeId, title: resolvePageTypeLabel(type, t), openable: type.openable })),
-      panels: activePage ? panelPresentations.current.get(activePage.id)?.read() ?? [] : [],
+      panels: (() => {
+        const panels = new Map((activePage ? panelPresentations.current.get(activePage.id)?.read() ?? [] : []).map(panel => [panel.id, panel]));
+        for (const claim of claims) {
+          if (claim.home.kind !== 'shell-bottom') continue;
+          const instance = [...dockviewInstances.current.values()].find(candidate => candidate.api.getPanel(claim.id));
+          const panel = instance?.owner.kind === 'shell-bottom'
+            ? shellPanelPresentation.current?.read().find(item => item.id === claim.id)
+            : instance?.owner.kind === 'page'
+              ? panelPresentations.current.get(instance.owner.pageId)?.read().find(item => item.id === claim.id)
+              : undefined;
+          const runtimePanel = instance?.api.getPanel(claim.id);
+          panels.set(claim.id, panel ?? {
+            id: claim.id,
+            title: titleForClaim(claim),
+            mounted: runtimePanel !== undefined,
+            visible: instance?.owner.kind === 'page'
+              ? instance.owner.pageId === activePageId && runtimePanel?.api.isVisible === true
+              : instance?.owner.kind === 'shell-bottom' && shellPanelPresentation.current?.isVisible(claim.id) === true,
+            active: runtimePanel?.api.isActive === true,
+            placement: panelPlacementFor(instance?.owner, runtimePanel?.api.location.type),
+          });
+        }
+        return [...panels.values()];
+      })(),
       hasMorePages: false, hasMorePageTypes: false, hasMorePanels: false,
       appearance: { theme, preference, language: i18n.language },
     });
@@ -826,8 +1196,8 @@ export function ViewerShell({
   });
   useEffect(() => pageHost?.attachPresentation?.((operation, args, signal) => presentationOwner.current!(operation, args, signal)), [pageHost]);
   const openDockPages = useMemo(
-    () => pages.filter((page) => pageTypes.find((pageType) => pageType.typeId === page.typeId)?.layout === 'dock'),
-    [pageTypes, pages],
+    () => pages.filter((page) => page.pageType.layout === 'dock'),
+    [pages],
   );
   const openSurfacePageTypes = useMemo(
     () =>
@@ -847,6 +1217,178 @@ export function ViewerShell({
     (claim: SlotClaim) => (claim.titleKey ? t(claim.titleKey) : claim.id),
     [i18n.language, t],
   );
+
+  const resolveDropDock = useCallback((point: { x: number; y: number }, sourceApi: DockviewApi, panelId: string) => {
+    const sourceOwner = dockviewInstances.current.get(sourceApi.id)?.owner;
+    const claim = shellHomeClaimForPanel(panelId, claimsRef.current);
+    for (const instance of dockviewInstances.current.values()) {
+      const host = instance.host;
+      if (instance.api === sourceApi || !host) continue;
+      const pageRow = host.closest<HTMLElement>('.fx-view-workspace-row');
+      if (pageRow && !pageRow.classList.contains('is-active')) continue;
+      const rect = host.getBoundingClientRect();
+      if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) continue;
+      if (!canTransferPanelBetweenDocks(sourceOwner, instance.owner, claim)) return null;
+      return {
+        api: instance.api,
+        host,
+        edges: instance.owner.kind === 'page' ? PAGE_WORKBENCH_EDGES : ['bottom'] as const,
+      };
+    }
+    const source = dockviewInstances.current.get(sourceApi.id);
+    if (source?.host) {
+      const sourceHost = source.host;
+      const rect = sourceHost.getBoundingClientRect();
+      if (point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom) {
+        return {
+          api: sourceApi,
+          host: sourceHost,
+          edges: source.owner.kind === 'page' ? PAGE_WORKBENCH_EDGES : ['bottom'] as const,
+        };
+      }
+    }
+    return null;
+  }, []);
+
+  const onCrossDockDrop = useCallback(async ({
+    sourceApi,
+    targetApi,
+    panelId,
+    position,
+    sourceWasEdge,
+  }: Parameters<NonNullable<UeDragOptions['onCrossDockDrop']>>[0]) => {
+    const sourceOwner = dockviewInstances.current.get(sourceApi.id)?.owner;
+    const targetOwner = dockviewInstances.current.get(targetApi.id)?.owner;
+    const claim = shellHomeClaimForPanel(panelId, claimsRef.current);
+    if (!claim || !canTransferPanelBetweenDocks(sourceOwner, targetOwner, claim)
+      || pendingPanelTransferCompletions.current.has(panelId)) return false;
+    try {
+      return await startPanelTransfer({
+        sourceApi,
+        targetApi,
+        id: panelId,
+        claim,
+        registry: slotRegistry,
+        title: titleForClaim(claim),
+        position,
+        sourceWasEdge,
+      });
+    } catch (error) {
+      reportWorkspaceCommandError(error, { operation: 'view.panel.transfer' });
+      throw error;
+    }
+  }, [slotRegistry, startPanelTransfer, titleForClaim]);
+
+  const registerDockview = useCallback((api: DockviewApi, owner: DockviewOwner, host?: HTMLElement) => {
+    const instance = { api, owner, host } satisfies DockviewInstance;
+    dockviewInstances.current.set(api.id, instance);
+    const onUnhandledDragOver = api.onUnhandledDragOverEvent(event => {
+      const source = transferSourceFor(event.getData(), api, dockviewInstances.current, claimsRef.current);
+      if (source && event.group) event.accept();
+    });
+    const onDidDrop = api.onDidDrop(event => {
+      const source = transferSourceFor(event.getData(), api, dockviewInstances.current, claimsRef.current);
+      if (!source || pendingPanelTransferCompletions.current.has(source.panelId)) return;
+      void startPanelTransfer({
+        sourceApi: source.source,
+        targetApi: api,
+        id: source.panelId,
+        claim: source.claim,
+        registry: slotRegistry,
+        title: titleForClaim(source.claim),
+        position: panelPositionForDrop(event),
+      }).catch(error => reportWorkspaceCommandError(error, { operation: 'view.panel.transfer' }));
+    });
+    setDockviewRevision(revision => revision + 1);
+    return () => {
+      onUnhandledDragOver.dispose();
+      onDidDrop.dispose();
+      if (dockviewInstances.current.get(api.id) === instance) dockviewInstances.current.delete(api.id);
+      queueMicrotask(() => {
+        if (dockviewInstances.current.size > 0 && !dockviewInstances.current.has(api.id)) {
+          setDockviewRevision(revision => revision + 1);
+        }
+      });
+    };
+  }, [slotRegistry, startPanelTransfer, titleForClaim]);
+
+  const returnSharedHomePanels = useCallback(async (sourceApi: DockviewApi) => {
+    const candidates = [...sourceApi.panels].flatMap(panel => {
+      const claim = claimsRef.current.find(candidate => candidate.id === panel.id && candidate.home.kind === 'shell-bottom');
+      return claim ? [{ id: panel.id, claim }] : [];
+    });
+    if (candidates.length === 0) return;
+    const shell = [...dockviewInstances.current.values()].find(instance => instance.owner.kind === 'shell-bottom');
+    if (!shell) throw new Error('View Shell bottom dock is not ready');
+    for (const { id, claim } of candidates) {
+      const pending = pendingPanelTransferCompletions.current.get(id);
+      if (pending) await pending;
+      if (!sourceApi.getPanel(id) || shell.api.getPanel(id)) continue;
+      await startPanelTransfer({
+        sourceApi,
+        targetApi: shell.api,
+        id,
+        claim,
+        registry: slotRegistry,
+        title: titleForClaim(claim),
+        position: shellBottomPosition(shell.api),
+      });
+    }
+  }, [slotRegistry, startPanelTransfer, titleForClaim]);
+
+  const canDropIntoEmptyShellEdge = useCallback(() => {
+    const shell = [...dockviewInstances.current.values()].find(instance => instance.owner.kind === 'shell-bottom');
+    const edgeGroup = shell && bottomEdgeGroup(shell.api);
+    if (!shell || !edgeGroup || edgeGroup.panels.length > 0) return false;
+    const source = transferSourceFor(getPanelData(), shell.api, dockviewInstances.current, claimsRef.current);
+    return Boolean(source && !pendingPanelTransferCompletions.current.has(source.panelId));
+  }, []);
+
+  const onShellBottomDragOver = useCallback((event: ReactDragEvent<HTMLElement>) => {
+    if (!canDropIntoEmptyShellEdge()) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  }, [canDropIntoEmptyShellEdge]);
+
+  const onShellBottomDrop = useCallback((event: ReactDragEvent<HTMLElement>) => {
+    if (!canDropIntoEmptyShellEdge()) return;
+    const shell = [...dockviewInstances.current.values()].find(instance => instance.owner.kind === 'shell-bottom');
+    const source = shell && transferSourceFor(getPanelData(), shell.api, dockviewInstances.current, claimsRef.current);
+    if (!shell || !source || pendingPanelTransferCompletions.current.has(source.panelId)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void startPanelTransfer({
+      sourceApi: source.source,
+      targetApi: shell.api,
+      id: source.panelId,
+      claim: source.claim,
+      registry: slotRegistry,
+      title: titleForClaim(source.claim),
+      position: shellBottomPosition(shell.api),
+    }).then(moved => {
+      if (moved) shellPanelPresentation.current?.reveal(source.panelId);
+    }).catch(error => reportWorkspaceCommandError(error, { operation: 'view.panel.transfer' }));
+  }, [canDropIntoEmptyShellEdge, slotRegistry, startPanelTransfer, titleForClaim]);
+
+  const readPanelPlacement = useCallback((api: DockviewApi | null, panelId: string) => {
+    const panel = api?.getPanel(panelId);
+    return panelPlacementFor(api ? dockviewInstances.current.get(api.id)?.owner : undefined, panel?.api.location.type);
+  }, []);
+
+  const pageClaimsFor = useCallback((pageId: string, pageTypeId: string) => {
+    const api = [...dockviewInstances.current.values()].find(instance =>
+      instance.owner.kind === 'page' && instance.owner.pageId === pageId)?.api;
+    return claimsForPage(claims, pageTypeId, api);
+  }, [claims, dockviewRevision]);
+  const shellClaims = useMemo(() => {
+    const shell = [...dockviewInstances.current.values()].find(instance => instance.owner.kind === 'shell-bottom')?.api;
+    return claims.filter(claim => claim.home.kind === 'shell-bottom' && (
+      pendingPanelTransferCompletions.current.has(claim.id) ||
+      shell?.getPanel(claim.id) !== undefined ||
+      ![...dockviewInstances.current.values()].some(instance =>
+        instance.owner.kind === 'page' && instance.api.getPanel(claim.id) !== undefined)
+    ));
+  }, [claims, dockviewRevision]);
 
   useEffect(() => {
     const root = globalThis.document?.documentElement;
@@ -942,8 +1484,7 @@ export function ViewerShell({
           <Text as="strong" variant="heading" tone="primary">{t('view.projectRecovery.restoringTitle')}</Text>
           <Text variant="body" tone="secondary">{t('view.projectRecovery.restoringDescription')}</Text>
         </main>
-      ) : (<>
-
+      ) : (
       <div className="fx-view-main-col">
         {openDockPages.map((page) => {
           const status = pageTypes.find(type => type.typeId === page.typeId)?.controller?.getStatus?.();
@@ -953,12 +1494,18 @@ export function ViewerShell({
             pageId={page.id}
             pageTypeId={page.typeId}
             registerPanelPresentation={registerPanelPresentation}
-            claims={claimsForPage(claims, page.typeId)}
+            registerDockview={registerDockview}
+            returnSharedHomePanels={returnSharedHomePanels}
+            readPanelPlacement={readPanelPlacement}
+            preservePanelIds={pendingPanelTransferCompletions.current}
+            resolveDropDock={resolveDropDock}
+            onCrossDockDrop={onCrossDockDrop}
+            claims={pageClaimsFor(page.id, page.typeId)}
             slotRegistry={slotRegistry}
             titleForClaim={titleForClaim}
             active={page.id === activePageId}
             responsiveAutoTuck={responsiveAutoTuck}
-            hideWhenInactive={pageTypes.some(type => type.typeId === page.typeId && type.hideWhenInactive)}
+            hideWhenInactive={page.pageType.hideWhenInactive === true}
             layoutHostId={page.typeId === VIEW_PAGE_TYPES.scene ? VIEW_LAYOUT_HOST_ID : undefined}
           />
           {status && <div className="fx-resource-page-status" role={status.phase === 'opening' ? 'status' : 'alert'} data-phase={status.phase}>
@@ -975,7 +1522,22 @@ export function ViewerShell({
           />
         ))}
       </div>
-      </>)}
+      )}
+      <ShellBottomDock
+        claims={shellClaims}
+        allClaims={claims}
+        slotRegistry={slotRegistry}
+        titleForClaim={titleForClaim}
+        registerDockview={registerDockview}
+        registerPresentation={registerShellPanelPresentation}
+        readPanelPlacement={readPanelPlacement}
+        preservePanelIds={pendingPanelTransferCompletions.current}
+        canDropIntoEmptyEdge={canDropIntoEmptyShellEdge}
+        onDragOver={onShellBottomDragOver}
+        onDrop={onShellBottomDrop}
+        resolveDropDock={resolveDropDock}
+        onCrossDockDrop={onCrossDockDrop}
+      />
     </div>
   );
 }

@@ -1,7 +1,6 @@
 // Asset and font error contracts.
 
 import type { VertexAttributeMap, VertexAttributePackDetail } from './media-contracts.js';
-import type { MeshMaterialOverrideConflict } from './mesh-contracts.js';
 
 // === Asset error model SSOT (feat-20260511-asset-system-v1 / D-P1 / w3) =========
 //
@@ -550,7 +549,6 @@ export type AssetErrorDetail =
       readonly defaultMaterialGuid: string;
       readonly actualKind: string;
     }
-  | MeshMaterialOverrideConflict
   | {
       readonly meshAssetGuid: string;
       readonly submeshIndex: number;

@@ -369,7 +369,8 @@ export function recordFxaaPass(
   paramsOverride?: Uint8Array,
   graphOutputFormat?: GPUTextureFormat,
 ): void {
-  const { runtime, pipelineState, encoder, camera, currentTexture } = c;
+  const { runtime, pipelineState, encoder, camera } = c;
+  const { texture: currentTexture } = c.outputTarget();
   // FXAA samples the graph-owned LDR target and writes the current surface.
   // The surface is an output attachment only: no COPY_SRC usage, no
   // copyTextureToTexture, and no backend-specific surface sampling path.

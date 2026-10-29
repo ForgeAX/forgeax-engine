@@ -1,3 +1,4 @@
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 // @forgeax/engine-runtime — postSpawnResolveJoints hook (M1 / T-14).
 //
 // Invoked after sceneInstances.instantiate to auto-wire Skin.joints: Entity[]
@@ -64,7 +65,7 @@ export function postSpawnResolveJoints(
   if (nameQuery.ok) {
     for (const row of nameQuery.value) {
       if (!subtree.has(row.entity as number)) continue;
-      const nameVal = row.get(Name).value;
+      const nameVal = world.get(row.entity, Name).unwrap().value;
       const list = nameIndex.get(nameVal) ?? [];
       list.push(row.entity);
       nameIndex.set(nameVal, list);
@@ -79,11 +80,11 @@ export function postSpawnResolveJoints(
   for (const queryRow of skinQuery.value) {
     const entity = queryRow.entity;
     if (!subtree.has(entity as number)) continue;
-    const binding = queryRow.get(Skin);
+    const read = world[worldRead];
     // Explicit Scene entity references are authoritative. Name-based fallback
     // would overwrite them and alias same-name rigs in one ordinary Scene.
-    if (binding.joints.length > 0) continue;
-    const skeletonHandle = binding.skeleton as number;
+    if ((read.getArrayLength(entity, Skin, 'joints') as number) > 0) continue;
+    const skeletonHandle = read.getFieldValue(entity, Skin, 'skeleton') as number;
 
     const skinAsset = resolver.resolveSkinAsset(skeletonHandle);
     if (skinAsset === undefined) {

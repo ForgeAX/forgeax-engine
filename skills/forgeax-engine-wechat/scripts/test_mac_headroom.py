@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """GPU attribution must preserve process identity and counter discontinuities."""
+import plistlib
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from mac_headroom import gpu_owner_interval, gpu_owners
+from mac_headroom import collector_source, gpu_owner_interval, gpu_owners, read_console
 
 
 def client(registry_id, pid, counter, entries=1):
@@ -15,6 +18,28 @@ def sample(rows, time):
 
 
 class AttributionTests(unittest.TestCase):
+    def test_console_observation_exports_lock_flags_without_account_data(self):
+        root = {'IOConsoleLocked': True, 'IOConsoleUsers': [
+            {'kCGSSessionOnConsoleKey': True, 'CGSSessionScreenIsLocked': True,
+             'kCGSSessionUserNameKey': 'private-account'}], 'UnrelatedPrivateProperty': 'secret'}
+        with patch('mac_headroom.subprocess.run', return_value=SimpleNamespace(
+                returncode=0, stdout=plistlib.dumps(root))):
+            self.assertEqual(read_console(), {'exitCode': 0, 'status': 'available',
+                                             'consoleLocked': True, 'screenLocked': True})
+
+    def test_missing_console_session_is_unavailable(self):
+        with patch('mac_headroom.subprocess.run', return_value=SimpleNamespace(
+                returncode=0, stdout=plistlib.dumps({'IOConsoleLocked': False}))):
+            self.assertEqual(read_console()['status'], 'unavailable')
+
+    def test_timeout_keeps_partial_observations_in_the_report(self):
+        source = collector_source(15, include_owners=True)
+        self.assertIn('except subprocess.TimeoutExpired as e:', source)
+        self.assertIn('"exitCode":124', source)
+        self.assertIn('"timedOut":True', source)
+        self.assertIn('report["gpu"]', source)
+        self.assertIn('"-n","25","-o","cpu"', source)
+
     def test_selects_only_gpu_client_identity_and_counters(self):
         tree = [{'IORegistryEntryChildren': [
             {'IORegistryEntryID': 8, 'IOUserClientCreator': 'pid 20, GPU process',

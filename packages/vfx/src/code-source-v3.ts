@@ -354,25 +354,11 @@ function rendererAllowed(kind: string): readonly string[] {
   }
 }
 
-function validateRenderer(
-  value: unknown,
-  emitterIndex: number,
-  index: number,
-  id: string,
-  runtimeReferences = false,
-): Result<ParticleRendererSourceV3, ParticleCodeSourceError> {
-  const path = `emitters[${emitterIndex}].renderers[${index}]`;
-  if (
-    !record(value) ||
-    typeof value.kind !== 'string' ||
-    (typeof value.material !== 'string' &&
-      !(runtimeReferences && typeof value.material === 'number'))
-  ) {
-    return fail(path, 'a Program v3 renderer object');
-  }
-  const unknown = unknownField(value, rendererAllowed(value.kind));
-  if (unknown !== undefined)
-    return fail(`${path}.${unknown}`, 'a supported Program v3 renderer field');
+/** Topology-independent option fields that any renderer kind may carry. */
+function rendererOptionFailure(
+  value: Record<string, unknown>,
+  path: string,
+): Result<never, ParticleCodeSourceError> | undefined {
   if (value.lighting !== undefined && value.lighting !== 'unlit' && value.lighting !== 'standard')
     return fail(`${path}.lighting`, 'unlit or standard');
   for (const field of ['castShadows', 'receiveShadows'] as const) {
@@ -399,22 +385,247 @@ function validateRenderer(
     !isParticleRendererSortingV3(value.sorting)
   )
     return fail(`${path}.sorting`, 'a Program v3 sorting mode');
-  const attrs = validateAttributes(value.attributes, `${path}.attributes`);
-  if (!attrs.ok) return attrs;
-  if (attrs.value !== undefined) {
-    for (const semantic of Object.keys(attrs.value)) {
-      if (
-        !PARTICLE_RENDERER_SEMANTICS[value.kind as ParticleRendererSourceV3['kind']]?.includes(
-          semantic as ParticleRendererSemantic,
-        )
-      ) {
-        return fail(
-          `${path}.attributes.${semantic}`,
-          'a semantic supported by this renderer topology',
-        );
-      }
+  return undefined;
+}
+
+/** Every mapped semantic must belong to the renderer topology's vocabulary. */
+function rendererSemanticFailure(
+  kind: string,
+  attributes: ParticleRendererSemanticMap | undefined,
+  path: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (attributes === undefined) return undefined;
+  for (const semantic of Object.keys(attributes)) {
+    if (
+      !PARTICLE_RENDERER_SEMANTICS[kind as ParticleRendererSourceV3['kind']]?.includes(
+        semantic as ParticleRendererSemantic,
+      )
+    ) {
+      return fail(
+        `${path}.attributes.${semantic}`,
+        'a semantic supported by this renderer topology',
+      );
     }
   }
+  return undefined;
+}
+
+function meshRendererFailure(
+  value: Record<string, unknown>,
+  path: string,
+  id: string,
+  runtimeReferences: boolean,
+): Result<never, ParticleCodeSourceError> | undefined {
+  const playerMesh =
+    record(value.mesh) && value.mesh.source === 'player' && Object.keys(value.mesh).length === 1;
+  if (
+    (!text(value.mesh) && !playerMesh && !(runtimeReferences && typeof value.mesh === 'number')) ||
+    (value.submesh !== undefined && !nonNegativeInteger(value.submesh))
+  )
+    return invalid(
+      path,
+      'a mesh GUID or { source: "player" }, with a non-negative submesh',
+      id,
+      'vfx-source-renderer-invalid',
+    );
+  return undefined;
+}
+
+/** Instance-buffer controls shared by billboard and strip renderers. */
+function rendererBufferFailure(
+  value: Record<string, unknown>,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean')
+    return invalid(`${path}.enabled`, 'a boolean enabled flag', id, 'vfx-source-renderer-invalid');
+  if (value.capacity !== undefined && (!positiveInteger(value.capacity) || value.capacity > 65536))
+    return invalid(
+      `${path}.capacity`,
+      'a positive capacity no greater than 65536',
+      id,
+      'vfx-source-renderer-invalid',
+    );
+  if (
+    value.overflow !== undefined &&
+    value.overflow !== 'drop-newest' &&
+    value.overflow !== 'drop-oldest'
+  )
+    return invalid(
+      `${path}.overflow`,
+      'drop-newest or drop-oldest',
+      id,
+      'vfx-source-renderer-invalid',
+    );
+  if (value.width !== undefined && (!finite(value.width) || value.width <= 0))
+    return invalid(`${path}.width`, 'a positive finite width', id, 'vfx-source-renderer-invalid');
+  return undefined;
+}
+
+function textureSheetValid(sheet: Record<string, unknown>): boolean {
+  return (
+    unknownField(sheet, ['columns', 'rows', 'frameRate', 'frameCount']) === undefined &&
+    positiveInteger(sheet.columns) &&
+    positiveInteger(sheet.rows) &&
+    sheet.columns <= 64 &&
+    sheet.rows <= 64 &&
+    finite(sheet.frameRate) &&
+    sheet.frameRate >= 0 &&
+    (sheet.frameCount === undefined ||
+      (positiveInteger(sheet.frameCount) && sheet.frameCount <= sheet.columns * sheet.rows))
+  );
+}
+
+function billboardRendererFailure(
+  value: Record<string, unknown>,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (
+    value.blend !== undefined &&
+    value.blend !== 'additive' &&
+    value.blend !== 'alpha' &&
+    value.blend !== 'opaque-cutout'
+  )
+    return invalid(
+      `${path}.blend`,
+      'additive, alpha, or opaque-cutout',
+      id,
+      'vfx-source-renderer-invalid',
+    );
+  if (
+    value.pivot !== undefined &&
+    (!vector(value.pivot, 2) || value.pivot.some((value) => value < -1 || value > 1))
+  )
+    return invalid(
+      `${path}.pivot`,
+      'two finite values in the -1..1 range',
+      id,
+      'vfx-source-renderer-invalid',
+    );
+  if (value.textureSheet !== undefined) {
+    if (!record(value.textureSheet))
+      return invalid(
+        `${path}.textureSheet`,
+        'a texture sheet object',
+        id,
+        'vfx-source-renderer-invalid',
+      );
+    if (!textureSheetValid(value.textureSheet))
+      return invalid(
+        `${path}.textureSheet`,
+        'a bounded texture sheet declaration',
+        id,
+        'vfx-source-renderer-invalid',
+      );
+  }
+  if (value.softParticle !== undefined) {
+    if (!record(value.softParticle))
+      return invalid(
+        `${path}.softParticle`,
+        'a soft-particle object',
+        id,
+        'vfx-source-renderer-invalid',
+      );
+    if (
+      unknownField(value.softParticle, ['fadeDistance']) !== undefined ||
+      !finite(value.softParticle.fadeDistance) ||
+      value.softParticle.fadeDistance <= 0
+    )
+      return invalid(
+        `${path}.softParticle`,
+        'a positive scene-depth fade distance',
+        id,
+        'vfx-source-renderer-invalid',
+      );
+  }
+  return undefined;
+}
+
+/** Ribbon, trail and beam topologies each require their strip declaration. */
+function stripRendererFailure(
+  value: Record<string, unknown>,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (value.kind === 'ribbon') {
+    if (value.stripKey !== 'alive-index' || !positiveInteger(value.capacity))
+      return invalid(
+        path,
+        "stripKey 'alive-index' and positive capacity",
+        id,
+        'vfx-source-renderer-invalid',
+      );
+  } else if (value.kind === 'trail') {
+    if (
+      !positiveInteger(value.historyLength) ||
+      value.historyLength > 256 ||
+      !positiveInteger(value.capacity)
+    )
+      return invalid(
+        path,
+        'a bounded trail historyLength and positive capacity',
+        id,
+        'vfx-source-renderer-invalid',
+      );
+  } else if (value.kind === 'beam') {
+    if (value.endpointField !== 'velocity' || !positiveInteger(value.capacity))
+      return invalid(
+        path,
+        "endpointField 'velocity' and positive capacity",
+        id,
+        'vfx-source-renderer-invalid',
+      );
+  } else {
+    return invalid(
+      path,
+      'billboard, mesh, ribbon, trail, or beam',
+      id,
+      'vfx-source-renderer-invalid',
+    );
+  }
+  return undefined;
+}
+
+/** Topology-specific declaration of a renderer whose common fields already validated. */
+function rendererTopologyFailure(
+  value: Record<string, unknown>,
+  path: string,
+  id: string,
+  runtimeReferences: boolean,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (value.kind === 'mesh') return meshRendererFailure(value, path, id, runtimeReferences);
+  const buffer = rendererBufferFailure(value, path, id);
+  if (buffer !== undefined) return buffer;
+  if (value.kind === 'billboard') return billboardRendererFailure(value, path, id);
+  return stripRendererFailure(value, path, id);
+}
+
+function validateRenderer(
+  value: unknown,
+  emitterIndex: number,
+  index: number,
+  id: string,
+  runtimeReferences = false,
+): Result<ParticleRendererSourceV3, ParticleCodeSourceError> {
+  const path = `emitters[${emitterIndex}].renderers[${index}]`;
+  if (
+    !record(value) ||
+    typeof value.kind !== 'string' ||
+    (typeof value.material !== 'string' &&
+      !(runtimeReferences && typeof value.material === 'number'))
+  ) {
+    return fail(path, 'a Program v3 renderer object');
+  }
+  const unknown = unknownField(value, rendererAllowed(value.kind));
+  if (unknown !== undefined)
+    return fail(`${path}.${unknown}`, 'a supported Program v3 renderer field');
+  const option = rendererOptionFailure(value, path);
+  if (option !== undefined) return option;
+  const attrs = validateAttributes(value.attributes, `${path}.attributes`);
+  if (!attrs.ok) return attrs;
+  const semantic = rendererSemanticFailure(value.kind, attrs.value, path);
+  if (semantic !== undefined) return semantic;
   const inputs = validateMaterialInputs(value.materialInputs, `${path}.materialInputs`);
   if (!inputs.ok) return inputs;
   if (
@@ -422,166 +633,245 @@ function validateRenderer(
     !text(value.kind)
   )
     return invalid(path, 'a supported renderer object', id, 'vfx-source-renderer-invalid');
-  if (value.kind === 'mesh') {
-    const playerMesh =
-      record(value.mesh) && value.mesh.source === 'player' && Object.keys(value.mesh).length === 1;
-    if (
-      (!text(value.mesh) &&
-        !playerMesh &&
-        !(runtimeReferences && typeof value.mesh === 'number')) ||
-      (value.submesh !== undefined && !nonNegativeInteger(value.submesh))
-    )
-      return invalid(
-        path,
-        'a mesh GUID or { source: "player" }, with a non-negative submesh',
-        id,
-        'vfx-source-renderer-invalid',
-      );
-  } else {
-    if (value.enabled !== undefined && typeof value.enabled !== 'boolean')
-      return invalid(
-        `${path}.enabled`,
-        'a boolean enabled flag',
-        id,
-        'vfx-source-renderer-invalid',
-      );
-    if (
-      value.capacity !== undefined &&
-      (!positiveInteger(value.capacity) || value.capacity > 65536)
-    )
-      return invalid(
-        `${path}.capacity`,
-        'a positive capacity no greater than 65536',
-        id,
-        'vfx-source-renderer-invalid',
-      );
-    if (
-      value.overflow !== undefined &&
-      value.overflow !== 'drop-newest' &&
-      value.overflow !== 'drop-oldest'
-    )
-      return invalid(
-        `${path}.overflow`,
-        'drop-newest or drop-oldest',
-        id,
-        'vfx-source-renderer-invalid',
-      );
-    if (value.width !== undefined && (!finite(value.width) || value.width <= 0))
-      return invalid(`${path}.width`, 'a positive finite width', id, 'vfx-source-renderer-invalid');
-    if (value.kind === 'billboard') {
-      if (
-        value.blend !== undefined &&
-        value.blend !== 'additive' &&
-        value.blend !== 'alpha' &&
-        value.blend !== 'opaque-cutout'
-      )
-        return invalid(
-          `${path}.blend`,
-          'additive, alpha, or opaque-cutout',
-          id,
-          'vfx-source-renderer-invalid',
-        );
-      if (
-        value.pivot !== undefined &&
-        (!vector(value.pivot, 2) || value.pivot.some((value) => value < -1 || value > 1))
-      )
-        return invalid(
-          `${path}.pivot`,
-          'two finite values in the -1..1 range',
-          id,
-          'vfx-source-renderer-invalid',
-        );
-      if (value.textureSheet !== undefined && !record(value.textureSheet))
-        return invalid(
-          `${path}.textureSheet`,
-          'a texture sheet object',
-          id,
-          'vfx-source-renderer-invalid',
-        );
-      if (value.textureSheet !== undefined && record(value.textureSheet)) {
-        const sheet = value.textureSheet;
-        const sheetExtra = unknownField(sheet, ['columns', 'rows', 'frameRate', 'frameCount']);
-        if (
-          sheetExtra !== undefined ||
-          !positiveInteger(sheet.columns) ||
-          !positiveInteger(sheet.rows) ||
-          sheet.columns > 64 ||
-          sheet.rows > 64 ||
-          !finite(sheet.frameRate) ||
-          sheet.frameRate < 0 ||
-          (sheet.frameCount !== undefined &&
-            (!positiveInteger(sheet.frameCount) || sheet.frameCount > sheet.columns * sheet.rows))
-        )
-          return invalid(
-            `${path}.textureSheet`,
-            'a bounded texture sheet declaration',
-            id,
-            'vfx-source-renderer-invalid',
-          );
-      }
-      if (value.softParticle !== undefined && !record(value.softParticle))
-        return invalid(
-          `${path}.softParticle`,
-          'a soft-particle object',
-          id,
-          'vfx-source-renderer-invalid',
-        );
-      if (value.softParticle !== undefined && record(value.softParticle)) {
-        const softExtra = unknownField(value.softParticle, ['fadeDistance']);
-        if (
-          softExtra !== undefined ||
-          !finite(value.softParticle.fadeDistance) ||
-          value.softParticle.fadeDistance <= 0
-        )
-          return invalid(
-            `${path}.softParticle`,
-            'a positive scene-depth fade distance',
-            id,
-            'vfx-source-renderer-invalid',
-          );
-      }
-    } else if (value.kind === 'ribbon') {
-      if (value.stripKey !== 'alive-index' || !positiveInteger(value.capacity))
-        return invalid(
-          path,
-          "stripKey 'alive-index' and positive capacity",
-          id,
-          'vfx-source-renderer-invalid',
-        );
-    } else if (value.kind === 'trail') {
-      if (
-        !positiveInteger(value.historyLength) ||
-        value.historyLength > 256 ||
-        !positiveInteger(value.capacity)
-      )
-        return invalid(
-          path,
-          'a bounded trail historyLength and positive capacity',
-          id,
-          'vfx-source-renderer-invalid',
-        );
-    } else if (value.kind === 'beam') {
-      if (value.endpointField !== 'velocity' || !positiveInteger(value.capacity))
-        return invalid(
-          path,
-          "endpointField 'velocity' and positive capacity",
-          id,
-          'vfx-source-renderer-invalid',
-        );
-    } else {
-      return invalid(
-        path,
-        'billboard, mesh, ribbon, trail, or beam',
-        id,
-        'vfx-source-renderer-invalid',
-      );
-    }
-  }
+  const topology = rendererTopologyFailure(value, path, id, runtimeReferences);
+  if (topology !== undefined) return topology;
   return ok({
     ...(value as unknown as ParticleRendererSourceV3),
     ...(attrs.value === undefined ? {} : { attributes: attrs.value }),
     ...(inputs.value === undefined ? {} : { materialInputs: inputs.value }),
   });
+}
+
+function emitterBoundsFailure(
+  bounds: unknown,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (!record(bounds)) return invalid(`${path}.bounds`, 'fixed aabb or sphere bounds', id);
+  const boundsExtra = unknownField(
+    bounds,
+    bounds.kind === 'aabb'
+      ? ['kind', 'min', 'max']
+      : bounds.kind === 'sphere'
+        ? ['kind', 'center', 'radius']
+        : ['kind'],
+  );
+  if (boundsExtra !== undefined) {
+    return invalid(`${path}.bounds.${boundsExtra}`, 'a supported bounds field', id);
+  }
+  const boundsOk =
+    (bounds.kind === 'aabb' && vector(bounds.min, 3) && vector(bounds.max, 3)) ||
+    (bounds.kind === 'sphere' &&
+      vector(bounds.center, 3) &&
+      finite(bounds.radius) &&
+      bounds.radius > 0);
+  if (!boundsOk) return invalid(`${path}.bounds`, 'valid fixed aabb or sphere bounds', id);
+  return undefined;
+}
+
+function emitterScheduleFailure(
+  schedule: unknown,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (!record(schedule) || !finite(schedule.rate) || schedule.rate < 0) {
+    return invalid(`${path}.schedule`, 'a non-negative spawn schedule', id);
+  }
+  const scheduleExtra = unknownField(schedule, ['rate', 'bursts', 'loopDuration']);
+  if (scheduleExtra !== undefined) {
+    return invalid(`${path}.schedule.${scheduleExtra}`, 'a supported schedule field', id);
+  }
+  if (
+    schedule.bursts !== undefined &&
+    (!Array.isArray(schedule.bursts) ||
+      schedule.bursts.some(
+        (burst) =>
+          !record(burst) || !finite(burst.time) || burst.time < 0 || !positiveInteger(burst.count),
+      ))
+  ) {
+    return invalid(`${path}.schedule.bursts`, 'non-negative timed positive bursts', id);
+  }
+  if (Array.isArray(schedule.bursts)) {
+    for (const [burstIndex, burst] of schedule.bursts.entries()) {
+      if (!record(burst)) continue;
+      const burstExtra = unknownField(burst, ['time', 'count']);
+      if (burstExtra !== undefined) {
+        return invalid(
+          `${path}.schedule.bursts[${burstIndex}].${burstExtra}`,
+          'a supported burst field',
+          id,
+        );
+      }
+    }
+  }
+  if (
+    schedule.loopDuration !== undefined &&
+    (!finite(schedule.loopDuration) || schedule.loopDuration <= 0)
+  ) {
+    return invalid(`${path}.schedule.loopDuration`, 'a positive finite duration', id);
+  }
+  return undefined;
+}
+
+/** The explicit GPU backend policy and WGSL program identity. */
+function emitterExecutionFailure(
+  value: Record<string, unknown>,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (!record(value.backend) || value.backend.required !== 'gpu') {
+    return invalid(`${path}.backend`, "the explicit policy { required: 'gpu' }", id);
+  }
+  const backendExtra = unknownField(value.backend, ['required']);
+  if (backendExtra !== undefined) {
+    return invalid(`${path}.backend.${backendExtra}`, 'the required GPU policy', id);
+  }
+  if (value.space !== 'local' && value.space !== 'world') {
+    return invalid(`${path}.space`, 'local or world', id);
+  }
+  const bounds = emitterBoundsFailure(value.bounds, path, id);
+  if (bounds !== undefined) return bounds;
+  const schedule = emitterScheduleFailure(value.schedule, path, id);
+  if (schedule !== undefined) return schedule;
+  if (!record(value.program) || !text(value.program.module)) {
+    return invalid(`${path}.program.module`, 'a WGSL module identity', id);
+  }
+  const programExtra = unknownField(value.program, ['module']);
+  if (programExtra !== undefined) {
+    return invalid(`${path}.program.${programExtra}`, 'a supported program field', id);
+  }
+  return undefined;
+}
+
+function parseEmitterRenderers(
+  value: unknown,
+  index: number,
+  path: string,
+  id: string,
+  runtimeReferences: boolean,
+): Result<ParticleRendererSourceV3[], ParticleCodeSourceError> {
+  if (!Array.isArray(value)) {
+    return invalid(
+      `${path}.renderers`,
+      'an explicit renderer array (empty for simulation only)',
+      id,
+    );
+  }
+  const renderers: ParticleRendererSourceV3[] = [];
+  for (const [rendererIndex, renderer] of value.entries()) {
+    const parsed = validateRenderer(renderer, index, rendererIndex, id, runtimeReferences);
+    if (!parsed.ok) return parsed;
+    renderers.push(parsed.value);
+  }
+  return ok(renderers);
+}
+
+function emitterChannelsFailure(
+  channels: unknown,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (channels === undefined) return undefined;
+  if (!Array.isArray(channels) || channels.length === 0) {
+    return eventInvalid(
+      'vfx-source-channel-invalid',
+      `${path}.channels`,
+      'a non-empty bounded channel list',
+      id,
+    );
+  }
+  const channelIds = new Set<string>();
+  for (const [channelIndex, channel] of channels.entries()) {
+    const channelPath = `${path}.channels[${channelIndex}]`;
+    if (!record(channel)) {
+      return eventInvalid('vfx-source-channel-invalid', channelPath, 'a channel object', id);
+    }
+    const channelExtra = unknownField(channel, ['id', 'payload', 'capacity', 'overflow']);
+    if (channelExtra !== undefined) {
+      return eventInvalid(
+        'vfx-source-channel-invalid',
+        `${channelPath}.${channelExtra}`,
+        'a supported channel field',
+        id,
+      );
+    }
+    if (!text(channel.id) || channelIds.has(channel.id)) {
+      return eventInvalid(
+        'vfx-source-channel-invalid',
+        `${channelPath}.id`,
+        'a unique non-empty channel id',
+        id,
+      );
+    }
+    if (
+      !positiveInteger(channel.capacity) ||
+      channel.capacity > 65536 ||
+      (channel.payload !== undefined && channel.payload !== 'impact') ||
+      (channel.overflow !== 'drop-newest' && channel.overflow !== 'drop-oldest')
+    ) {
+      return eventInvalid(
+        'vfx-source-channel-invalid',
+        channelPath,
+        'an impact channel with capacity 1..65536 and explicit overflow policy',
+        id,
+      );
+    }
+    channelIds.add(channel.id);
+  }
+  return undefined;
+}
+
+function emitterEventsFailure(
+  events: unknown,
+  path: string,
+  id: string,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (events === undefined) return undefined;
+  if (!Array.isArray(events)) {
+    return eventInvalid('vfx-source-event-invalid', `${path}.events`, 'an event list', id);
+  }
+  const eventIds = new Set<string>();
+  for (const [eventIndex, event] of events.entries()) {
+    const eventPath = `${path}.events[${eventIndex}]`;
+    if (!record(event)) {
+      return eventInvalid('vfx-source-event-invalid', eventPath, 'an event object', id);
+    }
+    const eventExtra = unknownField(event, [
+      'id',
+      'channel',
+      'subEmitter',
+      'fanOut',
+      'recursionDepth',
+    ]);
+    if (eventExtra !== undefined) {
+      return eventInvalid(
+        'vfx-source-event-invalid',
+        `${eventPath}.${eventExtra}`,
+        'a supported event field',
+        id,
+      );
+    }
+    if (!text(event.id) || eventIds.has(event.id)) {
+      return eventInvalid('vfx-source-event-invalid', `${eventPath}.id`, 'a unique event id', id);
+    }
+    if (
+      !text(event.channel) ||
+      !text(event.subEmitter) ||
+      !positiveInteger(event.fanOut) ||
+      event.fanOut > 16 ||
+      !positiveInteger(event.recursionDepth) ||
+      event.recursionDepth > 8
+    ) {
+      return eventInvalid(
+        'vfx-source-event-invalid',
+        eventPath,
+        'an event with bounded fanOut 1..16 and recursionDepth 1..8',
+        id,
+      );
+    }
+    eventIds.add(event.id);
+  }
+  return undefined;
 }
 
 function parseEmitter(
@@ -620,185 +910,14 @@ function parseEmitter(
   }
   if (!positiveInteger(value.capacity))
     return invalid(`${path}.capacity`, 'a positive integer', id);
-  if (!record(value.backend) || value.backend.required !== 'gpu') {
-    return invalid(`${path}.backend`, "the explicit policy { required: 'gpu' }", id);
-  }
-  const backendExtra = unknownField(value.backend, ['required']);
-  if (backendExtra !== undefined) {
-    return invalid(`${path}.backend.${backendExtra}`, 'the required GPU policy', id);
-  }
-  if (value.space !== 'local' && value.space !== 'world') {
-    return invalid(`${path}.space`, 'local or world', id);
-  }
-  if (!record(value.bounds)) return invalid(`${path}.bounds`, 'fixed aabb or sphere bounds', id);
-  const boundsExtra = unknownField(
-    value.bounds,
-    value.bounds.kind === 'aabb'
-      ? ['kind', 'min', 'max']
-      : value.bounds.kind === 'sphere'
-        ? ['kind', 'center', 'radius']
-        : ['kind'],
-  );
-  if (boundsExtra !== undefined) {
-    return invalid(`${path}.bounds.${boundsExtra}`, 'a supported bounds field', id);
-  }
-  const boundsOk =
-    (value.bounds.kind === 'aabb' && vector(value.bounds.min, 3) && vector(value.bounds.max, 3)) ||
-    (value.bounds.kind === 'sphere' &&
-      vector(value.bounds.center, 3) &&
-      finite(value.bounds.radius) &&
-      value.bounds.radius > 0);
-  if (!boundsOk) return invalid(`${path}.bounds`, 'valid fixed aabb or sphere bounds', id);
-  if (!record(value.schedule) || !finite(value.schedule.rate) || value.schedule.rate < 0) {
-    return invalid(`${path}.schedule`, 'a non-negative spawn schedule', id);
-  }
-  const scheduleExtra = unknownField(value.schedule, ['rate', 'bursts', 'loopDuration']);
-  if (scheduleExtra !== undefined) {
-    return invalid(`${path}.schedule.${scheduleExtra}`, 'a supported schedule field', id);
-  }
-  if (
-    value.schedule.bursts !== undefined &&
-    (!Array.isArray(value.schedule.bursts) ||
-      value.schedule.bursts.some(
-        (burst) =>
-          !record(burst) || !finite(burst.time) || burst.time < 0 || !positiveInteger(burst.count),
-      ))
-  ) {
-    return invalid(`${path}.schedule.bursts`, 'non-negative timed positive bursts', id);
-  }
-  if (Array.isArray(value.schedule.bursts)) {
-    for (const [burstIndex, burst] of value.schedule.bursts.entries()) {
-      if (!record(burst)) continue;
-      const burstExtra = unknownField(burst, ['time', 'count']);
-      if (burstExtra !== undefined) {
-        return invalid(
-          `${path}.schedule.bursts[${burstIndex}].${burstExtra}`,
-          'a supported burst field',
-          id,
-        );
-      }
-    }
-  }
-  if (
-    value.schedule.loopDuration !== undefined &&
-    (!finite(value.schedule.loopDuration) || value.schedule.loopDuration <= 0)
-  ) {
-    return invalid(`${path}.schedule.loopDuration`, 'a positive finite duration', id);
-  }
-  if (!record(value.program) || !text(value.program.module)) {
-    return invalid(`${path}.program.module`, 'a WGSL module identity', id);
-  }
-  const programExtra = unknownField(value.program, ['module']);
-  if (programExtra !== undefined) {
-    return invalid(`${path}.program.${programExtra}`, 'a supported program field', id);
-  }
-  if (!Array.isArray(value.renderers)) {
-    return invalid(
-      `${path}.renderers`,
-      'an explicit renderer array (empty for simulation only)',
-      id,
-    );
-  }
-  const renderers: ParticleRendererSourceV3[] = [];
-  for (const [rendererIndex, renderer] of value.renderers.entries()) {
-    const parsed = validateRenderer(renderer, index, rendererIndex, id, runtimeReferences);
-    if (!parsed.ok) return parsed;
-    renderers.push(parsed.value);
-  }
-  if (value.channels !== undefined) {
-    if (!Array.isArray(value.channels) || value.channels.length === 0) {
-      return eventInvalid(
-        'vfx-source-channel-invalid',
-        `${path}.channels`,
-        'a non-empty bounded channel list',
-        id,
-      );
-    }
-    const channelIds = new Set<string>();
-    for (const [channelIndex, channel] of value.channels.entries()) {
-      const channelPath = `${path}.channels[${channelIndex}]`;
-      if (!record(channel)) {
-        return eventInvalid('vfx-source-channel-invalid', channelPath, 'a channel object', id);
-      }
-      const channelExtra = unknownField(channel, ['id', 'payload', 'capacity', 'overflow']);
-      if (channelExtra !== undefined) {
-        return eventInvalid(
-          'vfx-source-channel-invalid',
-          `${channelPath}.${channelExtra}`,
-          'a supported channel field',
-          id,
-        );
-      }
-      if (!text(channel.id) || channelIds.has(channel.id)) {
-        return eventInvalid(
-          'vfx-source-channel-invalid',
-          `${channelPath}.id`,
-          'a unique non-empty channel id',
-          id,
-        );
-      }
-      if (
-        !positiveInteger(channel.capacity) ||
-        channel.capacity > 65536 ||
-        (channel.payload !== undefined && channel.payload !== 'impact') ||
-        (channel.overflow !== 'drop-newest' && channel.overflow !== 'drop-oldest')
-      ) {
-        return eventInvalid(
-          'vfx-source-channel-invalid',
-          channelPath,
-          'an impact channel with capacity 1..65536 and explicit overflow policy',
-          id,
-        );
-      }
-      channelIds.add(channel.id);
-    }
-  }
-  if (value.events !== undefined) {
-    if (!Array.isArray(value.events)) {
-      return eventInvalid('vfx-source-event-invalid', `${path}.events`, 'an event list', id);
-    }
-    const eventIds = new Set<string>();
-    for (const [eventIndex, event] of value.events.entries()) {
-      const eventPath = `${path}.events[${eventIndex}]`;
-      if (!record(event)) {
-        return eventInvalid('vfx-source-event-invalid', eventPath, 'an event object', id);
-      }
-      const eventExtra = unknownField(event, [
-        'id',
-        'channel',
-        'subEmitter',
-        'fanOut',
-        'recursionDepth',
-      ]);
-      if (eventExtra !== undefined) {
-        return eventInvalid(
-          'vfx-source-event-invalid',
-          `${eventPath}.${eventExtra}`,
-          'a supported event field',
-          id,
-        );
-      }
-      if (!text(event.id) || eventIds.has(event.id)) {
-        return eventInvalid('vfx-source-event-invalid', `${eventPath}.id`, 'a unique event id', id);
-      }
-      if (
-        !text(event.channel) ||
-        !text(event.subEmitter) ||
-        !positiveInteger(event.fanOut) ||
-        event.fanOut > 16 ||
-        !positiveInteger(event.recursionDepth) ||
-        event.recursionDepth > 8
-      ) {
-        return eventInvalid(
-          'vfx-source-event-invalid',
-          eventPath,
-          'an event with bounded fanOut 1..16 and recursionDepth 1..8',
-          id,
-        );
-      }
-      eventIds.add(event.id);
-    }
-  }
+  const execution = emitterExecutionFailure(value, path, id);
+  if (execution !== undefined) return execution;
+  const renderers = parseEmitterRenderers(value.renderers, index, path, id, runtimeReferences);
+  if (!renderers.ok) return renderers;
+  const channels = emitterChannelsFailure(value.channels, path, id);
+  if (channels !== undefined) return channels;
+  const events = emitterEventsFailure(value.events, path, id);
+  if (events !== undefined) return events;
   if (
     value.simulationWhenCulled !== undefined &&
     value.simulationWhenCulled !== 'continue' &&
@@ -807,7 +926,7 @@ function parseEmitter(
   ) {
     return invalid(`${path}.simulationWhenCulled`, 'continue, pause, or restart-on-visible', id);
   }
-  return ok({ ...(value as unknown as ParticleEmitterSourceV3), renderers });
+  return ok({ ...(value as unknown as ParticleEmitterSourceV3), renderers: renderers.value });
 }
 
 /** Parse the single Program v3 source shape. Older source versions are rejected. */

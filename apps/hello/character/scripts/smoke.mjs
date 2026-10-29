@@ -2,7 +2,7 @@
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // hello-character headless dawn-node smoke.
 //
-// Strategy: createApp with physicsPlugin('rapier-3d'), spawn a kinematic capsule
+// Strategy: createApp with physics3d, spawn a kinematic capsule
 // character + static ground, start the app, poll for PhysicsWorld (async WASM),
 // then DRIVE the character with PhysicsWorld.moveAndSlide for N frames and assert:
 //   1. createApp + app ready/start/stop succeed, app.onError == 0.
@@ -17,7 +17,7 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // (feat-20260617 G-2 / AC-15). Structural-only: no pixel readback (the demo's
 // visual gate is the Playwright browser probe + human Read(*.png)).
 //
-// Note: physicsPlugin.apply awaits the Rapier WASM import -- Cordis activation in
+// Note: physics3d.apply awaits the Rapier WASM import -- Cordis activation in
 // createApp resolves after the WASM module is loaded, so PhysicsWorld is
 // populated before the first app frame. If it fails to load within the
 // timeout, the smoke FAILs (non-vacuous PASS).
@@ -134,13 +134,14 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
+const { default: physics3d } = await import('@forgeax/engine-physics-rapier3d');
 const { createApp } = await import('@forgeax/engine-app/browser');
 
 const { Camera, DirectionalLight } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 
 const physicsPkg = await import('@forgeax/engine-physics');
-const { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, physicsPlugin } =
+const { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } =
   physicsPkg;
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -149,7 +150,7 @@ const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MA
 
 const appResult = await createApp(
   mockCanvas,
-  { platform: createSmokePlatform(mockCanvas),  plugins: [physicsPlugin('rapier-3d')] },
+  { platform: createSmokePlatform(mockCanvas),  plugins: [physics3d] },
   { shaderManifestUrl: MANIFEST_URL },
 ).catch((err) => {
   originalConsoleError(
@@ -318,10 +319,10 @@ if (totalFrames < SMOKE_MIN_FRAMES) {
   failures.push(`(c) total frames=${totalFrames} < ${SMOKE_MIN_FRAMES}`);
 }
 
-// Non-vacuous PASS: PhysicsWorld must be present (physicsPlugin awaits WASM
+// Non-vacuous PASS: PhysicsWorld must be present (physics3d awaits WASM
 // before createApp resolves). Assert moveAndSlide behaviour and grounded.
 if (!hasPhysicsWorld) {
-  failures.push(`(d) PhysicsWorld not present -- WASM did not load or physicsPlugin build failed`);
+  failures.push(`(d) PhysicsWorld not present -- WASM did not load or physics3d build failed`);
 } else {
   // AC-15: moveAndSlide advanced the character and it did not tunnel.
   if (finalPosX <= initialPosX + 0.3) {

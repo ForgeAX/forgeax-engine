@@ -882,100 +882,97 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     }
   };
 
-  const captureReflectionProbe = async (): Promise<Uint8Array> => {
-    if (!reflectionEvidence) throw new Error('reflection evidence mode is disabled');
-    // Own the 60-frame preparation window. A running App can submit another
-    // rAF frame while the async fallback readback resolves, which would race
-    // the inspection snapshot with a newer candidate. Direct draws remain the
-    // real renderer path; pausing only removes that unrelated frame authority.
-    const paused = app.pause();
-    if (!paused.ok) throw paused.error;
-    let receipt: Awaited<ReturnType<typeof renderer.draw>> | undefined;
-    const passNames = new Set<string>();
-    let owner = renderer.inspect().reflectionProbes;
+  type ReflectionProbeInspection = ReturnType<typeof renderer.inspect>['reflectionProbes'];
+
+  const learnRenderErrors = (): LearnRenderError[] =>
+    (globalThis as unknown as { __learnRenderErrors?: LearnRenderError[] }).__learnRenderErrors ??
+    [];
+
+  const drawReflectionEvidenceFrame = async (passNames: Set<string>): Promise<FrameReceipt> => {
+    const updated = world.update(1 / 60);
+    if (!updated.ok) throw updated.error;
+    const next = renderer.draw({
+      leases: [attached.value],
+      camera: { lease: attached.value },
+      environment: { lease: attached.value },
+    });
+    if (!next.ok) throw next.error;
+    const completed = await next.value.completed;
+    if (!completed.ok) throw completed.error;
+    for (const passName of renderer.inspect().perFramePassNames) passNames.add(passName);
+    return next.value;
+  };
+
+  const prepareReflectionProbe = async (passNames: Set<string>): Promise<FrameReceipt> => {
+    let receipt: FrameReceipt | undefined;
     for (let frame = 0; frame < REFLECTION_PROBE_CAPTURE_FRAMES; frame += 1) {
-      const updated = world.update(1 / 60);
-      if (!updated.ok) throw updated.error;
-      const next = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
-      if (!next.ok) throw next.error;
-      receipt = next;
-      const completed = await next.value.completed;
-      if (!completed.ok) throw completed.error;
+      receipt = await drawReflectionEvidenceFrame(passNames);
       (globalThis as typeof globalThis & { __transmissionFrameCount?: number }).__transmissionFrameCount =
         frame + 1;
-      for (const passName of renderer.inspect().perFramePassNames) passNames.add(passName);
-      owner = renderer.inspect().reflectionProbes;
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     }
-    if (receipt === undefined || !receipt.ok) throw new Error('probe evidence submitted no frame');
-    const drawEvidenceFrame = async (): Promise<FrameReceipt> => {
-      const updated = world.update(1 / 60);
-      if (!updated.ok) throw updated.error;
-      const next = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
-      if (!next.ok) throw next.error;
-      const completed = await next.value.completed;
-      if (!completed.ok) throw completed.error;
-      for (const passName of renderer.inspect().perFramePassNames) passNames.add(passName);
-      return next.value;
-    };
-    const committedProbeReady = (inspection: typeof owner): boolean => {
-      const fallbackReadback = inspection.reflectionFallbackReadback;
-      const committedProbe = inspection.reflectionFallbacks?.find((row) => row.source === 'probe');
-      return (
-        inspection.rawFacesCaptured === 6 &&
-        inspection.filteredStepsCompleted === 54 &&
-        inspection.activeCount > 0 &&
-        inspection.filteredMipLevels.length === 9 &&
-        fallbackReadback?.readbackStatus === 'complete' &&
-        fallbackReadback.linearHdr.slice(0, 3).some(
-          (value) => Number.isFinite(value) && value !== 0,
-        ) &&
-        committedProbe !== undefined &&
-        committedProbe.state === 'active' &&
-        committedProbe.candidateVisible === false &&
-        committedProbe.frameId === fallbackReadback.frameId &&
-        committedProbe.deviceGeneration === fallbackReadback.deviceGeneration
-      );
-    };
-    // A queue/readback completion can publish the immutable inspection snapshot
-    // one tick after the receipt promise resolves. Re-read and, if needed,
-    // advance one bounded frame so the producer's committed fallback is observed.
+    if (receipt === undefined) throw new Error('probe evidence submitted no frame');
+    return receipt;
+  };
+
+  const committedProbeReady = (inspection: ReflectionProbeInspection): boolean => {
+    const fallbackReadback = inspection.reflectionFallbackReadback;
+    const committedProbe = inspection.reflectionFallbacks?.find((row) => row.source === 'probe');
+    return (
+      inspection.rawFacesCaptured === 6 &&
+      inspection.filteredStepsCompleted === 54 &&
+      inspection.activeCount > 0 &&
+      inspection.filteredMipLevels.length === 9 &&
+      fallbackReadback?.readbackStatus === 'complete' &&
+      fallbackReadback.linearHdr.slice(0, 3).some(
+        (value) => Number.isFinite(value) && value !== 0,
+      ) &&
+      committedProbe !== undefined &&
+      committedProbe.state === 'active' &&
+      committedProbe.candidateVisible === false &&
+      committedProbe.frameId === fallbackReadback.frameId &&
+      committedProbe.deviceGeneration === fallbackReadback.deviceGeneration
+    );
+  };
+
+  // A queue/readback completion can publish the immutable inspection snapshot
+  // one tick after the receipt promise resolves. Re-read and, if needed,
+  // advance one bounded frame so the producer's committed fallback is observed.
+  const awaitCommittedProbe = async (passNames: Set<string>): Promise<ReflectionProbeInspection> => {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     for (let attempt = 0; attempt < 16; attempt += 1) {
-      owner = renderer.inspect().reflectionProbes;
-      if (committedProbeReady(owner)) break;
-      await drawEvidenceFrame();
+      if (committedProbeReady(renderer.inspect().reflectionProbes)) break;
+      await drawReflectionEvidenceFrame(passNames);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     }
-    owner = renderer.inspect().reflectionProbes;
+    const owner = renderer.inspect().reflectionProbes;
     if (!committedProbeReady(owner)) {
       throw new Error(`ReflectionProbe baseline publication did not settle: ${JSON.stringify(owner)}`);
     }
-    const pixels = await captureCanvasPixels(canvas);
-    if (!pixels.ok) throw pixels.error;
+    return owner;
+  };
+
+  const readReflectionRoi = (pixels: Uint8Array) => {
     const width = Math.max(1, canvas.width);
     const centerOffset = (Math.floor(canvas.height / 2) * width + Math.floor(width / 2)) * 4;
-    const outsideOffset =
-      (Math.floor(canvas.height / 2) * width + Math.floor(width * 0.88)) * 4;
+    const outsideOffset = (Math.floor(canvas.height / 2) * width + Math.floor(width * 0.88)) * 4;
     const rgba = (offset: number): readonly [number, number, number, number] => [
-      pixels.value[offset] ?? 0,
-      pixels.value[offset + 1] ?? 0,
-      pixels.value[offset + 2] ?? 0,
-      pixels.value[offset + 3] ?? 0,
+      pixels[offset] ?? 0,
+      pixels[offset + 1] ?? 0,
+      pixels[offset + 2] ?? 0,
+      pixels[offset + 3] ?? 0,
     ];
+    return { center: rgba(centerOffset), outside: rgba(outsideOffset) };
+  };
+
+  const assertProbeBaseline = (owner: ReflectionProbeInspection): void => {
     const rawFaces = owner.rawFacesCaptured;
     const filteredSteps = owner.filteredStepsCompleted;
     const mipLevels = owner.filteredMipLevels;
     if (rawFaces !== 6 || filteredSteps !== 54) {
-      throw new Error(`ReflectionProbe owner counters rawFaces=${rawFaces}, filteredSteps=${filteredSteps}`);
+      throw new Error(
+        `ReflectionProbe owner counters rawFaces=${rawFaces}, filteredSteps=${filteredSteps}`,
+      );
     }
     if (mipLevels.length !== 9 || mipLevels[0] !== 0 || mipLevels[8] !== 8) {
       throw new Error(`ReflectionProbe owner mip levels=${JSON.stringify(mipLevels)}`);
@@ -983,9 +980,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     const fallbackReadback = owner.reflectionFallbackReadback;
     if (
       fallbackReadback?.readbackStatus !== 'complete' ||
-      !fallbackReadback.linearHdr.slice(0, 3).some(
-        (value) => Number.isFinite(value) && value !== 0,
-      )
+      !fallbackReadback.linearHdr.slice(0, 3).some((value) => Number.isFinite(value) && value !== 0)
     ) {
       throw new Error(
         `ReflectionProbe fallback MRT readback was not non-zero: ${JSON.stringify(fallbackReadback)}`,
@@ -1002,213 +997,219 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         `ReflectionProbe fallback receipt identity mismatch: ${JSON.stringify({ committedProbe, fallbackReadback })}`,
       );
     }
-    const initialGpuErrors =
-      (globalThis as unknown as { __learnRenderErrors?: LearnRenderError[] }).__learnRenderErrors ??
-      [];
+    const initialGpuErrors = learnRenderErrors();
     if (initialGpuErrors.length > 0) {
       throw new Error(`ReflectionProbe GPU errors=${JSON.stringify(initialGpuErrors)}`);
     }
-    // Preserve the completed probe publication before the fault and neutral
-    // transition fixtures mutate the owner inspection. The verifier needs a
-    // source row and readback from this exact baseline, not the replacement
-    // device snapshot captured after recovery.
-    const baselineOwner = structuredClone(owner);
-    const baselineSsrDependencies = structuredClone(renderer.inspect().ssrDependencies);
+  };
 
-    const fallbackRow = (inspection: typeof owner, source: 'probe' | 'skylight' | 'neutral') =>
-      inspection.reflectionFallbacks?.find((row) => row.source === source);
-    let submitFailure:
-      | {
-          readonly drawError: string;
-          readonly before: unknown;
-          readonly after: unknown;
-          readonly failureStage?: string;
-          readonly failureCode?: string;
-          readonly preservedLkg: boolean;
-          readonly generationStable: boolean;
-          readonly candidateInvisible: boolean;
-        }
-      | undefined;
-    if (faultInstrumentation !== undefined) {
-      const beforeFailure = renderer.inspect().reflectionProbes;
-      const beforeRow = fallbackRow(beforeFailure, 'probe');
-      submitFailureArmed = true;
-      const updated = world.update(1 / 60);
-      if (!updated.ok) throw updated.error;
-      const failed = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
-      if (failed.ok) throw new Error('reflection fallback submit fault was not injected');
-      const afterFailure = renderer.inspect().reflectionProbes;
-      const afterRow = fallbackRow(afterFailure, 'probe');
-      const failureInspection = afterFailure.reflectionFallbackInspection;
-      const preservedLkg =
-        beforeRow !== undefined &&
-        afterRow !== undefined &&
-        afterRow.state === 'lkg' &&
-        afterRow.sourceGeneration === beforeRow.sourceGeneration &&
-        afterRow.projectionGeneration === beforeRow.projectionGeneration;
-      const candidateInvisible =
-        (afterFailure.reflectionFallbacks ?? []).every((row) => row.candidateVisible === false);
-      submitFailure = {
-        drawError: failed.error.code,
-        before: beforeRow,
-        after: afterRow,
-        ...(failureInspection.failureStage === undefined
-          ? {}
-          : { failureStage: failureInspection.failureStage }),
-        ...(failureInspection.failureCode === undefined
-          ? {}
-          : { failureCode: failureInspection.failureCode }),
-        preservedLkg,
-        generationStable: preservedLkg,
-        candidateInvisible,
-      };
-      owner = afterFailure;
-      // A following successful frame must promote the same source-identical
-      // candidate back to active before the device replacement scenario.
-      await drawEvidenceFrame();
-      owner = renderer.inspect().reflectionProbes;
+  const probeFallbackRow = (inspection: ReflectionProbeInspection) => {
+    return inspection.reflectionFallbacks?.find((row) => row.source === 'probe');
+  };
+
+  /** One injected submit fault must keep the probe row as its last-known-good generation. */
+  const injectSubmitFailure = () => {
+    const beforeFailure = renderer.inspect().reflectionProbes;
+    const beforeRow = probeFallbackRow(beforeFailure);
+    submitFailureArmed = true;
+    const updated = world.update(1 / 60);
+    if (!updated.ok) throw updated.error;
+    const failed = renderer.draw({
+      leases: [attached.value],
+      camera: { lease: attached.value },
+      environment: { lease: attached.value },
+    });
+    if (failed.ok) throw new Error('reflection fallback submit fault was not injected');
+    const afterFailure = renderer.inspect().reflectionProbes;
+    const afterRow = probeFallbackRow(afterFailure);
+    const failureInspection = afterFailure.reflectionFallbackInspection;
+    const preservedLkg =
+      beforeRow !== undefined &&
+      afterRow !== undefined &&
+      afterRow.state === 'lkg' &&
+      afterRow.sourceGeneration === beforeRow.sourceGeneration &&
+      afterRow.projectionGeneration === beforeRow.projectionGeneration;
+    const candidateInvisible = (afterFailure.reflectionFallbacks ?? []).every(
+      (row) => row.candidateVisible === false,
+    );
+    return {
+      drawError: failed.error.code,
+      before: beforeRow,
+      after: afterRow,
+      ...(failureInspection.failureStage === undefined
+        ? {}
+        : { failureStage: failureInspection.failureStage }),
+      ...(failureInspection.failureCode === undefined
+        ? {}
+        : { failureCode: failureInspection.failureCode }),
+      preservedLkg,
+      generationStable: preservedLkg,
+      candidateInvisible,
+    };
+  };
+
+  const loseReflectionDevice = async (): Promise<string> => {
+    if (resolveInjectedDeviceLoss === undefined) {
+      throw new Error('reflection fallback device-loss fault resolver was not installed');
     }
-
-    let deviceRecovery:
-      | {
-          readonly triggered: boolean;
-          readonly lostState: string;
-          readonly recoverCode: string;
-          readonly beforeDeviceGeneration: number;
-          readonly afterDeviceGeneration: number;
-          readonly generationChanged: boolean;
-          readonly replacementRow: unknown;
-          readonly readback: unknown;
-          readonly matchingReplacement: boolean;
-        }
-      | undefined;
-    if (faultInstrumentation !== undefined) {
-      const beforeLoss = renderer.inspect();
-      const beforeDeviceGeneration = beforeLoss.frame.deviceGeneration;
-      if (resolveInjectedDeviceLoss === undefined) {
-        throw new Error('reflection fallback device-loss fault resolver was not installed');
-      }
-      const host = globalThis as typeof globalThis & {
-        __learnRenderExpectedErrorCodes?: Record<string, number>;
-      };
-      host.__learnRenderExpectedErrorCodes ??= {};
-      host.__learnRenderExpectedErrorCodes['device-lost'] =
-        (host.__learnRenderExpectedErrorCodes['device-lost'] ?? 0) + 1;
-      resolveInjectedDeviceLoss({
-        reason: 'unknown',
-        message: 'fixture-injected reflection fallback device replacement',
-      });
-      for (let attempt = 0; attempt < 10 && renderer.state() !== 'device-lost'; attempt += 1) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      }
-      const lostState = renderer.state();
-      if (lostState !== 'device-lost') throw new Error(`device-loss fault did not reach renderer: ${lostState}`);
-      const recovered = await renderer.recover();
-      const recoverCode = recovered.ok ? 'recovered' : recovered.error.code;
-      if (!recovered.ok) throw recovered.error;
-      let recoveryReceipt: NonNullable<typeof receipt>['value'] | undefined;
-      for (let frame = 0; frame < 40; frame += 1) {
-        recoveryReceipt = await drawEvidenceFrame();
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      }
-      const afterRecovery = renderer.inspect();
-      const replacementOwner = afterRecovery.reflectionProbes;
-      const replacementRow = fallbackRow(replacementOwner, 'probe');
-      const replacementReadback = replacementOwner.reflectionFallbackReadback;
-      const generationChanged = afterRecovery.frame.deviceGeneration > beforeDeviceGeneration;
-      const matchingReplacement =
-        generationChanged &&
-        replacementRow?.state === 'active' &&
-        replacementRow.candidateVisible === false &&
-        replacementRow.deviceGeneration === afterRecovery.frame.deviceGeneration &&
-        replacementReadback?.readbackStatus === 'complete' &&
-        replacementReadback.deviceGeneration === replacementRow.deviceGeneration &&
-        replacementReadback.frameId === replacementRow.frameId;
-      deviceRecovery = {
-        triggered: true,
-        lostState,
-        recoverCode,
-        beforeDeviceGeneration,
-        afterDeviceGeneration: afterRecovery.frame.deviceGeneration,
-        generationChanged,
-        replacementRow,
-        readback: replacementReadback,
-        matchingReplacement,
-      };
-      if (!matchingReplacement || recoveryReceipt === undefined) {
-        throw new Error(`device replacement receipt mismatch: ${JSON.stringify(deviceRecovery)}`);
-      }
-      owner = replacementOwner;
-      receipt = { ok: true, value: recoveryReceipt };
+    const host = globalThis as typeof globalThis & {
+      __learnRenderExpectedErrorCodes?: Record<string, number>;
+    };
+    host.__learnRenderExpectedErrorCodes ??= {};
+    host.__learnRenderExpectedErrorCodes['device-lost'] =
+      (host.__learnRenderExpectedErrorCodes['device-lost'] ?? 0) + 1;
+    resolveInjectedDeviceLoss({
+      reason: 'unknown',
+      message: 'fixture-injected reflection fallback device replacement',
+    });
+    for (let attempt = 0; attempt < 10 && renderer.state() !== 'device-lost'; attempt += 1) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     }
+    const lostState = renderer.state();
+    if (lostState !== 'device-lost')
+      throw new Error(`device-loss fault did not reach renderer: ${lostState}`);
+    return lostState;
+  };
 
-    const gpuErrors =
-      (globalThis as unknown as { __learnRenderErrors?: LearnRenderError[] }).__learnRenderErrors ??
-      [];
+  /** Replaces the device and settles a bounded window before checking the probe republished on the new generation. */
+  const replaceReflectionDevice = async (passNames: Set<string>) => {
+    const beforeLoss = renderer.inspect();
+    const beforeDeviceGeneration = beforeLoss.frame.deviceGeneration;
+    const lostState = await loseReflectionDevice();
+    const recovered = await renderer.recover();
+    const recoverCode = recovered.ok ? 'recovered' : recovered.error.code;
+    if (!recovered.ok) throw recovered.error;
+    let recoveryReceipt: FrameReceipt | undefined;
+    for (let frame = 0; frame < 40; frame += 1) {
+      recoveryReceipt = await drawReflectionEvidenceFrame(passNames);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+    const afterRecovery = renderer.inspect();
+    const replacementOwner = afterRecovery.reflectionProbes;
+    const replacementRow = probeFallbackRow(replacementOwner);
+    const replacementReadback = replacementOwner.reflectionFallbackReadback;
+    const generationChanged = afterRecovery.frame.deviceGeneration > beforeDeviceGeneration;
+    const matchingReplacement =
+      generationChanged &&
+      replacementRow?.state === 'active' &&
+      replacementRow.candidateVisible === false &&
+      replacementRow.deviceGeneration === afterRecovery.frame.deviceGeneration &&
+      replacementReadback?.readbackStatus === 'complete' &&
+      replacementReadback.deviceGeneration === replacementRow.deviceGeneration &&
+      replacementReadback.frameId === replacementRow.frameId;
+    const deviceRecovery: NonNullable<NonNullable<TargetReport['reflectionProbe']>['deviceRecovery']> = {
+      triggered: true,
+      lostState,
+      recoverCode,
+      beforeDeviceGeneration,
+      afterDeviceGeneration: afterRecovery.frame.deviceGeneration,
+      generationChanged,
+      replacementRow,
+      readback: replacementReadback,
+      matchingReplacement,
+    };
+    if (!matchingReplacement || recoveryReceipt === undefined) {
+      throw new Error(`device replacement receipt mismatch: ${JSON.stringify(deviceRecovery)}`);
+    }
+    return { deviceRecovery, owner: replacementOwner, receipt: recoveryReceipt };
+  };
+
+  const assertSsrSceneCarrier = (passNames: Set<string>) => {
+    const gpuErrors = learnRenderErrors();
     if (gpuErrors.length > 0) throw new Error(`ReflectionProbe GPU errors=${JSON.stringify(gpuErrors)}`);
-    const initialOwner = baselineOwner;
-    const initialSsrDependencies = baselineSsrDependencies;
     const ssr = renderer.inspect().ssr;
     if (ssr.status !== 'admitted') {
       throw new Error(`SSR scene carrier was not admitted: ${JSON.stringify(ssr)}`);
     }
     const ssrPassNames = [...passNames].filter((name) => name.startsWith('ssr-'));
     if (ssrPassNames.length < 4) {
-      throw new Error(`SSR scene carrier pass roster is incomplete: ${JSON.stringify(ssrPassNames)}`);
+      throw new Error(
+        `SSR scene carrier pass roster is incomplete: ${JSON.stringify(ssrPassNames)}`,
+      );
     }
-    let neutralOwner: typeof owner | undefined;
-    let neutralSsrDependencies: SsrDependenciesInspection | undefined;
-    if (sceneEntities.skylight !== undefined) {
-      const removed = world.despawn(sceneEntities.skylight);
-      if (!removed.ok) throw removed.error;
-      if (sceneEntities.reflectionProbe !== undefined) {
-        const removedProbe = world.despawn(sceneEntities.reflectionProbe);
-        if (!removedProbe.ok) throw removedProbe.error;
-      }
-      const updated = world.update(1 / 60);
-      if (!updated.ok) throw updated.error;
-      const next = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
-      if (!next.ok) throw next.error;
-      const completed = await next.value.completed;
-      if (!completed.ok) throw completed.error;
-      // The first frame publishes the generation change and resets temporal
-      // history; settle one more successful frame before inspecting the
-      // committed neutral fallback and its dependent temporal receipt.
-      const settled = world.update(1 / 60);
-      if (!settled.ok) throw settled.error;
-      const settledDraw = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
-      if (!settledDraw.ok) throw settledDraw.error;
-      const settledCompleted = await settledDraw.value.completed;
-      if (!settledCompleted.ok) throw settledCompleted.error;
-      // Inspecting the committed source generation intentionally invalidates
-      // temporal history tied to the old projection. Submit one more frame
-      // after that reset so neutral and temporal receipts share one generation.
-      void renderer.inspect().ssrDependencies;
-      const recovered = world.update(1 / 60);
-      if (!recovered.ok) throw recovered.error;
-      const recoveredDraw = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
-      if (!recoveredDraw.ok) throw recoveredDraw.error;
-      const recoveredCompleted = await recoveredDraw.value.completed;
-      if (!recoveredCompleted.ok) throw recoveredCompleted.error;
-      neutralOwner = structuredClone(renderer.inspect().reflectionProbes);
-      neutralSsrDependencies = structuredClone(renderer.inspect().ssrDependencies);
+    return { gpuErrors, ssr };
+  };
+
+  const drawNeutralTransitionFrame = async (): Promise<void> => {
+    const updated = world.update(1 / 60);
+    if (!updated.ok) throw updated.error;
+    const next = renderer.draw({
+      leases: [attached.value],
+      camera: { lease: attached.value },
+      environment: { lease: attached.value },
+    });
+    if (!next.ok) throw next.error;
+    const completed = await next.value.completed;
+    if (!completed.ok) throw completed.error;
+  };
+
+  /** Removes the Skylight and probe, then observes the committed neutral fallback. */
+  const observeNeutralFallback = async (skylight: EntityHandle) => {
+    const removed = world.despawn(skylight);
+    if (!removed.ok) throw removed.error;
+    if (sceneEntities.reflectionProbe !== undefined) {
+      const removedProbe = world.despawn(sceneEntities.reflectionProbe);
+      if (!removedProbe.ok) throw removedProbe.error;
     }
+    await drawNeutralTransitionFrame();
+    // The first frame publishes the generation change and resets temporal
+    // history; settle one more successful frame before inspecting the
+    // committed neutral fallback and its dependent temporal receipt.
+    await drawNeutralTransitionFrame();
+    // Inspecting the committed source generation intentionally invalidates
+    // temporal history tied to the old projection. Submit one more frame
+    // after that reset so neutral and temporal receipts share one generation.
+    void renderer.inspect().ssrDependencies;
+    await drawNeutralTransitionFrame();
+    const neutralOwner = structuredClone(renderer.inspect().reflectionProbes);
+    const neutralSsrDependencies: SsrDependenciesInspection = structuredClone(renderer.inspect().ssrDependencies);
+    return { neutralOwner, neutralSsrDependencies };
+  };
+
+  const captureReflectionProbe = async (): Promise<Uint8Array> => {
+    if (!reflectionEvidence) throw new Error('reflection evidence mode is disabled');
+    // Own the 60-frame preparation window. A running App can submit another
+    // rAF frame while the async fallback readback resolves, which would race
+    // the inspection snapshot with a newer candidate. Direct draws remain the
+    // real renderer path; pausing only removes that unrelated frame authority.
+    const paused = app.pause();
+    if (!paused.ok) throw paused.error;
+    const passNames = new Set<string>();
+    let receipt = await prepareReflectionProbe(passNames);
+    let owner = await awaitCommittedProbe(passNames);
+    const pixels = await captureCanvasPixels(canvas);
+    if (!pixels.ok) throw pixels.error;
+    const roi = readReflectionRoi(pixels.value);
+    const rawFaces = owner.rawFacesCaptured;
+    const filteredSteps = owner.filteredStepsCompleted;
+    const mipLevels = owner.filteredMipLevels;
+    assertProbeBaseline(owner);
+    // Preserve the completed probe publication before the fault and neutral
+    // transition fixtures mutate the owner inspection. The verifier needs a
+    // source row and readback from this exact baseline, not the replacement
+    // device snapshot captured after recovery.
+    const initialOwner = structuredClone(owner);
+    const initialSsrDependencies = structuredClone(renderer.inspect().ssrDependencies);
+    let submitFailure: ReturnType<typeof injectSubmitFailure> | undefined;
+    if (faultInstrumentation !== undefined) {
+      submitFailure = injectSubmitFailure();
+      // A following successful frame must promote the same source-identical
+      // candidate back to active before the device replacement scenario.
+      await drawReflectionEvidenceFrame(passNames);
+      owner = renderer.inspect().reflectionProbes;
+    }
+    let deviceRecovery: NonNullable<TargetReport['reflectionProbe']>['deviceRecovery'];
+    if (faultInstrumentation !== undefined) {
+      const replaced = await replaceReflectionDevice(passNames);
+      deviceRecovery = replaced.deviceRecovery;
+      owner = replaced.owner;
+      receipt = replaced.receipt;
+    }
+    const { gpuErrors, ssr } = assertSsrSceneCarrier(passNames);
+    const neutral =
+      sceneEntities.skylight === undefined
+        ? undefined
+        : await observeNeutralFallback(sceneEntities.skylight);
     const report = (globalThis as typeof globalThis & {
       __renderTargetReflectionReport?: TargetReport;
     }).__renderTargetReflectionReport;
@@ -1221,18 +1222,17 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         roughnessLod: [Math.min(...mipLevels, 0), Math.max(...mipLevels, 4)],
         insideSelection: 'probe',
         outsideSelection: 'skylight',
-        receiptFrameId: receipt.value.frameId,
-        deviceGeneration: receipt.value.deviceGeneration,
+        receiptFrameId: receipt.frameId,
+        deviceGeneration: receipt.deviceGeneration,
         pngByteLength: pixels.value.byteLength,
-        roi: { center: rgba(centerOffset), outside: rgba(outsideOffset) },
+        roi,
         gpuErrors,
         owner,
         ssrDependencies: initialSsrDependencies,
         ssr,
         initialOwner,
         initialSsrDependencies,
-        ...(neutralOwner === undefined ? {} : { neutralOwner }),
-        ...(neutralSsrDependencies === undefined ? {} : { neutralSsrDependencies }),
+        ...(neutral === undefined ? {} : neutral),
         ...(submitFailure === undefined ? {} : { submitFailure }),
         ...(deviceRecovery === undefined ? {} : { deviceRecovery }),
       },

@@ -1,6 +1,5 @@
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
-import { isFiniteBounds3 } from '@forgeax/engine-types';
 import {
   materialArtifactProgramIdentity,
   sameMaterialArtifactProgram,
@@ -10,9 +9,10 @@ import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import { reflectedRenderState } from '../material-render-state';
 import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
 import { geometryRenderStateForTopology } from '../record/main-pass-material';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import { SceneSlotFrame, SlotIdentityKeys } from '../scene/scene-slots';
 import { type BatchExecution, captureBatchLod } from './batch-execution';
 import { batchVisibleSpan, GPU_DRIVEN_LOD_LEVEL_CAPACITY } from './batch-layout';
 import { MemberCandidates } from './batch-members';
@@ -26,11 +26,8 @@ import type {
 import { GpuDrawSelection } from './draw-selection';
 import { fixedTaskPlan } from './fixed-task-plan';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
-import {
-  lodCoverageMayFade,
-  lodCrossfadeCapable,
-  prepareLodProjectionPlan,
-} from './production-raster-lod';
+import { lodCoverageMayFade, lodCrossfadeCapable } from './production-raster-lod';
+import type { PreparedAssemblyInputs } from './retained-batch-inputs';
 
 export interface PreparedBatch {
   readonly batch: GpuDrivenBatch;
@@ -46,22 +43,6 @@ export interface PreparedBatch {
   readonly materialBindingClass: string;
   /** Stable World attachment key used to join same-submit GPU counters. */
   readonly worldKey: number;
-}
-
-export function skinLaneReason(
-  snapshot: RenderableSnapshot,
-): 'skin-bounds-missing' | 'skin-address-missing' | undefined {
-  if (snapshot.skin === undefined) return undefined;
-  if (!isFiniteBounds3(snapshot.skin.bounds)) return 'skin-bounds-missing';
-  if (
-    snapshot.skin.storageOrUniform !== 'storage' ||
-    !Number.isInteger(snapshot.skin.customDataStart) ||
-    snapshot.skin.customDataStart < 0 ||
-    snapshot.skin.buffer === undefined
-  ) {
-    return 'skin-address-missing';
-  }
-  return undefined;
 }
 
 export function meshSupportsBatch(mesh: MeshGpuHandles, batch: GpuDrivenBatch): boolean {
@@ -249,9 +230,8 @@ export function assemblePreparedPlan(
   source: SubmissionPlan,
   batchRows: readonly PreparedBatchRows[],
   worldKeys: readonly number[] | undefined,
-  lodPlan = prepareLodProjectionPlan(source),
 ) {
-  return { source, worldKeys, batchRows: Object.freeze([...batchRows]), lodPlan };
+  return { source, worldKeys, batchRows: Object.freeze([...batchRows]) };
 }
 
 export type PreparedProductionPlan = ReturnType<typeof assemblePreparedPlan>;
@@ -385,6 +365,20 @@ export function groupForPartition(
   };
 }
 
+function filteredMaterialBindings(batches: readonly PreparedBatch[]) {
+  return Object.freeze(
+    batches.map(({ batch, materialBindingClass }) => {
+      const binding = batch.binding;
+      if (binding === undefined) throw new Error('Prepared batch has no shared material binding');
+      return Object.freeze({
+        material: binding.material,
+        worldId: binding.worldId,
+        resourceClass: materialBindingClass,
+      });
+    }),
+  );
+}
+
 export function assembleFilteredGroups(
   source: SubmissionPlan,
   batches: readonly PreparedBatch[],
@@ -421,9 +415,15 @@ export function assembleFilteredGroups(
     visibleCapacity,
   });
   const plan = fixedMembership ? fixedTaskPlan(captured) : captured;
+  const ownedBatches = Object.freeze([...batches]);
+  let materialBindings: ReturnType<typeof filteredMaterialBindings> | undefined;
   return {
     plan,
-    batches: Object.freeze([...batches]),
+    batches: ownedBatches,
+    get materialBindings() {
+      materialBindings ??= filteredMaterialBindings(ownedBatches);
+      return materialBindings;
+    },
     materialBatches: Object.freeze([...materialBatches.values()]),
     selection: new GpuDrawSelection(batches.map((batch) => batch.batch)),
   };
@@ -450,6 +450,88 @@ export function suppressedPrimitiveWords(
     const word = slot.slot >>> 5;
     if (word < words.length) words[word] = (words[word] ?? 0) | (1 << (slot.slot & 31));
   }
+  return words;
+}
+
+/** The inputs one suppression bitmap was derived from. */
+export interface SuppressionSource {
+  readonly slots: PersistentGpuDrivenState['slots'];
+  readonly worldKeys: readonly number[] | undefined;
+  readonly activeEntityKeys: ReadonlySet<number>;
+  readonly words: Uint32Array;
+}
+
+/**
+ * Words a patched bitmap changed relative to the bitmap it was patched from,
+ * so each view uploading the earlier bitmap visits only those words.
+ */
+const suppressionPatches = new WeakMap<
+  Uint32Array,
+  { readonly base: Uint32Array; readonly words: readonly number[] }
+>();
+
+export function suppressionPatchOf(
+  words: Uint32Array,
+): { readonly base: Uint32Array; readonly words: readonly number[] } | undefined {
+  return suppressionPatches.get(words);
+}
+
+/**
+ * Patch an earlier bitmap to `suppressedPrimitiveWords(slots, ...)`, visiting
+ * only the slots whose rows or active identities entered or left since the
+ * earlier inputs, read from the scene's row-change log. `undefined` when the
+ * inputs are not fixed rosters of the same routing or the log cannot answer,
+ * so only the complete derivation can answer.
+ */
+export function patchSuppressedPrimitiveWords(
+  previous: SuppressionSource,
+  slots: PersistentGpuDrivenState['slots'],
+  worldKeys: readonly number[] | undefined,
+  activeEntityKeys: ReadonlySet<number>,
+  sceneCapacity: number,
+): Uint32Array | undefined {
+  if (
+    !(slots instanceof SceneSlotFrame) ||
+    !(previous.slots instanceof SceneSlotFrame) ||
+    !(activeEntityKeys instanceof SlotIdentityKeys) ||
+    !(previous.activeEntityKeys instanceof SlotIdentityKeys) ||
+    previous.worldKeys?.length !== worldKeys?.length ||
+    previous.worldKeys?.some((key, index) => key !== worldKeys?.[index]) === true ||
+    // Capacity bounds which rows the earlier bitmap could address.
+    previous.words.length !== Math.max(1, Math.ceil(sceneCapacity / 32))
+  )
+    return undefined;
+  const words = previous.words.slice();
+  const changed: number[] = [];
+  const evaluate = (slot: number): void => {
+    const word = slot >>> 5;
+    if (word >= words.length) return;
+    const record = slots.slotAt(slot);
+    const suppressed =
+      record !== undefined &&
+      !activeEntityKeys.has(
+        worldEntityKey(
+          worldKeys?.[record.snapshot.worldId] ?? record.snapshot.worldId,
+          record.snapshot.entityKey,
+        ),
+      );
+    const bit = 1 << (slot & 31);
+    const before = words[word] ?? 0;
+    const after = suppressed ? before | bit : before & ~bit;
+    if (after === before) return;
+    // A word enters the list when it first diverges from the base bitmap.
+    if (before === previous.words[word]) changed.push(word);
+    words[word] = after;
+  };
+  // A row's bit depends only on its presence and identity, never on its content.
+  if (
+    !activeEntityKeys.changesSince(previous.activeEntityKeys, evaluate) ||
+    !slots.changesSince(previous.slots, (slot, kind) => {
+      if (kind !== 'update') evaluate(slot);
+    })
+  )
+    return undefined;
+  suppressionPatches.set(words, { base: previous.words, words: changed });
   return words;
 }
 
@@ -533,6 +615,40 @@ export function sameMaterialArtifact(
   );
 }
 
+export class BatchPreparation {
+  readonly batches = new Map<
+    number,
+    {
+      readonly source: GpuDrivenBatch;
+      readonly signature: string;
+      readonly artifact: MaterialShaderArtifact | undefined;
+      readonly value: PreparedBatchRows;
+      /** Identity facts that let a retained execution skip signature derivation. */
+      readonly execution?: BatchExecution;
+      readonly materialAddress?: number | undefined;
+      readonly geometryAddress?: number | undefined;
+      /** Scene geometry whose pinned version proved geometryAddress. */
+      readonly geometry?: import('../scene/mesh-frame').MeshGeometry | undefined;
+      /** Render state is author-mutable in place; its serialization stays observed. */
+      readonly renderState?: string | undefined;
+    }
+  >();
+  cached:
+    | {
+        readonly plan: SubmissionPlan;
+        /** Current immutable frame lookup for attribution, independent of prepared geometry. */
+        readonly slotAt: PersistentGpuDrivenState['slotAt'];
+        readonly worldKeys: readonly number[] | undefined;
+        readonly scene: PersistentGpuDrivenState['scene'];
+        readonly batchRows: readonly PreparedBatchRows[];
+        readonly value: PreparedProductionPlan;
+        /** Exact inputs of an unchanged assembly; equal inputs skip the row walk. */
+        readonly inputs?: PreparedAssemblyInputs;
+      }
+    | undefined;
+}
+
+/** Current artifact facts use the original canonical signature. */
 export function shadowArtifactSignature(
   artifact: MaterialShaderArtifact | undefined,
 ): string | undefined {

@@ -1,3 +1,4 @@
+import type { RenderSceneRecord } from '../scene/render-scene-types';
 import type { GlobalSdfGrid } from './global-sdf';
 import type { SceneFieldSource } from './scene-field-projection';
 import type { SdfMeshInstance } from './sdf-query';
@@ -15,12 +16,82 @@ interface FieldEditEntry {
   readonly geometry: readonly unknown[];
   /** Material facts: a change recaptures the instance's Cards only. */
   material: readonly unknown[];
-  transform: Float32Array;
+  readonly transform: Float32Array;
+  /** Membership in the currently bound immutable SDF sample box. */
+  outside?: boolean;
   readonly local: FieldEditBounds;
 }
 
 /** Identity -> owned row of one prepared field; edits mutate it in place. */
-export type FieldEditState = Map<string, FieldEditEntry>;
+export class FieldEditState extends Map<string, FieldEditEntry> {
+  readonly #rows = new Map<string, Set<string>>();
+  #grid: GlobalSdfGrid | undefined;
+  #outside = 0;
+
+  // biome-ignore lint/complexity/noUselessConstructor: Map(iterable) would call set before private indices initialize.
+  constructor() {
+    super();
+  }
+
+  outsideEmpty(grid: GlobalSdfGrid): boolean {
+    if (this.#grid !== grid) {
+      this.#grid = grid;
+      this.#outside = 0;
+      for (const value of this.values()) {
+        value.outside = outsideGrid(value, grid);
+        if (value.outside) this.#outside++;
+      }
+    }
+    return this.#outside === 0;
+  }
+
+  override set(id: string, value: FieldEditEntry): this {
+    const parts = id.split(':');
+    const key = `${parts[0]}:${parts[2]}`;
+    let rows = this.#rows.get(key);
+    if (rows === undefined) {
+      rows = new Set();
+      this.#rows.set(key, rows);
+    }
+    rows.add(id);
+    if (super.get(id)?.outside) this.#outside--;
+    if (this.#grid !== undefined) {
+      value.outside = outsideGrid(value, this.#grid);
+      if (value.outside) this.#outside++;
+    }
+    return super.set(id, value);
+  }
+
+  override delete(id: string): boolean {
+    const parts = id.split(':');
+    const key = `${parts[0]}:${parts[2]}`;
+    const rows = this.#rows.get(key);
+    rows?.delete(id);
+    if (rows?.size === 0) this.#rows.delete(key);
+    if (super.get(id)?.outside) this.#outside--;
+    return super.delete(id);
+  }
+
+  override clear(): void {
+    this.#rows.clear();
+    this.#outside = 0;
+    super.clear();
+  }
+
+  *identities(
+    sources: readonly Pick<RenderSceneRecord, 'worldId' | 'slot'>[],
+  ): IterableIterator<string> {
+    for (const source of sources) yield* this.#rows.get(`${source.worldId}:${source.slot}`) ?? [];
+  }
+}
+
+/** Complete cold input, or the current rows named by retained change evidence. */
+export interface FieldEditInput {
+  readonly sources: readonly SceneFieldSource[];
+  readonly instances: readonly SdfMeshInstance[];
+  /** Omitted only for a complete cold snapshot. Missing rows of these sources leave. */
+  readonly changedSources?: readonly Pick<RenderSceneRecord, 'worldId' | 'slot'>[];
+}
 
 /** One projected identity entering a prepared field or changing its materials. */
 interface FieldEditSource {
@@ -34,12 +105,14 @@ interface FieldEditSource {
 /** One scene delta a prepared field can apply without a rebuild. */
 export interface FieldEdit {
   readonly moved: readonly {
+    readonly id: string;
     readonly index: number;
     readonly from: Float32Array;
     readonly to: Float32Array;
     readonly local: FieldEditBounds;
   }[];
   readonly removed: readonly {
+    readonly id: string;
     readonly index: number;
     readonly from: Float32Array;
     readonly local: FieldEditBounds;
@@ -102,7 +175,7 @@ export function fieldEditState(
   sources: readonly SceneFieldSource[],
   instances: readonly SdfMeshInstance[],
 ): FieldEditState {
-  const state: FieldEditState = new Map();
+  const state = new FieldEditState();
   for (const { id, source, instance } of identities(sources, instances))
     state.set(id, entry(instance.instanceId, source, instance));
   return state;
@@ -115,8 +188,7 @@ export function fieldEditState(
  */
 export function diffFieldEdit(
   state: FieldEditState,
-  sources: readonly SceneFieldSource[],
-  instances: readonly SdfMeshInstance[],
+  { sources, instances, changedSources }: FieldEditInput,
 ): FieldEdit {
   const moved: FieldEdit['moved'][number][] = [];
   const added: FieldEditSource[] = [];
@@ -132,14 +204,16 @@ export function diffFieldEdit(
     kept.add(id);
     const to = Float32Array.from(instance.transform);
     if (to.some((v, i) => v !== owned.transform[i]))
-      moved.push({ index: owned.index, from: owned.transform, to, local: owned.local });
+      moved.push({ id, index: owned.index, from: owned.transform, to, local: owned.local });
     if (!same(materialFacts(source), owned.material))
       rematerialized.push({ index: owned.index, id, source, instance, local });
   }
   const removed: FieldEdit['removed'][number][] = [];
-  for (const [id, owned] of state)
-    if (!kept.has(id))
-      removed.push({ index: owned.index, from: owned.transform, local: owned.local });
+  for (const id of changedSources === undefined ? state.keys() : state.identities(changedSources)) {
+    const owned = state.get(id);
+    if (owned !== undefined && !kept.has(id))
+      removed.push({ id, index: owned.index, from: owned.transform, local: owned.local });
+  }
   return { moved, removed, added, rematerialized };
 }
 
@@ -149,19 +223,16 @@ export function adoptFieldEdit(
   edit: FieldEdit,
   rows: readonly number[] = [],
 ): void {
-  const byIndex = new Map([...state].map(([id, entry]) => [entry.index, id]));
   for (const move of edit.moved) {
-    const id = byIndex.get(move.index);
-    const owned = id === undefined ? undefined : state.get(id);
-    if (owned !== undefined) owned.transform = move.to;
+    const owned = state.get(move.id);
+    if (owned !== undefined) state.set(move.id, { ...owned, transform: move.to });
   }
   for (const change of edit.rematerialized) {
     const owned = state.get(change.id);
     if (owned !== undefined) owned.material = materialFacts(change.source);
   }
   for (const removal of edit.removed) {
-    const id = byIndex.get(removal.index);
-    if (id !== undefined) state.delete(id);
+    state.delete(removal.id);
   }
   if (rows.length !== edit.added.length) throw new Error('field edit adds need one row each');
   edit.added.forEach((add, i) => {
@@ -191,18 +262,19 @@ export function worldBounds(local: FieldEditBounds, t: ArrayLike<number>): Field
   };
 }
 
-/** The current scene contains no trace geometry outside the stored SDF sample box.
- * Derive from the adopted edit authority, including geometry without field data. */
-export function fieldOutsideEmpty(state: FieldEditState, grid: GlobalSdfGrid): boolean {
-  for (const entry of state.values()) {
-    const bounds = worldBounds(entry.local, entry.transform);
-    for (const axis of [0, 1, 2] as const) {
-      const lo = grid.origin[axis];
-      const hi = lo + (grid.dimensions[axis] - 1) * grid.spacing;
-      if (!(bounds.min[axis] >= lo && bounds.max[axis] <= hi)) return false;
-    }
+function outsideGrid(entry: FieldEditEntry, grid: GlobalSdfGrid): boolean {
+  const bounds = worldBounds(entry.local, entry.transform);
+  for (const axis of [0, 1, 2] as const) {
+    const lo = grid.origin[axis];
+    const hi = lo + (grid.dimensions[axis] - 1) * grid.spacing;
+    if (!(bounds.min[axis] >= lo && bounds.max[axis] <= hi)) return true;
   }
-  return true;
+  return false;
+}
+
+/** Adopted trace geometry has no bounds outside the immutable SDF sample box. */
+export function fieldOutsideEmpty(state: FieldEditState, grid: GlobalSdfGrid): boolean {
+  return state.outsideEmpty(grid);
 }
 
 /** World boxes whose SDF an edit changes: old and new placements; material-only changes add none. */
@@ -212,36 +284,4 @@ export function fieldEditBounds(edit: FieldEdit): FieldEditBounds[] {
     ...edit.removed.map((r) => worldBounds(r.local, r.from)),
     ...edit.added.map((a) => worldBounds(a.local, a.instance.transform)),
   ];
-}
-
-/** Scene slot -> generation of every projected field source. */
-export type FieldSourceSlots = ReadonlyMap<number, number>;
-
-export const fieldSourceSlots = (
-  sources: readonly Pick<SceneFieldSource, 'slot' | 'generation'>[],
-): FieldSourceSlots => new Map(sources.map((source) => [source.slot, source.generation]));
-
-/**
- * True when scene content changes touch no field input, so the full scene
- * projection can be skipped: the change set is proven (`changed` defined),
- * every source slot is live at its generation (removed slots are absent from
- * change logs), no changed slot is a source, and the changed slots alone
- * project no field source (`projectsSource`; deforming meshes never do).
- */
-export function fieldInputsUnchanged<R extends { readonly generation: number }>(
-  sources: FieldSourceSlots,
-  changed: readonly number[] | undefined,
-  slotAt: (slot: number) => R | undefined,
-  projectsSource: (records: readonly R[]) => boolean,
-): boolean {
-  if (changed === undefined) return false;
-  for (const [slot, generation] of sources)
-    if (slotAt(slot)?.generation !== generation) return false;
-  const records: R[] = [];
-  for (const slot of changed) {
-    if (sources.has(slot)) return false;
-    const record = slotAt(slot);
-    if (record !== undefined) records.push(record);
-  }
-  return records.length === 0 || !projectsSource(records);
 }

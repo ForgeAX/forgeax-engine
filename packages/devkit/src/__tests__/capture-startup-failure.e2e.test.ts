@@ -1,5 +1,6 @@
 // @perf-budget-skip: real browser capture of the generated failure surface; no GPU qualification.
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -47,7 +48,7 @@ it.each([
       globalThis.triggerFailure = () => globalThis.__forgeaxStartup.fail(${failure});
       ${
         timing === 'after-frame'
-          ? "document.documentElement.dataset.forgeaxFrameSubmitted = '1';"
+          ? 'canvas.forgeaxFrameProgress = { submitted: { frameId: 1, deviceGeneration: 1 } };'
           : 'globalThis.triggerFailure();'
       }
     </script></body>`,
@@ -95,6 +96,9 @@ it.each([
     expect(performance.now() - failureObservedAt).toBeLessThan(1000);
     const evidence = resolve(import.meta.dirname, '../../../../artifacts/capture-startup-failure');
     await mkdir(evidence, { recursive: true });
+    // The startup failure page is a diagnostic: it never lands on the
+    // explicitly requested deliverable path or in the project's artifacts/.
+    const diagnostics = join(await realpath(root), '.forgeax', 'diag');
     await expect(
       session.capture('unreachable-checkpoint', {
         timeoutMs: 5000,
@@ -102,13 +106,26 @@ it.each([
       }),
     ).rejects.toMatchObject({
       code: 'browser-capture-runtime-failed',
+      detail: { output: join(diagnostics, `${timing}.failure.png`) },
     });
-    await expect(
-      session.capture(undefined, {
-        purpose: 'observe',
-        timeoutMs: 5000,
-      }),
-    ).rejects.toMatchObject({ code: 'browser-capture-runtime-failed' });
+    expect(existsSync(join(evidence, `${timing}.png`))).toBe(false);
+    expect(existsSync(join(diagnostics, `${timing}.failure.png`))).toBe(true);
+    const observed = await session.capture(undefined, { purpose: 'observe', timeoutMs: 5000 }).then(
+      () => undefined,
+      (error: unknown) => error as { code: string; detail: { output: string } },
+    );
+    expect(observed?.code).toBe('browser-capture-runtime-failed');
+    expect(observed?.detail.output.startsWith(join(diagnostics, 'artifacts', 'playthrough'))).toBe(
+      true,
+    );
+    expect(observed?.detail.output.endsWith('-capture.failure.png')).toBe(true);
+    const artifacts = existsSync(join(root, 'artifacts'))
+      ? await readdir(join(root, 'artifacts'), { recursive: true })
+      : [];
+    // Only the accepted pre-failure frame of the after-frame case is a deliverable.
+    expect(artifacts.filter((path) => path.endsWith('.png'))).toHaveLength(
+      timing === 'after-frame' ? 1 : 0,
+    );
     expect(session.report().ok).toBe(false);
     expect(session.report().captures.at(-1)?.runtime).toMatchObject({
       fatalError: expect.stringContaining('Call initialize() before using vag-platform-sdk'),

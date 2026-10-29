@@ -17,26 +17,27 @@ results, not a requirement to repeat every past experiment.
 
 | Task | Read |
 | --- | --- |
-| New session or an unfamiliar symptom | [Field guide](references/field-guide.md) |
-| Install/find official tools; connect a remote machine | [Setup](references/setup.md) |
-| Login QR, client authorization, pending tasks and tool-result handling | [Tooling](references/tooling.md) |
-| Build, compress, validate and transfer the ordinary publication | [Build](references/build.md) |
-| Own one simulator, find the actual game realm, inspect UI and drive controls | [Simulator](references/simulator.md) |
-| Discover a phone, use official preview, capture original failures and edit forms | [Android device](references/android-device.md) |
-| Prepare independent native contacts on Android | [Multi-touch](references/android-multitouch.md) |
-| WASM growth, native completion or resources not retiring | [Memory diagnosis](references/memory-diagnosis.md) |
-| Slow frames, host contention, UI/scene CPU and GPU attribution | [Performance](references/performance.md) |
+| New session or an unfamiliar symptom | Field guide |
+| Install/find official tools; connect a remote machine | Setup |
+| Login QR, client authorization, pending tasks and tool-result handling | Tooling |
+| Build, compress, validate and transfer the ordinary publication | Build |
+| Own one simulator, find the actual game realm, inspect UI and drive controls | Simulator |
+| Discover a phone, use official preview, capture original failures and edit forms | Android device |
+| Startup stalls, missing native error fields, package reads or plugin waits | Structured startup workflow |
+| Prepare independent native contacts on Android | Multi-touch |
+| WASM growth, native completion or resources not retiring | Memory diagnosis |
+| Slow frames, host contention, UI/scene CPU and GPU attribution | Performance |
 | Reusable Engine optimization techniques or offline CPU/GPU and A/B analysis | [Engine performance](../forgeax-engine-performance/SKILL.md) |
-| Repeatable walk/run/jump and camera rotation with completed-frame timing | [Gameplay benchmark](references/gameplay-performance.md) |
-| HTML/CSS layout, glyphs, controls and GPU UI parity | [Blitz](references/blitz.md) |
-| Joystick, run, jump, camera and input cancellation | [Mobile game](references/mobile-game.md) |
-| Clipped/missing pixels or an unexplained backend difference | [Canvas positive control](references/canvas-readback.md), then [RHI capture](references/rhi-capture.md) and [shader sources](references/shader-sources.md) |
-| Native clock/display, missing globals, resource startup or Host lifecycle | [Engine integration](references/engine-integration.md) |
-| Local execution, classic Worker or V2 admission and integration | [Worker execution](references/worker-execution.md) |
-| Native sockets, audio, remote resources or disk cache | [Native services](references/native-services.md) |
-| Select a reusable script or its regression suite | [Toolbox](references/toolbox.md) |
-| Decide what a result proves and publish evidence | [Verification](references/verification.md) |
-| Check official authorities or dated qualification | [Sources](references/sources.md) |
+| Repeatable walk/run/jump and camera rotation with completed-frame timing | Gameplay benchmark |
+| HTML/CSS layout, glyphs, controls and GPU UI parity | Blitz |
+| Joystick, run, jump, camera and input cancellation | Mobile game |
+| Clipped/missing pixels or an unexplained backend difference | Canvas positive control, then RHI capture and shader sources |
+| Native clock/display, missing globals, resource startup or Host lifecycle | Engine integration |
+| Local execution, classic Worker or V2 admission and integration | Worker execution |
+| Native sockets, audio, remote resources or disk cache | Native services |
+| Select a reusable script or its regression suite | Toolbox |
+| Decide what a result proves and publish evidence | Verification |
+| Check official authorities or dated qualification | Sources |
 
 ## Keep the actual game authoritative
 
@@ -57,6 +58,14 @@ its native Host, and a phone checks its own runtime/driver. A phone-only failure
 needs direct phone evidence without an unchanged simulator detour. Record the
 actual target and backend on every result. Honor the user's current priority.
 
+Default iteration is an owner regression, then the complete ordinary game in the
+official simulator, then the phone. Shared CPU work, Bundle validation and startup
+logic should be reproduced locally before another long phone cycle. Once that
+simulator path is healthy, use the phone for native download/network, device GPU,
+touch, lifecycle and final FPS evidence; simulator throughput cannot qualify a
+phone's budget. If a failure is already proven phone-only, retain that simulator
+control and diagnose the failing target directly.
+
 Rendering failures without a named startup/asset cause follow
 [forgeax-engine-rhi-debug](../forgeax-engine-rhi-debug/SKILL.md): capture the
 failing frame and inspect its work/resources before speculative shader changes.
@@ -72,3 +81,9 @@ and assets. Keep commands, source identity, actual interactions, completed frame
 original failures and reviewed screenshots together. Publish only sanitized
 results with accessible image links. Account state, AppIDs, device identities,
 QR images and raw logs remain outside tracked sources.
+
+Extend the owning diagnostic entrypoint when evidence is missing. Keep collection,
+bounded transport, cleanup, tests and interpretation together in this directory;
+graduate a successful temporary probe into that path before relying on it again.
+Do not make routine investigations depend on generated-chunk edits or private
+globals. Keep unavailable capabilities and incomplete reports visible.

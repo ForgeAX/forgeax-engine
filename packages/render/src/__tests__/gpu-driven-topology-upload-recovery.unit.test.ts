@@ -8,9 +8,10 @@ import { uploadFixture } from './gpu-driven-topology-upload-fixture';
 import { observeGpuInputBytes } from './helpers/gpu-input-bytes';
 
 it.each([
+  // Coalesced update: one arena range, then the task and selector writes.
+  { at: 1, thrown: false },
   { at: 2, thrown: false },
-  { at: 7, thrown: false },
-  { at: 8, thrown: false },
+  { at: 3, thrown: false },
   { at: 2, thrown: true },
 ])('preserves held member roots and restores task bindings after write $at fails (thrown=$thrown)', async ({
   at,

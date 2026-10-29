@@ -328,7 +328,12 @@ it.each([
         positions: number[];
         indices: number[];
       };
-      expect(original).toMatchObject({ width: 2, position: [2, 0, 0], typed: true });
+      expect(original).toMatchObject({
+        width: 2,
+        position: [2, 0, 0],
+        typed: true,
+        ambientColor: [0.125, 0.25, 0.5],
+      });
       expect(await call(page, 'install')).toEqual({ lazy: true, lazyExecutor: true, members: 1 });
       expect(await call(page, 'tool')).toMatchObject({
         outcome: 'succeeded',
@@ -414,7 +419,12 @@ it.each([
         positions: number[];
         indices: number[];
       };
-      expect(recovered).toMatchObject({ width: 4, position: [2, 0, 0], typed: true });
+      expect(recovered).toMatchObject({
+        width: 4,
+        position: [2, 0, 0],
+        typed: true,
+        ambientColor: [0.125, 0.25, 0.5],
+      });
       expect(recovered.indices).toEqual(original.indices);
       expect(await call(restored, 'install')).toEqual({
         lazy: true,

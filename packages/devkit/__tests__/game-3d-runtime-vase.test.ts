@@ -5,7 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from '
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import type { ExecutionReport } from '@forgeax/engine-app';
-import { expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 import { devCommand } from '../src/commands.js';
 import { disposeDevKitHosts } from '../src/host.js';
 import { createBrowserCapture, type BrowserCaptureSession } from '../src/browser-capture.js';
@@ -25,6 +25,20 @@ declare global {
     | { observedAtMs: number; latestCompleted?: unknown; readyCount: number; firstReadyAtMs?: number; loadingWaitStartedAtMs?: number }
     | undefined;
 }
+
+// Compile the identical authored template once. Each case still owns a fresh
+// project, runtime DDC, Catalog and browser; only verified build products cross cases.
+const previousBuildCache = process.env.FORGEAX_BUILD_CACHE_DIR;
+let buildCache: string | undefined;
+beforeAll(async () => {
+  buildCache = await mkdtemp(resolve(tmpdir(), 'forgeax-vase-build-cache-'));
+  process.env.FORGEAX_BUILD_CACHE_DIR = buildCache;
+});
+afterAll(async () => {
+  if (previousBuildCache === undefined) delete process.env.FORGEAX_BUILD_CACHE_DIR;
+  else process.env.FORGEAX_BUILD_CACHE_DIR = previousBuildCache;
+  if (buildCache !== undefined) await rm(buildCache, { recursive: true, force: true });
+});
 
 it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', { timeout: 420000 }, async (worker, { signal, onTestFinished }) => {
   const repository = resolve(import.meta.dirname, '../../..');

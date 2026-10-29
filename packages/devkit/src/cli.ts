@@ -40,7 +40,7 @@ if (rawArgs[0] === '--__forgeax-backend') {
   }
 } else {
   const { runUnifiedCli } = await import('./unified-cli.js');
-  const result = await runUnifiedCli(rawArgs);
+  const result = await runUnifiedCli(rawArgs, { presentation: 'compact' });
   const jsonFlag = [...rawArgs]
     .reverse()
     .find((arg) => arg === '--json' || arg.startsWith('--json='));
@@ -59,8 +59,7 @@ if (rawArgs[0] === '--__forgeax-backend') {
         readonly summary?: string;
         readonly nodes: readonly {
           readonly name: string;
-          readonly path: string;
-          readonly summary: string;
+          readonly summary?: string;
           readonly children?: readonly unknown[];
           readonly leaf?: unknown;
         }[];
@@ -78,10 +77,15 @@ if (rawArgs[0] === '--__forgeax-backend') {
       };
       process.stdout.write(`${help.path === '' ? 'forgeax' : `forgeax ${help.path ?? ''}`}\n`);
       if (help.summary !== undefined) process.stdout.write(`  ${help.summary}\n`);
+      // A tree marks only nodes with children; progressive help marks every non-leaf.
+      const treeFlag = [...rawArgs]
+        .reverse()
+        .find((arg) => arg === '--tree' || arg.startsWith('--tree='));
+      const tree = treeFlag !== undefined && treeFlag !== '--tree=false';
       const render = (nodes: readonly (typeof help.nodes)[number][], indent: string): void => {
         for (const node of nodes) {
           process.stdout.write(
-            `${indent}${node.name}${node.leaf === undefined ? ' …' : ''}  ${node.summary}\n`,
+            `${indent}${node.name}${node.children !== undefined || (!tree && node.leaf === undefined) ? ' …' : ''}${node.summary === undefined ? '' : `  ${node.summary}`}\n`,
           );
           if (node.children !== undefined)
             render(node.children as typeof help.nodes, `${indent}  `);
@@ -108,6 +112,10 @@ if (rawArgs[0] === '--__forgeax-backend') {
       }
     } else if (value !== undefined) {
       process.stdout.write(`${JSON.stringify(value)}\n`);
+      if (result.omitted !== undefined)
+        process.stderr.write(
+          `[forgeax] summarized ${result.omitted.fields.join(', ')}; rerun with ${result.omitted.flag} for the full value\n`,
+        );
     }
   } else {
     process.stderr.write(
@@ -115,4 +123,12 @@ if (rawArgs[0] === '--__forgeax-backend') {
     );
   }
   if (!result.ok) process.exitCode = result.error?.code === 'cli-parse-error' ? 2 : 1;
+  // Preview publishes startup status while its foreground HTTP owner remains
+  // live. Every other command has a terminal result and a disposed command Host.
+  if (!result.ok || result.command !== 'project preview') {
+    // Imported extensions may retain timers after their command has completed.
+    await new Promise<void>((resolveFlush) => process.stdout.write('', () => resolveFlush()));
+    await new Promise<void>((resolveFlush) => process.stderr.write('', () => resolveFlush()));
+    process.exit();
+  }
 }

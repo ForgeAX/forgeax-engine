@@ -9,7 +9,7 @@ export default vfxProbe(
     summary:
       'A ParticleEffectPlayer component on an ordinary entity references a shared ParticleEffectAsset loaded through the owner Pack loader; the runtime keys inspection by player handle, asset GUID and emitter ID.',
     expect:
-      'host.inspect lists one playing player with the lab GUID and all five emitters, phaseTick advances with fixed ticks, and a tampered fingerprint is refused by the loader.',
+      'host.inspect lists one playing player with the lab GUID and all five emitters, phaseTick advances with frame ticks, and a tampered fingerprint is refused by the loader.',
   },
   async (vfx, { frames }) => {
     const before = vfx.host.inspect(vfx.world)?.players[0];
@@ -34,7 +34,7 @@ export default vfxProbe(
           Object.values(LAB_EMITTER_IDS).join(','),
         after?.emitters.map((emitter) => emitter.id),
       ),
-      check('phaseTick advances with fixed ticks', tick(after) > tick(before), {
+      check('phaseTick advances with frame ticks', tick(after) > tick(before), {
         before: tick(before),
         after: tick(after),
       }),

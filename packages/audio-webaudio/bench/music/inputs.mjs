@@ -52,7 +52,9 @@ export async function sourceHashes(root) {
     catch(error) { if(error?.code!=='ENOENT')throw error; }
   }
   inputs.push(...await files(resolve(root,'packages/dawn-node/dist/native')));
-  for(const profile of ['base-ssao','point-ssao']) inputs.push(...await files(resolve(root,`packages/vite-plugin-shader/dist/engine-inputs/${profile}`)));
+  const shaderProfiles=resolve(root,'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz');
+  try { await access(shaderProfiles); inputs.push(shaderProfiles); }
+  catch(error) { if(error?.code!=='ENOENT')throw error; }
   return hashes(root,inputs);
 }
 export async function siteHashes(root, site) {

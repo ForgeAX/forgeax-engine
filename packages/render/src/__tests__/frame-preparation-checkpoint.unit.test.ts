@@ -139,7 +139,7 @@ async function fixture(abortThrows = false) {
           caps: device.caps,
           gpuWork,
         },
-        captures: { snapshots: [], auxiliary: [], exclusive: false, accept() {} },
+        captures: { snapshots: [], exclusive: false, accept() {} },
         accept: (result) => {
           expect(result.errors).toEqual([]);
           prepared = result;

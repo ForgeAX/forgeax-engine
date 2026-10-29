@@ -1,11 +1,28 @@
 # @forgeax/engine-pack
 
+## Authoring diagnostics and discovery
+
+Malformed Meta diagnostics retain AJV instance paths, schema paths, keywords and params, including `missingProperty`. Repair the reported field rather than assuming every schema failure is a GUID problem. Gateway scan failures retain their original structured code and detail under `detail.cause`.
+
+`PACK_AUTHORING_OPERATION_DESCRIPTORS` is the operation-semantic authority. Source operations may write; values/apply, rebuild and cold-cook require an inspected `expectedRevision`. Create, clone/import and draft operations retain their own identity and document revision contracts. DevKit projects this metadata into operation help and required inputs.
+
 ## Shared material program transport
 
-Published packages with repeated cooked material programs use the
-`pack-material-programs/1` envelope: one complete Pack plus a package-local
-program table. The transport replaces only `material-cook/4` program records
-with bounded integer references. Decode restores readonly sharing before normal
+Player delivery may group complete WGSL artifacts into bounded Zstd streams.
+The existing stored `byteRange` locates a stream in an `FXBUNDL1` Bundle; optional
+`decodedRange { offset, length }` locates the original artifact inside that decoded
+stream. A decoded range requires Zstd, a stored Bundle range, an individual
+`byteLength` equal to the decoded range length, and individual SHA-256 integrity;
+streaming delivery is excluded. Readers reject unsafe or out-of-bounds windows.
+This is a transport descriptor extension: program identities, cooked records and
+the original WGSL bytes are unchanged. Source development remains per-artifact.
+
+Published packages with repeated cooked material programs or selection ABIs use
+the `pack-material-programs/2` envelope: one complete Pack plus package-local
+`programs` and `abis` tables. The transport replaces `material-cook/4` program
+records with bounded integer references, and each table program's
+`selections[].abi` with a reference into `abis`, since many specializations share
+one reflected ABI. Decode restores readonly sharing before normal
 Pack, publication, artifact and material validation. Material parameters, GUIDs,
 receipts, references and specialization facts remain in their original records.
 Plain packages without repeated programs keep their existing envelope.
@@ -18,6 +35,11 @@ is a delivery representation. Browser/native resource reads, current publication
 reads and CLI Pack parsing restore it through this same codec. Fresh platform
 JSON is decoded before the existing immutable material-fact retention, which
 visits each shared program once; custom response readers retain clone semantics.
+
+`encodeAnimationClipSamples` / `decodeAnimationClipSamples` (also on
+`@forgeax/engine-pack/runtime`) move an animation clip's numeric sampler arrays
+into the f32 `animation-clip/samples.bin` artifact and resolve its
+`{ offset, count }` windows; a window outside the artifact fails decode.
 
 Catalog row operations live only in `projection.operations`. Successful producer
 rows retain the three public projection axes but no longer duplicate the entire
@@ -47,7 +69,7 @@ and `createFileSystemPackDrafts`. Declaration reads parse literal descriptors
 without evaluating user modules. Dynamic TS stays supported by ordinary builds
 but is not automatically rewritten. Opted-in Worker builds remove live metadata
 from the execution closure and reject ambient source/reflection bypasses.
-Named Scene, light/sky, physics and Skin schemas used by Game3D are admitted as
+Named Scene, camera/view/resolution, light/sky, physics and Skin schemas used by Game3D are admitted as
 generation vocabulary; runtime service and plugin imports remain unavailable.
 
 A draft owns sparse edits, at most 256 undo steps and one reusable generation.
@@ -56,6 +78,15 @@ atomically updates TS defaults, direct JSON fields or instance overrides.
 Revisions derive from file bytes. Refresh performs field-level three-way merging;
 conflicts and write failures preserve edits. Managers retain at most 32 documents,
 confine real source paths and serialize saves to the same physical file.
+Initial open and refresh re-read a source that changes during parsing within a
+bounded number of rounds, including a coalesced truncate/write notification.
+An unchanged unsupported declaration remains an error; a continuously changing
+opening fails with a source revision conflict instead of admitting stale bytes.
+
+Reopening a draft with a source-declaration failure rereads the file through its
+existing serialized refresh queue. This recovers a repaired file when a watcher
+coalesced its final write, retaining the draft identity, unsaved edits and undo
+history. Generation and preview failures keep their existing recovery owners.
 
 ## Runtime schema validation
 
@@ -101,11 +132,15 @@ still validates fresh source metadata but executes only declared plugin producer
 map meshes, materials and equipment are produced by the normal asset worklist.
 Direct Pack JSON plugin outputs remain explicit in their existing source entries.
 
-Both cold production and verified cache hits reject plugin outputs from an
-undeclared producer. Parameters, instances, isolated worker lifetimes, deferred
-content reads and complete final reference validation keep their existing owners.
-When migrating an older procedural plugin Pack, add `plugins: true`; do not add
-it to ordinary resource Packs to restore the former duplicate execution.
+An omitted `plugins` field means `false`. Plugin discovery does not execute that
+ScriptablePack, and cold production omits its `kind: 'plugin'` outputs while
+keeping ordinary resources. Cache entries containing plugin outputs are treated
+as misses and rebuilt under the same rule. Declare `plugins: true` when those
+outputs should be published and discovered. This capability does not activate a
+PluginAsset; the host still chooses which definitions to mount. Parameters,
+instances, isolated worker lifetimes, deferred content reads and complete final
+reference validation keep their existing owners. Direct Pack JSON plugin
+outputs remain explicit in their source entries.
 
 ## ScriptablePack 与 Pack authoring
 
@@ -329,24 +364,13 @@ source.
 
 Pack or external source plus Meta owns author facts. DDC and Catalog are derived projections; they are not author databases or write authorities.
 
-## Engine builtin mesh descriptors
+## Engine Content library
 
-The Engine-owned primitive mesh identities are published from one UUIDv5 table
-(`@forgeax/engine-pack/builtin`). A standalone DevKit build materializes only
-the missing rows as an ordinary Pack v2 tuple; Geometry then derives the mesh
-payload from the `procedural-*` token at load time.
-
-| Descriptor | GUID source | Geometry token |
-|:--|:--|:--|
-| Cube | `HANDLE_CUBE` | `procedural-cube` |
-| Triangle | `HANDLE_TRIANGLE` | `procedural-triangle` |
-| Quad | `HANDLE_QUAD` | `procedural-quad` |
-| Sphere | `HANDLE_SPHERE` | `procedural-sphere` |
-| Nine-slice quad | `HANDLE_NINESLICE_QUAD` | `procedural-nine-slice-quad` |
-| Cylinder | `HANDLE_CYLINDER` | `procedural-cylinder` |
-
-This keeps the runtime registry generic while ensuring a packaged game can
-resolve legacy scene references without a second process-static asset owner.
+Engine-native assets are ordinary `*.pack.ts` sources in
+[`@forgeax/engine-content`](../content/README.md), mounted explicitly through
+forge.json `assetLibraries`. Their GUIDs derive from the library Pack namespaces
+like any project Pack; there is no separate builtin namespace, token payload or
+generated descriptor file.
 
 > [!IMPORTANT]
 > The pack contract has one material authoring shape: a `MaterialAsset` payload. The cook stage resolves inheritance, values, texture coordinates, module references, artifact bytes, and a receipt into one record. Runtime consumers use the GUID and catalog locator; they do not author a second shader resource.
@@ -478,7 +502,16 @@ need their normal Registry loader/decoder. No cooker enters the player.
 
 `forgeax asset inspect --subject <source.pack.ts> --root <project> --json` executes module initialization, validates the default export, and projects canonical Meta without calling `build`. `@forgeax/engine-pack/source-node` accepts a host executor with `load` and optional `dispose`; `timeoutMs` bounds module initialization and `buildTimeoutMs` bounds one `build(context)` call. A build timeout returns one structured `pack-source-load-failed` Result with `detail.phase: 'build'`, the configured `timeoutMs`, and deterministic cleanup of the isolated worker and compile root.
 
-The default worker executes the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
+Trusted production and Workspace authoring share the finite 120-second build bound (`SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`), so a complete geometry recipe does not inherit the low-level loader's 15-second default. Both module initialization and build expiration still retire their isolated execution lease; runtime loading fences are independent of these offline limits.
+
+Build workers execute the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
+
+Disposable metadata workers compile the static import closure. If module
+initialization touches a deferred dynamic import, they load the complete closure.
+Builds compile the full captured closure and can add derived-text cache entries
+while retaining the exact earlier entries. Source inventory still captures literal
+dynamic dependencies; cache identity follows filenames and digests, independently
+of transport ordering. Module instances remain local to each execution realm.
 
 Captured JSON is canonicalized into data files in that same disposable directory.
 Small ESM wrappers parse those captured files, so bulk payloads do not remain in
@@ -559,7 +592,13 @@ while retaining captured bytes, aliases and negative candidates for later public
 checks; a closed compiler is never queried as current resolution evidence.
 The build owner must verify again immediately before publication and discard a
 stale candidate. A fresh build creates a fresh snapshot; only content-keyed
-syntax parsing survives across generations. No caller maintains an invalidation list.
+syntax parsing and, when the owner passes one, a `createScriptablePackMetadataCache()`
+survive across generations. That owner-lifetime cache keys successful metadata by
+source path plus the new snapshot's freshly read and digested relative closure, so
+an edited entry or transitive import re-executes only its Pack; bare package
+imports remain the host's pinned context. It evicts least-recently-used closures
+beyond its bound and the owner clears it on disposal. No caller maintains an
+invalidation list.
 The syntax cache bounds retained digest/import text, array slots and entry count,
 not source body size, so large data modules reuse their parsed imports without
 retaining a second copy of their bytes. Source digests and publication verification
@@ -585,12 +624,12 @@ if (!result.ok) throw result.error; // PackError with .code 'pack-guid-malformed
 const guid = result.value;
 
 // Build / CI: validate an asset directory
-const scanResult = await scan(["apps/hello/cube/assets"]);
+const scanResult = await scan(["apps/hello/room/assets"]);
 if (!scanResult.ok) throw scanResult.error; // PackError with .code/.hint/.detail
 console.log(scanResult.value); // PackEntry[]
 
 // Build hosts can retain one validated inventory and project paths from it.
-const inventory = await scanInventory(["apps/hello/cube/assets"]);
+const inventory = await scanInventory(["apps/hello/room/assets"]);
 if (!inventory.ok) throw inventory.error;
 console.log(inventory.value.paths, inventory.value.declarations);
 ```
@@ -737,7 +776,6 @@ and included in the program-set identity; the producer must recook incomplete ge
 | `AssetGuid.format` | `(guid: AssetGuid) => string` | Format as lowercase dash-separated UUID string |
 | `AssetGuid.equals` | `(a: AssetGuid, b: AssetGuid) => boolean` | Constant-time equality |
 | `AssetGuid.random` | `() => AssetGuid` | Generate a random UUIDv7 GUID |
-| `deriveBuiltin` | `(name: string) => AssetGuid` | Derive a deterministic UUIDv5 synchronously from the exact UTF-8 name within the ForgeaX namespace; shares the internal SHA-1 kernel with `AssetGuid.derive` |
 
 ## `PackErrorCode` -- 13-member closed union
 
@@ -770,7 +808,7 @@ this package does not publish an independent executable.
 |:--|:--|:--|
 | `forgeax asset list --root <project> --json` | Print a bounded page (default `limit=100`, maximum 256); add `--type` and `--cursor` to continue | 0 on valid roots |
 | `forgeax asset inspect --subject <guid> --root <project> --json` | Print matching asset evidence | 0 found / 1 not found |
-| `forgeax asset verify --root <project> --json` | Run the fail-fast scanner and return a bounded `asset-verification-v1` source/output report | 0 clean / 1 error |
+| `forgeax asset verify --root <project> --json` | Run the fail-fast scanner; the CLI prints the report's `summary`, scope counts and `attention` (assets not yet produced and available, at most 20). `--detail` prints the full bounded `asset-verification-v1` source/output report | 0 clean / 1 error |
 
 ```bash
 # Direct invocation (after pnpm -F @forgeax/engine-pack build)
@@ -923,7 +961,6 @@ unique copy of authored program content.
 | `.` | Re-exports from all subpaths |
 | `./schema` | Compiled ajv validators for `.meta.json` and `.pack.json` |
 | `./guid` | `AssetGuid` and `PackageId` brands; UUID parse/format utilities and synchronous `AssetGuid.derive(packageId, sourceKey)` |
-| `./builtin` | ForgeaX namespace, synchronous `deriveBuiltin(name)`, builtin GUIDs and mesh descriptors |
 | `./errors` | `PackError` class + `PackErrorCode` closed union + `PackErrorDetail` discriminated union |
 | `./bridge` | `AssetRegistry` GUID bridge helpers |
 | `./scanner` | File tree scanner with fail-fast 7-step validation chain |

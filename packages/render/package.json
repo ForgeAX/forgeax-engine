@@ -43,7 +43,8 @@
     "@forgeax/engine-shader": "workspace:*",
     "@forgeax/engine-skinning": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "@noble/hashes": "^2.2.0"
+    "@noble/hashes": "^2.2.0",
+    "uuidv7": "^1.2.1"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

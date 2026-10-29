@@ -1,4 +1,5 @@
 import { isValidAssetGuidString } from '@forgeax/engine-types';
+import { selectDecodedArtifactBytes } from './bundle.js';
 import { decodeCatalogWire } from './catalog-wire.js';
 import { type AssetCliContext, emitAssetCliError } from './cli-output.js';
 
@@ -15,6 +16,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import * as zlib from 'node:zlib';
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import type {
   ArtifactDescriptor,
   AssetEvidence,
@@ -613,7 +615,9 @@ function absolutePath(path: string, cwd: string): string {
 
 async function readJson(path: string, ctx: AssetCtx): Promise<unknown | undefined> {
   try {
-    return JSON.parse(await readFile(path, 'utf8')) as unknown;
+    const text = await decodeDocumentText(await readFile(path));
+    if (!text.ok) throw new Error(`document decode failed: ${text.error.code}`);
+    return JSON.parse(text.value) as unknown;
   } catch (e) {
     emitAssetCliError(ctx, {
       code: 'asset-evidence-input-invalid',
@@ -649,6 +653,13 @@ function zstdDecoded(bytes: Uint8Array): Uint8Array {
   return zstdDecompress(bytes);
 }
 
+function decodedOfflineArtifact(bytes: Uint8Array, descriptor: ArtifactDescriptor): Uint8Array {
+  const decoded = descriptor.contentEncoding === 'zstd' ? zstdDecoded(bytes) : bytes;
+  const selected = selectDecodedArtifactBytes(decoded, descriptor);
+  if (!selected.ok) throw new Error(selected.error);
+  return selected.value;
+}
+
 function artifactInputs(
   pack: { readonly guid: string; readonly artifacts: Readonly<Record<string, ArtifactDescriptor>> },
   packagePathValue: string,
@@ -678,7 +689,7 @@ function artifactInputs(
             `sha256:${createHash('sha256').update(stored).digest('hex')}` === range.bundleDigest);
         const window =
           range === undefined ? stored : stored.subarray(range.offset, range.offset + range.length);
-        const bytes = descriptor.contentEncoding === 'zstd' ? zstdDecoded(window) : window;
+        const bytes = decodedOfflineArtifact(window, descriptor);
         const lengthOk =
           descriptor.byteLength === undefined || descriptor.byteLength === bytes.byteLength;
         const digestOk =

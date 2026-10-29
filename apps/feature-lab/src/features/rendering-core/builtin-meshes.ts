@@ -6,7 +6,7 @@ import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Built-in meshes + Standard PBR',
-  catalog: 'Builtin mesh handles',
+  catalog: 'Primitive mesh factories',
   kind: 'visual',
   summary:
     'Code-created cube, sphere, cylinder and quad assets share the ordinary runtime asset owner and render under one DirectionalLight.',

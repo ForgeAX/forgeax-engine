@@ -8,7 +8,7 @@ import {
   MAX_FRAME_CAPSULES,
 } from '../capsule-shadow/frame';
 import { inspectCapsuleShadow } from '../capsule-shadow/inspection';
-import { poseShadowCapsules, WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
+import { type CapsuleShadowSnapshot, WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
 import {
   restrictShadowCasterClasses,
   SHADOW_CASTER_PROMOTE_WINDOW,
@@ -38,28 +38,13 @@ const binding = {
   materialBindingSources: [],
 };
 
-describe('poseShadowCapsules', () => {
-  it('places bind-space capsules with jointWorld x inverseBind and scales the radius', () => {
-    const set = {
-      joints: new Uint16Array([1]),
-      shapes: new Float32Array([0, 1, 0, 0, 2, 0, 0.25]),
-    };
-    // Bind pose puts joint 1 at y = 1, so the inverse bind removes that offset.
-    const ibms = [IDENTITY, translation(0, -1, 0)];
-    const worlds = [IDENTITY, translation(3, 0, 0, 2)];
-    const posed = poseShadowCapsules(set, ibms, worlds);
-    expect(posed.length).toBe(WORLD_CAPSULE_STRIDE);
-    expect(Array.from(posed)).toEqual([3, 0, 0, 0.5, 3, 2, 0, 0]);
-  });
-});
-
-describe('ShadowCasterClassifier capsule exclusion', () => {
+describe('ShadowCasterClassifier source membership', () => {
   const scene = { contentRevision: 0, changedSlotsSince: () => [] };
   const slots = [
     { slot: 0, snapshot: {} },
-    { slot: 1, snapshot: { skin: {}, capsuleShadow: { status: 'ready' } } },
-    { slot: 2, snapshot: { skin: {}, capsuleShadow: { status: 'no-shadow-capsules' } } },
-    { slot: 3, snapshot: { skin: {} } },
+    { slot: 1, snapshot: { skinBinding: {}, capsuleShadowRequested: true } },
+    { slot: 2, snapshot: { skinBinding: {}, capsuleShadowRequested: true } },
+    { slot: 3, snapshot: { skinBinding: {} } },
   ];
   // Run past every promotion window so the classifier is quiescent.
   const settled = (): ShadowCasterClassifier => {
@@ -74,62 +59,72 @@ describe('ShadowCasterClassifier capsule exclusion', () => {
     return classifier;
   };
 
-  it('drops only capsule-ready casters from the directional dynamic class', () => {
+  it('retains all Skin as dynamic and leaves capsule readiness to actual view demand', () => {
     const classifier = settled();
-    const off = classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene, false);
+    const off = classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene);
     expect(Array.from(off.dynamicSlots)).toEqual([1, 2, 3]);
-    expect(off.directionalDynamicSlots).toBe(off.dynamicSlots);
 
-    const on = classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene, true);
+    const on = classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene);
     expect(Array.from(on.staticSlots)).toEqual([0]);
     expect(on.dynamicSlots).toBe(off.dynamicSlots);
-    expect(Array.from(on.directionalDynamicSlots)).toEqual([2, 3]);
-    expect(classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene, true)).toBe(on);
+    expect(classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene)).toBe(on);
   });
 
   it('restricts the directional class to the view candidates', () => {
-    const classes = settled().update({ slots, slotAt: (slot) => slots[slot] }, scene, true);
+    const classes = settled().update({ slots, slotAt: (slot) => slots[slot] }, scene);
     const restricted = restrictShadowCasterClasses(classes, [0, 1, 3]);
     expect([0, 1, 2, 3].filter((slot) => restricted.dynamicSlots.has(slot))).toEqual([1, 3]);
-    expect([0, 1, 2, 3].filter((slot) => restricted.directionalDynamicSlots.has(slot))).toEqual([
-      3,
-    ]);
   });
 });
 
+const states = new WeakMap<RenderableSnapshot, CapsuleShadowSnapshot>();
+const demand = (source: RenderableSnapshot) => states.get(source);
+function withState(source: RenderableSnapshot, state: CapsuleShadowSnapshot): RenderableSnapshot {
+  states.set(source, state);
+  return source;
+}
+
 describe('inspectCapsuleShadow', () => {
-  const ready = {
-    ...binding,
-    capsuleShadow: { status: 'ready', capsules: new Float32Array(WORLD_CAPSULE_STRIDE * 3) },
-  } as RenderableSnapshot;
+  const ready = withState(
+    { ...binding, capsuleShadowRequested: true },
+    { status: 'ready', capsules: new Float32Array(WORLD_CAPSULE_STRIDE * 3) },
+  );
   const rows = [
     ready,
     ready,
-    { capsuleShadow: { status: 'not-skinned' } } as RenderableSnapshot,
+    withState({ ...binding, capsuleShadowRequested: true }, { status: 'not-skinned' }),
     {} as RenderableSnapshot,
   ];
 
   it('is absent without a CapsuleShadow request', () => {
-    expect(inspectCapsuleShadow([{} as RenderableSnapshot], materials, true, true)).toBe(undefined);
+    expect(
+      inspectCapsuleShadow([{} as RenderableSnapshot], materials, true, true, undefined, demand),
+    ).toBe(undefined);
   });
 
   it('admits ready renderables and reports the submitted tile binning', () => {
     const submission = { capsuleCount: 6, droppedCapsules: 1, tileCount: 9, tileOverflow: 2 };
-    expect(inspectCapsuleShadow(rows, materials, true, true, submission)).toEqual({
+    expect(inspectCapsuleShadow(rows, materials, true, true, submission, demand)).toEqual({
       requested: 3,
       admitted: 2,
       ...submission,
       fallbacks: { 'not-skinned': 1 },
     });
-    expect(inspectCapsuleShadow(rows, materials, true, true)?.capsuleCount).toBe(0);
+    expect(inspectCapsuleShadow(rows, materials, true, true, undefined, demand)?.capsuleCount).toBe(
+      0,
+    );
   });
 
   it('reports the lane and light fallbacks for ready renderables', () => {
-    expect(inspectCapsuleShadow(rows, materials, false, true)?.fallbacks).toEqual({
+    expect(
+      inspectCapsuleShadow(rows, materials, false, true, undefined, demand)?.fallbacks,
+    ).toEqual({
       'forward-path': 2,
       'not-skinned': 1,
     });
-    expect(inspectCapsuleShadow(rows, materials, true, false)?.fallbacks).toEqual({
+    expect(
+      inspectCapsuleShadow(rows, materials, true, false, undefined, demand)?.fallbacks,
+    ).toEqual({
       'no-directional-shadow': 2,
       'not-skinned': 1,
     });
@@ -152,7 +147,7 @@ describe('buildCapsuleShadowFrame', () => {
     const capsules = new Float32Array(count * WORLD_CAPSULE_STRIDE);
     for (let index = 0; index < count; index++)
       capsules.set([x, 0.5, z, 0.2, x, 1.5, z, 0], index * WORLD_CAPSULE_STRIDE);
-    return { ...binding, capsuleShadow: { status: 'ready', capsules } } as RenderableSnapshot;
+    return withState({ ...binding, capsuleShadowRequested: true }, { status: 'ready', capsules });
   };
   const cone = capsuleConeHalfAngle(undefined);
 
@@ -165,6 +160,7 @@ describe('buildCapsuleShadowFrame', () => {
       cone,
       160,
       160,
+      demand,
     );
     expect(frame.tilesX).toBe(10);
     expect(frame.capsules[7]).toBeCloseTo(capsuleReach(1, 0.2, 1));
@@ -187,6 +183,7 @@ describe('buildCapsuleShadowFrame', () => {
       cone,
       160,
       160,
+      demand,
     );
     expect(frame.submission).toEqual({
       capsuleCount: 1,
@@ -199,7 +196,16 @@ describe('buildCapsuleShadowFrame', () => {
   it('keeps the closest capsules within the frame and tile budgets', () => {
     const far = character(0, -40, MAX_FRAME_CAPSULES);
     const near = character(0, 0, MAX_CAPSULES_PER_TILE + 8);
-    const frame = buildCapsuleShadowFrame([far, near], materials, camera, down, cone, 160, 160);
+    const frame = buildCapsuleShadowFrame(
+      [far, near],
+      materials,
+      camera,
+      down,
+      cone,
+      160,
+      160,
+      demand,
+    );
     expect(frame.submission.capsuleCount).toBe(MAX_FRAME_CAPSULES);
     expect(frame.submission.droppedCapsules).toBe(MAX_CAPSULES_PER_TILE + 8);
     expect(frame.submission.tileOverflow).toBeGreaterThan(0);
@@ -215,22 +221,20 @@ describe('buildCapsuleShadowFrame', () => {
 
 it('adopts capsule Pass changes from a fixed material frame without replacing the entity', () => {
   const resource = new MaterialResource(defaultMaterialSnapshot(9));
-  const row = {
-    ...binding,
-    material: resource,
-    materials: [resource],
-    capsuleShadow: {
+  const row = withState(
+    { ...binding, material: resource, materials: [resource], capsuleShadowRequested: true },
+    {
       status: 'ready',
       capsules: Float32Array.of(0, 0, 0, 0.2, 0, 1, 0, 0),
     },
-  } as RenderableSnapshot;
+  );
   const previous = new MaterialFrame(undefined).with(resource);
   resource.adopt({ ...resource.snapshot, passes: [] });
   const next = new MaterialFrame(undefined).with(resource);
-  expect(inspectCapsuleShadow([row], previous, true, true)?.admitted).toBe(1);
-  expect(inspectCapsuleShadow([row], next, true, true)).toMatchObject({
+  expect(inspectCapsuleShadow([row], previous, true, true, undefined, demand)?.admitted).toBe(1);
+  expect(inspectCapsuleShadow([row], next, true, true, undefined, demand)).toMatchObject({
     admitted: 0,
     fallbacks: { 'no-shadow-caster-pass': 1 },
   });
-  expect(row.capsuleShadow?.status).toBe('ready');
+  expect(demand(row)?.status).toBe('ready');
 });

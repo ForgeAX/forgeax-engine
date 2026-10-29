@@ -1,18 +1,8 @@
-/** Event-path ownership and lifecycle reset primitives for browser hosts. */
+/** Event-path ownership primitives for browser hosts. */
 
 export interface UiOwnershipResult {
   readonly owned: boolean;
   readonly source: 'composed-path' | 'target-fallback' | 'unknown';
-}
-
-export interface UiInputResetBoundaryOptions {
-  readonly clear: () => void;
-  readonly signal?: AbortSignal;
-}
-
-export interface UiInputResetBoundary {
-  readonly reset: () => void;
-  readonly dispose: () => void;
 }
 
 function contains(root: Node, value: EventTarget | null): boolean {
@@ -40,23 +30,4 @@ export function resolveUiOwnership(event: Event, host: Node): UiOwnershipResult 
 
 export function isUiOwnedEvent(event: Event, host: Node): boolean {
   return resolveUiOwnership(event, host).owned;
-}
-
-export function createUiInputResetBoundary(
-  options: UiInputResetBoundaryOptions,
-): UiInputResetBoundary {
-  let disposed = false;
-  const reset = (): void => {
-    if (!disposed) options.clear();
-  };
-  const onAbort = (): void => reset();
-  options.signal?.addEventListener('abort', onAbort, { once: true });
-  return {
-    reset,
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      options.signal?.removeEventListener('abort', onAbort);
-    },
-  };
 }

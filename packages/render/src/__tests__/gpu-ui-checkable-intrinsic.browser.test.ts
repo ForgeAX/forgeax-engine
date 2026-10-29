@@ -269,9 +269,12 @@ it('matches Chromium checkable and range geometry through native layout and WebG
     let comparison: ReturnType<typeof compareUiRaster>;
     try {
       const final = required(model.works.at(-1));
-      inspection = (await replay.inspectWork(final.workIndex, ['pipeline', 'bindings'])).unwrap();
-      const read = (await replay.inspectWork(final.workIndex, ['pixels'])).unwrap();
-      const attachment = required(read.attachment);
+      const read = (
+        await replay.inspectWork(final.workIndex, ['pipeline', 'bindings', 'pixels'])
+      ).unwrap();
+      const { attachment: pixels, ...facts } = read;
+      inspection = facts;
+      const attachment = required(pixels);
       const rowStride = attachment.bytes.length / height;
       const rgba = new Uint8Array(width * height * 4);
       for (let y = 0; y < height; y++)

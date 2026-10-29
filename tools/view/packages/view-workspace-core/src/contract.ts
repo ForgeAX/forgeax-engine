@@ -1,5 +1,6 @@
 import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools, EngineWorkspacePreviewDisplay, EngineWorkspacePreviewDisplayOptions } from '@forgeax/engine/app';
 import { createWorkspaceId } from './id.ts';
+export type { MaterialPreviewMesh, MaterialPreviewState } from '@forgeax/engine/app';
 export type { PresentationSnapshot, WorkspacePresentation } from './presentation.ts';
 import { serializeWorkspaceSceneSelection } from './scene-selection.ts';
 /** Optional display producer projection. Consumers must discover the operation before calling. */
@@ -157,6 +158,10 @@ export const VIEW_WORKSPACE_DOMAIN_OPERATION_EFFECTS = Object.freeze({
   'preview.capture': 'command',
   'preview.resize': 'command',
   'preview.texture.get': 'query',
+  'preview.material.get': 'query',
+  'preview.material.set': 'command',
+  'preview.material.rotate': 'command',
+  'preview.material.reset': 'command',
   'preview.texture.set': 'command',
   'preview.display.get': 'query',
   'preview.display.set': 'command',

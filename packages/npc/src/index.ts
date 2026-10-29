@@ -117,17 +117,22 @@ export function npcPlugin(options: NpcPluginOptions): Plugin {
             queries: [{ with: [NpcBrain] }],
             fn: (_world, queryResults) => {
               const bindings: NpcBrainBinding[] = [];
-              for (const row of queryResults[0]) {
-                const entity = row.entity;
-                const value = world.get(entity, NpcBrain);
-                if (!value.ok) continue;
-                bindings.push({
-                  entity,
-                  soulId: value.value.soulId,
-                  affordanceRef: value.value.affordanceRef,
-                  enabled: value.value.enabled,
-                  lod: value.value.lod as NpcCognitiveLod,
-                });
+              for (const querySpan of queryResults[0].spans().unwrap()) {
+                const queryEntities = querySpan.entities;
+                for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+                  const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+
+                  const entity = queriedEntity;
+                  const value = world.get(entity, NpcBrain);
+                  if (!value.ok) continue;
+                  bindings.push({
+                    entity,
+                    soulId: value.value.soulId,
+                    affordanceRef: value.value.affordanceRef,
+                    enabled: value.value.enabled,
+                    lod: value.value.lod as NpcCognitiveLod,
+                  });
+                }
               }
               const signature = JSON.stringify(bindings);
               if (signature !== previous) {

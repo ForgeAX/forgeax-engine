@@ -12,7 +12,10 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -108,7 +111,7 @@ export async function verifyReverseZ(
     const receipt = await draw();
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
-    await save('frame.rhitape', capture.bytes);
+    await save('frame.rhitape', compactTape(capture).bytes);
     await save(
       'inspection.json',
       new TextEncoder().encode(JSON.stringify({ errors, inspection: renderer.inspect() }, null, 2)),
@@ -134,25 +137,30 @@ export async function verifyReverseZ(
       const device = (
         await adapter.requestDevice(replayDeviceRequest(source, adapter.features, adapter.limits))
       ).unwrap();
+      const replayWork = observeReplaySubmissions(device);
       const replay = (
         await openReplay(source, { device, createShaderModule: webgpu.createShaderModule })
       ).unwrap();
       try {
-        const inspected = (
-          await replay.inspectWork(last.workIndex, ['pipeline', 'bindings'])
+        const inspected = describeReplayWork(last);
+        const reads = (
+          await replay.readAtWorks([
+            { resourceId: colorId, workIndex: last.workIndex },
+            {
+              resourceId: depthId,
+              workIndex: last.workIndex,
+              subresource: { aspect: 'depth-only', mipLevel: 0, arrayLayer: 0 },
+            },
+            { resourceId: finalColorId, workIndex: final.workIndex },
+          ])
         ).unwrap();
-        const color = (await replay.readResourceAtWork(colorId, last.workIndex)).unwrap();
-        const depth = (
-          await replay.readResourceAtWork(depthId, last.workIndex, {
-            aspect: 'depth-only',
-            mipLevel: 0,
-            arrayLayer: 0,
-          })
-        ).unwrap();
-        const output = (await replay.readResourceAtWork(finalColorId, final.workIndex)).unwrap();
+        replayWork.assertMaximum(11);
+        const [color, depth, output] = reads.map((result) => result.unwrap());
+        if (!color || !depth || !output) throw new Error('missing reverse-Z readback');
         return { inspected, color, depth, output };
       } finally {
         (await replay.dispose()).unwrap();
+        replayWork.restore();
       }
     };
     const replay = await replayFrame(tape);
@@ -178,25 +186,28 @@ export async function verifyReverseZ(
     await save('replay-color.bin', replay.color.bytes);
     // Falsify the actual recorded scene clear: greater-depth writes must fail against 1.
     let changed = 0;
-    const invalid = encodeTape({
-      ...tape,
-      events: tape.events.map((event) => {
-        if (
-          event.kind !== 'beginRenderPass' ||
-          !event.desc.depthStencilAttachment ||
-          event.desc.depthStencilAttachment.depthLoadOp !== 'clear'
-        )
-          return event;
-        changed++;
-        return {
-          ...event,
-          desc: {
-            ...event.desc,
-            depthStencilAttachment: { ...event.desc.depthStencilAttachment, depthClearValue: 1 },
-          },
-        };
-      }),
-    }).unwrap();
+    const invalid = encodeTape(
+      {
+        ...tape,
+        events: tape.events.map((event) => {
+          if (
+            event.kind !== 'beginRenderPass' ||
+            !event.desc.depthStencilAttachment ||
+            event.desc.depthStencilAttachment.depthLoadOp !== 'clear'
+          )
+            return event;
+          changed++;
+          return {
+            ...event,
+            desc: {
+              ...event.desc,
+              depthStencilAttachment: { ...event.desc.depthStencilAttachment, depthClearValue: 1 },
+            },
+          };
+        }),
+      },
+      { compression: 'gzip' },
+    ).unwrap();
     expect(changed).toBeGreaterThan(0);
     const falsified = await replayFrame(decodeTape(invalid).unwrap());
     await save('falsified.rgba', falsified.output.bytes);

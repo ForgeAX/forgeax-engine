@@ -13,10 +13,19 @@ import type {
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { type BindGroupLayoutDescriptor, err, ok, type Result } from '@forgeax/engine-types';
-import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
+import { PipelineRecipeState } from '@forgeax/engine-rhi';
+import {
+  type BindGroupLayoutDescriptor,
+  err,
+  isDeepFrozenJson,
+  ok,
+  type Result,
+  ShaderSource,
+  shaderSourceDescriptor,
+} from '@forgeax/engine-types';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
+import { sameValue } from '../same-value';
 import type { SceneDataTarget } from '../temporal/scene-data';
 import type {
   RenderFeaturePassDeclaration,
@@ -78,7 +87,7 @@ export type RenderFeatureGpuBufferUsage =
   | 'copy-src';
 
 export interface RenderFeatureGpuProgramDescriptor {
-  readonly wgsl: string;
+  readonly wgsl: string | ShaderSource;
   readonly entryPoints: readonly string[];
   readonly bindings?: readonly BindGroupLayoutDescriptor[];
 }
@@ -221,17 +230,26 @@ export function encodeRenderFeatureGpuComputePass(
   work: RenderFeatureResolvedGpuComputePass,
   resolveTarget?: (target: RenderFeatureComputeTarget) => TextureView,
 ): void {
+  // A compute pass keeps its pipeline and bind groups across dispatches, so
+  // consecutive dispatches that share them skip the redundant set calls.
+  let pipeline: ComputePipeline | undefined;
+  let bindGroup: BindGroup | undefined;
   for (const dispatch of work.dispatches) {
-    pass.setPipeline(dispatch.pipeline);
+    if (dispatch.pipeline !== pipeline) {
+      pass.setPipeline(dispatch.pipeline);
+      pipeline = dispatch.pipeline;
+    }
     if (dispatch.resolveBindGroup !== undefined && resolveTarget === undefined) {
       throw new Error('Graph texture resolver required for sampled compute work');
     }
-    pass.setBindGroup(
-      0,
+    const group =
       dispatch.resolveBindGroup !== undefined && resolveTarget !== undefined
         ? dispatch.resolveBindGroup(resolveTarget)
-        : dispatch.bindGroup,
-    );
+        : dispatch.bindGroup;
+    if (group !== bindGroup) {
+      pass.setBindGroup(0, group);
+      bindGroup = group;
+    }
     if ('workgroups' in dispatch) pass.dispatchWorkgroups(...dispatch.workgroups);
     else pass.dispatchWorkgroupsIndirect(dispatch.indirectBuffer, dispatch.indirectOffset);
   }
@@ -291,6 +309,8 @@ export interface PreparedGraphicsResourceLease {
   release(): Result<void, RenderError>;
 }
 
+const NO_RESOURCE_LEASES: readonly PreparedGraphicsResourceLease[] = Object.freeze([]);
+
 interface ProgramItem {
   readonly completionQualified: boolean;
   readonly name: string;
@@ -312,7 +332,8 @@ interface ProgramItem {
 
 interface BufferItem {
   readonly name: string;
-  readonly signature: string;
+  /** Unaligned size the owned buffer was declared with. */
+  readonly requestedSize: number;
   readonly reference: RenderFeatureGpuBufferRef;
   readonly buffer: Buffer;
   readonly size: number;
@@ -412,60 +433,151 @@ function failure(
   );
 }
 
+/** The owned buffer item when it was declared with this size and usage bit set. */
+function ownedBufferMatching(
+  item: BufferItem | undefined,
+  requestedSize: number,
+  physicalUsage: number,
+): BufferItem | undefined {
+  return item?.owned === true &&
+    item.requestedSize === requestedSize &&
+    item.physicalUsage === physicalUsage
+    ? item
+    : undefined;
+}
+
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value !== null && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
+    const source = ownedProgramSources.get(value);
+    return `{${Object.keys(value as Record<string, unknown>)
       // Descriptor keys are canonicalized by code unit, not locale.  These
       // descriptors are generated every frame; avoiding locale collation
       // keeps the stable spelling deterministic and removes a per-call
       // ICU-backed comparator from the prepared-resource hot path.
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, child]) => `${key}:${stable(child)}`)
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(
+        (key) =>
+          `${key}:${stable(key === 'wgsl' && source !== undefined ? source.identity : (value as Record<string, unknown>)[key])}`,
+      )
       .join(',')}}`;
   }
   return JSON.stringify(value);
 }
 
+type ComputeAccessSummary = Omit<RenderFeatureResolvedGpuComputePass, 'dispatches'>;
 /**
- * Compare prepared-program declarations without reserializing the WGSL and
- * bind-group layout on every warm frame.  This is intentionally a structural
- * comparison: callers may reuse and mutate their declaration objects, so an
- * object-identity fast path would make a stale pipeline appear valid.
+ * The graph accesses of one compute pass are a pure function of its program,
+ * per-dispatch binding items and indirect buffer items (all immutable). The
+ * last proven summary is kept on the pass's first binding item (one pass owner)
+ * and reused while every item is identical.
  */
-function equalDescriptorValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (typeof left !== typeof right || left === null || right === null) return false;
-  if (ArrayBuffer.isView(left) || ArrayBuffer.isView(right)) {
-    if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right)) return false;
-    if (left.byteLength !== right.byteLength) return false;
-    const leftBytes = new Uint8Array(left.buffer, left.byteOffset, left.byteLength);
-    const rightBytes = new Uint8Array(right.buffer, right.byteOffset, right.byteLength);
-    for (let index = 0; index < leftBytes.length; index += 1) {
-      if (leftBytes[index] !== rightBytes[index]) return false;
-    }
-    return true;
+const computeAccessSummaries = new WeakMap<
+  BindingsItem,
+  {
+    readonly program: ProgramItem;
+    readonly bindings: readonly BindingsItem[];
+    readonly indirect: readonly (BufferItem | undefined)[];
+    readonly summary: ComputeAccessSummary;
   }
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    for (let index = 0; index < left.length; index += 1) {
-      if (!equalDescriptorValue(left[index], right[index])) return false;
+>();
+function sameItems<T>(left: readonly T[], right: readonly T[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
+}
+function computeAccessSummary(
+  featureIdentity: string,
+  program: ProgramItem,
+  dispatchBindings: readonly BindingsItem[],
+  indirectItems: readonly (BufferItem | undefined)[],
+): Result<ComputeAccessSummary, RenderError> {
+  const owner = dispatchBindings[0];
+  const cached = owner === undefined ? undefined : computeAccessSummaries.get(owner);
+  if (
+    cached !== undefined &&
+    cached.program === program &&
+    sameItems(cached.bindings, dispatchBindings) &&
+    sameItems(cached.indirect, indirectItems)
+  )
+    return ok(cached.summary);
+  const resolvedBuffers = new Map<BufferItem, Set<GraphBufferAccess>>();
+  for (const item of dispatchBindings) {
+    if (item === undefined) continue;
+    for (const entry of item.buffers) {
+      const access = program.bindingLayouts.get(entry.binding);
+      if (access === undefined) {
+        return err(
+          failure(
+            featureIdentity,
+            'resolve-gpu-compute',
+            'bindings',
+            item.name,
+            `buffer-layout-unavailable:${entry.binding}`,
+          ),
+        );
+      }
+      const derived = graphAccess(access.type);
+      const prior = resolvedBuffers.get(entry.item) ?? new Set<GraphBufferAccess>();
+      if (prior.size > 0 && !prior.has(derived)) {
+        if (prior.has('storage-read-write') || derived === 'storage-read-write') {
+          resolvedBuffers.set(entry.item, new Set(['storage-read-write']));
+          continue;
+        }
+        return err(
+          failure(
+            featureIdentity,
+            'resolve-gpu-compute',
+            'bindings',
+            item.name,
+            `buffer-access-conflict:${entry.binding}`,
+          ),
+        );
+      }
+      prior.add(derived);
+      resolvedBuffers.set(entry.item, prior);
     }
-    return true;
   }
-  if (typeof left === 'object' && typeof right === 'object') {
-    const leftRecord = left as Record<string, unknown>;
-    const rightRecord = right as Record<string, unknown>;
-    const leftKeys = Object.keys(leftRecord);
-    const rightKeys = Object.keys(rightRecord);
-    if (leftKeys.length !== rightKeys.length) return false;
-    for (const key of leftKeys) {
-      if (!Object.hasOwn(rightRecord, key)) return false;
-      if (!equalDescriptorValue(leftRecord[key], rightRecord[key])) return false;
+  for (const item of indirectItems) {
+    if (item === undefined) continue;
+    const accesses = resolvedBuffers.get(item) ?? new Set<GraphBufferAccess>();
+    accesses.add('indirect-read');
+    resolvedBuffers.set(item, accesses);
+  }
+  const sampledTargets = new Set<RenderFeatureComputeTarget>();
+  const storageTargets = new Set<RenderFeatureComputeTarget>();
+  for (const item of dispatchBindings) {
+    for (const entry of item?.entries ?? []) {
+      const target = entry.textureView?.logicalTarget;
+      if (target === undefined) continue;
+      const role = program.textureBindings.get(entry.binding) ?? 'sampled';
+      if (role === 'sampled') sampledTargets.add(target);
+      else storageTargets.add(target);
     }
-    return true;
   }
-  return false;
+  const summary: ComputeAccessSummary = Object.freeze({
+    sampledTargets: Object.freeze([...sampledTargets]),
+    storageTargets: Object.freeze([...storageTargets]),
+    buffers: Object.freeze(
+      [...resolvedBuffers].flatMap(([item, accesses]) =>
+        [...accesses].map((access) => ({
+          name: item.name,
+          buffer: item.buffer,
+          size: item.size,
+          physicalUsage: item.physicalUsage,
+          access,
+        })),
+      ),
+    ),
+  });
+  if (owner !== undefined)
+    computeAccessSummaries.set(owner, {
+      program,
+      bindings: [...dispatchBindings],
+      indirect: [...indirectItems],
+      summary,
+    });
+  return ok(summary);
 }
 
 function cloneDescriptorValue(value: unknown): unknown {
@@ -498,36 +610,158 @@ function cloneProgramDescriptor(
 
 const ownedProgramData = new WeakSet<object>();
 const ownedProgramKeys = new WeakMap<object, string>();
+const ownedProgramSources = new WeakMap<object, ShaderSource>();
+const ownedProgramStates = new WeakMap<object, ReadonlyMap<string, PipelineRecipeState>>();
 
 /** Detach cooked program data once; mutable declarations still use exact checks. */
 export function ownRenderFeatureProgramData<T>(value: T): T {
+  return ownRenderFeatureProgramDataWith(value);
+}
+
+/**
+ * @internal Detach program data, substituting nodes for which `reuse` returns an
+ * already owned, content-equal value. The caller proves that equality; every other
+ * node is copied and frozen in one pass that also checks it is plain JSON data.
+ */
+export function ownRenderFeatureProgramDataWith<T>(
+  value: T,
+  reuse?: (node: object) => object | undefined,
+): T {
   if (isOwnedRenderFeatureProgramData(value)) return value;
-  const owned = cloneDescriptorValue(value) as T;
-  const plainJson = (input: unknown): boolean => {
-    if (input === null || input === undefined) return true;
-    if (typeof input !== 'object') return ['string', 'number', 'boolean'].includes(typeof input);
-    const array = Array.isArray(input),
-      prototype = Object.getPrototypeOf(input);
-    if (!array && prototype !== Object.prototype && prototype !== null) return false;
-    return Reflect.ownKeys(input).every((key) => {
-      if (array && key === 'length') return true;
-      const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      return (
-        typeof key === 'string' &&
-        descriptor?.enumerable === true &&
-        'value' in descriptor &&
-        plainJson(descriptor.value)
-      );
-    });
-  };
-  const immutableJson = (value: unknown): boolean => {
-    if (value === null || value === undefined) return true;
-    if (typeof value !== 'object') return ['string', 'number', 'boolean'].includes(typeof value);
-    return Object.isFrozen(value) && Object.values(value).every(immutableJson);
-  };
-  if (owned !== null && typeof owned === 'object' && plainJson(value) && immutableJson(owned))
-    ownedProgramData.add(owned);
+  const state = { plain: true };
+  const owned = ownProgramNode(value, state, reuse) as T;
+  if (state.plain && owned !== null && typeof owned === 'object') ownedProgramData.add(owned);
   return owned;
+}
+
+/**
+ * One walk replaces the former clone + source plain-JSON walk + frozen-copy walk.
+ * The copy keeps the former clone semantics exactly (enumerable string keys,
+ * accessor values read once, views copied as bytes); any non-JSON trait only
+ * clears `state.plain`, so such a copy is detached but never marked owned.
+ * Owned subtrees and deep-frozen plain JSON subtrees are immutable and are
+ * shared, not copied.
+ */
+function ownProgramNode(
+  value: unknown,
+  state: { plain: boolean },
+  reuse: ((node: object) => object | undefined) | undefined,
+): unknown {
+  if (value === null || value === undefined) return value;
+  const type = typeof value;
+  if (type !== 'object') {
+    if (type !== 'string' && type !== 'number' && type !== 'boolean') state.plain = false;
+    return value;
+  }
+  const node = value as object;
+  const sourceField = Object.getOwnPropertyDescriptor(node, 'wgsl');
+  const entriesField = Object.getOwnPropertyDescriptor(node, 'entryPoints');
+  const programNode =
+    (typeof sourceField?.value === 'string' || ShaderSource.is(sourceField?.value)) &&
+    Array.isArray(entriesField?.value);
+  if (ownedProgramData.has(node)) return node;
+  if (!containsProgram(node) && adoptsByIdentity(node)) return node;
+  if (reuse !== undefined) {
+    const substitute = reuse(node);
+    if (substitute !== undefined && ownedProgramData.has(substitute)) return substitute;
+  }
+  if (ArrayBuffer.isView(node)) {
+    state.plain = false;
+    return new Uint8Array(new Uint8Array(node.buffer, node.byteOffset, node.byteLength));
+  }
+  const array = Array.isArray(node);
+  if (!array) {
+    const prototype = Object.getPrototypeOf(node);
+    if (prototype !== Object.prototype && prototype !== null) state.plain = false;
+  }
+  const keys = Reflect.ownKeys(node);
+  const out: Record<string, unknown> = array
+    ? (new Array((node as unknown[]).length) as unknown as Record<string, unknown>)
+    : {};
+  copyProgramProperties(node, out, keys, state, reuse);
+  if (programNode && state.plain) {
+    const source = ShaderSource.is(out.wgsl) ? out.wgsl : new ShaderSource([out.wgsl as string]);
+    Object.defineProperty(out, 'wgsl', { enumerable: true, get: () => source.read() });
+    ownedProgramSources.set(out, source);
+    ownedProgramStates.set(
+      out,
+      new Map(
+        (out.entryPoints as string[]).map((entryPoint) => [
+          entryPoint,
+          new PipelineRecipeState('compute', { compute: { entryPoint } }),
+        ]),
+      ),
+    );
+    ownedProgramKeys.set(out, stable(out));
+    ownedProgramData.add(out);
+  }
+  return Object.freeze(out);
+}
+
+function copyProgramProperties(
+  node: object,
+  out: Record<string, unknown>,
+  keys: readonly PropertyKey[],
+  state: { plain: boolean },
+  reuse: ((node: object) => object | undefined) | undefined,
+): void {
+  const array = Array.isArray(node);
+  for (const key of keys) {
+    if (typeof key !== 'string') {
+      state.plain = false;
+      continue;
+    }
+    if (array && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(node, key);
+    if (descriptor === undefined) continue;
+    if (descriptor.enumerable !== true) {
+      state.plain = false;
+      continue;
+    }
+    let child: unknown;
+    if ('value' in descriptor) child = descriptor.value;
+    else {
+      state.plain = false;
+      child = (node as Record<string, unknown>)[key];
+    }
+    const copied =
+      key === 'wgsl' && ShaderSource.is(child) ? child : ownProgramNode(child, state, reuse);
+    if (key === '__proto__')
+      Object.defineProperty(out, key, {
+        value: copied,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    else out[key] = copied;
+  }
+}
+
+/**
+ * Owned data is shared as is. A deep-frozen plain JSON subtree can no longer
+ * change either, so owning it needs no copy: it is adopted by identity, and
+ * large cooked facts (material ABIs the asset owner retains frozen) stay one
+ * shared instance.
+ */
+function containsProgram(node: object): boolean {
+  const source = Object.getOwnPropertyDescriptor(node, 'wgsl');
+  const entries = Object.getOwnPropertyDescriptor(node, 'entryPoints');
+  if (
+    (typeof source?.value === 'string' || ShaderSource.is(source?.value)) &&
+    Array.isArray(entries?.value)
+  )
+    return true;
+  if (!isDeepFrozenJson(node)) return true;
+  return Object.values(node).some(
+    (value) => value !== null && typeof value === 'object' && containsProgram(value),
+  );
+}
+
+function adoptsByIdentity(node: object): boolean {
+  if (ownedProgramData.has(node)) return true;
+  if (!isDeepFrozenJson(node)) return false;
+  ownedProgramData.add(node);
+  return true;
 }
 
 export function isOwnedRenderFeatureProgramData(value: unknown): boolean {
@@ -575,7 +809,7 @@ export interface RenderFeatureNativeResourceAdmission {
 
 export interface RenderFeatureNativePlanBuilder {
   scope(scope: RenderFeatureWorkScope): RenderFeatureNativeScopeWork;
-  readonly resourceAdmission?: RenderFeatureNativeResourceAdmission;
+  readonly resourceAdmission?: RenderFeatureNativeResourceAdmission | undefined;
   finish(
     finalWork: readonly RenderFeatureWork[],
     sourceFeedback?: unknown,
@@ -589,7 +823,7 @@ export interface RenderFeatureNativePlanBuilder {
 interface NativePlanPublication extends RenderFeatureNativePlanOwner {
   readonly batchReadOnlyDepthRaster?: true;
   readonly work: readonly RenderFeatureWork[];
-  readonly resourceAdmission?: RenderFeatureNativeResourceAdmission;
+  readonly resourceAdmission?: RenderFeatureNativeResourceAdmission | undefined;
   consumed: boolean;
 }
 
@@ -602,13 +836,13 @@ const nativePlanPublications = new WeakMap<object, NativePlanPublication>();
  */
 export function createRenderFeatureNativePlanBuilder(
   input: RenderFeatureNativePlanOwner,
-  resourceAdmission?: RenderFeatureNativeResourceAdmission,
+  createResourceAdmission?: () => RenderFeatureNativeResourceAdmission,
 ): RenderFeatureNativePlanBuilder {
   const { transaction, featureIdentity, frameNumber, generation } = input;
   const views = input.views.map(({ identity, render }) => ({ identity, render }));
   const viewNames = new Set(views.map((view) => view.identity));
   if (viewNames.size !== views.length) throw new Error('Duplicate native plan view');
-  const scopes = new Map<string, RenderFeatureNativeScopeWork>();
+  let scopes: Map<string, RenderFeatureNativeScopeWork> | undefined;
   let closed = false;
   const scopeKey = (scope: RenderFeatureWorkScope): string => {
     if (scope === 'frame') return 'frame';
@@ -616,34 +850,43 @@ export function createRenderFeatureNativePlanBuilder(
       throw new Error('Unknown native plan scope');
     return `view:${scope.view}`;
   };
-  const guardedAdmission =
-    resourceAdmission === undefined
-      ? undefined
-      : (Object.fromEntries(
-          Object.entries(resourceAdmission).map(([name, method]) => [
-            name,
-            (scope: RenderFeatureWorkScope, ...args: unknown[]) => {
-              if (closed) throw new Error('Native plan builder is closed');
-              scopeKey(scope);
-              return (method as (scope: RenderFeatureWorkScope, ...args: unknown[]) => unknown)(
-                scope,
-                ...args,
-              );
-            },
-          ]),
-        ) as unknown as RenderFeatureNativeResourceAdmission);
+  let resourceAdmission: RenderFeatureNativeResourceAdmission | undefined;
+  let guardedAdmission: RenderFeatureNativeResourceAdmission | undefined;
+  const admission = () => {
+    if (guardedAdmission === undefined && createResourceAdmission !== undefined) {
+      if (closed) throw new Error('Native plan builder is closed');
+      resourceAdmission = createResourceAdmission();
+      guardedAdmission = Object.fromEntries(
+        Object.entries(resourceAdmission).map(([name, method]) => [
+          name,
+          (scope: RenderFeatureWorkScope, ...args: unknown[]) => {
+            if (closed) throw new Error('Native plan builder is closed');
+            scopeKey(scope);
+            return (method as (scope: RenderFeatureWorkScope, ...args: unknown[]) => unknown)(
+              scope,
+              ...args,
+            );
+          },
+        ]),
+      ) as unknown as RenderFeatureNativeResourceAdmission;
+    }
+    return guardedAdmission;
+  };
   return {
-    ...(guardedAdmission === undefined ? {} : { resourceAdmission: guardedAdmission }),
+    get resourceAdmission() {
+      return admission();
+    },
     scope: (scope) => {
       if (closed) throw new Error('Native plan builder is closed');
       const key = scopeKey(scope);
-      let work = scopes.get(key);
+      let work = scopes?.get(key);
       if (work === undefined) {
         work = {
           scope: scope === 'frame' ? 'frame' : { view: scope.view },
           resources: [],
           passes: [],
         };
+        scopes ??= new Map();
         scopes.set(key, work);
       }
       return work;
@@ -651,16 +894,17 @@ export function createRenderFeatureNativePlanBuilder(
     finish: (finalWork, sourceFeedback, options) => {
       if (closed) throw new Error('Native plan builder is closed');
       closed = true;
-      const admitted = new Set<string>();
+      let admitted: Set<string> | undefined;
       for (const work of finalWork) {
         const key = scopeKey(work.scope);
         if (
-          !scopes.has(key) ||
-          admitted.has(key) ||
+          !scopes?.has(key) ||
+          admitted?.has(key) === true ||
           !Array.isArray(work.resources) ||
           !Array.isArray(work.passes)
         )
           throw new Error('Native plan work must use each created scope at most once');
+        admitted ??= new Set();
         admitted.add(key);
       }
       const native = {} as RenderFeatureNativePlanToken;
@@ -677,7 +921,7 @@ export function createRenderFeatureNativePlanBuilder(
         views,
         ...(options?.batchReadOnlyDepthRaster === true ? { batchReadOnlyDepthRaster: true } : {}),
         work: finalWork,
-        ...(guardedAdmission === undefined ? {} : { resourceAdmission: guardedAdmission }),
+        ...(resourceAdmission === undefined ? {} : { resourceAdmission }),
         consumed: false,
       });
       return planned;
@@ -790,9 +1034,17 @@ function createRenderFeatureGpuWorkSession(input: {
   const retiring = new Map<object, object>();
   const changedResourceNames = new Set<string>();
   const destroyedBuffers = new WeakSet<Buffer>();
+  // Active, parked and queue-retired resources all remain in these indexes.
+  const hasResourceReferences = (): boolean =>
+    programRefs.size !== 0 ||
+    bufferRefs.size !== 0 ||
+    bindingRefs.size !== 0 ||
+    textureViewRefs.size !== 0 ||
+    samplerRefs.size !== 0;
   // Resource refs are freshly allocated opaque objects. Rollback needs only
-  // this frame's additions; accepted index keys never need copying.
-  const snapshotIndexes = () => ({
+  // this frame's additions; accepted index keys never need copying. One
+  // rollback record is retained and reset per frame instead of reallocated.
+  const candidateState = {
     // Candidate preparation only inserts or overwrites active names. Keep
     // each name's first old value; accepted keys never move before commit.
     programs: new Map<string, ProgramItem | undefined>(),
@@ -800,20 +1052,41 @@ function createRenderFeatureGpuWorkSession(input: {
     bindings: new Map<string, BindingsItem | undefined>(),
     textureViews: new Map<string, TextureViewItem | undefined>(),
     samplers: new Map<string, SamplerItem | undefined>(),
-    parkedPrograms: new Map(parkedPrograms),
-    parkedBuffers: new Map(parkedBuffers),
-    parkedBindings: new Map(parkedBindings),
+    parkedPrograms: new Map<string, { readonly item: ProgramItem; readonly frame: number }>(),
+    parkedBuffers: new Map<string, { readonly item: BufferItem; readonly frame: number }>(),
+    parkedBindings: new Map<string, { readonly item: BindingsItem; readonly frame: number }>(),
     addedProgramRefs: [] as object[],
     addedBufferRefs: [] as object[],
     addedBindingRefs: [] as object[],
     addedTextureViewRefs: [] as object[],
     addedSamplerRefs: [] as object[],
-  });
-  let candidate: ReturnType<typeof snapshotIndexes> | undefined;
-  const restore = <K, V>(target: Map<K, V>, saved: ReadonlyMap<K, V>): void => {
-    target.clear();
-    for (const [key, value] of saved) target.set(key, value);
   };
+  // Clearing an empty collection still reallocates its table; skip it.
+  const clearCollection = (collection: { readonly size: number; clear(): void }): void => {
+    if (collection.size > 0) collection.clear();
+  };
+  const copyInto = <K, V>(target: Map<K, V>, source: ReadonlyMap<K, V>): void => {
+    clearCollection(target);
+    if (source.size > 0) for (const [key, value] of source) target.set(key, value);
+  };
+  const snapshotIndexes = (): typeof candidateState => {
+    const state = candidateState;
+    clearCollection(state.programs);
+    clearCollection(state.buffers);
+    clearCollection(state.bindings);
+    clearCollection(state.textureViews);
+    clearCollection(state.samplers);
+    copyInto(state.parkedPrograms, parkedPrograms);
+    copyInto(state.parkedBuffers, parkedBuffers);
+    copyInto(state.parkedBindings, parkedBindings);
+    state.addedProgramRefs.length = 0;
+    state.addedBufferRefs.length = 0;
+    state.addedBindingRefs.length = 0;
+    state.addedTextureViewRefs.length = 0;
+    state.addedSamplerRefs.length = 0;
+    return state;
+  };
+  let candidate: ReturnType<typeof snapshotIndexes> | undefined;
   const setCandidateName = <T>(
     target: Map<string, T>,
     previous: Map<string, T | undefined> | undefined,
@@ -857,6 +1130,7 @@ function createRenderFeatureGpuWorkSession(input: {
     const previous = candidate;
     if (previous === undefined) return ok(undefined);
     candidate = undefined;
+    if (!hasResourceReferences()) return ok(undefined);
     const createdBuffers: BufferItem[] = [];
     for (const reference of previous.addedBufferRefs) {
       const item = bufferRefs.get(reference);
@@ -870,9 +1144,9 @@ function createRenderFeatureGpuWorkSession(input: {
     restoreCandidateNames(bindings, previous.bindings);
     restoreCandidateNames(textureViews, previous.textureViews);
     restoreCandidateNames(samplers, previous.samplers);
-    restore(parkedPrograms, previous.parkedPrograms);
-    restore(parkedBuffers, previous.parkedBuffers);
-    restore(parkedBindings, previous.parkedBindings);
+    copyInto(parkedPrograms, previous.parkedPrograms);
+    copyInto(parkedBuffers, previous.parkedBuffers);
+    copyInto(parkedBindings, previous.parkedBindings);
     discard(programRefs, previous.addedProgramRefs);
     discard(bufferRefs, previous.addedBufferRefs);
     discard(bindingRefs, previous.addedBindingRefs);
@@ -969,19 +1243,24 @@ function createRenderFeatureGpuWorkSession(input: {
     descriptor,
     waitForCompletion = false,
   ) => {
+    const source = ownedProgramSources.get(descriptor);
     const createAsync = waitForCompletion ? input.device.createComputePipelineAsync : undefined;
     const complete = (item: ProgramItem) => createAsync === undefined || item.completionQualified;
     const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
     if (
       prior !== undefined &&
       complete(prior) &&
-      equalDescriptorValue(prior.descriptor, descriptor)
+      sameProgramDescriptor(prior.descriptor, descriptor)
     ) {
       activateProgram(prior);
       touchProgram(prior);
       return ok(prior.reference);
     }
-    if (name.length === 0 || descriptor.wgsl.length === 0 || descriptor.entryPoints.length === 0) {
+    if (
+      name.length === 0 ||
+      (source?.length ?? descriptor.wgsl.length) === 0 ||
+      descriptor.entryPoints.length === 0
+    ) {
       return err(
         failure(
           input.featureIdentity,
@@ -992,13 +1271,7 @@ function createRenderFeatureGpuWorkSession(input: {
         ),
       );
     }
-    let programKey = isOwnedRenderFeatureProgramData(descriptor)
-      ? ownedProgramKeys.get(descriptor)
-      : undefined;
-    if (programKey === undefined) {
-      programKey = stable(descriptor);
-      if (isOwnedRenderFeatureProgramData(descriptor)) ownedProgramKeys.set(descriptor, programKey);
-    }
+    const programKey = programDescriptorKey(descriptor);
     const compiled = compiledPrograms.get(programKey);
     if (compiled !== undefined && complete(compiled)) {
       compiledPrograms.delete(programKey);
@@ -1027,10 +1300,9 @@ function createRenderFeatureGpuWorkSession(input: {
       return err(preparationFailure('rhi-not-available:pipeline-pending'));
     const module =
       preparing === undefined
-        ? input.shaderModuleFactory.createShaderModule({
-            label: name,
-            code: descriptor.wgsl,
-          })
+        ? input.shaderModuleFactory.createShaderModule(
+            source?.descriptor(name) ?? shaderSourceDescriptor(descriptor.wgsl, name),
+          )
         : ok(preparing.module);
     if (!module.ok) {
       return err(
@@ -1145,11 +1417,21 @@ function createRenderFeatureGpuWorkSession(input: {
       };
       for (const entryPoint of descriptor.entryPoints) {
         try {
-          const completion = createAsync.call(input.device, {
-            label: `${name}.${entryPoint}`,
-            layout: pipelineLayout,
-            compute: { module: module.value, entryPoint },
-          });
+          const selected = selectProgramPipeline(
+            input.device,
+            descriptor,
+            entryPoint,
+            pipelineLayout,
+            module.value,
+            true,
+          );
+          const create = () =>
+            createAsync.call(input.device, {
+              label: `${name}.${entryPoint}`,
+              layout: pipelineLayout,
+              compute: { module: module.value, entryPoint },
+            });
+          const completion = completeProgramSelection(selected, create);
           // forgeax-async-whitelist: dom-native - observe actual backend compute compilation completion.
           if ('ok' in completion) settle(entryPoint, completion);
           else
@@ -1166,12 +1448,22 @@ function createRenderFeatureGpuWorkSession(input: {
     }
     if (preparing === undefined && createAsync === undefined)
       for (const entryPoint of descriptor.entryPoints) {
-        const pipeline = input.device.createComputePipeline({
-          label: `${name}.${entryPoint}`,
-          layout: pipelineLayout,
-          compute: { module: module.value, entryPoint },
-        });
-        if (!pipeline.ok) return err(preparationFailure(pipeline.error.code));
+        const selected = selectProgramPipeline(
+          input.device,
+          descriptor,
+          entryPoint,
+          pipelineLayout,
+          module.value,
+          false,
+        );
+        const pipeline = immediateProgramSelection(selected, () =>
+          input.device.createComputePipeline({
+            label: `${name}.${entryPoint}`,
+            layout: pipelineLayout,
+            compute: { module: module.value, entryPoint },
+          }),
+        );
+        if (!pipeline.ok) return err(preparationFailure(rhiReason(pipeline.error)));
         pipelineMap.set(entryPoint, pipeline.value);
       }
     preparingPrograms.delete(programKey);
@@ -1269,11 +1561,15 @@ function createRenderFeatureGpuWorkSession(input: {
           return uploadFailure('upload-range-invalid');
       }
     }
-    const signature = stable({ size: descriptor.size, usage: [...descriptor.usage].sort() });
-    let item = buffers.get(name) ?? parkedBuffers.get(name)?.item;
-    if (item !== undefined && (item.signature !== signature || !item.owned)) item = undefined;
+    // Size and the usage bit set identify an owned buffer: equal bits are the
+    // same usage set in any order, so no per-frame signature text is built.
+    const usage = descriptor.usage.reduce((bits, key) => bits | BUFFER_USAGE[key], COPY_DST);
+    let item = ownedBufferMatching(
+      buffers.get(name) ?? parkedBuffers.get(name)?.item,
+      descriptor.size,
+      usage,
+    );
     if (item === undefined) {
-      const usage = descriptor.usage.reduce((bits, key) => bits | BUFFER_USAGE[key], COPY_DST);
       const created = input.device.createBuffer({
         label: name,
         size: alignedSize(descriptor.size),
@@ -1296,7 +1592,7 @@ function createRenderFeatureGpuWorkSession(input: {
       }) as RenderFeatureGpuBufferRef;
       item = {
         name,
-        signature,
+        requestedSize: descriptor.size,
         reference,
         buffer: created.value,
         size: alignedSize(descriptor.size),
@@ -1378,7 +1674,7 @@ function createRenderFeatureGpuWorkSession(input: {
     }) as RenderFeatureGpuBufferRef;
     const item: BufferItem = {
       name,
-      signature: stable({ external: true, size, usage: [...descriptor.usage].sort() }),
+      requestedSize: descriptor.size,
       reference,
       buffer: resource,
       size,
@@ -1907,14 +2203,15 @@ function createRenderFeatureGpuWorkSession(input: {
       if (candidate !== undefined)
         throw new Error('Feature GPU frame must commit or abort before beginning another frame');
       candidate = snapshotIndexes();
-      changedResourceNames.clear();
-      touchedPrograms.clear();
-      touchedBuffers.clear();
-      touchedTextureViews.clear();
-      touchedSamplers.clear();
-      touchedBindings.clear();
+      clearCollection(changedResourceNames);
+      clearCollection(touchedPrograms);
+      clearCollection(touchedBuffers);
+      clearCollection(touchedTextureViews);
+      clearCollection(touchedSamplers);
+      clearCollection(touchedBindings);
     },
     retainResources: (matches) => {
+      if (!hasResourceReferences()) return;
       for (const item of programs.values()) if (matches(item.name)) touchProgram(item);
       for (const item of buffers.values()) if (matches(item.name)) touchBuffer(item);
       for (const item of textureViews.values()) if (matches(item.name)) touchTextureView(item);
@@ -1995,7 +2292,8 @@ function createRenderFeatureGpuWorkSession(input: {
           ? undefined
           : bufferRefs.get(dispatch.indirect.buffer as object),
       );
-      for (const [index, dispatch] of descriptor.dispatches.entries()) {
+      for (let index = 0; index < descriptor.dispatches.length; index++) {
+        const dispatch = descriptor.dispatches[index] as (typeof descriptor.dispatches)[number];
         const indirectItem = indirectItems[index];
         const invalidDirect =
           dispatch.workgroups !== undefined &&
@@ -2035,7 +2333,8 @@ function createRenderFeatureGpuWorkSession(input: {
       }
       const resolvedDispatches: RenderFeatureResolvedGpuComputePass['dispatches'][number][] = [];
       let emptyDispatches = 0;
-      for (const [index, dispatch] of descriptor.dispatches.entries()) {
+      for (let index = 0; index < descriptor.dispatches.length; index++) {
+        const dispatch = descriptor.dispatches[index] as (typeof descriptor.dispatches)[number];
         const pipeline = program.pipelines.get(dispatch.entryPoint);
         const dispatchBinding = dispatchBindings[index];
         if (pipeline === undefined || dispatchBinding === undefined) continue;
@@ -2108,74 +2407,14 @@ function createRenderFeatureGpuWorkSession(input: {
           ),
         );
       }
-      const resolvedBuffers = new Map<BufferItem, Set<GraphBufferAccess>>();
-      for (const item of dispatchBindings) {
-        if (item === undefined) continue;
-        for (const entry of item.buffers) {
-          const access = program.bindingLayouts.get(entry.binding);
-          if (access === undefined) {
-            return err(
-              failure(
-                featureIdentity,
-                'resolve-gpu-compute',
-                'bindings',
-                item.name,
-                `buffer-layout-unavailable:${entry.binding}`,
-              ),
-            );
-          }
-          const derived = graphAccess(access.type);
-          const prior = resolvedBuffers.get(entry.item) ?? new Set<GraphBufferAccess>();
-          if (prior.size > 0 && !prior.has(derived)) {
-            if (prior.has('storage-read-write') || derived === 'storage-read-write') {
-              resolvedBuffers.set(entry.item, new Set(['storage-read-write']));
-              continue;
-            }
-            return err(
-              failure(
-                featureIdentity,
-                'resolve-gpu-compute',
-                'bindings',
-                item.name,
-                `buffer-access-conflict:${entry.binding}`,
-              ),
-            );
-          }
-          prior.add(derived);
-          resolvedBuffers.set(entry.item, prior);
-        }
-      }
-      for (const item of indirectItems) {
-        if (item === undefined) continue;
-        const accesses = resolvedBuffers.get(item) ?? new Set<GraphBufferAccess>();
-        accesses.add('indirect-read');
-        resolvedBuffers.set(item, accesses);
-      }
-      const sampledTargets = new Set<RenderFeatureComputeTarget>();
-      const storageTargets = new Set<RenderFeatureComputeTarget>();
-      for (const item of dispatchBindings) {
-        for (const entry of item?.entries ?? []) {
-          const target = entry.textureView?.logicalTarget;
-          if (target === undefined) continue;
-          const role = program.textureBindings.get(entry.binding) ?? 'sampled';
-          if (role === 'sampled') sampledTargets.add(target);
-          else storageTargets.add(target);
-        }
-      }
-      return ok({
-        sampledTargets: [...sampledTargets],
-        storageTargets: [...storageTargets],
-        buffers: [...resolvedBuffers].flatMap(([item, accesses]) =>
-          [...accesses].map((access) => ({
-            name: item.name,
-            buffer: item.buffer,
-            size: item.size,
-            physicalUsage: item.physicalUsage,
-            access,
-          })),
-        ),
-        dispatches: resolvedDispatches,
-      });
+      const access = computeAccessSummary(
+        featureIdentity,
+        program,
+        dispatchBindings as readonly BindingsItem[],
+        indirectItems,
+      );
+      if (!access.ok) return access;
+      return ok({ ...access.value, dispatches: resolvedDispatches });
     },
     resolveBuffer: (reference) => {
       const item = bufferRefs.get(reference as object);
@@ -2189,9 +2428,12 @@ function createRenderFeatureGpuWorkSession(input: {
     },
     abortFrame,
     commitFrame: () => {
-      if (candidate === undefined) return [];
+      if (candidate === undefined) return NO_RESOURCE_LEASES;
       candidate = undefined;
       frameSerial += 1;
+      // No prepared references means there are no active, parked or pending
+      // retirement resources to visit. In-flight retirement retains its refs.
+      if (!hasResourceReferences()) return NO_RESOURCE_LEASES;
       const park = <T extends { readonly name: string }>(
         active: Map<string, T>,
         parked: Map<string, { readonly item: T; readonly frame: number }>,
@@ -2267,7 +2509,7 @@ function createRenderFeatureGpuWorkSession(input: {
       retire(bindingRefs, bindings, parkedBindings, touchedBindings);
       retire(textureViewRefs, textureViews, undefined, touchedTextureViews);
       retire(samplerRefs, samplers, undefined, touchedSamplers);
-      if (releases.length === 0) return [];
+      if (releases.length === 0) return NO_RESOURCE_LEASES;
       let released = false;
       return [
         {
@@ -2317,8 +2559,6 @@ function createRenderFeatureGpuWorkSession(input: {
  * retains the per-feature prepared GPU state and recreates it after recovery.
  */
 export interface RenderFeatureGpuWorkOwner {
-  /** Candidate root carries this detached GPU-work owner itself. */
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown>;
   beginFeature(
     featureIdentity: string,
     generation: number,
@@ -2347,14 +2587,6 @@ export function createRenderFeatureGpuWorkOwner(input: {
   let disposed = false;
 
   const owner: RenderFeatureGpuWorkOwner = {
-    createRecoveryRoot: (scope) => ({
-      kind: 'feature',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('Feature GPU candidate scope is not active.');
-        return owner;
-      },
-      cleanup: () => undefined,
-    }),
     beginFeature: (featureIdentity, generation, requestedShaderModuleMode = 'validated') => {
       if (disposed) {
         throw new Error('Render feature GPU work owner is disposed.');
@@ -2395,4 +2627,66 @@ export function createRenderFeatureGpuWorkOwner(input: {
     },
   };
   return owner;
+}
+
+function programDescriptorKey(descriptor: RenderFeatureGpuProgramDescriptor): string {
+  if (!isOwnedRenderFeatureProgramData(descriptor)) return stable(descriptor);
+  const existing = ownedProgramKeys.get(descriptor);
+  if (existing !== undefined) return existing;
+  const key = stable(descriptor);
+  ownedProgramKeys.set(descriptor, key);
+  return key;
+}
+
+function sameProgramDescriptor(
+  left: RenderFeatureGpuProgramDescriptor,
+  right: RenderFeatureGpuProgramDescriptor,
+): boolean {
+  if (left === right) return true;
+  if (isOwnedRenderFeatureProgramData(left) && isOwnedRenderFeatureProgramData(right))
+    return programDescriptorKey(left) === programDescriptorKey(right);
+  return sameValue(left, right);
+}
+
+type ProgramPipelineSelection =
+  | Result<ComputePipeline | undefined, unknown>
+  | Promise<Result<ComputePipeline | undefined, unknown>>
+  | undefined;
+
+function selectProgramPipeline(
+  device: RhiDevice,
+  descriptor: RenderFeatureGpuProgramDescriptor,
+  entryPoint: string,
+  layout: PipelineLayout | 'auto',
+  module: ShaderModule,
+  completed: boolean,
+): ProgramPipelineSelection {
+  const state = ownedProgramStates.get(descriptor)?.get(entryPoint);
+  return state === undefined
+    ? undefined
+    : device.pipelineLibrary?.selectCompute?.(state, { layout, compute: module }, completed);
+}
+
+function completeProgramSelection(
+  selected: ProgramPipelineSelection,
+  create: () => Result<ComputePipeline, unknown> | Promise<Result<ComputePipeline, unknown>>,
+): Result<ComputePipeline, unknown> | Promise<Result<ComputePipeline, unknown>> {
+  if (selected === undefined) return create();
+  if ('ok' in selected)
+    return selected.ok && selected.value === undefined
+      ? create()
+      : (selected as Result<ComputePipeline, unknown>);
+  return selected.then((result) => {
+    if (result.ok && result.value === undefined) throw new Error('Selected pipeline disappeared');
+    return result as Result<ComputePipeline, unknown>;
+  });
+}
+
+function immediateProgramSelection(
+  selected: ProgramPipelineSelection,
+  create: () => Result<ComputePipeline, unknown>,
+): Result<ComputePipeline, unknown> {
+  if (selected !== undefined && 'ok' in selected && (!selected.ok || selected.value !== undefined))
+    return selected as Result<ComputePipeline, unknown>;
+  return create();
 }

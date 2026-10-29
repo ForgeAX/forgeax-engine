@@ -1,6 +1,6 @@
 import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
 import { type BindGroupLayout, type RenderPipeline, RhiError } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { GPU_SHADER_STAGE_FRAGMENT } from './gpu-stage';
 import { getOrCreateFromChain } from './record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './record/render-context';
@@ -153,7 +153,7 @@ export function addVarianceShadowPasses(
                 hint: 'rebuild the Engine shader manifest',
               });
             const module = factory
-              .createShaderModule({ code: source, label: 'forgeax::engine-shadow-variance' })
+              .createShaderModule(shaderSourceDescriptor(source, 'forgeax::engine-shadow-variance'))
               .unwrap();
             const layout = device
               .createBindGroupLayout({

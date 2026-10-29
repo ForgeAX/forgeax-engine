@@ -30,6 +30,17 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   { id: 'vfx-depth', files: [VFX_DEPTH_DAWN_TEST_FILE] },
   {
+    id: 'nested-discard',
+    // Complete multi-scene pixel coverage needs an independent native lifetime.
+    files: ['packages/runtime/src/__tests__/dawn/nested-discard-pixels.dawn.test.ts'],
+  },
+  {
+    // This capture/replay owner lost its native worker inside ordinary-4.
+    // Keep the complete source-texture proof in one fresh native process.
+    id: 'rect-source',
+    files: ['packages/runtime/src/__tests__/rect-light-source-texture.dawn.test.ts'],
+  },
+  {
     id: 'transmission',
     files: ['packages/render/src/transmission/__tests__/standard-transmission.dawn.test.ts'],
   },
@@ -130,12 +141,22 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'gi-2',
     'compact-2',
     'vfx-depth',
-    'feature-depth',
+    'transmission',
     'heavy-3',
     'timing-lifecycle',
   ]),
-  Object.freeze(['ordinary-3', 'transmission', 'gi-3', 'gi-4', 'compact-3', 'heavy-2', 'heavy-4']),
-  Object.freeze(['ordinary-4', 'shadow-fields', 'compact-1', 'specular-aa', 'gpu-timing', 'gi-5']),
+  Object.freeze(['ordinary-3', 'feature-depth', 'gi-3', 'compact-3', 'heavy-2', 'heavy-4']),
+  Object.freeze([
+    'ordinary-4',
+    'rect-source',
+    'shadow-fields',
+    'compact-1',
+    'nested-discard',
+    'specular-aa',
+    'gpu-timing',
+    'gi-4',
+    'gi-5',
+  ]),
 ]);
 
 export const DAWN_GATE_GROUPS = [

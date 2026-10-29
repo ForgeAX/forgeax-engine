@@ -15,7 +15,7 @@
 // failure - any new kind the importer learns to emit MUST be registered
 // here, otherwise the build break is the warning).
 
-export interface GltfDocItemLike {
+export interface GltfDocItem {
   readonly kind: string;
   readonly sourceIndex: number;
   readonly name?: string;
@@ -52,7 +52,7 @@ function pluraliseKind(kind: string): string {
   return `${kind}s`;
 }
 
-export function subAssetKey(item: GltfDocItemLike): SubAssetKey {
+export function subAssetKey(item: GltfDocItem): SubAssetKey {
   return {
     kind: item.kind,
     name: item.name ?? null,

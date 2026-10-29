@@ -162,7 +162,7 @@ describe('Standard Bloom exact-zero topology', () => {
       'utf8',
     );
     const clusteredSource = readFileSync(
-      new URL('../pipeline/standard-pipeline.ts', import.meta.url),
+      new URL('../pipeline/standard-deferred-lane.ts', import.meta.url),
       'utf8',
     );
     const postSource = readFileSync(

@@ -48,7 +48,7 @@ query resolve/map work is outside the timed passes. Missing timestamp-query
 support is explicit. These kernel times do not establish whole-game FPS,
 simulator performance, UI cost, or phone performance.
 
-The [Mac hardware result and its measurement limits](../../platform/VERIFICATION.md#direct-dfg-on-mac-webgpu)
+The Mac hardware result and its measurement limits
 record actual GPU timestamps, numerical differences, phase order and shared-host
 monitor coverage. Preserve the original strict-comparison failure alongside the
 native-reference result; the latter does not erase the former.

@@ -74,7 +74,7 @@ export function computeScreenRayFromMatrices(
   const proj = mat4.create();
   view.set(viewMatrix);
   proj.set(projectionMatrix);
-  const r = ray.create();
+  const r = ray.create(new Float32Array(6));
   ray.screenToRay(r, screenX, screenY, viewportWidth, viewportHeight, view, proj);
   return { ray: r, view, proj };
 }
@@ -137,7 +137,7 @@ export function computeScreenRay(
   }
 
   // --- screen -> world ray (two-point unproject; clamp + NaN/Inf sanitized inside) ---
-  const r = ray.create();
+  const r = ray.create(new Float32Array(6));
   ray.screenToRay(r, screenX, screenY, viewportWidth, viewportHeight, view, proj);
 
   return { ray: r, view, proj };

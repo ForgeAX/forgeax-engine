@@ -6,6 +6,7 @@ import {
   transcodeKtx2,
 } from '@forgeax/engine-codec';
 import {
+  type ArtifactDescriptor,
   type AssetDecoderContribution,
   type AssetDecoderInput,
   type AssetDecoderResult,
@@ -153,6 +154,15 @@ export function prepareRuntimeEquirect(value: EquirectAsset): Result<EquirectAss
       );
 }
 
+type BasisModule = Awaited<ReturnType<typeof initBasisTranscoder>>;
+type EncodedFile =
+  | InstanceType<BasisModule['KTX2File']>
+  | InstanceType<NonNullable<BasisModule['BasisFile']>>;
+type Ktx2Source = Extract<ReturnType<typeof parseKtx2>, { ok: true }>['value'];
+type AssetCodec = NonNullable<ArtifactDescriptor['assetCodec']>;
+type EncodedContainer = NonNullable<AssetCodec['container']>;
+type BasisProfile = 'etc1s' | 'uastc-ldr' | 'uastc-hdr';
+
 async function readImageSurface<P extends TextureAsset | EquirectAsset>(
   input: AssetDecoderInput<P>,
   kind: P['kind'],
@@ -169,155 +179,210 @@ async function readImageSurface<P extends TextureAsset | EquirectAsset>(
   }
 
   const body = envelope.artifacts.body ?? envelope.artifacts.atlas;
-  let data = imageBytes((payload as { data?: unknown }).data);
   if (body !== undefined) {
     const read = await artifacts.read(body);
     if (!read.ok) return err(read.error);
-    const bytes = read.value;
-    data = bytes;
-
-    // Source admission validates the container but retains its single immutable
-    // encoded byte source. Device capabilities belong to Renderer derivation.
-    const codec = body.assetCodec?.name === 'basis' ? body.assetCodec : undefined;
-    const container =
-      codec?.container ??
-      (body.mediaType === 'image/ktx2'
-        ? 'ktx2'
-        : body.mediaType === 'image/basis'
-          ? 'basis'
-          : undefined);
-    if (container !== undefined) {
-      const candidate = payload as Partial<TextureAsset>;
-      if (candidate.colorSpace !== 'srgb' && candidate.colorSpace !== 'linear')
-        return invalid(envelope.guid, expected, `${kind} color space is invalid`);
-      const profile = codec?.profile;
-      if (
-        (container !== 'basis' && container !== 'ktx2') ||
-        (codec !== undefined &&
-          profile !== 'etc1s' &&
-          profile !== 'uastc' &&
-          profile !== 'uastc-ldr' &&
-          profile !== 'uastc-hdr') ||
-        (profile === 'uastc-hdr' && (container !== 'ktx2' || candidate.colorSpace !== 'linear'))
-      )
-        return invalid(envelope.guid, expected, 'basis-profile-unsupported');
-      const codecFailure = (cause: {
-        code: string;
-        expected: string;
-        hint: string;
-        detail?: unknown;
-      }) =>
-        err<AssetLoadError>({
-          code: 'asset-decode-failed',
-          expected: cause.expected,
-          hint: cause.hint,
-          detail: {
-            guid: envelope.guid,
-            kind,
-            cause: {
-              ...cause,
-              detail: {
-                container,
-                profile,
-                ...(typeof cause.detail === 'object' && cause.detail !== null ? cause.detail : {}),
-              },
-            },
-          },
-        });
-      const parsed = container === 'ktx2' ? await parseKtx2(bytes) : undefined;
-      if (parsed !== undefined && !parsed.ok) return codecFailure(parsed.error);
-      if (parsed?.ok && ktx2ColorSpace(parsed.value) !== candidate.colorSpace)
-        return invalid(envelope.guid, expected, 'ktx2-color-space-mismatch');
-      try {
-        const module = await initBasisTranscoder();
-        const file =
-          container === 'ktx2'
-            ? new module.KTX2File(bytes)
-            : module.BasisFile === undefined
-              ? undefined
-              : new module.BasisFile(bytes);
-        if (file === undefined) return invalid(envelope.guid, expected, 'basis-file-unavailable');
-        try {
-          const ktx = 'getWidth' in file ? file : undefined;
-          const raw = 'getNumImages' in file ? file : undefined;
-          if (
-            (ktx !== undefined &&
-              (!ktx.isValid() || ktx.getFaces() !== 1 || ktx.getLayers() > 1)) ||
-            (raw !== undefined && raw.getNumImages() !== 1)
-          )
-            return invalid(envelope.guid, expected, 'basis-image-shape-unsupported');
-          const actual = file.getBasisTexFormat();
-          const actualProfile =
-            actual === module.basis_tex_format.cETC1S.value
-              ? 'etc1s'
-              : actual === module.basis_tex_format.cUASTC_LDR_4x4.value
-                ? 'uastc-ldr'
-                : actual === module.basis_tex_format.cUASTC_HDR_4x4.value
-                  ? 'uastc-hdr'
-                  : undefined;
-          if (
-            actualProfile === undefined ||
-            (actualProfile === 'uastc-hdr' &&
-              (container !== 'ktx2' || candidate.colorSpace !== 'linear'))
-          )
-            return invalid(envelope.guid, expected, 'basis-profile-unsupported');
-          if (
-            profile !== undefined &&
-            actualProfile !== (profile === 'uastc' ? 'uastc-ldr' : profile)
-          )
-            return invalid(envelope.guid, expected, 'basis-profile-mismatch');
-          const target =
-            actualProfile === 'uastc-hdr'
-              ? 'rgba16float'
-              : candidate.colorSpace === 'srgb'
-                ? 'rgba8unorm-srgb'
-                : 'rgba8unorm';
-          // Equirect drives renderable IBL products and intentionally uses decoded
-          // pixels. Ordinary sampled textures keep the compressed source.
-          if (kind === 'equirect') {
-            const transcoded = parsed?.ok
-              ? await transcodeKtx2(parsed.value, target)
-              : await transcodeBasis(bytes, target);
-            if (!transcoded.ok) return codecFailure(transcoded.error);
-            const mip = transcoded.value.mips[0];
-            if (mip === undefined)
-              return invalid(envelope.guid, expected, 'codec:base-mip-missing');
-            return readDecodedSurface(envelope.guid, expected, kind, {
-              ...payload,
-              width: mip.width,
-              height: mip.height,
-              format: target,
-              data: mip.data,
-            });
-          }
-          const width = ktx?.getWidth() ?? raw?.getImageWidth(0, 0) ?? 0;
-          const height = ktx?.getHeight() ?? raw?.getImageHeight(0, 0) ?? 0;
-          const levelCount = ktx?.getLevels() ?? raw?.getNumLevels(0) ?? 0;
-          return readDecodedSurface(envelope.guid, expected, kind, {
-            ...payload,
-            shape: { viewDimension: '2d', extent: { width, height } },
-            format: target,
-            data: bytes,
-            encoding: container,
-            mips: { kind: 'packed', levelCount },
-          });
-        } finally {
-          file.close();
-        }
-      } catch (cause) {
-        return invalid(
-          envelope.guid,
-          expected,
-          cause instanceof Error ? cause.message : 'basis-inspection-failed',
-        );
-      }
-    }
+    return readArtifactSurface(envelope.guid, expected, kind, payload, body, read.value);
   }
-
+  const data = imageBytes((payload as { data?: unknown }).data);
   return readDecodedSurface(envelope.guid, expected, kind, {
     ...payload,
     ...(data === undefined ? {} : { data }),
   });
+}
+
+function basisCodec(body: ArtifactDescriptor): AssetCodec | undefined {
+  return body.assetCodec?.name === 'basis' ? body.assetCodec : undefined;
+}
+
+function encodedContainer(body: ArtifactDescriptor): EncodedContainer | undefined {
+  const codec = basisCodec(body);
+  if (codec?.container !== undefined) return codec.container;
+  if (body.mediaType === 'image/ktx2') return 'ktx2';
+  return body.mediaType === 'image/basis' ? 'basis' : undefined;
+}
+
+function hdrProfileRejected(
+  profile: string | undefined,
+  container: EncodedContainer,
+  colorSpace: TextureAsset['colorSpace'],
+): boolean {
+  return profile === 'uastc-hdr' && (container !== 'ktx2' || colorSpace !== 'linear');
+}
+
+function declaredProfileRejected(
+  codec: AssetCodec | undefined,
+  container: EncodedContainer,
+  colorSpace: TextureAsset['colorSpace'],
+): boolean {
+  const profile = codec?.profile;
+  return (
+    (container !== 'basis' && container !== 'ktx2') ||
+    (codec !== undefined &&
+      profile !== 'etc1s' &&
+      profile !== 'uastc' &&
+      profile !== 'uastc-ldr' &&
+      profile !== 'uastc-hdr') ||
+    hdrProfileRejected(profile, container, colorSpace)
+  );
+}
+
+function codecDecodeFailure(
+  guid: string,
+  kind: string,
+  container: EncodedContainer,
+  profile: string | undefined,
+  cause: { code: string; expected: string; hint: string; detail?: unknown },
+) {
+  return err<AssetLoadError>({
+    code: 'asset-decode-failed',
+    expected: cause.expected,
+    hint: cause.hint,
+    detail: {
+      guid,
+      kind,
+      cause: {
+        ...cause,
+        detail: {
+          container,
+          profile,
+          ...(typeof cause.detail === 'object' && cause.detail !== null ? cause.detail : {}),
+        },
+      },
+    },
+  });
+}
+
+function openEncodedFile(
+  module: BasisModule,
+  container: EncodedContainer,
+  bytes: Uint8Array,
+): EncodedFile | undefined {
+  if (container === 'ktx2') return new module.KTX2File(bytes);
+  return module.BasisFile === undefined ? undefined : new module.BasisFile(bytes);
+}
+
+function encodedFileShapeSupported(file: EncodedFile): boolean {
+  if ('getWidth' in file) return file.isValid() && file.getFaces() === 1 && file.getLayers() <= 1;
+  return file.getNumImages() === 1;
+}
+
+function encodedFileProfile(module: BasisModule, file: EncodedFile): BasisProfile | undefined {
+  const actual = file.getBasisTexFormat();
+  if (actual === module.basis_tex_format.cETC1S.value) return 'etc1s';
+  if (actual === module.basis_tex_format.cUASTC_LDR_4x4.value) return 'uastc-ldr';
+  return actual === module.basis_tex_format.cUASTC_HDR_4x4.value ? 'uastc-hdr' : undefined;
+}
+
+function actualProfileMatchesDeclared(actual: BasisProfile, declared: string | undefined): boolean {
+  return declared === undefined || actual === (declared === 'uastc' ? 'uastc-ldr' : declared);
+}
+
+function transcodeEncodedSource(
+  parsed: Ktx2Source | undefined,
+  bytes: Uint8Array,
+  target: ReturnType<typeof encodedTargetFormat>,
+): ReturnType<typeof transcodeBasis> {
+  return parsed === undefined ? transcodeBasis(bytes, target) : transcodeKtx2(parsed, target);
+}
+
+function encodedTargetFormat(
+  profile: BasisProfile,
+  colorSpace: TextureAsset['colorSpace'],
+): 'rgba16float' | 'rgba8unorm-srgb' | 'rgba8unorm' {
+  if (profile === 'uastc-hdr') return 'rgba16float';
+  return colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
+}
+
+function encodedTextureLayout(file: EncodedFile): {
+  readonly width: number;
+  readonly height: number;
+  readonly levelCount: number;
+} {
+  if ('getWidth' in file) {
+    return { width: file.getWidth(), height: file.getHeight(), levelCount: file.getLevels() };
+  }
+  return {
+    width: file.getImageWidth(0, 0),
+    height: file.getImageHeight(0, 0),
+    levelCount: file.getNumLevels(0),
+  };
+}
+
+// Source admission validates the container but retains its single immutable
+// encoded byte source. Device capabilities belong to Renderer derivation.
+async function readArtifactSurface<P extends TextureAsset | EquirectAsset>(
+  guid: string,
+  expected: string,
+  kind: P['kind'],
+  payload: object,
+  body: ArtifactDescriptor,
+  bytes: Uint8Array,
+): Promise<AssetDecoderResult<P>> {
+  const container = encodedContainer(body);
+  if (container === undefined)
+    return readDecodedSurface(guid, expected, kind, { ...payload, data: bytes });
+  const candidate = payload as Partial<TextureAsset>;
+  const colorSpace = candidate.colorSpace;
+  if (colorSpace !== 'srgb' && colorSpace !== 'linear')
+    return invalid(guid, expected, `${kind} color space is invalid`);
+  const codec = basisCodec(body);
+  if (declaredProfileRejected(codec, container, colorSpace))
+    return invalid(guid, expected, 'basis-profile-unsupported');
+  const profile = codec?.profile;
+  const parsed = container === 'ktx2' ? await parseKtx2(bytes) : undefined;
+  if (parsed !== undefined && !parsed.ok)
+    return codecDecodeFailure(guid, kind, container, profile, parsed.error);
+  if (parsed !== undefined && ktx2ColorSpace(parsed.value) !== colorSpace)
+    return invalid(guid, expected, 'ktx2-color-space-mismatch');
+  try {
+    const module = await initBasisTranscoder();
+    const file = openEncodedFile(module, container, bytes);
+    if (file === undefined) return invalid(guid, expected, 'basis-file-unavailable');
+    try {
+      if (!encodedFileShapeSupported(file))
+        return invalid(guid, expected, 'basis-image-shape-unsupported');
+      const actualProfile = encodedFileProfile(module, file);
+      if (actualProfile === undefined || hdrProfileRejected(actualProfile, container, colorSpace))
+        return invalid(guid, expected, 'basis-profile-unsupported');
+      if (!actualProfileMatchesDeclared(actualProfile, profile))
+        return invalid(guid, expected, 'basis-profile-mismatch');
+      const target = encodedTargetFormat(actualProfile, colorSpace);
+      // Equirect drives renderable IBL products and intentionally uses decoded
+      // pixels. Ordinary sampled textures keep the compressed source.
+      if (kind === 'equirect') {
+        const transcoded = await transcodeEncodedSource(parsed?.value, bytes, target);
+        if (!transcoded.ok)
+          return codecDecodeFailure(guid, kind, container, profile, transcoded.error);
+        const mip = transcoded.value.mips[0];
+        if (mip === undefined) return invalid(guid, expected, 'codec:base-mip-missing');
+        return readDecodedSurface(guid, expected, kind, {
+          ...payload,
+          width: mip.width,
+          height: mip.height,
+          format: target,
+          data: mip.data,
+        });
+      }
+      const { width, height, levelCount } = encodedTextureLayout(file);
+      return readDecodedSurface(guid, expected, kind, {
+        ...payload,
+        shape: { viewDimension: '2d', extent: { width, height } },
+        format: target,
+        data: bytes,
+        encoding: container,
+        mips: { kind: 'packed', levelCount },
+      });
+    } finally {
+      file.close();
+    }
+  } catch (cause) {
+    return invalid(
+      guid,
+      expected,
+      cause instanceof Error ? cause.message : 'basis-inspection-failed',
+    );
+  }
 }
 
 function readDecodedSurface<P extends TextureAsset | EquirectAsset>(

@@ -7,7 +7,7 @@ resource lifetime and RHI capture. The package does not ship a Three GPU rendere
 or a runtime shader compiler.
 
 This is a bounded compatibility surface, not complete Three conformance. See
-[COMPATIBILITY.md](COMPATIBILITY.md) for defaults, supported source operations,
+COMPATIBILITY.md for defaults, supported source operations,
 measured rendering differences and the specific native contracts still missing.
 WebGL backends and their exclusive interfaces are outside the target. Addon
 expansion is deferred; the existing OrbitControls and GLTFLoader paths remain.
@@ -53,7 +53,7 @@ submitting. Video inputs require `texture.colorSpace = THREE.SRGBColorSpace`.
 
 Additional Physical texture combinations use the build-only `cookPhysicalMaterials()`
 entry and `forgeax.materialPrograms`; the exact recipe workflow and bundled sets are
-listed in [COMPATIBILITY.md](COMPATIBILITY.md#physical-texture-recipes-without-engine-changes).
+listed in COMPATIBILITY.md.
 
 The source objects own their mutable state. Use ordinary `needsUpdate`, geometry
 attributes, material properties, skeleton poses, morph weights and disposal.

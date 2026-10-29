@@ -13,6 +13,7 @@ import {
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   ChildOf,
+  Children,
   GlobalTransform,
   readPresentationWorldMatrix,
   Transform,
@@ -44,10 +45,10 @@ import type { RenderFeature } from '../../features/types';
 import { Materials } from '../../materials';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { subsurfaceDemand } from '../../subsurface/demand';
-import { renderPublicationTransfers } from '../contract';
-import { publicationDispatchGroups } from '../dispatch-groups';
+import type { RenderPublication } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
@@ -98,14 +99,14 @@ function fixture(
   const publish = () => {
     const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     const saved = structuredClone(packet);
-    const accepted = receiver.accept(packet).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
     const frame = scene.consumePublication(accepted);
-    const returned = structuredClone(renderPublicationTransfers(packet), {
-      transfer: renderPublicationTransfers(packet),
+    const returned = structuredClone(renderPublicationTransfers(encodeRenderPublication(packet)), {
+      transfer: renderPublicationTransfers(encodeRenderPublication(packet)),
     });
     publisher.recycle(packet.revision, returned).unwrap();
     // Preserve logical rows independently from the returned transport storage.
@@ -171,9 +172,9 @@ describe('native render publication', () => {
       candidate.accept();
       const original = packet.transforms[packet.transforms.length - 1] as number;
       packet.transforms[packet.transforms.length - 1] = value;
-      expect(f.receiver.accept(packet)).toMatchObject({ ok: false });
+      expect(f.receiver.accept(encodeRenderPublication(packet))).toMatchObject({ ok: false });
       packet.transforms[packet.transforms.length - 1] = original;
-      const accepted = f.receiver.accept(packet).unwrap();
+      const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
       expect(f.scene.consumePublication(accepted).renderables).toHaveLength(2);
     } finally {
       f.publisher.dispose();
@@ -182,7 +183,7 @@ describe('native render publication', () => {
     }
   });
 
-  it('owns dispatch membership without freezing borrowed packet rows or nested material values', () => {
+  it('derives late-view dispatch from shared rows without freezing borrowed packet rows', () => {
     const f = fixture();
     const candidate = f.publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
@@ -190,30 +191,12 @@ describe('native render publication', () => {
     try {
       const source = packet.templates[0]?.dispatch[0];
       expect(source).toBeDefined();
-      const accepted = f.receiver.accept(packet).unwrap();
-      const groups = publicationDispatchGroups(accepted.frame);
-      expect(groups).toBeDefined();
-      expect(Object.isFrozen(accepted.frame.dispatch)).toBe(true);
-      expect(accepted.frame.dispatch.every(Object.isFrozen)).toBe(true);
+      const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
       expect(Object.isFrozen(source)).toBe(false);
-      for (const [index, row] of accepted.frame.renderables.entries()) {
-        expect(groups?.[index]).toEqual(
-          accepted.frame.dispatch.filter((entry) => entry.renderableIndex === index),
-        );
-        expect(row.entityKey).toBeGreaterThan(0);
-      }
-      if (source !== undefined) Object.assign(source, { renderableIndex: 1000 });
-      const first = [...accepted.frame.dispatch][0];
-      expect(first?.renderableIndex).toBe(0);
-      if (first !== undefined) {
-        first.tags.observed = 'live-nested-value';
-        expect(groups?.[0] === undefined ? undefined : [...groups[0]][0]?.tags.observed).toBe(
-          'live-nested-value',
-        );
-      }
+      for (const row of accepted.frame.renderables) expect(row.entityKey).toBeGreaterThan(0);
+      // A late view derives its dispatch from the shared rows, not from retained packet rows.
       const late = f.receiver.snapshot(accepted);
-      expect(publicationDispatchGroups(late.frame)).toBeDefined();
-      expect(late.frame.dispatch.every(Object.isFrozen)).toBe(true);
+      expect(late.frame.dispatch).toHaveLength(0);
       expect(f.scene.consumePublication(late).renderables).toHaveLength(2);
     } finally {
       f.publisher.dispose();
@@ -228,7 +211,7 @@ describe('native render publication', () => {
     const packet = structuredClone(candidate.packet);
     candidate.accept();
     try {
-      const accepted = f.receiver.accept(packet).unwrap();
+      const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
       let reads = 0;
       const dispatch = accepted.frame.dispatch.map((entry) => ({
         ...entry,
@@ -238,7 +221,6 @@ describe('native render publication', () => {
         },
       }));
       const borrowed = { ...accepted, frame: { ...accepted.frame, dispatch } };
-      expect(publicationDispatchGroups(borrowed.frame)).toBeUndefined();
       const frame = f.scene.consumePublication(borrowed);
       expect(reads).toBe(0);
       expect(Object.isFrozen(dispatch)).toBe(false);
@@ -246,6 +228,17 @@ describe('native render publication', () => {
       expect(frame.dispatch.map((entry) => entry.materialHandle)).toEqual(
         accepted.frame.dispatch.map((entry) => entry.materialHandle),
       );
+      // The packet dispatch is projected from shared template Passes on read,
+      // not materialized as one entry object per row and Pass.
+      expect(Array.isArray(accepted.frame.dispatch)).toBe(false);
+      const listed = [...accepted.frame.dispatch];
+      expect(listed.length).toBe(accepted.frame.dispatch.length);
+      listed.forEach((entry, index) => {
+        expect(accepted.frame.dispatch.at(index)).toEqual(entry);
+        expect(accepted.frame.renderables.at(entry.renderableIndex)?.entityKey).toBe(
+          entry.entityIndex,
+        );
+      });
     } finally {
       f.publisher.dispose();
       f.receiver.dispose();
@@ -278,7 +271,9 @@ describe('native render publication', () => {
       },
     });
     try {
-      expect(() => f.receiver.accept(changing, failing)).toThrow('admission interrupted');
+      expect(() => f.receiver.accept(encodeRenderPublication(changing), failing)).toThrow(
+        'admission interrupted',
+      );
       expect(f.receiver.acceptedRevision).toBe(packet.base);
       expect(initial.resources.handleForGuid?.(guid)).toBeUndefined();
     } finally {
@@ -306,7 +301,7 @@ describe('native render publication', () => {
     const iterator = Map.prototype[Symbol.iterator];
     let visits = 0;
     try {
-      f.receiver.accept({ ...packet, assets: rows }).unwrap();
+      f.receiver.accept(encodeRenderPublication({ ...packet, assets: rows })).unwrap();
       const retire = rows.slice(0, 3).map((row) => row.handle);
       vi.spyOn(Map.prototype, Symbol.iterator).mockImplementation(function* (
         this: Map<unknown, unknown>,
@@ -319,12 +314,14 @@ describe('native render publication', () => {
         return undefined;
       });
       const accepted = f.receiver
-        .accept({
-          ...packet,
-          base: packet.revision,
-          revision: packet.revision + 1,
-          retiredAssets: retire,
-        })
+        .accept(
+          encodeRenderPublication({
+            ...packet,
+            base: packet.revision,
+            revision: packet.revision + 1,
+            retiredAssets: retire,
+          }),
+        )
         .unwrap();
       expect(visits).toBe(0);
       for (const row of rows) {
@@ -356,18 +353,22 @@ describe('native render publication', () => {
       },
     });
     try {
-      expect(() => f.receiver.accept(changed, failing)).toThrow('admission interrupted');
+      expect(() => f.receiver.accept(encodeRenderPublication(changed), failing)).toThrow(
+        'admission interrupted',
+      );
       expect(f.receiver.acceptedRevision).toBe(packet.base);
       expect(initial.resources.handleForGuid?.(guid)).toBeUndefined();
-      const admitted = f.receiver.accept(changed, f.assets).unwrap();
+      const admitted = f.receiver.accept(encodeRenderPublication(changed), f.assets).unwrap();
       expect(admitted.resources.handleForGuid?.(guid)).toBe(handle);
       const retired = f.receiver
-        .accept({
-          ...packet,
-          base: packet.revision,
-          revision: packet.revision + 1,
-          retiredAssets: [handle],
-        })
+        .accept(
+          encodeRenderPublication({
+            ...packet,
+            base: packet.revision,
+            revision: packet.revision + 1,
+            retiredAssets: [handle],
+          }),
+        )
         .unwrap();
       expect(retired.resources.handleForGuid?.(guid)).toBeUndefined();
       expect(retired.resources.resolveAsset(handle).ok).toBe(false);
@@ -392,10 +393,12 @@ describe('native render publication', () => {
         if (key === 'shaderRegistry' && !entered) {
           entered = true;
           expect(
-            f.receiver.accept({
-              ...packet,
-              assets: [{ handle, revision: 1, guid, value: material }],
-            }),
+            f.receiver.accept(
+              encodeRenderPublication({
+                ...packet,
+                assets: [{ handle, revision: 1, guid, value: material }],
+              }),
+            ),
           ).toMatchObject({
             ok: false,
             error: { detail: { reason: 'in-flight' } },
@@ -406,7 +409,7 @@ describe('native render publication', () => {
       },
     });
     try {
-      const accepted = f.receiver.accept(packet, assets).unwrap();
+      const accepted = f.receiver.accept(encodeRenderPublication(packet), assets).unwrap();
       expect(entered).toBe(true);
       expect(f.receiver.acceptedRevision).toBe(packet.revision);
       expect(accepted.resources.handleForGuid?.(guid)).toBeUndefined();
@@ -440,11 +443,13 @@ describe('native render publication', () => {
       vi.stubGlobal('Map', observedMap);
       for (let step = 0; step < 8; step++) {
         const accepted = f.receiver
-          .accept({
-            ...packet,
-            base: packet.base + step,
-            revision: packet.revision + step,
-          })
+          .accept(
+            encodeRenderPublication({
+              ...packet,
+              base: packet.base + step,
+              revision: packet.revision + step,
+            }),
+          )
           .unwrap();
         expect(accepted.resources.handleForGuid?.(guid)).toBe(handle);
       }
@@ -771,7 +776,7 @@ describe('native render publication', () => {
       const light = packet.metadata.lights.point[0];
       if (light === undefined) throw new Error('missing point fixture');
       Reflect.set(light, 'decay', decay);
-      expect(f.receiver.accept(packet)).toMatchObject({
+      expect(f.receiver.accept(encodeRenderPublication(packet))).toMatchObject({
         ok: false,
         error: { detail: { reason: 'shape' } },
       });
@@ -779,7 +784,7 @@ describe('native render publication', () => {
     }
     const missing = structuredClone(candidate.packet);
     Reflect.set(missing.metadata.lights, 'point', [undefined]);
-    expect(f.receiver.accept(missing)).toMatchObject({
+    expect(f.receiver.accept(encodeRenderPublication(missing))).toMatchObject({
       ok: false,
       error: { detail: { reason: 'shape' } },
     });
@@ -823,14 +828,18 @@ describe('native render publication', () => {
       expect(candidate.packet.materials).toHaveLength(1);
       expect(candidate.packet.templates).toHaveLength(1);
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
-      const frame = f.scene.consumePublication(f.receiver.accept(packet).unwrap());
+      const frame = f.scene.consumePublication(
+        f.receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
       expect(
         frame.renderables.map((row) => row.material.snapshot.paramSnapshot?.baseColor),
       ).toEqual([color, color]);
-      f.publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      f.publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
     } finally {
       observer.mockRestore();
       f.publisher.dispose();
@@ -915,13 +924,13 @@ describe('native render publication', () => {
       const template = receiverPacket.templates[0];
       if (template === undefined) throw new Error('missing receiver template');
       Reflect.set(template.snapshot, 'lightingChannels', value);
-      expect(f.receiver.accept(receiverPacket)).toMatchObject({
+      expect(f.receiver.accept(encodeRenderPublication(receiverPacket))).toMatchObject({
         ok: false,
         error: { detail: { reason: 'shape' } },
       });
       const lightPacket = structuredClone(candidate.packet);
       Reflect.set(lightPacket.metadata.lights, 'point', [{ lightingChannels: value }]);
-      expect(f.receiver.accept(lightPacket)).toMatchObject({
+      expect(f.receiver.accept(encodeRenderPublication(lightPacket))).toMatchObject({
         ok: false,
         error: { detail: { reason: 'shape' } },
       });
@@ -930,7 +939,7 @@ describe('native render publication', () => {
       const shadowTemplate = shadowReceiver.templates[0];
       if (shadowTemplate === undefined) throw new Error('missing shadow receiver');
       Reflect.set(shadowTemplate.snapshot, 'shadowChannels', value);
-      expect(f.receiver.accept(shadowReceiver)).toMatchObject({
+      expect(f.receiver.accept(encodeRenderPublication(shadowReceiver))).toMatchObject({
         ok: false,
         error: { detail: { reason: 'shape' } },
       });
@@ -942,7 +951,7 @@ describe('native render publication', () => {
           field,
           field === 'directionalCsmConfig' ? shadow : [shadow],
         );
-        expect(f.receiver.accept(shadowPacket)).toMatchObject({
+        expect(f.receiver.accept(encodeRenderPublication(shadowPacket))).toMatchObject({
           ok: false,
           error: { detail: { reason: 'shape' } },
         });
@@ -951,7 +960,7 @@ describe('native render publication', () => {
     }
     const nullLight = structuredClone(candidate.packet);
     Reflect.set(nullLight.metadata.lights, 'point', [null]);
-    expect(f.receiver.accept(nullLight).ok).toBe(false);
+    expect(f.receiver.accept(encodeRenderPublication(nullLight)).ok).toBe(false);
     candidate.discard();
     expect(f.publish().frame.renderables).toHaveLength(2);
     f.publisher.dispose();
@@ -1024,15 +1033,21 @@ describe('native render publication', () => {
   it('rejects old epochs before the first baseline and wrong revisions without advancing acceptance', () => {
     const f = fixture();
     const candidate = f.publisher.prepare(0).unwrap();
-    expect(f.receiver.accept({ ...candidate.packet, epoch: 0 })).toMatchObject({
+    expect(
+      f.receiver.accept(encodeRenderPublication({ ...candidate.packet, epoch: 0 })),
+    ).toMatchObject({
       ok: false,
       error: { detail: { reason: 'identity' } },
     });
-    expect(f.receiver.accept({ ...candidate.packet, base: 1 })).toMatchObject({
+    expect(
+      f.receiver.accept(encodeRenderPublication({ ...candidate.packet, base: 1 })),
+    ).toMatchObject({
       ok: false,
       error: { detail: { reason: 'base' } },
     });
-    expect(f.receiver.accept({ ...candidate.packet, revision: 2 })).toMatchObject({
+    expect(
+      f.receiver.accept(encodeRenderPublication({ ...candidate.packet, revision: 2 })),
+    ).toMatchObject({
       ok: false,
       error: { detail: { reason: 'revision' } },
     });
@@ -1046,13 +1061,18 @@ describe('native render publication', () => {
   it('rejects malformed columns and missing dependencies without consuming the baseline', () => {
     const f = fixture();
     const candidate = f.publisher.prepare(0).unwrap();
+    // A record shorter than its header counts is a truncated publication.
+    const truncated = { ...candidate.message, record: candidate.message.record.slice(0, 160) };
+    expect(f.receiver.accept(truncated).ok).toBe(false);
+    expect(() =>
+      encodeRenderPublication({ ...candidate.packet, transforms: new Float32Array(1) }),
+    ).toThrow('transform columns');
     for (const packet of [
-      { ...candidate.packet, transforms: new Float32Array(1) },
       { ...candidate.packet, assets: [] },
       { ...candidate.packet, upserts: new Uint32Array([f.first, 99]) },
       { ...candidate.packet, removed: new Uint32Array([f.first]) },
     ]) {
-      expect(f.receiver.accept(packet).ok).toBe(false);
+      expect(f.receiver.accept(encodeRenderPublication(packet)).ok).toBe(false);
       expect(f.receiver.acceptedRevision).toBe(0);
     }
     candidate.discard();
@@ -1223,9 +1243,21 @@ it.each([
   f.world.update(0).unwrap();
   const baseline = f.publish();
   expect(baseline.packet.upserts.length).toBe(count * 2);
+  // The baseline-sized columns shrink once; later deltas transfer only
+  // change-sized storage (each column at most the 64 KiB shrink floor), so
+  // external-memory pressure stays independent of N.
+  const bound = 5 * 64 * 1024;
+  const transferred = (packet: RenderPublication) =>
+    renderPublicationTransfers(encodeRenderPublication(packet)).reduce(
+      (sum, buffer) => sum + buffer.byteLength,
+      0,
+    );
+  expect(transferred(baseline.packet)).toBeGreaterThanOrEqual(count * 8);
+  expect(transferred(f.publish().packet)).toBeLessThanOrEqual(bound);
   const allocations = f.publisher.inspect().allocations;
   for (let i = 0; i < 3; i++) {
     const next = f.publish();
+    expect(transferred(next.packet)).toBeLessThanOrEqual(bound);
     expect(
       next.packet.upserts.length +
         next.packet.transforms.length +
@@ -1277,7 +1309,7 @@ it('publishes frame-owned environment and post parameters without geometry churn
   f.publisher.dispose();
 });
 
-it('publishes detached skin poses and follows joint changes across skipped source frames', () => {
+it('publishes static Skin membership and unique joint columns across skipped source frames', () => {
   const f = fixture();
   const identity = new Float32Array(32);
   for (const base of [0, 16]) for (const lane of [0, 5, 10, 15]) identity[base + lane] = 1;
@@ -1323,30 +1355,35 @@ it('publishes detached skin poses and follows joint changes across skipped sourc
     .unwrap();
   f.world.update(0).unwrap();
   const initial = f.publish();
-  const pose = initial.packet.templates.find((t) => t.snapshot.skinPose !== undefined)?.snapshot
-    .skinPose;
-  expect(pose?.jointCount).toBe(2);
-  expect(pose?.jointWorlds[0]?.buffer).toBe(pose?.jointWorlds[1]?.buffer);
-  expect(pose?.jointWorlds[1]?.byteOffset).toBe((pose?.jointWorlds[0]?.byteOffset ?? 0) + 64);
-  expect(pose?.jointWorlds[1]?.[12]).toBe(2);
-  expect(initial.packet.templates.every((t) => t.snapshot.skin === undefined)).toBe(true);
+  const binding = initial.packet.templates.find((t) => t.snapshot.skinBinding !== undefined)
+    ?.snapshot.skinBinding;
+  expect(binding?.joints).toEqual([Number(joint), Number(other)]);
+  const jointX = (packet: typeof initial.packet, entity: number) => {
+    const index = packet.transformEntities.indexOf(entity);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return packet.transforms[index * 16 + 12];
+  };
+  expect(jointX(initial.packet, joint)).toBe(0);
+  expect(jointX(initial.packet, other)).toBe(2);
+  expect(
+    initial.packet.templates.every((t) => !('skinPose' in t.snapshot) && !('skin' in t.snapshot)),
+  ).toBe(true);
   f.world.set(joint, Transform, { pos: [0.5, 0, 0] }).unwrap();
   f.world.update(1 / 60).unwrap();
   f.world.set(joint, Transform, { pos: [1, 0, 0] }).unwrap();
   f.world.update(1 / 60).unwrap();
   const next = f.publish();
-  const nextPose = next.packet.templates.find((t) => t.snapshot.skinPose !== undefined)?.snapshot
-    .skinPose;
-  expect(nextPose?.jointWorlds[0]?.[12]).toBe(1);
-  expect(nextPose?.jointWorlds[1]?.[12]).toBe(2);
-  expect(nextPose?.jointWorlds[0]?.buffer).toBe(nextPose?.jointWorlds[1]?.buffer);
-  expect(nextPose?.jointWorlds[0]?.buffer).not.toBe(pose?.jointWorlds[0]?.buffer);
-  expect(pose?.jointWorlds[0]?.[12]).toBe(0);
-  expect(f.publish().packet.upserts).toHaveLength(0);
+  expect(next.packet.upserts).toHaveLength(0);
+  expect(next.packet.templates).toHaveLength(0);
+  expect([...next.packet.transformEntities]).toEqual([Number(joint)]);
+  expect(jointX(next.packet, joint)).toBe(1);
+  expect(jointX(initial.packet, joint)).toBe(0);
+  expect(jointX(initial.packet, other)).toBe(2);
+  expect(f.publish().packet.transformEntities).toHaveLength(0);
   f.world.removeComponent(f.first, Skin).unwrap();
   f.world.set(f.first, MeshRenderer, { materials: [f.defaultMaterial] }).unwrap();
   expect(
-    f.publish().frame.renderables.find((row) => row.entityKey === f.first)?.skinPose,
+    f.publish().frame.renderables.find((row) => row.entityKey === f.first)?.skinBinding,
   ).toBeUndefined();
   f.publisher.dispose();
 });
@@ -1356,7 +1393,7 @@ it('renders a one-frame identity before its sealed removal and reuses two buffer
   const seal = () => {
     const candidate = f.publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     return packet;
@@ -1374,13 +1411,21 @@ it('renders a one-frame identity before its sealed removal and reuses two buffer
     // More source mutations cannot edit either already-transferred publication.
     f.world.despawn(replacement).unwrap();
     f.world.update(0).unwrap();
-    const firstFrame = f.scene.consumePublication(f.receiver.accept(first).unwrap());
+    const firstFrame = f.scene.consumePublication(
+      f.receiver.accept(encodeRenderPublication(first)).unwrap(),
+    );
     expect(firstFrame.renderables.map((row) => row.entityKey)).toContain(f.first);
-    f.publisher.recycle(first.revision, renderPublicationTransfers(first)).unwrap();
-    const secondFrame = f.scene.consumePublication(f.receiver.accept(second).unwrap());
+    f.publisher
+      .recycle(first.revision, renderPublicationTransfers(encodeRenderPublication(first)))
+      .unwrap();
+    const secondFrame = f.scene.consumePublication(
+      f.receiver.accept(encodeRenderPublication(second)).unwrap(),
+    );
     expect(secondFrame.renderables.map((row) => row.entityKey)).toContain(replacement);
     expect(secondFrame.renderables.map((row) => row.entityKey)).not.toContain(f.first);
-    f.publisher.recycle(second.revision, renderPublicationTransfers(second)).unwrap();
+    f.publisher
+      .recycle(second.revision, renderPublicationTransfers(encodeRenderPublication(second)))
+      .unwrap();
     // Warm both slots for equivalent changed-transform frames, then drain in pairs.
     let warmAllocations: number | undefined;
     for (let index = 0; index < 4; index++) {
@@ -1391,7 +1436,9 @@ it('renders a one-frame identity before its sealed removal and reuses two buffer
       });
       const allocations = f.publisher.inspect().allocations;
       for (const packet of packets)
-        f.publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        f.publisher
+          .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+          .unwrap();
       warmAllocations ??= allocations;
       expect(allocations).toBe(warmAllocations);
     }
@@ -1404,7 +1451,7 @@ it('keeps three transferred publications detached, ordered and bounded while reu
   const f = fixture({}, 3);
   const seal = () => {
     const candidate = f.publisher.prepare(0).unwrap();
-    const buffers = renderPublicationTransfers(candidate.packet);
+    const buffers = renderPublicationTransfers(candidate.message);
     const packet = structuredClone(candidate.packet, { transfer: buffers });
     candidate.accept();
     expect(buffers.every((buffer) => buffer.byteLength === 0)).toBe(true);
@@ -1426,32 +1473,53 @@ it('keeps three transferred publications detached, ordered and bounded while reu
       [2, 1],
       [3, 2],
     ]);
-    expect(new Set(packets.flatMap(renderPublicationTransfers)).size).toBe(12);
+    expect(
+      new Set(
+        packets.flatMap((packet) => renderPublicationTransfers(encodeRenderPublication(packet))),
+      ).size,
+    ).toBe(3);
     expect(f.publisher.inspect().inFlightCount).toBe(3);
     expect(f.publisher.prepare(0)).toMatchObject({
       ok: false,
       error: { detail: { reason: 'in-flight' } },
     });
-    expect(f.publisher.recycle(second.revision, renderPublicationTransfers(second))).toMatchObject({
+    expect(
+      f.publisher.recycle(
+        second.revision,
+        renderPublicationTransfers(encodeRenderPublication(second)),
+      ),
+    ).toMatchObject({
       ok: false,
       error: { detail: { reason: 'revision' } },
     });
     // Current World writes cannot alter any of the three already-sealed frames.
     f.world.set(f.second, Transform, { pos: [4, 0, 0] }).unwrap();
     f.world.update(0).unwrap();
-    const firstFrame = f.scene.consumePublication(f.receiver.accept(first).unwrap());
+    const firstFrame = f.scene.consumePublication(
+      f.receiver.accept(encodeRenderPublication(first)).unwrap(),
+    );
     expect(firstFrame.renderables.map(({ entityKey }) => entityKey)).toContain(f.first);
-    f.publisher.recycle(first.revision, renderPublicationTransfers(first)).unwrap();
-    const secondFrame = f.scene.consumePublication(f.receiver.accept(second).unwrap());
+    f.publisher
+      .recycle(first.revision, renderPublicationTransfers(encodeRenderPublication(first)))
+      .unwrap();
+    const secondFrame = f.scene.consumePublication(
+      f.receiver.accept(encodeRenderPublication(second)).unwrap(),
+    );
     expect(secondFrame.renderables.map(({ entityKey }) => entityKey)).toContain(replacement);
     expect(secondFrame.renderables.map(({ entityKey }) => entityKey)).not.toContain(f.first);
-    f.publisher.recycle(second.revision, renderPublicationTransfers(second)).unwrap();
-    const thirdFrame = f.scene.consumePublication(f.receiver.accept(third).unwrap());
+    f.publisher
+      .recycle(second.revision, renderPublicationTransfers(encodeRenderPublication(second)))
+      .unwrap();
+    const thirdFrame = f.scene.consumePublication(
+      f.receiver.accept(encodeRenderPublication(third)).unwrap(),
+    );
     expect(thirdFrame.renderables.map(({ entityKey }) => entityKey)).not.toContain(replacement);
     expect(
       thirdFrame.renderables.find(({ entityKey }) => entityKey === f.second)?.transform.world[12],
     ).toBe(3);
-    f.publisher.recycle(third.revision, renderPublicationTransfers(third)).unwrap();
+    f.publisher
+      .recycle(third.revision, renderPublicationTransfers(encodeRenderPublication(third)))
+      .unwrap();
 
     let warmAllocations: number | undefined;
     for (let cycle = 0; cycle < 4; cycle++) {
@@ -1462,7 +1530,9 @@ it('keeps three transferred publications detached, ordered and bounded while reu
       });
       const allocations = f.publisher.inspect().allocations;
       for (const packet of next)
-        f.publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        f.publisher
+          .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+          .unwrap();
       warmAllocations ??= allocations;
       expect(allocations).toBe(warmAllocations);
       expect(f.publisher.inspect().inFlightCount).toBe(0);
@@ -1486,7 +1556,7 @@ it('keeps three-flight source ACKs tied to admitted revisions through discard an
   const seal = () => {
     const candidate = f.publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     return packet;
@@ -1502,7 +1572,7 @@ it('keeps three-flight source ACKs tied to admitted revisions through discard an
     expect(() =>
       structuredClone(
         { packet: rejected.packet, invalid() {} },
-        { transfer: renderPublicationTransfers(rejected.packet) },
+        { transfer: renderPublicationTransfers(rejected.message) },
       ),
     ).toThrow();
     expect(rejected.packet.transforms.byteLength).toBeGreaterThan(0);
@@ -1562,14 +1632,16 @@ it('publishes detached view configuration and seeds a late view from the current
   f.world.update(0).unwrap();
   const candidate = f.publisher.prepare(1).unwrap();
   const packet = structuredClone(candidate.packet, {
-    transfer: renderPublicationTransfers(candidate.packet),
+    transfer: renderPublicationTransfers(candidate.message),
   });
   candidate.accept();
-  const accepted = f.receiver.accept(packet).unwrap();
+  const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
   const late = new PersistentRenderScene({ assets: f.assets });
   const baseline = f.receiver.snapshot(accepted);
   expect(accepted.materialUpdates).toHaveLength(0);
-  expect(baseline.materialUpdates).toContain(baseline.frame.renderables.at(0)?.material);
+  expect(baseline.materialUpdates).toContain(
+    [...baseline.scene.rows.capture()][0]?.snapshot.material,
+  );
   const frame = late.consumePublication(baseline);
   expect(frame.renderables.map((row) => row.entityKey)).toEqual([Number(f.first)]);
   expect(frame.renderables.at(0)?.transform.world[12]).toBe(3);
@@ -1657,16 +1729,53 @@ it('publishes the same interpolated root, camera and animated skin across half-f
       const root = published.frame.renderables.find((row) => row.entityKey === f.first);
       const expected = f.world.getResource(Time).elapsed * 60 - 1;
       expect(root?.transform.world[12]).toBeCloseTo(expected, 5);
-      expect(root?.skinPose?.jointWorlds[0]?.[12]).toBeCloseTo(
+      const jointIndex = published.packet.transformEntities.indexOf(Number(joint));
+      expect(jointIndex).toBeGreaterThanOrEqual(0);
+      expect(published.packet.transforms[jointIndex * 16 + 12]).toBeCloseTo(
         expected + f.world.getResource(Time).elapsed,
         5,
       );
       expect(published.frame.cameras[0]?.position[0]).toBeCloseTo(expected, 5);
-      expect(published.packet.upserts.length).toBeGreaterThan(0);
+      if (frame === 0) expect(published.packet.upserts.length).toBeGreaterThan(0);
+      else expect(published.packet.upserts).toHaveLength(0);
       if (previous !== undefined) expect(root?.transform.world[12]).toBeCloseTo(previous + 0.5, 5);
       previous = root?.transform.world[12];
     }
   } finally {
     f.publisher.dispose();
+  }
+});
+
+it('does not walk or republish descendants when an unrelated parent component is added or removed', () => {
+  const f = fixture();
+  const parent = f.world.spawn({ component: Transform, data: {} }).unwrap();
+  f.world.addComponent(f.first, { component: ChildOf, data: { parent } }).unwrap();
+  f.world.addComponent(f.second, { component: ChildOf, data: { parent } }).unwrap();
+  f.world.update(0).unwrap();
+  f.publish();
+  try {
+    for (const add of [true, false]) {
+      if (add)
+        f.world
+          .addComponent(parent, { component: MeshFilter, data: { assetHandle: f.cube } })
+          .unwrap();
+      else f.world.removeComponent(parent, MeshFilter).unwrap();
+      f.world.update(0).unwrap();
+      const read = vi.spyOn(f.world, 'get');
+      const candidate = f.publisher.prepare(0).unwrap();
+      try {
+        expect(candidate.packet.upserts.length).toBe(0);
+        expect(candidate.packet.templates.length).toBe(0);
+        expect(read.mock.calls.some(([, component]) => component === Children)).toBe(false);
+      } finally {
+        candidate.discard();
+        read.mockRestore();
+      }
+      f.publish();
+    }
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
   }
 });

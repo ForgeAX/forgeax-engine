@@ -15,13 +15,18 @@ const git = (cwd, args) =>
     maxBuffer: 1024 * 1024,
   });
 
+function isCurrentActionsWorkspace(root, env = process.env) {
+  const workspace = env.GITHUB_WORKSPACE;
+  return (
+    env.GITHUB_ACTIONS === 'true' &&
+    workspace !== undefined &&
+    existsSync(workspace) &&
+    realpathSync(workspace) === realpathSync(root)
+  );
+}
+
 export function cleanRetiredModelingSubmoduleCheckout(root = process.cwd(), env = process.env) {
-  if (
-    env.GITHUB_ACTIONS !== 'true' ||
-    !env.GITHUB_WORKSPACE ||
-    resolve(env.GITHUB_WORKSPACE) !== resolve(root)
-  )
-    return false;
+  if (!isCurrentActionsWorkspace(root, env)) return false;
 
   const repository = git(root, ['rev-parse', '--show-toplevel']);
   if (repository.status !== 0 || realpathSync(repository.stdout.trim()) !== realpathSync(root))
@@ -56,12 +61,7 @@ function inside(parent, path) {
 }
 
 function pruneRetiredWorkspaceSubmodules(root) {
-  if (
-    process.env.GITHUB_ACTIONS !== 'true' ||
-    !process.env.GITHUB_WORKSPACE ||
-    realpathSync(process.env.GITHUB_WORKSPACE) !== realpathSync(root)
-  )
-    return;
+  if (!isCurrentActionsWorkspace(root)) return;
   const top = git(root, ['rev-parse', '--show-toplevel']);
   if (top.status !== 0 || realpathSync(top.stdout.trim()) !== realpathSync(root)) return;
   const modules = git(root, ['rev-parse', '--git-path', 'modules']);

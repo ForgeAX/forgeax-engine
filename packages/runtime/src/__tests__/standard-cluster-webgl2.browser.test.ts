@@ -146,6 +146,8 @@ it.each([
           direction: [0, 0, -1],
           intensity: 12,
           range: 10,
+          // Pixel evidence was recorded with the former hard 60-degree cone.
+          innerConeDeg: 60,
           castShadow: false,
           lightingChannels: 0,
         },

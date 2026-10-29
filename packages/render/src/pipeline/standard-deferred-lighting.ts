@@ -9,6 +9,7 @@ import {
   RhiError,
   type RenderPipeline as RhiPipeline,
 } from '@forgeax/engine-rhi';
+import { shaderSourceDescriptor } from '@forgeax/engine-types';
 import {
   buildCapsuleShadowFrame,
   capsuleTileTableWords,
@@ -20,7 +21,10 @@ import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/dir
 import type { GraphEnvironment } from '../environment/ibl';
 import { atmosphereTextures } from '../environment/luts';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
-import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
+import {
+  SKYLIGHT_UNIFORM_BYTES,
+  type SkylightBindGroupResources,
+} from '../ibl/skylight-bind-group';
 import { buildPerFrameBindGroups } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
@@ -35,21 +39,21 @@ import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
 export interface StandardDeferredShaderSources {
-  readonly shadowVariance?: string;
-  readonly decalProject?: string;
-  readonly decalApply?: string;
-  readonly subsurface?: string;
-  readonly clustered: string;
-  readonly unclustered: string;
-  readonly clusteredLut?: string;
-  readonly unclusteredLut?: string;
+  readonly shadowVariance?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly decalProject?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly decalApply?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly subsurface?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
+  readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
+  readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 interface DeferredLightingProgram {
   readonly scope: DeviceScope;
   readonly device: RhiDevice;
   readonly viewLayout: BindGroupLayout;
-  readonly source: string;
+  readonly source: string | import('@forgeax/engine-types').ShaderSource;
   readonly pipeline: RhiPipeline;
   readonly material: BindGroupLayout;
   readonly cluster: BindGroupLayout;
@@ -60,10 +64,24 @@ interface DeferredLightingProgram {
 // survive graph replacement only inside their owning live device generation.
 const lightingPrograms = new WeakMap<
   DeviceScope,
-  WeakMap<RhiDevice, WeakMap<BindGroupLayout, Map<string, Map<string, DeferredLightingProgram>>>>
+  WeakMap<
+    RhiDevice,
+    WeakMap<
+      BindGroupLayout,
+      Map<
+        string | import('@forgeax/engine-types').ShaderSource,
+        Map<string, DeferredLightingProgram>
+      >
+    >
+  >
 >();
 
-function programsFor(scope: DeviceScope, device: RhiDevice, view: BindGroupLayout, source: string) {
+function programsFor(
+  scope: DeviceScope,
+  device: RhiDevice,
+  view: BindGroupLayout,
+  source: string | import('@forgeax/engine-types').ShaderSource,
+) {
   let devices = lightingPrograms.get(scope);
   if (devices === undefined) {
     devices = new WeakMap();
@@ -168,6 +186,7 @@ export function addStandardDeferredLighting(
               light.coneHalfAngle,
               input.size.width,
               input.size.height,
+              internal.runtime.demandCapsuleShadow ?? (() => undefined),
             );
       if (capsuleFrame !== undefined) {
         // Auxiliary capture views shade their own tiles; inspection reports the display view.
@@ -312,10 +331,12 @@ export function addStandardDeferredLighting(
         let program = programs.get(key);
         if (program === undefined) {
           const module = frame.runtime.shaderModuleFactory
-            ?.createShaderModule({
-              code: source,
-              label: `standard_deferred_${input.cluster !== null}_${usesLut}`,
-            })
+            ?.createShaderModule(
+              shaderSourceDescriptor(
+                source,
+                `standard_deferred_${input.cluster !== null}_${usesLut}`,
+              ),
+            )
             .unwrap();
           if (module === undefined)
             throw new RhiError({
@@ -354,7 +375,11 @@ export function addStandardDeferredLighting(
                     viewDimension: binding === 8 ? ('cube' as const) : ('2d' as const),
                   },
                 })),
-                { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 80 } },
+                {
+                  binding: 12,
+                  visibility: 2,
+                  buffer: { type: 'uniform', minBindingSize: SKYLIGHT_UNIFORM_BYTES },
+                },
                 { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
                 { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
                 {

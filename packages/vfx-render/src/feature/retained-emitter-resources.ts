@@ -40,7 +40,7 @@ interface RetainedProjectionResources {
  * runtime bytes pass through this object after the cold declaration boundary. */
 export function retainEmitterResources(input: {
   readonly previous: RetainedEmitterResources | undefined;
-  readonly batch?: VfxComputeBatchProgram;
+  readonly batch?: VfxComputeBatchProgram | undefined;
   readonly emitter: VfxGpuTickIntent['emitter'];
   readonly instance: VfxArenaInstance;
   readonly program: string;
@@ -199,7 +199,7 @@ export function retainEmitterResources(input: {
 }
 
 export function retainProjectionResources(input: {
-  readonly batch?: VfxComputeBatchProgram;
+  readonly batch?: VfxComputeBatchProgram | undefined;
   readonly frame: RetainedEmitterResources;
   readonly instance: VfxArenaInstance;
   readonly program: string;

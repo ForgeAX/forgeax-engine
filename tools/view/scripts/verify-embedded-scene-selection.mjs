@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { cp, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const engine = resolve(process.argv[2]);
@@ -28,7 +28,7 @@ for (const name of ['src', 'codex', 'package.json', 'host.app.pack.json'])
   await cp(join(source, name), join(mcp, name), { recursive: true });
 await symlink(join(source, 'node_modules'), join(mcp, 'node_modules'));
 await cp(join(engine, 'templates/game-3d'), project, { recursive: true,
-  filter: path => !['node_modules', '.forgeax', '.git'].includes(path.split('/').at(-1)) });
+  filter: path => !['node_modules', '.forgeax', '.git'].includes(basename(path)) });
 await symlink(join(engine, 'node_modules'), join(project, 'node_modules'));
 const execute = promisify(execFile);
 const cli = async (command, input) => {
@@ -99,12 +99,13 @@ try {
   assert.ok(scene);
   await cli('view workspace asset open', { projectId: state.project.id, targetId: state.projectTarget.targetId, guid: scene.guid });
   const frame = shell.frameLocator('iframe[data-forgeax-mcp-preview]');
-  const canvas = frame.locator('canvas');
+  const canvas = frame.locator('canvas#app');
   await canvas.waitFor({ state: 'visible', timeout: 120000 });
   const frameDeadline = Date.now() + 120000;
-  while (Number(await frame.locator('html').getAttribute('data-forgeax-frame-completed')) < 60 && Date.now() < frameDeadline)
+  const readCompletedFrame = () => canvas.evaluate(canvas => canvas.forgeaxFrameProgress?.completed?.frameId ?? 0);
+  while (Number(await readCompletedFrame()) < 60 && Date.now() < frameDeadline)
     await new Promise(resolve => setTimeout(resolve, 100));
-  assert.ok(Number(await frame.locator('html').getAttribute('data-forgeax-frame-completed')) >= 60);
+  assert.ok(Number(await readCompletedFrame()) >= 60);
   state = await cli('view workspace tabs get', {});
   await cli('view workspace scene clear', { targetId: state.preview.target.targetId, targetGeneration: state.preview.target.generation });
   const box = await canvas.boundingBox();

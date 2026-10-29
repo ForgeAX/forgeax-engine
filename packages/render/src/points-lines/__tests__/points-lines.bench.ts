@@ -81,7 +81,7 @@ function snapshot(component: 'Points' | 'Lines') {
     materialGeneration: 1,
     style:
       component === 'Points'
-        ? { kind: 'points', sizePx: 8, shape: 'circle' }
+        ? { kind: 'points', size: 8, sizeUnits: 'pixels', shape: 'circle' }
         : { kind: 'lines', width: 3 },
     layer: 0,
     visible: true,
@@ -159,7 +159,7 @@ function makeRealScene(
         },
         { component: MeshFilter, data: { assetHandle: pointMeshHandle } },
         { component: MeshRenderer, data: { materials: [materialHandle] } },
-        { component: Points, data: { sizePx: 8, shape: PointShapeValue.circle } },
+        { component: Points, data: { size: 8, shape: PointShapeValue.circle } },
       )
       .unwrap();
     world
@@ -258,7 +258,7 @@ function prepareWorkload(
   preparation = new PointsLinesPreparation({ cache, adapter: RESOURCE_ADAPTER }),
 ) {
   const authored =
-    component === 'Points' ? { points: { sizePx: 8, shape: 1 } } : { lines: { width: 3 } };
+    component === 'Points' ? { points: { size: 8, shape: 1 } } : { lines: { width: 3 } };
   const admission = admitPointsLines({
     entity: component === 'Points' ? 10 : 11,
     mesh,

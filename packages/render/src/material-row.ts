@@ -66,6 +66,21 @@ function numericFallback(
   }
 }
 
+function declaredDefault(
+  name: string,
+  schema: readonly ParamSchemaEntry[],
+  defaults: ReadonlyMap<string, unknown> | undefined,
+): number | readonly number[] | undefined {
+  const entry = defaults === undefined ? schema.find((entry) => entry.name === name) : undefined;
+  const defaultValue =
+    defaults === undefined
+      ? entry !== undefined && 'default' in entry
+        ? entry.default
+        : undefined
+      : defaults.get(name);
+  return isNumericValue(defaultValue) ? defaultValue : undefined;
+}
+
 function numericValue(
   name: string,
   material: MaterialSnapshot,
@@ -79,15 +94,7 @@ function numericValue(
     const materialValue = numericFallback(name, material);
     if (materialValue !== undefined) return materialValue;
   }
-  const entry = defaults === undefined ? schema.find((entry) => entry.name === name) : undefined;
-  const defaultValue =
-    defaults === undefined
-      ? entry !== undefined && 'default' in entry
-        ? entry.default
-        : undefined
-      : defaults.get(name);
-  if (isNumericValue(defaultValue)) return defaultValue;
-  return undefined;
+  return declaredDefault(name, schema, defaults);
 }
 
 function writeScalar(view: DataView, member: UboFieldLayout, value: number): void {
@@ -108,24 +115,64 @@ function writeScalar(view: DataView, member: UboFieldLayout, value: number): voi
   }
 }
 
+function componentCount(member: UboFieldLayout): number {
+  switch (member.type) {
+    case 'f32':
+    case 'i32':
+    case 'u32':
+      return 1;
+    case 'vec2':
+      return 2;
+    case 'vec3':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+/**
+ * Components a shorter vector omits keep its declared default, matching the
+ * classic UBO path that seeds schema defaults before writing authored values:
+ * an RGB `baseColor` keeps the declared alpha 1 instead of packing 0.
+ */
 function writeNumeric(
   view: DataView,
   member: UboFieldLayout,
   value: number | readonly number[] | undefined,
+  declared: number | readonly number[] | undefined,
 ): void {
-  if (member.type === 'f32' || member.type === 'i32' || member.type === 'u32') {
+  const count = componentCount(member);
+  if (count === 1) {
     writeScalar(view, member, typeof value === 'number' ? value : (value?.[0] ?? 0));
     return;
   }
   const values = Array.isArray(value) ? value : [];
-  const count = member.type === 'vec2' ? 2 : member.type === 'vec3' ? 3 : 4;
+  const fallback = Array.isArray(declared) ? declared : [];
   for (let index = 0; index < count; index += 1) {
     writeScalar(
       view,
       { ...member, offset: member.offset + index * 4, type: 'f32' },
-      values[index] ?? 0,
+      values[index] ?? fallback[index] ?? 0,
     );
   }
+}
+
+function writeMember(
+  view: DataView,
+  member: UboFieldLayout,
+  material: MaterialSnapshot,
+  schema: readonly ParamSchemaEntry[],
+  allowStandardFallback: boolean,
+  defaults: ReadonlyMap<string, unknown> | undefined,
+): void {
+  const value = numericValue(member.name, material, schema, allowStandardFallback, defaults);
+  const short = Array.isArray(value) && value.length < componentCount(member);
+  writeNumeric(
+    view,
+    member,
+    value,
+    short ? declaredDefault(member.name, schema, defaults) : undefined,
+  );
 }
 
 function validateReceipt(receipt: MaterialProgramAbi): void {
@@ -153,16 +200,13 @@ export function packStandardPbrMaterialRow(
   const view = new DataView(payload.buffer);
   const f32 = new Float32Array(payload.buffer);
   for (const member of STANDARD_PIPELINE_DERIVED.numericMembers) {
-    writeNumeric(
+    writeMember(
       view,
       member,
-      numericValue(
-        member.name,
-        material,
-        STANDARD_PIPELINE_PARAM_SCHEMA,
-        true,
-        STANDARD_PIPELINE_DEFAULTS,
-      ),
+      material,
+      STANDARD_PIPELINE_PARAM_SCHEMA,
+      true,
+      STANDARD_PIPELINE_DEFAULTS,
     );
   }
   for (const record of STANDARD_PIPELINE_DERIVED.coordinateRecords) {
@@ -194,8 +238,9 @@ export function packMaterialProgramRow(
   const view = new DataView(payload.buffer);
   const f32 = new Float32Array(payload.buffer);
   const defaults = admittedDefaults(schema);
+  // Snapshot fields back missing values exactly as the direct uniform writer does.
   for (const member of derived.numericMembers) {
-    writeNumeric(view, member, numericValue(member.name, material, schema, false, defaults));
+    writeMember(view, member, material, schema, true, defaults);
   }
   for (const record of derived.coordinateRecords) {
     writeMaterialTextureCoordinateRecord(

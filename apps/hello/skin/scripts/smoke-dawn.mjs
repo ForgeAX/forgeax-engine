@@ -97,29 +97,18 @@ Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: t
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
 let sharedDevice;
-// feat-20260612-skin-palette-per-frame-upload M4 / m4-4: dawn-node palette
-// readback probe (AC-01 dawn-equivalent fallback to the browser-path AC-01
-// in smoke-browser.mjs). The browser smoke is the primary gate; this probe
-// is the bottom-of-the-stack guard so a dawn-node-only regression in the
-// SkinPaletteAllocator/writeJointPalette path does not slip through silent.
-// Implementation choice: intercept device.queue.writeBuffer for buffers
-// labeled `skin-palette` (the SkinPaletteAllocator's GPUBuffer label) and
-// hash the payload bytes. The plan-strategy mentions mapAsync as the
-// "ideal" readback path; the runtime palette buffer is created with
-// STORAGE | COPY_DST (no COPY_SRC / MAP_READ), so a true mapAsync would
-// require staging a copyBufferToBuffer round-trip every frame -- a
-// significantly more invasive smoke-side change than the intercept and
-// functionally equivalent (the writeBuffer payload IS the bytes the GPU
-// stores, byte-for-byte, modulo the GPU's internal write coalescing). The
-// implementer note explicitly allows this simplification when the
-// intercept is the load-bearing observation. Sample window: >=3 distinct
-// fullHash values across the recorded writes (paralleling smoke-browser
-// AC-01's 3-sample lower bound). The post-loop stability probe also pauses
-// all three players, proves two unchanged frames produce no palette write,
-// then resumes one frame and proves a dirty pose produces a write. FALSIFY
-// anchor: short-circuit
-// writeJointPalette in skin-palette-allocator.ts to write a constant
-// identity payload -> distinctness collapses to 1 -> probe red.
+// Shared Skin input probe (AC-01 dawn-equivalent of smoke-browser.mjs).
+// Renderers publish each referenced joint's presentation matrix once into the
+// shared numeric input buffer (`gpu-scene-shared-inputs`); the GPU-driven view
+// resolves transient palettes from it, and CPU-recorded draws write per-draw
+// task scratch (`skin-task-data`). Intercept device.queue.writeBuffer for both
+// labels and hash the payload bytes: animated joints must produce >=3 writes
+// with >=2 distinct payloads. The post-loop stability probe pauses all three
+// players, proves two unchanged frames upload no shared Skin input, then
+// resumes one frame and proves the changed joints are uploaded. FALSIFY
+// anchor: freeze the published joint matrices -> distinctness collapses and
+// the resumed frame uploads nothing -> probe red.
+const SKIN_INPUT_LABELS = new Set(['gpu-scene-shared-inputs', 'skin-task-data']);
 const skinPaletteWritesDawn = [];
 const fnv1a32Dawn = (bytes, start, end) => {
   let h = 0x811c9dc5;
@@ -149,7 +138,7 @@ globalThis.navigator.gpu.requestAdapter = async (opts) => {
       dev.createBuffer = (cdesc) => {
         const buf = origCB(cdesc);
         try {
-          if ((cdesc.label ?? '') === 'skin-palette') {
+          if (SKIN_INPUT_LABELS.has(cdesc.label ?? '')) {
             paletteIndex.set(buf, paletteBufferCount++);
           }
         } catch (_e) {}
@@ -451,7 +440,11 @@ world.spawn({
 
 const errors = [];
 renderer.subscribe((event) => {
-  if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
+  if (event.kind === 'error') {
+    if (errors.length === 0)
+      console.error(`[smoke] first renderer error ${event.error.message} ${JSON.stringify(event.error.detail ?? null)}`);
+    errors.push({ code: event.error.code, hint: event.error.hint });
+  }
 });
 
 
@@ -673,12 +666,9 @@ await device.queue.onSubmittedWorkDone();
 const frameWall = Date.now() - frameStart;
 console.log(`[smoke] frames observed=${framesObserved} (wall=${frameWall}ms, target=${TARGET_FRAMES})`);
 
-// AC-08 palette residency proof: an unchanged pose keeps its persistent
-// address and reports zero upload bytes at the allocator boundary (the unit
-// gate asserts the receipt fields). This Dawn carrier additionally exercises
-// the real render loop: settle one paused frame, then require two stable
-// frames with no `skin-palette` writeBuffer call before resuming animation and
-// requiring one dirty write.
+// AC-08 change-driven upload proof: unchanged joints publish nothing. Settle
+// one paused frame, then require two stable frames with no shared Skin input
+// writeBuffer call before resuming animation and requiring one dirty write.
 for (const instance of perInstance) {
   const paused = world.set(instance.root, AnimationPlayer, { paused: true });
   if (!paused.ok) throw paused.error;
@@ -691,11 +681,19 @@ for (const instance of perInstance) {
   const resumed = world.set(instance.root, AnimationPlayer, { paused: false });
   if (!resumed.ok) throw resumed.error;
 }
+// Each completed animated frame must upload its changed joints. The unpaced
+// warm-up loop above may still be preparing pipelines and submits nothing.
 const dirtyPaletteStart = skinPaletteWritesDawn.length;
-await renderM22Frame();
-const dirtyPaletteWrites = skinPaletteWritesDawn.length - dirtyPaletteStart;
+const dirtyFrameWrites = [];
+for (let i = 0; i < 3; i++) {
+  const before = skinPaletteWritesDawn.length;
+  await renderM22Frame();
+  dirtyFrameWrites.push(skinPaletteWritesDawn.length - before);
+}
+const dirtyPaletteWrites = Math.min(...dirtyFrameWrites);
+const dirtyHashes = new Set(skinPaletteWritesDawn.slice(dirtyPaletteStart).map((w) => w.fullHash));
 console.log(
-  `[smoke] palette-stability stableWriteBufferDelta=${stablePaletteWrites} dirtyWriteBufferDelta=${dirtyPaletteWrites}`,
+  `[smoke] skin-input-stability stableWriteBufferDelta=${stablePaletteWrites} dirtyFrameWrites=${JSON.stringify(dirtyFrameWrites)} dirtyDistinctHashes=${dirtyHashes.size}`,
 );
 
 if (!renderTarget) {
@@ -794,44 +792,38 @@ if (errors.length > 0) {
 // feat-20260612-skin-palette-per-frame-upload M4 / m4-4: AC-01 dawn-node
 // equivalent fallback. The browser smoke (smoke-browser.mjs) is the
 // primary AC-01 gate; this probe catches a dawn-only regression in the
-// skin-palette per-frame upload chain. Sample window >=3 distinct
-// fullHash values; FALSIFY anchor: short-circuit writeJointPalette to
-// identity -> distinctness collapses to 1 -> probe red.
+// shared Skin input upload chain.
 const skinPaletteHitsDawn = skinPaletteWritesDawn.length;
 const skinPaletteFullHashSetDawn = new Set(skinPaletteWritesDawn.map((w) => w.fullHash));
 console.log(
-  `[smoke] m4-4 skin-palette writes=${skinPaletteHitsDawn} distinctFullHash=${skinPaletteFullHashSetDawn.size} sample=[${[...skinPaletteFullHashSetDawn].slice(0, 4).join(',')}]`,
+  `[smoke] m4-4 skin-input writes=${skinPaletteHitsDawn} distinctFullHash=${skinPaletteFullHashSetDawn.size} sample=[${[...skinPaletteFullHashSetDawn].slice(0, 4).join(',')}]`,
 );
 if (skinPaletteHitsDawn < 3) {
   failures.push(
-    `(f) m4-4 skin-palette writeBuffer hit count=${skinPaletteHitsDawn} (need >=3); SkinPaletteAllocator buffer never created or write hook never engaged`,
+    `(f) m4-4 skin-input writeBuffer hit count=${skinPaletteHitsDawn} (need >=3); shared Skin input buffer never written or write hook never engaged`,
   );
 }
-if (skinPaletteFullHashSetDawn.size < 2) {
+if (skinPaletteFullHashSetDawn.size < 2 || dirtyHashes.size < 2) {
   failures.push(
-    `(f) m4-4 skin-palette payload distinctness=${skinPaletteFullHashSetDawn.size} (need >=2); palette frozen across frames -- writeJointPalette short-circuit or upstream GlobalTransform.world propagation failure`,
+    `(f) m4-4 skin-input payload distinctness=${skinPaletteFullHashSetDawn.size} (need >=2, completed animated frames ${dirtyHashes.size}); joint inputs frozen across frames -- joint publication or upstream GlobalTransform.world propagation failure`,
   );
 }
 if (stablePaletteWrites !== 0) {
   failures.push(
-    `(f) AC-08 stable palette writeBuffer delta=${stablePaletteWrites} (expected 0); unchanged paused poses are re-uploading`,
+    `(f) AC-08 stable Skin input writeBuffer delta=${stablePaletteWrites} (expected 0); unchanged paused joints are re-uploading`,
   );
 }
 if (dirtyPaletteWrites < 1) {
   failures.push(
-    `(f) AC-08 dirty palette writeBuffer delta=${dirtyPaletteWrites} (need >=1); resumed pose did not publish a dirty range`,
+    `(f) AC-08 dirty Skin input writeBuffer per frame=${JSON.stringify(dirtyFrameWrites)} (need >=1 each); resumed joints did not publish a dirty range`,
   );
 }
 
-// bug-20260615 M4 AC-02 counter-proof (palette-hash structural assertion).
-// The parented-rig (pos y=1) palette hashes differ from the identity-parent
-// palette hashes. The parented-mode reference set (pos y=1):
-//   {c72b7794, bfe6ce5c, 7d92e658}
-// The FALSIFY=identity-parent mode produces a different set:
-//   {05dba7cc, b8f254fc, 7cbb03c9}
-// This gate asserts: identity-parent mode palette hashes MUST NOT match
-// the parented-mode reference. A match means the parent transform is NOT
-// load-bearing (parent change has no effect on palette) -- AC-02 failed.
+// bug-20260615 M4 AC-02 counter-proof (Skin input hash structural assertion).
+// The parented-rig (pos y=1) joint input hashes must differ from the
+// identity-parent hashes. This gate asserts: identity-parent mode hashes MUST
+// NOT match the parented-mode reference. A match means the parent transform
+// is NOT load-bearing (parent change has no effect on joints) -- AC-02 failed.
 const PARENTED_PALETTE_REF = new Set(['c72b7794', 'bfe6ce5c', '7d92e658']);
 if (FALSIFY === 'identity-parent') {
   const identitySet = skinPaletteFullHashSetDawn;
@@ -860,7 +852,7 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `[smoke] PASS - 6 criteria GREEN: backend=webgpu, frames=${framesObserved}, meshed sites above threshold=${meshedRenderCount}/${meshSites.length}, NaN=0, RhiError count=0, palette writes=${skinPaletteHitsDawn} (${skinPaletteFullHashSetDawn.size} distinct), stableDelta=${stablePaletteWrites}, dirtyDelta=${dirtyPaletteWrites}`,
+  `[smoke] PASS - 6 criteria GREEN: backend=webgpu, frames=${framesObserved}, meshed sites above threshold=${meshedRenderCount}/${meshSites.length}, NaN=0, RhiError count=0, Skin input writes=${skinPaletteHitsDawn} (${skinPaletteFullHashSetDawn.size} distinct), stableDelta=${stablePaletteWrites}, dirtyDelta=${dirtyPaletteWrites}`,
 );
 
 device.destroy?.();

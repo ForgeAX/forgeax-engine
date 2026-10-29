@@ -26,6 +26,7 @@ export { FORGE_JSON } from './paths.js';
 export type { GameProject, GameProjectRoots } from './schema.js';
 // ── Middle tier: schema self-introspection + types ──────────────────────────
 export {
+  AssetLibrarySpecifier,
   GameProjectRootsSchema,
   GameProjectSchema,
   PluginRealmSchema,

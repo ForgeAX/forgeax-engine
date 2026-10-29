@@ -29,4 +29,4 @@ export type {
 } from './transcode.js';
 export { selectTranscodeTarget } from './transcode.js';
 export type { BasisWasmHost } from './wasm/basis-types.js';
-export { decompressZstd } from './zstd.js';
+export { decodeDocumentText, decompressZstd } from './zstd.js';

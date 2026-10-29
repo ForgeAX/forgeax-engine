@@ -32,6 +32,7 @@ import {
   type PmremAtlas,
   pmremLevelCount,
 } from '../ibl/pmrem';
+import { SKYLIGHT_UNIFORM_BYTES, skylightGroundLane } from '../ibl/skylight-bind-group';
 import type {
   ReflectionFallbackReadbackReceipt,
   ReflectionFallbackReceipt,
@@ -116,7 +117,25 @@ type PendingFallback = {
   readonly frameId: number;
   readonly deviceGeneration: number;
   readonly projection: ReflectionFallbackProjection;
+  /** Prepared with this ticket's immutable projection; valid for this ticket's lifetime. */
+  readonly signature: string;
 };
+
+function hasNonNeutralFallback(tickets: ReadonlyMap<string, PendingFallback>): boolean {
+  for (const ticket of tickets.values()) if (ticket.projection.source !== 'neutral') return true;
+  return false;
+}
+
+const NEUTRAL_FRAME_PROJECTION: ReflectionFallbackProjection = Object.freeze({
+  renderableKey: '__frame__',
+  sourceKey: 'neutral',
+  source: 'neutral',
+  coverage: 0,
+  linearHdr: Object.freeze([0, 0, 0, 0] as const),
+  brdfSignature: 'standard-pbr-ibl-v1',
+});
+
+const NEUTRAL_FRAME_SIGNATURE = reflectionFallbackProjectionSignature(NEUTRAL_FRAME_PROJECTION);
 
 const REFLECTION_PROBE_PRODUCER_ID = 'forgeax::render::reflection-probe-record-owner';
 // Probe uniforms share the existing Skylight ABI.  Offset the negative
@@ -593,6 +612,8 @@ export class ReflectionProbeRecordOwner {
       this.workCursor = (candidateIndex + 1) % candidates.length;
       break;
     }
+    const fallbackHasNonNeutral =
+      this.fallbackFormatAvailable && hasNonNeutralFallback(fallbackTickets);
     return {
       table,
       selections,
@@ -603,12 +624,8 @@ export class ReflectionProbeRecordOwner {
       // selected producer source rather than from the presence of a
       // renderable row; scenes without a probe or Skylight stay on the
       // ordinary single-target path.
-      fallbackDemand:
-        this.fallbackFormatAvailable &&
-        [...fallbackTickets.values()].some((ticket) => ticket.projection.source !== 'neutral'),
-      fallbackHasNonNeutral:
-        this.fallbackFormatAvailable &&
-        [...fallbackTickets.values()].some((ticket) => ticket.projection.source !== 'neutral'),
+      fallbackDemand: fallbackHasNonNeutral,
+      fallbackHasNonNeutral,
       completeSubmission: (submitted, completed, fallbackOutput, fallbackRequested = true) =>
         this.completeSubmission(
           submitted,
@@ -719,78 +736,26 @@ export class ReflectionProbeRecordOwner {
         ? new Map([['__frame__', { kind: 'skylight' as const }]])
         : selections;
     const skyView =
-      skylight === undefined || skylight.equirectHandle === 0
+      stagedSelections.size === 0 || skylight === undefined || skylight.equirectHandle === 0
         ? undefined
         : this.internals.gpuStore.getCubemapIbl(skylight.equirectHandle, resourceWorld)
             ?.prefilterView;
     const skyContent = skyView === undefined ? 0 : getOpaqueResourceIdentity(skyView);
     const skylightSignature =
-      skylight === undefined
+      stagedSelections.size === 0 || skylight === undefined
         ? ''
-        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0]), skyContent])}`;
-    for (const [renderableKey, selection] of stagedSelections) {
-      const probeKey =
-        selection.kind === 'probe' ? `${selection.worldId}:${selection.entityKey}` : undefined;
-      const resource = probeKey === undefined ? undefined : accepted.get(probeKey);
-      const source = resolveReflectionFallbackSource(
-        selection,
-        resource?.active !== undefined &&
-          resource.activeFact?.center.every((v, i) => v === resource.fact.center[i]) === true,
-        skylight !== undefined,
-      );
-      const projection = deriveReflectionFallbackProjection({
+        : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0]), ...skylightGroundLane(skylight, true), skyContent])}`;
+    for (const [renderableKey, selection] of stagedSelections)
+      this.stageFallbackProjection(
         renderableKey,
-        sourceKey:
-          reflectionFallbackSourceKey(source, selection, skylight) +
-          (source === 'probe' && resource !== undefined
-            ? `@${resource.filter.activeGeneration}:${resource.fact.boxProjection === true}:${resource.fact.intensity}`
-            : '') +
-          skylightSignature +
-          (source === 'skylight' ? `:environment:${environment?.environmentSignature ?? ''}` : ''),
-        source,
-        coverage: reflectionFallbackCoverage(source, resource?.fact, selection),
-        ...(resource === undefined ? {} : { extent: resource.fact.halfExtents }),
-        linearHdr: [0, 0, 0, 0],
-        brdfSignature: 'standard-pbr-ibl-v1',
-      });
-      if (!projection.ok) {
-        this.recordFallbackFailure({
-          stage: 'prepare',
-          code: projection.error.code,
-          expected: projection.error.expected,
-          detail: { renderableKey, field: projection.error.field },
-        });
-        continue;
-      }
-      const signature = reflectionFallbackProjectionSignature(projection.value);
-      const previousCandidate = this.latestFallbackTickets.get(renderableKey);
-      if (
-        previousCandidate !== undefined &&
-        reflectionFallbackProjectionSignature(previousCandidate.projection) !== signature
-      ) {
-        this.fallbackRetiredFrames.set(renderableKey, frameId);
-      }
-      const previousSignature = this.fallbackSignatures.get(renderableKey);
-      if (previousSignature !== undefined && previousSignature !== signature) {
-        // A changed source, coverage, extent, or BRDF is not a compatible LKG.
-        // Hide the old row until this new candidate has its own matching
-        // submit/readback receipt; otherwise SSR could subtract a stale lobe.
-        this.fallbackReceipts.delete(renderableKey);
-        this.fallbackSignatures.delete(renderableKey);
-        this.fallbackCommittedFrames.delete(renderableKey);
-        this.fallbackRetiredFrames.set(renderableKey, frameId);
-        this.fallbackReadback = undefined;
-        if (this.fallbackReceiptKey === renderableKey) this.fallbackReceiptKey = undefined;
-      }
-      const pending: PendingFallback = {
-        ticket: ++this.nextFallbackTicket,
+        selection,
+        accepted,
         frameId,
-        deviceGeneration: this.internals.deviceScope.generation,
-        projection: projection.value,
-      };
-      tickets.set(renderableKey, pending);
-      this.latestFallbackTickets.set(renderableKey, pending);
-    }
+        skylight,
+        skylightSignature,
+        environment,
+        tickets,
+      );
     // Retire rows that disappeared from this frame's main-pass selection.
     // Keeping them would make a detached inspection row outlive its source.
     for (const renderableKey of this.fallbackReceipts.keys()) {
@@ -812,30 +777,96 @@ export class ReflectionProbeRecordOwner {
       this.latestFallbackTickets.delete(key);
       this.fallbackRetiredFrames.set(key, frameId);
     }
-    if (tickets.size === 0 && facts.length === 0) {
-      const neutralKey = '__frame__';
-      const projection = deriveReflectionFallbackProjection({
-        renderableKey: neutralKey,
-        sourceKey: 'neutral',
-        source: 'neutral',
-        coverage: 0,
-        linearHdr: [0, 0, 0, 0],
-        brdfSignature: 'standard-pbr-ibl-v1',
-      });
-      if (projection.ok) {
-        const pending: PendingFallback = {
-          ticket: ++this.nextFallbackTicket,
-          frameId,
-          deviceGeneration: this.internals.deviceScope.generation,
-          projection: projection.value,
-        };
-        tickets.set(neutralKey, pending);
-        this.latestFallbackTickets.set(neutralKey, pending);
-      }
-    }
+    if (tickets.size === 0 && facts.length === 0) this.stageNeutralFallback(tickets, frameId);
     this.selectFallbackReceiptKey(tickets, skylight !== undefined);
     this.refreshFallbackReceipt();
     return tickets;
+  }
+
+  /** Empty consumers still receive the existing independent neutral frame ticket. */
+  private stageNeutralFallback(tickets: Map<string, PendingFallback>, frameId: number): void {
+    const pending: PendingFallback = {
+      ticket: ++this.nextFallbackTicket,
+      frameId,
+      deviceGeneration: this.internals.deviceScope.generation,
+      projection: NEUTRAL_FRAME_PROJECTION,
+      signature: NEUTRAL_FRAME_SIGNATURE,
+    };
+    tickets.set('__frame__', pending);
+    this.latestFallbackTickets.set('__frame__', pending);
+  }
+
+  /** One consumer's immutable evidence and independent frame ticket. */
+  private stageFallbackProjection(
+    renderableKey: string,
+    selection: ReflectionProbeSelectionResult,
+    accepted: ReadonlyMap<string, ProbeGpuResource>,
+    frameId: number,
+    skylight: SkylightSnapshot | undefined,
+    skylightSignature: string,
+    environment: SelectedEnvironmentFrame | undefined,
+    tickets: Map<string, PendingFallback>,
+  ): void {
+    const probeKey =
+      selection.kind === 'probe' ? `${selection.worldId}:${selection.entityKey}` : undefined;
+    const resource = probeKey === undefined ? undefined : accepted.get(probeKey);
+    const source = resolveReflectionFallbackSource(
+      selection,
+      resource?.active !== undefined &&
+        resource.activeFact?.center.every((v, i) => v === resource.fact.center[i]) === true,
+      skylight !== undefined,
+    );
+    const projectionInput = {
+      renderableKey,
+      sourceKey:
+        reflectionFallbackSourceKey(source, selection, skylight) +
+        (source === 'probe' && resource !== undefined
+          ? `@${resource.filter.activeGeneration}:${resource.fact.boxProjection === true}:${resource.fact.intensity}`
+          : '') +
+        skylightSignature +
+        (source === 'skylight' ? `:environment:${environment?.environmentSignature ?? ''}` : ''),
+      source,
+      coverage: reflectionFallbackCoverage(source, resource?.fact, selection),
+      ...(resource === undefined ? {} : { extent: resource.fact.halfExtents }),
+      linearHdr: [0, 0, 0, 0] as const,
+      brdfSignature: 'standard-pbr-ibl-v1',
+    };
+    const previousCandidate = this.latestFallbackTickets.get(renderableKey);
+    const projection = deriveReflectionFallbackProjection(projectionInput);
+    if (!projection.ok) {
+      this.recordFallbackFailure({
+        stage: 'prepare',
+        code: projection.error.code,
+        expected: projection.error.expected,
+        detail: { renderableKey, field: projection.error.field },
+      });
+      return;
+    }
+    const signature = reflectionFallbackProjectionSignature(projection.value);
+    if (previousCandidate !== undefined && previousCandidate.signature !== signature) {
+      this.fallbackRetiredFrames.set(renderableKey, frameId);
+    }
+    const previousSignature = this.fallbackSignatures.get(renderableKey);
+    if (previousSignature !== undefined && previousSignature !== signature) {
+      // A changed source, coverage, extent, or BRDF is not a compatible LKG.
+      // Hide the old row until this new candidate has its own matching
+      // submit/readback receipt; otherwise SSR could subtract a stale lobe.
+      this.fallbackReceipts.delete(renderableKey);
+      this.fallbackSignatures.delete(renderableKey);
+      this.fallbackCommittedFrames.delete(renderableKey);
+      this.fallbackRetiredFrames.set(renderableKey, frameId);
+      this.fallbackReadback = undefined;
+      if (this.fallbackReceiptKey === renderableKey) this.fallbackReceiptKey = undefined;
+    }
+    const pending: PendingFallback = {
+      ticket: ++this.nextFallbackTicket,
+      frameId,
+      deviceGeneration: this.internals.deviceScope.generation,
+      projection: projection.value,
+      signature,
+    };
+    tickets.set(renderableKey, pending);
+    this.latestFallbackTickets.set(renderableKey, pending);
   }
 
   private selectFallbackReceiptKey(
@@ -903,7 +934,7 @@ export class ReflectionProbeRecordOwner {
     pending: PendingFallback,
     state: ReflectionFallbackReceipt['state'],
   ): void {
-    const signature = reflectionFallbackProjectionSignature(pending.projection);
+    const signature = pending.signature;
     const previousSignature = this.fallbackSignatures.get(renderableKey);
     const changed = signature !== previousSignature;
     const previous = this.fallbackReceipts.get(renderableKey);
@@ -940,7 +971,7 @@ export class ReflectionProbeRecordOwner {
     for (const [renderableKey, pending] of fallbackTickets) {
       if (this.latestFallbackTickets.get(renderableKey) !== pending) continue;
       const previous = this.fallbackReceipts.get(renderableKey);
-      const signature = reflectionFallbackProjectionSignature(pending.projection);
+      const signature = pending.signature;
       const compatible =
         previous !== undefined && this.fallbackSignatures.get(renderableKey) === signature;
       if (compatible) {
@@ -1089,8 +1120,7 @@ export class ReflectionProbeRecordOwner {
       const committedFrame = this.fallbackCommittedFrames.get(renderableKey);
       if (
         latest === undefined ||
-        reflectionFallbackProjectionSignature(latest.projection) !==
-          reflectionFallbackProjectionSignature(pending.projection) ||
+        latest.signature !== pending.signature ||
         pending.frameId !== fallbackOutput.frameId ||
         pending.deviceGeneration !== this.internals.deviceScope.generation ||
         (retiredAt !== undefined && pending.frameId < retiredAt) ||
@@ -1214,7 +1244,7 @@ export class ReflectionProbeRecordOwner {
           cache.brdfLutView !== undefined));
     const diffuse =
       skylight === undefined
-        ? [0, 0, 0, index + 1, 0, 0, 0, 1, 0, 0, 0, 0]
+        ? [0, 0, 0, index + 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
         : [
             ...(diffuseAvailable
               ? skylight.color.map((value) => value * skylight.intensity)
@@ -1223,6 +1253,7 @@ export class ReflectionProbeRecordOwner {
             ...skylight.rotation,
             ...(skylight.ambientIrradiance ?? [0, 0, 0]),
             0,
+            ...skylightGroundLane(skylight, diffuseAvailable),
           ];
     let existing = this.resources.get(key);
     if (
@@ -1317,7 +1348,7 @@ export class ReflectionProbeRecordOwner {
     }
     const uniformBuffer = this.internals.device.createBuffer({
       label: `reflection-probe-${index}-uniforms`,
-      size: 80,
+      size: SKYLIGHT_UNIFORM_BYTES,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
       mappedAtCreation: false,
     });

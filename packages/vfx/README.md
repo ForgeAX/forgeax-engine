@@ -19,17 +19,17 @@ artifact must be cold-cooked instead of being treated as current.
 
 | Package | Owns |
 |:--|:--|
-| `@forgeax/engine-vfx` | Source validation, cooked asset loading, `ParticleEffectPlayer`, FixedUpdate intents, deterministic spawn scheduling |
+| `@forgeax/engine-vfx` | Source validation, cooked asset loading, `ParticleEffectPlayer`, per-frame Update intents, deterministic spawn scheduling |
 | `@forgeax/engine-vfx-compiler` | WGSL composition, import resolution, Naga validation, reflection, deterministic cook |
 | `@forgeax/engine-vfx-render` | Persistent GPU state, compute passes, fixed-bounds culling, billboard/mesh projection, indirect draws |
 
 `AssetRegistry.load` and `create` return the reference bound to `ParticleEffectPlayer.effect`.
 The asset owner retains exact definition versions for Players, queued ticks and submitted
-emitters. A managed definition edit is adopted at the next FixedUpdate: playback starts a
+emitters. A managed definition edit is adopted at the next update: playback starts a
 new cycle and rebuilds its reflected instance. Existing queued ticks retain their previous
 definition and parameter bytes until acknowledgement. Unchanged paused Players retain their
 accepted definition without polling assets; resume, replay, or an explicit Player change adopts
-the current definition at FixedUpdate and keeps a pending reset for the next dispatch.
+the current definition at the next update and keeps a pending reset for the next dispatch.
 
 Queue acknowledgement transfers or releases a version lease directly. Replaced emitter IDs
 leave retained state while their queued ticks remain ordered. Recovery, Player removal and
@@ -50,7 +50,7 @@ semantics. WGSL compilation stays build-time, and native GPU preparation validat
 Runtime caches source digests and declaration scans within
 128 entries / 16 MiB, so numeric edits process metadata without rehashing unchanged WGSL.
 
-Player membership and controls use World change evidence. Unchanged paused fixed steps do not
+Player membership and controls use World change evidence. Unchanged paused updates do not
 query Players or asset versions; active Players read their selected definition during simulation.
 The intent queue indexes sequences by Player, so capacity checks, replay and removal never walk
 other Players' queued work. Acknowledgement directly removes the named sequences; an explicit
@@ -87,7 +87,7 @@ endpoints each produce reflected resources and an indirect topology draw.
 Optional GPU collision imports `forgeax_vfx::data::scene_sdf` in the update
 module. Cooking reflects its closed `vfx:scene-sdf` requirement; the
 [VFX Render host](../vfx-render/README.md#managed-scene-sdf-collision) supplies
-the World range and Renderer owns the field. The player and FixedUpdate contract
+the World range and Renderer owns the field. The player and update contract
 remain realm-neutral: no field bytes, RHI objects or CPU particle mirror enter ECS.
 
 New authoring tools may use `PARTICLE_CODE_DEFAULT_MODULE_ID` as an immediately
@@ -236,7 +236,7 @@ world.spawn({
 });
 ```
 
-Install `createVfxRuntimeHost` from `@forgeax/engine-vfx-render`, attach each World once, and register `host.feature` with the Renderer. The host installs the decoder and FixedUpdate intent producer. Successful ECS binding retains its own reference; release the caller grant with `assets.release(effect)`.
+Install `createVfxRuntimeHost` from `@forgeax/engine-vfx-render`, attach each World once, and register `host.feature` with the Renderer. The host installs the decoder and the Update intent producer. Successful ECS binding retains its own reference; release the caller grant with `assets.release(effect)`.
 
 ## Authoring projection
 
@@ -272,15 +272,16 @@ responsibility.
 
 ## Runtime invariants
 
-- FixedUpdate is the only simulation clock; render frames consume ordered tick intents.
-- A newly rendered Player admits its time-zero state with zero delta before its first FixedUpdate. This uses the same native spawn preparation without advancing World time, firing a rate interval, or consuming an existing Player's pending patch/replay.
+- The World frame is the simulation clock. The `vfx-gpu-runtime` Update system runs after `FixedUpdate` and advances every simulating player once by `Time.delta` times its `timeScale`; render frames consume ordered tick intents. `Time.delta` is already bounded by `TimePolicy.maxDeltaSeconds`, so a hitch cannot queue an unbounded interval. A zero-delta frame with no reset, patch or channel input queues nothing.
+- A newly rendered Player admits its time-zero state with zero delta before its first update. This uses the same native spawn preparation without advancing World time, firing a rate interval, or consuming an existing Player's pending patch/replay.
 - GPU particle buffers remain persistent and are never read back for ordinary simulation or drawing.
 - Time-zero bursts fire once per play cycle. Rate remainder and particle IDs survive frame-rate variation.
 - `vfx_random_spawn` and `vfx_random_update` are addressable by seed, particle ID, tick, and sample key.
 - Cold GPU preparation stalls effect time within the bounded queue. Post-start overflow reports `vfx-intent-queue-overflow`; ticks are not silently discarded.
-- Seed/effect changes and stop-to-play transitions restart the player at a fixed boundary.
-- `phaseTick` counts effect dispatches, including zero-time admission, and resets to zero on replay or `restart-on-visible`; `tick` remains the World-global FixedTime correlation key. `initialFixedDelta` retains the first dispatch delta so recovery does not add a simulated interval to an initialized Player.
-- `replay(player)` advances an authored stopped player for exactly one FixedUpdate and never creates a second persistent play-state authority.
+- Seed/effect changes and stop-to-play transitions restart the player at an update boundary.
+- `phaseTick` counts effect dispatches, including zero-time admission, and resets to zero on replay or `restart-on-visible`; `tick` is the runtime update count kept for correlation. Each intent records its own `delta` and the cycle's `elapsed` seconds; `initialDelta` retains the first dispatch delta so recovery does not add a simulated interval to an initialized Player.
+- Recovery quantizes variable frame deltas: `buildVfxRecoveryIntents` replays the same dispatch count over the same cycle time, keeping the exact `initialDelta` and splitting the remaining `elapsed` evenly. Dispatch count, cycle time, spawn total and particle IDs match the live cycle; motion integrates over the even steps instead of the recorded frame partition.
+- `replay(player)` advances an authored stopped player for exactly one update and never creates a second persistent play-state authority.
 
 `VfxGpuRuntime.inspectPlayers()` and `inspectPlayer(player)` expose stable keyed
 snapshots for every attached player and emitter. They report the asset GUID,
@@ -289,7 +290,7 @@ counters, `cameraVisible`, `sessionEnabled`, phase/global ticks, schedule, bound
 committed tick intent per emitter. Observation never selects a single global
 “latest intent,” so two players and multi-emitter effects remain distinguishable.
 The renderer uses `forEachEmitterSource(world, visitor)` to refresh frustum
-visibility even when a paused player has no pending fixed-tick intent. It
+visibility even when a paused player has no pending tick intent. It
 admits new Players and retires despawned entities and removed `ParticleEffectPlayer` components from
 the pending and committed state before extraction, without advancing World time.
 
@@ -345,11 +346,11 @@ the first failure in that order. Repair it and validate again.
 | `vfx-asset-version-unsupported` | Cold-cook the older source and publish a Program v3 payload |
 | `vfx-asset-v3-program-missing` | Republish the Program v3 asset-local `particle-effect/program.json` artifact |
 | `vfx-asset-v3-fingerprint-mismatch` | Cold-cook the v3 payload and program atomically |
-| `vfx-effect-unavailable` | Load the shared effect before the first FixedUpdate |
+| `vfx-effect-unavailable` | Load the shared effect before the first update |
 | `vfx-intent-queue-overflow` | Recover the Renderer or restart the player; inspect render readiness |
 
 Device recovery discards the old render generation and reconstructs each active
-retained emitter from its deterministic committed fixed-tick inputs on the first
+retained emitter from its deterministic committed tick inputs on the first
 submitted replacement-device frame. Recovery does not advance World time,
 publish channel events, allocate a play cycle, or reset the authored player.
 No stale handle or CPU particle mirror survives recovery.

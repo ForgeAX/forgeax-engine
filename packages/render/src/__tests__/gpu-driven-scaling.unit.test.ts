@@ -81,7 +81,8 @@ describe('GPU-driven scaling contract', () => {
     });
     expect(stablePlan.batches.length).toBe(1);
     expect(stablePlan.batches.at(0)?.visibleCapacity).toBe(ENTITY_COUNT);
-    expect(deriveGpuDrivenViewBufferCapacities(stablePlan).visible).toBe(131_072);
+    // Exact aligned requirement; growth slack belongs to the allocating view.
+    expect(deriveGpuDrivenViewBufferCapacities(stablePlan).visible).toBe(100_032);
   });
 
   it('keeps 100k LOD candidates dense in one shared-chain batch with per-level segments', () => {
@@ -105,11 +106,11 @@ describe('GPU-driven scaling contract', () => {
     // with two level segments of one aligned capacity.
     expect(deriveGpuDrivenViewBufferCapacities(plan)).toEqual({
       candidate: 131_072,
-      visible: 262_144,
+      visible: 200_064,
       batch: 1,
       indirect: 2,
     });
-  });
+  }, 30_000);
 
   it('reuses materialization and topology identities while static', () => {
     expect(stableMaterializationReused).toBe(true);

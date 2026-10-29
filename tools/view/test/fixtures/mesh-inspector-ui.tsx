@@ -18,15 +18,20 @@ let deferInspection = false;
 let finishInspection: (() => void) | undefined;
 let copyText = '';
 let clipboardWrites = 0;
+let thumbnailEpoch = 0;
+let catalogEpoch = 0;
+let showTexture = false;
+const thumbnails = new Map<string, { state: string; dataUrl?: string }>();
 const removedComponents = new Set<string>();
 const calls: { operation: string; args: Record<string, unknown>; aborted: boolean }[] = [];
 let sceneTreeRequests = 0;
 const listeners = new Set<(state: ReturnType<typeof state>) => void>();
 const target = () => ({ targetId: 'scene', generation });
-const state = () => ({ revision, project: { id: projectId, name: 'Inspector fixture', root: '/fixture' }, preview: { target: target() }, sceneSelection: { primary: { entityId: selected }, entityIds: selectedIds }, assets: [
+const state = () => ({ revision, thumbnailEpoch, catalogEpoch, project: { id: projectId, name: 'Inspector fixture', root: '/fixture' }, preview: { target: target() }, sceneSelection: { primary: { entityId: selected }, entityIds: selectedIds }, assets: [
   { guid: 'mesh-guid', kind: 'mesh', name: meshName, path: 'assets/farm.pack.ts', previewable: true },
   { guid: 'ground-material', kind: 'material', name: 'Farm Ground', path: 'assets/farm.pack.ts', previewable: true },
   { guid: 'trim-material', kind: 'material', name: 'Painted Trim', path: 'assets/farm.pack.ts', previewable: true },
+  { guid: 'texture-guid', kind: 'texture', name: 'Texture reference', path: 'assets/farm.pack.ts', previewable: true },
 ] });
 const changed = () => { revision++; for (const listener of listeners) listener(state()); };
 const nodes = [
@@ -57,6 +62,7 @@ function inspect(id: string) {
     component('Visibility', { state: { type: 'enum', labels: { inherited: 0, hidden: 1, visible: 2 } } }, { state: 2 }),
     component('RigidBody', { bodyType: { type: 'enum', labels: { static: 0, dynamic: 1 } } }, { bodyType: 0 }),
     component('CustomHealth', { health: { type: 'f32' } }, { health: 7 }),
+    ...(showTexture ? [component('CustomTexture', { map: { type: 'asset<texture>' } }, { map: 'texture-guid' })] : []),
   ];
   return {
     entityId: id, entity: node.entity, name: node.name, targetId: 'scene', worldId: 'world', sampledAt: Date.now(),
@@ -81,11 +87,15 @@ const client = {
     if (operation === 'scene.select') { selected = String(args.entityId); selectedIds = [selected]; changed(); return state(); }
     if (operation === 'entity.focus') return { entityId: args.entityId };
     if (operation === 'asset.open') return { asset: { guid: args.guid } };
+    if (operation === 'assets.thumbnails') return { thumbnails: (args.guids as string[]).map(guid => ({ guid, ...(thumbnails.get(guid) ?? { state: 'unsupported' }) })) };
     throw new Error(`Unexpected fixture operation ${operation}`);
   },
 };
 Object.assign(globalThis, { meshInspectorFixture: {
   calls,
+  thumbnails(rows: [string, { state: string; dataUrl?: string }][]) { for (const [guid, row] of rows) thumbnails.set(guid, row); thumbnailEpoch++; changed(); },
+  catalogChanged() { catalogEpoch++; changed(); },
+  textureReference() { showTexture = true; changed(); },
   sceneTreeRequests: () => sceneTreeRequests,
   copyText: () => copyText,
   clipboardWrites: () => clipboardWrites,

@@ -2,7 +2,7 @@ import type { MaterialProgramAbi } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { admitSingleLayerMediumSubmission } from '../gpu-driven.js';
 
-const abi: MaterialProgramAbi = {
+const abi = {
   directEntry: 'vs_main',
   sceneIndexEntry: 'vs_scene_index',
   materialRow: { addressUnitBytes: 16, byteLength: 416, fields: [] },
@@ -24,7 +24,7 @@ const abi: MaterialProgramAbi = {
     outputAbi: 'SingleLayerMediumSurfaceData',
     passes: ['nearest-layer', 'color'],
   },
-};
+} satisfies MaterialProgramAbi;
 
 const ready = {
   abi,
@@ -37,6 +37,42 @@ const ready = {
 };
 
 describe('single-layer Surface GPU-driven admission', () => {
+  it('names the missing dynamicInput page and the two fixes when none is published', () => {
+    const declared: MaterialProgramAbi = {
+      ...abi,
+      surface: {
+        ...abi.surface,
+        dynamicInput: {
+          layout: {
+            name: 'waterEvents',
+            fields: [],
+            maxRecords: 1,
+            maxDomains: 1,
+            maxPageBytes: 16,
+            maxBindings: 1,
+            maxEventsPerSample: 1,
+            stride: 16,
+            identity: 'water-events/test',
+          },
+          group: 3,
+          binding: 3,
+          readOnly: true,
+          accessor: 'read_waterEvents',
+        },
+      },
+    };
+    const result = admitSingleLayerMediumSubmission({
+      ...ready,
+      abi: declared,
+      dynamicInputReady: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('surface-producer-not-ready');
+    expect(result.error.hint).toContain('renderer.setSurfaceDynamicInput');
+    expect(result.error.hint).toContain('drop surface.dynamicInput');
+  });
+
   it('admits nearest-layer and color to the same GPU-driven lane', () => {
     const result = admitSingleLayerMediumSubmission(ready);
     expect(result.ok).toBe(true);

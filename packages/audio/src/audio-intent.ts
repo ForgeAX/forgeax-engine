@@ -78,12 +78,12 @@ export interface AudioIntentBackendOptions {
   readonly emit: (intent: AudioIntent) => void | AudioClipIdentity;
   readonly maxPublishedBytes?: number;
   readonly maxPublishedSources?: number;
-  readonly state?: () => AudioState;
+  readonly state?: () => AudioState | undefined;
 }
 
 const DISCONNECTED_AUDIO_STATE: AudioState = {
-  contextState: 'suspended',
-  activeSourceCount: 0,
+  contextState: 'unavailable',
+  activeSourceCount: null,
   lastError: null,
 };
 
@@ -223,7 +223,7 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
             Number.isSafeInteger(command.requestId) && command.requestId > 0
               ? command.requestId
               : 0,
-          epoch: options.state?.().music?.epoch ?? 0,
+          epoch: options.state?.()?.music?.epoch ?? 0,
           status: 'rejected',
           failure: musicFailure(
             'invalid-command',

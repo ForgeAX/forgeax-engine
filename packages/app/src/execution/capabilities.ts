@@ -53,6 +53,8 @@ function probeWorker(timeoutMs: number | null): Promise<WorkerProbeResult> {
 export async function probeExecutionCapabilities(
   canvas: HTMLCanvasElement,
   timeoutMs: number | null = 2_000,
+  /** App installs the WebGPU stub in every execution Worker realm it creates. */
+  webGpuStub = false,
 ): Promise<ExecutionCapabilities> {
   const workerAvailable = typeof Worker === 'function';
   const offscreenAvailable = typeof canvas.transferControlToOffscreen === 'function';
@@ -78,12 +80,14 @@ export async function probeExecutionCapabilities(
         ? 'requestAnimationFrame observed in DedicatedWorker'
         : 'requestAnimationFrame unavailable in DedicatedWorker',
     },
-    workerWebGpu: {
-      available: worker.workerWebGpu,
-      reason: worker.workerWebGpu
-        ? 'navigator.gpu observed in DedicatedWorker'
-        : 'navigator.gpu unavailable in DedicatedWorker',
-    },
+    workerWebGpu: webGpuStub
+      ? { available: true, reason: 'WebGPU stub installed in each execution Worker' }
+      : {
+          available: worker.workerWebGpu,
+          reason: worker.workerWebGpu
+            ? 'navigator.gpu observed in DedicatedWorker'
+            : 'navigator.gpu unavailable in DedicatedWorker',
+        },
     crossOriginIsolated: {
       available: isolated,
       reason: isolated ? 'crossOriginIsolated is true' : 'crossOriginIsolated is false',

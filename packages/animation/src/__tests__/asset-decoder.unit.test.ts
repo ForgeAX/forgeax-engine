@@ -1,4 +1,13 @@
-import { type AssetDecoderContribution, type AssetDecoderInput, ok } from '@forgeax/engine-types';
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
+import {
+  type AnimationClip,
+  type AssetDecoderContribution,
+  type AssetDecoderInput,
+  ok,
+} from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { animationClipContribution, animationGraphContribution } from '../assets/animation-decoder';
 
@@ -68,6 +77,60 @@ describe('animationClipContribution', async () => {
           ],
         }),
       ).toBeUndefined();
+  });
+  it('reads numeric samplers from the samples artifact and keeps discrete outputs inline', async () => {
+    const clip = {
+      kind: 'animation-clip',
+      duration: 1,
+      channels: [
+        {
+          targetId: 'a95da0ec669189f98273e8f86d8ad9f2',
+          property: 'rotation',
+          sampler: { input: [0, 1], output: [0, 0, 0, 1, 0, 0.5, 0, 1], interpolation: 'LINEAR' },
+        },
+        {
+          targetId: 'a95da0ec669189f98273e8f86d8ad9f2',
+          property: 'property',
+          binding: 'Visibility.visible',
+          sampler: { input: [0, 0.5], output: [true, false], interpolation: 'STEP' },
+        },
+      ],
+    };
+    const samples = requireValue(encodeAnimationClipSamples(clip));
+    expect(samples.payload.channels).toMatchObject([
+      { sampler: { input: { offset: 0, count: 2 }, output: { offset: 2, count: 8 } } },
+      { sampler: { input: { offset: 10, count: 2 }, output: [true, false] } },
+    ]);
+    const descriptor = { path: 'clip.bin', mediaType: 'application/octet-stream' };
+    const read = async (input: Uint8Array) =>
+      animationClipContribution.decoder.decode({
+        envelope: {
+          guid: 'decoder-test',
+          kind: 'animation-clip',
+          payload: JSON.parse(JSON.stringify(samples.payload)),
+          refs: [],
+          artifacts: { [ANIMATION_CLIP_SAMPLES_ARTIFACT]: descriptor },
+        },
+        artifacts: { read: async () => ok(input) },
+        signal: new AbortController().signal,
+      } as unknown as AssetDecoderInput<AnimationClip>);
+    const loaded = (await read(samples.bytes)) as unknown as {
+      ok: true;
+      value: { channels: { sampler: { input: Float32Array; output: unknown } }[] };
+    };
+    expect(loaded.ok).toBe(true);
+    expect(loaded.value.channels[0]?.sampler.output).toEqual(
+      new Float32Array([0, 0, 0, 1, 0, 0.5, 0, 1]),
+    );
+    expect(loaded.value.channels[1]?.sampler).toMatchObject({
+      input: new Float32Array([0, 0.5]),
+      output: [true, false],
+    });
+    // A truncated artifact cannot satisfy every window.
+    expect(await read(samples.bytes.slice(0, 16))).toMatchObject({
+      ok: false,
+      error: { code: 'asset-package-invalid' },
+    });
   });
   it('retains property bindings and STEP values across the JSON transport', async () => {
     const channel = (output: unknown, interpolation = 'STEP') => ({

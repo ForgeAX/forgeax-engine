@@ -1,6 +1,7 @@
 import { assetDataBytes } from '@forgeax/engine-assets-runtime/internal';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { attributeChannelBytes, packedRowsEligible } from './publication/packed-rows-mesh';
 
 /** A standard MeshAsset candidate prepared for one attached World generation. */
 export interface DynamicGeometryPrepareInput {
@@ -18,6 +19,15 @@ export interface DynamicGeometryPrepareInput {
   readonly topologyRevision?: number;
   /** Captured by the Renderer host from the World FixedTime resource. */
   readonly fixedStep?: number;
+  /**
+   * Render-realm CPU channel request. `'packed-rows'` sends a static raster-only
+   * triangle mesh to the Renderer with its packed interleaved rows only; every
+   * attribute key stays as an empty layout key and cold consumers rebuild the
+   * channels from the rows. Ineligible meshes (skin, morph, LOD, cards,
+   * distance field, non-triangle or non-float32 channels) keep full channels.
+   * The World MeshAsset is never trimmed. Default `'full'`.
+   */
+  readonly renderAttributes?: 'full' | 'packed-rows';
 }
 
 /** Internal lifecycle input after the host resolves the asset reference. */
@@ -216,6 +226,41 @@ interface CandidateAcceptancePlan {
   readonly invalidatesHistory: boolean;
 }
 
+/** One admission input resolved to its current lifecycle record. */
+interface ResolvedCandidate {
+  readonly candidate: DynamicGeometryCandidate;
+  readonly record: CandidateRecord;
+  readonly inputIndex: number;
+}
+
+/** Revision watermarks and records of one World's entities outside an admission batch. */
+interface EntityHistory {
+  readonly newestRevision: Map<number | undefined, number>;
+  readonly newestTopology: Map<number | undefined, number>;
+  readonly records: Map<number | undefined, CandidateRecord[]>;
+}
+
+function keepNewest(
+  watermarks: Map<number | undefined, number>,
+  entity: number | undefined,
+  revision: number,
+): void {
+  const previous = watermarks.get(entity);
+  if (previous === undefined || revision > previous) watermarks.set(entity, revision);
+}
+
+/** Admission ordering names an object World and a non-negative integer fixed step. */
+function isOrdering(ordering: DynamicGeometryOrdering): boolean {
+  return (
+    ordering !== null &&
+    typeof ordering === 'object' &&
+    ordering.world !== null &&
+    typeof ordering.world === 'object' &&
+    Number.isInteger(ordering.fixedStep) &&
+    ordering.fixedStep >= 0
+  );
+}
+
 /**
  * A public candidate is a credential, not a mutable state object. Keep the
  * owner/world check in `current` cheap, then compare every scalar admission
@@ -282,10 +327,14 @@ function validateMesh(mesh: MeshAsset): string | undefined {
   return undefined;
 }
 
-function meshByteSize(mesh: MeshAsset): number {
+function meshByteSize(mesh: MeshAsset, renderAttributes?: 'full' | 'packed-rows'): number {
   // Charge the complete private MeshAsset copy, including morph/offline data.
   // This is the same logical-view accounting used by its runtime storage owner.
-  return assetDataBytes(mesh);
+  // A packed-rows copy does not carry its canonical channel bytes.
+  const bytes = assetDataBytes(mesh);
+  return renderAttributes === 'packed-rows' && packedRowsEligible(mesh)
+    ? bytes - attributeChannelBytes(mesh)
+    : bytes;
 }
 
 /**
@@ -501,70 +550,50 @@ export function createDynamicGeometryLifecycle(
       0,
     );
 
-  const planCandidates = (
-    candidates: readonly DynamicGeometryCandidate[],
-    ordering: DynamicGeometryOrdering,
-  ): Result<readonly CandidateAcceptancePlan[], DynamicGeometryError> => {
-    if (disposed)
-      return failure('dynamic-geometry-disposed', 'renderer is alive', 'rebuild the Renderer');
-    if (!Array.isArray(candidates) || candidates.length === 0) {
-      return batchFailure('dynamic-geometry-invalid', 'input', undefined, undefined, {
-        candidateCount: Array.isArray(candidates) ? candidates.length : undefined,
-      });
+  /**
+   * Complete declared preparation batches may exceed the per-call candidate
+   * budget. One admission may name several of them, so a producer can prepare
+   * one transaction in bounded slices; every member of each named batch must
+   * be present, the union stays within one declared roster bound, and the
+   * whole union is still accepted or refused together.
+   */
+  const isCompleteDeclaredBatch = (candidates: readonly DynamicGeometryCandidate[]): boolean => {
+    if (candidates.length === 0 || candidates.length > maxCandidateLimit) return false;
+    const members = new Map<readonly string[], number>();
+    for (const candidate of candidates) {
+      const declared =
+        candidate?.candidateId === undefined
+          ? undefined
+          : records.get(candidate.candidateId)?.batch;
+      if (declared === undefined) return false;
+      members.set(declared, (members.get(declared) ?? 0) + 1);
     }
-    const first = candidates[0];
-    const declared =
-      first?.candidateId === undefined ? undefined : records.get(first.candidateId)?.batch;
-    const completeDeclaredBatch =
-      declared !== undefined &&
-      declared.length === candidates.length &&
-      candidates.every(
-        (candidate) =>
-          candidate?.candidateId !== undefined &&
-          records.get(candidate.candidateId)?.batch === declared,
-      );
-    if (candidates.length > maxCandidates && !completeDeclaredBatch) {
-      return failure(
-        'dynamic-geometry-budget-exceeded',
-        'candidate batch remains within the bounded renderer budget',
-        'split the batch before preparing its candidates',
-        {
-          reason: 'batch-count',
-          requested: candidates.length,
-          used: candidates.length,
-          limit: maxCandidates,
-          pendingFenceCandidates: pendingFenceCandidateCount(),
-          actual: {
-            candidateCount: candidates.length,
-            maxCandidates,
-            retainedCandidates: retainedCandidateCount(),
-          },
+    for (const [declared, count] of members) if (declared.length !== count) return false;
+    return true;
+  };
+  const batchCountFailure = (candidateCount: number): Result<never, DynamicGeometryError> =>
+    failure(
+      'dynamic-geometry-budget-exceeded',
+      'candidate batch remains within the bounded renderer budget',
+      'split the batch before preparing its candidates',
+      {
+        reason: 'batch-count',
+        requested: candidateCount,
+        used: candidateCount,
+        limit: maxCandidates,
+        pendingFenceCandidates: pendingFenceCandidateCount(),
+        actual: {
+          candidateCount,
+          maxCandidates,
+          retainedCandidates: retainedCandidateCount(),
         },
-      );
-    }
-    if (
-      ordering === null ||
-      typeof ordering !== 'object' ||
-      ordering.world === null ||
-      typeof ordering.world !== 'object' ||
-      !Number.isInteger(ordering.fixedStep) ||
-      ordering.fixedStep < 0
-    ) {
-      return batchFailure(
-        'dynamic-geometry-ordering-required',
-        'ordering',
-        undefined,
-        undefined,
-        ordering,
-      );
-    }
-    const orderingWorld = ordering.world;
-    const orderingFixedStep = ordering.fixedStep;
-    const resolved: Array<{
-      readonly candidate: DynamicGeometryCandidate;
-      readonly record: CandidateRecord;
-      readonly inputIndex: number;
-    }> = [];
+      },
+    );
+  /** Each input must be this lifecycle's current credential for its record. */
+  const resolveCredentials = (
+    candidates: readonly DynamicGeometryCandidate[],
+  ): Result<readonly ResolvedCandidate[], DynamicGeometryError> => {
+    const resolved: ResolvedCandidate[] = [];
     for (let inputIndex = 0; inputIndex < candidates.length; inputIndex += 1) {
       const candidate = candidates[inputIndex];
       if (candidate === undefined || candidate === null || typeof candidate !== 'object') {
@@ -589,14 +618,21 @@ export function createDynamicGeometryLifecycle(
       }
       resolved.push({ candidate, record, inputIndex });
     }
-
-    // A prepared transaction cannot be split or combined after its budget is reserved.
+    return ok(resolved);
+  };
+  /**
+   * A prepared transaction cannot be split or combined after its budget is
+   * reserved, and one admission names each candidate and entity once.
+   */
+  const batchMembershipFailure = (
+    resolved: readonly ResolvedCandidate[],
+    completeDeclaredBatch: boolean,
+  ): Result<never, DynamicGeometryError> | undefined => {
     if (resolved.some((entry) => entry.record.batch !== undefined) && !completeDeclaredBatch) {
       return batchFailure('dynamic-geometry-invalid', 'input', undefined, undefined, {
         reason: 'admission must contain the complete declared preparation batch',
       });
     }
-
     const candidateIndexes = new Map<string, number>();
     const entityIndexes = new Map<object, Map<number | undefined, number>>();
     for (const entry of resolved) {
@@ -628,7 +664,12 @@ export function createDynamicGeometryLifecycle(
       }
       indexesByEntity.set(entry.record.candidate.entity, entry.inputIndex);
     }
-
+    return undefined;
+  };
+  /** Every member must be a current-generation, prepared, non-stale record. */
+  const preparedStateFailure = (
+    resolved: readonly ResolvedCandidate[],
+  ): Result<never, DynamicGeometryError> | undefined => {
     for (const entry of resolved) {
       if (entry.record.candidate.generation !== currentGeneration) {
         return batchFailure(
@@ -640,7 +681,6 @@ export function createDynamicGeometryLifecycle(
         );
       }
     }
-
     for (const entry of resolved) {
       if (entry.candidate.state !== 'prepared' || entry.record.candidate.state !== 'prepared') {
         return batchFailure(
@@ -657,15 +697,21 @@ export function createDynamicGeometryLifecycle(
         });
       }
     }
-
+    return undefined;
+  };
+  /** Members belong to the ordering World and were prepared no later than its fixed step. */
+  const orderingFailure = (
+    resolved: readonly ResolvedCandidate[],
+    ordering: DynamicGeometryOrdering,
+  ): Result<never, DynamicGeometryError> | undefined => {
     for (const entry of resolved) {
-      if (entry.record.world !== orderingWorld) {
+      if (entry.record.world !== ordering.world) {
         return batchFailure(
           'dynamic-geometry-ordering-required',
           'ordering',
           entry.inputIndex,
           entry.candidate,
-          { expectedWorld: entry.record.world, actualWorld: orderingWorld },
+          { expectedWorld: entry.record.world, actualWorld: ordering.world },
         );
       }
       const preparedFixedStep = entry.record.candidate.fixedStep;
@@ -673,103 +719,118 @@ export function createDynamicGeometryLifecycle(
         preparedFixedStep !== undefined &&
         (!Number.isInteger(preparedFixedStep) ||
           preparedFixedStep < 0 ||
-          preparedFixedStep > orderingFixedStep)
+          preparedFixedStep > ordering.fixedStep)
       ) {
         return batchFailure(
           'dynamic-geometry-ordering-required',
           'ordering',
           entry.inputIndex,
           entry.candidate,
-          { preparedFixedStep, orderingFixedStep },
+          { preparedFixedStep, orderingFixedStep: ordering.fixedStep },
         );
       }
     }
-
+    return undefined;
+  };
+  /** Newest revision watermarks and same-entity records of this World outside the batch. */
+  const entityHistory = (world: object, resolved: readonly ResolvedCandidate[]): EntityHistory => {
     const batchIds = new Set(resolved.map((entry) => entry.candidate.candidateId));
-    const newestRevisionByEntity = new Map<number | undefined, number>(
-      latestRevisionByWorld.get(orderingWorld),
-    );
-    const newestTopologyByEntity = new Map<number | undefined, number>(
-      latestTopologyRevisionByWorld.get(orderingWorld),
-    );
-    const recordsByEntity = new Map<number | undefined, CandidateRecord[]>();
-    const keepNewest = (
-      watermarks: Map<number | undefined, number>,
-      entity: number | undefined,
-      revision: number,
-    ): void => {
-      const previous = watermarks.get(entity);
-      if (previous === undefined || revision > previous) watermarks.set(entity, revision);
+    const history: EntityHistory = {
+      newestRevision: new Map<number | undefined, number>(latestRevisionByWorld.get(world)),
+      newestTopology: new Map<number | undefined, number>(latestTopologyRevisionByWorld.get(world)),
+      records: new Map<number | undefined, CandidateRecord[]>(),
     };
     for (const [candidateId, record] of records) {
-      if (record.world !== orderingWorld || batchIds.has(candidateId)) continue;
+      if (record.world !== world || batchIds.has(candidateId)) continue;
       const candidate = record.candidate;
       if (candidate.state === 'prepared' || candidate.state === 'accepted') {
-        keepNewest(newestRevisionByEntity, candidate.entity, candidate.revision);
+        keepNewest(history.newestRevision, candidate.entity, candidate.revision);
       }
-      keepNewest(newestTopologyByEntity, candidate.entity, candidate.topologyRevision);
-      const sameEntity = recordsByEntity.get(candidate.entity) ?? [];
+      keepNewest(history.newestTopology, candidate.entity, candidate.topologyRevision);
+      const sameEntity = history.records.get(candidate.entity) ?? [];
       sameEntity.push(record);
-      recordsByEntity.set(candidate.entity, sameEntity);
+      history.records.set(candidate.entity, sameEntity);
     }
-
-    const planned: Array<{
-      readonly entry: (typeof resolved)[number];
-      readonly invalidatesHistory: boolean;
-      readonly historyRecords: readonly CandidateRecord[];
-    }> = [];
+    return history;
+  };
+  /** Revisions must advance past the entity's newest; topology may not regress. */
+  const revisionFailure = (
+    entry: ResolvedCandidate,
+    history: EntityHistory,
+  ): Result<never, DynamicGeometryError> | undefined => {
+    const candidate = entry.record.candidate;
+    if (!Number.isInteger(candidate.revision) || candidate.revision < 0) {
+      return batchFailure(
+        'dynamic-geometry-invalid',
+        'revision-topology',
+        entry.inputIndex,
+        entry.candidate,
+        { revision: candidate.revision },
+      );
+    }
+    const newestRevision = history.newestRevision.get(candidate.entity);
+    if (newestRevision !== undefined && candidate.revision <= newestRevision) {
+      return batchFailure(
+        'dynamic-geometry-stale',
+        'revision-topology',
+        entry.inputIndex,
+        entry.candidate,
+        { revision: candidate.revision, newestRevision },
+      );
+    }
+    if (!Number.isInteger(candidate.topologyRevision) || candidate.topologyRevision < 0) {
+      return batchFailure(
+        'dynamic-geometry-invalid',
+        'revision-topology',
+        entry.inputIndex,
+        entry.candidate,
+        { topologyRevision: candidate.topologyRevision },
+      );
+    }
+    const newestTopology = history.newestTopology.get(candidate.entity);
+    if (newestTopology !== undefined && candidate.topologyRevision < newestTopology) {
+      return batchFailure(
+        'dynamic-geometry-stale',
+        'revision-topology',
+        entry.inputIndex,
+        entry.candidate,
+        { topologyRevision: candidate.topologyRevision, newestTopology },
+      );
+    }
+    return undefined;
+  };
+  /** Plan each member's acceptance; a newer topology invalidates older entity history. */
+  const planAcceptances = (
+    resolved: readonly ResolvedCandidate[],
+    ordering: DynamicGeometryOrdering,
+  ): Result<readonly CandidateAcceptancePlan[], DynamicGeometryError> => {
+    const history = entityHistory(ordering.world, resolved);
+    const plans: CandidateAcceptancePlan[] = [];
     for (const entry of resolved) {
+      const revision = revisionFailure(entry, history);
+      if (revision !== undefined) return revision;
       const candidate = entry.record.candidate;
-      if (!Number.isInteger(candidate.revision) || candidate.revision < 0) {
-        return batchFailure(
-          'dynamic-geometry-invalid',
-          'revision-topology',
-          entry.inputIndex,
-          entry.candidate,
-          { revision: candidate.revision },
-        );
-      }
-      const newestRevision = newestRevisionByEntity.get(candidate.entity);
-      if (newestRevision !== undefined && candidate.revision <= newestRevision) {
-        return batchFailure(
-          'dynamic-geometry-stale',
-          'revision-topology',
-          entry.inputIndex,
-          entry.candidate,
-          { revision: candidate.revision, newestRevision },
-        );
-      }
-      if (!Number.isInteger(candidate.topologyRevision) || candidate.topologyRevision < 0) {
-        return batchFailure(
-          'dynamic-geometry-invalid',
-          'revision-topology',
-          entry.inputIndex,
-          entry.candidate,
-          { topologyRevision: candidate.topologyRevision },
-        );
-      }
-      const newestTopology = newestTopologyByEntity.get(candidate.entity);
-      if (newestTopology !== undefined && candidate.topologyRevision < newestTopology) {
-        return batchFailure(
-          'dynamic-geometry-stale',
-          'revision-topology',
-          entry.inputIndex,
-          entry.candidate,
-          { topologyRevision: candidate.topologyRevision, newestTopology },
-        );
-      }
+      const newestTopology = history.newestTopology.get(candidate.entity);
       const invalidatesHistory =
         newestTopology !== undefined && candidate.topologyRevision > newestTopology;
       const historyRecords = invalidatesHistory
-        ? (recordsByEntity.get(candidate.entity) ?? []).filter(
+        ? (history.records.get(candidate.entity) ?? []).filter(
             (record) =>
               record.candidate.topologyRevision < candidate.topologyRevision &&
               !record.historyInvalidated,
           )
         : [];
-      planned.push({ entry, invalidatesHistory, historyRecords });
+      const accepted = Object.freeze({
+        ...candidate,
+        fixedStep: ordering.fixedStep,
+        state: 'accepted' as const,
+      });
+      plans.push(planAcceptance(entry.record, accepted, historyRecords, invalidatesHistory));
     }
-
+    return ok(plans);
+  };
+  /** Retained count and reserved mesh bytes must still fit and match the running total. */
+  const reservedBudgetFailure = (): Result<never, DynamicGeometryError> | undefined => {
     let reservedBytes = 0;
     for (const record of records.values()) {
       reservedBytes += record.candidate.meshBytes;
@@ -797,16 +858,43 @@ export function createDynamicGeometryLifecycle(
         maxMeshBytes,
       });
     }
+    return undefined;
+  };
 
-    const plans = planned.map(({ entry, invalidatesHistory, historyRecords }) => {
-      const accepted = Object.freeze({
-        ...entry.record.candidate,
-        fixedStep: orderingFixedStep,
-        state: 'accepted' as const,
+  const planCandidates = (
+    candidates: readonly DynamicGeometryCandidate[],
+    ordering: DynamicGeometryOrdering,
+  ): Result<readonly CandidateAcceptancePlan[], DynamicGeometryError> => {
+    if (disposed)
+      return failure('dynamic-geometry-disposed', 'renderer is alive', 'rebuild the Renderer');
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      return batchFailure('dynamic-geometry-invalid', 'input', undefined, undefined, {
+        candidateCount: Array.isArray(candidates) ? candidates.length : undefined,
       });
-      return planAcceptance(entry.record, accepted, historyRecords, invalidatesHistory);
-    });
-    return ok(plans);
+    }
+    const completeDeclaredBatch = isCompleteDeclaredBatch(candidates);
+    if (candidates.length > maxCandidates && !completeDeclaredBatch) {
+      return batchCountFailure(candidates.length);
+    }
+    if (!isOrdering(ordering)) {
+      return batchFailure(
+        'dynamic-geometry-ordering-required',
+        'ordering',
+        undefined,
+        undefined,
+        ordering,
+      );
+    }
+    const resolved = resolveCredentials(candidates);
+    if (!resolved.ok) return resolved;
+    const rejected =
+      batchMembershipFailure(resolved.value, completeDeclaredBatch) ??
+      preparedStateFailure(resolved.value) ??
+      orderingFailure(resolved.value, ordering);
+    if (rejected !== undefined) return rejected;
+    const plans = planAcceptances(resolved.value, ordering);
+    if (!plans.ok) return plans;
+    return reservedBudgetFailure() ?? plans;
   };
 
   const prepare = (
@@ -873,7 +961,7 @@ export function createDynamicGeometryLifecycle(
         'MeshAsset satisfies the standard geometry contract',
         invalid,
       );
-    const candidateBytes = meshByteSize(input.mesh);
+    const candidateBytes = meshByteSize(input.mesh, input.renderAttributes);
     if (
       !Number.isSafeInteger(candidateBytes) ||
       candidateBytes < 0 ||

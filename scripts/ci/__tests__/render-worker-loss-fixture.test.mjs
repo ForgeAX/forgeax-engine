@@ -18,6 +18,7 @@ for (const injected of [false, true])
     let resolveLoss;
     let destroys = 0;
     let handler;
+    const messages = [];
     const native = {
       lost: new Promise((resolve) => {
         resolveLoss = resolve;
@@ -27,14 +28,32 @@ for (const injected of [false, true])
         resolveLoss({ reason: 'destroyed', message: 'native device destroyed' });
       },
     };
-    const gpu = { requestAdapter: async () => ({ requestDevice: async () => native }) };
+    const info = {
+      vendor: 'fixture-vendor',
+      architecture: 'fixture-architecture',
+      description: 'fixture-adapter',
+      isFallbackAdapter: false,
+    };
+    const gpu = { requestAdapter: async () => ({ info, requestDevice: async () => native }) };
     runInNewContext(`${source.slice(start, end)}; ready = true;`, {
       navigator: { gpu },
+      postMessage: (message) => messages.push(message),
       addEventListener: (_name, listener) => {
         handler = listener;
       },
     });
     const device = await (await gpu.requestAdapter()).requestDevice();
+    assert.deepEqual(JSON.parse(JSON.stringify(messages)), [
+      {
+        kind: 'probe-adapter',
+        info: {
+          vendor: info.vendor,
+          architecture: info.architecture,
+          description: info.description,
+          fallback: false,
+        },
+      },
+    ]);
     assert.equal(device, native);
     assert.equal(destroys, 0);
     if (injected) handler({ data: 'lose-device', stopImmediatePropagation() {} });

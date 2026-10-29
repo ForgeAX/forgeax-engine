@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
-import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { createPrimitiveMesh, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import type { MeshAsset, TextureAsset } from '@forgeax/engine-types';
@@ -10,9 +10,13 @@ import { createPublishedMeshResidencyHost } from '../../assembly/published-mesh-
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { PersistentRenderScene } from '../../scene/render-scene';
-import { renderPublicationAssetTransfers, renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import {
+  encodeRenderPublication,
+  renderPublicationAssetTransfers,
+  renderPublicationTransfers,
+} from '../record';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
@@ -57,17 +61,19 @@ function fixture() {
   world.update(0).unwrap();
   const transfer = () => {
     const candidate = publisher.prepare(0).unwrap();
-    const assetBuffers = renderPublicationAssetTransfers(candidate.packet);
+    const assetBuffers = renderPublicationAssetTransfers(candidate.message);
     const bytes = assetBuffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
     const packet = structuredClone(candidate.packet, {
-      transfer: [...renderPublicationTransfers(candidate.packet), ...assetBuffers],
+      transfer: [...renderPublicationTransfers(candidate.message), ...assetBuffers],
     });
     candidate.accept();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, bytes };
   };
   const initial = transfer();
-  const accepted = receiver.accept(initial.packet).unwrap();
+  const accepted = receiver.accept(encodeRenderPublication(initial.packet)).unwrap();
   const close = () => {
     publisher.dispose();
     receiver.dispose();
@@ -95,7 +101,7 @@ it('delivers published asset changes to every retained scene without publishing 
     const { packet } = f.transfer();
     expect(packet.upserts).toHaveLength(0);
     expect(packet.templates).toHaveLength(0);
-    const accepted = f.receiver.accept(packet).unwrap();
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     for (const scene of scenes) scene.consumePublication(accepted);
     for (const observer of observers) {
       expect(observer).toHaveBeenCalledExactlyOnceWith(
@@ -103,7 +109,7 @@ it('delivers published asset changes to every retained scene without publishing 
         expect.objectContaining({ handle: f.texture, removed: false }),
       );
     }
-    const unchanged = f.receiver.accept(f.transfer().packet).unwrap();
+    const unchanged = f.receiver.accept(encodeRenderPublication(f.transfer().packet)).unwrap();
     for (const scene of scenes) scene.consumePublication(unchanged);
     for (const observer of observers) expect(observer).toHaveBeenCalledTimes(1);
   } finally {
@@ -139,7 +145,7 @@ it('transfers only mesh channel and texture region bytes without publishing thei
     expect(packet.upserts).toHaveLength(0);
     expect(packet.templates).toHaveLength(0);
     expect(bytes).toBe(12 + 12 + 16);
-    const accepted = f.receiver.accept(packet).unwrap();
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
     const texture = accepted.resources.resolveAsset<TextureAsset>(f.texture).unwrap();
     expect(mesh.vertices.buffer).toBe(beforeMesh.vertices.buffer);
@@ -160,6 +166,39 @@ it('transfers only mesh channel and texture region bytes without publishing thei
       })
       .unwrap();
     expect(texture.data[(10 * 1024 + 510) * 4]).toBe(127);
+  } finally {
+    f.close();
+  }
+});
+
+it('publishes a multi-range mesh write as one patch with changed bytes only', () => {
+  const f = fixture();
+  try {
+    const source = runtimeAssets(f.assets).borrow<MeshAsset>(f.mesh).unwrap();
+    const stride = deriveVertexLayoutProjection(source.attributes).arrayStride;
+    const rows = source.vertices.slice(0, (2 * stride) / 4);
+    const indices =
+      source.indices instanceof Uint16Array ? Uint16Array.of(0, 0, 0) : Uint32Array.of(0, 0, 0);
+    f.assets
+      .writeRange(f.mesh, [
+        { first: 2, vertices: rows },
+        { first: 3, indices },
+      ])
+      .unwrap();
+    const { packet } = f.transfer();
+    expect(packet.assets).toHaveLength(0);
+    expect(packet.upserts).toHaveLength(0);
+    expect(packet.assetPatches).toHaveLength(1);
+    const patch = packet.assetPatches[0];
+    assert(patch);
+    const patchBytes = patch.ranges.reduce((sum, range) => sum + range.bytes.byteLength, 0);
+    // Interleaved rows once, their derived packed channels once, and three indices.
+    expect(patchBytes).toBe(2 * stride * 2 + 3 * indices.BYTES_PER_ELEMENT);
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
+    const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
+    expect([...mesh.vertices.subarray((2 * stride) / 4, (4 * stride) / 4)]).toEqual([...rows]);
+    assert(mesh.indices);
+    expect([...mesh.indices.subarray(3, 6)]).toEqual([0, 0, 0]);
   } finally {
     f.close();
   }
@@ -192,10 +231,10 @@ it('rejects a late invalid range atomically and keeps fixed preparation bytes th
     const last = patch.ranges[patch.ranges.length - 1];
     assert(last);
     Object.assign(last, { byteOffset: Number.MAX_SAFE_INTEGER });
-    expect(f.receiver.accept(bad).ok).toBe(false);
+    expect(f.receiver.accept(encodeRenderPublication(bad)).ok).toBe(false);
     expect(before.vertices).toEqual(original);
     expect(candidate.isCurrent()).toBe(true);
-    const accepted = f.receiver.accept(packet).unwrap();
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     expect(candidate.isCurrent()).toBe(false);
     expect(candidate.mesh.vertices).toEqual(original);
     const current = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
@@ -247,7 +286,7 @@ it('prepares a future mesh revision without changing the drawn allocation, then 
     expect(candidate.isCurrent()).toBe(true);
     expect(store.getMeshGpuHandles(f.mesh, f.accepted.resources)).toBe(old);
     const { packet } = f.transfer();
-    const accepted = f.receiver.accept(packet).unwrap();
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const next = store.getMeshGpuHandles(f.mesh, accepted.resources);
     assert(next);
     expect(next).not.toBe(old);

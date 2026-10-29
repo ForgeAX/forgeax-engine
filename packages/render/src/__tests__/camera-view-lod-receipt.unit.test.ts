@@ -9,6 +9,7 @@ import {
 } from '../assembly/lod-observation';
 import { ANTIALIAS_NONE, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
+import type { LodOcclusionInspectionCell } from '../render-system';
 import * as timingModule from '../renderer';
 import { inspectLodOcclusion } from '../scene/visibility/inspection';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
@@ -520,9 +521,18 @@ describe('camera-view LOD receipt observation', () => {
         currentInspection = replacementInspection;
         return undefined;
       };
+    const cells = new WeakMap<object, LodOcclusionInspectionCell>();
+    const cellOf = (inspection: typeof capturedInspection): LodOcclusionInspectionCell => {
+      let cell = cells.get(inspection);
+      if (cell === undefined) {
+        cell = { view: inspection.view, submit: inspection.submit, value: () => inspection };
+        cells.set(inspection, cell);
+      }
+      return cell;
+    };
     const system = {
-      get lodOcclusionInspection() {
-        return currentInspection;
+      get lodOcclusion() {
+        return cellOf(currentInspection);
       },
       perFrameGraphInfo: { generation: 11 },
       get perFrameGraphIncarnation() {
@@ -548,7 +558,7 @@ describe('camera-view LOD receipt observation', () => {
           system,
           viewRef: {},
           primary: false,
-          inspection: capturedInspection,
+          inspection: cellOf(capturedInspection),
         },
       ],
       leases: [{ lease, worldIdentity: 'world-a', generation: 3 }],

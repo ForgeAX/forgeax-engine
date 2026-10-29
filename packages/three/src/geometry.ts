@@ -76,11 +76,26 @@ export function geometryValues(geometry: BufferGeometry, grouped: boolean): unkn
   return values;
 }
 
+type Topology = 'triangle-list' | 'point-list' | 'line-list' | 'line-strip';
+
+/** Mixed vertex-color groups duplicate the vertex stream; the second copy carries white. */
+interface VertexLayout {
+  readonly sourceCount: number;
+  readonly count: number;
+  readonly mixedColor: boolean;
+}
+
+interface ProjectedIndices {
+  readonly indices: number[];
+  readonly submeshes: MeshAsset['submeshes'][number][];
+  readonly slotCount: number;
+}
+
 export function projectGeometry(
   geometry: BufferGeometry,
   grouped: boolean,
   materials?: readonly GeometryMaterial[],
-  topology: 'triangle-list' | 'point-list' | 'line-list' | 'line-strip' = 'triangle-list',
+  topology: Topology = 'triangle-list',
   projectedUvs: Readonly<Record<string, Float32Array>> = {},
   wireframe = false,
 ): Result<MeshAsset | undefined, Error> {
@@ -90,7 +105,43 @@ export function projectGeometry(
   const useColor =
     geometry.hasAttribute('color') && (materials?.some((m) => m.vertexColors) ?? true);
   const mixedColor = useColor && materials?.some((m) => !m.vertexColors) === true;
-  const count = sourceCount * (mixedColor ? 2 : 1);
+  const layout = { sourceCount, count: sourceCount * (mixedColor ? 2 : 1), mixedColor };
+  const projected = projectVertexAttributes(geometry, useColor, layout);
+  if (!projected.ok) return projected;
+  const attributes = projected.value;
+  appendProjectedUvs(attributes, projectedUvs, layout);
+  const ranged = projectIndices(geometry, grouped, materials, topology, wireframe, layout);
+  if (!ranged.ok) return ranged;
+  if (ranged.value === undefined) return ok(undefined);
+  const { indices, submeshes, slotCount } = ranged.value;
+  const count = layout.count;
+  completeNormals(attributes, indices, count);
+  const nativeIndices = count > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+  const tangents = completeTangents(geometry, attributes, topology, nativeIndices, count);
+  if (!tangents.ok) return tangents;
+  const morphTargets = projectMorphTargets(geometry, layout);
+  if (!morphTargets.ok) return morphTargets;
+  const packed = packInterleavedVertexAttributes(attributes, count);
+  if (!packed.ok) return packed;
+  return ok({
+    kind: 'mesh',
+    ...(morphTargets.value.length === 0 ? {} : { morphTargets: morphTargets.value }),
+    vertices: packed.value.vertices,
+    attributes,
+    indices: nativeIndices,
+    aabb: box3.fromPositions(box3.create(), attributes.position as Float32Array),
+    submeshes,
+    materialSlots: Array.from({ length: slotCount }, (_, slot) => ({
+      slotName: `material-${slot}`,
+    })),
+  });
+}
+
+function projectVertexAttributes(
+  geometry: BufferGeometry,
+  useColor: boolean,
+  layout: VertexLayout,
+): Result<VertexAttributeMap, Error> {
   const attributes: VertexAttributeMap = {};
   for (const [key, attribute] of Object.entries(geometry.attributes)) {
     // Ordinary Three materials ignore application attributes they never read.
@@ -98,90 +149,156 @@ export function projectGeometry(
     const name = key as keyof typeof WIDTHS;
     const width = WIDTHS[name];
     if (
-      attribute.count !== sourceCount ||
+      attribute.count !== layout.sourceCount ||
       (attribute.itemSize !== width && !(key === 'color' && attribute.itemSize === 3))
     )
       return invalid(`BufferGeometry.attributes.${key}.itemSize/count`, geometry.uuid);
     const values =
-      name === 'skinIndex' ? new Uint16Array(count * width) : new Float32Array(count * width);
-    for (let vertex = 0; vertex < count; vertex++) {
-      for (let lane = 0; lane < width; lane++) {
-        const value =
-          (key === 'color' && vertex >= sourceCount) || (lane === 3 && attribute.itemSize === 3)
-            ? 1
-            : readComponent(attribute, vertex % sourceCount, lane);
-        if (
-          !Number.isFinite(value) ||
-          (name === 'skinIndex' && (!Number.isInteger(value) || value < 0 || value > 65535))
-        )
-          return invalid(`BufferGeometry.attributes.${key}`, geometry.uuid);
-        values[vertex * width + lane] = value;
-      }
-    }
+      name === 'skinIndex'
+        ? new Uint16Array(layout.count * width)
+        : new Float32Array(layout.count * width);
+    if (!copyAttribute(values, attribute, name, layout))
+      return invalid(`BufferGeometry.attributes.${key}`, geometry.uuid);
     if (name === 'skinIndex') attributes.skinIndex = values as Uint16Array;
     else attributes[name] = values as Float32Array;
   }
+  return ok(attributes);
+}
+
+/** Copy one source attribute into its native width; false when a component is not admissible. */
+function copyAttribute(
+  values: Float32Array | Uint16Array,
+  attribute: BufferAttribute | InterleavedBufferAttribute,
+  name: keyof typeof WIDTHS,
+  layout: VertexLayout,
+): boolean {
+  const width = WIDTHS[name];
+  for (let vertex = 0; vertex < layout.count; vertex++) {
+    for (let lane = 0; lane < width; lane++) {
+      const value =
+        (name === 'color' && vertex >= layout.sourceCount) ||
+        (lane === 3 && attribute.itemSize === 3)
+          ? 1
+          : readComponent(attribute, vertex % layout.sourceCount, lane);
+      if (
+        !Number.isFinite(value) ||
+        (name === 'skinIndex' && (!Number.isInteger(value) || value < 0 || value > 65535))
+      )
+        return false;
+      values[vertex * width + lane] = value;
+    }
+  }
+  return true;
+}
+
+function appendProjectedUvs(
+  attributes: VertexAttributeMap,
+  projectedUvs: Readonly<Record<string, Float32Array>>,
+  layout: VertexLayout,
+): void {
   for (const [name, source] of Object.entries(projectedUvs)) {
-    const data = new Float32Array(count * 2);
+    const data = new Float32Array(layout.count * 2);
     data.set(source);
-    if (mixedColor) data.set(source, sourceCount * 2);
+    if (layout.mixedColor) data.set(source, layout.sourceCount * 2);
     attributes[name as 'uv'] = data;
   }
-  // Preserve the source index order when intersecting groups and drawRange.
-  const originalIndex = geometry.index;
-  const available = originalIndex?.count ?? sourceCount;
+}
+
+/** Preserve the source index order when intersecting groups and drawRange. */
+function projectIndices(
+  geometry: BufferGeometry,
+  grouped: boolean,
+  materials: readonly GeometryMaterial[] | undefined,
+  topology: Topology,
+  wireframe: boolean,
+  layout: VertexLayout,
+): Result<ProjectedIndices | undefined, Error> {
+  const available = geometry.index?.count ?? layout.sourceCount;
   const start = Math.max(0, Math.min(available, geometry.drawRange.start));
   const end = Math.max(0, Math.min(available, geometry.drawRange.start + geometry.drawRange.count));
   if (![start, end].every((value) => Number.isSafeInteger(value) && value >= 0))
     return invalid('BufferGeometry.drawRange', geometry.uuid);
   if (end <= start) return ok(undefined);
   const ranges = grouped ? geometry.groups : [{ start: 0, count: available, materialIndex: 0 }];
+  const primitiveSize =
+    wireframe || topology === 'triangle-list' ? 3 : topology === 'line-list' ? 2 : 1;
   const indices: number[] = [];
   const submeshes: MeshAsset['submeshes'][number][] = [];
   let slotCount = 1;
   for (const range of ranges) {
-    if (
-      !Number.isSafeInteger(range.start) ||
-      !(Number.isSafeInteger(range.count) || range.count === Infinity)
-    )
-      return invalid('BufferGeometry.groups', geometry.uuid);
+    if (!isSafeRange(range)) return invalid('BufferGeometry.groups', geometry.uuid);
     const first = Math.max(start, range.start);
     const endOfRange = Math.min(end, range.start + range.count);
-    const primitiveSize =
-      wireframe || topology === 'triangle-list' ? 3 : topology === 'line-list' ? 2 : 1;
     const last = first + Math.floor((endOfRange - first) / primitiveSize) * primitiveSize;
-    const sourceSlot = range.materialIndex ?? 0;
-    const slot =
-      materials === undefined ? sourceSlot : materials.findIndex((m) => m.slot === sourceSlot);
+    const slot = selectedSlot(materials, range.materialIndex);
     if (slot === -1 || last <= first) continue;
     if (!Number.isSafeInteger(slot) || slot < 0 || slot > 255)
       return invalid('BufferGeometry.groups.materialIndex', geometry.uuid);
     const offset = indices.length;
-    for (let i = first; i < last; i++) {
-      const index = originalIndex?.getX(i) ?? i;
-      if (!Number.isInteger(index) || index < 0 || index >= sourceCount)
-        return invalid('BufferGeometry.index', geometry.uuid);
-      indices.push(index + (mixedColor && !materials?.[slot]?.vertexColors ? sourceCount : 0));
-    }
-    if (wireframe) {
-      const triangles = indices.splice(offset);
-      for (let i = 0; i < triangles.length; i += 3) {
-        const a = triangles[i] ?? 0,
-          b = triangles[i + 1] ?? 0,
-          c = triangles[i + 2] ?? 0;
-        indices.push(a, b, b, c, c, a);
-      }
-    }
+    const colorOffset =
+      layout.mixedColor && !materials?.[slot]?.vertexColors ? layout.sourceCount : 0;
+    if (!appendSourceIndices(indices, geometry, first, last, colorOffset, layout.sourceCount))
+      return invalid('BufferGeometry.index', geometry.uuid);
+    if (wireframe) expandWireframe(indices, offset);
     submeshes.push({
       indexOffset: offset,
       indexCount: indices.length - offset,
-      vertexCount: count,
+      vertexCount: layout.count,
       topology,
       materialSlot: slot,
     });
     slotCount = Math.max(slotCount, slot + 1);
   }
   if (submeshes.length === 0) return ok(undefined);
+  return ok({ indices, submeshes, slotCount });
+}
+
+function isSafeRange(range: { readonly start: number; readonly count: number }): boolean {
+  return (
+    Number.isSafeInteger(range.start) &&
+    (Number.isSafeInteger(range.count) || range.count === Infinity)
+  );
+}
+
+/** Native slot of a source material index: its position among the selected materials, or -1. */
+function selectedSlot(
+  materials: readonly GeometryMaterial[] | undefined,
+  materialIndex: number | undefined,
+): number {
+  const sourceSlot = materialIndex ?? 0;
+  return materials === undefined ? sourceSlot : materials.findIndex((m) => m.slot === sourceSlot);
+}
+
+/** Append source indices [first, last) shifted into the selected color copy; false on an out-of-range index. */
+function appendSourceIndices(
+  indices: number[],
+  geometry: BufferGeometry,
+  first: number,
+  last: number,
+  colorOffset: number,
+  sourceCount: number,
+): boolean {
+  const originalIndex = geometry.index;
+  for (let i = first; i < last; i++) {
+    const index = originalIndex?.getX(i) ?? i;
+    if (!Number.isInteger(index) || index < 0 || index >= sourceCount) return false;
+    indices.push(index + colorOffset);
+  }
+  return true;
+}
+
+/** Replace the triangles appended after offset by their three edges. */
+function expandWireframe(indices: number[], offset: number): void {
+  const triangles = indices.splice(offset);
+  for (let i = 0; i < triangles.length; i += 3) {
+    const a = triangles[i] ?? 0,
+      b = triangles[i + 1] ?? 0,
+      c = triangles[i + 2] ?? 0;
+    indices.push(a, b, b, c, c, a);
+  }
+}
+
+function completeNormals(attributes: VertexAttributeMap, indices: number[], count: number): void {
   if (attributes.normal === undefined) {
     // Fill the native vertex ABI without changing the source. Basic ignores
     // normals; admitted lit materials select primitive geometry in their Surface.
@@ -189,7 +306,6 @@ export function projectGeometry(
     for (let vertex = 0; vertex < count; vertex++) normals[vertex * 3 + 1] = 1;
     attributes.normal = normals;
   }
-  const nativeIndices = count > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
   // Reserved BatchedMesh capacity can contain zero normals. Unreferenced
   // vertices do not participate in shading, but still need a valid native ABI.
   const referenced = new Set(indices);
@@ -203,26 +319,24 @@ export function projectGeometry(
     )
       normals[vertex * 3 + 1] = 1;
   }
-  // Three supplies zero UVs for absent inputs. Forgeax's canonical material ABI also
-  // requires tangents, derived by Geometry's existing kernel without mutating the source.
+}
+
+/**
+ * Three supplies zero UVs for absent inputs. Forgeax's canonical material ABI also
+ * requires tangents, derived by Geometry's existing kernel without mutating the source.
+ */
+function completeTangents(
+  geometry: BufferGeometry,
+  attributes: VertexAttributeMap,
+  topology: Topology,
+  nativeIndices: Uint16Array | Uint32Array,
+  count: number,
+): Result<void, Error> {
   if (attributes.uv === undefined) {
     attributes.uv = new Float32Array(count * 2);
     if (attributes.tangent === undefined) {
-      const tangents = new Float32Array(count * 4);
-      const normals = attributes.normal as Float32Array;
-      for (let vertex = 0; vertex < count; vertex++) {
-        if (
-          !writeNormalPlaneTangent(
-            tangents,
-            vertex * 4,
-            normals[vertex * 3] ?? 0,
-            normals[vertex * 3 + 1] ?? 0,
-            normals[vertex * 3 + 2] ?? 0,
-          )
-        )
-          return invalid('BufferGeometry.normal', geometry.uuid);
-        tangents[vertex * 4 + 3] = 1;
-      }
+      const tangents = normalPlaneTangents(attributes.normal as Float32Array, count);
+      if (tangents === undefined) return invalid('BufferGeometry.normal', geometry.uuid);
       attributes.tangent = tangents;
     }
   }
@@ -241,16 +355,43 @@ export function projectGeometry(
     if (!tangents.ok) return tangents;
     attributes.tangent = tangents.value;
   }
+  return ok(undefined);
+}
+
+/** UV-less tangents lie in each normal's plane; undefined when a normal is degenerate. */
+function normalPlaneTangents(normals: Float32Array, count: number): Float32Array | undefined {
+  const tangents = new Float32Array(count * 4);
+  for (let vertex = 0; vertex < count; vertex++) {
+    if (
+      !writeNormalPlaneTangent(
+        tangents,
+        vertex * 4,
+        normals[vertex * 3] ?? 0,
+        normals[vertex * 3 + 1] ?? 0,
+        normals[vertex * 3 + 2] ?? 0,
+      )
+    )
+      return undefined;
+    tangents[vertex * 4 + 3] = 1;
+  }
+  return tangents;
+}
+
+type MorphTarget = NonNullable<MeshAsset['morphTargets']>[number];
+
+function projectMorphTargets(
+  geometry: BufferGeometry,
+  layout: VertexLayout,
+): Result<MorphTarget[], Error> {
   const morphCount = Math.max(
     0,
     ...['position', 'normal'].map(
       (name) => geometry.morphAttributes[name as 'position' | 'normal']?.length ?? 0,
     ),
   );
-  const morphTargets: NonNullable<MeshAsset['morphTargets']>[number][] = Array.from(
-    { length: morphCount },
-    () => ({ position: new Float32Array(count * 3) }),
-  );
+  const morphTargets: MorphTarget[] = Array.from({ length: morphCount }, () => ({
+    position: new Float32Array(layout.count * 3),
+  }));
   for (const [name, targets] of Object.entries(geometry.morphAttributes)) {
     if (targets === undefined || targets.length === 0) continue;
     // r184 MorphNode only applies position and normal, including on WebGPU.
@@ -262,35 +403,33 @@ export function projectGeometry(
     if (base === undefined)
       return invalid(`Morph ${name} requires its base attribute`, geometry.uuid);
     for (let index = 0; index < morphCount; index++) {
-      const target = targets[index];
-      if (target === undefined || target.itemSize !== 3 || target.count !== sourceCount)
-        return invalid('Morph target extent', geometry.uuid);
-      const delta = new Float32Array(count * 3);
-      for (let vertex = 0; vertex < count; vertex++)
-        for (let lane = 0; lane < 3; lane++) {
-          const value =
-            readComponent(target, vertex % sourceCount, lane) -
-            (geometry.morphTargetsRelative ? 0 : readComponent(base, vertex % sourceCount, lane));
-          if (!Number.isFinite(value)) return invalid('Morph target value', geometry.uuid);
-          delta[vertex * 3 + lane] = value;
-        }
-      morphTargets[index] = { ...morphTargets[index], [name]: delta };
+      const delta = morphDelta(geometry, targets[index], base, layout);
+      if (!delta.ok) return delta;
+      morphTargets[index] = { ...morphTargets[index], [name]: delta.value };
     }
   }
-  const packed = packInterleavedVertexAttributes(attributes, count);
-  if (!packed.ok) return packed;
-  return ok({
-    kind: 'mesh',
-    ...(morphTargets.length === 0 ? {} : { morphTargets }),
-    vertices: packed.value.vertices,
-    attributes,
-    indices: nativeIndices,
-    aabb: box3.fromPositions(box3.create(), attributes.position as Float32Array),
-    submeshes,
-    materialSlots: Array.from({ length: slotCount }, (_, slot) => ({
-      slotName: `material-${slot}`,
-    })),
-  });
+  return ok(morphTargets);
+}
+
+function morphDelta(
+  geometry: BufferGeometry,
+  target: BufferAttribute | InterleavedBufferAttribute | undefined,
+  base: BufferAttribute | InterleavedBufferAttribute,
+  layout: VertexLayout,
+): Result<Float32Array, Error> {
+  if (target === undefined || target.itemSize !== 3 || target.count !== layout.sourceCount)
+    return invalid('Morph target extent', geometry.uuid);
+  const delta = new Float32Array(layout.count * 3);
+  for (let vertex = 0; vertex < layout.count; vertex++)
+    for (let lane = 0; lane < 3; lane++) {
+      const source = vertex % layout.sourceCount;
+      const value =
+        readComponent(target, source, lane) -
+        (geometry.morphTargetsRelative ? 0 : readComponent(base, source, lane));
+      if (!Number.isFinite(value)) return invalid('Morph target value', geometry.uuid);
+      delta[vertex * 3 + lane] = value;
+    }
+  return ok(delta);
 }
 
 function readComponent(

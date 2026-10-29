@@ -32,11 +32,12 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "tsup": "8.5.1",
+    "tsup": "9.0.0",
     "typescript": "6.0.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "forgeax": {
+    "library": { "assetRoot": "assets/canonical-kit" },
     "metrics": {
       "bundle-size": { "enabled": true, "path": "dist/index.mjs", "compression": "gzip" },
       "fps": { "enabled": false, "reason": "Preview sessions are bounded operations, not an application frame loop" },

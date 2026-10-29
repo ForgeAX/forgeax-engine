@@ -144,19 +144,17 @@ export function createTemporalView(input: TemporalViewInput): TemporalView {
   const jitter: Jitter | undefined = taa
     ? (HALTON_23_8[frameIndex % HALTON_23_8.length] as Jitter)
     : undefined;
+  const jitterUv: Jitter | undefined =
+    jitter === undefined
+      ? undefined
+      : (Object.freeze([jitter[0] / internalWidth, jitter[1] / internalHeight]) as Jitter);
   return Object.freeze({
     input: normalized,
     historyVersion,
     mode: taa ? 'taa' : 'off',
     jitter,
-    jitterCancellationUv:
-      jitter === undefined
-        ? undefined
-        : (Object.freeze([jitter[0] / internalWidth, jitter[1] / internalHeight]) as Jitter),
-    currentJitterUv:
-      jitter === undefined
-        ? undefined
-        : (Object.freeze([jitter[0] / internalWidth, jitter[1] / internalHeight]) as Jitter),
+    jitterCancellationUv: jitterUv,
+    currentJitterUv: jitterUv,
     historyValid: normalized.historyValid,
     temporalFrameIndex: frameIndex,
     currentUnjitteredViewProjection: input.currentUnjitteredViewProjection,
@@ -171,17 +169,16 @@ export function createTemporalView(input: TemporalViewInput): TemporalView {
   });
 }
 
+/** Classify input changes before publishing the one finalized TemporalView. */
 export function resolveTemporalReset(
-  previous: TemporalView | undefined,
-  next: TemporalView,
+  before: TemporalView['input'] | undefined,
+  after: TemporalView['input'],
 ): TemporalResetReason | undefined {
   // Motion Blur uses the unjittered `off` temporal mode as well as TAA. Keep
   // the reset matrix shared so a camera switch, resize, or recovery cannot
   // leak a previous motion vector merely because antialiasing is disabled.
-  if (previous === undefined) return 'first-frame';
-  if (next.mode === 'taa' && previous.mode !== 'taa') return 'first-frame';
-  const before = previous.input;
-  const after = next.input;
+  if (before === undefined) return 'first-frame';
+  if (after.antialias === 'taa' && before.antialias !== 'taa') return 'first-frame';
   if (before.width !== after.width || before.height !== after.height) return 'resize';
   if (after.cameraCut) return 'camera-cut';
   if (before.historyVersion !== after.historyVersion) return 'history-version';

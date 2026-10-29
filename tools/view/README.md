@@ -172,6 +172,12 @@ Engine may load a PluginAsset through a compiled chunk. View resolves its static
 UI from the selected View package's `@forgeax/view/plugin` entry instead of
 using that chunk's URL. Game plugins execute in Engine's Worker; browser UI
 belongs to frontend plugins.
+Engine-owned generated binaries that the viewer bundles (for example the wgpu
+WASM used by RHI inspection) are not copied into `dist/viewer`. The build keeps
+their hashed URLs under `assets/engine/<package-dir>/<hash>/<file>`, and both View
+servers read those bytes from `pkg/` of the exact-version Engine installation
+(`view-workspace-core/viewer-static`). The browser's existing provenance check
+still verifies the bytes.
 
 ### Observe an AI run
 
@@ -261,19 +267,23 @@ retain the backend by leaving a close handshake unanswered.
 The API/CLI operations can be composed by a caller. No startup operation
 implicitly runs the following steps on its behalf.
 
-## Source integration and publication
+## Source integration and distribution
 
 View retains its own repository and review boundary. Engine selects its exact source
 at `tools/view` and owns the workspace lock, integrated build, SDK inventory and publisher.
-The public tool is `@forgeax/view`, Apache-2.0, at the same distribution version as Engine.
-Games install `@forgeax/engine`; they do not acquire a View dependency.
+The public npm products are `@forgeax/engine` and `@forgeax/engine-sdk`. The SDK
+embeds View as a private local `@forgeax/view` package, using the same version as
+its Engine dependency. Historical standalone `@forgeax/view` prerelease tags are
+retired; do not use them to pair View with an Engine channel. Install the SDK
+channel to receive its matching View tool. Games install `@forgeax/engine`; they
+do not acquire a View dependency.
 
 ```mermaid
 flowchart LR
   Source["View repository"] --> Pin["Engine tools/view gitlink"]
   Pin --> Build["One Engine workspace and lockfile"]
   Plugins["Engine tools/view-plugins source"] --> Build
-  Build --> Tool["SDK cli-runtime: Engine plus View"]
+  Build --> Tool["SDK cli-runtime: Engine plus private View"]
   Engine["Engine runtime packages"] --> Game["Ordinary game project"]
 ```
 
@@ -528,6 +538,11 @@ independent lifecycle assertions, and all existing deadlines remain unchanged.
 Evidence records the selected workload. Paired CI derives the complete Engine
 consumer roster and partitions it across at most four shards.
 
+Inline asset probes admit the exact canvas's first completed `ready` frame inside
+their existing panel-extent wait before requesting a fresh capture. Layout and
+completed warming frames keep that wait pending. The capture's ten-second bound,
+natural panel dimensions, pixels and target identity checks remain unchanged.
+
 ## Lifecycle and operation ownership
 
 The resident Node process contains a BackendHost. It loads the Engine domain
@@ -780,6 +795,19 @@ The resident `@forgeax/view/plugin` also accepts `config.disabledPages`.
 | Asset | `forgeax.view.page.asset.frontend` | Fallback resource properties |
 | HTML UI | `forgeax.view.page.html.frontend` | Standalone file preview and viewport settings |
 
+Panel claims declare one home: a page (`pageType`) or the Shell bottom edge
+drawer. Page homes require a `layout.dock`; Shell-bottom homes support only
+`layout.order` because the Shell owns placement, sizing and tab stacking. The
+Shell drawer starts as a 32px bottom tab strip and opens a panel flyout when
+selected. A Shell-home panel may move into a page and keeps its claim and
+mounted content there; closing that page returns it to the Shell bottom edge.
+Page-home panels remain owned by their page. Unregistering the owning page type
+also reconciles the surviving Shell claim and reattaches its existing mount
+host after the page Dockview retires.
+`presentation.get` reports placement from the live Dockview owner and location,
+including the page ID/type or Shell bottom edge, grid, floating or popout
+location.
+
 Use `forgeax.view.<role>.<feature>.<side>` for native runtime names:
 `page` for pages, `panel` for scene panels, `service` for API clients,
 providers and target presentation, and `shell` for UI hosting. For example,
@@ -922,12 +950,14 @@ when a camera gesture must keep one authenticated client connection. A
 single-operation invocation closes its connection after the Engine API reply.
 
 Viewport clicks use View's `scene.pick` selection workflow with physical output
-pixels (`x`, `y`) and the exact `targetId` / `targetGeneration`. It calls Engine's
-existing `target.pick` query; direct `target.pick` calls do not change View
-selection. `scene.select`, `scene.pick` and `scene.clear` share cancellation and
-target guards, so a late result cannot replace a newer selection. Clearing also
-requires the exact target identity. Query or highlight failures preserve the
-last confirmed selection and use the ordinary workspace error channel.
+pixels (`x`, `y`) and the exact `targetId` / `targetGeneration`. It requests
+triangle granularity from Engine's `target.pick`; direct calls keep bounds
+granularity unless explicitly overridden. `scene.select`, `scene.pick` and
+`scene.clear` share cancellation and target guards, so a late result cannot
+replace a newer selection. An Engine that does not confirm triangle granularity
+fails closed without changing the current selection. Query or highlight failures
+preserve the last confirmed selection and use the ordinary workspace error
+channel.
 
 ## Custom workspace embedding
 

@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { projectRayScene } from '../../raytracing/scene-projection';
+import { projectVisibleSurfaces } from '../../raytracing/visible-surface';
 import { retainedTransportPlane } from './scene-projection.fixture';
 
 it('projects the accepted material snapshot across edits without consulting newer World values', () => {
@@ -58,7 +59,7 @@ it('projects the accepted material snapshot across edits without consulting newe
   const combined = projectRayScene(
     [...source.retained.slotsSnapshot(), ...slots],
     [source.world, secondWorld.world].map(worldRenderResources),
-    16,
+    projectVisibleSurfaces([...source.retained.slotsSnapshot(), ...slots], 16).unwrap(),
   );
   const secondSlot = secondWorld.retained.slotsSnapshot().at(0);
   if (secondSlot === undefined) throw new Error('missing second World fixture slot');

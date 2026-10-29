@@ -3,6 +3,7 @@
 // Re-exports the RapierPhysicsWorld2D class, WASM loader, and three-phase tick
 // systems.
 
+export { default } from './plugin.js';
 export type { Rapier2DCollisionEvent } from './rapier-physics-world-2d';
 export {
   createRapier2DPhysicsWorld,

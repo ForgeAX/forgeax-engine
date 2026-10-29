@@ -1,5 +1,6 @@
 import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
+import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
 import {
   createRuntimePackPublication,
   decodePackBlob,
@@ -105,6 +106,132 @@ async function fixture(plugin = false, encoding: 'identity' | 'zstd' = 'zstd') {
   };
   return { original, rows, publication, bodies, fetcher, compressed };
 }
+
+it.each([
+  'capture',
+  'validate',
+] as const)('reads identity and zstd Pack documents through %s publication admission', async (operation) => {
+  const { compressZstd } = await import('@forgeax/engine-codec/encode');
+  for (const encoding of ['identity', 'zstd'] as const) {
+    const input = await fixture();
+    if (encoding === 'zstd') {
+      const bytes = defined(input.bodies.get(packageUrl));
+      const compressed = await compressZstd(bytes);
+      if (!compressed.ok) throw compressed.error;
+      input.bodies.set(packageUrl, compressed.value);
+    }
+    if (operation === 'capture') {
+      const result = await captureAssetPublication(
+        defined(input.rows[0]),
+        input.rows,
+        createCatalogSource({ entries: input.rows }),
+        input.fetcher,
+      );
+      expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
+      expect(result.unwrap().pack).toEqual(input.publication.pack);
+    } else {
+      const result = await validateAssetPublication(input.rows, input.fetcher, undefined, {
+        decoders: runtimePackDecoders,
+      });
+      expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
+      expect((defined(result.unwrap().get(guid)) as MeshAsset).attributes.position).toEqual(
+        input.original.attributes.position,
+      );
+    }
+  }
+});
+
+it.each([
+  'cold',
+  'owned',
+] as const)('verifies a captured Bundle once while checking every %s artifact', async (mode) => {
+  const input = await fixture(false, 'identity');
+  const original = defined(input.publication.pack.assets[0]);
+  const descriptor = defined(original.artifacts.body);
+  const body = defined(input.bodies.get(new URL(descriptor.path, packageUrl).href));
+  const bundle = encodeAssetBundle([body]);
+  const digest = `sha256:${Buffer.from(await crypto.subtle.digest('SHA-256', bundle.bytes)).toString('hex')}`;
+  const publication = createRuntimePackPublication({
+    pack: {
+      assets: input.publication.pack.assets.map((asset) => ({
+        ...asset,
+        artifacts: Object.fromEntries(
+          Array.from({ length: 12 }, (_, index) => [
+            `body${index}`,
+            {
+              ...descriptor,
+              path: 'bundle.bin',
+              byteRange: { ...defined(bundle.windows[0]), bundleDigest: digest },
+            },
+          ]),
+        ),
+      })),
+    },
+    scopeId: 'delivered',
+    sourcePath: 'original.pack',
+    sourceRevision: 'original-revision',
+    packageUrl,
+    sourceKeys: new Map([
+      [guid, 'mesh/main'],
+      [sibling, 'mesh/sibling'],
+    ]),
+  });
+  const rows: CatalogEntry[] = publication.publication.outputs.map((output) => ({
+    guid: output.guid,
+    kind: output.kind,
+    sourceKey: output.sourceKey,
+    sourcePath: 'original.pack',
+    packageUrl,
+    publication: publication.publication,
+  }));
+  let corrupt = false;
+  const fetcher = vi.fn<typeof fetch>(async (url) => {
+    if (String(url) === packageUrl) return new Response(JSON.stringify(publication.pack));
+    const bytes = bundle.bytes.slice();
+    if (corrupt) bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 1;
+    return new Response(bytes);
+  });
+  const source = createCatalogSource({ entries: rows });
+  const registry = mode === 'owned' ? new AssetRegistry({ scopeId: 'delivered' }) : undefined;
+  registry?.setCatalogSource(source, fetcher);
+  const hashing = vi.spyOn(crypto.subtle, 'digest');
+  try {
+    const captured = (
+      await captureAssetPublication(
+        defined(rows[0]),
+        rows,
+        source,
+        fetcher,
+        registry ? { registry } : {},
+      )
+    ).unwrap();
+    expect(decodePackBlob(defined(captured.blobs['bundle.bin']))).toEqual(bundle.bytes);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/bundle.bin'))).toHaveLength(
+      1,
+    );
+    expect(
+      hashing.mock.calls.filter(([, bytes]) => bytes.byteLength === bundle.bytes.byteLength),
+    ).toHaveLength(1);
+    expect(
+      hashing.mock.calls.filter(([, bytes]) => bytes.byteLength === body.byteLength),
+    ).toHaveLength(24);
+    corrupt = true;
+    expect(
+      (
+        await captureAssetPublication(
+          defined(rows[0]),
+          rows,
+          source,
+          fetcher,
+          registry ? { registry } : {},
+        )
+      ).ok,
+    ).toBe(false);
+  } finally {
+    hashing.mockRestore();
+    registry?.dispose();
+  }
+});
 
 it('captures frozen transport without awaiting an unrelated unfinished domain read', async () => {
   const input = await fixture(false, 'identity');

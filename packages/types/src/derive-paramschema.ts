@@ -288,6 +288,43 @@ interface ParamSchemaShape {
 interface ParamSchemaDerivation {
   readonly shape: ParamSchemaShape;
   readonly derivedInterface: DerivedMaterialInterface;
+  /** Exact JSON spelling of an owner-frozen schema, when it is lossless. */
+  readonly canonicalSchema?: string;
+}
+
+// Many materials publish equal runtime schemas as separate arrays. Owner
+// admission shares one frozen schema and derivation per exact content, so a
+// schema is copied, frozen and derived once instead of once per material. The
+// key is the JSON spelling, used only when that spelling is lossless (no
+// undefined fields, negative zero or non-finite numbers); the index is weak.
+const ADMITTED_PARAM_SCHEMAS_BY_CONTENT = new Map<string, WeakRef<readonly ParamSchemaEntry[]>>();
+const collectedParamSchemas =
+  typeof FinalizationRegistry === 'function'
+    ? new FinalizationRegistry<string>((key) => {
+        if (ADMITTED_PARAM_SCHEMAS_BY_CONTENT.get(key)?.deref() === undefined)
+          ADMITTED_PARAM_SCHEMAS_BY_CONTENT.delete(key);
+      })
+    : undefined;
+
+/** JSON spelling plus whether it identifies the value exactly. */
+function exactSchemaJson(schema: readonly ParamSchemaEntry[]): {
+  readonly text: string;
+  readonly exact: boolean;
+} {
+  let exact = true;
+  const text = JSON.stringify(schema, (_key, value: unknown) => {
+    if (
+      value === undefined ||
+      (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0)))
+    )
+      exact = false;
+    else if (value !== null && typeof value === 'object') {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== Array.prototype) exact = false;
+    }
+    return value;
+  });
+  return { text, exact };
 }
 
 // Runtime compatibility callers do not always carry an owner/revision. Keep
@@ -327,10 +364,10 @@ export class ParamSchemaProjectionOwner {
     }
     this.#admissions += 1;
     const key = `${args.ownerId}\u0000${args.revision}`;
-    const canonicalSchema = JSON.stringify(args.schema);
+    const spelled = exactSchemaJson(args.schema);
     const existing = this.#projections.get(key);
     if (existing !== undefined) {
-      if (existing.canonicalSchema !== canonicalSchema) {
+      if (existing.canonicalSchema !== spelled.text) {
         throw new Error(
           `ParamSchemaProjectionOwner: ${args.ownerId}@${args.revision} reused with different schema content`,
         );
@@ -338,21 +375,39 @@ export class ParamSchemaProjectionOwner {
       return existing;
     }
 
-    const admitted = ADMITTED_PARAM_SCHEMA_PROJECTIONS.get(args.schema);
-    const schema = admitted === undefined ? freezeParamSchema(args.schema) : args.schema;
-    const shape = admitted?.shape ?? captureParamSchemaShape(schema);
-    const derivedInterface =
-      admitted?.derivedInterface ?? freezeDerivedMaterialInterface(derivePure(schema, shape));
+    let schema = args.schema;
+    let admitted = ADMITTED_PARAM_SCHEMA_PROJECTIONS.get(schema);
+    if (admitted === undefined && spelled.exact) {
+      const shared = ADMITTED_PARAM_SCHEMAS_BY_CONTENT.get(spelled.text)?.deref();
+      const sharedDerivation =
+        shared === undefined ? undefined : ADMITTED_PARAM_SCHEMA_PROJECTIONS.get(shared);
+      if (shared !== undefined && sharedDerivation !== undefined) {
+        schema = shared;
+        admitted = sharedDerivation;
+      }
+    }
     if (admitted === undefined) {
+      schema = freezeParamSchema(schema);
+      const shape = captureParamSchemaShape(schema);
+      admitted = {
+        shape,
+        derivedInterface: freezeDerivedMaterialInterface(derivePure(schema, shape)),
+        ...(spelled.exact ? { canonicalSchema: spelled.text } : {}),
+      };
       this.#derivations += 1;
-      ADMITTED_PARAM_SCHEMA_PROJECTIONS.set(schema, { shape, derivedInterface });
+      ADMITTED_PARAM_SCHEMA_PROJECTIONS.set(schema, admitted);
+      if (spelled.exact) {
+        ADMITTED_PARAM_SCHEMAS_BY_CONTENT.set(spelled.text, new WeakRef(schema));
+        collectedParamSchemas?.register(schema, spelled.text);
+      }
     }
     const projection = Object.freeze({
       ownerId: args.ownerId,
       revision: args.revision,
       schema,
-      derivedInterface,
-      canonicalSchema,
+      derivedInterface: admitted.derivedInterface,
+      // Reuse the retained spelling; equal text from this call is garbage.
+      canonicalSchema: admitted.canonicalSchema ?? spelled.text,
     });
     this.#projections.set(key, projection);
     return projection;

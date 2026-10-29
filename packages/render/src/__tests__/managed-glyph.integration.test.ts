@@ -8,15 +8,17 @@ import { assert, expect, it } from 'vitest';
 import { samplerContribution } from '../assets/asset-decoders';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { GlyphText } from '../components/glyph-text';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
+import { SceneComposition } from '../scene/scene-composition';
 
 it.each([
   'local',
   'worker',
+  'worker-shared-owner',
 ] as const)('adopts Font content without rewriting labels (%s)', (mode) => {
   const assets = new AssetRegistry();
   assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
@@ -78,7 +80,11 @@ it.each([
       .unwrap(),
   );
   const lease = createRenderReadLease(world);
-  const scene = new PersistentRenderScene({ assets });
+  const shared = mode === 'worker-shared-owner' ? new SceneComposition({ assets }) : undefined;
+  const scene =
+    shared === undefined
+      ? new PersistentRenderScene({ assets })
+      : new PersistentRenderScene({}, shared);
   const owner = { cameraOwner: 0, resourceOwner: 0 };
   const identity = { source: 'glyph-test', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
@@ -87,13 +93,17 @@ it.each([
     upserts = 0;
   const draw = () => {
     world.update(0).unwrap();
-    if (mode === 'worker') {
+    if (mode !== 'local') {
       const candidate = publisher.prepare(0).unwrap();
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       upserts += packet.upserts.length;
-      const result = scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const result = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return result;
     }
     return scene.extractComposition(
@@ -104,18 +114,11 @@ it.each([
         if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
         else if (request === 'full') extractions += labels.length;
-        return extractFrames(
-          [world],
-          owner,
-          assets,
-          undefined,
-          scene.materialSnapshotCacheStore(),
-          {
-            cull: 'none',
-            retainHidden: true,
-            renderables: request,
-          },
-        );
+        return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
       },
       [lease],
     );
@@ -175,6 +178,7 @@ it.each([
     expect(world.get(camera, Camera).ok).toBe(true);
   } finally {
     scene.dispose();
+    shared?.dispose();
     publisher.dispose();
     receiver.dispose();
     lease.dispose();

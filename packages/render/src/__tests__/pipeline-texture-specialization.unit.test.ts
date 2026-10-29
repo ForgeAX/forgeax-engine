@@ -129,7 +129,7 @@ describe('material pipeline texture specialization', () => {
     );
   });
 
-  it('forwards specialization values to both shader stages without changing the module', () => {
+  it('preserves common texture specialization in both shader stages', () => {
     const module = {};
     const descriptor = buildPipelineDescriptor(spec({ '64000': 0 }), {
       vertex: module,
@@ -137,6 +137,23 @@ describe('material pipeline texture specialization', () => {
     });
     expect(descriptor.fragment).toMatchObject({ module, constants: { '64000': 0 } });
     expect(descriptor.vertex).toMatchObject({ module, constants: { '64000': 0 } });
+  });
+
+  it('separates vertex overrides from fragment values and includes them in cache identity', () => {
+    const base = spec({ '64000': 5, '64001': 0 });
+    const scoped = { ...base, shader: { ...base.shader, vertexConstants: { '64000': 5 } } };
+    const module = {};
+    const descriptor = buildPipelineDescriptor(scoped, { vertex: module, fragment: module });
+    expect(descriptor.vertex).toMatchObject({ module, constants: { '64000': 5 } });
+    expect(descriptor.vertex).not.toHaveProperty('constants.64001');
+    expect(descriptor.fragment).toMatchObject({ constants: { '64000': 5, '64001': 0 } });
+    expect(cacheKeyOf(scoped)).not.toBe(cacheKeyOf(base));
+    expect(cacheKeyOf(scoped)).not.toBe(
+      cacheKeyOf({
+        ...scoped,
+        shader: { ...scoped.shader, vertexConstants: { '64000': 7 } },
+      }),
+    );
   });
 
   it('keeps authored entry points and texture overrides orthogonal in descriptors and cache keys', () => {

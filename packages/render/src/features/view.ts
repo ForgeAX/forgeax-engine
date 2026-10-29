@@ -1,5 +1,5 @@
-import { mat4 } from '@forgeax/engine-math';
-import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
+import { mat4, vec3 } from '@forgeax/engine-math';
+import { computeViewProjectionMatrix } from '../record/helpers';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderFeatureExtractView } from './types';
 
@@ -19,13 +19,9 @@ export function renderFeatureCameraView(camera: CameraSnapshot): RenderFeatureEx
     selectedCamera: camera,
     selectedView: {
       position: new Float32Array(camera.position),
-      right: new Float32Array([camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0]),
-      up: new Float32Array([camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0]),
-      viewProjection: mat4.multiply(
-        mat4.create(),
-        computeProjectionMatrix(camera),
-        computeViewMatrix(camera),
-      ),
+      right: vec3.create(camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0),
+      up: vec3.create(camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0),
+      viewProjection: computeViewProjectionMatrix(camera, mat4.create()),
     },
   };
 }

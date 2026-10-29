@@ -10,6 +10,7 @@ import { createViewPanelHost } from '../host/panel-bridge.ts';
 import { createViewPageHost, createViewPageTypeRegistry } from '../host/page-registry.ts';
 import { createViewSlotRegistry } from '../host/slot-registry.ts';
 import { initI18n, t } from '../i18n';
+import { isCodexBrowser } from '../codex-browser.ts';
 import { ViewerShell } from './ViewerShell';
 import { useHostWsConnection } from './use-host-ws-connection';
 import * as panels from '../panels-entry';
@@ -30,8 +31,9 @@ const embeddedShell: Plugin = {
     const pageRegistry = createViewPageTypeRegistry();
     const pageHost = createViewPageHost({ registry: pageRegistry });
     const element = document.createElement('div');
-    const panelHost = createViewPanelHost({ registry, overlayRoot: element });
+    const panelHost = createViewPanelHost({ registry, pageRegistry, overlayRoot: element });
     element.id = 'forgeax-view-root';
+    element.toggleAttribute('data-forgeax-codex-browser', isCodexBrowser(document));
     // Do not trap every UI overlay in a stacking context below the borrowed
     // Engine surface. Panels, surfaces and portaled overlays share one stack.
     element.style.cssText = 'position:absolute;inset:0';

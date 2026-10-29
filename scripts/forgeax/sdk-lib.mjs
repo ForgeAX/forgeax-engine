@@ -19,9 +19,57 @@ import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { sdkGpuStage } from './sdk-stage.mjs';
 
-export const SDK_MANIFEST_VERSION = '1.9.0';
+export const SDK_MANIFEST_VERSION = '1.11.0';
+export const SDK_NPM_PACKAGE_NAMES = Object.freeze(['@forgeax/engine', '@forgeax/engine-sdk']);
 export const SDK_SOURCE_ROOT = 'source/engine';
 export const SDK_SOURCE_FORMAT = 'git-archive-public-snapshot';
+/** Full-ZIP surfaces the npm carrier omits; games install the same Engine bytes from npm. */
+export const SDK_ZIP_ONLY_PATHS = Object.freeze(['store', 'packages', 'toolchain/wasm']);
+
+/** Stage the online SDK from the same immutable inventory as the offline ZIP. */
+export async function stageSdkCarrier(sdkRoot, destination, engineArchive) {
+  const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-engine-reuse-'));
+  try {
+    await promisify(execFile)('tar', ['-xzf', engineArchive, '-C', temporary]);
+    const engineRoot = resolve(temporary, 'package');
+    const manifest = JSON.parse(await readFile(resolve(sdkRoot, 'sdk-manifest.json'), 'utf8'));
+    const engine = JSON.parse(await readFile(resolve(engineRoot, 'package.json'), 'utf8'));
+    if (engine.name !== '@forgeax/engine' || engine.version !== manifest.sdkVersion)
+      throw new Error('sdk-carrier-engine-version-mismatch');
+    const key = ({ bytes, sha256 }) => `${bytes}:${sha256}`;
+    const files = (await filesUnder(engineRoot)).filter(
+      // npm may rewrite package metadata and ignore-file names during extraction.
+      (path) => !['package.json', '.gitignore', '.npmignore'].includes(path.split(sep).at(-1)),
+    );
+    const index = new Map();
+    for (const entry of await mapConcurrent(files, (path) => artifact(engineRoot, path))) {
+      if (!index.has(key(entry))) index.set(key(entry), entry.path);
+    }
+    manifest.artifacts = manifest.artifacts
+      .filter(({ path }) => !SDK_ZIP_ONLY_PATHS.some((prefix) => path.startsWith(`${prefix}/`)))
+      .map((entry) => {
+        const enginePath = index.get(key(entry));
+        return enginePath === undefined ? entry : { ...entry, enginePath };
+      });
+    const reused = new Set(
+      manifest.artifacts
+        .filter((entry) => entry.enginePath !== undefined)
+        .map(({ path }) => resolve(sdkRoot, path)),
+    );
+    await cp(sdkRoot, destination, {
+      recursive: true,
+      filter: (source) =>
+        !reused.has(source) &&
+        !SDK_ZIP_ONLY_PATHS.some((path) => source === resolve(sdkRoot, path)),
+    });
+    await writeFile(
+      resolve(destination, 'sdk-manifest.json'),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
 
 const SDK_REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -154,11 +202,16 @@ export function discoverSdkTemplates(templatesRoot = resolve(SDK_REPOSITORY_ROOT
 }
 
 export const SDK_TEMPLATES = discoverSdkTemplates();
-export const SDK_SOURCE_EXCLUDED_PATHS = Object.freeze(['.gitmodules', 'forgeax-engine-assets']);
 export const SDK_SOURCE_GIT_DEPENDENCIES = Object.freeze([
   'third_party/wgpu',
   'third_party/blitz',
   'tools/view',
+]);
+export const SDK_SOURCE_EXCLUDED_PATHS = Object.freeze([
+  '.gitmodules',
+  'forgeax-engine-assets',
+  '.github',
+  ...SDK_SOURCE_GIT_DEPENDENCIES.map((root) => `${root}/.github`),
 ]);
 export const SDK_RETIRED_PACKAGE_FILES = Object.freeze({
   '@forgeax/engine-vite-plugin-pack': Object.freeze([
@@ -194,6 +247,7 @@ export const SDK_SOURCE_WASM = Object.freeze([
       files: Object.freeze([
         'rapier-native.mjs',
         'rapier-native.d.mts',
+        ...(dimension === '3d' ? ['rapier-simd.mjs', 'rapier-simd.d.mts'] : []),
         'rapier.wasm',
         'rapier.mjs',
         'rapier.d.mts',
@@ -434,7 +488,14 @@ async function probeNpmPublication(item, tag, fetchImpl) {
     if (typeof metadata.dist.tarball !== 'string') {
       return { ready: false, reason: 'tarball-url-missing' };
     }
-    const [tagsResponse, tarballResponse] = await Promise.all([
+    // Installers resolve versions from the package's install metadata, which the
+    // registry can serve after the exact version document; a fresh install in
+    // between fails with ERR_PNPM_NO_MATCHING_VERSION.
+    const [installResponse, tagsResponse, tarballResponse] = await Promise.all([
+      fetchImpl(`https://registry.npmjs.org/${encodedName}`, {
+        headers: { ...headers, accept: 'application/vnd.npm.install-v1+json' },
+        signal: AbortSignal.timeout(30_000),
+      }),
       tag === undefined
         ? undefined
         : fetchImpl(`https://registry.npmjs.org/-/package/${encodedName}/dist-tags`, {
@@ -447,6 +508,15 @@ async function probeNpmPublication(item, tag, fetchImpl) {
         headers: { 'cache-control': 'no-cache' },
       }),
     ]);
+    if (!installResponse.ok) {
+      return { ready: false, reason: `install-metadata-http-${installResponse.status}` };
+    }
+    const installed = (await installResponse.json()).versions?.[item.version];
+    if (installed === undefined)
+      return { ready: false, reason: 'install-metadata-version-missing' };
+    if (installed.dist?.integrity !== item.integrity) {
+      throw new Error(`npm-published-integrity-mismatch: ${item.name}`);
+    }
     if (tagsResponse !== undefined && !tagsResponse.ok) {
       return { ready: false, reason: `dist-tags-http-${tagsResponse.status}` };
     }
@@ -708,39 +778,6 @@ export async function writePackageArchive(root, path, options = {}) {
   await chmod(path, 0o644);
 }
 
-function withoutVolatileStoreTime(value) {
-  if (Array.isArray(value)) return value.map(withoutVolatileStoreTime);
-  if (value === null || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [
-      key,
-      key === 'checkedAt' ? 0 : withoutVolatileStoreTime(child),
-    ]),
-  );
-}
-
-function containsStoreDiff(value) {
-  if (Array.isArray(value)) return value.length > 0;
-  if (value === null || typeof value !== 'object') return true;
-  return Object.values(value).some(containsStoreDiff);
-}
-
-function withoutEmptySideEffects(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
-  const sideEffects = value.sideEffects;
-  if (sideEffects === null || typeof sideEffects !== 'object' || Array.isArray(sideEffects)) {
-    return value;
-  }
-  const retained = Object.fromEntries(
-    Object.entries(sideEffects).filter(([, diff]) => containsStoreDiff(diff)),
-  );
-  if (Object.keys(retained).length === 0) {
-    const { sideEffects: _emptySideEffects, ...withoutSideEffects } = value;
-    return withoutSideEffects;
-  }
-  return { ...value, sideEffects: retained };
-}
-
 /** Keep package integrity while allowing the consumer's selected registry. */
 export function normalizeSdkRegistryLockfile(lockfile, ownedTarballUrls) {
   for (const url of ownedTarballUrls) {
@@ -756,34 +793,10 @@ export function isPnpmSqliteStoreArtifact(path) {
 }
 
 export async function normalizePnpmStore(storeRoot, storeFormat = 'v11') {
-  const indexRoot = resolve(storeRoot, storeFormat, 'index');
-  let indexFiles;
-  try {
-    indexFiles = await filesUnder(indexRoot);
-  } catch (cause) {
-    if (
-      cause === null ||
-      typeof cause !== 'object' ||
-      !('code' in cause) ||
-      cause.code !== 'ENOENT'
-    ) {
-      throw cause;
-    }
-    // pnpm 11+ uses a SQLite index.db instead of JSON index files. Its binary
-    // page layout is owned by pnpm; do not rewrite it in place.
-    await readFile(resolve(storeRoot, storeFormat, 'index.db'));
-    // SQLite's shared-memory sidecar is a live coordination file, not store
-    // data. pnpm may leave it behind after install; it is recreated on use.
-    await rm(resolve(storeRoot, storeFormat, 'index.db-shm'), { force: true });
-    return;
-  }
-  for (const path of indexFiles) {
-    if (!path.endsWith('.json')) continue;
-    const value = stable(
-      withoutEmptySideEffects(withoutVolatileStoreTime(JSON.parse(await readFile(path, 'utf8')))),
-    );
-    await writeFile(path, `${JSON.stringify(value)}\n`);
-  }
+  // The pinned pnpm owns SQLite's binary page layout and write-ahead log.
+  await readFile(resolve(storeRoot, storeFormat, 'index.db'));
+  // Shared memory is live coordination state and is recreated on use.
+  await rm(resolve(storeRoot, storeFormat, 'index.db-shm'), { force: true });
 }
 
 /** Report the store format actually written by pnpm instead of inferring it from its major. */
@@ -796,4 +809,15 @@ export async function detectPnpmStoreFormat(storeRoot) {
     throw new Error(`sdk-pnpm-store-format-ambiguous: ${formats.join(',') || 'none'}`);
   }
   return formats[0];
+}
+
+/** Generated discovery belongs to the installed release; narrative guides retain their owner. */
+export function localSdkDiscoveryLinks(source, prefix) {
+  return source.replaceAll(/\]\(([^)\s]+)\)/g, (link, target) => {
+    const file = target.slice(target.lastIndexOf('/') + 1);
+    return target.includes('/references/') &&
+      (file === 'api-index.md' || file === 'feature-catalog.md')
+      ? `](${prefix}${file})`
+      : link;
+  });
 }

@@ -2,13 +2,14 @@
 
 Archetype ECS for ForgeaX. The package owns the hot path shared by every
 domain: entity identity, component storage, relationships, queries, structural
-mutation, two schedules, resources, time, and optional shared numeric kernels.
+mutation, schedules, resources, time, and optional shared numeric kernels.
 
 > [!IMPORTANT]
-> `World` is the state authority. Scene instances, render extraction, physics
+> A `World` is the state authority of its realm. Scene instances, physics
 > backends, asset ownership, input collection, and application lifecycle stay
-> in their owning packages. Do not add a second ECS facade for one of those
-> domains.
+> in their owning packages. A domain that needs its own entity store (the
+> renderer's Render World) instantiates another `World` with domain schedules;
+> it never wraps the World in a second ECS facade.
 
 `World` directly owns its graph, entity records, managed stores, relationship
 indexes, row/block revisions, and execution health. Query, command, and
@@ -71,9 +72,10 @@ if (!stepped.ok) console.error(stepped.error.code, stepped.error.hint);
 ```
 
 The normal data path is `world.query(descriptor)` with a row iterator or a
-packed `QuerySpan`. Success-path row access is direct and allocation-free;
-expected boundary failures use the shared `Result` carrier from
-`@forgeax/engine-types`.
+packed `QuerySpan`. Row traversal reuses a borrowed facade; `row.get` constructs
+a component object and selected array views. Numeric columns avoid that
+materialization. Expected boundary failures use the shared `Result` carrier
+from `@forgeax/engine-types`.
 
 ## Components and schema
 
@@ -91,7 +93,7 @@ open-ended metadata do not belong on a component token.
 | `shared<Tag>` | World-owned non-asset shared payload | `{ type: 'shared<RenderTarget>' }` |
 | `array<T>` | variable array replaced as one value or written in place by range | `{ type: 'array<f32>' }` |
 | `array<T,N>` | fixed-size inline array | `{ type: 'array<f32, 4>' }` |
-| sparse tag | presence-only marker | `defineComponent('Disabled', {})` |
+| tag | presence-only marker; `{ storage: 'sparse' }` flips without moving the row | `defineComponent('Residual', {}, { storage: 'sparse' })` |
 
 `world.sharedRefs.acquire(target, payload)` returns one caller-owned reference
 while preserving the interned handle for the same target and payload object.
@@ -140,6 +142,9 @@ after the mutation epoch `since` (read with `readMutationEpoch(world)`), or
 `'whole'` when any other write replaced the field, the entity was despawned,
 or the bounded per-field history (1024 writes) no longer covers `since`.
 `'whole'` is always a safe answer; consumers then reproject the full array.
+A range write covering the whole field (a per-frame pose) keeps no history:
+`'whole'` is then the exact answer, so retained memory stays independent of
+write count.
 
 The Scene package may define a single-field `Name { value: 'string' }` token
 for authoring. ECS stores the value through the same closed `string` schema
@@ -231,8 +236,74 @@ for components declared by the canonical ECS entry.
 
 ## Queries and projections
 
+The physical-row batch contract
+includes the implemented read-only slice, examples and admission evidence.
+
 Queries are the only public data-plane API. A row is the flexible path; a span
 is the packed numeric path and includes entity handles for owner-side identity.
+Engine owners select spans for numeric batches and identity-only scans, resolving
+columns and entity windows outside the inner loop. Use the existing `world-read`
+capability for a numeric field or fixed-array element. Managed strings and
+complete authoring declarations retain semantic reads when the owner needs them. Sparse/optional read-only
+queries can use physical batches; they cannot use spans.
+`pnpm check:ecs-iteration` rejects component snapshot traversal and facade
+escape in Engine implementation; comments and owner allowlists cannot waive it. Identity-only
+`row.entity`/`row.has` loops are admitted, including sparse membership filtering;
+they reuse one facade per traversal. Apps and templates keep the
+ordinary gameplay API. See the [CI policy](../../scripts/ci/README.md#engine-ecs-iteration-gate).
+
+### Physical numeric batches
+
+`query.batches()` prepares a cached `Result<Iterable<QueryBatch>, QueryBatchUnavailableError>`.
+This first slice accepts read-only, non-temporal descriptors, including sparse
+`with`/`without` predicates and optional data. Write, changed and added descriptors
+return explicit `write-access` / `temporal-filter` reasons; their existing rows,
+spans and projection APIs retain their semantics.
+
+```ts
+const active = world.query({ read: [Position], optional: [Tint], with: [Active] }).unwrap();
+const batches = active.batches().unwrap();
+for (const batch of batches) {
+  const x = batch.read(Position, 'x');
+  if (batch.kind === 'indexed') {
+    const { rows, count } = batch;
+    for (let i = 0; i < count; i++) consume(x[rows[i] as number] as number);
+  } else {
+    for (let row = batch.start; row < batch.end; row++) consume(x[row] as number);
+  }
+}
+```
+
+| Fact | Access |
+| --- | --- |
+| Dense table range | Physical rows in `[start, end)` |
+| Sparse selection | Physical `rows[0..count)`; trailing capacity is not selected |
+| Required numeric field | `batch.read(Position, 'x')`, original column with no copy/subarray |
+| Optional numeric field | `batch.read(Tint, 'alpha')`, column or `undefined` per batch; zero is present |
+| Entity identity | `batch.entities[physicalRow]` |
+| Fixed array element | `column[physicalRow * batch.stride(Component, field) + element]` |
+
+Resolve columns, identities and row indices outside the entity loop. Inline
+numeric scalars, booleans/enums as raw codes, entity references, fixed numeric
+arrays and fixed buffers are eligible. Managed payload fields are rejected;
+read columns and index arrays expose no mutation methods or backing buffer.
+
+Batches borrow live storage until advance/close/structure change. Column access
+rejects expired batches and structural invalidation; iteration fences poisoned
+Worlds and active derived writes. A raw array access cannot run a per-entity
+structure check: defer structural changes while a batch is borrowed. Nested
+iteration on the same Query is rejected. Repeated close calls cannot invalidate
+a later row, span or batch iterator.
+
+The Query retains one reusable validation lease; iteration and batch objects
+still have overhead proportional to traversal and batch count. This is low allocation, not a zero-allocation
+promise. Dense spans or known-entity numeric probes may remain better for their
+workload; benchmark the best eligible API instead of migrating every loop.
+Run [`bench/query-batches.mjs`](bench/query-batches.mjs) after the ECS build to
+compare actual API CPU, sampled allocation and signed retained-heap deltas.
+
+### Query storage and observation
+
 Raw `Table`, `Archetype`, `Column`, and `FieldView` values are package-private.
 Variable-array columns retain their count-column key from table creation and
 carry it through growth. Semantic reads, writes and release still observe the
@@ -254,7 +325,7 @@ the accessed table's grown columns; row counts come directly from that table.
 Structural mutation still invalidates active iterators; `changed` and `added` observations
 remain independent between Query instances.
 
-The [storage matching allocation comparison](reports/query-storage-matching-20261017/README.md)
+The storage matching allocation comparison
 records a source-qualified environment extraction fixture and its raw profiles.
 
 The row iterator reuses its borrowed row facade. Read each entity/value during
@@ -304,14 +375,15 @@ numeric writes leave projections current. Array, buffer and managed-field writes
 remain explicit publications: a fixed-array view may already have been edited
 through an alias before `set` is called.
 
-State consumers use `createStateProjection` from the projection subpath. World
+State consumers use `createStateProjection` from the projection subpath. Its current candidate exposes `hasStructuralChange(index)` over the existing per-index evidence, so consumers can refresh that identity after component removal without treating a global structural change as a change to every row. Read this predicate before accepting or superseding the candidate; those actions expire it. World
 publishes writes into mutable max-epoch radix indices over stable entity slots.
 A consumer reads only changed index paths and retains its accepted membership
 and cursor. Component indices own the only changed epoch for each live component identity;
 row and sparse storage retain only the distinct added epoch. Migration and
 swap-removal move added evidence but never duplicate or move changed evidence.
 Known-identity queries read the same index directly. Removal releases empty
-paths. Repeated writes mutate existing paths; unexpected allocation failure
+paths (a bounded spare list reuses their nodes) and rescans a node only when it
+held the removed maximum. Repeated writes mutate existing paths; unexpected allocation failure
 after a mutation poisons the World through its existing partial-write policy.
 Structural facts coalesce by World slot, retaining deletion and generation
 replacement for independent slow consumers without an append history.
@@ -345,12 +417,19 @@ candidate.accept(); // Only after the consumer successfully applies its changes.
 | Boundary | Contract |
 |:--|:--|
 | Discovery | Prunes unchanged max-epoch index paths; resolves only emitted stable identities. Explicit invalidation may rebuild the consumer baseline. |
-| Acceptance | Synchronous, consumer-local; a new read, invalidation, or World mutation expires an outstanding candidate. |
+| Acceptance | Synchronous, consumer-local; a new read, invalidation, observed/candidate component write or any structural mutation expires an outstanding candidate. Writes to other components and resources do not expire it. |
 | Failure | Leave the batch unaccepted and read again; poisoned Worlds reject projection. |
 | Scratch | `indices` is borrowed until the next `read`; do not retain it as a snapshot. |
 | Invalidation | Preserves prior identities so deleted sources can still leave the consumer. |
-| Fast check | `isCurrent()` compares accepted World epochs without allocating a batch; unrelated writes may return false. |
+| Fast check | `isCurrent()` checks the same component/structure fence without allocating a batch; unrelated component and resource writes leave it current. |
 | Root facts | `membershipChanged` and `changedComponents` conservatively identify work domains; `changed(entity, component)` checks a surviving value against acceptance. Removed components require current-membership reconciliation. |
+
+The observation declaration is the acceptance fence. A producer may read input
+components, write separate derived output components in the same World, then
+accept its inputs. Include every component whose value or membership the
+consumer relies on; resource reads are outside this component projection's
+fence. Structural edits remain conservative and must precede the read or follow
+acceptance. The borrowed batch never becomes an asynchronous frame snapshot.
 
 Derived numeric producers execute under one World-owned synchronous write
 fence. The internal `writeRows` operation covers the producer's numeric writes,
@@ -409,11 +488,31 @@ capability never hands out a storage view and cannot mutate the World.
 Queries never expose table ids, rows, columns, or a duplicate snapshot data
 plane.
 
+### Steady-state cost at scale
+
+Steady per-frame work allocates in proportion to changes, not entity count
+([steady-state bench](bench/steady-state.mjs)):
+
+| Operation | Steady allocation |
+|:--|:--|
+| `set` on a numeric/bool/entity component, `setArrayRange`, `ok(undefined)` | none |
+| `set` with an array payload | none beyond the caller's payload object |
+| sparse tag add/remove | none (no row move); table tags copy the row |
+| changed row iteration | none per row; `row.get` builds one snapshot object (and views) |
+| spawn / despawn | payload validation records only; archetype rosters are memoized |
+
+Small variable arrays (up to 256 bytes) share chunk cells instead of owning
+an ArrayBuffer each; a fixed `array<T,N>` stays cheaper still.
+
 ## Schedules, time, and resources
 
-Only `Update` and `FixedUpdate` are user schedules. Registration is token-first;
-there is no frame-end schedule, system-parameter DSL, terminal render hook, or
-severity/error-handler registry.
+`Update` and `FixedUpdate` are the simulation schedules driven by
+`world.update(dt)`. A domain declares its own phases with `defineSchedule(name)`
+and executes them explicitly with `world.run(token)`; a domain run never
+advances World time and cannot order against another schedule; running a token the World has
+never registered, or ordering across schedules, returns `schedule-scope-mismatch`. Registration is
+token-first; there is no frame-end schedule, system-parameter DSL, terminal
+render hook, or severity/error-handler registry.
 
 ```ts
 world.addSystem(Update, Move).unwrap();
@@ -564,7 +663,7 @@ specific change belong to its closed-loop verification report.
 - [x] Entity and component mutation use one World authority.
 - [x] Relationship targets remain materialized for $O(1 + k)$ reads.
 - [x] Query row/span are the only public data plane.
-- [x] `Update` and `FixedUpdate` are the only schedules.
+- [x] `Update`/`FixedUpdate` drive simulation; domain schedules run only explicitly.
 - [x] Expected failures are structured; unknown partial writes poison the World.
 - [x] Advanced projection/shared/externalization APIs are named subpaths.
 
@@ -580,6 +679,8 @@ allocation failure returns the existing structured managed-buffer error. Small
 fields keep their existing allocation and reuse behavior. Game data, including
 instance transforms, remains World-owned regardless of its size.
 
-Managed buffer slots derive logical length and backing storage from their current byte view. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
+Managed buffer slots are typed columns (size class, chunk, offset, logical length); the pool retains no view per slot and materializes a transient byte view only on request, so a small per-entity array costs no live object. Entity records (generation, archetype, row) are likewise typed columns rather than one object per entity. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
 
 Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only buffer sources and numeric-array inputs widen.
+
+Package history is maintained in the Harness changelog.

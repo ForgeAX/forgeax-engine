@@ -100,42 +100,62 @@ function resetReason(
   return undefined;
 }
 
+function createTemporalScratch() {
+  return { view: mat4.create(), projection: mat4.create(), jitteredProjection: mat4.create() };
+}
+let temporalScratch: ReturnType<typeof createTemporalScratch> | undefined;
+let projectingTemporal = false;
+
 export function projectTemporalView(input: TemporalViewInput): TemporalView {
-  const { camera } = input;
-  const viewId = temporalViewId(camera.worldId ?? 0, camera.entityKey ?? 0);
-  const currentJitterUv = temporalJitterUv(
-    input.temporalFrameIndex,
-    input.internalWidth ?? input.surfaceWidth,
-    input.internalHeight ?? input.surfaceHeight,
-  );
-  const view = mat4.invert(mat4.create(), camera.world);
-  const projection = cameraLensProjection(camera);
-  const currentUnjitteredViewProjection = mat4.multiply(mat4.create(), projection, view);
-  const jitteredProjection = jitterCameraProjection(mat4.create(), projection, currentJitterUv);
-  const currentJitteredViewProjection = mat4.multiply(mat4.create(), jitteredProjection, view);
-  const reason = resetReason(camera, viewId, input.lastSubmitted);
-  const historyValid = reason === undefined;
-  return {
-    viewId,
-    historyVersion: camera.historyVersion ?? 0,
-    temporalFrameIndex: input.temporalFrameIndex,
-    historyValid,
-    resetReason: reason,
-    currentJitterUv,
-    internalWidth: input.internalWidth ?? input.surfaceWidth,
-    internalHeight: input.internalHeight ?? input.surfaceHeight,
-    previousJitterUv: historyValid
-      ? (input.lastSubmitted?.jitterUv ?? currentJitterUv)
-      : currentJitterUv,
-    currentJitteredViewProjection,
-    currentUnjitteredViewProjection,
-    previousUnjitteredViewProjection: historyValid
-      ? (input.lastSubmitted?.unjitteredViewProjection ?? currentUnjitteredViewProjection)
-      : currentUnjitteredViewProjection,
-    projection: camera.projection,
-    near: camera.near,
-    far: camera.far,
-  };
+  const outer = projectingTemporal;
+  if (!outer && temporalScratch === undefined) temporalScratch = createTemporalScratch();
+  const scratch = outer
+    ? createTemporalScratch()
+    : (temporalScratch as ReturnType<typeof createTemporalScratch>);
+  projectingTemporal = true;
+  try {
+    const { camera } = input;
+    const viewId = temporalViewId(camera.worldId ?? 0, camera.entityKey ?? 0);
+    const currentJitterUv = temporalJitterUv(
+      input.temporalFrameIndex,
+      input.internalWidth ?? input.surfaceWidth,
+      input.internalHeight ?? input.surfaceHeight,
+    );
+    const view = mat4.invert(scratch.view, camera.world);
+    const projection = cameraLensProjection(camera, scratch.projection);
+    const currentUnjitteredViewProjection = mat4.multiply(mat4.create(), projection, view);
+    const jitteredProjection = jitterCameraProjection(
+      scratch.jitteredProjection,
+      projection,
+      currentJitterUv,
+    );
+    const currentJitteredViewProjection = mat4.multiply(mat4.create(), jitteredProjection, view);
+    const reason = resetReason(camera, viewId, input.lastSubmitted);
+    const historyValid = reason === undefined;
+    return {
+      viewId,
+      historyVersion: camera.historyVersion ?? 0,
+      temporalFrameIndex: input.temporalFrameIndex,
+      historyValid,
+      resetReason: reason,
+      currentJitterUv,
+      internalWidth: input.internalWidth ?? input.surfaceWidth,
+      internalHeight: input.internalHeight ?? input.surfaceHeight,
+      previousJitterUv: historyValid
+        ? (input.lastSubmitted?.jitterUv ?? currentJitterUv)
+        : currentJitterUv,
+      currentJitteredViewProjection,
+      currentUnjitteredViewProjection,
+      previousUnjitteredViewProjection: historyValid
+        ? (input.lastSubmitted?.unjitteredViewProjection ?? currentUnjitteredViewProjection)
+        : currentUnjitteredViewProjection,
+      projection: camera.projection,
+      near: camera.near,
+      far: camera.far,
+    };
+  } finally {
+    projectingTemporal = outer;
+  }
 }
 
 export function snapshotSubmittedTemporalView(view: TemporalView): SubmittedTemporalView {

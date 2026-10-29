@@ -3,10 +3,12 @@
 #import forgeax_view::fog::{translucent_fog}
 #import forgeax_view::common::{view}
 
-// Portable triangle expansion for square/circle points and independent
-// line-list segments and joined line-strip paths. Line width uses physical
-// pixels or world units (style.w carries the projection focal factor, converted
-// per endpoint by its clip w); dash distances use mesh-local units. Round caps
+// Portable triangle expansion for square/circle/soft points and independent
+// line-list segments and joined line-strip paths. Point size and line width use
+// physical pixels or world units (style.w carries the projection focal factor,
+// converted per vertex by its clip w); dash distances use mesh-local units.
+// Point vertices carry a size scale in `otherPosition.x` and an RGBA tint in
+// `neighborDistance`; the material texture maps across each point sprite. Round caps
 // extend open ends by the half width and trim every segment end beyond its
 // perpendicular to a circle, which also rounds miter joins without overlap.
 // No native wide primitive state is required.
@@ -54,6 +56,7 @@ struct PointsLinesFragment {
   // fragment position directly for exact physical-pixel coverage.
   @location(1) @interpolate(perspective) sampleCenter : vec2<f32>,
   @location(7) @interpolate(flat) capRadii : vec2<f32>,
+  @location(6) @interpolate(flat) tint : vec4<f32>,
 };
 
 fn clipPixelDelta(clip : vec4<f32>, pixels : vec2<f32>) -> vec2<f32> {
@@ -62,9 +65,15 @@ fn clipPixelDelta(clip : vec4<f32>, pixels : vec2<f32>) -> vec2<f32> {
   return pixels * ndcPerPixel * clip.w;
 }
 
-fn expandPoint(position : vec3<f32>, corner : vec2<f32>, sizePx : f32) -> vec4<f32> {
+// Physical pixels of a style extent at one projected vertex.
+fn rasterPixels(clip : vec4<f32>, extent : f32) -> f32 {
+  let worldScale = pointsLinesView.style.w;
+  return select(extent, extent * worldScale / max(clip.w, 0.000001), worldScale > 0.0);
+}
+
+fn expandPoint(position : vec3<f32>, corner : vec2<f32>, size : f32) -> vec4<f32> {
   let clip = pointsLinesView.worldViewProj * pointsLinesView.model * vec4<f32>(position, 1.0);
-  let offset = clipPixelDelta(clip, corner * (sizePx * 0.5));
+  let offset = clipPixelDelta(clip, corner * (rasterPixels(clip, size) * 0.5));
   return vec4<f32>(clip.xy + offset, clip.z, clip.w);
 }
 
@@ -101,9 +110,7 @@ fn projectLine(input : PointsLinesVertex) -> ProjectedLine {
 
 // Physical-pixel half width at one projected endpoint.
 fn lineHalfWidthPx(clip : vec4<f32>) -> f32 {
-  let halfWidth = pointsLinesView.style.x * 0.5;
-  let worldScale = pointsLinesView.style.w;
-  return select(halfWidth, halfWidth * worldScale / max(clip.w, 0.000001), worldScale > 0.0);
+  return rasterPixels(clip, pointsLinesView.style.x) * 0.5;
 }
 
 fn expandLine(input : PointsLinesVertex, line : ProjectedLine) -> vec4<f32> {
@@ -142,9 +149,6 @@ fn expandLine(input : PointsLinesVertex, line : ProjectedLine) -> vec4<f32> {
   return vec4<f32>(endpoint.xy + offset, endpoint.z, endpoint.w);
 }
 
-fn circleCoverage(sampleCenter : vec2<f32>) -> bool {
-  return dot(sampleCenter, sampleCenter) <= 1.0;
-}
 
 // Beyond a segment end's perpendicular, keep only the end's circle. A segment
 // with no projected length becomes one disc of the larger radius.
@@ -166,11 +170,12 @@ fn roundEndCoverage(input : PointsLinesFragment) -> bool {
 @vertex
 fn vs_main(input : PointsLinesVertex) -> PointsLinesFragment {
   let isLine = pointsLinesView.style.y > 0.5;
-  let isCircle = pointsLinesView.style.z > 0.5 && !isLine;
   var output : PointsLinesFragment;
-  output.position = expandPoint(input.position, input.corner, pointsLinesView.style.x);
+  output.position = expandPoint(input.position, input.corner, pointsLinesView.style.x * input.otherPosition.x);
+  output.tint = input.neighborDistance;
   var clippingPosition = input.position;
   if isLine {
+    output.tint = vec4<f32>(1.0);
     let line = projectLine(input);
     output.position = expandLine(input, line);
     let atEnd = input.corner.x > 0.0;
@@ -184,7 +189,8 @@ fn vs_main(input : PointsLinesVertex) -> PointsLinesFragment {
   }
   output.clippingPositionWS = (pointsLinesView.model * vec4<f32>(clippingPosition, 1.0)).xyz;
   output.dash = select(vec3<f32>(1.0, 0.0, 0.0), pointsLinesView.dash.xyz, isLine);
-  output.shape = select(0.0, 1.0, isCircle);
+  // -1 marks a line; points carry their shape label (0 square, 1 circle, 2 soft).
+  output.shape = select(pointsLinesView.style.z, -1.0, isLine);
   output.sampleCenter = select(input.corner, vec2<f32>(0.0, 0.0), isLine);
   return output;
 }
@@ -202,12 +208,22 @@ fn shadePointsLines(input : PointsLinesFragment) -> vec4<f32> {
     let phase = distance - floor(distance / period) * period;
     if phase >= input.dash.x { discard; }
   }
-  if input.shape > 0.5 && !circleCoverage(input.sampleCenter) {
+  let radiusSquared = dot(input.sampleCenter, input.sampleCenter);
+  if input.shape > 0.5 && radiusSquared > 1.0 {
     discard;
   }
-  let uv = material.baseColorTextureCoordinatesMetadata.xy;
+  // A soft point fades its alpha smoothly from the center to the rim.
+  let falloff = 1.0 - min(radiusSquared, 1.0);
+  let coverage = select(1.0, falloff * falloff, input.shape > 1.5);
+  // Points map the texture across the sprite (Three.js PointsMaterial.map).
+  let uv = select(
+    material.baseColorTextureCoordinatesMetadata.xy,
+    input.sampleCenter * 0.5 + vec2<f32>(0.5, 0.5),
+    input.shape > -0.5,
+  );
   let textureColor = textureSample(baseColorTexture, baseColorSampler, uv);
-  let color = material.baseColor * textureColor;
+  var color = material.baseColor * textureColor * input.tint;
+  color.a *= coverage;
   if material.alphaCutoff > 0.0 && color.a < material.alphaCutoff {
     discard;
   }

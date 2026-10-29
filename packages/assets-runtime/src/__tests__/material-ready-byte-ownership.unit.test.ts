@@ -1,8 +1,11 @@
 import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssetReference } from '../internal';
+import { shareVerifiedArtifactBytes } from '../internal/shared-immutable';
 import { createMaterialLoader } from '../material/loader';
+import { installMaterialReadyShaders } from '../material/runtime-shader';
 import { materialPublicationFixture, materialRecordFixture } from './fixtures/material-publication';
 import { loadMaterialFixture } from './fixtures/runtime-material';
 
@@ -18,6 +21,32 @@ async function ready(index: number) {
   if (loaded.status !== 'Ready') throw Error(loaded.error.code);
   return loaded;
 }
+
+it('keeps unused cooked programs as bytes through admission and device adoption', async () => {
+  const loaded = await ready(101);
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const fork = shaders.forkForDevice({
+    createShaderModule() {
+      throw Error('CPU preparation must not create GPU modules');
+    },
+  });
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  try {
+    installMaterialReadyShaders(shaders, loaded, new MaterialArtifactRegistry());
+    expect(decode).not.toHaveBeenCalled();
+    fork.installMaterialArtifactsFrom(shaders);
+    expect(decode).not.toHaveBeenCalled();
+    const key = loaded.record.programs[0]?.specializationKey;
+    if (key === undefined) throw Error('Missing program');
+    const first = fork.findMaterialArtifact(key).unwrap();
+    expect(decode).toHaveBeenCalledTimes(1);
+    expect(fork.findMaterialArtifact(key).unwrap()).toBe(first);
+    expect(shaders.findMaterialArtifact(key).unwrap().program).toBe(first.program);
+    expect(decode).toHaveBeenCalledTimes(1);
+  } finally {
+    decode.mockRestore();
+  }
+});
 
 describe('actual material-ready caller byte ownership work', () => {
   it('keeps duplicate registrations on distinct buffers through preflight and publication', async () => {
@@ -77,11 +106,13 @@ describe('actual material-ready caller byte ownership work', () => {
     const existing = owner.getMaterialArtifact(key);
     if (existing === undefined) throw Error('Missing retained artifact');
     const second = await ready(2);
-    const original = shaders.findMaterialArtifact.bind(shaders);
-    const spy = vi.spyOn(shaders, 'findMaterialArtifact').mockImplementation((identifier) => {
-      existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
-      return original(identifier);
-    });
+    const original = shaders.validateMaterialArtifactBytes.bind(shaders);
+    const spy = vi
+      .spyOn(shaders, 'validateMaterialArtifactBytes')
+      .mockImplementation((identifier, entry) => {
+        existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
+        return original(identifier, entry);
+      });
     try {
       let thrown: unknown;
       try {
@@ -98,4 +129,52 @@ describe('actual material-ready caller byte ownership work', () => {
       spy.mockRestore();
     }
   });
+});
+
+it('shares the fragment owner across Registries for one verified immutable cooked byte view', async () => {
+  const loaded = await ready(77);
+  const record = {
+    ...loaded.record,
+    programs: loaded.record.programs.map((program) => ({
+      ...program,
+      artifact: {
+        ...program.artifact,
+        bytes: shareVerifiedArtifactBytes(program.artifact.digest, program.artifact.bytes),
+      },
+    })),
+  };
+  const first = new ShaderRegistry({ manifestUrl: undefined });
+  const second = new ShaderRegistry({ manifestUrl: undefined });
+  installMaterialReadyShaders(first, { status: 'Ready', record }, new MaterialArtifactRegistry());
+  installMaterialReadyShaders(second, { status: 'Ready', record }, new MaterialArtifactRegistry());
+  for (const program of record.programs) {
+    const a = first.findMaterialArtifact(program.specializationKey).unwrap().program;
+    const b = second.findMaterialArtifact(program.specializationKey).unwrap().program;
+    expect(b.sourceReference).toBe(a.sourceReference);
+    expect(b.source).toBe(new TextDecoder().decode(program.artifact.bytes));
+  }
+});
+
+it('does not expand shared program bodies when an installed material is checked again', async () => {
+  const loaded = await ready(78);
+  const record = {
+    ...loaded.record,
+    programs: loaded.record.programs.map((program) => ({
+      ...program,
+      artifact: {
+        ...program.artifact,
+        bytes: shareVerifiedArtifactBytes(program.artifact.digest, program.artifact.bytes),
+      },
+    })),
+  };
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const artifacts = new MaterialArtifactRegistry();
+  installMaterialReadyShaders(shaders, { status: 'Ready', record }, artifacts);
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  try {
+    installMaterialReadyShaders(shaders, { status: 'Ready', record }, artifacts);
+    expect(read).not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+  }
 });

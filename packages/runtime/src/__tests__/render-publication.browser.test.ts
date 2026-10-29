@@ -144,11 +144,11 @@ it('renders the same Standard scene through local World and transferred publicat
         );
         expect((await direct.completed).ok).toBe(true);
         const candidate = publisher.prepare((frame + 1) / 60).unwrap();
-        const packet = structuredClone(candidate.packet, {
-          transfer: renderPublicationTransfers(candidate.packet),
+        const packet = structuredClone(candidate.message, {
+          transfer: renderPublicationTransfers(candidate.message),
         });
         candidate.accept();
-        if (x === 2 && frame === 0) expect(packet.programs.length).toBeGreaterThan(0);
+        if (x === 2 && frame === 0) expect(packet.side?.programs?.length).toBeGreaterThan(0);
         const draw = value(remote.renderer.draw({ publication: packet }));
         expect((await draw.completed).ok).toBe(true);
         shadowClaims.push(
@@ -212,8 +212,8 @@ it('renders the same Standard scene through local World and transferred publicat
           local.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
         );
         const candidate = publisher.prepare((4 + offset) / 60).unwrap();
-        const packet = structuredClone(candidate.packet, {
-          transfer: renderPublicationTransfers(candidate.packet),
+        const packet = structuredClone(candidate.message, {
+          transfer: renderPublicationTransfers(candidate.message),
         });
         candidate.accept();
         const draw = value(remote.renderer.draw({ publication: packet }));

@@ -179,9 +179,13 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-export function validateDarkGradientFixtureReport(
-  report: DarkGradientFixtureReport,
-): DarkGradientFixtureValidation {
+type FixtureCheck = DarkGradientFixtureValidation | undefined;
+
+function isWebgl2Backend(backendId: DarkGradientBackend): boolean {
+  return backendId === 'webkit-webgl2' || backendId === 'chromium-webgl2';
+}
+
+function validateReportIdentity(report: DarkGradientFixtureReport): FixtureCheck {
   if (report.schema !== DARK_GRADIENT_REPORT_SCHEMA) {
     return failure('schema', report.schema, DARK_GRADIENT_REPORT_SCHEMA);
   }
@@ -194,84 +198,124 @@ export function validateDarkGradientFixtureReport(
   if (!DARK_GRADIENT_FIXTURE.backends.includes(report.observation.backendId)) {
     return failure('observation.backendId', report.observation.backendId, 'a concrete M4 backend');
   }
-  for (const [name, observation] of [
-    ['observation', report.observation],
-    ['referenceObservation', report.referenceObservation],
-  ] as const) {
-    if (observation.sampleFrameCount !== DARK_GRADIENT_FIXTURE.frameCount) {
-      return failure(`${name}.sampleFrameCount`, observation.sampleFrameCount, 'the fixture 60-frame sample count');
-    }
-    if (!Number.isInteger(observation.frameId) || observation.frameId < observation.sampleFrameCount) {
-      return failure(`${name}.frameId`, observation.frameId, 'the actual final renderer frame at or after the 60-frame sample');
-    }
-    if (!isNonEmpty(observation.observationId) || !isNonEmpty(observation.rendererInspectionRef)) {
-      return failure(`${name} identity refs`, observation, 'non-empty stable identity references');
-    }
-    const expectedAntialias = name === 'observation' ? 'fxaa' : 'none';
-    if (observation.antialias !== expectedAntialias) {
-      return failure(`${name}.antialias`, observation.antialias, expectedAntialias);
-    }
-    if (observation.surfaceProfile !== 'dual-view' && observation.surfaceProfile !== 'raw-only') {
-      return failure(`${name}.surfaceProfile`, observation.surfaceProfile, 'dual-view or raw-only');
-    }
-    if (observation.rgba16floatRenderable !== true) {
-      return failure(`${name}.rgba16floatRenderable`, observation.rgba16floatRenderable, 'true');
-    }
-    if (!Array.isArray(observation.passNames)) {
-      return failure(`${name}.passNames`, observation.passNames, 'the committed graph pass names');
-    }
-    if (name === 'observation') {
-      if (!observation.passNames.includes('output-transform') || !observation.passNames.includes('fxaa')) {
-        return failure(`${name}.passNames`, observation.passNames, 'output-transform and fxaa');
-      }
-      if (
-        observation.standardOutputColor?.format !== 'rgba16float' ||
-        observation.standardOutputColor.domain !== 'display-encoded'
-      ) {
-        return failure(
-          `${name}.standardOutputColor`,
-          observation.standardOutputColor,
-          'rgba16float/display-encoded',
-        );
-      }
-    }
+  return undefined;
+}
+
+function validateObservationFrame(name: string, observation: DarkGradientObservationRef): FixtureCheck {
+  if (observation.sampleFrameCount !== DARK_GRADIENT_FIXTURE.frameCount) {
+    return failure(`${name}.sampleFrameCount`, observation.sampleFrameCount, 'the fixture 60-frame sample count');
   }
+  if (!Number.isInteger(observation.frameId) || observation.frameId < observation.sampleFrameCount) {
+    return failure(`${name}.frameId`, observation.frameId, 'the actual final renderer frame at or after the 60-frame sample');
+  }
+  if (!isNonEmpty(observation.observationId) || !isNonEmpty(observation.rendererInspectionRef)) {
+    return failure(`${name} identity refs`, observation, 'non-empty stable identity references');
+  }
+  return undefined;
+}
+
+function validateObservationSurface(
+  name: 'observation' | 'referenceObservation',
+  observation: DarkGradientObservationRef,
+): FixtureCheck {
+  const expectedAntialias = name === 'observation' ? 'fxaa' : 'none';
+  if (observation.antialias !== expectedAntialias) {
+    return failure(`${name}.antialias`, observation.antialias, expectedAntialias);
+  }
+  if (observation.surfaceProfile !== 'dual-view' && observation.surfaceProfile !== 'raw-only') {
+    return failure(`${name}.surfaceProfile`, observation.surfaceProfile, 'dual-view or raw-only');
+  }
+  if (observation.rgba16floatRenderable !== true) {
+    return failure(`${name}.rgba16floatRenderable`, observation.rgba16floatRenderable, 'true');
+  }
+  if (!Array.isArray(observation.passNames)) {
+    return failure(`${name}.passNames`, observation.passNames, 'the committed graph pass names');
+  }
+  return undefined;
+}
+
+function validateFxaaObservationGraph(observation: DarkGradientObservationRef): FixtureCheck {
+  if (!observation.passNames.includes('output-transform') || !observation.passNames.includes('fxaa')) {
+    return failure('observation.passNames', observation.passNames, 'output-transform and fxaa');
+  }
+  if (
+    observation.standardOutputColor?.format !== 'rgba16float' ||
+    observation.standardOutputColor.domain !== 'display-encoded'
+  ) {
+    return failure('observation.standardOutputColor', observation.standardOutputColor, 'rgba16float/display-encoded');
+  }
+  return undefined;
+}
+
+function validateObservationRef(
+  name: 'observation' | 'referenceObservation',
+  observation: DarkGradientObservationRef,
+): FixtureCheck {
+  const shared = validateObservationFrame(name, observation) ?? validateObservationSurface(name, observation);
+  if (shared !== undefined || name !== 'observation') return shared;
+  return validateFxaaObservationGraph(observation);
+}
+
+function validateObservationPair(report: DarkGradientFixtureReport): FixtureCheck {
+  const observed =
+    validateObservationRef('observation', report.observation) ??
+    validateObservationRef('referenceObservation', report.referenceObservation);
+  if (observed !== undefined) return observed;
   if (
     report.observation.observationId === report.referenceObservation.observationId &&
     report.observation.frameId === report.referenceObservation.frameId
   ) {
     return failure('paired observation identity', report.observation, 'distinct no-FXAA and FXAA renderer observations');
   }
+  return undefined;
+}
+
+function validateSurfaceFacts(report: DarkGradientFixtureReport): FixtureCheck {
   if (report.surface.intermediateFormat !== 'rgba16float') {
     return failure('surface.intermediateFormat', report.surface.intermediateFormat, 'rgba16float');
   }
   if (report.surface.domain !== 'display-encoded' || report.surface.endpoint !== 'surface.storage.raw') {
     return failure('surface domain/endpoint', report.surface, 'display-encoded inspection facts through surface.storage.raw');
   }
-  const requiresPresentationProof = report.observation.backendId === 'webkit-webgl2' || report.observation.backendId === 'chromium-webgl2';
-  if (
-    requiresPresentationProof &&
-    (report.presentationProof === undefined ||
-      report.presentationProof.descriptor !== true ||
-      report.presentationProof.acquisition !== true ||
-      report.presentationProof.validation !== true ||
-      !isNonEmpty(report.presentationProof.surfaceIdentity) ||
-      report.presentationProof.requested === undefined ||
-      report.presentationProof.validated === undefined ||
-      JSON.stringify(report.presentationProof.requested) !== JSON.stringify(report.presentationProof.validated))
-  ) {
+  return undefined;
+}
+
+function isCompletePresentationProof(proof: DarkGradientPresentationProof | undefined): boolean {
+  return (
+    proof !== undefined &&
+    proof.descriptor === true &&
+    proof.acquisition === true &&
+    proof.validation === true &&
+    isNonEmpty(proof.surfaceIdentity) &&
+    proof.requested !== undefined &&
+    proof.validated !== undefined &&
+    JSON.stringify(proof.requested) === JSON.stringify(proof.validated)
+  );
+}
+
+function validatePresentationProof(report: DarkGradientFixtureReport): FixtureCheck {
+  if (isWebgl2Backend(report.observation.backendId) && !isCompletePresentationProof(report.presentationProof)) {
     return failure('presentationProof', report.presentationProof, 'WebGL2 descriptor, acquisition, validation, identity, and matching descriptor facts');
   }
-  if (
-    report.pixelReadbackEvidence === undefined ||
-    report.pixelReadbackEvidence.fixtureId !== DARK_GRADIENT_FIXTURE_ID ||
-    report.pixelReadbackEvidence.backendId !== report.observation.backendId ||
-    report.pixelReadbackEvidence.lane !== report.observation.lane ||
-    report.pixelReadbackEvidence.observationId !== report.observation.observationId ||
-    report.pixelReadbackEvidence.frameId !== report.observation.frameId ||
-    ((report.observation.backendId === 'webkit-webgl2' || report.observation.backendId === 'chromium-webgl2') &&
-      report.pixelReadbackEvidence.surfaceIdentity !== report.presentationProof?.surfaceIdentity)
-  ) {
+  return undefined;
+}
+
+function readbackMatchesObservation(report: DarkGradientFixtureReport): boolean {
+  const evidence = report.pixelReadbackEvidence;
+  return (
+    evidence !== undefined &&
+    evidence.fixtureId === DARK_GRADIENT_FIXTURE_ID &&
+    evidence.backendId === report.observation.backendId &&
+    evidence.lane === report.observation.lane &&
+    evidence.observationId === report.observation.observationId &&
+    evidence.frameId === report.observation.frameId &&
+    (!isWebgl2Backend(report.observation.backendId) ||
+      evidence.surfaceIdentity === report.presentationProof?.surfaceIdentity)
+  );
+}
+
+function validatePixelReadback(report: DarkGradientFixtureReport): FixtureCheck {
+  if (!readbackMatchesObservation(report)) {
     return failure('pixelReadbackEvidence identity', report.pixelReadbackEvidence, 'post-frame pixels matching fixture, backend, lane, observation, and WebGL2 surface identity');
   }
   if (
@@ -281,6 +325,10 @@ export function validateDarkGradientFixtureReport(
   ) {
     return failure('pixelReadbackEvidence bytes', report.pixelReadbackEvidence, 'a complete non-empty RGBA8 readback');
   }
+  return undefined;
+}
+
+function validatePixelSource(report: DarkGradientFixtureReport): FixtureCheck {
   const expectedPixelSource = {
     'browser-webgpu': { endpoint: 'surface.storage.raw', method: 'gpu-raw-readback' },
     dawn: { endpoint: 'surface.storage.raw', method: 'gpu-raw-readback' },
@@ -301,7 +349,10 @@ export function validateDarkGradientFixtureReport(
   ) {
     return failure('pixelReadbackEvidence source/metrics', report.pixelReadbackEvidence, 'the single producer-owned pixel source and metric set');
   }
-  const metrics = report.metrics;
+  return undefined;
+}
+
+function validateMetricDiversity(metrics: DarkGradientPixelMetrics): FixtureCheck {
   if (metrics.uniqueColorRatio < DARK_GRADIENT_FIXTURE.thresholds.uniqueColorRatio) {
     return failure('metrics.uniqueColorRatio', metrics.uniqueColorRatio, 'ratio >= 0.75');
   }
@@ -314,6 +365,10 @@ export function validateDarkGradientFixtureReport(
   if (metrics.referenceScanlineLevels < DARK_GRADIENT_FIXTURE.thresholds.minimumReferenceScanlineLevels) {
     return failure('metrics.referenceScanlineLevels', metrics.referenceScanlineLevels, 'the no-FXAA baseline minimum scanline diversity');
   }
+  return undefined;
+}
+
+function validateMetricFidelity(metrics: DarkGradientPixelMetrics): FixtureCheck {
   if (metrics.meanAbsoluteChannelDelta > DARK_GRADIENT_FIXTURE.thresholds.meanAbsoluteChannelDelta) {
     return failure('metrics.meanAbsoluteChannelDelta', metrics.meanAbsoluteChannelDelta, 'delta <= 2/255');
   }
@@ -328,6 +383,10 @@ export function validateDarkGradientFixtureReport(
     return failure('metrics.validationErrors', metrics.validationErrors, 'zero validation errors');
   }
   if (!isNonEmpty(metrics.pixelHash)) return failure('metrics.pixelHash', metrics.pixelHash, 'a producer-owned pixel hash');
+  return undefined;
+}
+
+function validateFalsifiers(falsifiers: readonly DarkGradientFalsifier[]): FixtureCheck {
   const expectedMutations: readonly DarkGradientMutation[] = [
     'eight-bit-intermediate',
     'missing-oetf',
@@ -336,14 +395,30 @@ export function validateDarkGradientFixtureReport(
     'raw-only-overlay-after-transform',
   ];
   if (
-    report.falsifiers.length !== expectedMutations.length ||
+    falsifiers.length !== expectedMutations.length ||
     expectedMutations.some((mutation, index) => {
-      const falsifier = report.falsifiers[index];
+      const falsifier = falsifiers[index];
       return falsifier?.mutation !== mutation || falsifier.passed !== false ||
         !falsifier.actualFailedGates.includes(falsifier.expectedGate);
     })
   ) {
-    return failure('falsifiers', report.falsifiers, 'all five mutation gates must fail');
+    return failure('falsifiers', falsifiers, 'all five mutation gates must fail');
   }
-  return { ok: true, value: undefined };
+  return undefined;
+}
+
+export function validateDarkGradientFixtureReport(
+  report: DarkGradientFixtureReport,
+): DarkGradientFixtureValidation {
+  return (
+    validateReportIdentity(report) ??
+    validateObservationPair(report) ??
+    validateSurfaceFacts(report) ??
+    validatePresentationProof(report) ??
+    validatePixelReadback(report) ??
+    validatePixelSource(report) ??
+    validateMetricDiversity(report.metrics) ??
+    validateMetricFidelity(report.metrics) ??
+    validateFalsifiers(report.falsifiers) ?? { ok: true, value: undefined }
+  );
 }

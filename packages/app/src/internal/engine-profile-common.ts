@@ -11,12 +11,12 @@ import {
 } from './assets-world-plugin';
 
 export interface EngineProfileBase {
-  readonly assetAssembly?: AssetRuntimeAssembly;
+  readonly assetAssembly?: AssetRuntimeAssembly | undefined;
   readonly renderer: Renderer;
-  readonly animation?: AnimationPlaybackOptions;
-  readonly assets?: AssetRegistry;
-  readonly pluginPrograms?: PluginPrograms;
-  readonly runtimePacks?: RuntimePackOptions;
+  readonly animation?: AnimationPlaybackOptions | undefined;
+  readonly assets?: AssetRegistry | undefined;
+  readonly pluginPrograms?: PluginPrograms | undefined;
+  readonly runtimePacks?: RuntimePackOptions | undefined;
   readonly extensions?: readonly Plugin[];
 }
 

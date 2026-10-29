@@ -3,6 +3,19 @@ import { describe, it } from 'node:test';
 
 import { isViewportWorkspaceInputEvent, ViewWorkspaceInputController } from '../packages/view-plugin-viewport/src/workspace-shell.ts';
 
+it('limits material dolly steps without changing Scene defaults', async () => {
+  const samples = [];
+  const api = { async getCamera() { return { version: 1 }; }, async beginCamera() { return {}; },
+    async updateCamera({ input }) { if (input) samples.push(input); }, async commitCamera() {}, async abortCamera() {} };
+  for (const limit of [undefined, 0.25]) {
+    const controller = new ViewWorkspaceInputController({ api, targetId: 'preview', bindings: 'orbit', dollyStepLimit: limit });
+    await controller.begin();
+    controller.queueInput({ type: 'wheel', mode: 'dolly', deltaY: -10000 });
+    await controller.finish();
+    assert.equal(samples.at(-1).amount, -(limit ?? 4));
+  }
+});
+
 function camera(x = 0) {
   return { position: [x, 2, 6], target: [x, 1, 0], up: [0, 1, 0] };
 }

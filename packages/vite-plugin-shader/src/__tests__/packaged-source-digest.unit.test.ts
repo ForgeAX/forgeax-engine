@@ -2,20 +2,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { engineShaderSourceDigest, PACKAGED_SOURCE_RECORD } from '../index.js';
+import { engineShaderSourceDigest } from '../index.js';
 import { packagedProfileMatchesSource } from '../shared-engine-inputs.js';
 
 describe('packaged engine shader profile provenance', () => {
   let root: string;
   let sources: string;
-  let profile: string;
+  let label: string;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'packaged-source-digest-'));
     sources = join(root, 'src');
-    profile = join(root, 'base-ssao');
+    label = join(root, 'profiles.json.gz#base-ssao');
     mkdirSync(join(sources, 'nested'), { recursive: true });
-    mkdirSync(profile);
     writeFileSync(join(sources, 'common.wgsl'), 'var shadowMap: texture_depth_2d_array;\n');
     writeFileSync(join(sources, 'nested', 'entry.wgsl'), 'fn fs_main() {}\n');
     writeFileSync(join(sources, 'notes.md'), 'not shader input');
@@ -26,10 +25,6 @@ describe('packaged engine shader profile provenance', () => {
     vi.restoreAllMocks();
     rmSync(root, { recursive: true, force: true });
   });
-
-  const record = (shaderSourceDigest: string | undefined): void => {
-    writeFileSync(join(profile, PACKAGED_SOURCE_RECORD), JSON.stringify({ shaderSourceDigest }));
-  };
 
   it('digests every WGSL file, including entries without an import path', () => {
     const before = engineShaderSourceDigest(sources);
@@ -42,8 +37,9 @@ describe('packaged engine shader profile provenance', () => {
   });
 
   it('admits a profile prepared from the current sources', () => {
-    record(engineShaderSourceDigest(sources));
-    expect(packagedProfileMatchesSource(profile, sources)).toBe(true);
+    expect(packagedProfileMatchesSource(engineShaderSourceDigest(sources), sources, label)).toBe(
+      true,
+    );
     expect(console.warn).not.toHaveBeenCalled();
   });
 
@@ -69,16 +65,17 @@ describe('packaged engine shader profile provenance', () => {
   });
 
   it('rejects a profile left behind after a WGSL edit and warns once', () => {
-    record(engineShaderSourceDigest(sources));
+    const recorded = engineShaderSourceDigest(sources);
     writeFileSync(join(sources, 'common.wgsl'), 'var shadowMap: texture_depth_2d;\n');
-    expect(packagedProfileMatchesSource(profile, sources)).toBe(false);
-    expect(packagedProfileMatchesSource(profile, sources)).toBe(false);
+    expect(packagedProfileMatchesSource(recorded, sources, label)).toBe(false);
+    expect(packagedProfileMatchesSource(recorded, sources, label)).toBe(false);
     expect(console.warn).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a profile without a provenance record or without resolvable sources', () => {
-    expect(packagedProfileMatchesSource(profile, sources)).toBe(false);
-    record(engineShaderSourceDigest(sources));
-    expect(packagedProfileMatchesSource(profile, undefined)).toBe(false);
+    expect(packagedProfileMatchesSource(undefined, sources, label)).toBe(false);
+    expect(packagedProfileMatchesSource(engineShaderSourceDigest(sources), undefined, label)).toBe(
+      false,
+    );
   });
 });

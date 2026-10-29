@@ -7,7 +7,7 @@ import { afterAll, bench } from 'vitest';
 import { Camera, Instances, MeshFilter, MeshRenderer } from '../src/components';
 import { Materials } from '../src/materials';
 import { PersistentRenderScene } from '../src/scene/render-scene';
-import { renderPublicationTransfers } from '../src/publication/contract';
+import { renderPublicationTransfers } from '../src/publication/record';
 import { createRenderPublisher } from '../src/publication/publisher';
 import { RenderPublicationReceiver } from '../src/publication/receiver';
 
@@ -26,7 +26,7 @@ for (const { name, instances, unique } of [
   const material = assets.create(Materials.standard({ baseColor: [0.6, 0.5, 0.4, 1] })).unwrap();
   const sharedMesh = assets.create(geometry).unwrap();
   world
-    .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {} })
+    .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: { fov: Math.PI / 3, aspect: 1 } })
     .unwrap();
   const entities = Array.from({ length: instances === 0 ? 1000 : 64 }, () => {
     const entity = world
@@ -60,8 +60,8 @@ for (const { name, instances, unique } of [
     iteration++;
     world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+    const packet = structuredClone(candidate.message, {
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     scene.consumePublication(receiver.accept(packet).unwrap());

@@ -3,6 +3,7 @@ import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { BundleStore } from '../internal/bundle-store';
+import { shareVerifiedArtifactBytes } from '../internal/shared-immutable';
 import { ArtifactReadCache, type ArtifactReadRequest, readArtifact } from '../registry/artifact-io';
 import { defined } from './assert-defined';
 
@@ -30,6 +31,66 @@ function request(guid: string, entry = 0, bytes: Uint8Array = stored): ArtifactR
 const fetcher = () => vi.fn(async () => new Response(stored.slice()));
 
 describe('resident Asset Bundles', () => {
+  it('decodes a shared compressed group and verifies each selected program independently', async () => {
+    const { compressZstd } = await import('@forgeax/engine-codec/encode');
+    const programs = [new Uint8Array(2048).fill(17), new Uint8Array(1024).fill(29)];
+    const combined = new Uint8Array(3072);
+    combined.set(defined(programs[0]));
+    combined.set(defined(programs[1]), 2048);
+    const encoded = await compressZstd(combined);
+    if (!encoded.ok) throw new Error(encoded.error.code);
+    const compressed = encoded.value;
+    const packed = encodeAssetBundle([compressed]);
+    const fetch = vi.fn(async () => new Response(packed.bytes.slice()));
+    const requests = programs.map((bytes, index) => ({
+      guid: `group-${index}`,
+      packageUrl: 'https://game.test/group.pack.json',
+      artifactKey: 'body',
+      descriptor: {
+        path: 'bundles/group.bin',
+        mediaType: 'text/wgsl',
+        contentEncoding: 'zstd' as const,
+        byteLength: bytes.length,
+        integrity: { algorithm: 'sha256' as const, digest: hash(bytes) },
+        byteRange: { ...defined(packed.windows[0]), bundleDigest: hash(packed.bytes) },
+        decodedRange: { offset: index === 0 ? 0 : 2048, length: bytes.length },
+      },
+    }));
+    const cache = new ArtifactReadCache();
+    const results = await Promise.all(requests.map((r) => cache.readArtifact(r, fetch)));
+    expect(results.map((r) => r.unwrap())).toEqual(programs);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const bad = defined(requests[1]);
+    expect(
+      (
+        await readArtifact(
+          {
+            ...bad,
+            descriptor: {
+              ...bad.descriptor,
+              decodedRange: { offset: 2500, length: 1024 },
+            },
+          },
+          fetch,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(
+      (
+        await readArtifact(
+          {
+            ...bad,
+            descriptor: {
+              ...bad.descriptor,
+              integrity: { algorithm: 'sha256', digest: hash(defined(programs[0])) },
+            },
+          },
+          fetch,
+        )
+      ).ok,
+    ).toBe(false);
+  });
+
   it('fetches one Bundle for concurrent entries and reuses an extracted entry without refetching', async () => {
     const cache = new ArtifactReadCache(),
       fetch = fetcher();
@@ -261,5 +322,55 @@ describe('BundleStore residency', () => {
       invalid: (reason) => reason,
     });
     expect(store.snapshot()).toEqual({ bundles: 0, bytes: 0 });
+  });
+});
+
+describe('released Bundle entries with a live shared view', () => {
+  it('copies the realm view of the same content instead of refetching it', async () => {
+    const own = [Uint8Array.of(71, 72, 73, 74), Uint8Array.of(81, 82)];
+    const ownBundle = encodeAssetBundle(own);
+    const ranged = (entry: number): ArtifactReadRequest => {
+      const body = defined(own[entry]);
+      return {
+        guid: `shared-${entry}`,
+        packageUrl: 'https://game.test/shared.pack.json',
+        artifactKey: 'program',
+        descriptor: {
+          path: 'bundles/shared.bin',
+          mediaType: 'text/wgsl',
+          contentEncoding: 'identity',
+          byteLength: body.byteLength,
+          integrity: { algorithm: 'sha256', digest: hash(body) },
+          byteRange: { ...defined(ownBundle.windows[entry]), bundleDigest: hash(ownBundle.bytes) },
+        },
+      };
+    };
+    const ranges: (string | undefined)[] = [];
+    const fetch = vi.fn(async (_url: string, init?: { headers?: Record<string, string> }) => {
+      const range = init?.headers?.range;
+      ranges.push(range);
+      const match = range === undefined ? null : /^bytes=(\d+)-(\d+)$/.exec(range);
+      return new Response(
+        match === null
+          ? ownBundle.bytes.slice()
+          : ownBundle.bytes.slice(Number(match[1]), Number(match[2]) + 1),
+        { status: match === null ? 200 : 206 },
+      );
+    });
+    // A consumer such as the Material decoder keeps only the realm view of the content.
+    const held = await (async () => {
+      const first = (await new ArtifactReadCache().readArtifact(ranged(0), fetch)).unwrap();
+      return shareVerifiedArtifactBytes(hash(first), first);
+    })();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    // Another reader without the extracted value receives a verified private copy, no request.
+    const cache = new ArtifactReadCache();
+    const again = (await cache.readArtifact(ranged(0), fetch)).unwrap();
+    expect(again).toEqual(Uint8Array.of(71, 72, 73, 74));
+    expect(again).not.toBe(held);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    // Content nobody holds still answers through its Bundle.
+    expect((await cache.readArtifact(ranged(1), fetch)).unwrap()).toEqual(Uint8Array.of(81, 82));
+    expect(ranges).toEqual([undefined, undefined]);
   });
 });

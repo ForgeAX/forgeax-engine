@@ -38,6 +38,13 @@ it('preserves the optional pipeline library owner and its outcomes', async () =>
     overflow: 0,
     sourceBytes: 0,
     warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+    backgroundWarmup: {
+      requested: 0,
+      completed: 0,
+      failed: 0,
+      elapsedMs: 0,
+      state: 'idle' as const,
+    },
   };
   const prepared = ok(inspection);
   const preparationFailure = err(

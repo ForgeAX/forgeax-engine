@@ -1,5 +1,6 @@
 import type { RenderGraphFrame } from '@forgeax/engine-render-graph';
 import type { RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
+import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
 import {
   type ComputeState,
   computePipelineError,
@@ -16,7 +17,7 @@ type Variant =
   | 'reduce_furthest';
 type Factory = NonNullable<RenderPipelineFrame['runtime']['shaderModuleFactory']>;
 interface Program {
-  readonly source: string;
+  readonly source: string | ShaderSource;
   readonly factory: Factory;
   readonly createModule: Factory['createShaderModule'];
   readonly module: ShaderModule;
@@ -32,12 +33,32 @@ interface Programs {
 // Graph-owned texture views/buffers are never part of this retained owner.
 const scopedPrograms = new WeakMap<DeviceScope, Programs>();
 
+/** Generation ownership and disposal stay separate from per-program invalidation. */
+function scopedDepthPrograms(scope: DeviceScope, device: RhiDevice): Programs {
+  if (!scope.isAlive()) throw computePipelineError('depth pyramid live device scope');
+  let owned = scopedPrograms.get(scope);
+  if (owned === undefined) {
+    owned = { device, entries: new Map() };
+    scopedPrograms.set(scope, owned);
+    const retained = owned;
+    scope._adopt('pipeline', retained, () => {
+      retained.entries.clear();
+      if (scopedPrograms.get(scope) === retained) scopedPrograms.delete(scope);
+    });
+  }
+  if (owned.device !== device) throw computePipelineError('depth pyramid current device');
+  return owned;
+}
+
 /** Scope-less structural/direct graph adapters retain their original graph-local lifetime. */
-export function createDepthPyramidProgramResolver() {
+export function createDepthPyramidProgramResolver(
+  // Only producer-owned deeply frozen layout arrays may enter this metadata.
+  preparedLayouts?: ReadonlyMap<readonly unknown[], string>,
+) {
   let local: Programs | undefined;
   return (
     frame: RenderGraphFrame,
-    source: string,
+    source: string | ShaderSource,
     entries: readonly unknown[],
     variant: Variant,
   ): ComputeState => {
@@ -52,27 +73,16 @@ export function createDepthPyramidProgramResolver() {
       if (local?.device !== device) local = { device, entries: new Map() };
       programs = local;
     } else {
-      if (!scope.isAlive()) throw computePipelineError('depth pyramid live device scope');
-      let owned = scopedPrograms.get(scope);
-      if (owned === undefined) {
-        owned = { device, entries: new Map() };
-        scopedPrograms.set(scope, owned);
-        const retained = owned;
-        // RHI pipelines/layouts have no explicit destroy operation. Release the
-        // generation's JS roots; already submitted commands retain native use.
-        scope._adopt('pipeline', retained, () => {
-          retained.entries.clear();
-          if (scopedPrograms.get(scope) === retained) scopedPrograms.delete(scope);
-        });
-      }
-      if (owned.device !== device) throw computePipelineError('depth pyramid current device');
-      programs = owned;
+      programs = scopedDepthPrograms(scope, device);
     }
-    const layout = JSON.stringify(entries);
+    const layout = preparedLayouts?.get(entries) ?? JSON.stringify(entries);
     const createModule = factory.createShaderModule;
     // Module invalidation may keep the same factory/method/source. The real
     // factory owns pending/error/replacement, even when a program was retained.
-    const module = createModule.call(factory, { code: source, label: `depth_pyramid_${stage}` });
+    const module = createModule.call(
+      factory,
+      shaderSourceDescriptor(source, `depth_pyramid_${stage}`),
+    );
     if (!module.ok) throw module.error;
     if (scope !== undefined && (!scope.isAlive() || scopedPrograms.get(scope) !== programs))
       throw computePipelineError('depth pyramid live device scope');

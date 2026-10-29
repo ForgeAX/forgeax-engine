@@ -11,7 +11,7 @@ import {
   RhiError,
   type Sampler,
 } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { writeAllPrefilterUniforms } from '../device/gpu-residency';
 import { IBL_UNIFORM_SLOT_STRIDE, iblPrefilterGroup0Entries } from '../ibl/IblPipelineCache';
 import {
@@ -119,10 +119,10 @@ export function addAtmosphereIbl(
         hint: 'rebuild the Engine shader manifest before selecting Atmosphere lighting',
       });
     const diffuse = factory
-      .createShaderModule({ code: diffuseCode, label: 'atmosphere_ibl' })
+      .createShaderModule(shaderSourceDescriptor(diffuseCode, 'atmosphere_ibl'))
       .unwrap();
     const specular = factory
-      .createShaderModule({ code: prefilterCode, label: 'ibl-prefilter' })
+      .createShaderModule(shaderSourceDescriptor(prefilterCode, 'ibl-prefilter'))
       .unwrap();
     const diffuseInputs = device
       .createBindGroupLayout({

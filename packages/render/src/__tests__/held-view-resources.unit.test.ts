@@ -1,7 +1,7 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 
@@ -33,8 +33,7 @@ describe('held view resource ownership', () => {
     const create = vi.spyOn(device, 'createBuffer');
     const destroy = vi.spyOn(device, 'destroyBuffer');
     const frame = (views: readonly { identity: string; render: boolean }[]) => {
-      const result = runRenderFeatureFrame(
-        host,
+      const result = host.runFrame(
         views.map((view) => ({
           ...view,
           worlds: [],

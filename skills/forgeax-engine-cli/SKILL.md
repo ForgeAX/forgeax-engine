@@ -7,10 +7,56 @@ description: >-
 
 # forgeax-engine-cli
 
+## Quick contract
+
+Covers routine game work; stop here unless a task needs a section below. Run from the
+game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
+`forgeax help <path> --json` (`help --tree --json` lists all); never guess inputs.
+
+| Step | Command | Notes |
+|:--|:--|:--|
+| Validate setup | `project check` | Node/pnpm, manifest, dependencies |
+| Unit/type checks | `pnpm test`, `pnpm typecheck` | `project test` runs the project test gate |
+| Assets | `asset verify`, `asset list`, `asset inspect <guid>` | GUIDs, sidecars, Packs, closure |
+| Start live game | `dev start [--headless true] [--backend auto]` | Optional warm owner; headed by default |
+| Status | `dev status` | `phase`, `revision`, frame, unfinished eval; `stopped`/`unreachable` |
+| Accept runtime | `dev verify [--revision <rev>] [--require-ui]` | The acceptance gate; blocked means fail |
+| Scripted playthrough | `project play <script>` | Same gate on a real-input run in its own runtime |
+| Screenshot | `dev capture [--output <png>] [--checkpoint <name>]` | Open the PNG; a path is not evidence |
+| Look-dev loop | `dev look [--hide-ui true] [--viewports WxH,...] [--cameras '[…]']` | After each light/material/camera edit: waits for the edit, PNG + pixel report |
+| Inspect live state | `dev eval --revision <rev> --code '<js>'` | Revision required; `_import()` for tokens |
+| Observe | `dev find --name <n>`, `dev focus --name <n>`, `dev camera set/release` | Temporary camera, no scene edits |
+| Reload / stop | `dev reload`, `dev stop` | Reload invalidates revisions and refs |
+| Production output | `project build`, `project preview` | Serves verified `dist/` over HTTP |
+| Release | `project package [--format web-zip\|single-html] [--output <file>]` | Only when release is requested |
+
+- Observations return `revision`; pass it to `eval` (optionally `verify`) so stale
+  runtimes fail. Disk edits invalidate the runtime; `dev reload` after dependency or Engine changes.
+- Service upkeep is only `dev start`/`dev stop`; `look`/`capture`/`verify`/`eval` start
+  the owner on demand with the same results.
+- Errors keep `code`, `expected`, `hint`, `detail`; repair the named owner. When a result
+  lists `omitted.fields`, add `--detail` only if a decision needs them.
+- `dev status` only reports; `dev start` with other browser options replaces the owner.
+  `--backend auto` prefers hardware and reports any software fallback.
+- Playthrough scripts: wait for `html[data-forgeax-input="open"]` before the first input
+  when the host publishes it, then write checkpoint names to
+  `document.documentElement.dataset.forgeaxCaptureReady` for `capture(name)`; see
+  [Browser compositor capture](#browser-compositor-capture).
+- Evidence comes from the owner browser only; hand over the `dev status` URL. Never drive
+  another tab for acceptance: it may be backgrounded, and its `live-bridge-not-owner` is expected.
+- Run `project play`/`dev verify` blocking in one call with a large exec yield; never poll.
+- Hard rendering failures only (never for delivery): `dev start --rhi-capture true`,
+  reproduce, `rhi capture`, then [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md).
+
 > [!IMPORTANT]
 > **forgeax is the single product entry.** Discover commands progressively with forgeax help;
 > forgeax help --tree --json returns the complete structured command tree. ToolContribution, ToolClient,
 > and ToolRun are internal composition contracts behind the CLI, not additional product entries.
+
+`--json` output is compact by default: large owner fields are summarized and listed in
+`omitted.fields`. Add `--detail` only when a decision needs one of them, for example
+`project build --detail --json` for every artifact digest (also in `dist/forgeax-dist.json`)
+or `dev status --detail --json` for the full execution report.
 
 For difficult or unexplained rendering failures, start with
 [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md). Use live
@@ -25,7 +71,7 @@ annotations to platform independent View; hand off its actual View/project URL.
 Use platform simulation for MCP bridge regression and platform native for actual
 host behavior. Keep simulation and native evidence distinct.
 
-For Linux batch jobs without a monitor, first follow [Linux unattended validation](references/linux-unattended.md): writable XDG state, explicit headless versus Xvfb, and sandboxed non-root Chromium.
+For Linux batch jobs without a monitor, first follow Linux unattended validation: writable XDG state, explicit headless versus Xvfb, and sandboxed non-root Chromium.
 
 ## Persistent live control
 
@@ -49,12 +95,57 @@ revisions and entity refs. `find` returns refs usable with `focus --ref` when
 names are ambiguous. Focus frames the selected subtree from Renderer bounds using the current camera projection; `--distance` overrides automatic distance. `focus --name` uses an exact name and never chooses the
 first duplicate. `find --limit` defaults to 20 (maximum 100).
 
-`dev eval --revision <revision> --code 'return simulation.execution.report()'`
-requires a revision because arbitrary code can contain old entity handles.
+Live commands absorb self-resolving readiness states instead of failing:
+a runtime being replaced after an edit or reload, a startup generation
+superseded by a save during its compilation, a replaced World, or another
+eval or capture still running. `--ready-timeout-ms` bounds the wait (default
+120000; `0` returns the original error immediately). A result after waiting
+carries `waitedMs` beside the `revision` it ran against; a failure after
+waiting adds `detail.waitedMs`. A failed runtime with unchanged or unreadable
+inputs, an eval past its caller wait (`live-eval-continuing`) and invalid
+arguments fail without waiting; a stopped owner returns `live-not-running`. A startup superseded by newer inputs reports
+`live-startup-superseded: <cause>` in status `error` until its replacement is
+ready. A disconnected caller is never admitted later. Waiting never
+re-targets a pinned identity: when the runtime of a `--revision` or `--ref`
+is replaced, the command returns `live-revision-stale` with the current
+revision. `eval`, `camera set`, `camera release` and `focus` are retried only
+when rejected before execution; observations without a pinned revision re-run
+against the replacement runtime. `dev start` against an owner that is still
+starting, waiting or reloading waits within the project startup budget; it
+replaces a dead, failed, stale or differently configured owner.
+
+`dev eval --revision <revision> --code '…'` requires a revision because
+arbitrary code can hold old entity handles.
 Canceling its wait does not stop already-running code; reload/stop destroys
 its execution environment. Camera control is temporary: set/focus acquires
 an observation camera, get reports `control`, and release returns control to
 the game. These operations do not save scene edits.
+
+The App bridge belongs to the page the owner launched. The owner mints a
+token per opened page and passes it only in that page's URL; `dev status.url`
+omits it. Any other page served by the same Vite (a human tab, your own
+Playwright script opening `dev status.url`) runs the game normally, but the
+owner refuses its bridge connection with close code `4403`
+(`live-bridge-not-owner`); that page logs one warning and does not reconnect.
+If the owner page itself is reloaded, its newest instance takes over: the
+displaced socket is closed with `4409` (`live-bridge-displaced`) and its pending
+calls fail at once with `live-app-bridge-disconnected`. `dev reload` mints a new
+token, so pages from an earlier generation are refused. `dev` commands therefore
+keep targeting the owner page while other pages play.
+
+### Look-dev loop: `dev look`
+
+For lighting, material, fog, post and camera work, keep one `dev start --headless true`
+owner and run `dev look --hide-ui true --json` after every edit; use `project play` only
+for gameplay acceptance. The look waits for the edited revision (`waitedMs`), the
+startup fade and two fresh frames, then captures in the owner's warm page: one view
+per `--viewports` (`WxH[,WxH...]`, headless only) x `--cameras` (fixed
+`{name?, position, target, up?, lens?}` poses, released afterwards). Each view
+returns its PNG path, `metrics` (mean `luma` 0-255, HSV `saturation` 0-1, luma
+deviation `contrast`, `clipped`/`crushed` shares, `centre` vs `surround`) and
+`findings`: renderer error, flat frame, dark/very bright, blown highlights, crushed
+shadows, low saturation, low contrast, weak subject separation. Findings are
+heuristics that tell you where to look; open the PNG, then edit and look again.
 
 `dev capture` returns PNG and JSON report references with absolute paths and
 digests. Default artifacts live in the user's data directory and survive
@@ -63,6 +154,11 @@ relative paths resolve against the project. `--checkpoint` waits for an exact
 game-provided ready marker; it is not an image label and is unnecessary for
 ordinary screenshots. The frame number confirms a submission before capture,
 not the exact frame represented by the PNG.
+A white or transparent canvas under a working HUD is usually a renderer error: the JSON
+then carries `rendererError` (`code`, `message`, `frame`, `framesAgo`, `count`),
+`pixels.rendered: false` with `pixels.reason: "renderer-error"` and a one-line `hint`; the
+development host also logs each distinct renderer error once as a console warning (`dev logs`). Follow
+`forgeax-engine-rhi-debug` from that error instead of guessing at materials or lights.
 
 The default `--backend auto` prefers hardware and allows software fallback;
 status reports the requested policy, actual backend, and fallback reason.
@@ -94,8 +190,10 @@ browser behavior still needs observation. `plugin-startup-failed` fails even wit
 repair the named descendant and verify a fresh session. Keep original pinned-release,
 new-release, and post-fix evidence distinct when diagnosing across releases.
 Use the game's local-playable evidence table for completion and blocked-check handling.
-Run `dev verify --revision <current-revision> --json` (or `engine.run.verify`) for
+Run `dev verify --json` (or `engine.run.verify`; `--revision` pins one execution) for
 runtime acceptance; `dev capture` preserves observations and is not that gate.
+`project play <script> --json` applies the same runtime gate to the final frame of a
+scripted real-input playthrough in its own temporary runtime, with no revision.
 Evidence from a different execution diagnoses the owner; it does not accept the
 user's delivery target.
 
@@ -128,11 +226,12 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Install the SDK from npm | `forgeax sdk install <dir> [--version VERSION]` |
 | Create from the SDK or initialize an existing project | `forgeax project new [dir] --template empty\|game-3d` / `forgeax project init` / `forgeax project check` |
 | Install/verify project-local Engine skills | `forgeax project skill install` / `forgeax project skill verify` |
-| Package a hosted Web ZIP including Engine runtime | `forgeax project package --format web-zip [--output release/game-web.zip]` |
+| Package a hosted Web ZIP including Engine runtime (large JSON documents zstd-stored; `--compress=false` keeps plain JSON) | `forgeax project package --format web-zip [--output release/game-web.zip] [--compress=false]` |
 | Create a single-HTML offline candidate | `forgeax project package --format single-html --output release/game-offline.html --json` |
 | Browser compositor screenshot including Canvas and HTML/Shadow DOM | `forgeax project capture --backend auto --require-ui --output <png> --json` |
 | Headless software compositor capture | `forgeax project capture --headless true --backend software --require-ui --output <png> --json` |
-| Play one session and capture multiple checkpoints | `node <scenario.mjs>` + `createBrowserCapture(root).open()` / `session.capture()` |
+| Drive a scripted playthrough and verify the final frame in one command | `forgeax project play scripts/playthrough.mjs [--require-ui] --json` |
+| Compose a custom browser session with multiple checkpoints | `node <scenario.mjs>` + `createBrowserCapture(root).open()` / `session.capture()` |
 | Discover commands and arguments | `forgeax help [path] [--tree] [--json]` |
 | Execute build/resource-preview/authoring operations | `forgeax project ...` / `forgeax asset ...` / `forgeax rhi ...` / `forgeax profile ...` / `forgeax preview analyze` |
 | Compose operations programmatically | Import the SDK command client in an ordinary Node/Bun module. |
@@ -152,7 +251,7 @@ sdk-manifest.json checks SDK identity. Private GitHub Releases are internal arch
 consumer download sources. The target must be empty; download, version, or copy failures clean staging.
 
 For project operations, composition, preview evidence, and optional service acceleration, read
-[`references/authoring-operations.md`](references/authoring-operations.md) when those tasks apply.
+`references/authoring-operations.md` when those tasks apply.
 
 Resource preview operations are Engine-owned host-realm plugins. Discover the exact request with
 `forgeax help asset preview --json`; `forgeax asset preview --kind material --guid <guid> --json`
@@ -162,7 +261,7 @@ AABB; texture preview uses an aspect-preserving unlit presentation. A Standard m
 carries `sampledTextureBudget` (`limit`, `required`, `transmission`, `conflicts`) at the portable
 16-texture limit; `transmission: "exceeded"` means refraction drops on 16-texture devices.
 `forgeax dev start` runs the source-development asset path. `forgeax project preview` verifies and
-serves built `dist/`; it does not start a source-development server.
+serves built `dist/`; it does not start a source-development server. Live control and next-frame RHI capture need the owning dev/run session for the same project. A static browser picture alone cannot accept those commands. Offline RHI summary/inspect retain their artifact identity; GPU replay/read additionally require the named native provider.
 
 ## Browser compositor capture
 
@@ -183,6 +282,10 @@ ShadowRoot UI; canvas pixel reads/toDataURL omit DOM UI. The adjacent JSON sidec
 records GPUAdapterInfo, Chrome version, X display, lavapipe ICD, canvas/UI witnesses, and
 console/page errors. A visible Engine fatal diagnostic fails capture even with retained
 frame pixels and no browser errors; the report preserves it in `runtime.fatalError`.
+Only an accepted image is written to `--output` (or the default `artifacts/` path). A
+rejected capture (fatal/startup page, loading frame, flat canvas) and the provisional
+witness go to `.forgeax/diag/<same relative path>` as `*.failure.png`; `error.detail.output`
+names that file.
 --require-ui requires a game UI child beneath the generated host's #game-ui;
 Engine/browser ShadowRoots do not count as game UI.
 
@@ -198,15 +301,94 @@ document.fonts.ready. Projects must bundle the same Web fonts; system font fallb
 parity.
 
 Use --deterministic for local/remote pixel or color comparisons. The CLI opens ?forgeaxCapture=1;
-App publishes document.documentElement.dataset.forgeaxFrameSubmitted after an actual renderer submission
-and dispatches forgeax:frame-submitted on Canvas. The CLI waits for that signal and non-flat canvas crop, then
-for document.documentElement.dataset.forgeaxCaptureReady = 'true'. Before readiness, the game must pin
+App retains the submitted frame facts on canvas.forgeaxFrameProgress after an actual renderer submission
+and dispatches forgeax:frame-submitted on Canvas as a future-only notification. The CLI reads the snapshot
+and waits for a non-flat canvas crop before accepting the game's
+`document.documentElement.dataset.forgeaxCaptureReady = 'true'` checkpoint. Before readiness, the game must pin
 random seed, logical frame, state, and project fonts. Viewport, DPR, and elapsed time alone do not establish parity.
 
-For continuous playthroughs, reuse one session; repeated one-shot capture restarts the page and World:
+### Scripted playthrough
+
+`forgeax project play <script> --json` is the default interaction loop: it starts a
+temporary game and a private sandboxed browser, waits for the first ready frame with
+`html[data-forgeax-input="open"]`, calls the module's default export with the play helper,
+then applies the `dev verify` gate to the final frame (no fatal, no console/page errors,
+non-uniform canvas, healthy execution; `--require-ui` adds a `#game-ui` child). No
+`dev start`, `--revision`, polling or hand-written readiness waits are needed.
+Startup is a fixed cost per play: `timings.openMs` is the play's own Vite runtime (Pack
+cooking for Packs the project added or changed, often 10–30 s, else a few seconds; the
+browser launches meanwhile), `timings.readyMs` the Engine's startup until input opens.
+Every play gets an empty browser profile; Pack products and Vite's optimized
+dependencies (`.forgeax/play/vite`) carry over, so cover several checks in one script.
+Pack products are keyed by content and Engine release, not location: a copied project
+keeps them with its `.forgeax/ddc`, `project new` starts with the template's and Engine
+Content's products cooked by the SDK, and `FORGEAX_BUILD_CACHE_DIR` shares them between projects.
 
 ```js
-export default async function scenario({ browser }) {
+// scripts/playthrough.mjs (new empty projects include an editable example)
+import assert from 'node:assert/strict';
+/** @param {import('@forgeax/engine/devkit').PlayContext} play */
+export default async function playthrough(play) {
+  await play.step('start', () => play.mouse.click([0.5, 0.8])); // canvas-normalized [x, y]
+  const running = await play.waitFor((s) => s.phase === 'playing'); // registered read projection
+  await play.keyboard.hold('KeyW', (s) => s.speed > 12);
+  await play.screenshot('running');
+  await play.reload();
+  assert.equal((await play.state()).phase, 'menu');
+  return { elapsed: running.elapsed };
+}
+```
+
+Helpers: `step(name, run)`, `state(read?)`, `waitFor(predicate, { read, timeoutMs })`,
+`advance(seconds, { stepSeconds, read })`,
+`keyboard.press(key)`, `keyboard.hold(keys, ms | predicate)`, `mouse.click/move(point)`,
+`mouse.drag(from, to, { button })`, `screenshot(name)`, `reload()`, `wait(ms)`, the raw `page`
+and the run's abort `signal`. `press` and `click` hold until three more Engine frames complete.
+`state` reads `gameHost.gameProjection.registerRead({ id, read })` (the id defaults to the
+only read). Script `console` output goes to the report, keeping `--json` stdout one document.
+The default result (at most 900 bytes) has `passed`, step count, bounded `state`/`returned`,
+screenshot paths, `rendered`, error counts and the report path under
+`artifacts/play/<script path>/` (for example `artifacts/play/scripts/playthrough/play.json`);
+the failure screenshot is a diagnostic under `.forgeax/diag/artifacts/play/<script path>/`;
+`--detail` returns the full report. On `--timeout-ms` (`play-timeout`) or cancellation
+(`tool-run-cancelled`) helpers reject and the browser closes; a synchronous infinite loop in the
+script cannot be interrupted. A press lasts three frames; use `keyboard.hold(key, ms)` when a game
+distinguishes tap from hold. `advance` pauses the App, steps whole frames of explicit game
+time (default 1/60 s, at most 0.1 s per frame, 600 s and 36000 frames per call), resumes and
+returns `state`; frames before the last run the World update only (`advance(180)` takes about
+a second) and the last one renders. `{ render: true }` draws every stepped frame, for logic that
+reads the submitted picture (GPU picking, submitted terrain height). It sends no input (held keys
+stay held per stepped frame) and fails as
+`play-step-failed` reason `advance-invalid` or `advance-failed`. Use `play.advance` for any in-game timer, day/night cycle or long wait instead of `play.wait`/long `waitFor` timeouts. Failures are `play-script-invalid`, `play-not-ready` (`busy` included), `play-step-failed`
+(with `step`, `action`, failure screenshot, state, first browser error), `play-timeout` and
+`play-runtime-failed` (`detail.reason`: `fatal`, `renderer-error` (the report keeps `rendererError`), `browser-errors`, `flat-canvas`, `ui-missing`,
+`execution-unhealthy`, `execution-unavailable`, `final-frame-timeout`). The unchanged `empty`
+template draws no content, so its example reports `flat-canvas` until the game renders;
+`dev verify` rejects the same scene for its missing camera. Headless or unfocused Chromium rejects pointer lock; script mouse-look
+through a game control path such as `mouse.drag(a, b, { button: 'right' })`.
+
+Agent contract: `project play` usually takes 1–3 minutes; wait for it in a single call (use
+your shell tool's longest wait) instead of re-checking it; use `play.advance` for any in-game
+timer. stdout prints one JSON result when it ends; stderr prints a start line and the
+expected duration (the previous run of the script), then at most one progress line per 30 s,
+also while queued. Give the harness a timeout of at least
+21 minutes at default budgets (14 for one play, up to 7 more when queued), or lower
+`--timeout-ms`. Plays of one project run
+one at a time under `.forgeax/play/lock.json`: a second play waits (one stderr line,
+`timings.lockMs`) and fails as `play-not-ready` reason `busy` (naming the holder and lock
+file) after one play budget; an invalid script fails at once. `--viewports` (default
+`1280x720,1280x600`) runs the script in the first viewport, then resizes and applies the
+final-frame gate to a screenshot per further viewport; every viewport gets a HUD layout
+check whose `layout` warnings (`text-overlap`, `text-over-panel`, `text-clipped`, or
+`incomplete` when the check could not finish) never fail the play. Fix them or mark an
+intentional subtree `data-forgeax-layout="ignore"` before committing.
+
+For a custom composition, reuse one session; repeated one-shot capture restarts the page and World:
+
+```js
+import { createBrowserCapture } from '@forgeax/engine/devkit';
+const browser = createBrowserCapture(process.cwd());
+async function scenario() {
   const session = await browser.open({
     backend: 'auto',
     deterministic: true,
@@ -222,13 +404,21 @@ export default async function scenario({ browser }) {
     return { report: session.reportPath, captures: [spawn, arena] };
   } finally {
     await session.close();
+    await browser.close();
   }
 }
+console.log(JSON.stringify(await scenario()));
 ```
 
 ```bash
-a Node or Bun script using the SDK command client tests/playthrough.mjs --json
+node tests/playthrough.mjs
 ```
+
+Before the first real input after a page load or reload, wait for
+`document.documentElement.dataset.forgeaxInput === 'open'` (`html[data-forgeax-input="open"]`): the
+generated startup owner sets it with the first ready frame, its 150 ms fade does not block input, and it
+stays `closed` while loading or after a fatal startup error. A game state or HUD read alone can precede
+that frame.
 
 Games write checkpoint names to document.documentElement.dataset.forgeaxCaptureReady. capture('arena') waits
 for the Engine frame signal, exact marker, and non-flat crop before compositor capture. session.page retains native Playwright input and
@@ -258,6 +448,7 @@ forgeax project build ./games/my-game \
 |:--|:--|
 | project | External game directory containing forge.json and its entry; project files own authored truth. |
 | --base | Hosting URL prefix passed to Vite, Pack index, and runtime resource URLs. |
+| --html-head | Project-relative HTML head fragment applied before Vite and distribution sealing; use for platform script integration instead of editing dist afterward. |
 | --out-dir | Dedicated derived directory, resolved relative to project and cleared before build. |
 | --json | Complete artifact/digest closure corresponding to forgeax-dist.json. |
 
@@ -285,11 +476,13 @@ It excludes SDK source, node_modules, authored source, and remote debugging serv
 | Build Web release | forgeax project package --format web-zip | release/*-web.zip and SHA-256; JSON reports `files` and `bundles`. |
 | Share with players | Upload ZIP to HTTPS static/HTML-game hosting | Players open the URL, not index.html directly. |
 
-Both package formats ship Pack artifacts in Asset Bundles: one Pack never splits across
+Browser `project build` and both package formats share Pack artifact preparation in Asset Bundles: one Pack never splits across
 Bundles, bytes shared by several Bundles are stored once, and streaming artifacts keep their
 files. Group Packs that load together with the build root's
 `ctx.devkitDelivery = { bundles: { <name>: ['<source path prefix>/'] } }`; unmatched Packs
-fall into automatic Bundles of at most 8 MiB. See the DevKit README section
+fall into automatic Bundles of at most 8 MiB. Build `dist/` preserves diagnostic Catalog fields and
+cook receipts; packaging omits them and reuses existing encoded Bundle entries. Catalog, Pack,
+shader and pipeline documents use the same Codec reader; do not parse delivered files as plain JSON. See the DevKit README section
 "Player Asset Bundles".
 
 > [!CAUTION]
@@ -387,8 +580,8 @@ return Array.from(query.value, (row) => row.entity);
 For component data, import owning-package tokens and declare read/write/optional/filter roles:
 
 ```js
-const { MeshRenderer } = await _import('@forgeax/engine-render');
-const { Transform } = await _import('@forgeax/engine-scene');
+const { MeshRenderer } = await _import('@forgeax/engine/render');
+const { Transform } = await _import('@forgeax/engine/scene');
 const query = world.query({ read: [Transform], with: [MeshRenderer] });
 if (!query.ok) throw query.error;
 return Array.from(query.value, (row) => ({
@@ -402,7 +595,7 @@ return Array.from(query.value, (row) => ({
 ### Read component values
 
 ```js
-const { Transform } = await _import('@forgeax/engine-scene');
+const { Transform } = await _import('@forgeax/engine/scene');
 const query = world.query({ read: [Transform] });
 if (!query.ok) throw query.error;
 return Array.from(query.value, (row) => ({
@@ -419,7 +612,7 @@ bundles do not expose `.x` / `.y` / `.z` sub-fields.
 
 ```js
 // Spawn with components.
-const scene = await _import('@forgeax/engine-scene');
+const scene = await _import('@forgeax/engine/scene');
 const h = world.spawn({
   component: scene.Transform,
   data: { pos: [0, 5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
@@ -561,10 +754,15 @@ forgeax dev eval queries the current instance; domain plugins own import, Cook, 
 
 ## Pitfalls
 
-- **Bare import inside eval**: use injected _import(specifier), for example const ecs = await _import('@forgeax/engine-ecs').
+- **Bare import inside eval**: use injected _import(specifier) with the public facade subpath, for example const { Transform } = await _import('@forgeax/engine/scene'). The facade resolves in every project. A game declares only `@forgeax/engine`, so a focused name such as `@forgeax/engine-scene` resolves only when that package is hoisted or a direct dependency (Engine workspace apps); otherwise eval fails with "Failed to fetch dynamically imported module".
 - **world.query returns Result**: handle errors before iterating result.value; do not ignore descriptor conflicts or span capability errors.
 - **Browser instance unavailable**: inspect phase, bridgeConnected, and worldIdentity in forgeax dev status --root ./game --json; do not create a second temporary Page. Only Node/Dawn explicitly enables @forgeax/engine-remote/server.
 - **Retired standalone bin missing**: discover unified asset/debug/dev commands through forgeax help --tree.
+
+For a development Engine capability conflict, retain both resolved IDs and inspect
+physical package ownership and program-session queries. DevKit unifies Vite `v`
+cache versions automatically; repeatedly clearing its cache or patching installed
+SDK bytes does not repair conflicting package or session identities.
 
 ## Further reading
 
@@ -606,7 +804,7 @@ command. First inspect `components.schemas.Visibility`, then evaluate the
 same live path used by the app:
 
 ```ts
-const render = await _import('@forgeax/engine-render');
+const render = await _import('@forgeax/engine/render');
 const query = world.query({ read: [render.Visibility] }).unwrap();
 for (const row of query) console.log(row.get(render.Visibility).state);
 console.log(render.resolveVisibility(world).effective(entity));

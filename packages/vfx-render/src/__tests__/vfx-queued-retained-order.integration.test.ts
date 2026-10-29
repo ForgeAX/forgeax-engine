@@ -12,7 +12,7 @@ import {
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { expect, it, vi } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../../../render/src/features/host';
+import { createRenderFeatureHost } from '../../../render/src/features/host';
 import {
   cloneOwnedRenderFeaturePlanSignatureSnapshot,
   cloneRenderFeaturePlanSignatureSnapshot,
@@ -165,7 +165,7 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
       phaseTick: i.phaseTick,
       sequence: i.sequence,
     }));
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       {
         identity: 'main',
         render: true,
@@ -234,7 +234,7 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
       stringify.mockRestore();
     }
 
-    const retained = frame(3, 'both-retained-no-fixed-tick');
+    const retained = frame(3, 'both-retained-no-tick');
     expect(retained.frame.resources).toEqual(one.frame.resources);
     expect(retained.frame.resourceOrder).toEqual(one.frame.resourceOrder);
     expect(retained.frame.activePassOrder).toEqual([]);
@@ -300,7 +300,7 @@ it('keeps managed module snapshots exact without reserializing shared programs',
   let previousView: RenderFeaturePlanSignatureSnapshot | undefined;
   const frame = (frameNumber: number) => {
     world.update(1 / 60).unwrap();
-    const batch = runRenderFeatureFrame(host, [
+    const batch = host.runFrame([
       {
         identity: 'main',
         render: true,

@@ -9,7 +9,7 @@ import { buildScriptablePack,createStandardAssetOutputProducerRegistry } from '.
 import { bakeNavigationMesh } from '../../import/dist/navigation-bake.mjs';
 import { AssetRegistry } from '../../assets-runtime/dist/index.mjs';
 import { ShaderRegistry } from '../../shader/dist/index.mjs';
-import { physicsPlugin } from '../../physics/dist/index.mjs';
+import physics3d from '../../physics-rapier3d/dist/index.mjs';
 import { SceneInstance } from '../../render/dist/index.mjs';
 import { sceneAssetContribution, Transform } from '../../scene/dist/index.mjs';
 import { ok } from '../../types/dist/index.mjs';
@@ -45,7 +45,7 @@ export async function validateDelivery() {
     for(let restart=0;restart<2;restart++) {
       const registry=new AssetRegistry({ shaderRegistry: new ShaderRegistry({manifestUrl:undefined}) });for(const c of [navigationMeshContribution,sceneAssetContribution])registry.installDecoder(c.kind,c.decoder);registry.configurePackIndex(`${base}pack-index.json`);
       const mesh=(await registry.load(registry.parseGuid(navGuid),'navigation-mesh')).unwrap(),asset=registry.read(mesh).unwrap();
-      const world=new World({assets:registry}),ctx=await createWorldContext(world,[physicsPlugin('rapier-3d'),navigationCharacterPlugin(mesh)]);
+      const world=new World({assets:registry}),ctx=await createWorldContext(world,[physics3d,navigationCharacterPlugin(mesh)]);
       registry.release(mesh).unwrap();
       try {
         world.components.register(SceneInstance).unwrap();

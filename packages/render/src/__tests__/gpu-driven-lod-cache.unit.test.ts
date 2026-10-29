@@ -8,13 +8,10 @@ import type { MeshGpuHandles } from '../device/gpu-residency';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
-import {
-  type PreparedProductionPlan,
-  prepareBatchRows,
-} from '../gpu-driven/production-raster-prepare';
+import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
 import { GpuBuffer } from '../gpu-resource';
 import { GpuScene } from '../gpu-scene';
-import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
+import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_INDEX,
@@ -225,15 +222,6 @@ describe('GPU-driven filtered-plan cache', () => {
     const slots = f.projection.slotsSnapshot();
     const bytes = observeGpuInputBytes(f.device);
     const classes = bindings ? new Map([[`0:${member.entityKey}`, 'probe:0']]) : undefined;
-    const cachedLodCount = () =>
-      (
-        f.production as unknown as {
-          preparations: { forward: { cached: { value: PreparedProductionPlan } } };
-        }
-      ).preparations.forward.cached.value.lodPlan.groups.reduce(
-        (sum, group) => sum + group.candidateCount,
-        0,
-      );
     const prepare = (z: number) => {
       const input = admitGpuFixture({
         ...f.pbrInputs,
@@ -255,12 +243,10 @@ describe('GPU-driven filtered-plan cache', () => {
       expect(prepare(5)).toBe(2);
       expect(bytes.members()).toHaveLength(2);
       expect(prepare(50)).toBe(2);
-      expect(cachedLodCount()).toBe(2);
       // The mutable batch itself remains identical through raw -> canonical A
       // -> canonical B. Only captured row/root facts can qualify reuse.
       Object.assign(mutableBatch, { candidates: batch.candidates, members: batch.members });
       expect(prepare(5)).toBe(1);
-      expect(cachedLodCount()).toBe(1);
       const original = slots.at(0)?.snapshot;
       if (original === undefined) throw Error('expected source snapshot');
       const transforms = new Float32Array(32);
@@ -288,7 +274,6 @@ describe('GPU-driven filtered-plan cache', () => {
         members: nextBatch.members,
       });
       expect(prepare(5)).toBe(2);
-      expect(cachedLodCount()).toBe(2);
       expect(prepare(5)).toBe(2);
       expect(f.production.inspect().preparedBatchBuilds).toBe(0);
       Object.assign(mutableBatch, { candidates, members });
@@ -300,7 +285,6 @@ describe('GPU-driven filtered-plan cache', () => {
       members[0] = member;
       expect(prepare(5)).toBe(1);
       expect(bytes.members()).toHaveLength(1);
-      expect(cachedLodCount()).toBe(1);
     } finally {
       bytes.close();
       f.production.dispose();
@@ -546,8 +530,8 @@ describe('GPU-driven filtered-plan cache', () => {
       });
       expect(observations.slice(1, 4), JSON.stringify(observations)).toEqual([
         stable('stable'),
-        // Four radix pages plus the new 8-byte descriptor; GPU task headers stay fixed.
-        { ...stable('cpu-material-swap'), sharedInputUploadBytes: 4 * 1024 + 8 },
+        // Four radix pages plus the new 12-byte descriptor; GPU task headers stay fixed.
+        { ...stable('cpu-material-swap'), sharedInputUploadBytes: 4 * 1024 + 12 },
         { ...stable('map-order-only'), filteredPlanBuilds: 1 },
       ]);
       expect(observations[4]).toMatchObject({
@@ -714,7 +698,7 @@ describe('GPU-driven filtered-plan cache', () => {
         }
         if (!enabled) {
           expect(phases).toEqual([]);
-          expect(prepared.shadowBatchProjections?.size ?? 0).toBe(0);
+          expect(prepared.shadowBatchProjections?.()?.size ?? 0).toBe(0);
         }
         prepared._commitResourceReplacement();
       }
@@ -788,6 +772,53 @@ describe('GPU-driven filtered-plan cache', () => {
     }
   });
 
+  it.each([
+    16, 1024,
+  ])('does not read GPU-owned LOD rows on camera-only motion (N=%s)', async (count) => {
+    const f = await fixture(true, count);
+    const slots = f.projection.slotsSnapshot();
+    const meshes = new Map(slots.map((slot) => [slot.slot, f.gpuMesh] as const));
+    let reads = 0;
+    const scene = {
+      scene: f.availability.scene,
+      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      slots,
+      slotAt: (slot: number) => {
+        reads += 1;
+        return f.projection.slotAt(slot);
+      },
+    };
+    const prepare = (z: number) => {
+      const frame = f.production
+        .prepare(
+          admitGpuFixture({
+            ...f.pbrInputs,
+            scene,
+            camera: { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, z) },
+            meshBySlot: meshes,
+            viewBindGroupLayout: f.viewLayout,
+          }),
+        )
+        .unwrap();
+      expect(frame).toBeDefined();
+      frame?._commitResourceReplacement();
+    };
+    try {
+      prepare(5);
+      reads = 0;
+      prepare(50);
+      expect(reads).toBe(0);
+      expect(f.production.inspect()).toMatchObject({
+        filteredPlanBuilds: 0,
+        sharedInputUploadBytes: 0,
+        batchUploadBytes: 0,
+      });
+    } finally {
+      f.production.dispose();
+      f.availability.scene.dispose();
+    }
+  });
+
   it('keeps the filtered plan stable across LOD thresholds because the GPU selects the level', async () => {
     const fixtureValue = await fixture(true);
     const { availability, production, projection, topology, gpuMesh, viewLayout, pbrInputs } =
@@ -827,7 +858,6 @@ describe('GPU-driven filtered-plan cache', () => {
       filteredPlanBuilds: 1,
       planRebuildBatches: scene.plan.batches.length,
       planRebuildCandidates: 0,
-      lodSelectionChanges: 0,
     });
     expect(production.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
     expect(phases).toContain('record/gpu-driven-prepare/filter/main-plan');
@@ -838,7 +868,6 @@ describe('GPU-driven filtered-plan cache', () => {
       preparedBatchBuilds: 0,
       planRebuildBatches: 0,
       planRebuildCandidates: 0,
-      lodSelectionChanges: 0,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
       batchCount: 1,
@@ -847,15 +876,15 @@ describe('GPU-driven filtered-plan cache', () => {
     expect(phases).not.toContain('record/gpu-driven-prepare/filter/main-plan');
 
     // Crossing a LOD threshold is GPU-selected: no plan rebuild, no candidate
-    // or height upload. The CPU mirror still counts the selection change.
+    // or height upload, and no CPU walk of the LOD candidates.
     expect(prepareAt(50)).toBeDefined();
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
       planRebuildBatches: 0,
-      lodSelectionChanges: 2,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
     });
+    expect(phases.some((phase) => phase.includes('/lod'))).toBe(false);
 
     production.dispose();
     availability.scene.dispose();
@@ -980,20 +1009,25 @@ describe('GPU-driven filtered-plan cache', () => {
   });
 });
 const TRANSFORM_FLOATS = GPU_SCENE_LAYOUTS.transform.stride / 4;
-const PREVIOUS_FLOAT = TRANSFORM_FLOATS / 2;
+const PREVIOUS_FLOAT = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousIndex') / 4;
+const STAMP_FLOAT = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'stamp') / 4;
 
 /**
  * CPU mirror of the GPU Scene transform table, fed by queue writes, plus a
  * per-buffer byte ledger so a test can prove which tables a phase touched.
  */
 function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
-  const transforms = new Float32Array(scene.rowCapacity * TRANSFORM_FLOATS);
+  let transforms = new Float32Array(scene.transformByteLength / 4);
+  const transformTables = new Set<unknown>([scene.transformBuffer]);
   const bytesByBuffer = new Map<unknown, number>();
   const createBuffer = device.createBuffer.bind(device);
   const createdLabels: string[] = [];
   vi.spyOn(device, 'createBuffer').mockImplementation((descriptor) => {
     createdLabels.push(descriptor.label ?? '');
-    return createBuffer(descriptor);
+    const created = createBuffer(descriptor);
+    if (created.ok && descriptor.label === 'gpu-scene-transform-table')
+      transformTables.add(created.value);
+    return created;
   });
   const writeBuffer = device.queue.writeBuffer.bind(device.queue);
   vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data, ...rest) => {
@@ -1002,7 +1036,12 @@ function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
         ? new Uint8Array(data)
         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     bytesByBuffer.set(buffer, (bytesByBuffer.get(buffer) ?? 0) + bytes.byteLength);
-    if (buffer === scene.transformBuffer) {
+    if (transformTables.has(buffer)) {
+      if (offset + bytes.byteLength > transforms.byteLength) {
+        const grown = new Float32Array((offset + bytes.byteLength) / 4);
+        grown.set(transforms);
+        transforms = grown;
+      }
       new Uint8Array(transforms.buffer).set(bytes, offset);
     }
     return writeBuffer(buffer, offset, data, ...rest);
@@ -1017,12 +1056,19 @@ function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
     },
     /** Transform rows whose current world translation z equals `z`. */
     rowsAt(z: number) {
-      const found: Float32Array[] = [];
+      const found: number[] = [];
       for (let base = 0; base + TRANSFORM_FLOATS <= transforms.length; base += TRANSFORM_FLOATS) {
-        if (transforms[base + 14] === z)
-          found.push(transforms.subarray(base, base + TRANSFORM_FLOATS));
+        if (transforms[base + 14] === z) found.push(base / TRANSFORM_FLOATS);
       }
       return found;
+    },
+    /** The previous translation z a scene-index draw reads for `row`. */
+    previousZ(row: number) {
+      const words = new Uint32Array(transforms.buffer);
+      const base = row * TRANSFORM_FLOATS;
+      const stamped = words[base + STAMP_FLOAT] === words[STAMP_FLOAT];
+      const source = stamped ? (words[base + PREVIOUS_FLOAT] ?? row) : row;
+      return transforms[source * TRANSFORM_FLOATS + 14];
     },
   };
 }
@@ -1099,9 +1145,10 @@ describe('GPU-driven dirty scene rows', () => {
           const delta = projection.apply([updateWorld(entityIndex + 1, z, entityIndex % BATCHES)]);
           gpuScene.sync(delta, undefined, (slot) => projection.cullingWorldBoundsAt(slot)).unwrap();
           const synced = mirror.drain();
-          expect(synced.get(gpuScene.transformBuffer)).toBe(GPU_SCENE_LAYOUTS.transform.stride);
+          // The moved row and the row holding its submitted pose.
+          expect(synced.get(gpuScene.transformBuffer)).toBe(2 * GPU_SCENE_LAYOUTS.transform.stride);
           const moved = frame(temporal);
-          expect(moved.prepared.topologySignature).toBe(first.prepared.topologySignature);
+          expect(moved.prepared.topologySignature()).toBe(first.prepared.topologySignature());
           expect(moved.inspection).toMatchObject({
             preparedBatchBuilds: 0,
             filteredBatchBuilds: 0,
@@ -1128,23 +1175,20 @@ describe('GPU-driven dirty scene rows', () => {
     const gpuScene = availability.scene;
     const mirror = mirrorSceneWrites(device, gpuScene);
     try {
-      gpuScene.commitTemporalFrame().unwrap();
+      gpuScene.commitFrame().unwrap();
       let previousZ = 0;
       for (const z of [-1, -2, -3]) {
         gpuScene.sync(projection.apply([updateWorld(2, z)])).unwrap();
         const row = mirror.rowsAt(z)[0];
         expect(row).toBeDefined();
         if (row === undefined) return;
-        expect(row[PREVIOUS_FLOAT + 14]).toBe(previousZ);
-        expect(row[PREVIOUS_FLOAT + 14]).not.toBe(row[14]);
-        gpuScene.commitTemporalFrame().unwrap();
+        expect(mirror.previousZ(row)).toBe(previousZ);
+        gpuScene.commitFrame().unwrap();
         previousZ = z;
       }
       // One committed frame after the stop, prev settles to current.
       gpuScene.sync(projection.apply([])).unwrap();
-      const settled = mirror
-        .rowsAt(previousZ)
-        .find((row) => row[PREVIOUS_FLOAT + 14] === previousZ);
+      const settled = mirror.rowsAt(previousZ).find((row) => mirror.previousZ(row) === previousZ);
       expect(settled).toBeDefined();
     } finally {
       availability.scene.dispose();

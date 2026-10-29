@@ -108,13 +108,28 @@ test('frozen CI install removes an owned retired submodule after switching sourc
   assert.doesNotMatch(repeated.stderr, /removed retired workspace submodule/);
 });
 
-test('preserves local workspaces and a different Actions workspace', (t) => {
+test('preserves local workspaces and a different or missing Actions workspace', (t) => {
   const f = fixture(t);
-  for (const overrides of [{ GITHUB_ACTIONS: 'false' }, { GITHUB_WORKSPACE: f.source }]) {
+  for (const overrides of [
+    { GITHUB_ACTIONS: 'false' },
+    { GITHUB_WORKSPACE: f.source },
+    { GITHUB_WORKSPACE: join(f.root, '..', 'missing-workspace') },
+  ]) {
     const result = f.prepare([], overrides);
     assert.equal(result.status, 0, result.stderr);
     assert.ok(existsSync(join(f.checkout, 'package.json')));
   }
+});
+
+test('accepts an Actions workspace alias for the same physical checkout', (t) => {
+  const f = fixture(t);
+  const alias = join(f.root, '..', 'workspace-alias');
+  symlinkSync(f.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const result = f.prepare([], { GITHUB_WORKSPACE: alias });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(existsSync(f.checkout), false);
+  assert.ok(existsSync(join(f.metadata, 'config')));
+  assert.ok(existsSync(join(f.source, 'package.json')));
 });
 
 test('frozen CI install removes a retired gitlink materialized by an independent checkout', (t) => {

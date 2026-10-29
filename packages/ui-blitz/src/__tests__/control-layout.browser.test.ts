@@ -11,6 +11,17 @@ const wasm = {
   instantiate: (imports: object) => WebAssembly.instantiate(bytes, imports as WebAssembly.Imports),
 };
 
+const font = new Uint8Array(
+  await (
+    await fetch(
+      new URL(
+        '../../../devkit/node_modules/@fontsource-variable/noto-sans-sc/files/noto-sans-sc-latin-wght-normal.woff2',
+        import.meta.url,
+      ),
+    )
+  ).arrayBuffer(),
+);
+
 it.each([
   {
     name: 'intrinsic',
@@ -53,16 +64,6 @@ it.each([
   height,
   html,
 }) => {
-  const font = new Uint8Array(
-    await (
-      await fetch(
-        new URL(
-          '../../../devkit/node_modules/@fontsource-variable/noto-sans-sc/files/noto-sans-sc-latin-wght-normal.woff2',
-          import.meta.url,
-        ),
-      )
-    ).arrayBuffer(),
-  );
   await page.viewport(width, height);
   const iframe = document.createElement('iframe');
   iframe.style.cssText = `position:absolute;inset:0;width:${width}px;height:${height}px;border:0`;
@@ -170,6 +171,66 @@ it.each([
         ).toBeLessThanOrEqual(1);
       }
     }
+    expect(errors).toEqual([]);
+  } finally {
+    ui.dispose();
+    iframe.remove();
+  }
+});
+
+it('exposes single-line editor widths without changing other control padding boxes', async () => {
+  const types = ['text', 'number', 'password', 'email', 'url', 'tel', 'search', 'range'];
+  const html = `<!doctype html><style>
+    input,textarea{width:76px;height:30px;padding:5px;border:1px solid;font:13px "Control Layout"}
+    input[type=range],textarea{width:240px;height:60px}
+  </style>${types.map((type) => `<input id=${type} type=${type} value=2.4>`).join('')}<textarea id=textarea>2.4</textarea>`;
+  const iframe = document.createElement('iframe');
+  const loaded = new Promise<void>((resolve) => {
+    iframe.onload = () => resolve();
+  });
+  iframe.srcdoc = html;
+  document.body.append(iframe);
+  await loaded;
+  const browser = required(iframe.contentDocument);
+  browser.fonts.add(await new FontFace('Control Layout', font.slice().buffer).load());
+  const errors: unknown[] = [];
+  const ui = await createBlitzUi({
+    wasm,
+    html,
+    width: 600,
+    height: 320,
+    font,
+    fontFamily: 'Control Layout',
+    onError: (error) => errors.push(error),
+  });
+  try {
+    for (const boxSizing of ['content-box', 'border-box']) {
+      for (const padding of [0, 5, 10]) {
+        const states = [browser, ui.document].map((document) =>
+          Array.from(document.querySelectorAll<HTMLElement>('input,textarea'), (element) => {
+            element.style.boxSizing = boxSizing;
+            element.style.padding = `${padding}px`;
+            return {
+              id: element.id,
+              clientWidth: element.clientWidth,
+              scrollWidth: element.scrollWidth,
+              clientHeight: element.clientHeight,
+              scrollHeight: element.scrollHeight,
+            };
+          }),
+        );
+        expect(states[1], `${boxSizing}, padding ${padding}`).toEqual(states[0]);
+      }
+    }
+    const overflowing = [browser, ui.document].map((document) => {
+      const input = required(document.querySelector<HTMLInputElement>('#text'));
+      input.value = 'MMMMMMMMMMMMMMMMMMMM';
+      return { clientWidth: input.clientWidth, scrollWidth: input.scrollWidth };
+    });
+    expect(overflowing[1]).toEqual(overflowing[0]);
+    expect(required(overflowing[0]).scrollWidth).toBeGreaterThan(
+      required(overflowing[0]).clientWidth,
+    );
     expect(errors).toEqual([]);
   } finally {
     ui.dispose();

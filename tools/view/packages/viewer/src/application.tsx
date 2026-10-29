@@ -5,6 +5,7 @@ import { StrictMode, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { createViewPanelHost } from './host/panel-bridge.ts';
+import { isCodexBrowser } from './codex-browser.ts';
 import { createViewPageHost, createViewPageTypeRegistry } from './host/page-registry.ts';
 import { mountViewViewer } from './host/frontend.ts';
 import { createViewSlotRegistry } from './host/slot-registry.ts';
@@ -32,12 +33,14 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
 
   const root = document.getElementById('root');
   if (!root) throw new Error('ForgeaX View viewer requires #root');
+  root.toggleAttribute('data-forgeax-codex-browser', isCodexBrowser(document));
 
   window.__forgeaxViewSlotRegistry = createViewSlotRegistry(document);
   const pageRegistry = createViewPageTypeRegistry();
   const pageHost = createViewPageHost({ registry: pageRegistry });
   const panelHost = createViewPanelHost({
     registry: window.__forgeaxViewSlotRegistry,
+    pageRegistry,
     overlayRoot: root,
     platform,
   });

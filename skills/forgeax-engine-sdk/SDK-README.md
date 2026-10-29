@@ -1,11 +1,16 @@
 # ForgeaX Engine SDK
 
 > [!IMPORTANT]
-> The archive contains an immediately usable built SDK and editable Engine source snapshot. sdk-manifest.json owns per-file integrity.
+> Installed npm and ZIP SDKs extend the built Engine with editable source and the same release's prebuilt module outputs. The npm carrier omits bytes already supplied by its exact-version Engine dependency; `sdk install` materializes and verifies them. sdk-manifest.json owns per-file integrity.
 
 Online users can install the publishable SDK carrier through npm without private GitHub Release access:
 
+The registry transport uses npm 12.2.1, pinned by the source workspace's
+`.npm-version`. Use Node 22.22.3 or 24.18.0 with this toolchain and activate the
+pinned npm before installing:
+
 ```bash
+npm install --global npm@12.2.1
 pnpm dlx @forgeax/engine sdk install ~/ForgeaX/1.2.3
 ```
 
@@ -30,12 +35,17 @@ for 3D games, empty otherwise. It copies templates, installs skills,
 and creates external games with --ignore-scripts. Multiple games reuse the preflight
 instead of repeating native installation.
 
-The SDK pins pnpm 12.10.1. Full ZIPs install offline from store/pnpm/
+The SDK pins pnpm 12.15.0. Full ZIPs install offline from store/pnpm/
 without npm; generated .npmrc pins that store, so later development,
 tests, typechecks, and builds reuse it. npm carriers omit the store and install
 the same locked Engine versions from npm. Both surfaces share the pnpm lockfile and
 pnpm-workspace.yaml allowBuilds policy. sdk-manifest.json records the store layout
 created by the pinned pnpm release.
+
+The SDK includes the built View workspace under tools/view/. init installs it
+from that local directory alongside Engine in .forgeax/cli-runtime; no separate
+View npm package is required. Use bin/forgeax.mjs backend start and view start
+with this SDK's CLI. Games continue to depend only on Engine.
 
 game-3d is a content-bearing reference, not production artwork. Original/high-fidelity games replace
 visible content and forge.json/package/GUID/sourceKey/plugin identity, while reusing runtime code according to
@@ -61,7 +71,7 @@ Web ZIPs require and preserve root README.md and docs/feedback.md.
 > A missing monitor alone does not require software rendering. It is separate from ordinary player/release acceptance.
 
 For Linux image preparation and writable XDG state, follow
-[Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md).
+Linux unattended validation.
 Read the actual OS before choosing Ubuntu apt or TencentOS dnf packages. Use
 `--headless true` to capture without X11/Xvfb; the default virtual headed route
 requires Xvfb when `DISPLAY` is absent. Run sandboxed Chromium as a non-root user.
@@ -92,8 +102,9 @@ Bundle the same Web fonts; do not rely on matching system fonts.
 For cross-machine color regression, use --deterministic and ?forgeaxCapture=1. Games pin random
 seed/logical frame/fonts and set readiness only after Canvas/UI stabilize:
 document.documentElement.dataset.forgeaxCaptureReady = 'true'. App also publishes
-forgeaxFrameSubmitted after actual Renderer submission and dispatches
-forgeax:frame-submitted. The CLI waits for Engine submission/non-flat output before the game marker.
+`canvas.forgeaxFrameProgress.submitted` after actual Renderer submission and dispatches
+`forgeax:frame-submitted` as a future-only notification. The CLI reads the canvas snapshot and
+waits for non-flat output before the game marker.
 wait-ms adds settling after these handshakes; it does not identify a deterministic frame.
 
 For continuous captures, keep one Vite/Xvfb/Chrome/Page/World session and use named ready markers
@@ -131,57 +142,93 @@ rejects flat output, and appends to the same schema-v2 run.json. Programs cannot
 
 ## Bind local Engine source
 
-Generated games normally resolve published @forgeax/engine. To modify Engine source, bind a local checkout
-without rewriting project package.json:
+Generated games normally resolve published @forgeax/engine. The SDK source workspace
+already contains that release's module builds. Install source dependencies once,
+edit a package and rebuild only that owner; the other modules keep their prebuilt outputs:
+
+Read `source/engine/AGENTS.md` before changing Engine code; its package contracts
+and skills resolve within that source workspace.
+
+```bash
+cd /path/to/sdk/source/engine
+pnpm install --frozen-lockfile --ignore-scripts
+# Edit packages/math/src/; rebuild only Math.
+pnpm --filter @forgeax/engine-math build
+# If public types changed, also regenerate this package's declarations.
+pnpm exec tsc -p packages/math
+```
+
+From the game directory, select this workspace without rewriting project package.json:
 
 ```bash
 forgeax project engine status --json
-forgeax project engine use-local ../forgeax-engine --json
+forgeax project engine use-local /path/to/sdk/source/engine --json
 forgeax project engine check --json
 forgeax project engine unlink --json
 ```
 
 Only a local override creates .forgeax/engine-binding.json; absence is the sole default registry/SDK state.
+The same binding supplies main-thread and Worker imports. Rebuild dependent owners
+when changing an API they consume. `pnpm build:engine` remains the full-rebuild route.
 The project manifest remains dependency authority. doctor checks workspace builds,
 SDK packages, and invalid workspace:* consumer dependencies. status derives its digest
 from real built bytes and reports build time. unlink restores default resolution.
+
+To use embedded View with this source Engine, start its backend through the source
+CLI from your workspace directory. The source Host supplies the Engine graph; View
+continues to use the SDK's built tool. Stop an existing backend before switching:
+
+```bash
+node /path/to/sdk/source/engine/packages/devkit/dist/cli.mjs backend start --host-pack /path/to/sdk/tools/view/host.pack.json
+node /path/to/sdk/source/engine/packages/devkit/dist/cli.mjs view start
+```
+
+Each opened game must bind to that same source Engine. A conflicting prebuilt game
+remains an error; View does not silently change the game's Engine selection.
 
 ## SDK surfaces
 
 | Surface | Paths | Build Engine first? | Use |
 |:--|:--|:--:|:--|
 | Full ZIP built SDK | bin, packages, templates, skills, store/pnpm | No | Offline game creation, testing, execution, builds, delivery. |
-| npm carrier built SDK | bin, packages, templates, skills | No | Publishable size; locked game dependencies install online. |
-| Engine source | source/engine | After source edits | Inspect/extend packages, CLI, rules, and skills. |
+| npm SDK | bin, templates, skills, source/engine | No | Built Engine installs online; editable source and prebuilt module outputs support focused changes. |
+| Engine source (both transports) | source/engine | Changed packages only | Modify selected modules while reusing other modules' delivered builds; full rebuild remains available. |
 
 packages/name is a bare built npm package with manifest, README, dist, and resources at its root, without tarballs or a nested package directory.
 
 ```text
 forgeax-sdk/
 ├── bin/forgeax
-├── packages/<package>/
+├── packages/<package>/         # Full ZIP only.
 ├── templates/empty/
 ├── templates/game-3d/
 ├── store/pnpm/                 # Full ZIP only.
 ├── skills/<forgeax-engine-skill>/
-├── source/engine/
+├── source/engine/              # Both transports; includes prebuilt packages/*/dist.
+├── tools/view/                 # Built View workspace, installed locally by init.
 ├── schemas/
-├── toolchain/wasm/
+├── toolchain/wasm/             # Full ZIP only.
 ├── sdk-manifest.json
 └── AGENTS.md
 ```
 
-Read [AGENTS.md](AGENTS.md), then the [SDK capability tour](skills/forgeax-engine-sdk/SKILL.md) and [feature catalog](skills/forgeax-engine-sdk/references/feature-catalog.md). The catalog records a historical audit commit, not current-HEAD proof; match the exact Engine commit and gate receipt before relying on it. It discovers capabilities, not game activation. New games receive ordinary AGENTS/skills files; project skill install/verify manages Agent discovery links.
+Read [AGENTS.md](AGENTS.md), then the [SDK capability tour](skills/forgeax-engine-sdk/SKILL.md) and feature catalog. The catalog records a historical audit commit, not current-HEAD proof; match the exact Engine commit and gate receipt before relying on it. It discovers capabilities, not game activation. New games receive ordinary AGENTS/skills files; project skill install/verify manages Agent discovery links.
 
 ## Source snapshot
 
-source/engine excludes Git metadata, Harness state, and private assets. It includes public source/docs/rules/skills and prebuilt wgpu/FBX/Basis WASM:
+source/engine excludes Git metadata, each expanded repository's .github/, Harness
+state, and private assets. Package READMEs and skills provide documentation;
+there is no separate SDK docs/ directory. It includes editable source, rules,
+skills and prebuilt wgpu/FBX/Basis WASM:
 
 ```bash
 cd source/engine
 pnpm install
 pnpm build:engine
 ```
+
+Read the [DevKit contract](source/engine/packages/devkit/README.md) for CLI and
+project operations, and the focused package READMEs for Engine APIs.
 
 ## Integrity
 

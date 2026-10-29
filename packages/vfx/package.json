@@ -5,13 +5,13 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Runtime-safe code-first GPU VFX source, asset loading, player intent, and fixed-tick GPU work contracts.",
+  "description": "Runtime-safe code-first GPU VFX source, asset loading, player intent, and per-frame GPU work contracts.",
   "keywords": [
     "vfx",
     "gpu-particles",
     "particle-effect-player",
     "wgsl",
-    "fixed-update"
+    "frame-update"
   ],
   "exports": {
     ".": {

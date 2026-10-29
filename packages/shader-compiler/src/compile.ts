@@ -144,9 +144,9 @@ export interface CompileResult {
 
 const PRAGMA_RE = /^\s*#pragma\s+\S.*$/gm;
 const DEFINE_WITH_VALUE_RE = /^\s*#define\s+\w+\s+(\S.*)$/;
-const IMPORT_DIRECTIVE_RE = /^\s*#import\s+([A-Za-z0-9_:-]+)/;
+const IMPORT_DIRECTIVE_RE = /^\s*#import\s+([A-Za-z0-9_.:-]+)/;
 const MODULE_ID_PREFIX_RE = /^([A-Za-z0-9_-]+(?:::[A-Za-z0-9_-]+)*)/;
-const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_:-]+)/;
+const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.:-]+)/;
 
 /**
  * Specialize every module in one shader composition closure before naga_oil
@@ -168,7 +168,7 @@ function specializeConditionalDefines(
   const groups = new Map<string, { index: number; symbols: Set<string> }>();
   for (const [index, line] of output.entries()) {
     if (!line.includes('#import')) continue;
-    const match = /^\s*#import\s+([A-Za-z0-9_:-]+)::\{([^}]+)\}\s*$/.exec(line);
+    const match = /^\s*#import\s+([A-Za-z0-9_.:-]+)::\{([^}]+)\}\s*$/.exec(line);
     if (match === null) continue;
     const moduleId = match[1] ?? '';
     const symbols = (match[2] ?? '')
@@ -186,7 +186,7 @@ function specializeConditionalDefines(
   return output.join('\n');
 }
 
-function reachableImportIds(
+export function reachableShaderImportIds(
   source: string,
   imports: Readonly<Record<string, string>>,
 ): Set<string> {
@@ -201,7 +201,7 @@ function reachableImportIds(
     return undefined;
   };
   const reachable = new Set<string>();
-  const pending = [...source.matchAll(/^\s*#import\s+([A-Za-z0-9_:-]+)/gm)].map(
+  const pending = [...source.matchAll(/^\s*#import\s+([A-Za-z0-9_.:-]+)/gm)].map(
     (match) => match[1] ?? '',
   );
   while (pending.length > 0) {
@@ -212,7 +212,7 @@ function reachableImportIds(
     reachable.add(moduleId);
     const moduleSource = imports[moduleId];
     if (moduleSource === undefined) continue;
-    for (const child of moduleSource.matchAll(/^\s*#import\s+([A-Za-z0-9_:-]+)/gm)) {
+    for (const child of moduleSource.matchAll(/^\s*#import\s+([A-Za-z0-9_.:-]+)/gm)) {
       pending.push(child[1] ?? '');
     }
   }
@@ -385,7 +385,7 @@ export async function compileShaderWithComposition(
   const imports = entryImports;
   delete defines.VERTEX_COLOR_AVAILABLE;
   if (requestedVertexColor) defines.VERTEX_COLOR_AVAILABLE = true;
-  const reachable = reachableImportIds(source, imports);
+  const reachable = reachableShaderImportIds(source, imports);
   const specializedImports = Object.fromEntries(
     Object.entries(imports).map(([moduleId, moduleSource]) => [
       moduleId,

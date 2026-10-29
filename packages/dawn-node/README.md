@@ -8,7 +8,7 @@ by the browser and does not use this Node carrier.
 | --- | --- | --- |
 | macOS arm64 | Pinned Dawn with the Metal empty-compute timestamp patch | Host arm64 source build |
 | macOS x64 | Same pinned source and patch | Host x86_64 source build; validation pending |
-| Linux | Exact upstream `webgpu@0.4.0` | Upstream installation contract |
+| Linux | Exact upstream `webgpu@0.4.0`, an optional peer named `upstream-webgpu` | Consumers opt in with `upstream-webgpu@npm:webgpu@0.4.0`; the workspace installs it as a development dependency |
 | Windows x64 | Pinned Dawn with built DXC; GPU qualification pending | Host x64 source build |
 
 ## Build and installation
@@ -28,6 +28,8 @@ pnpm --filter @forgeax/engine-dawn-node build:native
 pnpm test:dawn
 ```
 
+macOS source preparation requires CMake, Ninja, Go, Python 3 and the selected Xcode SDK.
+
 Basic `pnpm test` / `pnpm test:unit` do not load this carrier. `pnpm test:all`
 explicitly selects the complete CPU, Browser and Dawn acceptance surface.
 Maintainer/CI GPU gates retain their full roster, completed-frame counts and
@@ -40,7 +42,7 @@ macOS and Windows import their prepared host native library from
 provider. An absent native output fails import rather than selecting another compiler.
 It uses official node-webgpu commit `2f5fb632d9d9db9bcb3705bd868de69a6a2ae4e2`
 and Dawn commit `c5d549e250b9225744929ae860b369cb4304a767`, verifies the checked-in
-patch and all three changed source files, and builds the current host architecture.
+patch and all four changed source files, and builds the current host architecture.
 Native binaries and build caches are generated and must not be committed.
 The package's unit project excludes its generated `dist/` and root
 `.native-build/` cache. Vendored WebGPU CTS specifications use their upstream
@@ -59,31 +61,62 @@ pinned Dawn with
 [`DAWN_USE_BUILT_DXC=ON`](https://github.com/google/dawn/blob/c5d549e250b9225744929ae860b369cb4304a767/CMakeLists.txt),
 retain its native DLL closure and provenance, and pass those same pipelines and
 the original complete gates.
-The Windows producer asks CMake to select the newest installed Visual Studio
-C++ generator, targets x64, and enables built DXC. MSVC `/MP` compiles up to
-four source files concurrently inside a project; MSBuild schedules one project
-at a time so aggregate compiler concurrency stays capped by host parallelism.
+The Windows producer uses CMake to discover the installed x64 Visual Studio
+and SDK, then imports that installation's official Native Tools environment.
+Ninja builds with that probe's MSVC compiler and one shared budget of at most two
+compile jobs, respecting `CMAKE_BUILD_PARALLEL_LEVEL` and available CPUs.
+The CMake probe retains the host `ninja.exe` path explicitly, so depot_tools'
+POSIX launcher cannot shadow it during source configuration.
+Windows retains the Release CRT/ABI and `NDEBUG` configuration, with host C/C++
+optimization disabled (`/Od /Ob0`) for this opt-in test/replay carrier. This trades
+native CPU execution speed and binary size for compilation time; the original
+runtime deadlines still qualify the result. GPU shader optimization and validation
+keep their existing policies. macOS keeps its ordinary optimized `Release` build.
+See [MSVC /Od](https://learn.microsoft.com/en-us/cpp/build/reference/od-disable-debug)
+and [inline expansion](https://learn.microsoft.com/en-us/cpp/build/reference/ob-inline-function-expansion).
+The C++20/D3D probe compiles and runs with the same profile. Before the source
+build, the producer verifies every generated C/C++ command's effective optimization
+and inline flags, so a dependency's target override fails before compilation.
+All existing backends, WGSL/HLSL validation and built DXC remain enabled.
+The Node binding accepts WGSL only ([pinned `createShaderModule`](https://github.com/google/dawn/blob/c5d549e250b9225744929ae860b369cb4304a767/src/dawn/node/binding/GPUDevice.cpp#L443)).
+Windows excludes the unreachable SPIR-V input reader from compilation while
+retaining the Vulkan SPIR-V writer and validator. Before compilation, the producer
+checks the actual CMake cache for those settings and every existing Windows
+backend. Pinned submodules use shallow retrieval; exact revisions and patched
+source digests remain mandatory.
 It builds the official `dawn_node` target and copies
 `dawn.node`, `dxcompiler.dll`, `dxil.dll`, and `d3dcompiler_47.dll` from the same
 Release output, checks every PE machine type, and records every file digest.
 Missing or altered DLLs invalidate the native cache. Source preparation checks
 the same pinned revisions and patched source bytes as macOS.
 
+D3D12 WARP adapters default to Dawn's `d3d_skip_shader_optimizations` policy.
+Dawn's existing Microsoft WARP vendor/device identity scopes this default. Native
+optimization of the nested shadow-cull kernel exceeded the unchanged 150-second
+Windows probe bound; the original kernel passed in 3.1 seconds with this
+official policy in diagnostic run `40241752219`. Physical GPU adapters keep
+optimized compilation, and explicit Dawn toggle choices retain their normal
+precedence. DXC, validation, IEEE behavior, shader contents and pixel criteria
+remain authoritative. The native patch and every changed source digest are
+part of the producer key, so an older DLL closure must rebuild before use.
+
 Windows preparation requires Git, Python 3 (`python`), CMake 3.24 or newer that
-supports the installed Visual Studio generation, Go, Visual Studio C++ Build
-Tools and Windows SDK, plus network access for the pinned official
-dependencies. The producer checks CMake, Go and Python before fetching source;
-the CMake generator discovers installed MSVC and the selected SDK version. The
+supports the installed Visual Studio generation, Ninja, Go, Visual Studio C++
+Build Tools and Windows SDK, plus network access for
+pinned official dependencies. The producer checks CMake, Ninja, Go and Python
+before fetching source; the CMake probe discovers Visual Studio and its SDK. The
 producer checks both registry views against actual D3D12/DXGI headers and passes
 that admitted SDK root to Dawn and built DXC, so stale registry paths cannot
 silently select another SDK. Windows producer caches
-use `%SystemDrive%/tmp/forgeax-dawn-native/<input-key>` so MSBuild's generated
-tracking paths fit its 260-character limit even in a deep project checkout.
+use `%SystemDrive%/tmp/forgeax-dawn-native/<input-key>` so generated native and
+SDK-probe paths remain short even in a deep project checkout.
 Source integrity reads and patch application use the same local Git long-path
 and LF policy as dependency preparation; global Git configuration is unchanged.
 The earlier missing-toolchain and long-path failures remain retained. Current
-MSVC/SDK admission and the pinned source build passed; GPU qualification remains
-a separate gate.
+SDK admission compiles and executes a C++20/D3D-header probe with the actual
+Ninja/MSVC environment before the pinned source build. GPU qualification remains
+a separate gate. See [Dawn's build guidance](https://dawn.googlesource.com/dawn/+/refs/heads/main/docs/building.md)
+and [Visual Studio Native Tools](https://learn.microsoft.com/en-us/cpp/build/building-on-the-command-line).
 
 Windows preparation keeps Git's long-path and LF checkout policy local to the
 producer and its gclient children. It invokes the official gclient batch/vpython
@@ -100,8 +133,8 @@ wheel paths; an existing `VPYTHON_VIRTUALENV_ROOT` is respected. Windows CMake
 preparation fetches dependencies with `--nohooks`, using the installed MSVC/SDK
 rather than Chromium's GN toolchain bootstrap.
 
-macOS preparation requires Git, Python 3, CMake, Go, Xcode's compiler and SDK, and
-network access for official pinned dependencies. Official depot_tools supplies Ninja.
+macOS preparation requires Git, Python 3, CMake, Ninja, Go, Xcode's compiler and SDK,
+and network access for official pinned dependencies.
 The SDK comes from `xcrun --sdk macosx --show-sdk-path`, so the selected Command Line
 Tools SDK and full Xcode installations use the same producer. An unavailable SDK fails
 before source download; the native provenance records the selected SDK path.

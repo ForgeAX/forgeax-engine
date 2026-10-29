@@ -280,300 +280,323 @@ function finiteOrUndefined(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) ? value : undefined;
 }
 
-export function parseMaterial(
-  matJson: GltfMaterialJson,
-  textures: readonly GltfTextureIr[],
-): Result<GltfMaterialIr, GltfError> {
-  const pbr = matJson.pbrMetallicRoughness;
-  const baseColor = pbr?.baseColorFactor ?? [1, 1, 1, 1];
-  const baseColor4: readonly [number, number, number, number] = [
-    baseColor[0] ?? 1,
-    baseColor[1] ?? 1,
-    baseColor[2] ?? 1,
-    baseColor[3] ?? 1,
-  ];
-  const alphaMode =
-    matJson.alphaMode === 'MASK' || matJson.alphaMode === 'BLEND' ? matJson.alphaMode : undefined;
-  const alphaCutoff = alphaMode === 'MASK' ? (matJson.alphaCutoff ?? 0.5) : undefined;
-  if (matJson.extensions?.KHR_materials_unlit !== undefined)
-    return ok({
-      ...(matJson.name === undefined ? {} : { name: matJson.name }),
-      unlit: true,
-      baseColorFactor: baseColor4,
-      metallicFactor: 0,
-      roughnessFactor: 1,
-      ...(pbr?.baseColorTexture === undefined
-        ? {}
-        : { baseColorTexture: parseTextureInfo(pbr.baseColorTexture, textures) }),
-      ...(alphaMode === undefined ? {} : { alphaMode }),
-      ...(alphaCutoff === undefined ? {} : { alphaCutoff }),
-      ...(matJson.doubleSided === undefined ? {} : { doubleSided: matJson.doubleSided }),
-    });
-  const emissiveFactor = tuple3(matJson.emissiveFactor);
-  const transmission = matJson.extensions?.KHR_materials_transmission;
-  const ior = matJson.extensions?.KHR_materials_ior;
-  const volume = matJson.extensions?.KHR_materials_volume;
-  const clearcoat = matJson.extensions?.KHR_materials_clearcoat;
-  const anisotropy = matJson.extensions?.KHR_materials_anisotropy;
-  const sheen = matJson.extensions?.KHR_materials_sheen;
-  const iridescence = matJson.extensions?.KHR_materials_iridescence;
-  const specular = matJson.extensions?.KHR_materials_specular;
-  const diffuseTransmission = matJson.extensions?.KHR_materials_diffuse_transmission;
-  const attenuationColor = tuple3(volume?.attenuationColor);
-  const invalid = (
-    extension: GltfMaterialTransmissionInvalidDetail['extension'],
-    field: string,
-    reason: GltfMaterialTransmissionInvalidDetail['reason'],
-    actual?: unknown,
-  ): Result<GltfMaterialIr, GltfError> =>
-    err(
-      gltfErr('gltf-material-transmission-invalid', {
-        extension,
-        field,
-        reason,
-        ...(actual === undefined ? {} : { actual }),
-      }),
-    );
-  const physicalInvalid = (
-    extension: GltfMaterialPhysicalInvalidDetail['extension'],
-    field: string,
-    reason: GltfMaterialPhysicalInvalidDetail['reason'],
-    actual?: unknown,
-  ): Result<GltfMaterialIr, GltfError> =>
-    err(
-      gltfErr('gltf-material-physical-invalid', {
-        extension,
-        field,
-        reason,
-        ...(actual === undefined ? {} : { actual }),
-      }),
-    );
+type TransmissionExtension = GltfMaterialTransmissionInvalidDetail['extension'];
+type PhysicalExtension = GltfMaterialPhysicalInvalidDetail['extension'];
+type MaterialExtensionsJson = NonNullable<GltfMaterialJson['extensions']>;
+type AlphaMode = NonNullable<GltfMaterialIr['alphaMode']>;
+type AlphaFields = Pick<GltfMaterialIr, 'alphaMode' | 'alphaCutoff'>;
+
+function transmissionInvalid(
+  extension: TransmissionExtension,
+  field: string,
+  reason: GltfMaterialTransmissionInvalidDetail['reason'],
+  actual?: unknown,
+): GltfError {
+  return gltfErr('gltf-material-transmission-invalid', {
+    extension,
+    field,
+    reason,
+    ...(actual === undefined ? {} : { actual }),
+  });
+}
+
+function physicalInvalid(
+  extension: PhysicalExtension,
+  field: string,
+  reason: GltfMaterialPhysicalInvalidDetail['reason'],
+  actual?: unknown,
+): GltfError {
+  return gltfErr('gltf-material-physical-invalid', {
+    extension,
+    field,
+    reason,
+    ...(actual === undefined ? {} : { actual }),
+  });
+}
+
+function validateUnit(
+  extension: PhysicalExtension,
+  field: string,
+  value: number | undefined,
+): GltfError | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    return physicalInvalid(extension, field, 'non-finite', value);
+  if (value < 0 || value > 1) return physicalInvalid(extension, field, 'range', value);
+  return undefined;
+}
+
+function validateFinite(
+  extension: PhysicalExtension,
+  field: string,
+  value: number | undefined,
+  minimum?: number,
+): GltfError | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    return physicalInvalid(extension, field, 'non-finite', value);
+  if (minimum !== undefined && value < minimum)
+    return physicalInvalid(extension, field, 'range', value);
+  return undefined;
+}
+
+function validateColor(
+  extension: PhysicalExtension,
+  field: string,
+  value: readonly number[] | undefined,
+): GltfError | undefined {
+  if (value === undefined) return undefined;
   if (
-    transmission?.transmissionFactor !== undefined &&
-    (typeof transmission.transmissionFactor !== 'number' ||
-      !Number.isFinite(transmission.transmissionFactor))
+    value.length < 3 ||
+    value.slice(0, 3).some((channel) => typeof channel !== 'number' || !Number.isFinite(channel))
   ) {
-    return invalid(
+    return physicalInvalid(extension, field, 'type', value);
+  }
+  if (value.slice(0, 3).some((channel) => channel < 0 || channel > 1)) {
+    return physicalInvalid(extension, field, 'range', value);
+  }
+  return undefined;
+}
+
+function validateTransmission(
+  transmission: MaterialExtensionsJson['KHR_materials_transmission'],
+): GltfError | undefined {
+  const factor = transmission?.transmissionFactor;
+  if (factor === undefined) return undefined;
+  if (typeof factor !== 'number' || !Number.isFinite(factor))
+    return transmissionInvalid(
       'KHR_materials_transmission',
       'transmissionFactor',
       'non-finite',
-      transmission.transmissionFactor,
+      factor,
     );
-  }
-  if (
-    transmission?.transmissionFactor !== undefined &&
-    (transmission.transmissionFactor < 0 || transmission.transmissionFactor > 1)
-  ) {
-    return invalid(
-      'KHR_materials_transmission',
-      'transmissionFactor',
-      'range',
-      transmission.transmissionFactor,
+  if (factor < 0 || factor > 1)
+    return transmissionInvalid('KHR_materials_transmission', 'transmissionFactor', 'range', factor);
+  return undefined;
+}
+
+function validateIor(ior: MaterialExtensionsJson['KHR_materials_ior']): GltfError | undefined {
+  const value = ior?.ior;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    return transmissionInvalid('KHR_materials_ior', 'ior', 'non-finite', value);
+  if (value < 1) return transmissionInvalid('KHR_materials_ior', 'ior', 'range', value);
+  return undefined;
+}
+
+function validateVolume(
+  volume: MaterialExtensionsJson['KHR_materials_volume'],
+): GltfError | undefined {
+  if (volume === undefined) return undefined;
+  const { thicknessFactor, attenuationDistance } = volume;
+  if (thicknessFactor !== undefined && !Number.isFinite(thicknessFactor))
+    return transmissionInvalid(
+      'KHR_materials_volume',
+      'thicknessFactor',
+      'non-finite',
+      thicknessFactor,
     );
-  }
-  if (ior?.ior !== undefined && (typeof ior.ior !== 'number' || !Number.isFinite(ior.ior))) {
-    return invalid('KHR_materials_ior', 'ior', 'non-finite', ior.ior);
-  }
-  if (ior?.ior !== undefined && ior.ior < 1) {
-    return invalid('KHR_materials_ior', 'ior', 'range', ior.ior);
-  }
-  if (volume?.thicknessFactor !== undefined && !Number.isFinite(volume.thicknessFactor)) {
-    return invalid('KHR_materials_volume', 'thicknessFactor', 'non-finite', volume.thicknessFactor);
-  }
-  if (volume?.thicknessFactor !== undefined && volume.thicknessFactor < 0) {
-    return invalid('KHR_materials_volume', 'thicknessFactor', 'range', volume.thicknessFactor);
-  }
+  if (thicknessFactor !== undefined && thicknessFactor < 0)
+    return transmissionInvalid('KHR_materials_volume', 'thicknessFactor', 'range', thicknessFactor);
+  const attenuationColor = tuple3(volume.attenuationColor);
   if (
-    volume?.attenuationColor !== undefined &&
+    volume.attenuationColor !== undefined &&
     (attenuationColor === undefined ||
       attenuationColor.some((value) => !Number.isFinite(value) || value < 0 || value > 1))
   ) {
-    return invalid('KHR_materials_volume', 'attenuationColor', 'range', volume.attenuationColor);
+    return transmissionInvalid(
+      'KHR_materials_volume',
+      'attenuationColor',
+      'range',
+      volume.attenuationColor,
+    );
   }
-  if (
-    volume?.attenuationDistance !== undefined &&
-    !Number.isFinite(volume.attenuationDistance) &&
-    volume.attenuationDistance !== Number.POSITIVE_INFINITY
-  ) {
-    return invalid(
+  return validateAttenuationDistance(attenuationDistance);
+}
+
+function validateAttenuationDistance(distance: number | undefined): GltfError | undefined {
+  if (distance === undefined) return undefined;
+  if (!Number.isFinite(distance) && distance !== Number.POSITIVE_INFINITY)
+    return transmissionInvalid(
       'KHR_materials_volume',
       'attenuationDistance',
       'non-finite',
-      volume.attenuationDistance,
+      distance,
     );
-  }
-  if (
-    volume?.attenuationDistance !== undefined &&
-    Number.isFinite(volume.attenuationDistance) &&
-    volume.attenuationDistance <= 0
-  ) {
-    return invalid(
-      'KHR_materials_volume',
-      'attenuationDistance',
-      'range',
-      volume.attenuationDistance,
-    );
-  }
-  if (alphaMode === 'BLEND' && (transmission?.transmissionFactor ?? 0) > 0) {
-    return invalid('KHR_materials_transmission', 'alphaMode', 'blend', alphaMode);
-  }
-  if (
-    clearcoat?.clearcoatFactor !== undefined &&
-    (typeof clearcoat.clearcoatFactor !== 'number' || !Number.isFinite(clearcoat.clearcoatFactor))
-  ) {
-    return physicalInvalid(
-      'KHR_materials_clearcoat',
-      'clearcoatFactor',
-      'non-finite',
-      clearcoat.clearcoatFactor,
-    );
-  }
-  if (
-    clearcoat?.clearcoatFactor !== undefined &&
-    (clearcoat.clearcoatFactor < 0 || clearcoat.clearcoatFactor > 1)
-  ) {
-    return physicalInvalid(
-      'KHR_materials_clearcoat',
-      'clearcoatFactor',
-      'range',
-      clearcoat.clearcoatFactor,
-    );
-  }
-  if (
-    clearcoat?.clearcoatRoughnessFactor !== undefined &&
-    (typeof clearcoat.clearcoatRoughnessFactor !== 'number' ||
-      !Number.isFinite(clearcoat.clearcoatRoughnessFactor))
-  ) {
-    return physicalInvalid(
+  if (Number.isFinite(distance) && distance <= 0)
+    return transmissionInvalid('KHR_materials_volume', 'attenuationDistance', 'range', distance);
+  return undefined;
+}
+
+function validateTransmissionBlend(
+  transmission: MaterialExtensionsJson['KHR_materials_transmission'],
+  alphaMode: AlphaMode | undefined,
+): GltfError | undefined {
+  if (alphaMode === 'BLEND' && (transmission?.transmissionFactor ?? 0) > 0)
+    return transmissionInvalid('KHR_materials_transmission', 'alphaMode', 'blend', alphaMode);
+  return undefined;
+}
+
+function validateClearcoat(
+  clearcoat: MaterialExtensionsJson['KHR_materials_clearcoat'],
+): GltfError | undefined {
+  const scale = clearcoat?.clearcoatNormalTexture?.scale;
+  return (
+    validateUnit('KHR_materials_clearcoat', 'clearcoatFactor', clearcoat?.clearcoatFactor) ??
+    validateUnit(
       'KHR_materials_clearcoat',
       'clearcoatRoughnessFactor',
-      'non-finite',
-      clearcoat.clearcoatRoughnessFactor,
-    );
-  }
-  if (
-    clearcoat?.clearcoatRoughnessFactor !== undefined &&
-    (clearcoat.clearcoatRoughnessFactor < 0 || clearcoat.clearcoatRoughnessFactor > 1)
-  ) {
-    return physicalInvalid(
-      'KHR_materials_clearcoat',
-      'clearcoatRoughnessFactor',
-      'range',
-      clearcoat.clearcoatRoughnessFactor,
-    );
-  }
-  if (
-    clearcoat?.clearcoatNormalTexture?.scale !== undefined &&
-    (typeof clearcoat.clearcoatNormalTexture.scale !== 'number' ||
-      !Number.isFinite(clearcoat.clearcoatNormalTexture.scale) ||
-      clearcoat.clearcoatNormalTexture.scale < 0)
-  ) {
-    return physicalInvalid(
-      'KHR_materials_clearcoat',
-      'clearcoatNormalTexture.scale',
-      'range',
-      clearcoat.clearcoatNormalTexture.scale,
-    );
-  }
-  const validateUnit = (
-    extension: GltfMaterialPhysicalInvalidDetail['extension'],
-    field: string,
-    value: number | undefined,
-  ) => {
-    if (value === undefined) return undefined;
-    if (typeof value !== 'number' || !Number.isFinite(value))
-      return physicalInvalid(extension, field, 'non-finite', value);
-    if (value < 0 || value > 1) return physicalInvalid(extension, field, 'range', value);
-    return undefined;
-  };
-  const validateFinite = (
-    extension: GltfMaterialPhysicalInvalidDetail['extension'],
-    field: string,
-    value: number | undefined,
-    minimum?: number,
-  ) => {
-    if (value === undefined) return undefined;
-    if (typeof value !== 'number' || !Number.isFinite(value))
-      return physicalInvalid(extension, field, 'non-finite', value);
-    if (minimum !== undefined && value < minimum)
-      return physicalInvalid(extension, field, 'range', value);
-    return undefined;
-  };
-  const validateColor = (
-    extension: GltfMaterialPhysicalInvalidDetail['extension'],
-    field: string,
-    value: readonly number[] | undefined,
-  ) => {
-    if (value === undefined) return undefined;
-    if (
-      value.length < 3 ||
-      value.slice(0, 3).some((channel) => typeof channel !== 'number' || !Number.isFinite(channel))
-    ) {
-      return physicalInvalid(extension, field, 'type', value);
-    }
-    if (value.slice(0, 3).some((channel) => channel < 0 || channel > 1)) {
-      return physicalInvalid(extension, field, 'range', value);
-    }
-    return undefined;
-  };
-  const physicalChecks = [
-    validateUnit('KHR_materials_anisotropy', 'anisotropyStrength', anisotropy?.anisotropyStrength),
+      clearcoat?.clearcoatRoughnessFactor,
+    ) ??
+    (scale !== undefined && (typeof scale !== 'number' || !Number.isFinite(scale) || scale < 0)
+      ? physicalInvalid('KHR_materials_clearcoat', 'clearcoatNormalTexture.scale', 'range', scale)
+      : undefined)
+  );
+}
+
+function validateSurfaceLobes(extensions: MaterialExtensionsJson): GltfError | undefined {
+  const anisotropy = extensions.KHR_materials_anisotropy;
+  const sheen = extensions.KHR_materials_sheen;
+  const iridescence = extensions.KHR_materials_iridescence;
+  return (
+    validateUnit(
+      'KHR_materials_anisotropy',
+      'anisotropyStrength',
+      anisotropy?.anisotropyStrength,
+    ) ??
     validateFinite(
       'KHR_materials_anisotropy',
       'anisotropyRotation',
       anisotropy?.anisotropyRotation,
-    ),
-    validateUnit('KHR_materials_sheen', 'sheenRoughnessFactor', sheen?.sheenRoughnessFactor),
-    validateColor('KHR_materials_sheen', 'sheenColorFactor', sheen?.sheenColorFactor),
-    validateUnit('KHR_materials_iridescence', 'iridescenceFactor', iridescence?.iridescenceFactor),
-    validateFinite('KHR_materials_iridescence', 'iridescenceIor', iridescence?.iridescenceIor, 1),
+    ) ??
+    validateUnit('KHR_materials_sheen', 'sheenRoughnessFactor', sheen?.sheenRoughnessFactor) ??
+    validateColor('KHR_materials_sheen', 'sheenColorFactor', sheen?.sheenColorFactor) ??
+    validateUnit(
+      'KHR_materials_iridescence',
+      'iridescenceFactor',
+      iridescence?.iridescenceFactor,
+    ) ??
+    validateFinite('KHR_materials_iridescence', 'iridescenceIor', iridescence?.iridescenceIor, 1) ??
     validateFinite(
       'KHR_materials_iridescence',
       'iridescenceThicknessMinimum',
       iridescence?.iridescenceThicknessMinimum,
       0,
-    ),
+    ) ??
     validateFinite(
       'KHR_materials_iridescence',
       'iridescenceThicknessMaximum',
       iridescence?.iridescenceThicknessMaximum,
       0,
-    ),
-    validateUnit('KHR_materials_specular', 'specularFactor', specular?.specularFactor),
-    validateColor('KHR_materials_specular', 'specularColorFactor', specular?.specularColorFactor),
+    )
+  );
+}
+
+function validateSpecularLobes(extensions: MaterialExtensionsJson): GltfError | undefined {
+  const specular = extensions.KHR_materials_specular;
+  const diffuseTransmission = extensions.KHR_materials_diffuse_transmission;
+  return (
+    validateUnit('KHR_materials_specular', 'specularFactor', specular?.specularFactor) ??
+    validateColor('KHR_materials_specular', 'specularColorFactor', specular?.specularColorFactor) ??
     validateUnit(
       'KHR_materials_diffuse_transmission',
       'diffuseTransmissionFactor',
       diffuseTransmission?.diffuseTransmissionFactor,
-    ),
+    ) ??
     validateColor(
       'KHR_materials_diffuse_transmission',
       'diffuseTransmissionColorFactor',
       diffuseTransmission?.diffuseTransmissionColorFactor,
-    ),
-  ];
-  for (const check of physicalChecks) if (check !== undefined) return check;
-  const emissiveStrength = matJson.extensions?.KHR_materials_emissive_strength?.emissiveStrength;
+    )
+  );
+}
+
+function validateEmissiveStrength(strength: number | undefined): GltfError | undefined {
   if (
-    emissiveStrength !== undefined &&
-    (typeof emissiveStrength !== 'number' ||
-      !Number.isFinite(emissiveStrength) ||
-      emissiveStrength < 0)
+    strength !== undefined &&
+    (typeof strength !== 'number' || !Number.isFinite(strength) || strength < 0)
   )
     return physicalInvalid(
       'KHR_materials_emissive_strength',
       'emissiveStrength',
       'range',
-      emissiveStrength,
+      strength,
     );
-  return ok({
+  return undefined;
+}
+
+/** Validation order is the error precedence: first failing field wins. */
+function validateMaterialExtensions(
+  extensions: MaterialExtensionsJson | undefined,
+  alphaMode: AlphaMode | undefined,
+): GltfError | undefined {
+  if (extensions === undefined) return undefined;
+  return (
+    validateTransmission(extensions.KHR_materials_transmission) ??
+    validateIor(extensions.KHR_materials_ior) ??
+    validateVolume(extensions.KHR_materials_volume) ??
+    validateTransmissionBlend(extensions.KHR_materials_transmission, alphaMode) ??
+    validateClearcoat(extensions.KHR_materials_clearcoat) ??
+    validateSurfaceLobes(extensions) ??
+    validateSpecularLobes(extensions) ??
+    validateEmissiveStrength(extensions.KHR_materials_emissive_strength?.emissiveStrength)
+  );
+}
+
+function baseColorFactorOf(
+  factor: readonly number[] | undefined,
+): readonly [number, number, number, number] {
+  const baseColor = factor ?? [1, 1, 1, 1];
+  return [baseColor[0] ?? 1, baseColor[1] ?? 1, baseColor[2] ?? 1, baseColor[3] ?? 1];
+}
+
+function alphaFields(matJson: GltfMaterialJson): AlphaFields {
+  const alphaMode =
+    matJson.alphaMode === 'MASK' || matJson.alphaMode === 'BLEND' ? matJson.alphaMode : undefined;
+  const alphaCutoff = alphaMode === 'MASK' ? (matJson.alphaCutoff ?? 0.5) : undefined;
+  return {
+    ...(alphaMode === undefined ? {} : { alphaMode }),
+    ...(alphaCutoff === undefined ? {} : { alphaCutoff }),
+  };
+}
+
+function normalTextureInfo(
+  info: NormalTextureInfoJson,
+  textures: readonly GltfTextureIr[],
+): GltfNormalTextureInfoIr {
+  return {
+    ...parseTextureInfo(info, textures),
+    ...(info.scale === undefined ? {} : { scale: info.scale }),
+  };
+}
+
+function unlitMaterial(
+  matJson: GltfMaterialJson,
+  textures: readonly GltfTextureIr[],
+  baseColorFactor: readonly [number, number, number, number],
+  alpha: AlphaFields,
+): GltfMaterialIr {
+  const baseColorTexture = matJson.pbrMetallicRoughness?.baseColorTexture;
+  return {
     ...(matJson.name === undefined ? {} : { name: matJson.name }),
-    baseColorFactor: baseColor4,
-    ...(emissiveFactor === undefined ? {} : { emissiveFactor }),
-    ...(emissiveStrength === undefined ? {} : { emissiveStrength }),
-    ...(matJson.extensions?.KHR_materials_unlit === undefined ? {} : { unlit: true }),
-    metallicFactor: pbr?.metallicFactor ?? 1.0,
-    roughnessFactor: pbr?.roughnessFactor ?? 1.0,
+    unlit: true,
+    baseColorFactor,
+    metallicFactor: 0,
+    roughnessFactor: 1,
+    ...(baseColorTexture === undefined
+      ? {}
+      : { baseColorTexture: parseTextureInfo(baseColorTexture, textures) }),
+    ...alpha,
+    ...(matJson.doubleSided === undefined ? {} : { doubleSided: matJson.doubleSided }),
+  };
+}
+
+function coreTextureFields(
+  matJson: GltfMaterialJson,
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  const pbr = matJson.pbrMetallicRoughness;
+  return {
     ...(pbr?.baseColorTexture === undefined
       ? {}
       : { baseColorTexture: parseTextureInfo(pbr.baseColorTexture, textures) }),
@@ -582,14 +605,7 @@ export function parseMaterial(
       : { metallicRoughnessTexture: parseTextureInfo(pbr.metallicRoughnessTexture, textures) }),
     ...(matJson.normalTexture === undefined
       ? {}
-      : {
-          normalTexture: {
-            ...parseTextureInfo(matJson.normalTexture, textures),
-            ...(matJson.normalTexture.scale === undefined
-              ? {}
-              : { scale: matJson.normalTexture.scale }),
-          },
-        }),
+      : { normalTexture: normalTextureInfo(matJson.normalTexture, textures) }),
     ...(matJson.occlusionTexture === undefined
       ? {}
       : {
@@ -603,152 +619,214 @@ export function parseMaterial(
     ...(matJson.emissiveTexture === undefined
       ? {}
       : { emissiveTexture: parseTextureInfo(matJson.emissiveTexture, textures) }),
-    ...(transmission === undefined
+  };
+}
+
+function transmissionFields(
+  transmission: MaterialExtensionsJson['KHR_materials_transmission'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (transmission === undefined) return {};
+  return {
+    transmissionFactor: transmission.transmissionFactor ?? 0,
+    transmissionChannel: 0,
+    ...(transmission.transmissionTexture === undefined
+      ? {}
+      : { transmissionTexture: parseTextureInfo(transmission.transmissionTexture, textures) }),
+  };
+}
+
+function volumeFields(
+  volume: MaterialExtensionsJson['KHR_materials_volume'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (volume === undefined) return {};
+  const attenuationColor = tuple3(volume.attenuationColor);
+  return {
+    thicknessFactor: volume.thicknessFactor ?? 0,
+    thicknessChannel: 1,
+    ...(volume.thicknessTexture === undefined
+      ? {}
+      : { thicknessTexture: parseTextureInfo(volume.thicknessTexture, textures) }),
+    ...(attenuationColor === undefined ? {} : { attenuationColor }),
+    ...(finiteOrUndefined(volume.attenuationDistance) === undefined
+      ? {}
+      : { attenuationDistance: volume.attenuationDistance }),
+  };
+}
+
+function clearcoatFields(
+  clearcoat: MaterialExtensionsJson['KHR_materials_clearcoat'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (clearcoat === undefined) return {};
+  return {
+    clearcoatFactor: clearcoat.clearcoatFactor ?? 0,
+    clearcoatChannel: 0,
+    clearcoatRoughnessFactor: clearcoat.clearcoatRoughnessFactor ?? 0,
+    clearcoatRoughnessChannel: 1,
+    clearcoatNormalChannel: [0, 1] as const,
+    ...(clearcoat.clearcoatTexture === undefined
+      ? {}
+      : { clearcoatTexture: parseTextureInfo(clearcoat.clearcoatTexture, textures) }),
+    ...(clearcoat.clearcoatRoughnessTexture === undefined
       ? {}
       : {
-          transmissionFactor: transmission.transmissionFactor ?? 0,
-          transmissionChannel: 0,
-          ...(transmission.transmissionTexture === undefined
-            ? {}
-            : {
-                transmissionTexture: parseTextureInfo(transmission.transmissionTexture, textures),
-              }),
+          clearcoatRoughnessTexture: parseTextureInfo(
+            clearcoat.clearcoatRoughnessTexture,
+            textures,
+          ),
         }),
+    ...(clearcoat.clearcoatNormalTexture === undefined
+      ? {}
+      : { clearcoatNormalTexture: normalTextureInfo(clearcoat.clearcoatNormalTexture, textures) }),
+  };
+}
+
+function anisotropyFields(
+  anisotropy: MaterialExtensionsJson['KHR_materials_anisotropy'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (anisotropy === undefined) return {};
+  return {
+    anisotropyStrength: anisotropy.anisotropyStrength ?? 0,
+    anisotropyRotation: anisotropy.anisotropyRotation ?? 0,
+    anisotropyChannel: [0, 1, 2] as const,
+    ...(anisotropy.anisotropyTexture === undefined
+      ? {}
+      : { anisotropyTexture: parseTextureInfo(anisotropy.anisotropyTexture, textures) }),
+  };
+}
+
+function sheenFields(
+  sheen: MaterialExtensionsJson['KHR_materials_sheen'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (sheen === undefined) return {};
+  return {
+    sheenColorFactor: tuple3(sheen.sheenColorFactor) ?? [0, 0, 0],
+    sheenColorChannel: [0, 1, 2] as const,
+    sheenRoughnessFactor: sheen.sheenRoughnessFactor ?? 0,
+    sheenRoughnessChannel: 3,
+    ...(sheen.sheenColorTexture === undefined
+      ? {}
+      : { sheenColorTexture: parseTextureInfo(sheen.sheenColorTexture, textures) }),
+    ...(sheen.sheenRoughnessTexture === undefined
+      ? {}
+      : { sheenRoughnessTexture: parseTextureInfo(sheen.sheenRoughnessTexture, textures) }),
+  };
+}
+
+function iridescenceFields(
+  iridescence: MaterialExtensionsJson['KHR_materials_iridescence'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (iridescence === undefined) return {};
+  return {
+    iridescenceFactor: iridescence.iridescenceFactor ?? 0,
+    iridescenceIor: iridescence.iridescenceIor ?? 1.3,
+    iridescenceThicknessMinimum: iridescence.iridescenceThicknessMinimum ?? 100,
+    iridescenceThicknessMaximum: iridescence.iridescenceThicknessMaximum ?? 400,
+    iridescenceChannel: 0,
+    iridescenceThicknessChannel: 1,
+    ...(iridescence.iridescenceTexture === undefined
+      ? {}
+      : { iridescenceTexture: parseTextureInfo(iridescence.iridescenceTexture, textures) }),
+    ...(iridescence.iridescenceThicknessTexture === undefined
+      ? {}
+      : {
+          iridescenceThicknessTexture: parseTextureInfo(
+            iridescence.iridescenceThicknessTexture,
+            textures,
+          ),
+        }),
+  };
+}
+
+function specularFields(
+  specular: MaterialExtensionsJson['KHR_materials_specular'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (specular === undefined) return {};
+  return {
+    specularFactor: specular.specularFactor ?? 1,
+    specularChannel: 3,
+    specularColorFactor: tuple3(specular.specularColorFactor) ?? [1, 1, 1],
+    specularColorChannel: [0, 1, 2] as const,
+    ...(specular.specularTexture === undefined
+      ? {}
+      : { specularTexture: parseTextureInfo(specular.specularTexture, textures) }),
+    ...(specular.specularColorTexture === undefined
+      ? {}
+      : { specularColorTexture: parseTextureInfo(specular.specularColorTexture, textures) }),
+  };
+}
+
+function diffuseTransmissionFields(
+  diffuseTransmission: MaterialExtensionsJson['KHR_materials_diffuse_transmission'],
+  textures: readonly GltfTextureIr[],
+): Partial<GltfMaterialIr> {
+  if (diffuseTransmission === undefined) return {};
+  return {
+    diffuseTransmissionFactor: diffuseTransmission.diffuseTransmissionFactor ?? 0,
+    diffuseTransmissionColorFactor: tuple3(diffuseTransmission.diffuseTransmissionColorFactor) ?? [
+      1, 1, 1,
+    ],
+    ...(diffuseTransmission.diffuseTransmissionTexture === undefined
+      ? {}
+      : {
+          diffuseTransmissionTexture: parseTextureInfo(
+            diffuseTransmission.diffuseTransmissionTexture,
+            textures,
+          ),
+        }),
+    ...(diffuseTransmission.diffuseTransmissionColorTexture === undefined
+      ? {}
+      : {
+          diffuseTransmissionColorTexture: parseTextureInfo(
+            diffuseTransmission.diffuseTransmissionColorTexture,
+            textures,
+          ),
+        }),
+  };
+}
+
+export function parseMaterial(
+  matJson: GltfMaterialJson,
+  textures: readonly GltfTextureIr[],
+): Result<GltfMaterialIr, GltfError> {
+  const pbr = matJson.pbrMetallicRoughness;
+  const baseColorFactor = baseColorFactorOf(pbr?.baseColorFactor);
+  const alpha = alphaFields(matJson);
+  const extensions = matJson.extensions;
+  if (extensions?.KHR_materials_unlit !== undefined)
+    return ok(unlitMaterial(matJson, textures, baseColorFactor, alpha));
+  const invalid = validateMaterialExtensions(extensions, alpha.alphaMode);
+  if (invalid !== undefined) return err(invalid);
+  const emissiveFactor = tuple3(matJson.emissiveFactor);
+  const emissiveStrength = extensions?.KHR_materials_emissive_strength?.emissiveStrength;
+  const ior = extensions?.KHR_materials_ior;
+  const baseColorTexCoord = pbr?.baseColorTexture?.texCoord;
+  return ok({
+    ...(matJson.name === undefined ? {} : { name: matJson.name }),
+    baseColorFactor,
+    ...(emissiveFactor === undefined ? {} : { emissiveFactor }),
+    ...(emissiveStrength === undefined ? {} : { emissiveStrength }),
+    metallicFactor: pbr?.metallicFactor ?? 1.0,
+    roughnessFactor: pbr?.roughnessFactor ?? 1.0,
+    ...coreTextureFields(matJson, textures),
+    ...transmissionFields(extensions?.KHR_materials_transmission, textures),
     ...(ior === undefined ? {} : { ior: ior.ior ?? 1.5 }),
-    ...(volume === undefined
-      ? {}
-      : {
-          thicknessFactor: volume.thicknessFactor ?? 0,
-          thicknessChannel: 1,
-          ...(volume.thicknessTexture === undefined
-            ? {}
-            : { thicknessTexture: parseTextureInfo(volume.thicknessTexture, textures) }),
-          ...(attenuationColor === undefined ? {} : { attenuationColor }),
-          ...(finiteOrUndefined(volume.attenuationDistance) === undefined
-            ? {}
-            : { attenuationDistance: volume.attenuationDistance }),
-        }),
-    ...(clearcoat === undefined
-      ? {}
-      : {
-          clearcoatFactor: clearcoat.clearcoatFactor ?? 0,
-          clearcoatChannel: 0,
-          clearcoatRoughnessFactor: clearcoat.clearcoatRoughnessFactor ?? 0,
-          clearcoatRoughnessChannel: 1,
-          clearcoatNormalChannel: [0, 1] as const,
-          ...(clearcoat.clearcoatTexture === undefined
-            ? {}
-            : { clearcoatTexture: parseTextureInfo(clearcoat.clearcoatTexture, textures) }),
-          ...(clearcoat.clearcoatRoughnessTexture === undefined
-            ? {}
-            : {
-                clearcoatRoughnessTexture: parseTextureInfo(
-                  clearcoat.clearcoatRoughnessTexture,
-                  textures,
-                ),
-              }),
-          ...(clearcoat.clearcoatNormalTexture === undefined
-            ? {}
-            : {
-                clearcoatNormalTexture: {
-                  ...parseTextureInfo(clearcoat.clearcoatNormalTexture, textures),
-                  ...(clearcoat.clearcoatNormalTexture.scale === undefined
-                    ? {}
-                    : { scale: clearcoat.clearcoatNormalTexture.scale }),
-                },
-              }),
-        }),
-    ...(anisotropy === undefined
-      ? {}
-      : {
-          anisotropyStrength: anisotropy.anisotropyStrength ?? 0,
-          anisotropyRotation: anisotropy.anisotropyRotation ?? 0,
-          anisotropyChannel: [0, 1, 2] as const,
-          ...(anisotropy.anisotropyTexture === undefined
-            ? {}
-            : { anisotropyTexture: parseTextureInfo(anisotropy.anisotropyTexture, textures) }),
-        }),
-    ...(sheen === undefined
-      ? {}
-      : {
-          sheenColorFactor: tuple3(sheen.sheenColorFactor) ?? [0, 0, 0],
-          sheenColorChannel: [0, 1, 2] as const,
-          sheenRoughnessFactor: sheen.sheenRoughnessFactor ?? 0,
-          sheenRoughnessChannel: 3,
-          ...(sheen.sheenColorTexture === undefined
-            ? {}
-            : { sheenColorTexture: parseTextureInfo(sheen.sheenColorTexture, textures) }),
-          ...(sheen.sheenRoughnessTexture === undefined
-            ? {}
-            : { sheenRoughnessTexture: parseTextureInfo(sheen.sheenRoughnessTexture, textures) }),
-        }),
-    ...(iridescence === undefined
-      ? {}
-      : {
-          iridescenceFactor: iridescence.iridescenceFactor ?? 0,
-          iridescenceIor: iridescence.iridescenceIor ?? 1.3,
-          iridescenceThicknessMinimum: iridescence.iridescenceThicknessMinimum ?? 100,
-          iridescenceThicknessMaximum: iridescence.iridescenceThicknessMaximum ?? 400,
-          iridescenceChannel: 0,
-          iridescenceThicknessChannel: 1,
-          ...(iridescence.iridescenceTexture === undefined
-            ? {}
-            : { iridescenceTexture: parseTextureInfo(iridescence.iridescenceTexture, textures) }),
-          ...(iridescence.iridescenceThicknessTexture === undefined
-            ? {}
-            : {
-                iridescenceThicknessTexture: parseTextureInfo(
-                  iridescence.iridescenceThicknessTexture,
-                  textures,
-                ),
-              }),
-        }),
-    ...(specular === undefined
-      ? {}
-      : {
-          specularFactor: specular.specularFactor ?? 1,
-          specularChannel: 3,
-          specularColorFactor: tuple3(specular.specularColorFactor) ?? [1, 1, 1],
-          specularColorChannel: [0, 1, 2] as const,
-          ...(specular.specularTexture === undefined
-            ? {}
-            : { specularTexture: parseTextureInfo(specular.specularTexture, textures) }),
-          ...(specular.specularColorTexture === undefined
-            ? {}
-            : {
-                specularColorTexture: parseTextureInfo(specular.specularColorTexture, textures),
-              }),
-        }),
-    ...(diffuseTransmission === undefined
-      ? {}
-      : {
-          diffuseTransmissionFactor: diffuseTransmission.diffuseTransmissionFactor ?? 0,
-          diffuseTransmissionColorFactor: tuple3(
-            diffuseTransmission.diffuseTransmissionColorFactor,
-          ) ?? [1, 1, 1],
-          ...(diffuseTransmission.diffuseTransmissionTexture === undefined
-            ? {}
-            : {
-                diffuseTransmissionTexture: parseTextureInfo(
-                  diffuseTransmission.diffuseTransmissionTexture,
-                  textures,
-                ),
-              }),
-          ...(diffuseTransmission.diffuseTransmissionColorTexture === undefined
-            ? {}
-            : {
-                diffuseTransmissionColorTexture: parseTextureInfo(
-                  diffuseTransmission.diffuseTransmissionColorTexture,
-                  textures,
-                ),
-              }),
-        }),
-    ...(alphaMode === undefined ? {} : { alphaMode }),
-    ...(alphaCutoff === undefined ? {} : { alphaCutoff }),
+    ...volumeFields(extensions?.KHR_materials_volume, textures),
+    ...clearcoatFields(extensions?.KHR_materials_clearcoat, textures),
+    ...anisotropyFields(extensions?.KHR_materials_anisotropy, textures),
+    ...sheenFields(extensions?.KHR_materials_sheen, textures),
+    ...iridescenceFields(extensions?.KHR_materials_iridescence, textures),
+    ...specularFields(extensions?.KHR_materials_specular, textures),
+    ...diffuseTransmissionFields(extensions?.KHR_materials_diffuse_transmission, textures),
+    ...alpha,
     ...(matJson.doubleSided === true ? { doubleSided: true } : {}),
-    ...(pbr?.baseColorTexture?.texCoord === undefined || pbr.baseColorTexture.texCoord === 0
-      ? {}
-      : { baseColorTexCoord: pbr.baseColorTexture.texCoord }),
+    ...(baseColorTexCoord === undefined || baseColorTexCoord === 0 ? {} : { baseColorTexCoord }),
   });
 }
 

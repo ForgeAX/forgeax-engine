@@ -14,9 +14,7 @@ import type {
   Sampler,
   ShaderModule,
 } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { ok, type Result, ShaderSource } from '@forgeax/engine-types';
 import type { DeviceScope } from '../../device/device-scope';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
@@ -144,7 +142,7 @@ interface ColorStageProgram {
   readonly name: string;
   readonly code: string;
   readonly module: ShaderModule;
-  readonly moduleLabel: string;
+  readonly moduleDescriptor: ReturnType<ShaderSource['descriptor']>;
   readonly format: string;
   readonly sampleCount: number;
   readonly stageLayout: BindGroupLayout | undefined;
@@ -186,7 +184,7 @@ export function addStandardColorStagePass(
   const code = COLOR_STAGE_PRELUDE_WGSL + fragmentWgsl;
   // The adapter keys modules by label; strengths and other source constants
   // must not alias the first module requested under the stage's display name.
-  let moduleLabel: string | undefined;
+  let moduleDescriptor: ReturnType<ShaderSource['descriptor']> | undefined;
   let unscopedPrograms: ColorStageProgram[] | undefined;
   const added = graph.addRasterPass(name, {
     accesses: [
@@ -212,12 +210,16 @@ export function addStandardColorStagePass(
       if (scope === undefined) unscopedPrograms ??= [];
       const programs =
         scope === undefined ? unscopedPrograms : scope.isAlive() ? programsFor(scope) : undefined;
-      moduleLabel ??=
-        programs?.find((entry) => entry.name === name && entry.code === code)?.moduleLabel ??
-        `${name}-sha256:${bytesToHex(sha256(utf8ToBytes(code)))}`;
+      moduleDescriptor ??= programs?.find(
+        (entry) => entry.name === name && entry.code === code,
+      )?.moduleDescriptor;
+      if (moduleDescriptor === undefined) {
+        const source = new ShaderSource([code]);
+        moduleDescriptor = source.descriptor(`${name}-sha256:${source.identity}`);
+      }
       // The factory remains the module/pending authority, including invalidation
       // that does not replace its object or method.
-      const source = factory.createShaderModule({ code, label: moduleLabel });
+      const source = factory.createShaderModule(moduleDescriptor);
       if (!source.ok) throw source.error;
       let program = programs?.find(
         (entry) =>
@@ -267,7 +269,7 @@ export function addStandardColorStagePass(
           name,
           code,
           module: source.value,
-          moduleLabel,
+          moduleDescriptor,
           format: output.format,
           sampleCount: output.sampleCount,
           stageLayout: stageBinding?.layout,

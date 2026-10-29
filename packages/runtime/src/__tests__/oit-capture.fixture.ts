@@ -7,8 +7,9 @@ import {
   summarizeFrame,
   type V7Tape,
 } from '@forgeax/engine-rhi-debug';
-import { expect } from 'vitest';
+import { assert, expect } from 'vitest';
 import { oitAccumulation } from '../../../render/src/oit/weight';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
 import {
   OIT_PROBES,
   OIT_SIZE,
@@ -18,6 +19,7 @@ import {
   probeReference,
   readPixel,
 } from './oit.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 
 /** Shared blend of every OIT accumulation target. */
 const SHARED_BLEND = {
@@ -131,26 +133,33 @@ export async function inspectOitTape(input: {
   for (const id of [accumId, weightId, sceneId])
     expect(unseeded.has(views.get(id) ?? id)).toBe(false);
 
+  const replayWork = observeReplaySubmissions(input.backend.device);
   const replay = (await openReplay(tape, input.backend)).unwrap();
   try {
-    const inspectedAccumulate = (
-      await replay.inspectWork(lastAccumulate.workIndex, ['pipeline', 'bindings'])
-    ).unwrap();
-    const inspectedComposite = (
-      await replay.inspectWork(compositeWork.workIndex, ['pipeline', 'bindings'])
-    ).unwrap();
+    const inspectedAccumulate = describeReplayWork(lastAccumulate);
+    const inspectedComposite = describeReplayWork(compositeWork);
     expect(inspectedAccumulate.pipeline?.pipelineHandleId).toBe(
       lastAccumulate.pipeline.pipelineHandleId,
     );
     expect(inspectedComposite.bindings?.map((binding) => binding.resourceId)).toEqual(
       expect.arrayContaining([accumId, weightId]),
     );
-    const read = async (id: string, workIndex: number) =>
-      (await replay.readResourceAtWork(id, workIndex, { mipLevel: 0, arrayLayer: 0 })).unwrap();
-    const accum = await read(accumId, lastAccumulate.workIndex);
-    const weight = await read(weightId, lastAccumulate.workIndex);
-    const sceneBefore = await read(sceneId, lastAccumulate.workIndex);
-    const sceneAfter = await read(sceneId, compositeWork.workIndex);
+    const reads = (
+      await replay.readAtWorks(
+        [
+          { resourceId: accumId, workIndex: lastAccumulate.workIndex },
+          { resourceId: weightId, workIndex: lastAccumulate.workIndex },
+          { resourceId: sceneId, workIndex: lastAccumulate.workIndex },
+          { resourceId: sceneId, workIndex: compositeWork.workIndex },
+        ].map((request) => ({ ...request, subresource: { mipLevel: 0, arrayLayer: 0 } })),
+      )
+    ).unwrap();
+    replayWork.assertMaximum(12);
+    const [accum, weight, sceneBefore, sceneAfter] = reads.map((result) => result.unwrap());
+    assert(accum);
+    assert(weight);
+    assert(sceneBefore);
+    assert(sceneAfter);
     expect(accum.format).toBe('rgba16float');
     expect(weight.format).toBe('r16float');
 
@@ -240,5 +249,6 @@ export async function inspectOitTape(input: {
     };
   } finally {
     (await replay.dispose()).unwrap();
+    replayWork.restore();
   }
 }

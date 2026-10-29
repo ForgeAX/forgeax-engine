@@ -1,5 +1,7 @@
-import type { RendererOperationError } from '../errors/render';
+import { err, ok } from '@forgeax/engine-rhi';
+import { RendererOperationError } from '../errors/render';
 import type { FrameReceipt, RenderInspection } from '../render-contract';
+import { structuredRendererCause } from './renderer-facade';
 
 export interface PendingFrameCompletion {
   readonly frameId: number;
@@ -125,6 +127,88 @@ export function guardFrameCompletion<T, E>(
       return isCurrent() ? result : { ok: false, error: staleError() };
     },
     (cause) => ({ ok: false, error: rejectedError(cause) }),
+  );
+}
+
+/** The one structured failure every completion path of a submitted frame reports. */
+export function completeFrameFailure(
+  frameId: number | undefined,
+  deviceGeneration: number,
+  cause: unknown,
+  options?: ErrorOptions,
+): RendererOperationError<'device-operation-failed'> {
+  return new RendererOperationError(
+    'device-operation-failed',
+    {
+      operation: 'complete-frame',
+      ...(frameId === undefined ? {} : { frameId }),
+      deviceGeneration,
+      cause: structuredRendererCause(cause, 'complete-frame'),
+    },
+    options,
+  );
+}
+
+/** Settle a receipt once its queue fence and optional reflection fallback complete. */
+export function settleFrameCompletion(
+  frameId: number,
+  deviceGeneration: number,
+  queueCompletion: Promise<unknown>,
+  reflectionCompletion: Promise<unknown> | undefined,
+): FrameReceipt['completed'] {
+  return Promise.all([queueCompletion, reflectionCompletion ?? Promise.resolve()])
+    .then(() => ok(undefined))
+    .catch((cause: unknown) =>
+      err(completeFrameFailure(frameId, deviceGeneration, cause, { cause })),
+    );
+}
+
+/**
+ * Race a settled completion against its continuation: a stale generation or
+ * a terminated continuation (device loss, disposal, internal fault) wins.
+ */
+export function raceFrameContinuation(
+  completion: FrameReceipt['completed'],
+  continuation: ContinuationTerminator,
+  frameId: number,
+  deviceGeneration: number,
+): FrameReceipt['completed'] {
+  const guarded = guardFrameCompletion(
+    completion,
+    () => continuation.guard('queue-completion'),
+    () =>
+      completeFrameFailure(frameId, deviceGeneration, {
+        code: 'stale-generation',
+        expected: 'frame completion belongs to its device generation',
+        hint: 'discard the stale receipt',
+      }),
+    (cause: unknown) => completeFrameFailure(frameId, deviceGeneration, cause),
+  );
+  const terminated = continuation
+    .promise()
+    .then((reason) => err(terminatedFrameFailure(reason, frameId, deviceGeneration)));
+  return Promise.race([guarded, terminated]);
+}
+
+function terminatedFrameFailure(
+  reason: ContinuationTerminationReason,
+  frameId: number,
+  deviceGeneration: number,
+): RendererOperationError<'device-operation-failed'> {
+  if (reason.code === 'internal-fault')
+    return completeFrameFailure(frameId, deviceGeneration, reason.detail, {
+      cause: reason.detail.cause,
+    });
+  return completeFrameFailure(
+    frameId,
+    deviceGeneration,
+    {
+      code: reason.code,
+      expected: 'a frame continuation completes before device loss or disposal',
+      hint: 'discard the stale receipt and inspect the current renderer generation',
+      detail: reason,
+    },
+    undefined,
   );
 }
 

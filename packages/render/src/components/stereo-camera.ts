@@ -129,25 +129,25 @@ export function stereoEyeSlot(stereo: StereoCameraSnapshot, eye: StereoEye): 0 |
   return (eye === 'left') !== stereo.swapEyes ? 0 : 1;
 }
 
-/** The normalized sub-rectangle of an outer CameraView viewport covered by one eye. */
+/** The normalized sub-rectangle of an outer CameraView viewport covered by one eye, written to `out`. */
 export function stereoEyeViewport(
   viewport: ArrayLike<number>,
   stereo: StereoCameraSnapshot,
   eye: StereoEye,
+  out: Float32Array,
 ): Float32Array {
   const x = viewport[0] ?? 0,
     y = viewport[1] ?? 0,
     w = viewport[2] ?? 1,
     h = viewport[3] ?? 1;
   const slot = stereoEyeSlot(stereo, eye);
-  switch (stereo.layout) {
-    case 'side-by-side':
-      return new Float32Array([x + slot * w * 0.5, y, w * 0.5, h]);
-    case 'top-bottom':
-      return new Float32Array([x, y + slot * h * 0.5, w, h * 0.5]);
-    case 'anaglyph':
-      return new Float32Array([x, y, w, h]);
-  }
+  const across = stereo.layout === 'side-by-side',
+    down = stereo.layout === 'top-bottom';
+  out[0] = across ? x + slot * w * 0.5 : x;
+  out[1] = down ? y + slot * h * 0.5 : y;
+  out[2] = across ? w * 0.5 : w;
+  out[3] = down ? h * 0.5 : h;
+  return out;
 }
 
 /**

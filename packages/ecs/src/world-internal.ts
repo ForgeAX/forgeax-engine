@@ -25,9 +25,10 @@ import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ArrayRangesChange } from './storage/array-range-log';
 import type { ChangeTicks } from './storage/change-detection';
 import type { ChangeIndex } from './storage/change-index';
+import type { EntityRecords } from './storage/entity-records';
 import type { Table } from './storage/table';
 import type { ClockWriter } from './time';
-import type { ComponentData, EcsError, EntityRecord } from './world';
+import type { ComponentData, EcsError } from './world';
 
 /** @internal Package-private identity; absent from the public export map. */
 export const worldInternal: unique symbol = Symbol.for(
@@ -76,7 +77,7 @@ export interface WorldInternal {
     entity: EntityHandle,
     component: Component,
   ) => Result<Record<string, unknown>, EcsError>;
-  readonly getRecords: () => EntityRecord[];
+  readonly getRecords: () => EntityRecords;
   readonly getRelationshipEpoch: (component: Component) => number;
   readonly getRelationshipTargetEntities: (
     component: Component,
@@ -91,7 +92,7 @@ export interface WorldInternal {
     entity: EntityHandle,
     operation: string,
     component?: string,
-  ) => Result<EntityRecord, EcsError>;
+  ) => Result<number, EcsError>;
   readonly markComponentChanged: (entity: EntityHandle, componentId: number) => void;
   readonly markComponentRangeChanged: (
     table: Table,
@@ -127,10 +128,6 @@ export interface WorldInternal {
     component: Component<string, S>,
     row: number,
   ) => ShapeOf<S>;
-  readonly recordIsLive: (
-    record: EntityRecord | undefined,
-    generation: number,
-  ) => record is EntityRecord;
   readonly routeError: (error: unknown, context?: { readonly systemName: string }) => void;
   readonly restoreMutationEpoch: (epoch: number) => void;
   readonly setFixedAccumulator: (value: number) => void;

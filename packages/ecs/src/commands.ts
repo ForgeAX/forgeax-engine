@@ -123,6 +123,117 @@ export interface CommandBufferImpl extends CommandBuffer {
 }
 
 /**
+ * Prototype-backed CommandBuffer. One buffer is created per system run, so
+ * its methods live on the prototype instead of being fresh closures per run.
+ */
+class CommandBufferState implements CommandBufferImpl {
+  readonly _queue: Command[] = [];
+  /** Created by the first deferred spawn; most system buffers never spawn. */
+  private pending: Set<number> | undefined;
+  _queueError: CommandBufferImpl['_queueError'] = null;
+  private currentStatus: CommandBuffer['status'] = 'open';
+
+  constructor(
+    private readonly world: WorldForCommands,
+    readonly _systemName: string,
+    readonly _scheduleName: string,
+  ) {}
+
+  get status(): CommandBuffer['status'] {
+    return this.currentStatus;
+  }
+
+  get _pendingEntities(): Set<number> {
+    this.pending ??= new Set<number>();
+    return this.pending;
+  }
+
+  private ensureOpen(): void {
+    if (this.currentStatus !== 'open') throw new Error(`CommandBuffer is ${this.currentStatus}`);
+  }
+
+  private recordQueueError(index: number, kind: CommandKind, cause: unknown): void {
+    if (this._queueError === null) this._queueError = { index, kind, cause };
+  }
+
+  _setStatus(next: 'committed' | 'aborted'): void {
+    if (this.currentStatus === 'open') this.currentStatus = next;
+  }
+
+  commit(): void {
+    this.ensureOpen();
+    this.currentStatus = 'committed';
+    this._queue.length = 0;
+    this.pending?.clear();
+    this._queueError = null;
+  }
+
+  abort(): void {
+    if (this.currentStatus !== 'open') return;
+    if (this.pending !== undefined)
+      for (const raw of this.pending) {
+        this.world[worldInternal].cancelPendingEntity(raw as EntityHandle);
+      }
+    this.currentStatus = 'aborted';
+    this._queue.length = 0;
+    this.pending?.clear();
+    this._queueError = null;
+  }
+
+  spawn(...componentDatas: ComponentData[]): EntityHandle {
+    this.ensureOpen();
+    // bug-20260615: validate raw spawn keys at queue time (synchronous,
+    // points at the calling system's stack) rather than only at flush
+    // time. Commands.spawn returns EntityHandle (no Result channel), so
+    // unknown-key is captured as a batch preflight failure.  The handle is
+    // still reserved so callers may compose later commands; abort releases
+    // every reservation without leaking a free slot.
+    for (const cd of componentDatas) {
+      const keyErr = validateComponentDataKeys(cd.component, cd.data as Record<string, unknown>);
+      if (keyErr !== null) this.recordQueueError(this._queue.length, 'spawn', keyErr);
+    }
+    const entity = this.world[worldInternal].allocatePendingEntity();
+    this._pendingEntities.add(entity as unknown as number);
+    this._queue.push({ type: 'spawn', componentDatas, entity });
+    return entity;
+  }
+
+  despawn(entity: EntityHandle): void {
+    this.ensureOpen();
+    this._queue.push({ type: 'despawn', entity });
+  }
+
+  addComponent<S extends ComponentSchema>(
+    entity: EntityHandle,
+    componentData: ComponentData<S>,
+  ): void {
+    this.ensureOpen();
+    const keyErr = validateComponentDataKeys(
+      componentData.component,
+      componentData.data as Record<string, unknown>,
+    );
+    if (keyErr !== null) this.recordQueueError(this._queue.length, 'addComponent', keyErr);
+    this._queue.push({
+      type: 'addComponent',
+      entity,
+      componentData: componentData as ComponentData,
+    });
+  }
+
+  removeComponent<S extends ComponentSchema>(
+    entity: EntityHandle,
+    component: Component<string, S>,
+  ): void {
+    this.ensureOpen();
+    this._queue.push({ type: 'removeComponent', entity, component: component as Component });
+  }
+
+  isDeferred(entity: EntityHandle): boolean {
+    return this.pending?.has(entity as unknown as number) === true;
+  }
+}
+
+/**
  * Create a CommandBuffer bound to a World.
  * @param world - the World (for pending entity allocation)
  */
@@ -130,99 +241,11 @@ export function createCommandBuffer(
   world: WorldForCommands,
   context: { readonly systemName?: string; readonly scheduleName?: string } = {},
 ): CommandBufferImpl {
-  const queue: Command[] = [];
-  const pendingEntities = new Set<number>();
-  let status: CommandBuffer['status'] = 'open';
-  let queueError: CommandBufferImpl['_queueError'] = null;
-  const ensureOpen = (): void => {
-    if (status !== 'open') throw new Error(`CommandBuffer is ${status}`);
-  };
-  const recordQueueError = (index: number, kind: CommandKind, cause: unknown): void => {
-    if (queueError === null) queueError = { index, kind, cause };
-  };
-
-  const buffer: CommandBufferImpl = {
-    _queue: queue,
-    _pendingEntities: pendingEntities,
-    _systemName: context.systemName ?? '<unknown-system>',
-    _scheduleName: context.scheduleName ?? '<unknown-schedule>',
-    get status() {
-      return status;
-    },
-    get _queueError() {
-      return queueError;
-    },
-    _setStatus(next) {
-      if (status === 'open') status = next;
-    },
-    commit() {
-      ensureOpen();
-      status = 'committed';
-      queue.length = 0;
-      pendingEntities.clear();
-      queueError = null;
-    },
-    abort() {
-      if (status !== 'open') return;
-      for (const raw of pendingEntities) {
-        world[worldInternal].cancelPendingEntity(raw as EntityHandle);
-      }
-      status = 'aborted';
-      queue.length = 0;
-      pendingEntities.clear();
-      queueError = null;
-    },
-
-    spawn(...componentDatas: ComponentData[]): EntityHandle {
-      ensureOpen();
-      // bug-20260615: validate raw spawn keys at queue time (synchronous,
-      // points at the calling system's stack) rather than only at flush
-      // time. Commands.spawn returns EntityHandle (no Result channel), so
-      // unknown-key is captured as a batch preflight failure.  The handle is
-      // still reserved so callers may compose later commands; abort releases
-      // every reservation without leaking a free slot.
-      for (const cd of componentDatas) {
-        const keyErr = validateComponentDataKeys(cd.component, cd.data as Record<string, unknown>);
-        if (keyErr !== null) recordQueueError(queue.length, 'spawn', keyErr);
-      }
-      const entity = world[worldInternal].allocatePendingEntity();
-      pendingEntities.add(entity as unknown as number);
-      queue.push({ type: 'spawn', componentDatas, entity });
-      return entity;
-    },
-
-    despawn(entity: EntityHandle): void {
-      ensureOpen();
-      queue.push({ type: 'despawn', entity });
-    },
-
-    addComponent<S extends ComponentSchema>(
-      entity: EntityHandle,
-      componentData: ComponentData<S>,
-    ): void {
-      ensureOpen();
-      const keyErr = validateComponentDataKeys(
-        componentData.component,
-        componentData.data as Record<string, unknown>,
-      );
-      if (keyErr !== null) recordQueueError(queue.length, 'addComponent', keyErr);
-      queue.push({ type: 'addComponent', entity, componentData: componentData as ComponentData });
-    },
-
-    removeComponent<S extends ComponentSchema>(
-      entity: EntityHandle,
-      component: Component<string, S>,
-    ): void {
-      ensureOpen();
-      queue.push({ type: 'removeComponent', entity, component: component as Component });
-    },
-
-    isDeferred(entity: EntityHandle): boolean {
-      return pendingEntities.has(entity as unknown as number);
-    },
-  };
-
-  return buffer;
+  return new CommandBufferState(
+    world,
+    context.systemName ?? '<unknown-system>',
+    context.scheduleName ?? '<unknown-schedule>',
+  );
 }
 
 function commandFailure(
@@ -564,6 +587,11 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
  */
 export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands): void {
   if (buffer.status !== 'open') return;
+  // Most system buffers stay empty: commit without the batch preflight.
+  if (buffer._queue.length === 0 && buffer._queueError === null) {
+    buffer.commit();
+    return;
+  }
   const queue = buffer._queue;
   try {
     preflightCommands(buffer, world);

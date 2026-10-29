@@ -78,12 +78,87 @@ export async function runIblSmoke(opts) {
   const { demoKind, demoId, referencePath, mode, distDir } = opts;
 
   // --- 1. dawn.node binding setup ---
+  await installDawnNavigatorGpu();
+  const surface = createOffscreenSmokeSurface();
+  const originalAmbientRequestAdapter = captureRequestedDevice(surface);
+
+  // --- 3. Engine + manifest ---
+  // This helper lives outside a workspace package, so Node cannot resolve a
+  // child's pnpm dependency symlinks while loading it from `_shared/`.
+  // Resolve the built package entries from the monorepo root instead.
+  const { World } = await import(engineDist('ecs'));
+  const { renderer, assets } = await constructIblRenderer(surface.canvas, originalAmbientRequestAdapter);
+
+  console.log(`[${demoId}] backend=${renderer.inspect().capabilities.backendKind}`);
+
+  const errors = [];
+  renderer.subscribe((event) => {
+    if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
+  });
+
+  // --- 4. Load newport_loft.hdr through REAL production loadByGuid path ---
+  const pack = await readNewportPack(distDir, demoId);
+  installPackFetch(pack);
+  assets.configurePackIndex('/pack-index.json');
+  const equirect = await loadNewportEquirect(assets);
+  const equirectPod = assets.read(equirect).unwrap();
+
+  // --- 5. Build scene (3x3 sphere matrix) ---
+  const world = new World({ assets: assets });
+  const worldAttachment1 = renderer.attach(world);
+  if (!worldAttachment1.ok) throw worldAttachment1.error;
+  const frameRequest = {
+    leases: [worldAttachment1.value],
+    camera: { lease: worldAttachment1.value },
+    environment: { lease: worldAttachment1.value },
+  };
+  console.log(`[${demoId}] loadByGuid<EquirectAsset> OK (format=${equirectPod.format} ${equirectPod.width}x${equirectPod.height})`);
+  await buildIblScene(world, demoKind, demoId, equirect);
+
+  // --- 6. Draw frames ---
+  const device = surface.device;
+  if (!device) fail('no shared device captured for readback');
+  const frameStart = Date.now();
+  const framesObserved = await drawUntilIblSettles(renderer, world, frameRequest, device, demoId, frameStart);
+
+  // --- 7. Pixel readback ---
+  const rgba = await readRenderTargetRgba(device, surface);
+
+  // --- 8. Verdict / bake ---
+  const failures = collectIblFailures(rgba, renderer, framesObserved, errors);
+  if (mode === 'bake') {
+    await bakeReferencePng(rgba, referencePath, demoId);
+  } else {
+    await compareWithReferencePng(rgba, referencePath, demoId, failures);
+  }
+
+  const wallTotalMs = Date.now() - frameStart;
+  if (failures.length > 0) {
+    console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);
+    for (const f of failures) console.error(`  ${f}`);
+    device.destroy?.();
+    process.exit(1);
+  }
+
+  console.log(
+    `[${demoId}] PASS -- mode=${mode} backend=webgpu frames=${framesObserved} errors=0 wallTotalMs=${wallTotalMs}`,
+  );
+  device.destroy?.();
+  delete globalThis.navigator.gpu;
+  return framesObserved;
+}
+
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function installDawnNavigatorGpu() {
   let create;
   let globals;
   try {
     ({ create, globals } = await import('@forgeax/engine-dawn-node'));
   } catch (err) {
-    fail(`dawn.node import failed: ${err instanceof Error ? err.message : String(err)}`);
+    fail(`dawn.node import failed: ${errorMessage(err)}`);
   }
   Object.assign(globalThis, globals);
   if (!('navigator' in globalThis) || globalThis.navigator === undefined) {
@@ -97,7 +172,7 @@ export async function runIblSmoke(opts) {
   try {
     gpu = create([]);
   } catch (err) {
-    fail(`dawn-node create([]) failed: ${err instanceof Error ? err.message : String(err)}`);
+    fail(`dawn-node create([]) failed: ${errorMessage(err)}`);
   }
   Object.defineProperty(globalThis.navigator, 'gpu', {
     value: gpu,
@@ -110,8 +185,10 @@ export async function runIblSmoke(opts) {
   // path (test:browser project) does not run smoke-dawn.mjs; the real Channel 2
   // BGRA path is exercised through the helper unmodified there.
   gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
+}
 
-  let sharedDevice;
+/** Record the first device requested through the ambient adapter; returns the original requestAdapter. */
+function captureRequestedDevice(surface) {
   const originalAmbientRequestAdapter = globalThis.navigator.gpu.requestAdapter.bind(
     globalThis.navigator.gpu,
   );
@@ -121,100 +198,83 @@ export async function runIblSmoke(opts) {
     const originalRequestDevice = rawAdapter.requestDevice.bind(rawAdapter);
     rawAdapter.requestDevice = async (desc) => {
       const dev = await originalRequestDevice(desc);
-      if (!sharedDevice) sharedDevice = dev;
+      if (!surface.device) surface.device = dev;
       return dev;
     };
     return rawAdapter;
   };
+  return originalAmbientRequestAdapter;
+}
 
-  // --- 2. Mock canvas with offscreen render target ---
-  let renderTarget;
-  let renderTargetFormat = 'rgba8unorm';
+// --- 2. Mock canvas with offscreen render target ---
+function createOffscreenSmokeSurface() {
+  const surface = { device: undefined, renderTarget: undefined, format: 'rgba8unorm', canvas: undefined };
   function ensureRenderTarget(device, format) {
-    if (renderTarget) return renderTarget;
-    renderTargetFormat = format;
-    renderTarget = device.createTexture({
+    if (surface.renderTarget) return surface.renderTarget;
+    surface.format = format;
+    surface.renderTarget = device.createTexture({
       size: { width: WIDTH, height: HEIGHT, depthOrArrayLayers: 1 },
       format,
       usage: 0x10 | 0x01,
       viewFormats: ['rgba8unorm-srgb'],
     });
-    return renderTarget;
+    return surface.renderTarget;
   }
-  const mockCanvas = {
+  surface.canvas = {
     width: WIDTH,
     height: HEIGHT,
     getContext(kind) {
       if (kind !== 'webgpu') return null;
       return {
         configure(desc) {
-          renderTargetFormat = desc.format ?? 'rgba8unorm';
+          surface.format = desc.format ?? 'rgba8unorm';
           ensureRenderTarget(desc.device, desc.format ?? 'rgba8unorm');
         },
         unconfigure() {},
         getCurrentTexture() {
-          if (!renderTarget) {
-            if (!sharedDevice) throw new Error('no shared device captured');
-            ensureRenderTarget(sharedDevice, 'rgba8unorm');
+          if (!surface.renderTarget) {
+            if (!surface.device) throw new Error('no shared device captured');
+            ensureRenderTarget(surface.device, 'rgba8unorm');
           }
-          return renderTarget;
+          return surface.renderTarget;
         },
       };
     },
     addEventListener() {},
     removeEventListener() {},
   };
+  return surface;
+}
 
-  // --- 3. Engine + manifest ---
-  // This helper lives outside a workspace package, so Node cannot resolve a
-  // child's pnpm dependency symlinks while loading it from `_shared/`.
-  // Resolve the built package entries from the monorepo root instead.
-  const { World } = await import(engineDist('ecs'));
-  const { createSphereGeometry } = await import(engineDist('geometry'));
-  const { Camera, MeshFilter, MeshRenderer } = await import(engineDist('render'));
+async function constructIblRenderer(canvas, originalAmbientRequestAdapter) {
   const { constructRuntimeRendererHost } = await import(
     engineDist('runtime', 'renderer-host.mjs'),
   );
-  const { SKYBOX_MODE_CUBEMAP, SkyboxBackground, Skylight } = await import(
-    engineDist('render'),
-  );
-  const { TONEMAP_REINHARD_EXTENDED } = await import(engineDist('render'));
-  const { Transform } = await import(engineDist('scene'));
   const { buildEngineShaderManifest } = await import(engineDist('vite-plugin-shader'));
 
   const ENGINE_MANIFEST = await buildEngineShaderManifest();
   const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
   process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
-  let renderer;
-  let assets;
   try {
     const host = await constructRuntimeRendererHost(
-      mockCanvas,
+      canvas,
       {},
       { shaderManifestUrl: MANIFEST_URL },
     );
     if (!host.ok) throw host.error;
-    renderer = host.value.renderer;
-    assets = host.value.assets;
+    return { renderer: host.value.renderer, assets: host.value.assets };
   } catch (err) {
-    fail(`renderer host construction failed: ${err instanceof Error ? err.message : String(err)}`);
+    fail(`renderer host construction failed: ${errorMessage(err)}`);
   } finally {
     globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
   }
+}
 
-  console.log(`[${demoId}] backend=${renderer.inspect().capabilities.backendKind}`);
-
-  const errors = [];
-  renderer.subscribe((event) => {
-    if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
-  });
-
-
-  // --- 4. Load newport_loft.hdr through REAL production loadByGuid path ---
-  // AC-07: No decodeHdr / registerWithGuid HDR bypass. The smoke serves the
-  // pre-built pack-index.json + Pack v2 package + asset-local body.bin from
-  // distDir via mock fetch.
+// AC-07: No decodeHdr / registerWithGuid HDR bypass. The smoke serves the
+// pre-built pack-index.json + Pack v2 package + asset-local body.bin from
+// distDir via mock fetch.
+async function readNewportCatalog(distDir) {
   const packIndexPath = resolve(distDir, 'pack-index.json');
 
   let packIndexWire;
@@ -223,19 +283,24 @@ export async function runIblSmoke(opts) {
     packIndexWire = JSON.parse(await readFile(packIndexPath, 'utf8'));
     packIndexJson = decodeCatalogWire(packIndexWire).unwrap();
   } catch (err) {
-    fail(`pack-index.json unreadable at ${packIndexPath}: ${err instanceof Error ? err.message : String(err)}; run 'pnpm build' for this demo first.`);
+    fail(`pack-index.json unreadable at ${packIndexPath}: ${errorMessage(err)}; run 'pnpm build' for this demo first.`);
   }
 
   const packIndexRows = readCatalogRows(packIndexJson);
   if (packIndexRows === undefined) throw new Error('Invalid published Catalog');
   const hdrEntry = packIndexRows.find((e) => e.guid === NEWPORT_LOFT_GUID);
   if (!hdrEntry) fail(`newport_loft.hdr GUID ${NEWPORT_LOFT_GUID} not found in pack-index at ${packIndexPath}`);
+  return { packIndexWire, hdrEntry };
+}
+
+async function readNewportPack(distDir, demoId) {
+  const { packIndexWire, hdrEntry } = await readNewportCatalog(distDir);
   const packagePath = resolve(distDir, hdrEntry.packageUrl.replace(/^\//, ''));
   let packFileJson;
   try {
     packFileJson = JSON.parse(await readFile(packagePath, 'utf8'));
   } catch (err) {
-    fail(`pack file unreadable at ${packagePath}: ${err instanceof Error ? err.message : String(err)}`);
+    fail(`pack file unreadable at ${packagePath}: ${errorMessage(err)}`);
   }
   const packAsset = packFileJson.assets?.find((asset) => asset.guid === NEWPORT_LOFT_GUID);
   const bodyDescriptor = packAsset?.artifacts?.body;
@@ -253,7 +318,7 @@ export async function runIblSmoke(opts) {
     const buf = await readFile(importedBinPath);
     importedBinBytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   } catch (err) {
-    fail(`imported .bin unreadable at ${importedBinPath}: ${err instanceof Error ? err.message : String(err)}`);
+    fail(`imported .bin unreadable at ${importedBinPath}: ${errorMessage(err)}`);
   }
 
   // FALSIFY=hdr-bin-empty: zero out the imported .bin to verify smoke detects missing IBL.
@@ -261,9 +326,11 @@ export async function runIblSmoke(opts) {
     console.log(`[${demoId}] FALSIFY=hdr-bin-empty: zeroing imported .bin payload (${importedBinBytes.length} bytes -> all-zero)`);
     importedBinBytes.fill(0);
   }
+  return { packIndexWire, packageUrl: hdrEntry.packageUrl, packFileJson, artifactUrl, importedBinBytes };
+}
 
-  // Mock fetch: serve pack-index.json, the Pack v2 JSON, and its body.bin.
-  const originalFetch = globalThis.fetch;
+// Mock fetch: serve pack-index.json, the Pack v2 JSON, and its body.bin.
+function installPackFetch({ packIndexWire, packageUrl, packFileJson, artifactUrl, importedBinBytes }) {
   globalThis.fetch = async (url) => {
     if (typeof url === 'string' && url === '/pack-index.json') {
       return {
@@ -272,7 +339,7 @@ export async function runIblSmoke(opts) {
         arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
       };
     }
-    if (typeof url === 'string' && url === hdrEntry.packageUrl) {
+    if (typeof url === 'string' && url === packageUrl) {
       return {
         ok: true,
         json: () => Promise.resolve(packFileJson),
@@ -290,9 +357,9 @@ export async function runIblSmoke(opts) {
     }
     return { ok: false, status: 404, json: () => Promise.resolve({}), arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) };
   };
+}
 
-  assets.configurePackIndex('/pack-index.json');
-
+async function loadNewportEquirect(assets) {
   const { AssetGuid } = await import(engineDist('pack', 'guid.mjs'));
   const guidRes = AssetGuid.parse(NEWPORT_LOFT_GUID);
   if (!guidRes.ok)
@@ -302,25 +369,17 @@ export async function runIblSmoke(opts) {
   const hdrPodRes = await assets.load(guidRes.value, 'equirect');
   if (!hdrPodRes.ok)
     fail(`load(newport_loft.hdr) failed: ${hdrPodRes.error.code} - ${hdrPodRes.error.hint}`);
+  // The equirect->cubemap + IBL projection is INTERNAL to the engine (lazy,
+  // in the render record arm) -- the Skylight holds the equirect handle
+  // directly, no manual upload call.
+  return hdrPodRes.value;
+}
 
-  const equirectPod = assets.read(hdrPodRes.value).unwrap();
-
-  // --- 5. Build scene (3x3 sphere matrix) ---
-  const world = new World({ assets: assets });
-  const worldAttachment1 = renderer.attach(world);
-  if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const frameRequest = {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  };
-
-  // Mint a user-tier handle for the equirect pod. The equirect->cubemap + IBL
-  // projection is now INTERNAL to the engine (lazy, in the render record arm) --
-  // the Skylight holds the equirect handle directly, no manual upload call.
-  const equirect = hdrPodRes.value;
-
-  console.log(`[${demoId}] loadByGuid<EquirectAsset> OK (format=${equirectPod.format} ${equirectPod.width}x${equirectPod.height})`);
+async function buildIblScene(world, demoKind, demoId, equirect) {
+  const { createSphereGeometry } = await import(engineDist('geometry'));
+  const { Camera, MeshFilter, MeshRenderer, SKYBOX_MODE_CUBEMAP, SkyboxBackground, Skylight, TONEMAP_REINHARD_EXTENDED } =
+    await import(engineDist('render'));
+  const { Transform } = await import(engineDist('scene'));
 
   world.spawn({
     component: Skylight,
@@ -390,23 +449,20 @@ export async function runIblSmoke(opts) {
     });
     console.log(`[${demoId}] SkyboxBackground spawned (same equirect handle as Skylight)`);
   }
+}
 
-  // --- 6. Draw frames ---
-  // The equirect->cubemap + IBL precompute (cubemap projection -> irradiance
-  // convolution -> prefilter mip chain -> BRDF LUT) is fire-and-forget async
-  // inside the engine record arm (feat-20260630): the Skylight binds the white
-  // fallback cube until that multi-stage projection settles, then upgrades to
-  // full IBL. In a real browser the rAF loop yields between frames so the chain
-  // completes within a window; this dawn-node loop must do the same. A tight sync
-  // for-loop would never let the microtask/timer queue drain, so the projection
-  // would never complete and the final frame would stay white -> large baseline
-  // delta. Yield each frame, wait for the renderer to report the IBL binding
-  // active, then run a final draw batch before readback.
-  // This is the harness matching production frame pacing, not an engine workaround.
-  const device = sharedDevice;
-  if (!device) fail('no shared device captured for readback');
-
-  const frameStart = Date.now();
+// The equirect->cubemap + IBL precompute (cubemap projection -> irradiance
+// convolution -> prefilter mip chain -> BRDF LUT) is fire-and-forget async
+// inside the engine record arm (feat-20260630): the Skylight binds the white
+// fallback cube until that multi-stage projection settles, then upgrades to
+// full IBL. In a real browser the rAF loop yields between frames so the chain
+// completes within a window; this dawn-node loop must do the same. A tight sync
+// for-loop would never let the microtask/timer queue drain, so the projection
+// would never complete and the final frame would stay white -> large baseline
+// delta. Yield each frame, wait for the renderer to report the IBL binding
+// active, then run a final draw batch before readback.
+// This is the harness matching production frame pacing, not an engine workaround.
+async function drawUntilIblSettles(renderer, world, frameRequest, device, demoId, frameStart) {
   let framesObserved = 0;
   for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
     world.update(1 / 60).unwrap();
@@ -423,22 +479,7 @@ export async function runIblSmoke(opts) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
   }
-  // Wait for the renderer to report the projected IBL as bound. A fixed wall
-  // timer is not enough on software adapters (lavapipe runs the projection on
-  // the CPU and needs several seconds), which left the final frame on the white
-  // fallback cube; the renderer's iblBinding fact is the readiness authority.
-  const iblDeadline = Date.now() + IBL_READY_TIMEOUT_MS;
-  while (renderer.inspect().iblBinding?.active !== 'active') {
-    if (Date.now() > iblDeadline) {
-      fail(`IBL binding stayed on the fallback cube for ${IBL_READY_TIMEOUT_MS}ms (iblBinding=${JSON.stringify(renderer.inspect().iblBinding?.active)})`);
-    }
-    world.update(1 / 60).unwrap();
-    const r = renderer.draw(frameRequest);
-    if (!r.ok) console.error(`[smoke] IBL wait draw error: ${r.error.code}`);
-    framesObserved++;
-    await device.queue.onSubmittedWorkDone();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  framesObserved += await waitForIblBinding(renderer, world, frameRequest, device);
   console.log(`[${demoId}] IBL binding active after ${Date.now() - frameStart}ms`);
   for (let i = 0; i < 32; i++) {
     world.update(1 / 60).unwrap();
@@ -455,9 +496,32 @@ export async function runIblSmoke(opts) {
   console.log(
     `[${demoId}] frames observed=${framesObserved} (wall=${frameWall}ms, target=${SMOKE_MIN_FRAMES})`,
   );
+  return framesObserved;
+}
 
-  // --- 7. Pixel readback ---
-  if (!renderTarget) fail('renderTarget never allocated');
+// Wait for the renderer to report the projected IBL as bound. A fixed wall
+// timer is not enough on software adapters (lavapipe runs the projection on
+// the CPU and needs several seconds), which left the final frame on the white
+// fallback cube; the renderer's iblBinding fact is the readiness authority.
+async function waitForIblBinding(renderer, world, frameRequest, device) {
+  let framesObserved = 0;
+  const iblDeadline = Date.now() + IBL_READY_TIMEOUT_MS;
+  while (renderer.inspect().iblBinding?.active !== 'active') {
+    if (Date.now() > iblDeadline) {
+      fail(`IBL binding stayed on the fallback cube for ${IBL_READY_TIMEOUT_MS}ms (iblBinding=${JSON.stringify(renderer.inspect().iblBinding?.active)})`);
+    }
+    world.update(1 / 60).unwrap();
+    const r = renderer.draw(frameRequest);
+    if (!r.ok) console.error(`[smoke] IBL wait draw error: ${r.error.code}`);
+    framesObserved++;
+    await device.queue.onSubmittedWorkDone();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return framesObserved;
+}
+
+async function readRenderTargetRgba(device, surface) {
+  if (!surface.renderTarget) fail('renderTarget never allocated');
   const bytesPerPixel = 4;
   const unpaddedBytesPerRow = WIDTH * bytesPerPixel;
   const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
@@ -468,7 +532,7 @@ export async function runIblSmoke(opts) {
   {
     const enc = device.createCommandEncoder();
     enc.copyTextureToBuffer(
-      { texture: renderTarget },
+      { texture: surface.renderTarget },
       { buffer: readbackBuffer, bytesPerRow, rowsPerImage: HEIGHT },
       { width: WIDTH, height: HEIGHT, depthOrArrayLayers: 1 },
     );
@@ -477,7 +541,7 @@ export async function runIblSmoke(opts) {
   try {
     await readbackBuffer.mapAsync(0x01);
   } catch (err) {
-    fail(`mapAsync rejected: ${err instanceof Error ? err.message : String(err)}`);
+    fail(`mapAsync rejected: ${errorMessage(err)}`);
   }
   const mapped = readbackBuffer.getMappedRange();
   const padded = new Uint8Array(mapped.slice(0));
@@ -487,20 +551,24 @@ export async function runIblSmoke(opts) {
   // Convert padded readback to tightly packed RGBA for PNG storage. Dawn's
   // smoke canvas pins the preferred format to rgba8unorm, but keep this
   // format-aware for hosts that expose a BGRA swapchain.
-  const readbackIsBgra = renderTargetFormat.startsWith('bgra');
+  const readbackIsBgra = surface.format.startsWith('bgra');
+  const redOffset = readbackIsBgra ? 2 : 0;
+  const blueOffset = readbackIsBgra ? 0 : 2;
   const rgba = new Uint8Array(WIDTH * HEIGHT * 4);
   for (let y = 0; y < HEIGHT; y++) {
     for (let x = 0; x < WIDTH; x++) {
       const srcOff = y * bytesPerRow + x * bytesPerPixel;
       const dstOff = (y * WIDTH + x) * 4;
-      rgba[dstOff + 0] = padded[srcOff + (readbackIsBgra ? 2 : 0)] ?? 0;
+      rgba[dstOff + 0] = padded[srcOff + redOffset] ?? 0;
       rgba[dstOff + 1] = padded[srcOff + 1] ?? 0;
-      rgba[dstOff + 2] = padded[srcOff + (readbackIsBgra ? 0 : 2)] ?? 0;
+      rgba[dstOff + 2] = padded[srcOff + blueOffset] ?? 0;
       rgba[dstOff + 3] = padded[srcOff + 3] ?? 255;
     }
   }
+  return rgba;
+}
 
-  // --- 8. Verdict / bake ---
+function collectIblFailures(rgba, renderer, framesObserved, errors) {
   const failures = [];
   if (rgba.some((value, index) => index % 4 === 3 && value !== 255)) {
     failures.push('(a) opaque sphere fixture must preserve alpha=1 throughout the final frame');
@@ -513,62 +581,51 @@ export async function runIblSmoke(opts) {
     const codes = errors.map((e) => e.code).join(', ');
     failures.push(`(c) Renderer.onError fired ${errors.length} times: [${codes}]`);
   }
+  return failures;
+}
 
-  if (mode === 'bake') {
-    await mkdir(dirname(referencePath), { recursive: true });
-    const pngBytes = encodePngRgba(rgba, WIDTH, HEIGHT);
-    await writeFile(referencePath, pngBytes);
-    console.log(`[${demoId}] BAKE -- wrote reference PNG (${pngBytes.length} bytes) to ${referencePath}`);
-  } else {
-    let refBytes;
-    try {
-      refBytes = await readFile(referencePath);
-    } catch (err) {
-      failures.push(
-        `(d) reference PNG unreadable at ${referencePath}: ${err instanceof Error ? err.message : String(err)}; ` +
-          `run pnpm bake:ibl-reference to regenerate.`,
-      );
-    }
-    if (refBytes !== undefined) {
-      const refRgba = decodePngRgba(refBytes);
-      if (refRgba === null) {
-        failures.push(`(d) reference PNG decode failed`);
-      } else if (refRgba.length !== rgba.length) {
-        failures.push(
-          `(d) reference PNG size mismatch: got ${refRgba.length} expected ${rgba.length}`,
-        );
-      } else {
-        let sumAbs = 0;
-        for (let i = 0; i < rgba.length; i++) {
-          sumAbs += Math.abs((rgba[i] ?? 0) - (refRgba[i] ?? 0));
-        }
-        const meanAbsDelta = sumAbs / rgba.length / 255;
-        console.log(
-          `[${demoId}] meanAbsDelta=${meanAbsDelta.toFixed(5)} (threshold=${SMOKE_DELTA_THRESHOLD})`,
-        );
-        if (meanAbsDelta > SMOKE_DELTA_THRESHOLD) {
-          failures.push(
-            `(d) meanAbsDelta=${meanAbsDelta.toFixed(5)} > threshold=${SMOKE_DELTA_THRESHOLD}`,
-          );
-        }
-      }
-    }
+async function bakeReferencePng(rgba, referencePath, demoId) {
+  await mkdir(dirname(referencePath), { recursive: true });
+  const pngBytes = encodePngRgba(rgba, WIDTH, HEIGHT);
+  await writeFile(referencePath, pngBytes);
+  console.log(`[${demoId}] BAKE -- wrote reference PNG (${pngBytes.length} bytes) to ${referencePath}`);
+}
+
+async function compareWithReferencePng(rgba, referencePath, demoId, failures) {
+  let refBytes;
+  try {
+    refBytes = await readFile(referencePath);
+  } catch (err) {
+    failures.push(
+      `(d) reference PNG unreadable at ${referencePath}: ${errorMessage(err)}; ` +
+        `run pnpm bake:ibl-reference to regenerate.`,
+    );
   }
-
-  const wallTotalMs = Date.now() - frameStart;
-  if (failures.length > 0) {
-    console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);
-    for (const f of failures) console.error(`  ${f}`);
-    device.destroy?.();
-    process.exit(1);
+  if (refBytes === undefined) return;
+  const refRgba = decodePngRgba(refBytes);
+  if (refRgba === null) {
+    failures.push(`(d) reference PNG decode failed`);
+    return;
   }
-
+  if (refRgba.length !== rgba.length) {
+    failures.push(
+      `(d) reference PNG size mismatch: got ${refRgba.length} expected ${rgba.length}`,
+    );
+    return;
+  }
+  let sumAbs = 0;
+  for (let i = 0; i < rgba.length; i++) {
+    sumAbs += Math.abs((rgba[i] ?? 0) - (refRgba[i] ?? 0));
+  }
+  const meanAbsDelta = sumAbs / rgba.length / 255;
   console.log(
-    `[${demoId}] PASS -- mode=${mode} backend=webgpu frames=${framesObserved} errors=0 wallTotalMs=${wallTotalMs}`,
+    `[${demoId}] meanAbsDelta=${meanAbsDelta.toFixed(5)} (threshold=${SMOKE_DELTA_THRESHOLD})`,
   );
-  device.destroy?.();
-  delete globalThis.navigator.gpu;
-  return framesObserved;
+  if (meanAbsDelta > SMOKE_DELTA_THRESHOLD) {
+    failures.push(
+      `(d) meanAbsDelta=${meanAbsDelta.toFixed(5)} > threshold=${SMOKE_DELTA_THRESHOLD}`,
+    );
+  }
 }
 
 function fail(msg) {

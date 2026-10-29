@@ -73,7 +73,7 @@ fn readCoefficient(index: u32) -> vec4<f32> {
 }
 fn environment(sh: array<vec4<f32>, 9>, blend: f32) -> vec3<f32> {
   let sky = SkylightUniforms(0.55, 1.0, 1.0, 1.0,
-    vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(1.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0));
+    vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(1.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0), vec4<f32>(0.0));
   let result = evaluateStandardEnvironment(vec3<f32>(0.0), vec3<f32>(0.0, 0.0, 1.0),
     vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.7, 0.5, 0.3),
     vec3<f32>(0.4, 0.2, 0.1) * parameters.expected.y, 0.0, 0.6, vec3<f32>(0.04),

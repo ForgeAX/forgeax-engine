@@ -366,7 +366,7 @@ const appErrorPolicy = {
   'app-not-started': {
     expected:
       'state must be "running" or "paused" to accept stop/pause/resume; "idle" / "stopped" terminal sinks reject',
-    hint: 'check getState() before calling stop/pause/resume; rebuild the handle via createApp({...}) when the previous one terminated on device-lost',
+    hint: 'call start() before stop/pause/resume; rebuild the handle via createApp({...}) when the previous one terminated on device-lost',
   },
   'app-already-running': {
     expected:

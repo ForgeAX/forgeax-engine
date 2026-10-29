@@ -399,13 +399,14 @@ export interface RenderPipelineContext {
   readonly pipelineState: RenderPipelineStateView;
   readonly runtime: RenderPipelineRuntime;
   readonly encoder: RhiCommandEncoder;
-  readonly view: TextureView;
+  /** Acquire presentation resources only when recording executable passes.
+   * Pipeline preparation may copy this context without touching the surface. */
+  readonly outputTarget: () => { readonly texture: Texture; readonly view: TextureView };
   readonly clear: readonly [number, number, number, number] | number[];
   readonly targetW: number;
   readonly targetH: number;
   /** Renderer-owned output/internal dimensions shared by Standard consumers. */
   readonly extent?: RenderExtent;
-  readonly currentTexture: Texture;
   readonly camera: CameraSnapshot;
   /** Per-frame post-process parameter bytes keyed by shader id. */
   readonly postProcessParams: ReadonlyMap<string, Uint8Array>;
@@ -426,33 +427,33 @@ export interface RenderPipelineContext {
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface VolumetricFogShaderSources {
-  readonly inject: string;
-  readonly temporal: string;
-  readonly integrate: string;
-  readonly composite: string;
+  readonly inject: string | import('@forgeax/engine-types').ShaderSource;
+  readonly temporal: string | import('@forgeax/engine-types').ShaderSource;
+  readonly integrate: string | import('@forgeax/engine-types').ShaderSource;
+  readonly composite: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface DepthPyramidShaderSources {
-  readonly seed: string;
-  readonly reduce: string;
+  readonly seed: string | import('@forgeax/engine-types').ShaderSource;
+  readonly reduce: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface SsrShaderSources {
-  readonly trace: string;
-  readonly temporal: string;
-  readonly compose: string;
+  readonly trace: string | import('@forgeax/engine-types').ShaderSource;
+  readonly temporal: string | import('@forgeax/engine-types').ShaderSource;
+  readonly compose: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable analytic-atmosphere entry-point sources emitted by the shader manifest. */
 export interface AtmosphereShaderSources {
-  readonly luts: string;
-  readonly compose: string;
-  readonly ibl: string;
-  readonly prefilter: string;
-  readonly cube: string;
-  readonly background: string;
+  readonly luts: string | import('@forgeax/engine-types').ShaderSource;
+  readonly compose: string | import('@forgeax/engine-types').ShaderSource;
+  readonly ibl: string | import('@forgeax/engine-types').ShaderSource;
+  readonly prefilter: string | import('@forgeax/engine-types').ShaderSource;
+  readonly cube: string | import('@forgeax/engine-types').ShaderSource;
+  readonly background: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /**
@@ -494,7 +495,7 @@ export interface SpotLightProjectorFrameContext {
   readonly texture: Texture;
   readonly view: TextureView;
   readonly sampler: Sampler;
-  /** Spot-light index in ExtractedLights.spot for the accepted texture. */
+  /** Spot-light index in the light roster for the accepted texture. */
   readonly spotIndex?: number;
   /** Unified Standard Cluster slot index (points precede spots). */
   readonly lightSlotIndex?: number;
@@ -647,7 +648,13 @@ export interface Renderer {
   currentDeviceGeneration?: () => number;
   /** Detached bounds from an extracted World or the bound publication source; undefined if unavailable. */
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
-  inspect(options?: { readonly pipelineLibrary?: boolean }): RenderInspection;
+  inspect(options?: {
+    readonly pipelineLibrary?: boolean;
+    /** Start/stop an explicit diagnostic route retention scope. */
+    readonly pipelineLibraryCollection?: boolean;
+    readonly pipelineLibraryLimits?: import('@forgeax/engine-rhi').PipelineLibraryLimits;
+    readonly runtimeRequests?: boolean;
+  }): RenderInspection;
   /** Opt-in diagnostic; caller holds this receipt until readback finishes. */
   observeGeometry?: (
     receipt: FrameReceipt,
@@ -779,6 +786,14 @@ export interface FrameReceipt {
    */
   readonly barrelDistortion?: import('./barrel-distortion.js').BarrelDistortionMapping;
   readonly completed: Promise<RenderResult<void, RenderError>>;
+  /**
+   * The same completion for frame-credit feedback only. It settles when the
+   * GPU work is done even while a cooperative frame holds completion-driven
+   * releases (`RhiQueue.holdCompletions`); `completed` settles after that
+   * hold. Absent when the backend has no hold, where both are identical.
+   * Never use it to release or reuse resources.
+   */
+  readonly creditCompleted?: Promise<RenderResult<void, RenderError>>;
 }
 
 /** Producer-derived presentation readiness for one submitted frame. */
@@ -1044,8 +1059,13 @@ export interface RenderObservationInspection {
  */
 export interface RenderInspection {
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryInspection;
+  /** Complete optional Renderer preparation, including native work and CPU source analysis. */
+  readonly backgroundPipelineLibraryState?: 'running' | 'done' | 'failed';
   /** Included only by an explicit inspect({pipelineLibrary:true}) export request. */
   readonly pipelineLibraryManifest?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /** Finite action policy used by the accompanying complete export. */
+  readonly pipelineLibraryCollecting?: boolean;
+  readonly pipelineLibraryPolicy?: Required<import('@forgeax/engine-rhi').PipelineLibraryLimits>;
   readonly views?: readonly import('./inspection-types').CameraViewInspection[];
   readonly state: RendererState;
   /** Bounded detached facts for the current or last recovery attempt. */
@@ -1321,7 +1341,6 @@ export const RENDER_HDRP_BINNER_PHASE_CATALOG = [
 export const RENDER_HDRP_CLUSTER_PHASE_CATALOG = [
   'record/scene-state/hdrp-cluster/binner',
   ...RENDER_HDRP_BINNER_PHASE_CATALOG,
-  'record/scene-state/hdrp-cluster/payload-packing',
   'record/scene-state/hdrp-cluster/buffer-upload',
 ] as const;
 
@@ -1433,6 +1452,8 @@ export type RenderPhaseSkipReason =
 
 /** First-version options bag (intentionally empty; reserved for v0.1). */
 export interface RendererOptions {
+  /** Fixed display-scene short-axis cap in pixels; default 0 (uncapped). Canvas, UI and explicit RenderTargets retain their sizes. */
+  readonly maxRenderShortSide?: number;
   /** Default-off receipt-owned CPU shadow workload; no additional GPU operations. */
   readonly shadowWorkload?: boolean;
   /**
@@ -1445,8 +1466,16 @@ export interface RendererOptions {
 
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /**
+   * Captured recipes prepared after first readiness without blocking it, with a
+   * bounded compilation window. Observe progress through
+   * `inspect().pipelineLibrary.backgroundWarmup`; failures never fail the renderer.
+   */
+  readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  /** Renderer AssetRegistry content bytes: positive safe integer; default 4 GiB. */
+  readonly assetBudgetBytes?: number;
   /** Construction-time graph composition; resources and submission remain renderer-owned. */
   readonly pipeline?: import('./render-pipeline.js').RenderPipeline;
   /** Bind a source session before receiving any publication. */

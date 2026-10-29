@@ -4,6 +4,9 @@ export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   test: {
     name: '@forgeax/engine-devkit/runtime-browser',
+    reporters: process.env.FORGEAX_BROWSER_COST_REPORT === '1'
+      ? ['default', fileURLToPath(new URL('../../scripts/ci/browser-cost-reporter.mjs', import.meta.url))]
+      : ['default'],
     environment: 'node',
     include: [
       '__tests__/runtime-pack-worker.test.ts',

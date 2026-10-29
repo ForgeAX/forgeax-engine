@@ -1,18 +1,35 @@
 import {
   type FrameReceipt,
   type GpuPassTimingObservation,
+  type PublishedRenderFrameInput,
   querySubmittedTerrainHeight,
   type Renderer,
   type RendererOperationError,
+  type RendererOptions,
   type RenderFeature,
   type RenderPublication,
   type RenderPublicationIdentity,
+  renderPublicationBytes,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
 import { createFullscreenRenderFeature } from '@forgeax/engine-render/authoring';
-import { fullscreenRenderFeatureDeclaration } from '@forgeax/engine-render/internal';
+import {
+  fullscreenRenderFeatureDeclaration,
+  renderGraphCompileCount,
+} from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
-import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+import {
+  type RhiCommandCounts,
+  readRhiCommandCounts,
+  subtractRhiCommandCounts,
+  webGpuPipelineCreationCount,
+} from '@forgeax/engine-rhi-webgpu';
+import {
+  type BundlerOptions,
+  constructRuntimeRendererHost,
+  type RendererHostAssembly,
+} from '@forgeax/engine-runtime/internal/renderer-host';
+import { bindLoadProgressScope } from '@forgeax/engine-types';
 import {
   createRhiCapture,
   createRhiInstrumentation,
@@ -20,10 +37,13 @@ import {
   type RhiRemoteCaptureCompletion,
 } from '../internal/rhi-capture';
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
-import { prepareBootstrapEntry } from './bootstrap-entry';
+import { type PreparedExecutionBootstrap, prepareBootstrapEntry } from './bootstrap-entry';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
+import { installCarriedGpuStub } from './gpu-stub';
 import type { SerializedRenderError } from './protocol';
 import { ownReceivedPublicationMaterials } from './received-publication-materials';
+import { drainRenderCompletion, joinRenderCompletion } from './render-completion';
+import { RenderDrawTiming } from './render-draw-timing';
 import { RenderMeshResidency } from './render-mesh-residency';
 import type {
   CompletedMeshConsumption,
@@ -33,7 +53,7 @@ import type {
 import { createRenderWorkerTaskTurns, yieldRenderWorkerTaskTurn } from './render-worker-task-turn';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
-import type { ExecutionDiagnosticsOptions } from './types';
+import type { ExecutionDiagnosticsOptions, ExecutionGeometryObservationResult } from './types';
 import { serializableDetail, workerError } from './worker-error';
 
 const scope = globalThis as unknown as {
@@ -44,6 +64,16 @@ const scope = globalThis as unknown as {
 let renderer: Renderer | undefined;
 let meshResidency: RenderMeshResidency | undefined;
 let publicationIdentity: RenderPublicationIdentity | undefined;
+/** Host port for render-submitted / render-complete; Host credit bypasses the Engine tick. */
+let hostPort: MessagePort | undefined;
+/** Always-on draw cadence and stall accounting (Render Worker clock). */
+const drawTiming = new RenderDrawTiming({
+  now: () => performance.now(),
+  graphCompiles: renderGraphCompileCount,
+  pipelineCreations: webGpuPipelineCreationCount,
+});
+/** RHI command counts at the previous submitted frame; per-frame counts are the difference. */
+let previousCommandCounts: RhiCommandCounts | undefined;
 let inspectionWorldIdentity: string | undefined;
 let unsubscribeRenderer: (() => void) | undefined;
 let readyAnnounced = false;
@@ -93,8 +123,8 @@ let geometryRequest:
   | undefined;
 
 function closeVideoFrames(message: DrawMessage): void {
-  for (const row of message.publication.videoFrames) row.frame.close();
-  for (const row of message.publication.canvasFrames ?? []) row.frame?.close();
+  for (const row of message.publication.side?.videoFrames ?? []) row.frame.close();
+  for (const row of message.publication.side?.canvasFrames ?? []) row.frame?.close();
 }
 
 function unavailableCaptureFrame(
@@ -235,7 +265,9 @@ function inspectRendererDiagnostics():
   }
 }
 
-function fail(message: RenderWorkerInput, cause: unknown): void {
+type FailureMessage = RenderWorkerInput | InitFailureContext;
+
+function fail(message: FailureMessage, cause: unknown): void {
   if (failed) return;
   failed = true;
   activePreparationAbort?.abort();
@@ -301,29 +333,56 @@ async function completeFrame(
   meshConsumption?: CompletedMeshConsumption,
   captureDraw?: CaptureDrawTransaction,
 ): Promise<void> {
+  const submittedAt = performance.now();
+  let creditReturned = false;
+  let previousSettled = false;
   try {
     // Observe this receipt immediately, before the next draw changes frame state.
     const observedTiming = gpuPassTimingEnabled
       ? frameRenderer.observe(receipt, { include: ['timings'] })
       : undefined;
-    const completion = receipt.completed.then((result) => {
+    // Credit feedback follows GPU completion even while a cooperative draw
+    // holds completion-driven releases; teardown below still awaits completed.
+    const completion = (receipt.creditCompleted ?? receipt.completed).then((result) => {
       if (!result.ok) {
         // Preserve the target receipt failure before worker teardown invalidates
         // any other capture requests.
         failCaptureDraw(captureDraw);
         throw result.error;
       }
+      return undefined;
     });
-    const [, timingResult] = await Promise.all([completion, observedTiming, snapshotBoundary]);
+    const timingResult = await joinRenderCompletion(completion, observedTiming, snapshotBoundary);
     settleCaptureDraw(captureDraw, receipt, timingResult);
     traceCompletion('render-own-composite-continuation', message, receipt);
     // Composite receipts/readbacks can finish out of order. The publisher and
     // Host advance only the contiguous completed prefix, never a newer frame.
     await previous;
+    previousSettled = true;
     traceCompletion('render-previous-prefix-passed', message, receipt);
     if (failed) return;
     const gpuPassTiming = timingResult?.ok === true ? timingResult.value.timings : undefined;
     const buffers = renderPublicationTransfers(message.publication);
+    const frame = {
+      kind: 'frame-complete',
+      worldIdentity: message.worldIdentity,
+      frameId: message.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+      ...(receipt.graphGeneration === undefined
+        ? {}
+        : { graphGeneration: receipt.graphGeneration }),
+      ...(receipt.barrelDistortion === undefined
+        ? {}
+        : { barrelDistortion: receipt.barrelDistortion }),
+      presentation: receipt.presentation,
+      ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
+        ? {}
+        : { presentationPendingReason: receipt.presentationPendingReason }),
+      engineUpdateMs: 0,
+      kernelWaitMs: 0,
+      renderSubmitToCompleteMs: performance.now() - submittedAt,
+    } as const;
     scope.postMessage(
       {
         kind: 'completed',
@@ -331,159 +390,186 @@ async function completeFrame(
         buffers,
         ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
         ...(meshConsumption === undefined ? {} : { meshConsumption }),
-        frame: {
-          kind: 'frame-complete',
-          worldIdentity: message.worldIdentity,
-          frameId: message.frameId,
-          deviceGeneration: receipt.deviceGeneration,
-          ...(receipt.shadowWorkload === undefined
-            ? {}
-            : { shadowWorkload: receipt.shadowWorkload }),
-          ...(receipt.graphGeneration === undefined
-            ? {}
-            : { graphGeneration: receipt.graphGeneration }),
-          ...(receipt.barrelDistortion === undefined
-            ? {}
-            : { barrelDistortion: receipt.barrelDistortion }),
-          presentation: receipt.presentation,
-          ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
-            ? {}
-            : { presentationPendingReason: receipt.presentationPendingReason }),
-          engineUpdateMs: 0,
-          kernelWaitMs: 0,
-        },
+        frame,
       },
       meshConsumption?.bindings.buffer instanceof ArrayBuffer
         ? [...buffers, meshConsumption.bindings.buffer]
         : buffers,
     );
+    hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
+    // The Host may admit the next frame now; its draw can arrive during a
+    // checkpoint of the current draw, before this receipt is fully retired.
+    creditReturned = true;
+    framesInFlight--;
   } catch (cause) {
     // A failed successor must stop admission even while an older receipt waits.
     fail(message, cause);
   } finally {
     // Observation failure cannot let disposal outrun this frame or its predecessor.
-    await Promise.allSettled([previous, receipt.completed]);
+    await drainRenderCompletion(receipt.completed, previous, previousSettled);
     closeVideoFrames(message);
     unretiredReceipts--;
-    framesInFlight--;
+    if (!creditReturned) framesInFlight--;
   }
 }
 
-async function receive(message: RenderWorkerInput): Promise<void> {
-  if (message.kind === 'geometry-observe-cancel') {
-    if (geometryRequest?.requestId === message.requestId) {
-      geometryRequest.cancelled = true;
-      if (!geometryRequest.started) geometryRequest = undefined;
-    }
-    return;
+type InitMessage = Extract<RenderWorkerInput, { kind: 'init' }>;
+interface InitFailureContext {
+  readonly kind: 'init';
+  readonly identity: InitMessage['identity'];
+}
+type InspectMessage = Extract<RenderWorkerInput, { kind: 'inspect' }>;
+type CaptureMessage = Extract<RenderWorkerInput, { kind: 'capture' }>;
+type GeometryRequest = NonNullable<typeof geometryRequest>;
+
+function createInitFailureContext(message: InitMessage): InitFailureContext {
+  return { kind: 'init', identity: { ...message.identity } };
+}
+
+function receiveGeometryObserveCancel(requestId: number): void {
+  if (geometryRequest?.requestId === requestId) {
+    geometryRequest.cancelled = true;
+    if (!geometryRequest.started) geometryRequest = undefined;
   }
-  if (message.kind === 'geometry-observe-next') {
-    if (
-      geometryRequest !== undefined ||
-      renderer === undefined ||
-      publicationIdentity?.source !== message.identity.source ||
-      publicationIdentity.epoch !== message.identity.epoch ||
-      inspectionWorldIdentity !== message.worldIdentity
-    ) {
-      scope.postMessage({
-        kind: 'geometry-observation-result',
-        requestId: message.requestId,
-        identity: message.identity,
-        worldIdentity: message.worldIdentity,
-        result: rendererInspectionFailure(
-          geometryRequest === undefined ? 'not-ready' : 'request-limit',
-        ),
-      });
-    } else geometryRequest = { ...message, cancelled: false, started: false };
-    return;
+}
+
+function receiveGeometryObserveNext(
+  message: Extract<RenderWorkerInput, { kind: 'geometry-observe-next' }>,
+): void {
+  if (
+    geometryRequest !== undefined ||
+    renderer === undefined ||
+    publicationIdentity?.source !== message.identity.source ||
+    publicationIdentity.epoch !== message.identity.epoch ||
+    inspectionWorldIdentity !== message.worldIdentity
+  ) {
+    scope.postMessage({
+      kind: 'geometry-observation-result',
+      requestId: message.requestId,
+      identity: message.identity,
+      worldIdentity: message.worldIdentity,
+      result: rendererInspectionFailure(
+        geometryRequest === undefined ? 'not-ready' : 'request-limit',
+      ),
+    });
+  } else geometryRequest = { ...message, cancelled: false, started: false };
+}
+
+/** Disposes mesh residency, Renderer and recorder in order; returns the first cleanup failure. */
+async function disposeRenderResources(): Promise<unknown> {
+  let cleanupFailure: unknown;
+  try {
+    await meshResidency?.dispose();
+  } catch (cause) {
+    cleanupFailure = cause;
   }
-  if (message.kind === 'dispose') {
-    terrainReceipts.clear();
-    shuttingDown = true;
-    activePreparationAbort?.abort();
-    invalidateCaptureRequests();
-    try {
-      await initializing;
-      await drawing;
-      await completing;
-      let cleanupFailure: unknown;
-      try {
-        await meshResidency?.dispose();
-      } catch (cause) {
-        cleanupFailure = cause;
-      }
-      try {
-        const disposed = await renderer?.dispose();
-        if (disposed?.ok === false) throw disposed.error;
-      } catch (cause) {
-        cleanupFailure ??= cause;
-      }
-      try {
-        await attachment?.dispose();
-      } catch (cause) {
-        cleanupFailure ??= cause;
-      }
-      if (cleanupFailure !== undefined) throw cleanupFailure;
-      scope.postMessage({ kind: 'disposed' });
-    } catch (cause) {
-      scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
-    } finally {
-      unsubscribeRenderer?.();
-      unsubscribeRenderer = undefined;
-      featureTaskTurns.dispose();
-      scope.close();
-    }
-    return;
+  try {
+    const disposed = await renderer?.dispose();
+    if (disposed?.ok === false) throw disposed.error;
+  } catch (cause) {
+    cleanupFailure ??= cause;
   }
-  if (message.kind === 'mesh-prepare' || message.kind === 'mesh-release') {
-    try {
-      await initializing;
-      // A suspended recording owns its extracted mesh/binding references.
-      // Keep resource controls behind that same serial draw drain.
-      if (renderTaskYield === 'features') await drawing;
-      if (failed || shuttingDown) return;
-      if (meshResidency === undefined) throw new Error('Render mesh receiver is not ready');
-      await meshResidency.receive(message);
-    } catch (cause) {
-      fail(message, cause);
-    }
-    return;
+  try {
+    await attachment?.dispose();
+  } catch (cause) {
+    cleanupFailure ??= cause;
   }
-  if (message.kind === 'inspect') {
-    const current = publicationIdentity;
-    const matched =
-      current !== undefined &&
-      current.source === message.identity.source &&
-      current.epoch === message.identity.epoch &&
-      inspectionWorldIdentity === message.worldIdentity;
-    const result = !matched
-      ? rendererInspectionFailure('stale-session')
-      : failed || shuttingDown || !readyAnnounced
-        ? rendererInspectionFailure('not-ready')
-        : readRendererInspection(renderer, undefined, message);
+  return cleanupFailure;
+}
+
+async function receiveDispose(): Promise<void> {
+  terrainReceipts.clear();
+  shuttingDown = true;
+  activePreparationAbort?.abort();
+  invalidateCaptureRequests();
+  try {
+    await initializing;
+    await drawing;
+    await completing;
+    const cleanupFailure = await disposeRenderResources();
+    if (cleanupFailure !== undefined) throw cleanupFailure;
+    scope.postMessage({ kind: 'disposed' });
+  } catch (cause) {
+    scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
+  } finally {
+    unsubscribeRenderer?.();
+    unsubscribeRenderer = undefined;
+    featureTaskTurns.dispose();
+    scope.close();
+  }
+}
+
+async function receiveMeshControl(
+  message: Extract<RenderWorkerInput, { kind: 'mesh-prepare' | 'mesh-release' }>,
+): Promise<void> {
+  try {
+    await initializing;
+    // A suspended recording owns its extracted mesh/binding references.
+    // Keep resource controls behind that same serial draw drain.
+    if (renderTaskYield === 'features') await drawing;
+    if (failed || shuttingDown) return;
+    if (meshResidency === undefined) throw new Error('Render mesh receiver is not ready');
+    await meshResidency.receive(message);
+  } catch (cause) {
+    fail(message, cause);
+  }
+}
+
+function inspectionResult(message: InspectMessage): ReturnType<typeof readRendererInspection> {
+  const current = publicationIdentity;
+  const matched =
+    current !== undefined &&
+    current.source === message.identity.source &&
+    current.epoch === message.identity.epoch &&
+    inspectionWorldIdentity === message.worldIdentity;
+  if (!matched) return rendererInspectionFailure('stale-session');
+  return failed || shuttingDown || !readyAnnounced
+    ? rendererInspectionFailure('not-ready')
+    : readRendererInspection(renderer, undefined, message);
+}
+
+function receiveInspect(message: InspectMessage): void {
+  const result = inspectionResult(message);
+  try {
+    scope.postMessage({
+      kind: 'inspect-result',
+      requestId: message.requestId,
+      identity: message.identity,
+      worldIdentity: message.worldIdentity,
+      result,
+    });
+  } catch (cause) {
+    // One failure delivery; observation cannot change draw admission.
     try {
       scope.postMessage({
         kind: 'inspect-result',
         requestId: message.requestId,
         identity: message.identity,
         worldIdentity: message.worldIdentity,
-        result,
+        result: rendererInspectionFailure('transport', cause),
       });
-    } catch (cause) {
-      // One failure delivery; observation cannot change draw admission.
-      try {
-        scope.postMessage({
-          kind: 'inspect-result',
-          requestId: message.requestId,
-          identity: message.identity,
-          worldIdentity: message.worldIdentity,
-          result: rendererInspectionFailure('transport', cause),
-        });
-      } catch {
-        // No delivery is possible; caller still fails at its unchanged read deadline.
-        console.error('Renderer inspection failure response was not delivered');
-      }
+    } catch {
+      // No delivery is possible; caller still fails at its unchanged read deadline.
+      console.error('Renderer inspection failure response was not delivered');
     }
+  }
+}
+
+async function receive(message: RenderWorkerInput): Promise<void> {
+  if (message.kind === 'geometry-observe-cancel') {
+    receiveGeometryObserveCancel(message.requestId);
+    return;
+  }
+  if (message.kind === 'geometry-observe-next') {
+    receiveGeometryObserveNext(message);
+    return;
+  }
+  if (message.kind === 'dispose') return receiveDispose();
+  if (message.kind === 'mesh-prepare' || message.kind === 'mesh-release') {
+    return receiveMeshControl(message);
+  }
+  if (message.kind === 'inspect') {
+    receiveInspect(message);
     return;
   }
   if (failed || shuttingDown) {
@@ -493,343 +579,584 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     }
     return;
   }
-  let completionOwnsFrame = false;
+  if (message.kind === 'draw') return receiveDraw(message);
   try {
-    if (message.kind === 'terrain-height') {
-      const receipt = terrainReceipts.get(message.frameId);
-      const result =
-        receipt === undefined
-          ? {
-              ok: false as const,
-              error: {
-                code: 'terrain-query-unavailable' as const,
-                expected: 'a retained exact submitted frame from this Worker generation',
-                hint: 'query a recent frame in the current Render Worker session',
-                detail: { field: 'frameId', actual: message.frameId },
-              },
-            }
-          : await querySubmittedTerrainHeight(receipt, message.request);
-      scope.postMessage({ kind: 'terrain-height-result', requestId: message.requestId, result });
-      return;
-    }
-    if (message.kind === 'bounds') {
-      scope.postMessage({
-        kind: 'bounds-result',
-        requestId: message.requestId,
-        bounds:
-          publicationIdentity === undefined
-            ? undefined
-            : renderer?.bounds(publicationIdentity, message.entity),
-      });
-      return;
-    }
-    if (message.kind === 'capture-cancel') {
-      const request = captureRequests.get(message.requestId);
-      if (request !== undefined) {
-        request.controller.abort();
-        settleCaptureRequest(request, unavailableCaptureFrame('capture-invalidated'));
-      }
-      return;
-    }
-    if (message.kind === 'capture') {
-      if (capture === undefined) {
+    switch (message.kind) {
+      case 'terrain-height':
+        return await receiveTerrainHeight(message);
+      case 'bounds':
         scope.postMessage({
-          kind: 'capture-result',
+          kind: 'bounds-result',
           requestId: message.requestId,
-          result: {
-            ok: false,
-            error: createRhiDebugError('capture-unavailable', {
-              stage: 'capture',
-              cause: 'Render Worker recorder is disabled',
-            }),
+          bounds:
+            publicationIdentity === undefined
+              ? undefined
+              : renderer?.bounds(publicationIdentity, message.entity),
+        });
+        return;
+      case 'capture-cancel':
+        receiveCaptureCancel(message.requestId);
+        return;
+      case 'capture':
+        return await receiveCapture(message);
+      case 'init':
+        return await receiveInit(message);
+    }
+  } catch (cause) {
+    fail(message, cause);
+  }
+}
+
+async function receiveTerrainHeight(
+  message: Extract<RenderWorkerInput, { kind: 'terrain-height' }>,
+): Promise<void> {
+  const receipt = terrainReceipts.get(message.frameId);
+  const result =
+    receipt === undefined
+      ? {
+          ok: false as const,
+          error: {
+            code: 'terrain-query-unavailable' as const,
+            expected: 'a retained exact submitted frame from this Worker generation',
+            hint: 'query a recent frame in the current Render Worker session',
+            detail: { field: 'frameId', actual: message.frameId },
           },
-        });
-        return;
-      }
-      const controller = new AbortController();
-      let resolveFrame!: (frame: RhiRemoteCaptureCompletion) => void;
-      const request: WorkerCaptureRequest = {
-        controller,
-        frame: new Promise((resolve) => {
-          resolveFrame = resolve;
+        }
+      : await querySubmittedTerrainHeight(receipt, message.request);
+  scope.postMessage({ kind: 'terrain-height-result', requestId: message.requestId, result });
+}
+
+function receiveCaptureCancel(requestId: number): void {
+  const request = captureRequests.get(requestId);
+  if (request !== undefined) {
+    request.controller.abort();
+    settleCaptureRequest(request, unavailableCaptureFrame('capture-invalidated'));
+  }
+}
+
+function createCaptureRequest(): WorkerCaptureRequest {
+  let resolveFrame!: (frame: RhiRemoteCaptureCompletion) => void;
+  return {
+    controller: new AbortController(),
+    frame: new Promise((resolve) => {
+      resolveFrame = resolve;
+    }),
+    resolveFrame: (frame) => resolveFrame(frame),
+    captureGeneration: undefined,
+    draw: undefined,
+    boundaryCount: 0,
+    settled: false,
+  };
+}
+
+async function receiveCapture(message: CaptureMessage): Promise<void> {
+  if (capture === undefined) {
+    scope.postMessage({
+      kind: 'capture-result',
+      requestId: message.requestId,
+      result: {
+        ok: false,
+        error: createRhiDebugError('capture-unavailable', {
+          stage: 'capture',
+          cause: 'Render Worker recorder is disabled',
         }),
-        resolveFrame: (frame) => resolveFrame(frame),
-        captureGeneration: undefined,
-        draw: undefined,
-        boundaryCount: 0,
-        settled: false,
-      };
-      captureRequests.set(message.requestId, request);
-      const previousGeneration = attachment?.captureGeneration;
-      const captureResult = capture.captureFrame({ ...message.options, signal: controller.signal });
-      const currentGeneration = attachment?.captureGeneration;
-      request.captureGeneration =
-        currentGeneration !== undefined && currentGeneration !== previousGeneration
-          ? currentGeneration
-          : undefined;
-      const result = await captureResult;
-      if (!result.ok) {
-        captureRequests.delete(message.requestId);
-        scope.postMessage({
-          kind: 'capture-result',
-          requestId: message.requestId,
-          result: { ok: false, error: result.error },
-        });
-        return;
-      }
-      if (request.boundaryCount === 0)
-        settleCaptureRequest(request, unavailableCaptureFrame('frame-unavailable'));
-      const submittedFrame = await request.frame;
-      captureRequests.delete(message.requestId);
-      const bytes = transferable(result.value.bytes);
-      scope.postMessage(
-        {
-          kind: 'capture-result',
-          requestId: message.requestId,
-          result: { ok: true, value: { kind: 'rhi-tape', bytes, submittedFrame } },
-        },
-        [bytes.buffer],
-      );
+      },
+    });
+    return;
+  }
+  const request = createCaptureRequest();
+  captureRequests.set(message.requestId, request);
+  const previousGeneration = attachment?.captureGeneration;
+  const captureResult = capture.captureFrame({
+    ...message.options,
+    signal: request.controller.signal,
+  });
+  const currentGeneration = attachment?.captureGeneration;
+  request.captureGeneration =
+    currentGeneration !== undefined && currentGeneration !== previousGeneration
+      ? currentGeneration
+      : undefined;
+  const result = await captureResult;
+  if (!result.ok) {
+    captureRequests.delete(message.requestId);
+    scope.postMessage({
+      kind: 'capture-result',
+      requestId: message.requestId,
+      result: { ok: false, error: result.error },
+    });
+    return;
+  }
+  if (request.boundaryCount === 0)
+    settleCaptureRequest(request, unavailableCaptureFrame('frame-unavailable'));
+  const submittedFrame = await request.frame;
+  captureRequests.delete(message.requestId);
+  const bytes = transferable(result.value.bytes);
+  scope.postMessage(
+    {
+      kind: 'capture-result',
+      requestId: message.requestId,
+      result: { ok: true, value: { kind: 'rhi-tape', bytes, submittedFrame } },
+    },
+    [bytes.buffer],
+  );
+}
+
+function adoptInitPolicies(message: InitMessage): void {
+  canvas = message.canvas;
+  hostPort = message.hostPort;
+  geometryLane = message.geometryLane;
+  renderTaskYield = message.renderTaskYield ?? 'none';
+  renderPipelineCapacity =
+    message.renderPipelineCapacity === 4 ? 4 : message.renderPipelineCapacity === 3 ? 3 : 2;
+  gpuPassTimingEnabled = message.gpuPassTiming !== undefined;
+}
+
+function recorderRendererOptions(
+  recorder: RecorderAttachment | undefined,
+): Pick<RendererOptions, 'rhi' | 'rhiInstrumentation'> {
+  if (recorder === undefined) return {};
+  return {
+    rhi: recorder.backend.rhi,
+    rhiInstrumentation: {
+      ...createRhiInstrumentation(recorder),
+      onFrameBoundary: () => {
+        const current = attachment;
+        if (current === undefined) return;
+        const captureGeneration = current.captureGeneration;
+        if (current.isRecordingCapture(captureGeneration))
+          trackRecordingBoundary(captureGeneration);
+        captureBoundary = current.frameBoundary();
+      },
+    },
+  };
+}
+
+function initRendererOptions(
+  message: InitMessage,
+  prepared: PreparedExecutionBootstrap,
+): RendererOptions {
+  return {
+    ...recorderRendererOptions(attachment),
+    publicationSource: message.identity,
+    ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
+    ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
+    ...(message.pipelineLibrary === undefined ? {} : { pipelineLibrary: message.pipelineLibrary }),
+    ...(message.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: message.backgroundPipelineLibrary }),
+    ...(message.outputColorSpace === undefined
+      ? {}
+      : { outputColorSpace: message.outputColorSpace }),
+    ...(message.dynamicGeometryMeshBudgetBytes === undefined
+      ? {}
+      : { dynamicGeometryMeshBudgetBytes: message.dynamicGeometryMeshBudgetBytes }),
+    ...(message.assetBudgetBytes === undefined
+      ? {}
+      : { assetBudgetBytes: message.assetBudgetBytes }),
+    ...(prepared.features === undefined ? {} : { features: prepared.features }),
+    ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
+  };
+}
+
+function initBundlerOptions(message: InitMessage): BundlerOptions {
+  return {
+    ...(message.shaderManifestUrl === undefined
+      ? {}
+      : { shaderManifestUrl: message.shaderManifestUrl }),
+    ...(message.build === undefined ? {} : { build: message.build }),
+  };
+}
+
+function isDeviceLostLifecycle(error: SerializedRenderError): boolean {
+  const detail = error.detail;
+  return (
+    readyAnnounced &&
+    error.code === 'device-operation-failed' &&
+    typeof detail === 'object' &&
+    detail !== null &&
+    'operation' in detail &&
+    detail.operation === 'renderer-event' &&
+    'cause' in detail &&
+    typeof detail.cause === 'object' &&
+    detail.cause !== null &&
+    'code' in detail.cause &&
+    detail.cause.code === 'device-lost' &&
+    renderer?.state() === 'device-lost'
+  );
+}
+
+function forwardRendererError(
+  message: InitFailureContext,
+  rendererError: Extract<
+    Parameters<Parameters<Renderer['subscribe']>[0]>[0],
+    { kind: 'error' }
+  >['error'],
+): void {
+  let error: SerializedRenderError | undefined;
+  let detailSerialized = false;
+  try {
+    error = {
+      code: rendererError.code,
+      expected: rendererError.expected,
+      hint: rendererError.hint,
+      detail: undefined,
+    };
+    error = {
+      ...error,
+      detail: 'detail' in rendererError ? serializableDetail(rendererError.detail) : undefined,
+    };
+    detailSerialized = true;
+    if (!readyAnnounced || isDeviceLostLifecycle(error)) {
+      fail(message, error);
       return;
     }
-    if (message.kind === 'init') {
-      if (renderer !== undefined || busy) throw new Error('Duplicate Render Worker initialization');
-      busy = true;
-      canvas = message.canvas;
-      geometryLane = message.geometryLane;
-      renderTaskYield = message.renderTaskYield ?? 'none';
-      renderPipelineCapacity =
-        message.renderPipelineCapacity === 4 ? 4 : message.renderPipelineCapacity === 3 ? 3 : 2;
-      gpuPassTimingEnabled = message.gpuPassTiming !== undefined;
-      const prepared = await prepareBootstrapEntry(message.bootstrapUrl, message.bootstrapData);
-      if (!prepared.ok) throw prepared.error;
-      if (message.rhiCapture === true) {
-        attachment = await attachWorkerRhiRecorder();
-        capture = createRhiCapture(attachment);
-      }
-      const constructed = await constructRuntimeRendererHost(
-        canvas,
-        {
-          ...(attachment === undefined
-            ? {}
-            : {
-                rhi: attachment.backend.rhi,
-                rhiInstrumentation: {
-                  ...createRhiInstrumentation(attachment),
-                  onFrameBoundary: () => {
-                    const recorder = attachment;
-                    if (recorder === undefined) return;
-                    const captureGeneration = recorder.captureGeneration;
-                    if (recorder.isRecordingCapture(captureGeneration))
-                      trackRecordingBoundary(captureGeneration);
-                    captureBoundary = recorder.frameBoundary();
-                  },
-                },
-              }),
-          publicationSource: message.identity,
-          ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
-          ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
-          ...(message.pipelineLibrary === undefined
-            ? {}
-            : { pipelineLibrary: message.pipelineLibrary }),
-          ...(message.outputColorSpace === undefined
-            ? {}
-            : { outputColorSpace: message.outputColorSpace }),
-          ...(message.dynamicGeometryMeshBudgetBytes === undefined
-            ? {}
-            : { dynamicGeometryMeshBudgetBytes: message.dynamicGeometryMeshBudgetBytes }),
-          ...(prepared.value.features === undefined ? {} : { features: prepared.value.features }),
-          ...(prepared.value.ssrIdentity === undefined
-            ? {}
-            : { ssrIdentity: prepared.value.ssrIdentity }),
-        },
-        {
-          ...(message.shaderManifestUrl === undefined
-            ? {}
-            : { shaderManifestUrl: message.shaderManifestUrl }),
-          ...(message.build === undefined ? {} : { build: message.build }),
-        },
-      );
-      if (!constructed.ok) throw constructed.error;
-      renderer = constructed.value.renderer;
-      publicationIdentity = message.identity;
-      meshResidency = new RenderMeshResidency(renderer, message.identity, (message) =>
-        scope.postMessage(message),
-      );
-      inspectionWorldIdentity = message.worldIdentity;
-      unsubscribeRenderer = renderer.subscribe((event) => {
-        if (event.kind !== 'error' || shuttingDown || failed) return;
-        let error: SerializedRenderError | undefined;
-        let detailSerialized = false;
-        try {
-          error = {
-            code: event.error.code,
-            expected: event.error.expected,
-            hint: event.error.hint,
-            detail: undefined,
-          };
-          error = {
-            ...error,
-            detail: 'detail' in event.error ? serializableDetail(event.error.detail) : undefined,
-          };
-          detailSerialized = true;
-          const detail = error.detail;
-          const deviceLostLifecycle =
-            readyAnnounced &&
-            error.code === 'device-operation-failed' &&
-            typeof detail === 'object' &&
-            detail !== null &&
-            'operation' in detail &&
-            detail.operation === 'renderer-event' &&
-            'cause' in detail &&
-            typeof detail.cause === 'object' &&
-            detail.cause !== null &&
-            'code' in detail.cause &&
-            detail.cause.code === 'device-lost' &&
-            renderer?.state() === 'device-lost';
-          if (!readyAnnounced || deviceLostLifecycle) {
-            fail(message, error);
-            return;
-          }
-          const rendererFacts = inspectRendererDiagnostics();
-          scope.postMessage({
-            kind: 'renderer-error',
-            identity: message.identity,
-            error,
-            ...(rendererFacts === undefined ? {} : { renderer: rendererFacts }),
-          });
-        } catch (cause) {
-          const bridgeError = {
-            code: 'render-error-forwarding-failed',
-            expected: 'Render Worker delivers the public Renderer error',
-            hint: 'inspect the error transport cause',
-            detail: { rendererError: error, detailSerialized, cause: workerError(cause) },
-          };
-          if (!failed) {
-            fail(message, bridgeError);
-            return;
-          }
-          // Initialization fail() latched before its first post threw.
-          // Attempt the terminal bridge message once, without resetting admission.
-          scope.postMessage({
-            kind: 'failed',
-            error: bridgeError,
-            stage: message.kind,
-            recoverable: false,
-          });
-        }
-      });
-      await prepared.value.configureRenderer?.(renderer);
-      applyRendererOrderDiagnostic(
-        renderer,
-        message.gbufferBatchOrderDiagnostic,
-        message.featureReadOnlyDepthBatchDiagnostic,
-      );
-      if (failed || shuttingDown) return;
-      const declared = new Map<string, RenderFeature<unknown>>(
-        (prepared.value.features ?? []).map((feature) => [feature.identity, feature]),
-      );
-      const active = new Set(declared.keys());
-      synchronizeFeatures = async (rows) => {
-        const identities = new Set(rows.map((row) => row.identity));
-        for (const row of rows) {
-          if (row.fullscreen === undefined) continue;
-          if (row.fullscreen.identity !== row.identity)
-            throw new Error('Conflicting published fullscreen RenderFeature identity');
-          const previous = declared.get(row.identity);
-          if (previous !== undefined) {
-            const declaration = fullscreenRenderFeatureDeclaration(previous);
-            if (declaration === undefined)
-              throw new Error('Conflicting published fullscreen RenderFeature declaration');
-            if (JSON.stringify(declaration) === JSON.stringify(row.fullscreen)) continue;
-            if (active.has(row.identity)) {
-              const removed = await constructed.value.featureHost.uninstallRenderFeature(previous);
-              if (!removed.ok) throw removed.error;
-              active.delete(row.identity);
-            }
-          }
-          declared.set(row.identity, createFullscreenRenderFeature(row.fullscreen));
-        }
-        for (const feature of declared.values()) {
-          if (identities.has(feature.identity) === active.has(feature.identity)) continue;
-          const result = identities.has(feature.identity)
-            ? await constructed.value.featureHost.installRenderFeature(feature)
-            : await constructed.value.featureHost.uninstallRenderFeature(feature);
-          if (!result.ok) throw result.error;
-          if (identities.has(feature.identity)) active.add(feature.identity);
-          else active.delete(feature.identity);
-        }
-      };
-      busy = false;
-      const inspection = renderer.inspect();
-      if (failed || shuttingDown) return;
-      scope.postMessage({
-        kind: 'ready',
-        deviceGeneration: inspection.frame.deviceGeneration,
-        capabilities: inspection.capabilities,
-        ...(inspection.limits === undefined ? {} : { limits: inspection.limits }),
-      });
-      readyAnnounced = true;
+    const rendererFacts = inspectRendererDiagnostics();
+    scope.postMessage({
+      kind: 'renderer-error',
+      identity: message.identity,
+      error,
+      ...(rendererFacts === undefined ? {} : { renderer: rendererFacts }),
+    });
+  } catch (cause) {
+    const bridgeError = {
+      code: 'render-error-forwarding-failed',
+      expected: 'Render Worker delivers the public Renderer error',
+      hint: 'inspect the error transport cause',
+      detail: { rendererError: error, detailSerialized, cause: workerError(cause) },
+    };
+    if (!failed) {
+      fail(message, bridgeError);
       return;
     }
+    // Initialization fail() latched before its first post threw.
+    // Attempt the terminal bridge message once, without resetting admission.
+    scope.postMessage({
+      kind: 'failed',
+      error: bridgeError,
+      stage: message.kind,
+      recoverable: false,
+    });
+  }
+}
+
+function createRendererErrorListener(
+  failureContext: InitFailureContext,
+): Parameters<Renderer['subscribe']>[0] {
+  const listener: Parameters<Renderer['subscribe']>[0] = (event) => {
+    if (event.kind !== 'error' || shuttingDown || failed) return;
+    forwardRendererError(failureContext, event.error);
+  };
+  return listener;
+}
+
+type RenderFeatureHost = RendererHostAssembly['featureHost'];
+type PublishedFeatureRow = RenderPublication['features'][number];
+
+/**
+ * Adopts one published fullscreen declaration; an installed feature whose
+ * declaration changed is uninstalled so the reconciliation pass reinstalls it.
+ */
+async function adoptFullscreenDeclaration(
+  featureHost: RenderFeatureHost,
+  declared: Map<string, RenderFeature<unknown>>,
+  active: Set<string>,
+  fullscreen: NonNullable<PublishedFeatureRow['fullscreen']>,
+): Promise<void> {
+  const previous = declared.get(fullscreen.identity);
+  if (previous !== undefined) {
+    const declaration = fullscreenRenderFeatureDeclaration(previous);
+    if (declaration === undefined)
+      throw new Error('Conflicting published fullscreen RenderFeature declaration');
+    if (JSON.stringify(declaration) === JSON.stringify(fullscreen)) return;
+    if (active.has(fullscreen.identity)) {
+      const removed = await featureHost.uninstallRenderFeature(previous);
+      if (!removed.ok) throw removed.error;
+      active.delete(fullscreen.identity);
+    }
+  }
+  declared.set(fullscreen.identity, createFullscreenRenderFeature(fullscreen));
+}
+
+function createFeatureSynchronizer(
+  featureHost: RenderFeatureHost,
+  features: readonly RenderFeature<unknown>[] | undefined,
+): (rows: RenderPublication['features']) => Promise<void> {
+  const declared = new Map<string, RenderFeature<unknown>>(
+    (features ?? []).map((feature) => [feature.identity, feature]),
+  );
+  const active = new Set(declared.keys());
+  return async (rows) => {
+    const identities = new Set(rows.map((row) => row.identity));
+    for (const row of rows) {
+      if (row.fullscreen === undefined) continue;
+      if (row.fullscreen.identity !== row.identity)
+        throw new Error('Conflicting published fullscreen RenderFeature identity');
+      await adoptFullscreenDeclaration(featureHost, declared, active, row.fullscreen);
+    }
+    for (const feature of declared.values()) {
+      if (identities.has(feature.identity) === active.has(feature.identity)) continue;
+      const result = identities.has(feature.identity)
+        ? await featureHost.installRenderFeature(feature)
+        : await featureHost.uninstallRenderFeature(feature);
+      if (!result.ok) throw result.error;
+      if (identities.has(feature.identity)) active.add(feature.identity);
+      else active.delete(feature.identity);
+    }
+  };
+}
+
+async function receiveInit(message: InitMessage): Promise<void> {
+  if (renderer !== undefined || busy) throw new Error('Duplicate Render Worker initialization');
+  busy = true;
+  if (message.loadProgressScope !== undefined) bindLoadProgressScope(message.loadProgressScope);
+  installCarriedGpuStub(message);
+  adoptInitPolicies(message);
+  const prepared = await prepareBootstrapEntry(message.bootstrapUrl, message.bootstrapData);
+  if (!prepared.ok) throw prepared.error;
+  if (message.rhiCapture === true) {
+    attachment = await attachWorkerRhiRecorder();
+    capture = createRhiCapture(attachment);
+  }
+  const constructed = await constructRuntimeRendererHost(
+    canvas,
+    initRendererOptions(message, prepared.value),
+    initBundlerOptions(message),
+  );
+  if (!constructed.ok) throw constructed.error;
+  const activeRenderer = constructed.value.renderer;
+  renderer = activeRenderer;
+  publicationIdentity = message.identity;
+  meshResidency = new RenderMeshResidency(activeRenderer, message.identity, (message) =>
+    scope.postMessage(message),
+  );
+  inspectionWorldIdentity = message.worldIdentity;
+  unsubscribeRenderer = activeRenderer.subscribe(
+    createRendererErrorListener(createInitFailureContext(message)),
+  );
+  await prepared.value.configureRenderer?.(activeRenderer);
+  applyRendererOrderDiagnostic(
+    activeRenderer,
+    message.gbufferBatchOrderDiagnostic,
+    message.featureReadOnlyDepthBatchDiagnostic,
+  );
+  if (failed || shuttingDown) return;
+  synchronizeFeatures = createFeatureSynchronizer(
+    constructed.value.featureHost,
+    prepared.value.features,
+  );
+  busy = false;
+  const inspection = activeRenderer.inspect();
+  if (failed || shuttingDown) return;
+  scope.postMessage({
+    kind: 'ready',
+    deviceGeneration: inspection.frame.deviceGeneration,
+    capabilities: inspection.capabilities,
+    ...(inspection.limits === undefined ? {} : { limits: inspection.limits }),
+  });
+  readyAnnounced = true;
+}
+
+/** Resizes the canvas, synchronizes published features and yields; false when the turn lost admission. */
+async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): Promise<boolean> {
+  if (message.width > 0 && message.height > 0) {
+    if (target.width !== message.width) target.width = message.width;
+    if (target.height !== message.height) target.height = message.height;
+  }
+  await synchronizeFeatures(message.publication.side?.features ?? []);
+  if (failed || shuttingDown) return false;
+  // Keep this draw in the same serial drain and retain its publication
+  // credit. A real older receipt may complete during this single task turn,
+  // letting its existing completion/ACK wake the Engine Worker before the
+  // next synchronous Renderer.draw task occupies this Worker. Never wait for
+  // that receipt: an unfinished GPU must not serialize CPU preparation.
+  if (renderTaskYield === 'completion' && unretiredReceipts > 0) {
+    await yieldRenderWorkerTaskTurn();
+    if (failed || shuttingDown) return false;
+  }
+  return true;
+}
+
+function claimGeometryRequest(): GeometryRequest | undefined {
+  const geometry = geometryRequest;
+  if (geometry?.cancelled) geometryRequest = undefined;
+  else if (geometry !== undefined) geometry.started = true;
+  return geometry;
+}
+
+function publishedFrameInput(
+  message: DrawMessage,
+  features: { identity: string; feedback: unknown }[],
+  observeGeometry: boolean,
+): PublishedRenderFrameInput {
+  return {
+    publication: ownReceivedPublicationMaterials(message.publication),
+    ...(observeGeometry
+      ? {
+          geometryObservation: true as const,
+          geometryObservationSourceWorldIdentity: message.worldIdentity,
+        }
+      : {}),
+    ...(geometryLane === undefined ? {} : { geometryLane }),
+    onFeatureSourceSubmitted: (identity, feedback) => features.push({ identity, feedback }),
+  };
+}
+
+async function drawScheduledPublication(
+  frameRenderer: Renderer,
+  input: PublishedRenderFrameInput,
+): Promise<ReturnType<Renderer['draw']>> {
+  if (frameRenderer.drawScheduled === undefined)
+    throw new Error('Renderer has no cooperative preparation entry');
+  const abort = new AbortController();
+  activePreparationAbort = abort;
+  try {
+    return await frameRenderer.drawScheduled(input, {
+      signal: abort.signal,
+      isCurrent: () => !failed && !shuttingDown,
+      checkpoint: () => (unretiredReceipts > 0 ? featureTaskTurns.yield() : Promise.resolve()),
+    });
+  } finally {
+    if (activePreparationAbort === abort) activePreparationAbort = undefined;
+  }
+}
+
+function matchesGeometrySource(
+  message: DrawMessage,
+  geometry: GeometryRequest | undefined,
+): boolean {
+  return (
+    geometry !== undefined &&
+    message.worldIdentity === geometry.worldIdentity &&
+    message.worldIdentity === inspectionWorldIdentity
+  );
+}
+
+function consumedMeshes(
+  message: DrawMessage,
+  receipt: FrameReceipt,
+): CompletedMeshConsumption | undefined {
+  return Number.isSafeInteger(message.sourceFixedStep) && message.sourceFixedStep >= 0
+    ? meshResidency?.consumed(receipt, message.sourceFixedStep)
+    : undefined;
+}
+
+function retainTerrainReceipt(frameId: number, receipt: FrameReceipt): void {
+  terrainReceipts.set(frameId, receipt);
+  while (terrainReceipts.size > 8) {
+    const oldest = terrainReceipts.keys().next().value;
+    if (oldest === undefined) break;
+    terrainReceipts.delete(oldest);
+  }
+}
+
+function postSubmitted(
+  message: DrawMessage,
+  receipt: FrameReceipt,
+  features: { identity: string; feedback: unknown }[],
+): void {
+  drawTiming.submit();
+  const drawIntervalMs = drawTiming.intervalMs;
+  const commandCounts = readRhiCommandCounts();
+  const rhiCommands =
+    previousCommandCounts === undefined
+      ? undefined
+      : subtractRhiCommandCounts(commandCounts, previousCommandCounts);
+  previousCommandCounts = commandCounts;
+  const submittedFrame = {
+    kind: 'frame-submitted',
+    worldIdentity: message.worldIdentity,
+    frameId: message.frameId,
+    deviceGeneration: receipt.deviceGeneration,
+    ...(drawIntervalMs === undefined ? {} : { renderDrawIntervalMs: drawIntervalMs }),
+    renderDrawCpuMs: drawTiming.cpuMs,
+    renderAwaitMs: drawTiming.awaitMs,
+    renderQueuedMs: drawTiming.queuedMs,
+    renderGraphCompiles: drawTiming.graphCompiles,
+    renderPipelineCreations: drawTiming.pipelineCreations,
+    ...(message.engineUpdateMs === undefined ? {} : { engineUpdateMs: message.engineUpdateMs }),
+    ...(message.engineCreditWaitMs === undefined
+      ? {}
+      : { engineCreditWaitMs: message.engineCreditWaitMs }),
+    ...(drawTiming.stallReason === undefined ? {} : { renderStallReason: drawTiming.stallReason }),
+    ...(rhiCommands === undefined ? {} : { rhiCommands }),
+    publicationBytes: renderPublicationBytes(message.publication),
+    ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
+    ...(receipt.barrelDistortion === undefined
+      ? {}
+      : { barrelDistortion: receipt.barrelDistortion }),
+  } as const;
+  scope.postMessage({
+    kind: 'submitted',
+    revision: message.publication.revision,
+    features,
+    frame: submittedFrame,
+  });
+  hostPort?.postMessage({
+    kind: 'render-submitted',
+    epoch: message.publication.epoch,
+    frame: submittedFrame,
+  });
+}
+
+/** Intrusive one-shot observation holds only this diagnostic draw turn. Normal frames never wait. */
+async function deliverGeometryObservation(
+  frameRenderer: Renderer,
+  geometry: GeometryRequest,
+  geometrySourceMatches: boolean,
+  receipt: FrameReceipt,
+): Promise<void> {
+  let result: ExecutionGeometryObservationResult;
+  try {
+    const observed = geometrySourceMatches
+      ? await frameRenderer.observeGeometry?.(receipt)
+      : undefined;
+    result = !geometrySourceMatches
+      ? rendererInspectionFailure('stale-session')
+      : observed === undefined
+        ? rendererInspectionFailure('inspection', 'geometry observation unsupported')
+        : { ok: true, value: observed };
+  } catch (error) {
+    result = rendererInspectionFailure('inspection', error);
+  }
+  if (!geometry.cancelled)
+    scope.postMessage({
+      kind: 'geometry-observation-result',
+      requestId: geometry.requestId,
+      identity: geometry.identity,
+      worldIdentity: geometry.worldIdentity,
+      result,
+    });
+  if (geometryRequest === geometry) geometryRequest = undefined;
+}
+
+async function receiveDraw(message: DrawMessage): Promise<void> {
+  let completionOwnsFrame = false;
+  drawTiming.begin(message);
+  try {
     if (renderer === undefined || canvas === undefined || busy)
       throw new Error('Render Worker has no publication credit');
+    const frameRenderer = renderer;
     busy = true;
-    if (message.width > 0 && message.height > 0) {
-      if (canvas.width !== message.width) canvas.width = message.width;
-      if (canvas.height !== message.height) canvas.height = message.height;
-    }
-    await synchronizeFeatures(message.publication.features);
-    if (failed || shuttingDown) return;
-    // Keep this draw in the same serial drain and retain its publication
-    // credit. A real older receipt may complete during this single task turn,
-    // letting its existing completion/ACK wake the Engine Worker before the
-    // next synchronous Renderer.draw task occupies this Worker. Never wait for
-    // that receipt: an unfinished GPU must not serialize CPU preparation.
-    if (renderTaskYield === 'completion' && unretiredReceipts > 0) {
-      await yieldRenderWorkerTaskTurn();
-      if (failed || shuttingDown) return;
-    }
+    if (!(await prepareDrawTurn(message, canvas))) return;
     const features: { identity: string; feedback: unknown }[] = [];
-    const geometry = geometryRequest;
-    if (geometry?.cancelled) geometryRequest = undefined;
-    else if (geometry !== undefined) geometry.started = true;
-    const geometrySourceMatches =
-      geometry !== undefined &&
-      message.worldIdentity === geometry.worldIdentity &&
-      message.worldIdentity === inspectionWorldIdentity;
-    const input: import('@forgeax/engine-render').PublishedRenderFrameInput = {
-      publication: ownReceivedPublicationMaterials(message.publication),
-      ...(geometry !== undefined && !geometry.cancelled && geometrySourceMatches
-        ? {
-            geometryObservation: true as const,
-            geometryObservationSourceWorldIdentity: message.worldIdentity,
-          }
-        : {}),
-      ...(geometryLane === undefined ? {} : { geometryLane }),
-      onFeatureSourceSubmitted: (identity, feedback) => features.push({ identity, feedback }),
-    };
-    let draw: ReturnType<Renderer['draw']>;
+    const geometry = claimGeometryRequest();
+    const geometrySourceMatches = matchesGeometrySource(message, geometry);
+    const input = publishedFrameInput(
+      message,
+      features,
+      geometry !== undefined && !geometry.cancelled && geometrySourceMatches,
+    );
     const captureDraw = attachment === undefined ? undefined : { recordingGenerations: [] };
+    let draw: ReturnType<Renderer['draw']>;
     const previousCaptureDraw = activeCaptureDraw;
     activeCaptureDraw = captureDraw;
     try {
-      if (renderTaskYield === 'features') {
-        if (renderer.drawScheduled === undefined)
-          throw new Error('Renderer has no cooperative preparation entry');
-        const abort = new AbortController();
-        activePreparationAbort = abort;
-        try {
-          draw = await renderer.drawScheduled(input, {
-            signal: abort.signal,
-            isCurrent: () => !failed && !shuttingDown,
-            checkpoint: () =>
-              unretiredReceipts > 0 ? featureTaskTurns.yield() : Promise.resolve(),
-          });
-        } finally {
-          if (activePreparationAbort === abort) activePreparationAbort = undefined;
-        }
-      } else draw = renderer.draw(input);
+      // Only cooperative preparation awaits; the ordinary draw stays synchronous.
+      draw =
+        renderTaskYield === 'features'
+          ? await drawScheduledPublication(frameRenderer, input)
+          : frameRenderer.draw(input);
     } finally {
       if (activeCaptureDraw === captureDraw) activeCaptureDraw = previousCaptureDraw;
     }
@@ -839,23 +1166,15 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       throw draw.error;
     }
     const receipt = draw.value;
-    const meshConsumption =
-      Number.isSafeInteger(message.sourceFixedStep) && message.sourceFixedStep >= 0
-        ? meshResidency?.consumed(receipt, message.sourceFixedStep)
-        : undefined;
-    terrainReceipts.set(message.frameId, receipt);
-    while (terrainReceipts.size > 8) {
-      const oldest = terrainReceipts.keys().next().value;
-      if (oldest === undefined) break;
-      terrainReceipts.delete(oldest);
-    }
+    const meshConsumption = consumedMeshes(message, receipt);
+    retainTerrainReceipt(message.frameId, receipt);
     const snapshotBoundary = captureBoundary;
     captureBoundary = undefined;
     completionOwnsFrame = true;
     unretiredReceipts++;
     completing = completeFrame(
       message,
-      renderer,
+      frameRenderer,
       receipt,
       completing,
       snapshotBoundary,
@@ -863,61 +1182,20 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       captureDraw,
     );
     if (failed) return;
-    scope.postMessage({
-      kind: 'submitted',
-      revision: message.publication.revision,
-      features,
-      frame: {
-        kind: 'frame-submitted',
-        worldIdentity: message.worldIdentity,
-        frameId: message.frameId,
-        deviceGeneration: receipt.deviceGeneration,
-        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
-        ...(receipt.graphGeneration === undefined
-          ? {}
-          : { graphGeneration: receipt.graphGeneration }),
-        ...(receipt.barrelDistortion === undefined
-          ? {}
-          : { barrelDistortion: receipt.barrelDistortion }),
-      },
-    });
+    postSubmitted(message, receipt, features);
     // Keep the source's submitted-before-completed order and existing credits,
     // while freezing GPU resources until the frame-header snapshot is complete.
     if (snapshotBoundary !== undefined) await snapshotBoundary;
-    if (geometry !== undefined && !geometry.cancelled) {
-      // Intrusive one-shot observation holds only this diagnostic draw turn. Normal frames never wait.
-      let result: import('./types').ExecutionGeometryObservationResult;
-      try {
-        const observed = geometrySourceMatches
-          ? await renderer.observeGeometry?.(receipt)
-          : undefined;
-        result = !geometrySourceMatches
-          ? rendererInspectionFailure('stale-session')
-          : observed === undefined
-            ? rendererInspectionFailure('inspection', 'geometry observation unsupported')
-            : { ok: true, value: observed };
-      } catch (error) {
-        result = rendererInspectionFailure('inspection', error);
-      }
-      if (!geometry.cancelled)
-        scope.postMessage({
-          kind: 'geometry-observation-result',
-          requestId: geometry.requestId,
-          identity: geometry.identity,
-          worldIdentity: geometry.worldIdentity,
-          result,
-        });
-      if (geometryRequest === geometry) geometryRequest = undefined;
-    }
+    if (geometry !== undefined && !geometry.cancelled)
+      await deliverGeometryObservation(frameRenderer, geometry, geometrySourceMatches, receipt);
   } catch (cause) {
     fail(message, cause);
   } finally {
-    if (message.kind === 'draw') {
-      busy = false;
-      if (!completionOwnsFrame) {
-        closeVideoFrames(message);
-        framesInFlight--;
-      }
+    drawTiming.end();
+    busy = false;
+    if (!completionOwnsFrame) {
+      closeVideoFrames(message);
+      framesInFlight--;
     }
   }
 }
@@ -949,6 +1227,7 @@ scope.onmessage = (event) => {
     return;
   }
   framesInFlight++;
+  drawTiming.arrive(message);
   if (drawing !== undefined) {
     queued.push(message);
     return;

@@ -7,6 +7,40 @@ description: >-
 
 # forgeax-engine-assets
 
+## Procedural content
+
+Choose the owner by when the content is known, not by how it is computed:
+
+| Known | Owner | Reference | Change |
+|:--|:--|:--|:--|
+| At build time: props, level meshes, materials, seeded variants | `.pack.ts` `build` calling `@forgeax/engine/geometry` factories; `parameters` (for example `seed`) select variants | GUID `AssetGuid.derive(packageId, sourceKey)`; `await assets.load(guid, kind)` | Edit source or parameter `values`; the producer re-cooks and caches |
+| During play: debris, growth, deforming water | `assets.create(meshAsset)` in a plugin; no Pack declaration, GUID or saved file | The returned handle; release it after the ECS binding takes its own reference | `writeRange` keeps vertex/index counts (per frame); `replace` changes topology |
+
+- A Pack `build` is a pure function of its source and `values`: derive randomness from a
+  seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), never
+  `Math.random()` or `Date.now()`. Runtime generation takes a gameplay seed so
+  playthroughs and tests reproduce.
+- Use `createMeshBuilder` for custom geometry; it derives packed layout and bounds and completes omitted triangle surface channels. Factories and `meshFromInterleaved` also emit the vec4 tangent stock materials need. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
+- Attribute presence maps such as `DEFAULT_VERTEX_ATTRIBUTE_MAP` describe layout; empty lane placeholders do not supply nonempty runtime geometry. Use builder output or `unpackInterleavedVertexAttributes` with the canonical layout projection for existing packed vertices. Retain channel cardinality and submesh validation; do not copy handwritten stride tables.
+- Runtime meshes can use Pack materials. Material `values` edits never move vertices.
+- Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
+- Compiled recipes: procedural props and runtime meshes.
+
+When authorized to adapt a copied author source to a different SDK, retain immutable originals and work outside active asset roots. Update real dependencies and APIs, regenerate locks with the package manager, compile and cook against the target SDK, then export/import the verified source closure with its identities and provenance. A locked-version rejection is not proof that adaptation is unsupported; changing only version labels or cloning GUIDs is not a migration.
+
+## Collected pipeline recipes
+
+Pass collected version-1 recipes through the build root's `pipelineLibrary` and
+`backgroundPipelineLibrary`. DevKit owns compute entry projection and exact
+content deduplication during cooking, including already-projected input. It keeps
+first occurrence order, reindexes dependencies and retains original-source aliases;
+startup overlap is removed only from the background output. Startup-owned
+dependencies unused by the remaining recipes and aliases are also omitted, with
+indices rewritten; unrelated unused rows remain. Do not add a
+parallel game-side identity/cache owner or discard distinct state variants by label.
+This is machine-independent preparation; final native compilation still belongs
+to the target device. See the [collection contract](../../packages/devkit/README.md#collect-and-prepare-gameplay-pipelines).
+
 ## View Pack parameters
 
 For a View parameter request, edit the selected Pack's `parameters` array. Start
@@ -68,6 +102,30 @@ Use `source(handle)` / `sourceOf(handle)` for adopted provenance and explicit
 `reload(handle, { conflict: 'reject' | 'overwrite' })` to adopt a newer source
 closure. Catalog changes alone do not overwrite runtime content. See the
 [runtime contract](../../packages/assets-runtime/README.md#runtime-content).
+
+Content generated during play (debris, per-wave ships, a reseeded town) needs no
+Pack: a plugin injecting `assets` calls `create` on geometry factory or
+`Materials` output and yields each `release`/`despawn` from its generator effect.
+Edit existing handles rather than creating per frame. Static-switch materials,
+identity, Worker publication and tangent facts are in
+[content created during play](../../packages/assets-runtime/README.md#content-created-during-play).
+
+## Engine Content library
+
+Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
+`plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker
+texture/sampler and a default Standard material are ordinary Pack assets in
+`@forgeax/engine-content`. Both SDK templates mount them with forge.json
+`"assetLibraries": ["@forgeax/engine/content"]`; `asset list` then shows them
+under `@forgeax/engine/content/<file>.pack.ts`. Reference them by the GUID
+strings in `EngineContent` from `@forgeax/engine/content` and load them like
+project assets. A project that removes the entry has none of them; library
+sources are read-only, so copy one into an asset root to edit it. Failures:
+`project-asset-library-unresolved` (install or bind the Engine, fix the
+specifier) and `project-asset-library-invalid` (package has no
+`forgeax.library.assetRoot`). In code, `createPrimitiveMesh(kind)` plus
+`assets.create` still produces an unregistered runtime mesh. See the
+[content contract](../../packages/content/README.md).
 
 ## Lighting asset route
 
@@ -248,14 +306,20 @@ artifact when an engine resource is missing.
 
 ## Contract routing
 
+Player packaging groups complete WGSL programs into bounded Zstd streams without
+removing backend or capability variants. An artifact's stored `byteRange` locates
+its group; optional `decodedRange` selects its original bytes after decompression.
+Individual lengths and hashes remain authoritative. Use ordinary build/package,
+load and asset verification; do not rewrite program identities or source bytes.
+
 | Task | Load |
 |:--|:--|
-| Catalog subscription, refs, package identity, compression | [`catalog-and-import.md`](references/catalog-and-import.md#catalogsource-subscribe-before-enumerating) |
-| Custom importers, sidecars, source resolution, byte decode | [`catalog-and-import.md`](references/catalog-and-import.md#register-a-custom-host-importer) |
-| Mesh UV contracts and structured recovery | [`runtime-and-mesh.md`](references/runtime-and-mesh.md#multi-uv-import-gltf-and-fbx-texcoord_0-through-7) |
+| Catalog subscription, refs, package identity, compression | `catalog-and-import.md` |
+| Custom importers, sidecars, source resolution, byte decode | `catalog-and-import.md` |
+| Mesh UV contracts and structured recovery | `runtime-and-mesh.md` |
 | Lightmap UV validation across LODs, baked-data identity and staleness | [import lightmap UVs](../../packages/import/README.md#lightmap-uv-validation) and [render bake data](../../packages/render/README.md#baked-lighting-identity-and-staleness) |
-| Runtime load, VFX, handles, video, nested scenes | [`runtime-and-mesh.md`](references/runtime-and-mesh.md#runtime-api-quick-reference) |
-| Scene writeback, new kinds, custom loaders, evidence | [`scene-and-custom-kinds.md`](references/scene-and-custom-kinds.md#scene-save-and-writeback) |
+| Runtime load, VFX, handles, video, nested scenes | `runtime-and-mesh.md` |
+| Scene writeback, new kinds, custom loaders, evidence | `scene-and-custom-kinds.md` |
 
 ## Plugin assets
 

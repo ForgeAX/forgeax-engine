@@ -196,9 +196,16 @@ try {
   assert.ok(scene, 'the fixture must expose a real cooked scene');
   const contentBrowser = page.locator('[data-forgeax-view="content-browser-root"]');
   await page.waitForFunction(name => document.querySelector('[data-forgeax-view="content-browser-root"]')?.textContent.includes(name), state.project.name);
-  if (!(await contentBrowser.isVisible())) {
-    await page.locator('.fx-view-workspace-row.is-active .dv-groupview-edge .dv-tab')
-      .filter({ hasText: /^Content Browser$/ }).click();
+  const presentationClient = await connectViewWorkspace({
+    endpoint: live.connection.endpoint,
+    token: live.connection.token,
+    clientId: 'content-browser-reveal-proof',
+  });
+  try {
+    const revealed = await presentationClient.call('presentation.panel.reveal', { panelId: 'content-browser' });
+    assert.equal(revealed.panels.find(panel => panel.id === 'content-browser')?.visible, true);
+  } finally {
+    presentationClient.close('content-browser reveal verification complete');
   }
   await contentBrowser.waitFor({ state: 'visible' });
   assert.ok(!(await contentBrowser.textContent()).includes('47 game'), 'live panels must not display the demo project');
@@ -323,9 +330,9 @@ try {
 
   if (playOnly) console.log(JSON.stringify({ passed: true, boundary: 'scene-play', cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) }));
   else {
-  const frameProgress = setInterval(() => { void page.evaluate(() => ({ frame: document.documentElement.dataset.forgeaxFrameSubmitted, error: document.querySelector('#forgeax-fatal-details')?.textContent })).then(value => console.error('preview progress', JSON.stringify(value))).catch(() => {}); }, 10_000);
+  const frameProgress = setInterval(() => { void page.evaluate(() => ({ frame: document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null, error: document.querySelector('#forgeax-fatal-details')?.textContent })).then(value => console.error('preview progress', JSON.stringify(value))).catch(() => {}); }, 10_000);
   frameProgress.unref();
-  try { await page.waitForFunction(() => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) >= 60 || !!document.querySelector('#forgeax-fatal-details')?.textContent, undefined, { timeout: 180_000 }); } finally { clearInterval(frameProgress); }
+  try { await page.waitForFunction(() => (document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= 60 || !!document.querySelector('#forgeax-fatal-details')?.textContent, undefined, { timeout: 180_000 }); } finally { clearInterval(frameProgress); }
   assert.equal(await page.evaluate(() => document.querySelector('#forgeax-fatal-details')?.textContent || ''), '', 'the renderer must stay healthy');
   const camera = await live.workspaceCore.getCamera({ tabId: VIEW_WORKSPACE_TAB_ID, targetId, targetGeneration });
   assert.ok(camera);
@@ -621,7 +628,7 @@ try {
     await page.screenshot({ path: join(evidence, 'failure.png'), timeout: 5000 }).catch(() => {});
     console.error('failure renderer', JSON.stringify(await page.evaluate(() => ({
       diagnostics: document.querySelector('#forgeax-fatal-details')?.textContent,
-      submitted: document.documentElement.dataset.forgeaxFrameSubmitted,
+      submitted: document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null,
       renderer: globalThis.__forgeaxGameInspection?.renderer(),
       viewport: document.querySelector('[data-forgeax-view-mount-host="viewport"]')?.getBoundingClientRect().toJSON(),
       canvas: document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.getBoundingClientRect().toJSON(),

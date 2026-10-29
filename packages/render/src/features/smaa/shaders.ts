@@ -1,6 +1,4 @@
-import { ok } from '@forgeax/engine-types';
 import type { RenderFeatureFullscreenProgramDeclaration } from '../plan';
-import type { RenderFeature } from '../types';
 
 // SMAA 1x Medium, adapted from Three.js r184 SMAANode and SMAA v2.8.
 // Copyright and redistribution terms: ./LICENSE.txt.
@@ -127,27 +125,6 @@ export const SMAA_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[]
     reads: ['scene-color', 'smaa-weights'],
   },
 ];
-
-export function createSmaaRenderFeature(): RenderFeature<readonly string[]> {
-  return {
-    identity: 'forgeax.smaa',
-    requiredCapabilities: ['rgba16floatRenderable'],
-    requiredFullscreenPostProcesses: SMAA_PROGRAMS.map((program) => ({
-      identity: program.name,
-      source: program.source,
-    })),
-    extract: (context) =>
-      ok(
-        context.views
-          .filter((view) => view.render && view.selectedCamera?.antialias === 'smaa')
-          .map((view) => view.identity),
-      ),
-    plan: (views) =>
-      ok({
-        work: views.map((view) => ({ scope: { view }, resources: SMAA_PROGRAMS, passes: [] })),
-      }),
-  };
-}
 
 export function isSmaaPostProcess(identity: string): boolean {
   return identity === 'forgeax.smaa' || SMAA_PROGRAMS.some((program) => program.name === identity);

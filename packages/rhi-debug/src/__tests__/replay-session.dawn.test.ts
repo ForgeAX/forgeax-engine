@@ -320,6 +320,58 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
     expect((await second.value.dispose()).ok).toBe(true);
   }, 60_000);
 
+  it('executes command buffers submitted before the selected encoder, even when recorded later', async () => {
+    // A renderer may record a mip/upload encoder after the frame encoder but
+    // submit it first; the frame then loads the target that encoder wrote.
+    const pack = await loadDawn();
+    const tape = triangleTape();
+    const events = [...tape.events];
+    const finishAt = events.findIndex((event) => event.kind === 'finish');
+    const later = [
+      { kind: 'createCommandEncoder', cmdHandleId: 'encoder:pre', desc: {} },
+      {
+        kind: 'beginRenderPass',
+        cmdHandleId: 'encoder:pre',
+        passHandleId: 'pass:pre',
+        desc: {
+          colorAttachments: [
+            {
+              view: null,
+              clearValue: { r: 1, g: 0, b: 1, a: 1 },
+              loadOp: 'clear',
+              storeOp: 'store',
+            },
+          ],
+        },
+        colorAttachmentViewHandleIds: ['texture-view:rt'],
+        colorAttachmentResolveTargetHandleIds: [undefined],
+        depthStencilViewHandleId: undefined,
+      },
+      { kind: 'endRenderPass', passHandleId: 'pass:pre' },
+      { kind: 'finish', cmdHandleId: 'encoder:pre' },
+      { kind: 'finish', cmdHandleId: 'encoder:frame' },
+      { kind: 'submit', cmdHandleIds: ['encoder:pre', 'encoder:frame'] },
+      { kind: 'frameMark', frameIdx: 0 },
+    ] as unknown as Tape['events'];
+    events.splice(finishAt, 3, ...later);
+    const replay = (
+      await openReplay(
+        { ...tape, events, header: { ...tape.header, eventCount: events.length } },
+        { device: await freshDevice(pack), createShaderModule: pack.createShaderModule },
+      )
+    ).unwrap();
+    try {
+      const inspected = (await replay.inspectWork(0, ['pixels'])).unwrap();
+      const bytes = inspected.attachment?.bytes;
+      // The uncovered corner carries the earlier-submitted clear, not the seed.
+      expect(bytes?.slice(0, 4)).toEqual(new Uint8Array([255, 0, 255, 255]));
+      const center = ((HEIGHT / 2) * WIDTH + WIDTH / 2) * 4;
+      expect(bytes?.slice(center, center + 4)).toEqual(new Uint8Array([255, 0, 0, 255]));
+    } finally {
+      (await replay.dispose()).unwrap();
+    }
+  }, 60_000);
+
   it('resolves an MSAA attachment for pixels and rejects direct MSAA readback', async () => {
     const pack = await loadDawn();
     const replayResult = await openReplay(msaaTriangleTape(), {

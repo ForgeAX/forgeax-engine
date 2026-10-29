@@ -36,19 +36,6 @@ export interface RuntimeAssetBinding {
   readonly diagnostics?: readonly CatalogDiagnostic[];
 }
 
-export function isRuntimeCatalogRoots(value: unknown): value is readonly RuntimeCatalogRoot[] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (root) =>
-        root !== null &&
-        typeof root === 'object' &&
-        typeof (root as { root?: unknown }).root === 'string' &&
-        typeof (root as { catalogPrefix?: unknown }).catalogPrefix === 'string',
-    )
-  );
-}
-
 /** Authority-bearing catalog response for one runtime scope. */
 export interface RuntimeCatalogSnapshot {
   readonly schemaVersion: typeof RUNTIME_CATALOG_SNAPSHOT_SCHEMA;

@@ -17,6 +17,97 @@ const resourceEvidence: Plugin = {
   },
 };
 
+it('freezes plugin bytes after the initial native dependency scan completes', async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-dev-scan-')));
+  let enterScan: () => void = () => {};
+  let releaseScan: () => void = () => {};
+  const entered = new Promise<void>((resolve) => {
+    enterScan = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releaseScan = resolve;
+  });
+  let scanned = false;
+  let server: ViteDevServer | undefined;
+  try {
+    await mkdir(resolve(root, 'node_modules/delayed-dependency'), { recursive: true });
+    await writeFile(
+      resolve(root, 'node_modules/delayed-dependency/package.json'),
+      '{"name":"delayed-dependency","main":"index.js"}',
+    );
+    await writeFile(
+      resolve(root, 'node_modules/delayed-dependency/index.js'),
+      'module.exports = 42;',
+    );
+    await writeFile(
+      resolve(root, 'scan.js'),
+      "import value from 'delayed-dependency'; console.log(value);",
+    );
+    // Consume the scanned dependency so capture waits for its optimized bytes
+    // before server.close() and temporary-directory cleanup.
+    await writeFile(
+      resolve(root, 'entry.js'),
+      "import value from 'delayed-dependency'; export default value;",
+    );
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      server: { middlewareMode: true, watch: null },
+      optimizeDeps: {
+        entries: ['scan.js'],
+        rolldownOptions: {
+          plugins: [
+            {
+              name: 'test:slow-native-dependency-scan',
+              async load(id) {
+                if (id !== resolve(root, 'scan.js')) return null;
+                enterScan();
+                await release;
+                scanned = true;
+                return "import value from 'delayed-dependency'; console.log(value);";
+              },
+            },
+          ],
+        },
+      },
+      plugins: [
+        {
+          name: 'test:slow-native-dependency-scan',
+          transform(_code, id) {
+            if (id === resolve(root, 'entry.js') && !scanned)
+              throw new Error('plugin capture preceded native dependency discovery');
+          },
+        },
+      ],
+    });
+    await server.environments.client?.depsOptimizer?.init();
+    await Promise.race([
+      entered,
+      server.environments.client?.depsOptimizer?.scanProcessing?.then(() => {
+        throw new Error('scanner did not visit its entry');
+      }),
+    ]);
+    const timer = setTimeout(() => releaseScan(), 100);
+    try {
+      const captured = await captureDevPluginPrograms(
+        server,
+        new Map([['plugin', '/entry.js']]),
+        'engine',
+      );
+      expect(captured.archive.error).toBeUndefined();
+      const program = defined(captured.archive.programs?.plugin);
+      expect((await loadPackProgram(program, {})).unwrap()).toBe(42);
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    releaseScan();
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it.each([
   ['asset URL', "export default new URL('./image.png', import.meta.url).href;", true],
   [

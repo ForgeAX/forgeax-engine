@@ -1,6 +1,9 @@
-import type { Renderer } from '@forgeax/engine-render';
+import type { Renderer, RenderInspection } from '@forgeax/engine-render';
 import { createRendererInspectionError, type RendererInspectionFailureReason } from '../errors';
-import type { ExecutionRendererInspectionResult } from './types';
+import type {
+  ExecutionRendererInspectionOptions,
+  ExecutionRendererInspectionResult,
+} from './types';
 import { serializableDetail } from './worker-error';
 
 export function rendererInspectionFailure(
@@ -20,17 +23,22 @@ export function rendererInspectionFailure(
   };
 }
 
-/** Read-only snapshot. Clone failure is explicit; no field is filtered or synthesized. */
-export function readRendererInspection(
+/** Select at the owner before cloning; unselected inventories never cross realms. */
+export function readRendererInspection<K extends keyof RenderInspection = keyof RenderInspection>(
   renderer: Renderer | undefined,
   signal?: AbortSignal,
-  options?: { readonly pipelineLibrary?: boolean },
-): ExecutionRendererInspectionResult {
+  options?: ExecutionRendererInspectionOptions<K>,
+): ExecutionRendererInspectionResult<Pick<RenderInspection, K>> {
   if (signal?.aborted) return rendererInspectionFailure('cancelled');
   try {
     if (renderer === undefined || renderer.state() !== 'alive')
       return rendererInspectionFailure('not-ready');
-    return { ok: true, value: structuredClone(renderer.inspect(options)) };
+    const snapshot = renderer.inspect(options);
+    const selected =
+      options?.fields === undefined
+        ? snapshot
+        : Object.fromEntries(options.fields.map((field) => [field, snapshot[field]]));
+    return { ok: true, value: structuredClone(selected) as Pick<RenderInspection, K> };
   } catch (cause) {
     return rendererInspectionFailure('inspection', cause);
   }

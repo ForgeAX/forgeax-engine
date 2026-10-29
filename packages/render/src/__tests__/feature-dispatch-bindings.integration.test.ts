@@ -7,8 +7,8 @@ import { resolveFeatureWorkResources } from '../features/frame-plan';
 import { createRenderFeatureHost, getRenderFeaturePlanExecutionProjection } from '../features/host';
 import {
   deriveRenderFeaturePassAccess,
-  freezeRenderFeaturePlan,
   type RenderFeatureWorkPlan,
+  validateRenderFeaturePlan,
 } from '../features/plan';
 import {
   createRenderFeatureGpuWorkOwner,
@@ -59,7 +59,7 @@ function plan(a = 1, b = 2): RenderFeatureWorkPlan {
 
 it('validates and derives every override, including zero-count and shared-view dependencies', () => {
   const source = plan();
-  expect(freezeRenderFeaturePlan('batch', source).ok).toBe(true);
+  expect(validateRenderFeaturePlan('batch', source).ok).toBe(true);
   const pass = source.passes[0];
   if (pass?.kind !== 'compute') throw new Error('Missing compute pass');
   expect(deriveRenderFeaturePassAccess(source, pass)).toEqual([
@@ -68,7 +68,7 @@ it('validates and derives every override, including zero-count and shared-view d
   ]);
   for (const override of ['missing', 'a']) {
     expect(
-      freezeRenderFeaturePlan('invalid', {
+      validateRenderFeaturePlan('invalid', {
         ...source,
         passes: [
           {
@@ -87,7 +87,7 @@ it('validates and derives every override, including zero-count and shared-view d
       resource.name === 'binding-b' ? { ...binding('b'), program: 'other' } : resource,
     ),
   };
-  expect(freezeRenderFeaturePlan('invalid', wrong).ok).toBe(false);
+  expect(validateRenderFeaturePlan('invalid', wrong).ok).toBe(false);
   const scoped = resolveFeatureWorkResources([
     { scope: 'frame', resources: source.resources, passes: [] },
     { scope: { view: 'main' }, resources: [], passes: source.passes },

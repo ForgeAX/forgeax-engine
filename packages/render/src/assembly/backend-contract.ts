@@ -143,7 +143,12 @@ export class EngineEnvironmentError extends Error {
   readonly detail: EngineEnvironmentErrorDetail;
 
   constructor(reason: string, detail: EngineEnvironmentErrorDetail = {}) {
-    const cause = describeEnvironmentCause(detail.webgpuError ?? detail.wgpuError);
+    const native = describeEnvironmentCause(detail.webgpuError);
+    const fallback = describeEnvironmentCause(detail.wgpuError);
+    const cause =
+      native !== undefined && fallback !== undefined
+        ? `webgpu: ${native}; wgpu-webgl2: ${fallback}`
+        : (native ?? fallback);
     super(
       `forgeax-engine: no usable backend (${reason}${cause === undefined ? '' : `; cause=${cause}`})`,
     );

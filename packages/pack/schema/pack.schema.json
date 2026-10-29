@@ -378,6 +378,26 @@
               "pattern": "^sha256:[a-f0-9]{64}$"
             }
           }
+        },
+        "decodedRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "offset",
+            "length"
+          ],
+          "properties": {
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
         }
       },
       "allOf": [
@@ -396,6 +416,33 @@
             ],
             "properties": {
               "delivery": false,
+              "integrity": {}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "decodedRange"
+            ],
+            "properties": {
+              "decodedRange": {}
+            }
+          },
+          "then": {
+            "required": [
+              "contentEncoding",
+              "byteRange",
+              "byteLength",
+              "integrity"
+            ],
+            "properties": {
+              "contentEncoding": {
+                "const": "zstd"
+              },
+              "delivery": false,
+              "byteRange": {},
+              "byteLength": {},
               "integrity": {}
             }
           }

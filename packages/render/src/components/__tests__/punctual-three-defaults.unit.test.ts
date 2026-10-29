@@ -3,6 +3,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { prepareExtractContext } from '../../render-system-extract';
 import { extractFrame } from '../../render-system-extract-tail';
+import { fitDirectionalCascades, renderLightsOf } from '../../world/render-lights';
+import { createRenderWorld } from '../../world/render-world';
 import { Camera, perspective } from '../camera';
 import { DirectionalLight } from '../directional-light';
 import {
@@ -16,7 +18,7 @@ import { PointLightShadow } from '../point-light-shadow';
 import { RectAreaLight } from '../rect-area-light';
 import { SpotLight } from '../spot-light';
 
-describe('Three r184 punctual defaults', () => {
+describe('punctual light defaults', () => {
   it('keeps bare light shadows off and admits only explicit per-light requests', () => {
     const world = new World();
     world
@@ -50,7 +52,7 @@ describe('Three r184 punctual defaults', () => {
     expect(world.get(spot, SpotLight).unwrap().castShadow).toBe(false);
     expect(off.lights.directional).toBeDefined();
     expect(off.lights.directionalCsmConfig).toBeUndefined();
-    expect(off.lights.splitPlanes).toBeUndefined();
+    expect(fitDirectionalCascades(off.lights, { camera: off.cameras[0] })).toBeUndefined();
     expect(off.lights.spot[0]).toMatchObject({ castShadow: false, shadowAtlasTile: -1 });
     expect(off.lights.spot[0]?.lightViewProj).toBeUndefined();
     expect(off.lights.pointShadow).toHaveLength(0);
@@ -58,9 +60,11 @@ describe('Three r184 punctual defaults', () => {
     world.set(spot, SpotLight, { castShadow: true }).unwrap();
     const on = extract();
     expect(on.lights.directionalCsmConfig).toBeDefined();
-    expect(on.lights.splitPlanes).toBeDefined();
-    expect(on.lights.spot[0]).toMatchObject({ castShadow: true, shadowAtlasTile: 0 });
+    expect(fitDirectionalCascades(on.lights, { camera: on.cameras[0] })?.splitPlanes).toBeDefined();
+    // Extraction requests the shadow; the Render World assigns the light's tile.
+    expect(on.lights.spot[0]).toMatchObject({ castShadow: true, shadowAtlasTile: -1 });
     expect(on.lights.spot[0]?.lightViewProj).toBeDefined();
+    expect(renderLightsOf(createRenderWorld()).sync(on.lights).spot[0]?.shadowAtlasTile).toBe(0);
     world.set(sun, DirectionalLight, { castShadow: false }).unwrap();
     world.set(spot, SpotLight, { castShadow: false }).unwrap();
     const disabled = extract();
@@ -68,7 +72,7 @@ describe('Three r184 punctual defaults', () => {
     expect(disabled.lights.spot[0]?.shadowAtlasTile).toBe(-1);
   });
 
-  it('transports no cutoff and a hard 60-degree spot through actual extraction', () => {
+  it('transports no cutoff and a full-falloff 60-degree spot through actual extraction', () => {
     const world = new World();
     const point = world
       .spawn({ component: Transform, data: {} }, { component: PointLight, data: {} })
@@ -85,7 +89,7 @@ describe('Three r184 punctual defaults', () => {
     const frame = extractFrame(world, prepareExtractContext(world));
     expect(frame.lights.point[0]?.invRangeSquared).toBe(0);
     expect(frame.lights.spot[0]).toMatchObject({ invRangeSquared: 0 });
-    expect(frame.lights.spot[0]?.cosInner).toBeCloseTo(0.5, 6);
+    expect(frame.lights.spot[0]?.cosInner).toBeCloseTo(1, 6);
     expect(frame.lights.spot[0]?.cosOuter).toBeCloseTo(0.5, 6);
     expect(computeInvRangeSquared(10)).toBe(0.01);
   });
@@ -155,6 +159,8 @@ describe('Three r184 punctual defaults', () => {
     const data = { direction: [0, -1, 0], castShadow };
     expect(validateSpotLightData({ ...data, innerConeDeg: 30, outerConeDeg: 30 }).ok).toBe(true);
     expect(validateSpotLightData({ ...data, innerConeDeg: 0, outerConeDeg: 60 }).ok).toBe(true);
+    // The default inner angle admits any authored outer angle on its own.
+    expect(validateSpotLightData({ ...data, outerConeDeg: 20 }).ok).toBe(true);
     for (const [innerConeDeg, outerConeDeg] of [
       [31, 30],
       [-1, 30],

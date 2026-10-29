@@ -329,3 +329,23 @@ describe('dedicated asset preview surfaces', () => {
     assert.equal(selectWorkspaceResourceSubject(snapshot, ['mesh']).guid, 'mesh-1');
   });
 });
+
+it('forwards resolveTarget and finishPreviewCamera to the asset preview presentation', async () => {
+  const { liveEnginePresentation } = await import('../packages/view-workspace-core/src/engine-presentation.ts');
+  const seen = [];
+  const resolved = { targetId: 'mesh' };
+  const presentation = {
+    surfacePlacement: 'shell',
+    resolveTarget: (targetId) => (seen.push(targetId), resolved),
+    async finishPreviewCamera(target) { seen.push(target); },
+  };
+  const wrapped = dedicatedPreviewPresentation(presentation, { panelId: 'mesh-preview', pageType: 'mesh' });
+  assert.equal(wrapped.resolveTarget('mesh'), resolved);
+  await wrapped.finishPreviewCamera({ targetId: 'mesh', generation: 2 });
+  assert.deepEqual(seen, ['mesh', { targetId: 'mesh', generation: 2 }]);
+  const ctx = { get: (name) => name === 'engineWorkspacePresentation' ? presentation : undefined };
+  const live = liveEnginePresentation(ctx);
+  assert.equal(live.resolveTarget('mesh'), resolved);
+  await live.finishPreviewCamera({ targetId: 'mesh' });
+  assert.equal(seen.at(-1).targetId, 'mesh');
+});

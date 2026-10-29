@@ -149,7 +149,7 @@ export function CBGrid({
     const thumbnail = item.type === 'asset' ? thumbnails.get(item.guid) : undefined;
     const isFolder = item.type === 'folder';
     const isFile = item.type === 'file';
-    const groupCount = grouping && isFile && item.assets.length > 1 ? item.assets.length : 0;
+    const groupCount = grouping && isFile && (item.isAssetPackage || item.assets.length > 1) ? item.assets.length : 0;
     const stacked = groupCount >= 2;
     const meta = isFolder
       ? null
@@ -226,7 +226,8 @@ export function CBGrid({
   for (let index = 0; index < items.length; ) {
     const item = items[index];
     if (!item) { index += 1; continue; }
-    if (grouping && item.type === 'file' && item.assets.length > 1 && expandedPacks.has(item.path)) {
+    if (grouping && item.type === 'file' && item.assets.length > 0
+      && (item.isAssetPackage || item.assets.length > 1) && expandedPacks.has(item.path)) {
       const guids = new Set(item.assets.map((asset) => asset.guid));
       nodes.push(renderCard(item, true, item.path));
       let nextIndex = index + 1;

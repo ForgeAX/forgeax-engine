@@ -140,12 +140,10 @@ export {
   type CloudOpticalResult,
   type CloudOpticsInput,
   type CloudRay,
-  compositeCloudRadiance,
   integrateCloudCameraPath,
   integrateCloudInterior,
   integrateCloudPath,
   integrateCloudSolarColumn,
-  intersectCloudLayer,
 } from './cloud/optics.js';
 export {
   CLOUD_QUALITY_PROFILES,
@@ -157,15 +155,12 @@ export {
   validateCloudLayer,
 } from './cloud/parameters.js';
 export {
-  acceptCloudLayerGeneration,
   CLOUD_HISTORY_SURFACE_COUNT,
   CLOUD_RGBA16FLOAT_BYTES_PER_TEXEL,
   type CloudGpuResourceEvidence,
-  type CloudLayerGeneration,
   type CloudLayerResourceFacts,
   type CloudLayerResourceInputs,
   inspectCloudLayerResources,
-  retainCloudLayerAfterFailure,
 } from './cloud/resources.js';
 export {
   type CloudShadowProjection,
@@ -282,7 +277,6 @@ export {
   type CubeCameraFace,
   type CubeCameraUpdateIntent,
   cubeCameraUpdateIntentFromF32,
-  cubeCameraUpdateIntentToF32,
 } from './components/cube-camera.js';
 export {
   DepthOfField,
@@ -301,7 +295,7 @@ export {
   validateDynamicResolutionCamera,
   validateDynamicResolutionParameters,
 } from './components/dynamic-resolution.js';
-export { Fog } from './components/fog.js';
+export { Fog, type FogMode, FogModeValue } from './components/fog.js';
 export { Instances, type InstancesData } from './components/instances.js';
 export { Layer } from './components/layer.js';
 export {
@@ -342,8 +336,11 @@ export { PointLightShadow } from './components/point-light-shadow.js';
 export {
   type PointShape,
   PointShapeValue,
+  type PointSizeUnits,
+  PointSizeUnitsValue,
   Points,
   pointShapeFromU32,
+  pointSizeUnitsFromU32,
 } from './components/points.js';
 export { PostProcessParams } from './components/post-process-params.js';
 export { RectAreaLight } from './components/rect-area-light.js';
@@ -355,7 +352,6 @@ export {
   type ReflectionProbeData,
   type ReflectionProbeUpdateIntent,
   reflectionProbeUpdateIntentFromF32,
-  reflectionProbeUpdateIntentToF32,
 } from './components/reflection-probe.js';
 export { SceneInstance } from './components/scene-instance.js';
 export {
@@ -370,7 +366,6 @@ export {
 } from './components/skybox-background.js';
 export { Skylight } from './components/skylight.js';
 export { SortKey } from './components/sort-key.js';
-export type { SpotLightAuthoring, SpotLightProjector } from './components/spot-light.js';
 export { SpotLight } from './components/spot-light.js';
 export {
   Visibility,
@@ -756,10 +751,15 @@ export {
   type RenderPublication,
   RenderPublicationError,
   type RenderPublicationIdentity,
-  renderPublicationAssetTransfers,
-  renderPublicationTransfers,
 } from './publication/contract';
 export { createRenderPublisher, type RenderPublicationCandidate } from './publication/publisher';
+export {
+  type RenderPublicationMessage,
+  type RenderPublicationSide,
+  renderPublicationAssetTransfers,
+  renderPublicationBytes,
+  renderPublicationTransfers,
+} from './publication/record';
 export { RenderPublicationTargetOwner, type RenderTargetAuthoring } from './publication/targets';
 export {
   DIFFUSE_GI_TIER_BUDGETS,
@@ -807,8 +807,6 @@ export type {
   GpuPassTimingObservation,
   GpuPassTimingOptions,
   GpuPassTimingPassIdentity,
-  GpuPassTimingReason,
-  GpuPassTimingReasonCode,
   GpuPassTimingRef,
   GpuPassTimingUnmeasuredEntry,
 } from './record/gpu-pass-timing/index.js';
@@ -826,7 +824,6 @@ export {
   buildReflectionProbeTable,
   type ReflectionProbeTable,
   type ReflectionProbeTableRow,
-  reflectionProbeTableBytes,
 } from './reflection/gpu-table.js';
 export {
   inspectReflectionFallback,
@@ -873,10 +870,7 @@ export type {
   RenderWorldLease,
 } from './render-contract.js';
 export { RENDER_PHASE_CATALOG } from './render-contract.js';
-export type {
-  TemporalInspectionInput,
-  TemporalInspectionStatus,
-} from './renderer-inspect.js';
+export type { TemporalInspectionStatus } from './renderer-inspect.js';
 export type { RenderSceneBounds } from './scene/render-scene-types.js';
 export type {
   LodOcclusionInspectionInput,
@@ -1030,7 +1024,6 @@ export {
 export { tilemapGeometry } from './tilemap-geometry';
 export {
   composeSingleLayerMediumColor,
-  estimateSingleLayerPathLength,
   integrateSingleLayerMedium,
   type MediumVector3,
   resolveSingleLayerMediumBackground,
@@ -1059,7 +1052,6 @@ export {
   type VolumeDensityBinding,
   VolumetricFog,
   type VolumetricFogAuthoring,
-  type VolumetricFogLightSelection,
   VolumetricFogSamplingValue,
   validateVolumetricFog,
 } from './volume/component.js';

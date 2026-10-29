@@ -7,7 +7,7 @@ import type { TypedShadowTargets } from '../typed-shadow-passes';
  * the opaque/forward pass, transmission, the transparent set and the
  * single-layer medium passes all spread this one value.
  */
-interface StandardForwardReceiverInputs {
+export interface StandardForwardReceiverInputs {
   readonly sampled: readonly RenderPipelineTarget[];
   readonly directionalShadow?: RenderPipelineTarget;
   readonly shadowMoments?: RenderPipelineTarget;

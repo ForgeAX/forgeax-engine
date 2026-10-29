@@ -1,6 +1,9 @@
 import { type EntityHandle, entityIndex } from '../entity-handle';
 import type { WorldInternal } from '../world-internal';
 
+/** Changed identities of one iteration, held in a query-owned typed buffer. */
+export type ChangedEntities = Uint32Array & { [index: number]: EntityHandle };
+
 const BUCKETS = 256;
 const LEVELS = 8;
 const SMALL = 32;
@@ -15,22 +18,64 @@ export class ChangedEntityOrder {
     private readonly sparse: boolean,
   ) {}
 
-  sort(entities: EntityHandle[]): void {
-    if (entities.length <= SMALL) {
-      this.insertion(entities, 0, entities.length);
-      return;
+  // World storage borrowed for one sort call only.
+  private records: ReturnType<WorldInternal['getRecords']> | undefined;
+  private archetypes: ReturnType<WorldInternal['getGraph']>['archetypes'] | undefined;
+  // Largest keys of the current batch; bytes above them are zero for every key.
+  private maxStorage = 0;
+  private maxRow = 0;
+
+  sort(entities: ChangedEntities): void {
+    this.records = this.owner.getRecords();
+    this.archetypes = this.owner.getGraph().archetypes;
+    try {
+      // Producers commonly write in physical order; one linear pass proves it.
+      if (this.ordered(entities)) return;
+      if (entities.length <= SMALL) {
+        this.insertion(entities, 0, entities.length);
+        return;
+      }
+      this.scratch ??= new Uint32Array(LEVELS * BUCKETS * 3);
+      this.partition(entities, 0, entities.length, 0, this.scratch);
+    } finally {
+      this.records = undefined;
+      this.archetypes = undefined;
     }
-    this.scratch ??= new Uint32Array(LEVELS * BUCKETS * 3);
-    this.partition(entities, 0, entities.length, 0, this.scratch);
+  }
+
+  private ordered(entities: ChangedEntities): boolean {
+    let storage = -1,
+      row = -1,
+      ordered = true,
+      maxStorage = 0,
+      maxRow = 0;
+    for (let at = 0; at < entities.length; at++) {
+      const entity = entities[at] as EntityHandle;
+      const nextStorage = this.key(entity, false);
+      const nextRow = this.key(entity, true);
+      if (nextStorage < storage || (nextStorage === storage && nextRow < row)) ordered = false;
+      storage = nextStorage;
+      row = nextRow;
+      if (nextStorage > maxStorage) maxStorage = nextStorage;
+      if (nextRow > maxRow) maxRow = nextRow;
+    }
+    this.maxStorage = maxStorage;
+    this.maxRow = maxRow;
+    return ordered;
+  }
+
+  private constantLevel(level: number): boolean {
+    return (level >= 4 ? this.maxRow : this.maxStorage) >>> (24 - (level & 3) * 8) === 0;
   }
 
   private key(entity: EntityHandle, row: boolean): number {
-    const record = this.owner.getRecords()[entityIndex(entity)];
-    const archetype = this.owner.getGraph().archetypes[record?.archetypeId ?? -1];
+    const records = this.records as ReturnType<WorldInternal['getRecords']>;
+    const slot = entityIndex(entity);
+    const archetype = this.archetypes?.[records.archetypeId[slot] ?? -1];
     if (row)
       return this.sparse
-        ? (record?.archetypeRow ?? 0)
-        : (archetype?.rows[record?.archetypeRow ?? -1] ?? 0);
+        ? (records.archetypeRow[slot] ?? 0)
+        : (archetype?.rows[records.archetypeRow[slot] ?? -1] ?? 0);
     return this.sparse ? (archetype?.id ?? 0) : (archetype?.tableId ?? 0);
   }
 
@@ -38,7 +83,7 @@ export class ChangedEntityOrder {
     return this.key(a, false) - this.key(b, false) || this.key(a, true) - this.key(b, true);
   }
 
-  private insertion(entities: EntityHandle[], start: number, end: number): void {
+  private insertion(entities: ChangedEntities, start: number, end: number): void {
     for (let at = start + 1; at < end; at++) {
       const entity = entities[at] as EntityHandle;
       let into = at;
@@ -56,16 +101,19 @@ export class ChangedEntityOrder {
   }
 
   private partition(
-    entities: EntityHandle[],
+    entities: ChangedEntities,
     start: number,
     end: number,
-    level: number,
+    first: number,
     scratch: Uint32Array,
   ): void {
     if (end - start <= SMALL) {
       this.insertion(entities, start, end);
       return;
     }
+    let level = first;
+    while (level < LEVELS && this.constantLevel(level)) level++;
+    if (level === LEVELS) return;
     const counts = level * BUCKETS * 3;
     const next = counts + BUCKETS;
     const ends = next + BUCKETS;

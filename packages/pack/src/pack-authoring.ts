@@ -1,6 +1,11 @@
 import type { Asset, AssetGuid, Result } from '@forgeax/engine-types';
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
-import { AssetGuid as AssetGuidCodec, isValidPackSourceKey, PackageId } from './guid.js';
+import {
+  AssetGuid as AssetGuidCodec,
+  isValidPackSourceKey,
+  PackageId,
+  packSourceKeyFailure,
+} from './guid.js';
 import type {
   PackDraftRequest,
   PackDraftSnapshot,
@@ -214,13 +219,10 @@ function cloneValue<T>(value: T): T {
 }
 
 function sourceKeyFailure(sourceKey: unknown, propertyPath = '$.sourceKey'): PackAuthoringError {
-  return authoringError(
-    'pack-source-key-invalid',
-    'a sourceKey matching ^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$',
-    'use a stable lower-case semantic key; do not derive it from file paths or output order',
-    { propertyPath, sourceKey },
-    typeof sourceKey === 'string' ? sourceKey : undefined,
-  );
+  return {
+    ...packSourceKeyFailure(sourceKey, { propertyPath }),
+    ...(typeof sourceKey === 'string' ? { actual: sourceKey } : {}),
+  };
 }
 
 function parameterFailure(
@@ -643,11 +645,6 @@ export interface PackBuildContextWithParameters<
   readonly packageId: PackageId;
   readonly values: PackBuildParameterValues<TParameters>;
 }
-
-export type PackBuildContext<TParameters extends readonly PackParameterDefinition[] | undefined> =
-  TParameters extends readonly PackParameterDefinition[]
-    ? PackBuildContextWithParameters<TParameters>
-    : PackBuildContextWithoutParameters;
 
 /** Build-only custom source. The host derives identity and invokes the kind's NativeCooker. */
 export interface PackCookSource {
@@ -1449,22 +1446,67 @@ export async function resolvePackParameterInheritance(
   return visit(subject, []);
 }
 
-export const PACK_AUTHORING_OPERATION_IDS = [
-  'asset.list',
-  'asset.inspect',
-  'asset.resolve',
-  'asset.verify',
-  'asset.source.create',
-  'asset.source.clone',
-  'asset.source.import',
-  'asset.source.instance.create',
-  'asset.source.values.apply',
-  'asset.source.rebuild',
-  'asset.source.cold-cook',
-  'asset.source.draft',
+/** Operation semantics are owned here; adapters derive discovery from these facts. */
+export const PACK_AUTHORING_OPERATION_DESCRIPTORS = [
+  { id: 'asset.list', domain: 'asset', readOnly: true, requiresRevision: false },
+  { id: 'asset.inspect', domain: 'asset', readOnly: true, requiresRevision: false },
+  { id: 'asset.resolve', domain: 'asset', readOnly: true, requiresRevision: false },
+  { id: 'asset.verify', domain: 'asset', readOnly: true, requiresRevision: false },
+  { id: 'asset.source.create', domain: 'session', readOnly: false, requiresRevision: false },
+  {
+    id: 'asset.source.clone',
+    requiredFields: ['sourcePath', 'targetPath'],
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: false,
+  },
+  {
+    id: 'asset.source.import',
+    requiredFields: ['sourcePath', 'targetPath'],
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: false,
+  },
+  {
+    id: 'asset.source.instance.create',
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: false,
+  },
+  {
+    id: 'asset.source.values.apply',
+    requiredFields: ['sourcePath', 'values'],
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: true,
+  },
+  {
+    id: 'asset.source.rebuild',
+    requiredFields: ['sourcePath'],
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: true,
+  },
+  {
+    id: 'asset.source.cold-cook',
+    requiredFields: ['sourcePath'],
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: true,
+  },
+  {
+    id: 'asset.source.draft',
+    requiredFields: ['draft'],
+    domain: 'session',
+    readOnly: false,
+    requiresRevision: false,
+  },
 ] as const;
 
-export type PackAuthoringOperationId = (typeof PACK_AUTHORING_OPERATION_IDS)[number];
+export type PackAuthoringOperationId = (typeof PACK_AUTHORING_OPERATION_DESCRIPTORS)[number]['id'];
+export const PACK_AUTHORING_OPERATION_IDS = PACK_AUTHORING_OPERATION_DESCRIPTORS.map(
+  ({ id }) => id,
+);
 
 export interface PackAuthoringOperation {
   /** Inspect only editable .pack.ts declarations; no inventory, module execution or generation. */
@@ -1644,15 +1686,3 @@ export function createPackAuthoringGateway<TResult = unknown>(
         }),
   };
 }
-
-export const PACK_AUTHORING_OPERATION_DESCRIPTORS = PACK_AUTHORING_OPERATION_IDS.map((id) => ({
-  id,
-  domain: id.startsWith('asset.source.') ? 'session' : 'asset',
-  readOnly: id !== 'asset.source.draft' && id.startsWith('asset.'),
-  requiresRevision: !id.startsWith('asset.') && id !== 'asset.source.create',
-})) as readonly {
-  id: PackAuthoringOperationId;
-  domain: 'asset' | 'session';
-  readOnly: boolean;
-  requiresRevision: boolean;
-}[];

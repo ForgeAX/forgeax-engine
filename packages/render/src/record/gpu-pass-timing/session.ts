@@ -22,7 +22,7 @@ import {
   type NormalizedGpuPassTimingOptions,
   normalizeGpuPassTimingOptions,
 } from './contract.js';
-import type { GpuPassTimingReason } from './errors.js';
+import type { GpuPassTimingError } from './errors.js';
 import { parseGpuPassTimingTicks } from './parser.js';
 
 const GPU_BUFFER_USAGE_MAP_READ = 0x01;
@@ -95,10 +95,10 @@ export interface GpuPassTimingCapture {
   encodeTail(
     encoder: RhiCommandEncoder,
     graphGeneration?: number,
-  ): Result<void, GpuPassTimingReason>;
+  ): Result<void, GpuPassTimingError>;
   markSubmitted(completion?: Promise<void>): void;
   snapshot(): GpuPassTimingFrame;
-  observe(): Promise<Result<GpuPassTimingFrame, GpuPassTimingReason>>;
+  observe(): Promise<Result<GpuPassTimingFrame, GpuPassTimingError>>;
   abort(cause?: { readonly code?: string | undefined }): void;
 }
 
@@ -106,7 +106,7 @@ export interface GpuPassTimingSession {
   readonly options: NormalizedGpuPassTimingOptions;
   beginFrame(
     identity: GpuPassTimingFrameIdentity,
-  ): Result<GpuPassTimingCapture, GpuPassTimingReason>;
+  ): Result<GpuPassTimingCapture, GpuPassTimingError>;
   dispose(): void;
 }
 
@@ -147,7 +147,7 @@ interface CaptureState {
   nextQueryIndex: number;
   droppedPassCount: number;
   timedPassCount: number;
-  terminal: Result<GpuPassTimingFrame, GpuPassTimingReason> | undefined;
+  terminal: Result<GpuPassTimingFrame, GpuPassTimingError> | undefined;
   submitted: Promise<void> | undefined;
 }
 
@@ -197,11 +197,11 @@ function isGenericEntry(entry: CaptureEntry | undefined): entry is GpuPassTiming
 }
 
 function reason(
-  code: GpuPassTimingReason['code'],
+  code: GpuPassTimingError['code'],
   expected: string,
   hint: string,
   detail: { readonly [key: string]: null | boolean | number | string },
-): GpuPassTimingReason {
+): GpuPassTimingError {
   return { code, expected, hint, detail };
 }
 
@@ -229,7 +229,7 @@ function readTick(bytes: ArrayBuffer, index: number): string {
   return view.getBigUint64(0, true).toString(10);
 }
 
-function createResourceFailure(error: unknown, operation: string): GpuPassTimingReason {
+function createResourceFailure(error: unknown, operation: string): GpuPassTimingError {
   return reason(
     'timestamp-readback-failed',
     `${operation} succeeds for the timing slot resource`,
@@ -241,7 +241,7 @@ function createResourceFailure(error: unknown, operation: string): GpuPassTiming
 function createSlot(
   device: RhiDevice,
   options: NormalizedGpuPassTimingOptions,
-): Result<Slot, GpuPassTimingReason> {
+): Result<Slot, GpuPassTimingError> {
   const queryCount = options.maxPassesPerFrame * 2;
   const querySet = device.createQuerySet({ type: 'timestamp', count: queryCount });
   if (!querySet.ok) {
@@ -632,7 +632,7 @@ function makeCapture(
   const encodeTail = (
     encoder: RhiCommandEncoder,
     graphGeneration?: number,
-  ): Result<void, GpuPassTimingReason> => {
+  ): Result<void, GpuPassTimingError> => {
     if (
       graphGeneration !== undefined &&
       state.submitted === undefined &&
@@ -705,7 +705,7 @@ function makeCapture(
       return err(createResourceFailure(error, 'timing resolve/copy'));
     }
   };
-  const terminalize = (result: Result<GpuPassTimingFrame, GpuPassTimingReason>): void => {
+  const terminalize = (result: Result<GpuPassTimingFrame, GpuPassTimingError>): void => {
     if (state.terminal !== undefined) return;
     state.terminal = result;
     state.slot.state = 'terminal';
@@ -905,7 +905,7 @@ async function sessionMapReadback(
   buffer: Buffer,
   period: number,
   override: GpuPassTimingSessionOptions['mapReadback'],
-): Promise<Result<MappedBuffer, GpuPassTimingReason>> {
+): Promise<Result<MappedBuffer, GpuPassTimingError>> {
   try {
     const mapped = await (override === undefined
       ? buffer.mapAsync(GPU_MAP_MODE_READ)
@@ -930,7 +930,7 @@ export function createGpuPassTimingSession(
   device: RhiDevice,
   options: GpuPassTimingOptions = {},
   sessionOptions: GpuPassTimingSessionOptions = {},
-): Result<GpuPassTimingSession, GpuPassTimingReason> {
+): Result<GpuPassTimingSession, GpuPassTimingError> {
   const normalized = normalizeGpuPassTimingOptions(options);
   if (!normalized.ok) return normalized;
   const period = device.caps.timestampPeriodNanoseconds;

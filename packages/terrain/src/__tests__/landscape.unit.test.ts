@@ -4,7 +4,6 @@ import { type Asset, type MaterialAsset, standardSurfaceParameters } from '@forg
 import { describe, expect, it } from 'vitest';
 import { buildTerrainAssets, terrainDerivedClosureValid } from '../closure.js';
 import { cookTerrain } from '../cook.js';
-import { terrainLayerWeights } from '../layers.js';
 import { terrainVertexCoordinates } from '../lod.js';
 import { terrainHeight, terrainHeightfield } from '../query.js';
 import { terrainSurfaceHeight, terrainSurfaceVertex } from '../submitted-surface.js';
@@ -207,30 +206,6 @@ describe('Landscape foundation falsifiers', () => {
       expect(edge.x).toBe(1);
       expect(edge.z).toBe(1);
     }
-  });
-  it('retains default channels for zero weight and applies alpha in list order', () => {
-    const out = new Float32Array(3);
-    const layers = [
-      { material: 'a', blend: 'weight' },
-      { material: 'b', blend: 'alpha' },
-      { material: 'c', blend: 'alpha' },
-    ] as const;
-    expect(terrainLayerWeights(layers, [0, 0.5, 0.25], [], out).defaultWeight).toBe(0.375);
-    expect([...out]).toEqual([0, 0.375, 0.25]);
-  });
-  it('normalizes the height-adjusted group and preserves zero-weight height epsilon', () => {
-    const out = new Float32Array(2);
-    terrainLayerWeights(
-      [
-        { material: 'a', blend: 'height', height: 'h', heightRange: [0, 1] },
-        { material: 'b', blend: 'weight' },
-      ],
-      [0, 1],
-      [0, 0],
-      out,
-    );
-    expect(out[0]).toBeGreaterThan(0);
-    expect((out[0] ?? 0) + (out[1] ?? 0)).toBeCloseTo(1, 5);
   });
   it('cooks identical shared-edge bytes and retains conservative source bounds', () => {
     const terrain = source(3, 2, [0, 1, 2, 3, 4, 5]);

@@ -377,3 +377,49 @@ describe('native prepared graphics input at the detached store boundary', () => 
     ).not.toBe(b);
   });
 });
+
+describe('frozen native requests proven by identity', () => {
+  it('skips the structural walk for an identical frozen request and releases replaced proofs', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const store = createPreparedGraphicsStore();
+    const pipeline = (format: 'rgba8unorm' | 'bgra8unorm') =>
+      Object.freeze({
+        shader: 'shader',
+        vertexLayout: 'none',
+        colorFormats: Object.freeze([format]),
+      });
+    const released = (() => {
+      const request = pipeline('rgba8unorm');
+      const first = store.beginFrame('fx', 1);
+      const reference = first.prepare('pipeline', 'p', request).unwrap();
+      first.commit().unwrap();
+      const second = store.beginFrame('fx', 1);
+      expect(second.prepare('pipeline', 'p', request, true).unwrap()).toBe(reference);
+      second.commit().unwrap();
+      const keys = vi.spyOn(Reflect, 'ownKeys');
+      try {
+        const third = store.beginFrame('fx', 1);
+        expect(third.prepare('pipeline', 'p', request, true).unwrap()).toBe(reference);
+        third.commit().unwrap();
+        expect(keys).not.toHaveBeenCalled();
+      } finally {
+        keys.mockRestore();
+      }
+      return new WeakRef(request);
+    })();
+    const replacement = pipeline('bgra8unorm');
+    for (let frame = 0; frame < 3; frame++) {
+      const replaced = store.beginFrame('fx', 1);
+      replaced.prepare('pipeline', 'p', replacement, true).unwrap();
+      replaced.commit().unwrap();
+    }
+    for (let attempt = 0; attempt < 10 && released.deref() !== undefined; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      gc();
+    }
+    expect(released.deref()).toBeUndefined();
+  });
+});

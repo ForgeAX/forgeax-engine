@@ -19,7 +19,8 @@ import {
   type RendererDiffuseReconstruction,
 } from './renderer-diffuse-reconstruction';
 import { rayReferenceFailure } from './scene';
-import { projectRayScene } from './scene-projection';
+import { type RaySceneEdit, RaySceneProjection } from './scene-retained';
+import type { VisibleSurfaceProjection } from './visible-surface';
 
 type TexturePreparation = Extract<
   ReturnType<typeof prepareSurfaceMaterialTextures>,
@@ -33,6 +34,8 @@ interface RayDiffuseFrameInput {
   readonly lights: readonly LightSnapshot[];
   readonly sampler: Sampler;
   readonly profile: StandardExactDiffuseGi;
+  /** The frame's visible-surface addresses; raster rays resolve rows through them. */
+  readonly visibleSurface: VisibleSurfaceProjection;
   readonly width: number;
   readonly height: number;
 }
@@ -68,6 +71,8 @@ export interface PreparedRayDiffuse {
   writeSample(): void;
   track(completed: Promise<unknown>): void;
   commit(): void;
+  /** Transfer this live allocation to a new content fence after a stable-shape scene edit. */
+  refresh(fence: RendererGenerationFence, edit: RaySceneEdit): PreparedRayDiffuse;
   retire(): void;
 }
 
@@ -75,8 +80,10 @@ export interface PreparedRayDiffuse {
  * UE LumenSceneRendering owns scene work outside view tracing; this exact-query
  * reference uses the same separation without claiming UE cache/gather behavior. */
 export class RendererRayDiffuse {
+  readonly #scene = new RaySceneProjection();
   #input: RayDiffuseFrameInput | undefined;
   #key = '';
+  #configuration = '';
   #generation = 0;
   #pending = false;
   #ready: PreparedRayDiffuse | undefined;
@@ -114,13 +121,12 @@ export class RendererRayDiffuse {
     };
   }
 
-  #signature(): string {
-    const input = this.#input;
+  #signature(input = this.#input, content = true): string {
     if (input === undefined) return '';
     const lights = packLights(input.lights);
     return JSON.stringify([
       input.runtime.deviceScope.generation,
-      input.scene.retained?.revision,
+      content ? input.scene.retained?.revision : undefined,
       input.worlds.map((world) => world.identity),
       input.width,
       input.height,
@@ -132,18 +138,35 @@ export class RendererRayDiffuse {
 
   prepare(input: RayDiffuseFrameInput): void {
     if (this.#disposed) return;
-    const sceneChanged = this.#input?.scene.scene !== input.scene.scene;
+    const previous = this.#input;
+    const sceneChanged =
+      previous?.scene.scene !== input.scene.scene ||
+      previous?.scene.retained?.identity !== input.scene.retained?.identity ||
+      previous?.runtime.device !== input.runtime.device;
     this.#input = input;
     let key: string;
+    let configuration: string;
     try {
       key = this.#signature();
+      configuration = this.#signature(input, false);
     } catch (cause) {
       this.#fail(input.runtime, cause);
       return;
     }
     if (sceneChanged || key !== this.#key) {
       this.#generation++;
+      const compatible = this.#configuration === configuration;
       this.#key = key;
+      this.#configuration = configuration;
+      this.#error = undefined;
+      this.#submitted = 0;
+      try {
+        if (!sceneChanged && this.#ready !== undefined && compatible && this.#refresh(input))
+          return;
+      } catch (cause) {
+        this.#fail(input.runtime, cause);
+        return;
+      }
       this.#ready?.retire();
       this.#ready = undefined;
       this.#error = undefined;
@@ -152,17 +175,7 @@ export class RendererRayDiffuse {
     if (this.#pending || this.#ready || this.#error) return;
     this.#pending = true;
     const generation = this.#generation;
-    const fence: RendererGenerationFence = {
-      capturedGeneration: generation,
-      currentGeneration: () => {
-        if (this.#disposed || this.#generation !== generation) return -1;
-        try {
-          return this.#signature() === this.#key ? generation : -1;
-        } catch {
-          return -1;
-        }
-      },
-    };
+    const fence = this.#fence();
     void this.#build(input, fence)
       .then(
         (candidate) => {
@@ -178,9 +191,40 @@ export class RendererRayDiffuse {
       });
   }
 
+  #fence(): RendererGenerationFence {
+    const generation = this.#generation;
+    return {
+      capturedGeneration: generation,
+      currentGeneration: () => {
+        if (this.#disposed || this.#generation !== generation) return -1;
+        try {
+          return this.#signature() === this.#key ? generation : -1;
+        } catch {
+          return -1;
+        }
+      },
+    };
+  }
+
+  #refresh(input: RayDiffuseFrameInput): boolean {
+    const retained = input.scene.retained;
+    if (
+      retained === undefined ||
+      this.#ready === undefined ||
+      this.#ready.textures.some((texture) => !texture.current())
+    )
+      return false;
+    this.#scene.sync(retained, input.worlds, input.visibleSurface);
+    const edit = this.#scene.edit;
+    if (edit === undefined) return false;
+    this.#ready = this.#ready.refresh(this.#fence(), edit);
+    return true;
+  }
+
   #fail(runtime: RenderSystemInternals, cause: unknown): void {
     this.#ready?.retire();
     this.#ready = undefined;
+    this.#scene.reset();
     this.#error = new RhiError({
       code: 'rhi-not-available',
       expected: 'a complete, current rigid scene and published materials for reference diffuse GI',
@@ -214,12 +258,9 @@ export class RendererRayDiffuse {
     const retained = input.scene.retained;
     if (retained === undefined)
       throw new Error('reference diffuse GI requires the complete retained scene');
-    const projected = projectRayScene(
-      retained.slots,
-      input.worlds,
-      Math.min(1_048_576, Math.floor(device.limits.maxStorageBufferBindingSize / 64)),
-      retained,
-    );
+    // The surface layout is the frame's own: rows written by the raster pass
+    // resolve through exactly these addresses. Copied before the first await.
+    const projected = this.#scene.sync(retained, input.worlds, input.visibleSurface);
     if (projected.surfaces.records.byteLength === 0)
       throw new Error('no admitted receiver records');
     const entries = [...shaders.entries()];
@@ -354,16 +395,17 @@ export class RendererRayDiffuse {
               },
               submittedSamples: () => samples,
             });
-      return {
-        generation: fence.capturedGeneration,
-        fence,
+      const preparedTransport = transport;
+      const prepared = (contentFence: RendererGenerationFence): PreparedRayDiffuse => ({
+        generation: contentFence.capturedGeneration,
+        fence: contentFence,
         pixelCount,
         records,
         recordBytes,
         rays,
         sample,
         textures,
-        transport,
+        transport: preparedTransport,
         generate,
         composite,
         ...(reconstruction === undefined ? {} : { reconstruction }),
@@ -377,13 +419,31 @@ export class RendererRayDiffuse {
           for (const texture of textures) texture.track(completed);
         },
         commit: () => {
+          if (contentFence.currentGeneration() !== contentFence.capturedGeneration) return;
           reconstruction?.commit();
           reflections?.reconstruction?.commit();
           samples++;
-          if (this.#ready?.generation === fence.capturedGeneration) this.#submitted++;
+          if (this.#ready?.generation === contentFence.capturedGeneration) this.#submitted++;
+        },
+        refresh: (nextFence, edit) => {
+          preparedTransport.updateScene(projected.scene, edit).unwrap();
+          reflectionTransport?.updateScene(projected.scene, edit).unwrap();
+          for (const { first, count } of edit.records)
+            device.queue
+              .writeBuffer(
+                records,
+                first * 4,
+                projected.surfaces.records.subarray(first, first + count),
+              )
+              .unwrap();
+          samples = 0;
+          reconstruction?.reset();
+          reflections?.reconstruction?.reset();
+          return prepared(nextFence);
         },
         retire: () => lifetime.retire(),
-      };
+      });
+      return prepared(fence);
     } catch (cause) {
       destroy();
       throw cause;
@@ -396,7 +456,9 @@ export class RendererRayDiffuse {
     this.#ready?.retire();
     this.#ready = undefined;
     this.#input = undefined;
+    this.#scene.reset();
     this.#key = '';
+    this.#configuration = '';
     this.#error = undefined;
     this.#submitted = 0;
   }

@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { readLiveProjectInputs } from '../live-project-inputs.js';
+import { liveProjectReadyLogLine, readLiveProjectInputs } from '../live-project-inputs.js';
 
 const roots: string[] = [];
 async function fixture() {
@@ -315,6 +315,46 @@ it('observes explicit host dependencies and asset membership in the accepted com
   expect(await readLiveProjectInputs(root, paths)).not.toBe(changed);
 });
 
+it('ignores test sources outside the accepted compiler scope', async () => {
+  const root = await fixture();
+  await mkdir(join(root, 'assets/player/__tests__'), { recursive: true });
+  const runtime = join(root, 'assets/player/player.ts');
+  const suite = join(root, 'assets/player/__tests__/player.test.ts');
+  const sibling = join(root, 'assets/player/player.spec.ts');
+  await writeFile(runtime, 'export const speed = 1;');
+  await writeFile(suite, "it('moves', () => {});");
+  await writeFile(sibling, "it('stops', () => {});");
+  const paths = [runtime];
+  const before = await readLiveProjectInputs(root, paths);
+  await writeFile(suite, "it('moves faster', () => {});");
+  await writeFile(sibling, "it('stops sooner', () => {});");
+  await writeFile(join(root, 'assets/player/__tests__/new.test.ts'), "it('new', () => {});");
+  expect(await readLiveProjectInputs(root, paths)).toBe(before);
+  await writeFile(runtime, 'export const speed = 20;');
+  expect(await readLiveProjectInputs(root, paths)).not.toBe(before);
+});
+
+it('tracks a test-named file that the compiler read', async () => {
+  const root = await fixture();
+  await mkdir(join(root, 'assets/__tests__'), { recursive: true });
+  const shared = join(root, 'assets/__tests__/fixture.ts');
+  await writeFile(shared, 'export const value = 1;');
+  const paths = [shared];
+  const before = await readLiveProjectInputs(root, paths);
+  await writeFile(shared, 'export const value = 20;');
+  expect(await readLiveProjectInputs(root, paths)).not.toBe(before);
+});
+
+it('keeps test sources in the conservative scope before the compiler reports one', async () => {
+  const root = await fixture();
+  await mkdir(join(root, 'assets/__tests__'), { recursive: true });
+  const suite = join(root, 'assets/__tests__/starter.test.ts');
+  await writeFile(suite, "it('starts', () => {});");
+  const before = await readLiveProjectInputs(root);
+  await writeFile(suite, "it('starts later', () => {});");
+  expect(await readLiveProjectInputs(root)).not.toBe(before);
+});
+
 it('rejects unreadable asset members after accepting the compiler scope', async () => {
   const root = await fixture();
   await mkdir(join(root, 'assets'));
@@ -324,4 +364,24 @@ it('rejects unreadable asset members after accepting the compiler scope', async 
   await expect(readLiveProjectInputs(root, [])).rejects.toMatchObject({ code: 'ENOENT' });
   await rm(broken);
   expect(await readLiveProjectInputs(root, [])).toBe(before);
+});
+
+it('logs a ready line as an input count plus the paths changed since the last generation', () => {
+  const root = '/game';
+  const paths = Array.from({ length: 40 }, (_, index) => `${root}/assets/${index}.pack.ts`);
+  const ready = { ready: true, generation: 2, url: 'http://127.0.0.1:1/', inputVersion: 'v2' };
+  expect(
+    JSON.parse(liveProjectReadyLogLine(root, { ...ready, inputPaths: paths }, undefined)),
+  ).toEqual({ ...ready, inputPathCount: 40 });
+  const next = [...paths.slice(1), `${root}/assets/new.pack.ts`];
+  expect(JSON.parse(liveProjectReadyLogLine(root, { ...ready, inputPaths: next }, paths))).toEqual({
+    ...ready,
+    inputPathCount: 40,
+    addedInputPaths: ['assets/new.pack.ts'],
+    removedInputPaths: ['assets/0.pack.ts'],
+  });
+  const replaced = paths.map((path) => path.replace('.pack.ts', '.pack.json'));
+  const bulk = JSON.parse(liveProjectReadyLogLine(root, { ...ready, inputPaths: replaced }, paths));
+  expect(bulk.addedInputPaths).toHaveLength(16);
+  expect(bulk.inputChangeCount).toBe(80);
 });

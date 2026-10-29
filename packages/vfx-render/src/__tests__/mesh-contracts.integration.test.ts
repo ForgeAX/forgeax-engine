@@ -16,11 +16,11 @@ import {
 } from '../../../render/src/assembly/webgpu-vertex-layouts';
 import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import {
-  freezeVfxPlan as freezeRenderFeaturePlan,
   gpuParticleRenderFeature,
   planPasses,
   planResources,
   singleViewContext,
+  freezeVfxPlan as validateRenderFeaturePlan,
 } from './vfx-frame-fixture';
 
 const inputs = [{ name: 'heat', type: 'vec4<f32>', visibility: 'vertex', lane: 0 }] as const;
@@ -141,7 +141,7 @@ async function fixture(
         }),
       )
       .unwrap();
-    expect(freezeRenderFeaturePlan(feature.identity, plan, targets).ok).toBe(true);
+    expect(validateRenderFeaturePlan(feature.identity, plan, targets).ok).toBe(true);
     return { plan, submit: () => feature.onFrameSubmitted?.(extracted) };
   };
   world.update(1 / 60).unwrap();

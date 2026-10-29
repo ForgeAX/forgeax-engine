@@ -19,7 +19,6 @@ import { SpawnLightInvalidBoundsError } from '../errors/ecs-validation';
 import { ShadowInvalidConfigError } from '../errors/render';
 import { DirectionalLight } from './directional-light';
 import { DirectionalShadowFilterValue } from './directional-shadow-filter';
-import { PointLight } from './point-light';
 import { PointLightShadow } from './point-light-shadow';
 import { RectAreaLight } from './rect-area-light';
 import { SpotLight } from './spot-light';
@@ -445,17 +444,6 @@ export function validateSpotLightData(
   if (data.castShadow !== true) return ok(undefined);
   const shadow = validatePunctualShadowData(data, SpotLight, range);
   if (!shadow.ok) return shadow;
-  return ok(undefined);
-}
-
-/** Validate point-light payloads at the render owner boundary. */
-export function validatePointLightData(
-  data: Readonly<Record<string, unknown>>,
-): LightValidationResult {
-  const range = (data.range as number | undefined) ?? (PointLight.fields.range.default as number);
-  if (typeof range !== 'number' || Number.isNaN(range) || range < 0) {
-    return err(new SpawnLightInvalidBoundsError('PointLight', 'range', range));
-  }
   return ok(undefined);
 }
 

@@ -1,18 +1,19 @@
+import type { SkinTaskBinding } from './record/skin-tasks';
 // Renderer-owned clustered light resources. One immutable bundle keeps the
 // producer uploads, graph imports, draw bindings and queue-fenced retirement
 // on the same device generation. Storage-capable devices retain the native
 // buffers; downlevel devices pack the same records/grid/memberships into one
 // RGBA32uint texture. Both transports share the cluster uniform contract.
 
-import {
-  type BindGroup,
-  type BindGroupLayout,
-  type BindGroupLayoutDescriptor,
-  type Buffer,
+import type {
+  BindGroup,
+  BindGroupLayout,
+  BindGroupLayoutDescriptor,
+  Buffer,
   RhiError,
-  type Sampler,
-  type Texture,
-  type TextureView,
+  Sampler,
+  Texture,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { GPU_SHADER_STAGE_COMPUTE } from './gpu-stage';
 import {
@@ -438,9 +439,9 @@ export function packClusterUniform(
  *     -> binding 7 = 1x1 white fallback texture (AO = 1.0)
  *     -> binding 8 = fallback sampler
  *
- * Intensity flows via `cluster_uniform.near_far_log.w` (binding 6); the host
- * writes intensity=0 when SSAO is disabled so the lighting blend
- * `mix(1.0, ssao*ao, 0) = 1.0` collapses to the round-1 baseline. The
+ * Intensity flows via `cluster_uniform.near_far_log.w` (binding 6); lighting
+ * reads it only as the enabled flag (the calc pass already applied the
+ * exponent), and the host writes 0 when SSAO is disabled. The
  * "always-7-entries" invariant lets every PBR PSO use the same pipeline
  * layout regardless of SSAO state — toggling the runtime config never
  * triggers shader recompile (charter P4 one consistent abstraction).
@@ -577,14 +578,13 @@ export function createHdrpUnifiedBindGroup(
   return result.value;
 }
 
-/** Build the clustered skin group(2) bind group with one shared palette window. */
+/** Bind the actual paired Skin task with the existing clustered lighting. */
 export function createHdrpSkinUnifiedBindGroup(
   runtime: RenderSystemRuntime,
   hdrpBuffers: HdrpBuffers,
   layout: BindGroupLayout,
   meshStorageBuffer: Buffer,
-  paletteBuffer: Buffer,
-  paletteBindingWindowBytes: number,
+  task: SkinTaskBinding,
   ssaoOptions: SsaoBindOptions = { enabled: false },
   meshBindingBytes = runtime.device.caps.storageBuffer
     ? MESH_PER_ENTITY_STRIDE
@@ -596,12 +596,7 @@ export function createHdrpSkinUnifiedBindGroup(
     label: 'hdrp-skin-unified-bg-group2',
     layout,
     entries: [
-      ...createPbrSkinMeshBindGroupEntries(
-        meshStorageBuffer,
-        meshBindingBytes,
-        paletteBuffer,
-        paletteBindingWindowBytes,
-      ),
+      ...createPbrSkinMeshBindGroupEntries(meshStorageBuffer, meshBindingBytes, task),
       ...standardLightingEntries(
         hdrpBuffers,
         ssaoOptions.enabled ? ssaoOptions.ssaoBlurredView : fallback.view,
@@ -656,6 +651,3 @@ export function createHdrpClusterMembershipBindGroup(
   }
   return result.value;
 }
-
-/** Sentinel error class re-export for tests asserting the error path. */
-export { RhiError as HdrpBufferAllocError };

@@ -46,7 +46,6 @@ export type ExecutionCapabilities = Readonly<
 >;
 
 export type ExecutionEngineHealth = 'idle' | 'starting' | 'running' | 'stopped' | 'faulted';
-export type ExecutionWorldHealth = WorldExecutionHealth;
 
 export type KernelDispatchReason =
   | 'no-eligible-kernel'
@@ -77,10 +76,10 @@ export interface ExecutionFault {
 export interface ExecutionAudioReport extends Omit<AudioState, 'lastError'> {
   readonly owner: 'host';
   readonly lastError: {
-    readonly code: string;
+    readonly code: NonNullable<AudioState['lastError']>['code'];
     readonly expected: string;
     readonly hint: string;
-    readonly detail: unknown;
+    readonly detail: NonNullable<AudioState['lastError']>['detail'];
   } | null;
 }
 
@@ -121,7 +120,7 @@ export type ExecutionRenderLimits = Readonly<{
 }>;
 
 export interface ExecutionReport {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 4;
   readonly workers: ExecutionSelection;
   readonly capabilities: ExecutionCapabilities;
   readonly engine: {
@@ -130,7 +129,7 @@ export interface ExecutionReport {
   };
   readonly world: {
     readonly identity: string | null;
-    readonly health: ExecutionWorldHealth;
+    readonly health: WorldExecutionHealth;
     readonly partialWrite: boolean;
     readonly retryable: boolean;
   };
@@ -224,11 +223,18 @@ export type ExecutionBootstrapValue =
 export interface ExecutionControl {
   report(): ExecutionReport;
   rebuild(): Promise<Result<ExecutionReport, AppError>>;
+  /**
+   * Limit admitted frames to at most `framesPerSecond`; `null` admits every
+   * display callback (the default). Admissions stay on display callbacks with
+   * an even cadence, and World time remains the measured elapsed time.
+   * Throws `RangeError` unless the value is `null` or finite and positive.
+   */
+  setFrameRateLimit(framesPerSecond: number | null): void;
 }
 
-/** Full detached facts from the actual selected Renderer, never execution-counter projections. */
-export type ExecutionRendererInspectionResult =
-  | { readonly ok: true; readonly value: RenderInspection }
+/** Detached facts from the actual selected Renderer; fields may be selected before transport. */
+export type ExecutionRendererInspectionResult<T = RenderInspection> =
+  | { readonly ok: true; readonly value: T }
   | {
       readonly ok: false;
       readonly error: Pick<
@@ -241,14 +247,30 @@ export type ExecutionGeometryObservationResult =
   | { readonly ok: true; readonly value: import('@forgeax/engine-render').GeometryObservation }
   | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
 
+export interface ExecutionRendererInspectionOptions<
+  K extends keyof RenderInspection = keyof RenderInspection,
+> {
+  readonly pipelineLibrary?: boolean;
+  readonly pipelineLibraryCollection?: boolean;
+  readonly pipelineLibraryLimits?: NonNullable<
+    NonNullable<
+      Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
+    >['pipelineLibraryLimits']
+  >;
+  /** Materialize the bounded runtime request history only for an explicit diagnostic read. */
+  readonly runtimeRequests?: boolean;
+  readonly signal?: AbortSignal;
+  /** Select owner fields before structured cloning; omission preserves the full snapshot. */
+  readonly fields?: readonly K[];
+}
+
 /** Public `execution` root injected into App.remoteEval/executeScript in the Engine realm. */
 export interface ExecutionRendererInspectionContext {
   /** One intrusive diagnostic frame; not ordinary FPS acceptance. */
   observeNextGeometry(options?: {
     readonly signal?: AbortSignal;
   }): Promise<ExecutionGeometryObservationResult>;
-  inspectRenderer(options?: {
-    readonly pipelineLibrary?: boolean;
-    readonly signal?: AbortSignal;
-  }): Promise<ExecutionRendererInspectionResult>;
+  inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
+    options?: ExecutionRendererInspectionOptions<K>,
+  ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>>;
 }

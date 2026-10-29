@@ -2,11 +2,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { type FrameRecording, submitFrameRecordings } from '../assembly/frame-recording';
-import {
-  createRenderFeatureHost,
-  type RenderFeatureFrameResult,
-  runRenderFeatureFrame,
-} from '../features/host';
+import { createRenderFeatureHost, type RenderFeatureFrameResult } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
@@ -160,7 +156,7 @@ it('never repeats accepted source acknowledgements after terminal callback failu
     onFrameAborted: () => events.push('aborted'),
   };
   const host = createRenderFeatureHost([feature]).unwrap();
-  const batch = runRenderFeatureFrame(host, [
+  const batch = host.runFrame([
     {
       identity: 'view',
       render: true,
@@ -225,7 +221,7 @@ it.each([
   }));
   const host = createRenderFeatureHost(features).unwrap();
   const frame = () =>
-    runRenderFeatureFrame(host, [
+    host.runFrame([
       {
         identity: 'view',
         render: true,

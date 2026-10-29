@@ -4,13 +4,20 @@ import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extrac
 export function publicationDependencies(
   row: Pick<
     RenderableSnapshot,
-    'assetHandle' | 'materials' | 'materialOverrides' | 'terrain' | 'glyph' | 'tilemap'
+    | 'assetHandle'
+    | 'materials'
+    | 'materialOverrides'
+    | 'terrain'
+    | 'glyph'
+    | 'tilemap'
+    | 'skinBinding'
   >,
 ): number[] {
   if (row.glyph !== undefined) return [row.glyph.font];
   if (row.tilemap !== undefined) return [row.tilemap.tileset];
   if (row.terrain !== undefined) return [row.terrain.handle];
   const handles = new Set<number>([row.assetHandle as number]);
+  if (row.skinBinding !== undefined) handles.add(row.skinBinding.skeleton);
   for (const override of row.materialOverrides ?? [])
     if (override?.snapshot.materialHandle) handles.add(override.snapshot.materialHandle);
   for (const material of row.materials) {
@@ -82,6 +89,7 @@ export function renderableAssetRoots(row: RenderableSnapshot): readonly number[]
   if (row.tilemap !== undefined) return [row.tilemap.tileset];
   if (row.terrain !== undefined) return [row.terrain.handle];
   const handles = new Set<number>(row.assetHandle === undefined ? [] : [row.assetHandle]);
+  if (row.skinBinding !== undefined) handles.add(row.skinBinding.skeleton);
   for (const override of row.materialOverrides ?? [])
     if (override?.snapshot.materialHandle) handles.add(override.snapshot.materialHandle);
   for (const material of row.materials) handles.add(material.snapshot.materialHandle ?? 0);

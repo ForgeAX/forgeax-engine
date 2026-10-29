@@ -96,6 +96,7 @@ import {
 } from '../gpu-texture-usage';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
+  GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_UNIFORM,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
@@ -119,7 +120,8 @@ import {
   type MeshRenderData,
   type TextureRenderData,
 } from '../render-data';
-import type { DeviceScope, LifecycleResourceSpec } from './device-scope';
+import type { DeviceScope } from './device-scope';
+import { MorphGeometry } from './morph-geometry';
 
 const FACE_COUNT = 6;
 
@@ -570,6 +572,8 @@ const NO_TEXTURE_WORK = ok(undefined);
 const DERIVED_GEOMETRY = Symbol();
 
 export class GpuResidencyCache {
+  /** Per-entity morphed streams derived from resident Mesh handles. */
+  readonly morphGeometry = new MorphGeometry();
   private readonly textureDerivations = new TextureDerivations();
   private readonly pendingImageAdoptions = new ScopedGpuResources<AssetChange>();
   /** Actual consumers can request RGBA for CPU image pages; ordinary GPU uploads select device caps. */
@@ -632,6 +636,12 @@ export class GpuResidencyCache {
     this.imagePageScopes.delete(world);
   }
   private readonly meshSourceRevisions = new WeakMap<MeshGpuHandles, number>();
+  /**
+   * Same-handle mesh content adoption outcomes. `inPlace` writes only the
+   * changed ranges, `copyOnWrite` forks a leased allocation without a
+   * re-preparation, and `retired` falls back to a later complete upload.
+   */
+  readonly meshChangeCounters = { inPlace: 0, copyOnWrite: 0, retired: 0 };
   readonly meshChanges = new MeshChanges();
   /** Monotonic within the native Mesh owner generation; no second publication clock. */
   get meshResidencyEpoch(): number {
@@ -1071,6 +1081,7 @@ export class GpuResidencyCache {
    */
   destroyAll(): void {
     this.meshChanges.assertIdle();
+    this.morphGeometry.dispose(() => {});
     this.textureDerivations.clear();
     this.pendingImageAdoptions.clear();
     this.imagePages.dispose();
@@ -1123,41 +1134,6 @@ export class GpuResidencyCache {
     this.pendingGeneratedRetirement.clear();
     this.retiredMeshes.clear();
     this.sharedMeshBuffers.clear();
-  }
-
-  /** Number of candidate-owned GPU resources currently held by this cache. */
-  recoveryResourceCount(): number {
-    let cubemapResources = 0;
-    const seen = new Set<GpuTexture>();
-    for (const entry of this.cubemapGpuHandles.values()) {
-      if (entry.texture !== null && !seen.has(entry.texture)) {
-        seen.add(entry.texture);
-        cubemapResources += 1;
-      }
-    }
-    return (
-      this.meshGpuHandles.size +
-      this.retiredMeshes.size +
-      this.textureGpuHandles.size +
-      this.retiredTextures.size +
-      this.samplerGpuHandles.size +
-      cubemapResources
-    );
-  }
-
-  /** Candidate root for the cache owner, not a scalar readiness marker. */
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown> {
-    return {
-      kind: 'texture',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('GPU residency candidate scope is not active.');
-        if (this.recoveryResourceCount() === 0) {
-          throw new Error('GPU residency candidate has no prepared resources.');
-        }
-        return this;
-      },
-      cleanup: () => undefined,
-    };
   }
 
   /**
@@ -1720,6 +1696,7 @@ export class GpuResidencyCache {
           field !== 'cardLayout',
       )
     ) {
+      if (!change.removed) this.meshChangeCounters.retired++;
       this.retireMeshEntry(key, entry, namespace);
       return ok(undefined);
     }
@@ -1731,13 +1708,18 @@ export class GpuResidencyCache {
     const device = this.gpuDevice;
     if (
       device === undefined ||
-      this.meshLifetime(entry).owners !== 0 ||
       (entry.lodRanges?.length ?? 0) > 1 ||
       entry.vboBytes !== mesh.vertices.byteLength
     ) {
+      this.meshChangeCounters.retired++;
       this.retireMeshEntry(key, entry, namespace);
       return ok(undefined);
     }
+    // An unsubmitted lease still reads the previous bytes. Mirror material
+    // versions: fork a private allocation for the new content and let the old
+    // generation retire with its lease, instead of a later full re-preparation.
+    if (this.meshLifetime(entry).owners !== 0)
+      return this.forkMeshEntry(key, entry, mesh, change.revision, namespace);
     // Validate every touched physical allocation before writing any of them.
     const writes = [];
     for (const range of ranges) {
@@ -1751,6 +1733,7 @@ export class GpuResidencyCache {
         allocation === undefined ||
         allocation.owners !== 1
       ) {
+        this.meshChangeCounters.retired++;
         this.retireMeshEntry(key, entry, namespace);
         return ok(undefined);
       }
@@ -1782,11 +1765,107 @@ export class GpuResidencyCache {
       if (!this.meshChanges.owns(token)) throw new Error('Mesh range write lost its generation');
       Object.assign(entry, { contentEpoch: this.meshChanges.publish(token) });
       this.meshSourceRevisions.set(entry, change.revision);
+      this.meshChangeCounters.inPlace++;
       return ok(undefined);
     } catch (cause) {
       this.retireMeshEntry(key, entry, namespace);
       throw cause;
     }
+  }
+
+  /**
+   * Copy-on-write for a leased mesh: the new private allocation receives the
+   * complete current source once and becomes the key's generation; the leased
+   * generation keeps its bytes until its lease and submissions complete.
+   */
+  private forkMeshEntry(
+    key: number,
+    entry: MeshGpuHandles,
+    mesh: TypesMeshAsset,
+    revision: number,
+    namespace: GpuResourceNamespace,
+  ): Result<void, RhiError> {
+    const device = this.gpuDevice;
+    const indices = mesh.indices;
+    const indexWidth = entry.indexFormat === 'uint32' ? 4 : 2;
+    const indexBytes = indices === undefined ? 0 : ((indices.byteLength + 3) >> 2) << 2;
+    if (
+      device === undefined ||
+      (indices === undefined) !== (entry.indexBuffer === null) ||
+      (indices !== undefined &&
+        (indices.BYTES_PER_ELEMENT !== indexWidth || indexBytes !== entry.iboBytes))
+    ) {
+      this.meshChangeCounters.retired++;
+      this.retireMeshEntry(key, entry, namespace);
+      return ok(undefined);
+    }
+    this.meshChanges.preflight();
+    const created: Buffer[] = [];
+    const fail = (error: RhiError): Result<void, RhiError> => {
+      for (const buffer of created) device.destroyBuffer(buffer);
+      this.retireMeshEntry(key, entry, namespace);
+      return err(error);
+    };
+    const vbo = device.createBuffer({
+      label: `mesh-${key}-vbo`,
+      size: entry.vboBytes,
+      usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
+      mappedAtCreation: false,
+    });
+    if (!vbo.ok) return fail(vbo.error);
+    created.push(vbo.value);
+    const vertexWrite = device.queue.writeBuffer(vbo.value, 0, mesh.vertices);
+    if (!vertexWrite.ok) return fail(vertexWrite.error);
+    let ibo: Buffer | null = null;
+    if (indices !== undefined) {
+      const indexResult = device.createBuffer({
+        label: `mesh-${key}-ibo`,
+        size: indexBytes,
+        usage: GPU_BUFFER_USAGE_INDEX | GPU_BUFFER_USAGE_COPY_DST,
+        mappedAtCreation: false,
+      });
+      if (!indexResult.ok) return fail(indexResult.error);
+      ibo = indexResult.value;
+      created.push(ibo);
+      let bytes = new Uint8Array(indices.buffer, indices.byteOffset, indices.byteLength);
+      if (bytes.byteLength !== indexBytes) {
+        const padded = new Uint8Array(indexBytes);
+        padded.set(bytes);
+        bytes = padded;
+      }
+      const indexWrite = device.queue.writeBuffer(ibo, 0, bytes);
+      if (!indexWrite.ok) return fail(indexWrite.error);
+    }
+    // Forked buffers are mutable, so they never join immutable byte sharing.
+    const own = (raw: Buffer): GpuBuffer => {
+      const buffer = this.wrapBuf(raw);
+      this.meshBufferOwners.set(buffer, {
+        buffer,
+        bytes: EMPTY_MESH_COMPARISON_WORDS,
+        owners: 1,
+        key: '',
+      });
+      return buffer;
+    };
+    const vertexBuffer = own(vbo.value);
+    const indexBuffer = ibo === null ? null : own(ibo);
+    const changeToken = this.meshChanges.create();
+    const forked: MeshGpuHandles = {
+      ...entry,
+      contentEpoch: changeToken.epoch,
+      changeToken,
+      vertexBuffer,
+      indexBuffer,
+    };
+    this.meshLifetime(forked);
+    const lodAssets = this.meshLodAssets.get(entry);
+    if (lodAssets !== undefined) this.meshLodAssets.set(forked, lodAssets);
+    this.meshSourceRevisions.set(forked, revision);
+    this.meshGpuHandles.set(key, forked, namespace);
+    // The key already names the fork; this retires only the leased generation.
+    this.retireMeshEntry(key, entry, namespace);
+    this.meshChangeCounters.copyOnWrite++;
+    return ok(undefined);
   }
 
   /** Region evidence keeps narrow uploads independent of the full image width. */

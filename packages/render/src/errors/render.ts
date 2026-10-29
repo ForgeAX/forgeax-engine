@@ -380,8 +380,11 @@ export class StandardLightBudgetExceededError extends Error {
   constructor(actual: number, budget: number) {
     const expected = `light count <= ${budget}`;
     const hint =
-      `${actual} finite local lights exceed Standard budget ${budget}; ` +
-      'reduce the local-light set or select a profile with a supported budget';
+      budget < 256
+        ? `${actual} finite local lights exceed Standard budget ${budget}; raise it with ` +
+          'renderer.setProfile({ ...renderer.inspect().profile, lightCount: 256 }) or reduce the local-light set'
+        : `${actual} finite local lights exceed the Standard maximum of 256; merge distant ` +
+          'lamps into emissive meshes with bloom or reduce the local-light set';
     super(`Standard light budget exceeded: ${actual} > ${budget}`);
     this.name = 'StandardLightBudgetExceededError';
     this.expected = expected;

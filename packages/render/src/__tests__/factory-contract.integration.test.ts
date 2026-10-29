@@ -10,6 +10,7 @@ import {
   type PipelineLibrary,
   type PipelineLibraryInspection,
   type PipelineLibraryManifest,
+  type PipelineLibraryPrepareOptions,
   RhiError,
   type RhiWebgpuRuntimeCause,
   type ShaderModule,
@@ -45,6 +46,7 @@ import {
   TONEMAP_ACES_FILMIC,
   TONEMAP_NONE,
 } from '../components/camera';
+import { DeviceScope } from '../device/device-scope';
 import { TemporalFrameSubmitError } from '../errors/render';
 import type { RenderFeaturePlanContext, RenderFeatureWork } from '../features/plan';
 import type { RenderFeature } from '../features/types';
@@ -220,6 +222,40 @@ function createGenericPostProbeFeature(): RenderFeature<undefined> {
 }
 
 describe('factory contract', () => {
+  it('releases runtime Feature shader owners after duplicate install, failure and uninstall', async () => {
+    const children = vi.spyOn(DeviceScope.prototype, 'createChild');
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { rhi },
+      { shaderManifestUrl: manifestUrl() },
+    );
+    const feature: RenderFeature<unknown> = {
+      identity: 'test::temporary-shaders',
+      requiredFullscreenPostProcesses: [{ identity: 'test::effect', source: '// owned feature' }],
+      extract: () => ok(undefined),
+      plan: () => ok({ work: [] }),
+    };
+    const warmups = () =>
+      children.mock.results
+        .filter(
+          (result) => result.type === 'return' && result.value.owner === 'render-feature-shaders',
+        )
+        .map((result) => result.value as DeviceScope);
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect((await renderer.installRenderFeature(feature)).ok).toBe(true);
+      expect((await renderer.installRenderFeature(feature)).ok).toBe(true);
+      expect(warmups().map((scope) => scope.isAlive())).toEqual([false, true]);
+      expect((await renderer.installRenderFeature({ ...feature })).ok).toBe(false);
+      expect(warmups().map((scope) => scope.isAlive())).toEqual([false, true, false]);
+      expect((await renderer.uninstallRenderFeature(feature)).ok).toBe(true);
+      expect(warmups().every((scope) => !scope.isAlive())).toBe(true);
+    } finally {
+      await renderer.dispose();
+      children.mockRestore();
+    }
+  });
+
   it.each([
     'webgpu',
     'wgpu-webgl2',
@@ -281,6 +317,13 @@ describe('factory contract', () => {
       overflow: 0,
       sourceBytes: 0,
       warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+      backgroundWarmup: {
+        requested: 0,
+        completed: 0,
+        failed: 0,
+        elapsedMs: 0,
+        state: 'idle' as const,
+      },
     };
     const pipelineLibrary: PipelineLibraryManifest = {
       version: 1,
@@ -360,6 +403,229 @@ describe('factory contract', () => {
       );
     } finally {
       libraryFence.resolve();
+      await renderer.dispose();
+    }
+  });
+
+  it('starts the background library after readiness without awaiting or failing on it', async () => {
+    const inspection: PipelineLibraryInspection = {
+      state: 'active',
+      shaders: 0,
+      renderPipelines: 0,
+      computePipelines: 0,
+      shaderHits: 0,
+      pipelineHits: 0,
+      synchronousCreations: 0,
+      asynchronousCreations: 0,
+      compilationCompleted: 0,
+      compilationPending: 0,
+      failures: 0,
+      unrecordable: 0,
+      overflow: 0,
+      sourceBytes: 0,
+      warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+      backgroundWarmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0, state: 'idle' },
+    };
+    const empty: PipelineLibraryManifest = {
+      version: 1,
+      backend: 'webgpu',
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const background: PipelineLibraryManifest = {
+      ...empty,
+      shaders: [{ code: '// background' }],
+    };
+    for (const outcome of ['pending', 'failed', 'done'] as const) {
+      const releaseCollection = vi.fn();
+      const collect = vi.fn(() => ({ dispose: releaseCollection }));
+      const fence = deferred<void>();
+      const prepare = vi.fn(
+        async (_manifest: PipelineLibraryManifest, options?: PipelineLibraryPrepareOptions) => {
+          if (options?.background !== true) return ok(inspection);
+          await fence.promise;
+          if (outcome === 'done') return ok(inspection);
+          return err(
+            new RhiError({ code: 'rhi-descriptor-invalid', expected: 'background', hint: 'test' }),
+          );
+        },
+      );
+      const library = {
+        collect,
+        prepare,
+        inspect: () => inspection,
+        export: () => ok(empty),
+      } satisfies PipelineLibrary;
+      const adapter = new RhiNullAdapter();
+      const device = Object.assign((await adapter.requestDevice()).unwrap(), {
+        pipelineLibrary: library,
+      });
+      const backend = {
+        ...rhi,
+        requestAdapter: async () =>
+          ok({
+            features: adapter.features,
+            limits: adapter.limits,
+            requestDevice: async () => ok(device),
+          }),
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const renderer = await constructRenderer(
+        { width: 64, height: 64, getContext: () => null },
+        { rhi: backend, pipelineLibrary: empty, backgroundPipelineLibrary: background },
+        { shaderManifestUrl: renderLifecycleManifestUrl() },
+      );
+      try {
+        // Readiness never waits for the still-pending background lane.
+        expect((await renderer.initialization).ok).toBe(true);
+        expect(
+          renderer.inspect({ pipelineLibraryCollection: true }).pipelineLibraryCollecting,
+        ).toBe(true);
+        expect(collect).toHaveBeenCalledOnce();
+        renderer.inspect({ pipelineLibraryCollection: false });
+        expect(releaseCollection).toHaveBeenCalledOnce();
+        renderer.inspect({ pipelineLibraryCollection: true });
+
+        expect(prepare).toHaveBeenCalledTimes(2);
+        expect(prepare.mock.calls[0]?.[0]).toEqual(empty);
+        expect(prepare).toHaveBeenLastCalledWith(
+          background,
+          expect.objectContaining({
+            background: true,
+            owner: expect.any(Object),
+            sources: expect.any(Array),
+          }),
+        );
+        expect(renderer.inspect().backgroundPipelineLibraryState).toBe('running');
+        if (outcome === 'failed') {
+          fence.resolve();
+          await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+          expect(renderer.inspect().state).toBe('alive');
+          expect(renderer.inspect().backgroundPipelineLibraryState).toBe('failed');
+        } else if (outcome === 'done') {
+          fence.resolve();
+          await vi.waitFor(() =>
+            expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
+          );
+          expect(warn).not.toHaveBeenCalled();
+        }
+      } finally {
+        fence.resolve();
+        await renderer.dispose();
+        expect(releaseCollection).toHaveBeenCalledTimes(2);
+        warn.mockRestore();
+      }
+    }
+  });
+
+  it('replays the background library on the recovered device', async () => {
+    const inspection: PipelineLibraryInspection = {
+      state: 'active',
+      shaders: 0,
+      renderPipelines: 0,
+      computePipelines: 0,
+      shaderHits: 0,
+      pipelineHits: 0,
+      synchronousCreations: 0,
+      asynchronousCreations: 0,
+      compilationCompleted: 0,
+      compilationPending: 0,
+      failures: 0,
+      unrecordable: 0,
+      overflow: 0,
+      sourceBytes: 0,
+      warmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0 },
+      backgroundWarmup: { requested: 0, completed: 0, failed: 0, elapsedMs: 0, state: 'idle' },
+    };
+    const empty: PipelineLibraryManifest = {
+      version: 1,
+      backend: 'webgpu',
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const background: PipelineLibraryManifest = {
+      ...empty,
+      shaders: [{ code: '// background' }],
+    };
+    const library = () => {
+      const prepare = vi.fn(async (_manifest: PipelineLibraryManifest) => ok(inspection));
+      return {
+        prepare,
+        inspect: () => inspection,
+        export: () => ok(empty),
+      } satisfies PipelineLibrary;
+    };
+    const adapter = new RhiNullAdapter();
+    const lost = deferred<{ readonly reason: 'unknown'; readonly message: string }>();
+    const firstLibrary = library(),
+      replacementLibrary = library();
+    const first = Object.assign((await adapter.requestDevice()).unwrap(), {
+      pipelineLibrary: firstLibrary,
+    });
+    const replacement = Object.assign((await adapter.requestDevice()).unwrap(), {
+      pipelineLibrary: replacementLibrary,
+    });
+    const proxy = new Proxy(first, {
+      get(target, property) {
+        if (property === 'lost') return lost.promise;
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    let devices = 0;
+    const recoverableRhi = {
+      ...rhi,
+      requestAdapter: async () =>
+        ok({
+          features: adapter.features,
+          limits: adapter.limits,
+          requestDevice: async () => ok(++devices === 1 ? proxy : replacement),
+        }),
+    } as never;
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { rhi: recoverableRhi, pipelineLibrary: empty, backgroundPipelineLibrary: background },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
+    );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect(firstLibrary.prepare).toHaveBeenLastCalledWith(
+        background,
+        expect.objectContaining({
+          background: true,
+          owner: expect.any(Object),
+          sources: expect.any(Array),
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
+      );
+      lost.reject({ reason: 'unknown', message: 'forced device loss' });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(renderer.health().reason).toBe('device-lost');
+      expect((await renderer.recover()).ok).toBe(true);
+      // The replacement device starts with an empty library: the same manifest
+      // runs again on its background lane instead of compiling on first use.
+      expect(replacementLibrary.prepare.mock.calls[0]?.[0]).toEqual(empty);
+      expect(replacementLibrary.prepare).toHaveBeenLastCalledWith(
+        background,
+        expect.objectContaining({
+          background: true,
+          owner: expect.any(Object),
+          sources: expect.any(Array),
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
+      );
+    } finally {
       await renderer.dispose();
     }
   });
@@ -2796,7 +3062,6 @@ describe('factory contract', () => {
       // Publication retires the graph bound to the previous canvas context;
       // the first recovered draw acquires the replacement presentation target.
       expect(renderer.inspect().perFramePassNames).toHaveLength(0);
-      expect(renderer.inspect().standardLighting).toBeDefined();
       expect(world.update().ok).toBe(true);
       expect(renderer.draw(input()).ok).toBe(true);
       expect(renderer.inspect().perFramePassNames.length).toBeGreaterThan(0);

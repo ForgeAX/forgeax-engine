@@ -10,7 +10,8 @@ canonical receipt plus generator, initializer, derived-glue and declaration dige
 The generated `wgpu-native.d.mts` retains the raw classes and exposes the typed
 native initializer without the browser loader. This build-only conversion needs
 the published artifact, not a local Rust checkout. Source builds separately require
-`verify-current.mjs` to match the current complete source closure.
+`verify-current.mjs` to match the current source closure, excluding Git/CI
+metadata and Cargo target outputs so SDK source can omit `.github/`.
 Generated runtime and declaration imports use the public
 `@forgeax/engine/wgpu-wasm/native-host` entry, whose SHA-256 export resolves the
 integrity dependency inside the complete Engine package. Consumers need only

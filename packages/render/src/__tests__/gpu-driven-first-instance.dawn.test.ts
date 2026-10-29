@@ -20,7 +20,9 @@ import {
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_STORAGE,
 } from '../gpu-usage';
-import type { RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import { buildBindGroupLayoutDescriptor } from '../pbr-pipeline';
+import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { snapshot, standardPbrInputs, updateSnapshot } from './gpu-driven-production-fixture';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
@@ -82,8 +84,15 @@ function member(entityKey: number, asset: number, x: number): RenderableSnapshot
   world[14] = -10;
   const draw = source.gpuDrivenDraws?.[0];
   if (draw === undefined) throw new Error('missing first-instance fixture draw');
+  // A distinct texture binding per member keeps each material root in its own batch.
+  const material = new MaterialResource({
+    ...source.material.snapshot,
+    textureHandles: new Map([['baseColorTexture', entityKey]]),
+  } as unknown as MaterialSnapshot);
   return {
     ...source,
+    material,
+    materials: [material],
     transform: { world },
     lods: [{ mesh: '00000000-0000-7000-8000-000000000001' as never, screenCoverage: 0.5 }],
     gpuDrivenDraws: [
@@ -193,13 +202,15 @@ describe('GPU-driven native first-instance addressing', () => {
         entries: [{ binding: 0, visibility: 0x1, buffer: { type: 'read-only-storage' } }],
       })
       .unwrap();
+    // The adapter binds the production slot-3 shape; this probe also reads
+    // the fragment-only ProbeBlend slot (binding 1) from its vertex stage.
     const instancesLayout = device
       .createBindGroupLayout({
-        entries: Array.from({ length: 8 }, (_, binding) => ({
-          binding,
-          visibility: 0x1,
-          buffer: { type: binding === 5 ? ('uniform' as const) : ('read-only-storage' as const) },
-        })),
+        entries: buildBindGroupLayoutDescriptor({} as never, {
+          kind: 'pbr-gpu-driven-instances',
+        }).entries.map((entry) =>
+          entry.binding === 1 ? { ...entry, visibility: entry.visibility | 0x1 } : entry,
+        ),
       })
       .unwrap();
     const layout = device

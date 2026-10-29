@@ -19,7 +19,7 @@ it.each([
       .importTexture(
         label,
         { format, size: 'surface', usage: 0x04 },
-        (frame) => frame.currentTexture,
+        (frame) => frame.outputTarget().texture,
       )
       .unwrap();
     return { texture, view: graph.view(texture).unwrap(), format, sampleCount: 1 };

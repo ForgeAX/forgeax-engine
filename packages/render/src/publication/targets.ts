@@ -1,5 +1,7 @@
 import { createRenderTargetHost, type RenderTargetHost } from '../assembly/render-target-host';
 import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { captureMaterialOverrides } from '../scene/mesh-materials';
 import type {
   RenderTarget,
   RenderTargetDescriptor,
@@ -93,19 +95,28 @@ interface ReceivedTarget {
 /** Translate logical references once at receive time; no source GPU handle crosses realms. */
 export class RenderPublicationTargetReceiver {
   private readonly targets = new Map<number, ReceivedTarget>();
+  /** Receiver-owned source key -> publisher source key, for materials accepted in earlier packets. */
+  private readonly origins = new Map<string, { readonly key: string; readonly target: number }>();
   constructor(private readonly host: RenderTargetAuthoring) {}
+  /** The publisher key an accepted (already rebound) material source was published under. */
+  originKey(key: string): string | undefined {
+    return this.origins.get(key)?.key;
+  }
   apply(input: PreparedRenderPublication): PreparedRenderPublication {
     const packet = input.packet;
     if (packet.targets.length === 0 && packet.targetSources.length === 0 && this.targets.size === 0)
       return input;
     const tokens = new Map<RenderTarget, RenderTarget>();
     const records = new Map<RenderTarget, ReceivedTarget>();
+    const ids = new Map<RenderTarget, number>();
     const active = new Set(packet.targets.map((row) => row.id));
     for (const [id, record] of this.targets)
       if (!active.has(id)) {
         const destroyed = this.host.destroyRenderTarget(record.target);
         if (!destroyed.ok) throw destroyed.error;
         this.targets.delete(id);
+        for (const [key, origin] of this.origins)
+          if (origin.target === id) this.origins.delete(key);
       }
     for (const row of packet.targets) {
       let record = this.targets.get(row.id);
@@ -122,6 +133,7 @@ export class RenderPublicationTargetReceiver {
       }
       tokens.set(row.token, record.target);
       records.set(row.token, record);
+      ids.set(row.token, row.id);
     }
     const resolve = (token: RenderTarget): RenderTarget => {
       const target = tokens.get(token);
@@ -143,6 +155,10 @@ export class RenderPublicationTargetReceiver {
         record.sources.set(key, source);
       }
       sources.set(renderTextureSourceKey(row.token), source);
+      this.origins.set(renderTextureSourceKey(source), {
+        key: renderTextureSourceKey(row.token),
+        target: ids.get(row.target) as number,
+      });
     }
     const camera = <T extends { readonly target?: RenderTarget }>(row: T): T =>
       row.target === undefined ? row : { ...row, target: resolve(row.target) };
@@ -155,7 +171,8 @@ export class RenderPublicationTargetReceiver {
         [...material.snapshot.textureSources].map(([name, token]) => {
           if (isCanvasTextureSource(token) || isExternalTextureSource(token))
             return [name, token] as const;
-          const source = sources.get(renderTextureSourceKey(token));
+          const key = renderTextureSourceKey(token);
+          const source = sources.get(key) ?? sources.get(this.originKey(key) ?? key);
           if (source === undefined)
             throw new RenderPublicationError({
               reason: 'shape',
@@ -169,12 +186,33 @@ export class RenderPublicationTargetReceiver {
       return resource;
     };
     const materialUpdates = input.materialUpdates.map(rebind);
+    // Rows without a rebound material stay the same object; only rebound rows are copied.
+    const snapshots = new Map<number, RenderableSnapshot>();
     const renderables = input.frame.renderables.map((row) => {
       const materials = row.materials.map(rebind);
+      // Slot overrides (MeshRenderer.materials) reference the same staged
+      // resources; they must resolve to the same rebound copy, or adoption
+      // cannot map them to the accepted material.
+      const overrides = row.materialOverrides?.map((material) =>
+        material === undefined ? undefined : rebind(material),
+      );
+      if (
+        materials.every((material, index) => material === row.materials[index]) &&
+        (overrides?.every((material, index) => material === row.materialOverrides?.[index]) ?? true)
+      )
+        return row;
       const first = row.materials.indexOf(row.material);
-      return { ...row, materials, material: materials[Math.max(0, first)] ?? row.material };
+      const rebound = {
+        ...row,
+        materials,
+        material: materials[Math.max(0, first)] ?? row.material,
+        ...(overrides === undefined
+          ? {}
+          : { materialOverrides: captureMaterialOverrides(overrides) }),
+      };
+      snapshots.set(row.entityKey, rebound);
+      return rebound;
     });
-    const snapshots = new Map(renderables.map((row) => [row.entityKey, row]));
     return {
       ...input,
       materialUpdates,
@@ -188,12 +226,7 @@ export class RenderPublicationTargetReceiver {
       operations: input.operations.map((operation) => {
         if (operation.kind === 'remove' || operation.snapshot === undefined) return operation;
         const snapshot = snapshots.get(operation.entityKey);
-        if (snapshot === undefined)
-          throw new RenderPublicationError({
-            reason: 'shape',
-            subject: 'missing remapped snapshot',
-          });
-        return { ...operation, snapshot };
+        return snapshot === undefined ? operation : { ...operation, snapshot };
       }),
     };
   }

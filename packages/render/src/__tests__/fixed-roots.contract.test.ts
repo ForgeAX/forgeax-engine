@@ -2,7 +2,6 @@ import { assert, expect, it, vi } from 'vitest';
 import { BatchSources, MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, type GpuDrivenBatch } from '../gpu-driven/batch-topology';
 import { MeshBatchProjection } from '../gpu-driven/mesh-batches';
-import type { FrameProjection } from '../scene/frame-list';
 import { TreeFrame } from '../scene/frame-tree-list';
 import { RenderScene } from '../scene/render-scene';
 import { receiptRow } from './gpu-draw-selection-fixture';
@@ -17,8 +16,9 @@ function publication() {
 it('keeps Direct members fixed when public derived container root is replaced', () => {
   const { topology, source } = publication();
   const batch = required(source.batches.at(0));
-  const members = batch.members as FrameProjection<unknown, unknown>;
-  Reflect.set(members.source, 'root', undefined);
+  const members = required(batch.members);
+  expect(Reflect.set(members, 'length', 0)).toBe(false);
+  expect(Reflect.set(members, 'source', undefined)).toBe(false);
   const executed = topology.query(source, undefined);
   expect(executed.batches.at(0)?.members?.length).toBe(1);
   expect(executed.batches.at(0)?.members?.at(0)?.entityKey).toBe(42);
@@ -58,8 +58,8 @@ it('prevents numeric candidate and member alias edits from changing held facts',
   const candidates = batch.candidates as MemberCandidates;
   const candidate = required(candidates.at(0));
   Reflect.set(candidate, 'generation', 999);
-  Reflect.set(required(candidates.root).value.member, 'instanceCount', 999);
-  Reflect.set(required(candidates.root), 'weight', 999);
+  Reflect.set(required(batch.members?.at(0)), 'instanceCount', 999);
+  expect(Reflect.set(required(candidates.root), 'weight', 999)).toBe(false);
   expect(candidates.at(0)?.generation).toBe(0);
   expect(candidates.length).toBe(1);
   expect(batch.members?.at(0)?.instanceCount).toBe(1);
@@ -76,13 +76,14 @@ it('retains fixed extent facts across 64/65 resize and generation replacement', 
     old = before.at(63);
   const grown = before.with({ ...member, instanceCount: 65 });
   const smaller = grown.with({ ...member, instanceCount: 64 });
-  expect(grown.at(63)).toBe(old);
-  expect(smaller.at(63)).toBe(old);
+  expect(grown.at(63)).toEqual(old);
+  expect(smaller.at(63)).toEqual(old);
+  expect(grown.at(64)).toEqual({ ...old, instanceOrdinal: 64 });
   expect(before.length).toBe(64);
   expect(grown.length).toBe(65);
   const replaced = grown.with({ ...member, generation: 2, instanceCount: 65 });
   expect(replaced.at(0)?.generation).toBe(2);
-  expect(replaced.at(0)).not.toBe(grown.at(0));
+  expect(replaced.at(64)?.generation).toBe(2);
   expect(grown.at(0)?.generation).toBe(1);
 });
 it('seals only changed member paths instead of walking the retained tree', () => {
@@ -103,7 +104,7 @@ it('seals only changed member paths instead of walking the retained tree', () =>
     expect(freeze.mock.calls.length).toBeLessThan(128);
     expect(inspect.mock.calls.length).toBeLessThan(256);
     expect(next.length).toBe(4095);
-    expect(next.at(-1)).toBe(old);
+    expect(next.at(-1)).toEqual(old);
     expect(members.length).toBe(4096);
   } finally {
     freeze.mockRestore();

@@ -27,6 +27,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -281,7 +282,7 @@ export async function verifyClippingPlanes(
       if (live === undefined) throw new Error('missing live HDR pixels');
       (await recorder.frameBoundary()).unwrap();
       const captured = (await pending).unwrap();
-      await save(`${name}.rhitape`, captured.bytes);
+      await save(`${name}.rhitape`, compactTape(captured).bytes);
       const tape = decodeTape(captured.bytes).unwrap();
       const model = buildFrameModel(tape);
       const geometry = model.works.find((work) =>

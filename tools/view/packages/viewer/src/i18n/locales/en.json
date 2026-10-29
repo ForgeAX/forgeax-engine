@@ -90,6 +90,11 @@
       "material": "Material",
       "mesh": "Mesh",
       "texture": "Texture",
+      "image": "Image",
+      "equirect": "Environment",
+      "audio": "Audio",
+      "model": "Model",
+      "plugin": "Plugin",
       "asset": "Asset",
       "html": "HTML UI",
       "history": "Operation history"
@@ -110,6 +115,7 @@
       "texturePreview": "Texture preview",
       "textureProperties": "Texture properties",
       "assetProperties": "Asset properties",
+      "parameters": "Runtime Parameter Settings",
       "htmlPreview": "HTML preview",
       "htmlInspector": "HTML source"
     },

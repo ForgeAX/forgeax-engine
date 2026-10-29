@@ -1,15 +1,21 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect, it } from 'vitest';
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  browserRendererFixture,
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  verifyReplay,
+} from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
+
+const rendererFor = browserRendererFixture();
 
 it('preserves transmission depth writes and transparent blending', {
   timeout: 180000,
 }, async () => {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
-  const renderer = new THREE.WebGPURenderer({ canvas });
+  const renderer = rendererFor();
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x385060);
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
@@ -50,7 +56,6 @@ it('preserves transmission depth writes and transparent blending', {
     glassMaterial.needsUpdate = true;
     expect(await frame('transparent')).not.toEqual(withoutDepth);
   } finally {
-    await renderer.dispose();
     for (const material of [backgroundMaterial, glassMaterial, stripMaterial]) material.dispose();
   }
 });
@@ -58,9 +63,7 @@ it('preserves transmission depth writes and transparent blending', {
 it('draws all double-sided transmission backs before the sorted fronts', {
   timeout: 180000,
 }, async () => {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
-  const renderer = new THREE.WebGPURenderer({ canvas });
+  const renderer = rendererFor();
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x385060);
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
@@ -109,7 +112,6 @@ it('draws all double-sided transmission backs before the sorted fronts', {
     glassMaterial.needsUpdate = secondMaterial.needsUpdate = true;
     await frame('transparent');
   } finally {
-    await renderer.dispose();
     for (const material of [backgroundMaterial, glassMaterial, secondMaterial]) material.dispose();
     geometry.dispose();
   }

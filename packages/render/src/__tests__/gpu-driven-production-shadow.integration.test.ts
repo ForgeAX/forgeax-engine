@@ -6,6 +6,8 @@ import { createMaterialShaderProgram } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareBatchExecution } from '../gpu-driven/batch-execution';
 import * as batchTopology from '../gpu-driven/batch-topology';
+import * as cameraProjection from '../gpu-driven/production-raster-camera';
+import * as shadowLod from '../gpu-driven/production-raster-lod';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
@@ -24,6 +26,41 @@ import { mesh, preparedSnapshot, updateSnapshot } from './gpu-driven-production-
 import { productionShadowFixture } from './gpu-driven-production-shadow-fixture';
 
 describe('GPU-driven production shadow projection', () => {
+  it.each([
+    false,
+    true,
+  ])('derives shadow cameras only for consumed compute work, with camera cull %s', async (cameraCull) => {
+    const f = await productionShadowFixture(2, 3);
+    const derive = vi.spyOn(shadowLod, 'lodViewCameraFromMatrix');
+    const cull = vi.spyOn(cameraProjection, 'occlusionCamera');
+    if (cameraCull)
+      for (const request of f.requests)
+        Object.assign(request, { cameraCull: { ndcDilation: 0.01, worldDilation: 0.01 } });
+    try {
+      f.prepare();
+      if (cameraCull) f.prepare();
+      expect(derive).toHaveBeenCalled();
+      derive.mockClear();
+      cull.mockClear();
+      const steady = f.prepare();
+      expect(steady.views.every((view) => view.submission.cache === 'hit')).toBe(true);
+      expect(derive).not.toHaveBeenCalled();
+      // The main view still derives its camera; retained shadows need none.
+      expect(cull).toHaveBeenCalledTimes(1);
+      const request = required(f.requests[0]);
+      const matrix = required(request.matrix);
+      matrix[12] = 0.25;
+      request.planes.set(frustum.fromViewProjection(frustum.create(), matrix));
+      const changed = f.prepare();
+      expect(changed.views.some((view) => view.submission.cache === 'invalidated')).toBe(true);
+      expect(derive).toHaveBeenCalled();
+    } finally {
+      derive.mockRestore();
+      cull.mockRestore();
+      f.dispose();
+    }
+  });
+
   it('admits prepared Alpha Mask draws to the GPU shadow lane', async () => {
     const f = await productionShadowFixture(1);
     try {
@@ -460,7 +497,7 @@ describe('GPU-driven production shadow projection', () => {
     ];
     const sourceForRecord: RenderableSnapshot = {
       ...source,
-      ...(skinned ? { skin: { buffer: {} as never, byteOffset: 0 } as never } : {}),
+      ...(skinned ? { skinBinding: { skeleton: 7, joints: [19] } } : {}),
       material: required(materials[0]),
       materials,
       gpuDrivenDraws: draws,
@@ -499,15 +536,25 @@ describe('GPU-driven production shadow projection', () => {
     const context = {
       runtime: {
         device,
-        getMaterialShaderPipeline: (...args: unknown[]) => {
+        getMaterialShaderPipelineEntry: (...args: unknown[]) => {
           pipelineRequests.push(args);
-          return {} as never;
+          return { pipeline: {} as never, group2Contract: skinned ? 'skin' : 'mesh' };
         },
+        demandSkinTask: () => ({
+          data: {},
+          auxiliary: {},
+          dataOffset: 0,
+          auxiliaryOffset: 0,
+          dataSize: 160,
+          auxiliarySize: 16,
+          jointCount: 1,
+          flags: 1,
+        }),
       },
       pipelineState: {
         identityInstanceBuffer,
         pbrSkinMeshBindGroupLayout: {} as never,
-        skinPaletteAllocator: { bindingWindowBytes: 256 },
+
         instancesBindGroupLayout,
         materialBindGroupLayout: {} as never,
         materialUniformBuffer: { buffer: {} as never, sizeInBytes: 256 },
@@ -551,13 +598,11 @@ describe('GPU-driven production shadow projection', () => {
       bindGroupCounts: { createBindGroup: 0, keys: [] },
       dispatch: [],
       // Stands in for the persistent scene owner, the only bounds source.
-      shadowCasterBounds: (source: RenderableSnapshot) => {
-        if (source.localAabb === undefined) return undefined;
-        const bounds = box3.transformBox3(box3.create(), source.localAabb, source.transform.world);
-        return {
-          min: [bounds[0], bounds[1], bounds[2]],
-          max: [bounds[3], bounds[4], bounds[5]],
-        };
+      shadowCasterBounds: (source: RenderableSnapshot, out: box3.Box3) => {
+        if (source.skinBinding !== undefined) return false;
+        if (source.localAabb === undefined) return false;
+        box3.transformBox3(out, source.localAabb, source.transform.world);
+        return true;
       },
     } as never;
     const selection = receiptSelection(
@@ -566,11 +611,11 @@ describe('GPU-driven production shadow projection', () => {
     );
     Object.assign(context, { shadowSlotForEntity: () => ({ slot: 0, generation: 0 }) });
     recordShadowCasterDraws(context, pass, {} as never, {} as never, [selection]);
-    expect(indexedDraws.map((args) => args[2])).toEqual(skinned ? [0, 3, 6, 6] : [3, 6, 6]);
+    expect(indexedDraws.map((args) => args[2])).toEqual([3, 6, 6]);
     const authored = pipelineRequests.find((args) => args[0] === 'custom-shadow-caster');
     expect(authored).toBeDefined();
     expect(authored?.[2]).toEqual({ cullMode: 'none', frontFace: mirrored ? 'ccw' : 'cw' });
-    expect(authored?.[15]).toBe(skinned ? 'pbr-skin' : 'pbr');
+    expect(authored?.[15]).toBeUndefined();
     if (skinned) expect(authored?.[5]).toContain('SKINNING_DISABLED=false');
 
     sourceForRecord.transform.world[12] = 100;
@@ -584,7 +629,7 @@ describe('GPU-driven production shadow projection', () => {
       false,
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     );
-    expect(indexedDraws).toHaveLength(skinned ? 4 : 0);
+    expect(indexedDraws).toHaveLength(skinned ? 3 : 0);
   });
 
   it.each([
@@ -652,10 +697,17 @@ describe('GPU-driven production shadow projection', () => {
         },
       ],
       materialFrame: new MaterialFrame(undefined).with(source.material, 1),
-      shadowCasterBounds: () => ({
-        min: [source.transform.world[12], -1, -1],
-        max: [(source.transform.world[12] ?? 0) + 2, 1, 1],
-      }),
+      shadowCasterBounds: (_source: RenderableSnapshot, out: box3.Box3) => {
+        out.set([
+          source.transform.world[12] ?? 0,
+          -1,
+          -1,
+          (source.transform.world[12] ?? 0) + 2,
+          1,
+          1,
+        ]);
+        return true;
+      },
       shadowViewPlanesByView: new Map([
         [key, frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()))],
       ]),

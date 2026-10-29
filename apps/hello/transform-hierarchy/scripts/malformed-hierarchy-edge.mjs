@@ -13,8 +13,13 @@ export function setMalformedParentEdge(world, child, parent, childOf) {
   if (internal === undefined) {
     throw new Error('Malformed hierarchy fixture requires the ECS test injection seam.');
   }
-  const record = internal.getRecords()[child & 0x00ffffff];
-  if (record === undefined || record.archetypeId < 0) {
+  const records = internal.getRecords();
+  const slot = child & 0x00ffffff;
+  const record = {
+    archetypeId: records.archetypeId[slot] ?? -1,
+    archetypeRow: records.archetypeRow[slot] ?? -1,
+  };
+  if (record.archetypeId < 0) {
     throw new Error(`Malformed hierarchy fixture child ${child} is not live.`);
   }
   const graph = internal.getGraph();

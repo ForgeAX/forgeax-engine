@@ -3,6 +3,9 @@ import { createApp } from '@forgeax/engine-app/browser';
 export async function workerPolicyFixture(data?: string) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 64;
+  // Bound App's CSS/DPR sizing too; width/height alone are only the initial buffer.
+  canvas.setAttribute('data-forgeax-render-width-limit', String(canvas.width));
+  canvas.setAttribute('data-forgeax-render-height-limit', String(canvas.height));
   document.body.append(canvas);
   const channel = new MessageChannel();
   const values: number[] = [];
@@ -31,12 +34,13 @@ export async function workerPolicyFixture(data?: string) {
     values,
     sealedValues,
     async dispose() {
-      if (result.ok) {
-        (await result.value.dispose()).unwrap();
-        result.value.canvas?.remove();
+      try {
+        if (result.ok) (await result.value.dispose()).unwrap();
+      } finally {
+        if (result.ok) result.value.canvas?.remove();
+        channel.port1.close();
+        canvas.remove();
       }
-      channel.port1.close();
-      canvas.remove();
     },
   };
 }

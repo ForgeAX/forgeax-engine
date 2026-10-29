@@ -730,10 +730,24 @@ export async function replayLayeredTapes(
     const session = await open(tape);
     try {
       const last = buildFrameModel(tape).works.length - 1;
-      const images: LinearImage[] = [];
-      for (let layer = 0; layer < layers; layer++)
-        images.push(await readLayer(session, id, last, layer));
-      return images;
+      if (!session.ok) throw new Error(`replay open failed: ${JSON.stringify(session.error)}`);
+      const reads = (
+        await session.value.readAtWorks(
+          Array.from({ length: layers }, (_, layer) => ({
+            resourceId: id,
+            workIndex: last,
+            subresource: { mipLevel: 0, arrayLayer: layer },
+          })),
+        )
+      ).unwrap();
+      return reads.map((read) => {
+        const result = read.unwrap();
+        return decodeUnorm(
+          result.bytes,
+          LAYERED_TARGET_SIZE,
+          result.bytes.byteLength / LAYERED_TARGET_SIZE,
+        );
+      });
     } finally {
       await disposeReplay(session);
     }
@@ -751,22 +765,25 @@ export async function replayLayeredTapes(
     2,
   );
   await disposeReplay(unmutated);
-  const mutatedBytes = encodeTape({
-    ...volumeTape,
-    events: volumeTape.events.map((event, index) => {
-      if (index !== moved.beginEventIndex || event.kind !== 'beginRenderPass') return event;
-      const desc = event.desc as { colorAttachments: readonly Record<string, unknown>[] };
-      return {
-        ...event,
-        desc: {
-          ...desc,
-          colorAttachments: desc.colorAttachments.map((attachment, slot) =>
-            slot === 0 ? { ...attachment, depthSlice: 1 } : attachment,
-          ),
-        },
-      } as typeof event;
-    }),
-  }).unwrap();
+  const mutatedBytes = encodeTape(
+    {
+      ...volumeTape,
+      events: volumeTape.events.map((event, index) => {
+        if (index !== moved.beginEventIndex || event.kind !== 'beginRenderPass') return event;
+        const desc = event.desc as { colorAttachments: readonly Record<string, unknown>[] };
+        return {
+          ...event,
+          desc: {
+            ...desc,
+            colorAttachments: desc.colorAttachments.map((attachment, slot) =>
+              slot === 0 ? { ...attachment, depthSlice: 1 } : attachment,
+            ),
+          },
+        } as typeof event;
+      }),
+    },
+    { compression: 'gzip' },
+  ).unwrap();
   const mutated = await open(decodeTape(mutatedBytes).unwrap());
   const mutatedCorner = pixel(await readLayer(mutated, volumeTexture, moved.workIndex, 1), 2, 2);
   await disposeReplay(mutated);

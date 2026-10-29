@@ -16,7 +16,16 @@ const extractPaths = (() => {
 describe('_getArrayView count (AC-03 gate)', () => {
   it('keeps skin and instance hot fields on column views', () => {
     const src = extractPaths.map((path) => readFileSync(path, 'utf8')).join('\n');
-    expect(src).toContain('readPresentationWorldMatrix(world, jointEntity)');
+    // Extraction admits static Skin membership only. Joint presentation
+    // matrices are read once per known joint change by their shared owners.
+    expect(src).not.toContain('readPresentationWorldMatrix(world, joint');
+    const renderSource = dirname(extractPaths[0]);
+    expect(readFileSync(join(renderSource, 'publication', 'publisher.ts'), 'utf8')).toContain(
+      'readPresentationWorldMatrix(world, joint as EntityHandle)',
+    );
+    expect(readFileSync(join(renderSource, 'scene', 'composition-skin.ts'), 'utf8')).toContain(
+      'readPresentationWorldMatrix(world, entity as EntityHandle)',
+    );
     const presentation = readFileSync(
       join(dirname(extractPaths[0]), '..', '..', 'scene', 'src', 'presentation.ts'),
       'utf8',

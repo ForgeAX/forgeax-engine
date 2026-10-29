@@ -4,10 +4,12 @@ import type { PassKind, PassSelector } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type {
+  CameraAdmission,
   DispatchEntry,
   DispatchList,
   MaterialSnapshot,
@@ -15,12 +17,13 @@ import type {
 } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
-import type { PersistentGpuDrivenState } from '../scene/render-scene';
-import { matchPass } from '../systems/pass-selector';
-import { TransparentSortCache } from '../systems/transparent-dispatch';
 import { standardTransmissionValue } from '../transmission/projection';
-import { directDrawRows } from './direct-draws';
-import { captureDispatchOverlays } from './dispatch-overlays';
+import {
+  type DirectDrawOutput,
+  type DirectDrawPhase,
+  type DirectDrawScene,
+  directDrawPhase,
+} from './direct-draw-phase';
 import type { buildDispatchPlan } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
@@ -45,7 +48,7 @@ export interface ScenePassRequest {
   readonly camera?: () => CameraSnapshot | undefined;
 }
 
-const sortByRequest = new WeakMap<ScenePassRequest, TransparentSortCache>();
+const DETACHED_VIEW = {};
 
 const requestsByGraph = new WeakMap<object, readonly ScenePassRequest[]>();
 
@@ -66,52 +69,39 @@ export function scenePassRequests(graph: object): readonly ScenePassRequest[] {
   return requestsByGraph.get(graph) ?? [];
 }
 
-/** Per-request selections; fixed material frames and GPU selections survive pose frames. */
-const directSelections = new WeakMap<
-  ScenePassRequest,
-  {
-    readonly materials: MaterialFrame;
-    readonly gpu: GpuDrawSelection;
-    readonly selected: Map<GpuDrivenBatchBinding, MaterialSnapshot | null>;
-  }
->();
+/**
+ * A request's Pass match is a pure function of one immutable accepted version.
+ * It survives GPU selection and plan replacements, which re-join only ownership.
+ */
+const passMatches = new WeakMap<ScenePassRequest, WeakMap<object, boolean>>();
 
-export function directPassMaterial(
+export function selectDirectPassMaterial(
   request: ScenePassRequest,
   materials: MaterialFrame,
   gpu: GpuDrawSelection,
 ): (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined {
-  let cache = directSelections.get(request);
-  if (cache?.materials !== materials || cache.gpu !== gpu) {
-    cache = { materials, gpu, selected: new Map() };
-    directSelections.set(request, cache);
+  let matches = passMatches.get(request);
+  if (matches === undefined) {
+    matches = new WeakMap();
+    passMatches.set(request, matches);
   }
-  const { selected } = cache;
-  const select = selectDirectPassMaterial(request, materials, gpu);
-  return (binding) => {
-    let material = selected.get(binding);
-    if (material === undefined) {
-      material = select(binding) ?? null;
-      selected.set(binding, material);
-    }
-    return material ?? undefined;
-  };
-}
-
-function selectDirectPassMaterial(
-  request: ScenePassRequest,
-  materials: MaterialFrame,
-  gpu: GpuDrawSelection,
-): (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined {
+  const matched = matches;
   return (binding) => {
     if (request.late) return undefined;
     const accepted = materials.get(binding.material);
     if (accepted === undefined)
       throw new Error('Scene Pass requires its accepted material version');
-    if (
-      !materialMatchesPass(accepted, request.selector, request.recordMode, request.excludeSelector)
-    )
-      return undefined;
+    let match = matched.get(accepted);
+    if (match === undefined) {
+      match = materialMatchesPass(
+        accepted,
+        request.selector,
+        request.recordMode,
+        request.excludeSelector,
+      );
+      matched.set(accepted, match);
+    }
+    if (!match) return undefined;
     if (
       request.gpu &&
       gpu.ownsBinding(
@@ -134,38 +124,145 @@ export interface ScenePassDraws {
   readonly mainPassMaterialSelection: ReturnType<typeof createMainPassMaterialSelectionOwner>;
 }
 
-/** Called only after the actual compiled graphs are selected; no executeIf is evaluated here. */
-export function prepareScenePasses(
-  requests: readonly ScenePassRequest[],
-  scene: Pick<PersistentGpuDrivenState, 'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots'>,
-  materials: MaterialFrame,
-  gpu: GpuDrawSelection,
-  meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
-  worlds: readonly RenderResourceScope[],
-  prepareUnbatched: (sources: FrameList<RenderableSnapshot>) => readonly ValidatedRenderable[],
-  viewDraws: FrameList<RenderableSnapshot>,
-  prepareGeometry: (mesh: MeshGpuHandles, material: MaterialSnapshot) => MeshGpuHandles,
-  projectDispatch: (rows: readonly ValidatedRenderable[]) => DispatchList,
-  fold: (dispatch: DispatchList, rows: readonly FoldRenderableLike[]) => readonly FoldBucket[],
-  lod: (
+const emptyDrawRows: readonly ValidatedRenderable[] = Object.freeze([]);
+const emptyDispatch: DispatchList = Object.freeze([]);
+const emptyMaterialSlots: readonly MaterialSnapshot[] = Object.freeze([]);
+const emptyMaterialIndices: readonly (readonly number[])[] = Object.freeze([]);
+const emptyScenePassDraws: ScenePassDraws = Object.freeze({
+  validatedOrdered: emptyDrawRows,
+  dispatch: emptyDispatch,
+  materialSlotIndices: emptyMaterialIndices,
+  foldDispatchPlan: null,
+  mainPassMaterialSelection: createMainPassMaterialSelectionOwner({
+    validatedOrdered: emptyDrawRows,
+    dispatch: emptyDispatch,
+    materialSlots: emptyMaterialSlots,
+    materialSlotIndices: emptyMaterialIndices,
+  }),
+});
+
+export interface ScenePassInputs {
+  readonly scene: DirectDrawScene;
+  readonly materials: MaterialFrame;
+  readonly gpu: GpuDrawSelection;
+  readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
+  readonly worlds: readonly RenderResourceScope[];
+  readonly prepareUnbatched: (
+    sources: FrameList<RenderableSnapshot>,
+  ) => readonly ValidatedRenderable[];
+  readonly viewDraws: FrameList<RenderableSnapshot>;
+  readonly prepareGeometry: (
+    mesh: MeshGpuHandles,
+    material: MaterialSnapshot,
+    source?: RenderableSnapshot,
+  ) => MeshGpuHandles;
+  readonly fold: (
+    dispatch: DispatchList,
+    rows: () => readonly FoldRenderableLike[],
+  ) => readonly FoldBucket[];
+  readonly lod: (
     rows: readonly ValidatedRenderable[],
     request: ScenePassRequest,
-  ) => readonly ValidatedRenderable[],
-  world: RenderResourceScope,
-  camera: CameraSnapshot | undefined,
-  cameraVisible?: (source: RenderableSnapshot) => boolean,
-) {
+  ) => readonly ValidatedRenderable[];
+  readonly world: RenderResourceScope;
+  readonly camera: CameraSnapshot | undefined;
+  readonly cameraVisible?: ((source: RenderableSnapshot) => boolean) | undefined;
+  readonly cameraAdmission?: CameraAdmission | undefined;
+  /** Resident geometry versions validation reads; see {@link DirectDrawInput.geometry}. */
+  readonly geometry?: readonly unknown[] | undefined;
+  /** Stable key of the view owning this preparation's retained phases. */
+  readonly view?: object | undefined;
+}
+
+/** The facts a fold reads from one row. */
+function foldSource(row: ValidatedRenderable, materials: MaterialFrame): FoldRenderableLike {
+  const accepted = materials.get(row.source.material);
+  if (accepted === undefined) throw new Error('Draw folding requires its accepted material');
+  return {
+    transform: row.source.transform,
+    material: accepted.snapshot,
+    spriteRegion: row.source.spriteRegion,
+  };
+}
+
+/** Camera facts CPU LOD selection reads. */
+function lodCameraTokens(camera: CameraSnapshot | undefined): readonly unknown[] {
+  if (camera === undefined) return [];
+  const position = camera.position;
+  return [
+    position[0],
+    position[1],
+    position[2],
+    camera.projection,
+    camera.fov,
+    camera.orthoTop,
+    camera.orthoBottom,
+  ];
+}
+
+/** One request's prepared output under the combined index space, retained while unchanged. */
+interface RequestWork {
+  readonly output: DirectDrawOutput;
+  readonly dispatch: DispatchList;
+  readonly buckets: readonly FoldBucket[];
+}
+
+const requestWork = new WeakMap<DirectDrawPhase, RequestWork>();
+
+function transmissionSlice(
+  output: DirectDrawOutput,
+  materials: MaterialFrame,
+  before: boolean,
+): readonly DispatchEntry[] {
+  const transmitting = new Set<number>();
+  for (const row of output.rows)
+    for (const resource of row.source.materials.length === 0
+      ? [row.source.material]
+      : row.source.materials) {
+      const material = materials.get(resource)?.snapshot;
+      if (material !== undefined && (standardTransmissionValue(material) ?? 0) > 0)
+        transmitting.add(material.materialHandle ?? 0);
+    }
+  let boundary = 0;
+  for (const entry of output.dispatch) {
+    if (transmitting.has(entry.materialHandle)) break;
+    boundary++;
+  }
+  return before ? output.dispatch.slice(0, boundary) : output.dispatch.slice(boundary);
+}
+
+/** Fold sources addressed by combined `renderableIndex`, without copying earlier requests. */
+function foldRows(
+  rows: readonly ValidatedRenderable[],
+  offset: number,
+  materials: MaterialFrame,
+): readonly FoldRenderableLike[] {
+  const sources: FoldRenderableLike[] = [];
+  sources.length = offset;
+  for (const row of rows) sources.push(foldSource(row, materials));
+  return sources;
+}
+
+/**
+ * Called only after the actual compiled graphs are selected; no executeIf is
+ * evaluated here. Each request of each view owns one retained
+ * {@link DirectDrawPhase}: a frame feeds it only entered, left and changed
+ * rows, and a request whose phase output and offset are unchanged reuses its
+ * combined rows, dispatch and fold buckets.
+ */
+export function prepareScenePasses(requests: readonly ScenePassRequest[], inputs: ScenePassInputs) {
+  const { materials, gpu, world, camera } = inputs;
+  const view = inputs.view ?? DETACHED_VIEW;
   const rows: ValidatedRenderable[] = [];
   const dispatch: DispatchEntry[] = [];
   const buckets: FoldBucket[] = [];
   const prepared = new Map<
     ScenePassRequest,
-    { readonly indices: ReadonlySet<number>; readonly dispatch: DispatchList }
+    { readonly start: number; readonly end: number; readonly dispatch: DispatchList }
   >();
   for (const request of new Set(requests)) {
     const eye = request.camera?.() ?? camera;
-    const selected = directPassMaterial(request, materials, gpu);
-    const matches = (resource: import('../material-resource').MaterialResource) => {
+    const matches = (resource: MaterialResource) => {
       const accepted = materials.get(resource);
       if (accepted === undefined) throw new Error('Direct draw requires its accepted material');
       return materialMatchesPass(
@@ -175,126 +272,69 @@ export function prepareScenePasses(
         request.excludeSelector,
       );
     };
-    const localRows = request.late
-      ? []
-      : lod(
-          directDrawRows(
-            scene,
-            selected,
-            meshes,
-            worlds,
-            request.passKind,
-            (sources) =>
-              prepareUnbatched(
-                sources.filter((source) =>
-                  (source.materials.length === 0 ? [source.material] : source.materials).some(
-                    matches,
-                  ),
-                ),
-              ).flatMap((row) => {
-                const submeshIndices = [
-                  ...(row.submeshIndices ?? row.mesh.submeshes.keys()),
-                ].filter((index) => {
-                  const submesh = row.mesh.submeshes[index];
-                  return (
-                    submesh !== undefined &&
-                    matches(row.source.materials[submesh.materialSlot] ?? row.source.material)
-                  );
-                });
-                return submeshIndices.length === 0 ? [] : [{ ...row, submeshIndices }];
-              }),
-            viewDraws,
-            prepareGeometry,
-            request.capture || eye?.antialias === 'taa' ? undefined : cameraVisible,
-          ),
-          request,
-        );
-    const sortSources = localRows.map((row) => {
-      const accepted = materials.get(row.source.material);
-      if (accepted === undefined) throw new Error('Draw sorting requires its accepted material');
-      return {
-        transform: row.source.transform,
-        material: accepted.snapshot,
-        spriteRegion: row.source.spriteRegion,
-      };
-    });
-    let sort = sortByRequest.get(request);
-    if (sort === undefined) {
-      sort = new TransparentSortCache();
-      sortByRequest.set(request, sort);
-    }
     const combinedTranslucency =
       request.recordMode === 'translucent' ||
       request.recordMode === 'translucent-before-transmission';
-    let localDispatch = sort.sort(
-      projectDispatch(localRows).filter(
-        (entry) => request.selector === undefined || matchPass(entry.tags, request.selector),
-      ),
-      world,
-      eye === undefined ? [] : [eye],
-      sortSources,
-      combinedTranslucency ||
-        request.recordMode === 'transparent' ||
-        request.recordMode === 'oit-residual',
-    );
-    if (combinedTranslucency) {
-      const transmitting = new Set(
-        localRows.flatMap((row) =>
-          (row.source.materials.length === 0
-            ? [row.source.material]
-            : row.source.materials
-          ).flatMap((resource) => {
-            const material = materials.get(resource)?.snapshot;
-            return material !== undefined && (standardTransmissionValue(material) ?? 0) > 0
-              ? [material.materialHandle ?? 0]
-              : [];
-          }),
-        ),
-      );
-      let boundary = 0;
-      for (const entry of localDispatch) {
-        if (transmitting.has(entry.materialHandle)) break;
-        boundary++;
-      }
-      localDispatch =
-        request.recordMode === 'translucent-before-transmission'
-          ? localDispatch.slice(0, boundary)
-          : localDispatch.slice(boundary);
-      if (localDispatch.length === 0) {
-        prepared.set(request, { indices: new Set(), dispatch: [] });
-        continue;
-      }
-    }
-    const overlays = captureDispatchOverlays(localDispatch).values;
+    const admitted = !(request.capture || eye?.antialias === 'taa');
+    const phase = directDrawPhase(view, request);
     const offset = rows.length;
-    const indices = new Set<number>();
-    for (const row of localRows) {
-      const index = offset + row.renderableIndex;
-      indices.add(index);
-      rows.push({ ...row, ...overlays.get(row.renderableIndex), renderableIndex: index });
+    const output = phase.sync({
+      offset,
+      scene: inputs.scene,
+      selection: [request.late],
+      gpu,
+      select: selectDirectPassMaterial(request, materials, gpu),
+      meshes: inputs.meshes,
+      worlds: inputs.worlds,
+      shadow: request.passKind === 'shadow',
+      materials,
+      prepareUnbatched: inputs.prepareUnbatched,
+      admits: matches,
+      viewDraws: request.late ? [] : inputs.viewDraws,
+      prepareGeometry: inputs.prepareGeometry,
+      visible: admitted ? inputs.cameraVisible : undefined,
+      admission: admitted ? inputs.cameraAdmission : undefined,
+      lod: (lodRows) => inputs.lod(lodRows, request),
+      lodCamera: lodCameraTokens(eye),
+      geometry: inputs.geometry,
+      entries: { selector: request.selector },
+      sort: {
+        mode: world.transparentSort.mode,
+        yzAlpha: world.transparentSort.yzAlpha,
+        camera: eye,
+        all:
+          combinedTranslucency ||
+          request.recordMode === 'transparent' ||
+          request.recordMode === 'oit-residual',
+      },
+    });
+    let work = requestWork.get(phase);
+    if (work === undefined || work.output !== output) {
+      const dispatch = combinedTranslucency
+        ? transmissionSlice(
+            output,
+            materials,
+            request.recordMode === 'translucent-before-transmission',
+          )
+        : output.dispatch;
+      const buckets =
+        !combinedTranslucency &&
+        !request.capture &&
+        request.passKind === 'forward' &&
+        output.rows.length > 0
+          ? inputs.fold(dispatch, () => foldRows(output.rows, offset, materials))
+          : [];
+      work = { output, dispatch, buckets };
     }
-    const mappedDispatch = localDispatch.map((entry) => ({
-      ...entry,
-      renderableIndex: offset + entry.renderableIndex,
-    }));
-    dispatch.push(...mappedDispatch);
-    if (
-      !combinedTranslucency &&
-      !request.capture &&
-      request.passKind === 'forward' &&
-      localRows.length > 0
-    ) {
-      for (const bucket of fold(localDispatch, sortSources)) {
-        buckets.push({
-          ...bucket,
-          entries: bucket.entries.map((entry) => ({
-            ...entry,
-            renderableIndex: offset + entry.renderableIndex,
-          })),
-        });
-      }
+    requestWork.set(phase, work);
+    if (combinedTranslucency && work.dispatch.length === 0) {
+      prepared.set(request, { start: offset, end: offset, dispatch: [] });
+      continue;
     }
-    prepared.set(request, { indices, dispatch: mappedDispatch });
+    for (const row of output.rows) rows.push(row);
+    for (const entry of work.dispatch) dispatch.push(entry);
+    for (const bucket of work.buckets) buckets.push(bucket);
+    prepared.set(request, { start: offset, end: rows.length, dispatch: work.dispatch });
   }
   return {
     rows,
@@ -304,26 +344,51 @@ export function prepareScenePasses(
       plan: ReturnType<typeof buildDispatchPlan>,
     ): ReadonlyMap<ScenePassRequest, ScenePassDraws> {
       const work = new Map<ScenePassRequest, ScenePassDraws>();
-      const rowsByIndex = new Map<number, number>();
-      for (const [index, row] of plan.validatedOrdered.entries())
-        rowsByIndex.set(row.renderableIndex, index);
+      if (rows.length === 0) {
+        let empty = true;
+        for (const candidate of prepared.values()) empty &&= candidate.dispatch.length === 0;
+        if (empty) {
+          for (const request of prepared.keys()) work.set(request, emptyScenePassDraws);
+          return work;
+        }
+      }
+      // Each combined row index belongs to one request's range; one ordered
+      // walk of the submitted plan yields every request's ascending positions.
+      const owners: (number[] | undefined)[] = new Array(rows.length);
+      const positionsByRequest = new Map<ScenePassRequest, number[]>();
       for (const [request, candidate] of prepared) {
-        const indices = [...candidate.indices]
-          .map((index) => rowsByIndex.get(index))
-          .filter((index): index is number => index !== undefined)
-          .sort((a, b) => a - b);
+        const positions: number[] = [];
+        positionsByRequest.set(request, positions);
+        owners.fill(positions, candidate.start, candidate.end);
+      }
+      const submitted = plan.validatedOrdered;
+      for (let position = 0; position < submitted.length; position++) {
+        const index = (submitted[position] as ValidatedRenderable).renderableIndex;
+        if (index >= 0 && index < owners.length) owners[index]?.push(position);
+      }
+      const fold = plan.foldDispatchPlan;
+      for (const [request, candidate] of prepared) {
+        const indices = positionsByRequest.get(request) as number[];
         const validatedOrdered = indices.map((index) => {
-          const row = plan.validatedOrdered[index];
+          const row = submitted[index];
           if (row === undefined) throw new Error('Missing submitted direct row');
           return row;
         });
-        const headBuckets = new Map<number, FoldBucket>();
-        const skipIndices = new Set<number>();
-        for (const [local, global] of indices.entries()) {
-          const head = plan.foldDispatchPlan?.headBuckets.get(global);
-          if (head !== undefined) headBuckets.set(local, head);
-          if (plan.foldDispatchPlan?.skipIndices.has(global)) skipIndices.add(local);
-        }
+        let headBuckets: Map<number, FoldBucket> | undefined;
+        let skipIndices: Set<number> | undefined;
+        if (fold != null)
+          for (let local = 0; local < indices.length; local++) {
+            const global = indices[local] as number;
+            const head = fold.headBuckets.get(global);
+            if (head !== undefined) {
+              headBuckets ??= new Map();
+              headBuckets.set(local, head);
+            }
+            if (fold.skipIndices.has(global)) {
+              skipIndices ??= new Set();
+              skipIndices.add(local);
+            }
+          }
         const roster = {
           validatedOrdered,
           dispatch: candidate.dispatch,
@@ -333,9 +398,13 @@ export function prepareScenePasses(
         work.set(request, {
           ...roster,
           foldDispatchPlan:
-            headBuckets.size === 0
+            headBuckets === undefined
               ? null
-              : { headBuckets, skipIndices, foldedBucketCount: headBuckets.size },
+              : {
+                  headBuckets,
+                  skipIndices: skipIndices ?? new Set(),
+                  foldedBucketCount: headBuckets.size,
+                },
           mainPassMaterialSelection: createMainPassMaterialSelectionOwner(roster),
         });
       }
@@ -356,8 +425,8 @@ export function scenePassContext(
       expected: 'prepared draw work for the executing Scene Pass',
       hint: 'prepare requests from the actual compiled graph before recording',
     });
-  const { gpuDrivenSelection: _gpu, cameraVisible, ...context } = c;
-  if (!request.capture && cameraVisible !== undefined)
-    return { ...context, cameraVisible, ...work };
-  return { ...context, ...work };
+  // Ownership was consumed while preparing this pass's CPU rows. Keep the
+  // complete detached frame shape and clear selection instead of rebuilding
+  // every property through object-rest exclusion.
+  return { ...c, ...work, gpuDrivenSelection: undefined };
 }

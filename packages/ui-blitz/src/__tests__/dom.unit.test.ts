@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createBlitzUi, UiDomError, type UiWasmHost } from '../index.js';
 import { checkableHtml, checkableTrace } from './checkable-fixture.js';
 import { required } from './fixture.js';
+import { mountViewportAsset } from './mount-viewport-fixture.js';
 
 const bytes = await readFile(new URL('../../pkg/ui_blitz_bg.wasm', import.meta.url));
 const host: UiWasmHost = {
@@ -29,6 +30,30 @@ afterEach(() => {
   for (const ui of live.splice(0)) ui.dispose();
 });
 describe('persistent real Blitz document', () => {
+  it('gives mounted percentage-height UI a real viewport and preserves scrolling', async () => {
+    const ui = await create('<style>body{margin:0}</style>');
+    const actions: string[] = [];
+    const mounted = mountUi(mountViewportAsset, {
+      root: ui.document.body,
+      layer: 1,
+      onAction: (name) => actions.push(name),
+    });
+    if (!mounted.ok) throw mounted.error;
+    try {
+      const viewport = required(mounted.value.host.shadowRoot?.querySelector('main'));
+      const button = required(viewport.querySelector('button'));
+      expect(viewport.getBoundingClientRect().height).toBe(100);
+      expect(ui.elementFromPoint(20, 15)).toBe(button);
+      button.click();
+      expect(actions).toEqual(['save']);
+      viewport.scrollTop = 60;
+      expect(viewport.scrollTop).toBe(60);
+      expect(button.getBoundingClientRect().y).toBe(-60);
+    } finally {
+      mounted.value.dispose();
+    }
+    expect(ui.document.body.children.length).toBe(0);
+  });
   it('rejects browser-authored CSS before mutating the real native document', async () => {
     const ui = await create('<p>Existing UI</p>');
     const root = required(ui.document.body);

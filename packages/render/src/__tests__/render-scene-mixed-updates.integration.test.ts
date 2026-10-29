@@ -180,7 +180,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     const owner = { cameraOwner: 0, resourceOwner: 0 };
     let rejectCandidate = false;
     const build = (request: PersistentRenderCandidateRequest) => {
-      const frame = extractFrames([world], owner, undefined, undefined, undefined, {
+      const frame = extractFrames([world], owner, undefined, undefined, {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -238,7 +238,7 @@ describe('PersistentRenderScene mixed World updates', () => {
 
     const build = (request: PersistentRenderCandidateRequest) => {
       requests.push(request);
-      const result = extractFrames(worlds, owner, assets, undefined, materialCaches, {
+      const result = extractFrames(worlds, owner, assets, materialCaches, {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -248,7 +248,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     };
     const draw = () => scene.extractComposition(worlds, owner, assets, build, leases);
     const oracle = () =>
-      extractFrames(worlds, owner, assets, undefined, undefined, {
+      extractFrames(worlds, owner, assets, undefined, {
         cull: 'none',
         retainHidden: true,
         renderables: 'full',
@@ -353,7 +353,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     const assets = first.assets;
     const build = (request: PersistentRenderCandidateRequest) => {
       requests.push(request);
-      return extractFrames(worlds, owner, assets, undefined, materialCaches, {
+      return extractFrames(worlds, owner, assets, materialCaches, {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -362,7 +362,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     };
     const draw = () => scene.extractComposition(worlds, owner, assets, build, leases);
     const oracle = () =>
-      extractFrames(worlds, owner, assets, undefined, undefined, {
+      extractFrames(worlds, owner, assets, undefined, {
         cull: 'none',
         retainHidden: true,
         renderables: 'full',
@@ -430,7 +430,7 @@ describe('PersistentRenderScene mixed World updates', () => {
     const assets = first.assets;
     const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
     const build = (request: PersistentRenderCandidateRequest) =>
-      extractFrames([first.world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
+      extractFrames([first.world], owner, assets, scene.materialSnapshotCacheStore(), {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -488,7 +488,7 @@ it('two Renderers independently adopt asset edits, rebinding and retries', () =>
         fail = false;
         throw new Error('injected extraction failure');
       }
-      return extractFrames([world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
+      return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
         cull: 'none',
         retainHidden: true,
         renderables: request,

@@ -18,23 +18,8 @@ import type {
   MaterialValue,
   ParamSchemaEntry,
 } from '@forgeax/engine-types';
-import {
-  createMaterialError,
-  projectMaterialParameterSchema,
-  ShaderSource,
-} from '@forgeax/engine-types';
-import { isSharedImmutableAssetData } from '../internal/shared-immutable.js';
+import { createMaterialError, projectMaterialParameterSchema } from '@forgeax/engine-types';
 import type { MaterialLoadError, MaterialReady } from './loader';
-
-// Materials that share one realm-immutable program view decode its WGSL once.
-// Private views may change between installs and are always decoded again.
-const decodedPrograms = new WeakMap<Uint8Array, ShaderSource>();
-function decodeProgram(bytes: Uint8Array): string | ShaderSource {
-  return (
-    (isSharedImmutableAssetData(bytes) ? decodedPrograms.get(bytes) : undefined) ??
-    new TextDecoder().decode(bytes)
-  );
-}
 
 export interface MaterialRenderPassProjection {
   readonly name: string;
@@ -322,13 +307,9 @@ export function installMaterialReadyShaders(
     const { default: _default, ...parameter } = entry;
     return parameter;
   });
-  const paramSchemaText = JSON.stringify(paramSchema);
   const entries = readiness.record.programs.map((program) => {
-    const source = decodeProgram(program.artifact.bytes);
-    if (source.length === 0)
-      throw new Error(
-        `MaterialReady ${readiness.record.guid} contains an empty shader program ${program.specializationKey}`,
-      );
+    if (program.artifact.bytes.byteLength === 0)
+      throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const pass = readiness.record.resolved.passes.find((pass) =>
       program.selections.some((selection) => selection.pass === pass.name),
     );
@@ -345,62 +326,26 @@ export function installMaterialReadyShaders(
     };
     return {
       artifact,
-      source,
-      programBytes: program.artifact.bytes,
-      ...(abi === undefined ? {} : { abi }),
+      input: {
+        bytes: artifact.bytes,
+        digest: program.artifact.digest,
+        paramSchema,
+        ...(abi === undefined ? {} : { receipt: abi }),
+      },
     };
   });
   const validation = new MaterialArtifactRegistry();
-  for (const { artifact, source, abi } of entries) {
+  for (const { artifact, input } of entries) {
     const previous = artifactRegistry.get(artifact.key);
     if (previous !== undefined) validation.register(previous).unwrap();
     const checked = validation.register(artifact);
     if (!checked.ok) throw conflictError(checked.error);
-    const shader = shaderRegistry.findMaterialArtifact(artifact.key);
-    if (!shader.ok) continue;
-    // Identical values need no serialization; the shared ABI usually is the same object.
-    const dimension =
-      shader.value.program.sourceReference.identity !==
-      (typeof source === 'string' ? new ShaderSource([source]).identity : source.identity)
-        ? 'bytes'
-        : shader.value.paramSchema !== paramSchema &&
-            JSON.stringify(shader.value.paramSchema) !== paramSchemaText
-          ? 'param-schema'
-          : shader.value.receipt !== abi &&
-              JSON.stringify(shader.value.receipt) !== JSON.stringify(abi)
-            ? 'receipt'
-            : undefined;
-    if (dimension !== undefined) {
-      throw conflictError({
-        code: 'material-artifact-conflict',
-        expected: 'one immutable source, interface, and ABI receipt per program key',
-        hint: 're-cook the conflicting program',
-        detail: {
-          key: artifact.key,
-          dimension,
-        },
-      });
-    }
+    const accepted = shaderRegistry.validateMaterialArtifactBytes(artifact.key, input);
+    if (!accepted.ok) throw conflictError(accepted.error);
   }
-  for (const { artifact, source, abi } of entries) {
+  for (const { artifact, input } of entries) {
     artifactRegistry.register(artifact).unwrap();
-    if (!shaderRegistry.findMaterialArtifact(artifact.key).ok) {
-      const sourceReference = shaderRegistry.shaderSource(source);
-      shaderRegistry.installMaterialArtifact(artifact.key, {
-        source: typeof source === 'string' ? source : source.read(),
-        sourceReference,
-        paramSchema,
-        ...(abi === undefined ? {} : { receipt: abi }),
-      });
-    }
-  }
-  // Publish decoded ownership only after the complete set passes both checks.
-  for (const { artifact, programBytes } of entries) {
-    if (isSharedImmutableAssetData(programBytes))
-      decodedPrograms.set(
-        programBytes,
-        shaderRegistry.findMaterialArtifact(artifact.key).unwrap().program.sourceReference,
-      );
+    shaderRegistry.installMaterialArtifactBytes(artifact.key, input);
   }
   return projectMaterialRecord(readiness.record);
 }

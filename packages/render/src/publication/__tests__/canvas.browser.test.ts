@@ -4,7 +4,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
-import { Camera, MeshFilter, MeshRenderer } from '../../components';
+import { Camera, MeshFilter, MeshRenderer, perspective } from '../../components';
 import { Materials } from '../../materials';
 import { CanvasTexture, isCanvasTextureSource } from '../../textures/canvas-texture';
 import { renderTextureSourceKey } from '../../textures/source-token';
@@ -37,7 +37,10 @@ it('publishes one native canvas frame for shared models, updates without ECS wri
     )
     .unwrap();
   world
-    .spawn({ component: Transform, data: { pos: [0, 0, 3] } }, { component: Camera, data: {} })
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 3] } },
+      { component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 1 }) },
+    )
     .unwrap();
   const entities = [0, 1].map((x) =>
     world

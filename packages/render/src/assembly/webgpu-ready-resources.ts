@@ -8,6 +8,7 @@ import type {
   Buffer,
   PipelineLayout,
   RhiDevice,
+  RhiQueue,
   Sampler,
   TextureView,
 } from '@forgeax/engine-rhi';
@@ -33,7 +34,10 @@ import {
 } from '../pipeline-spec';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from '../record/mesh-ssbo';
 import { MATERIAL_UNIFORM_BYTES } from '../record/render-context';
-import { SHADOW_CASTER_BUFFER_SIZE } from '../record/shadow-pass';
+import {
+  initializeShadowCasterUniforms,
+  SHADOW_CASTER_BUFFER_SIZE,
+} from '../record/shadow-caster-uniforms';
 import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
 import { MATERIAL_PER_ENTITY_STRIDE } from '../render-system';
 import { transmissionBackdropAvailable } from './device-feature-admission';
@@ -235,20 +239,21 @@ export function createViewUniformBuffer(createPersistentBuffer: CreatePersistent
 }
 
 /**
- * Per-pass cascade/spot UBO read by shadow_caster.wgsl. The record stage
- * overwrites it before each pass submit, which serializes host writes against
- * GPU reads.
+ * Per-pass cascade/spot UBO read by shadow_caster.wgsl. Its fixed headers are
+ * prepared here; recording updates only the dynamic spot matrices.
  */
 export function createShadowCasterCascadeBuffer(
   createPersistentBuffer: CreatePersistentBuffer,
+  queue: RhiQueue,
 ): Buffer {
-  return createUniformBuffer(
+  const buffer = createUniformBuffer(
     createPersistentBuffer,
     'shadow-caster-cascade-ubo',
     SHADOW_CASTER_BUFFER_SIZE,
     'createBuffer (shadow-caster cascade ubo) succeeded',
     'check device.limits.maxUniformBufferBindingSize',
   );
+  return initializeShadowCasterUniforms(queue, buffer);
 }
 
 /**

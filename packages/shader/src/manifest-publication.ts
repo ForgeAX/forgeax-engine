@@ -37,14 +37,14 @@ export async function digestShaderBytes(bytes: Uint8Array<ArrayBuffer>): Promise
 const fragmentsByRow = new WeakMap<object, readonly string[]>();
 /** Utility rows use the same admitted source owner as material variants. */
 export function manifestShaderSource(row: { readonly wgsl: string }): ShaderSource {
-  return selectedSourcesByRow.get(row)?.() ?? ShaderSource.fromText(row.wgsl, new Map());
+  return selectedSourcesByRow.get(row)?.() ?? new ShaderSource([row.wgsl]);
 }
 
 const selectedSourcesByRow = new WeakMap<object, () => ShaderSource>();
 
 /** Read the verified fragment owner without retaining its expanded body. */
 export function materialShaderSource(row: { readonly composedWgsl: string }): ShaderSource {
-  return selectedSourcesByRow.get(row)?.() ?? ShaderSource.fromText(row.composedWgsl, new Map());
+  return selectedSourcesByRow.get(row)?.() ?? new ShaderSource([row.composedWgsl]);
 }
 
 /** Exact source matching for boot-module aliases and selected material variants. */

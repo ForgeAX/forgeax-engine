@@ -69,7 +69,10 @@ if (process.argv[2] === 'errors') {
   ).unwrap();
   try {
     app.world
-      .spawn({ component: Camera, data: {} }, { component: Transform, data: { pos: [0, 0, 3] } })
+      .spawn(
+        { component: Camera, data: { fov: Math.PI / 3 } },
+        { component: Transform, data: { pos: [0, 0, 3] } },
+      )
       .unwrap();
     await app.pluginContext.plugin(engineWorkspaceTargetToolsPlugin, {
       targetId: 'target',

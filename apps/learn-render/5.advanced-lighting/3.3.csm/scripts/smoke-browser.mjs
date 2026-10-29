@@ -417,6 +417,30 @@ function assertCsmPixels({ pixels, width, height }) {
   );
 }
 
+// Observe initialized GPU contents and later writes through the same tape ABI.
+function csmCasterSelectors(tape, handleId) {
+  const bytes = new Uint8Array(2048);
+  const apply = (hash, offset, size) => {
+    const blob = tape.blobPool.get(hash);
+    const source = blob === undefined ? undefined : new Uint8Array(blob);
+    if (source === undefined || source.byteLength < size || offset < 0 || offset + size > bytes.byteLength)
+      throw new Error('cascade-index UBO content is missing or out of bounds');
+    bytes.set(source.subarray(0, size), offset);
+  };
+  const bootstrap = tape.bootstrap?.find((entry) => entry.handleId === handleId);
+  for (const data of bootstrap?.initialData ?? []) apply(data.hash, data.byteOffset, data.byteLength);
+  for (const event of tape.events)
+    if (event.kind === 'writeBuffer' && event.handleId === handleId)
+      apply(event.dataHash, event.bufferOffset, event.size);
+  const words = new Uint32Array(bytes.buffer);
+  return Array.from({ length: 4 }, (_, cascade) => {
+    const offset = cascade * 64;
+    if (words[offset] !== cascade || words[offset + 1] !== 0 || words[offset + 2] !== 0 || words[offset + 3] !== 0)
+      throw new Error(`cascade-index UBO header ${cascade} does not select its directional cascade`);
+    return words[offset];
+  });
+}
+
 /** @param {{ tape: { events: readonly object[], bootstrap?: readonly object[], blobPool: Map<string, ArrayBuffer> } }} input */
 function assertCsmTape({ tape }) {
   const events = [
@@ -475,19 +499,14 @@ function assertCsmTape({ tape }) {
     (event) => event.kind === 'createBuffer' && event.handleId === cascadeIndexBufferId,
   );
   const cascadeBinding = viewGroup.entries?.find((entry) => entry.binding === 7);
-  const cascadeWrites = events.filter(
-    (event) => event.kind === 'writeBuffer' && event.handleId === cascadeIndexBufferId && event.size === 16,
-  );
   if (
     cascadeIndexBuffer?.desc?.size !== 2048 ||
-    cascadeBinding?.resourceKind !== 'buffer' ||
-    cascadeWrites.length < 4
+    cascadeBinding?.resourceKind !== 'buffer'
   ) {
     throw new Error(
       `cascade-index UBO lineage is incomplete: ${JSON.stringify({
         buffer: cascadeIndexBuffer?.desc,
         binding: cascadeBinding,
-        writes: cascadeWrites.length,
       })}`,
     );
   }
@@ -495,6 +514,7 @@ function assertCsmTape({ tape }) {
     const blob = tape.blobPool.get(hash);
     return blob === undefined ? undefined : new Uint8Array(blob);
   };
+  const selectorValues = csmCasterSelectors(tape, cascadeIndexBufferId);
 
   const overlayBglIds = new Set(
     events
@@ -547,12 +567,6 @@ function assertCsmTape({ tape }) {
   }
   console.log(`[csm] overlay split params=${JSON.stringify(overlaySplits)} accepted`);
 
-  const selectorValues = cascadeWrites.map((event) => {
-    const selectorBytes = readBlob(event.dataHash);
-    return selectorBytes === undefined || selectorBytes.byteLength < 4
-      ? undefined
-      : new DataView(selectorBytes.buffer, selectorBytes.byteOffset, selectorBytes.byteLength).getUint32(0, true);
-  });
   const selectorRows = cascades.map((cascade, expectedIndex) => {
     const body = cascade.writer?.body ?? [];
     const shadowViewGroupId = body.find(

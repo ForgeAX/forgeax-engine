@@ -113,7 +113,6 @@ describe('single-layer medium shader model', () => {
 
 describe('single-layer medium sun, sky and fog', () => {
   const template = source('single-layer-medium.wgsl');
-  const common = source('common.wgsl');
 
   it('adds a footprint-aware sun glint from the main DirectionalLight', () => {
     expect(template).toContain('fn mediumSunGlint(');
@@ -121,15 +120,6 @@ describe('single-layer medium sun, sky and fog', () => {
     expect(template).toContain('* fresnel * view.lightColor * directionalShadow * (1.0 - foam)');
     expect(template).toContain('reflect(-lightDirection, normal)');
     expect(template).toContain('footprintVariance');
-  });
-
-  it('mirrors GradientSky along the reflection direction, falling back to the Skylight', () => {
-    expect(common).toContain('fn gradientSkyColor(v: View, dir: vec3<f32>) -> vec3<f32>');
-    expect(common).toContain('fn viewHasGradientSky(v: View) -> bool');
-    expect(template).toContain('return gradientSkyColor(view, reflectedDirection);');
-    expect(template.indexOf('viewHasGradientSky(view)')).toBeLessThan(
-      template.indexOf('samplePmrem('),
-    );
   });
 
   it('fogs the water surface at its own depth and keeps the already fogged backdrop', () => {

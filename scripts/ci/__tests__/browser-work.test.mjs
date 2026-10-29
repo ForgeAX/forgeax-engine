@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { checkBrowserWorkBudget, countBrowserWork } from '../../test/browser-work.mjs';
 import {
@@ -6,7 +9,53 @@ import {
   uncompressedFixtureEncodings,
 } from '../browser-evidence-encoding.mjs';
 import budgets from '../browser-work-budgets.json' with { type: 'json' };
+import { implicitShadowWorkloads } from '../browser-workload-policy.mjs';
 import { browserTestFiles } from '../run-split-vitest-browser.mjs';
+
+test('Browser creation fixtures declare shadow resolution and directional cascade workload', () => {
+  const sources = browserFixtureSources(process.cwd(), browserTestFiles());
+  assert.ok(
+    [...sources.keys()].some((file) => file.endsWith('render-worker-geometry-bootstrap.ts')),
+  );
+  assert.deepEqual(
+    [...sources].flatMap(([file, text]) => implicitShadowWorkloads(file, text)),
+    [],
+  );
+});
+
+test('shadow workload policy rejects omitted product defaults and retains explicit quality cases', () => {
+  const creation = (component, data) =>
+    `world.spawn({ component: ${component}, data: { ${data} } });`;
+  assert.equal(
+    implicitShadowWorkloads('fixture.ts', creation('DirectionalLight', 'castShadow: true')).length,
+    2,
+  );
+  assert.equal(
+    implicitShadowWorkloads(
+      'fixture.ts',
+      creation('DirectionalLight', 'castShadow: true, mapSize: 256'),
+    ).length,
+    1,
+  );
+  assert.equal(
+    implicitShadowWorkloads('fixture.ts', creation('SpotLight', 'castShadow: true')).length,
+    1,
+  );
+  assert.equal(implicitShadowWorkloads('fixture.ts', creation('PointLightShadow', '')).length, 1);
+  for (const data of [
+    'castShadow: false',
+    'intensity: 2',
+    'castShadow: true, mapSize, cascadeCount: 4',
+  ])
+    assert.deepEqual(implicitShadowWorkloads('fixture.ts', creation('DirectionalLight', data)), []);
+  assert.deepEqual(
+    implicitShadowWorkloads(
+      'fixture.ts',
+      'world.set(sun, DirectionalLight, { castShadow: true });',
+    ),
+    [],
+  );
+});
 
 test('native work instrumentation preserves receiver, arguments and promise identity', () => {
   const promise = Promise.resolve('device');
@@ -143,5 +192,34 @@ test('fixed replay workloads reject repeated native queue submissions', () => {
       () => checkBrowserWorkBudget(file, { ...counts, deviceRequests: 1 }, budgets, 1),
       /cold-device/,
     );
+  }
+});
+
+test('fixture policy follows URL and dynamic-import Worker sources without executing them', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-browser-workload-'));
+  try {
+    const directory = join(root, '__tests__');
+    mkdirSync(directory);
+    writeFileSync(join(directory, 'owner.ts'), `new URL('./worker.ts', import.meta.url);`);
+    writeFileSync(
+      join(directory, 'worker.ts'),
+      `import('./dynamic.ts'); throw Error('not executable');`,
+    );
+    writeFileSync(join(directory, 'dynamic.ts'), `encodeTape(tape);`);
+    const sources = browserFixtureSources(root, ['__tests__/owner.ts']);
+    assert.equal(sources.size, 3);
+    assert.equal(
+      [...sources].flatMap(([file, text]) => uncompressedFixtureEncodings(file, text)).length,
+      1,
+    );
+    assert.equal(
+      implicitShadowWorkloads(
+        'fixture.ts',
+        `({component: Render.DirectionalLight, data: {'castShadow': true}})`,
+      ).length,
+      2,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -43,11 +43,11 @@ const canvas = {
 
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { buildCapstoneScene } = await import(resolve(root, 'apps/hello/m8-integrated-capstone/src/scene.ts'));
-const { physicsPlugin } = await import('@forgeax/engine-physics');
+const { physics3d } = await import('@forgeax/engine-physics');
 const manifestPath = resolve(root, 'apps/hello/m8-integrated-capstone/dist/shaders/manifest.json');
 const manifestUrl = URL.createObjectURL(new Blob([readFileSync(manifestPath)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
-const result = await createApp(canvas, { platform: createSmokePlatform(canvas),  plugins: [physicsPlugin('rapier-3d')] }, { shaderManifestUrl: manifestUrl });
+const result = await createApp(canvas, { platform: createSmokePlatform(canvas),  plugins: [physics3d] }, { shaderManifestUrl: manifestUrl });
 if (!result.ok) throw new Error(`M8 Dawn createApp failed: ${result.error.code}`);
 const app = result.value;
 const scene = buildCapstoneScene(app.world);

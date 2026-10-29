@@ -16,7 +16,6 @@ import {
 } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
-import { encodeGradientSky } from './environment/gradient-sky';
 import { atmosphereTextures } from './environment/luts';
 import type { PostProcessShaderEntry } from './fullscreen-post-process-pass';
 import { prepareHiddenGpuDrivenPipelines } from './gpu-driven/material-artifacts';
@@ -209,7 +208,6 @@ export function addTypedSkyboxPass(
     ],
     encode: ({ pass, frame }) => {
       encodeSkyboxPass(frame as _InternalRenderPipelineContext, pass);
-      encodeGradientSky(frame as _InternalRenderPipelineContext, pass, 'scene', color);
     },
   });
 }

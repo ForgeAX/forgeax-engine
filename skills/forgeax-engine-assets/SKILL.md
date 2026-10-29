@@ -306,6 +306,12 @@ artifact when an engine resource is missing.
 
 ## Contract routing
 
+Player packaging groups complete WGSL programs into bounded Zstd streams without
+removing backend or capability variants. An artifact's stored `byteRange` locates
+its group; optional `decodedRange` selects its original bytes after decompression.
+Individual lengths and hashes remain authoritative. Use ordinary build/package,
+load and asset verification; do not rewrite program identities or source bytes.
+
 | Task | Load |
 |:--|:--|
 | Catalog subscription, refs, package identity, compression | `catalog-and-import.md` |

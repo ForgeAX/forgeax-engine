@@ -11,7 +11,7 @@ import { publishCanonicalKit } from '../../../packages/preview/scripts/build-can
 const root = resolve(import.meta.dirname, '../../..');
 const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
-test('publishes a public canonical fallback with its own receipt over a previous environment', async () => {
+test('replaces private and bundled HDR defaults with a generated canonical environment and receipt', async () => {
   const temporary = await mkdtemp(join(tmpdir(), 'forgeax-canonical-publication-'));
   try {
     const checkout = join(temporary, 'checkout');
@@ -26,7 +26,14 @@ test('publishes a public canonical fallback with its own receipt over a previous
       join(root, 'packages/preview/assets/canonical-kit/sky.hdr.meta.json'),
       join(packageKit, 'sky.hdr.meta.json'),
     );
-    await writeFile(join(checkout, '.forgeax-public-distribution'), 'public SDK\n');
+    const privateSky = join(
+      checkout,
+      'forgeax-engine-assets/demo-assets/template-game-default/sky.hdr',
+    );
+    await mkdir(resolve(privateSky, '..'), { recursive: true });
+    await writeFile(privateSky, Buffer.alloc(512 * 1024, 1));
+    await writeFile(join(packageKit, 'sky.hdr'), Buffer.alloc(512 * 1024, 2));
+
     await writeFile(join(packageKit, 'cook-receipt.json'), '{"previousEnvironment":true}\n');
     await promisify(execFile)(process.execPath, [script], {
       cwd: checkout,
@@ -35,6 +42,12 @@ test('publishes a public canonical fallback with its own receipt over a previous
 
     await publishCanonicalKit(stage, packageKit);
 
+    const environment = await readFile(join(packageKit, 'sky.hdr'));
+    assert.ok(
+      environment.length < 4096,
+      'default preview environment must be generated, not copied from an HDR library',
+    );
+    assert.ok(environment.toString('ascii').startsWith('#?RADIANCE'));
     const receiptBytes = await readFile(join(packageKit, 'cook-receipt.json'));
     assert.deepEqual(receiptBytes, await readFile(join(stage, 'cook-receipt.json')));
     const receipt = JSON.parse(receiptBytes);

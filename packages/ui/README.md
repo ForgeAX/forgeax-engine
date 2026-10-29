@@ -119,6 +119,11 @@ focus, including on touch Hosts. The browser mount corrects UA spin-button
 opacity when that pseudo-element is supported; native painting uses the same
 visible default. Disabled and read-only controls retain their opt-outs, and author CSS keeps precedence over the mount's base style.
 
+The mounted host fills its positioned root. Its internal content container has
+the same definite height, so an authored `height: 100%` HUD resolves against the
+viewport in both browser DOM and Blitz. Put scrolling and clipping on the authored
+element that owns them; consumers do not need to select or size internal wrappers.
+
 ## Producer authoring descriptor
 
 Every `kind: 'ui'` catalog row publishes the versioned `AssetAuthoringCapability.ui` descriptor from

@@ -1,45 +1,28 @@
 import { sha256 } from './sha256.js';
 
-/** Immutable CPU source owner. Complete text is borrowed, never memoized here. */
+/** Immutable CPU source owner. Runtime text is retained without splitting or copying. */
 export class ShaderSource {
-  readonly identity: string;
   readonly length: number;
   readonly #fragments: readonly string[];
+  #identity: string | undefined;
 
   constructor(fragments: readonly string[]) {
     if (!Array.isArray(fragments) || !fragments.every((fragment) => typeof fragment === 'string'))
       throw new Error('Shader source requires immutable text fragments');
     this.#fragments = Object.freeze([...fragments]);
     this.length = fragments.reduce((length, fragment) => length + fragment.length, 0);
-    // Hash complete UTF-8 text: surrogate pairs can cross fragment boundaries.
-    this.identity = sha256(this.read());
     Object.freeze(this);
+  }
+
+  get identity(): string {
+    // Hash on actual use, never while receiving an unused background library.
+    // Hash complete UTF-8 text: producer fragments can split surrogate pairs.
+    this.#identity ??= sha256(this.read());
+    return this.#identity;
   }
 
   static is(value: unknown): value is ShaderSource {
     return value !== null && typeof value === 'object' && #fragments in value;
-  }
-
-  /** Owner-local compact fragments; the caller owns the source index lifetime. */
-  static fromText(text: string, pool: Map<string, string>): ShaderSource {
-    const fragments: string[] = [];
-    for (const paragraph of text.split(/(?<=\n\n)/u)) {
-      for (let offset = 0; offset < paragraph.length; offset += 16_384) {
-        const fragment = paragraph.slice(offset, offset + 16_384);
-        let owned = pool.get(fragment);
-        if (owned === undefined) {
-          // Force independent UTF-16 storage. V8 sliced strings must not keep
-          // the complete imported/expanded body alive behind a small fragment.
-          const units = new Uint16Array(fragment.length);
-          for (let index = 0; index < fragment.length; index++)
-            units[index] = fragment.charCodeAt(index);
-          owned = String.fromCharCode(...units);
-          pool.set(owned, owned);
-        }
-        fragments.push(owned);
-      }
-    }
-    return new ShaderSource(fragments);
   }
 
   read(): string {

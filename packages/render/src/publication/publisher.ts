@@ -524,9 +524,22 @@ export function createRenderPublisher(
 
     private publishProgram(key: string): void {
       if (publishedPrograms.has(key) || this.programs.has(key)) return;
+      const declaration = assets.shaderRegistry.materialArtifactDeclaration(key);
+      const artifact = assets.getMaterialArtifact(key);
+      if (declaration?.kind === 'bytes' && artifact?.digest !== undefined) {
+        const { kind: _kind, ...metadata } = declaration;
+        assets.shaderRegistry
+          .validateMaterialArtifactBytes(key, {
+            ...metadata,
+            bytes: artifact.bytes,
+            digest: artifact.digest,
+          })
+          .unwrap();
+        this.programs.set(key, { key, shader: { sourceEncoding: 'utf8', ...metadata }, artifact });
+        return;
+      }
       const shader = assets.shaderRegistry.findMaterialArtifact(key);
       if (!shader.ok) throw shader.error;
-      const artifact = assets.getMaterialArtifact(key);
       this.programs.set(key, {
         key,
         shader: {

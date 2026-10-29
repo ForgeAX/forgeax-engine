@@ -120,6 +120,40 @@ function materialBindings(source: string): readonly number[] | undefined {
     : undefined;
 }
 
+/** Compare producer read metadata without decoding a shader source. */
+export function sameMaterialShaderEntryPoints(
+  left: readonly ShaderEntryPointReads[] | undefined,
+  right: readonly ShaderEntryPointReads[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        entry.name === other.name &&
+        entry.stage === other.stage &&
+        entry.bindings.length === other.bindings.length &&
+        entry.bindings.every((binding, index) => {
+          const candidate = other.bindings[index];
+          return (
+            candidate !== undefined &&
+            binding.group === candidate.group &&
+            binding.binding === candidate.binding &&
+            (binding.fields === candidate.fields ||
+              (binding.fields !== undefined &&
+                candidate.fields !== undefined &&
+                binding.fields.length === candidate.fields.length &&
+                binding.fields.every((field, index) => field === candidate.fields?.[index])))
+          );
+        })
+      );
+    })
+  );
+}
+
 /** Reflection may arrive after source warmup; retain the already admitted source facts. */
 export function withMaterialShaderEntryPoints(
   program: MaterialShaderProgram,
@@ -127,30 +161,7 @@ export function withMaterialShaderEntryPoints(
 ): MaterialShaderProgram {
   if (entryPoints === undefined || program.entryPoints === entryPoints) return program;
   if (program.entryPoints !== undefined) {
-    const same =
-      program.entryPoints.length === entryPoints.length &&
-      program.entryPoints.every((entry, index) => {
-        const other = entryPoints[index];
-        return (
-          other !== undefined &&
-          entry.name === other.name &&
-          entry.stage === other.stage &&
-          entry.bindings.length === other.bindings.length &&
-          entry.bindings.every((binding, index) => {
-            const candidate = other.bindings[index];
-            return (
-              candidate !== undefined &&
-              binding.group === candidate.group &&
-              binding.binding === candidate.binding &&
-              (binding.fields === candidate.fields ||
-                (binding.fields !== undefined &&
-                  candidate.fields !== undefined &&
-                  binding.fields.length === candidate.fields.length &&
-                  binding.fields.every((field, index) => field === candidate.fields?.[index])))
-            );
-          })
-        );
-      });
+    const same = sameMaterialShaderEntryPoints(program.entryPoints, entryPoints);
     if (!same)
       throw new Error(
         'ShaderRegistry: conflicting shader entry read contract for immutable source',
@@ -190,8 +201,7 @@ export function createMaterialShaderProgram(
   input: string | ShaderSource,
   entryPoints?: readonly ShaderEntryPointReads[],
 ): MaterialShaderProgram {
-  const sourceReference =
-    typeof input === 'string' ? ShaderSource.fromText(input, new Map()) : input;
+  const sourceReference = typeof input === 'string' ? new ShaderSource([input]) : input;
   const facts = analyzeMaterialShaderSource(sourceReference.read());
   return withMaterialShaderEntryPoints(
     Object.freeze({

@@ -464,7 +464,9 @@ export function rebindPublicationMaterialSchemas(
  * identity, so equal facts of different programs share one node. The caller's
  * row is not frozen, and the WGSL source string is not part of any key.
  */
-function canonicalShaderEntry(shader: MaterialShaderEntry): MaterialShaderEntry {
+function canonicalShaderEntry<
+  T extends Pick<MaterialShaderEntry, 'paramSchema' | 'receipt' | 'entryPoints'>,
+>(shader: T): T {
   const receipt = canonicalCopy(shader.receipt);
   const entryPoints = canonicalCopy(shader.entryPoints);
   const paramSchema = canonicalCopy(shader.paramSchema);
@@ -483,6 +485,31 @@ function canonicalCopy<T>(value: T): T | undefined {
     : internJson(structuredClone(value as T & object));
 }
 
+/** Validate direct-source publication without changing its eager admission route. */
+function publicationSourceEntry(
+  registry: ShaderRegistry,
+  key: string,
+  shader: MaterialShaderEntry,
+): MaterialShaderEntry | undefined {
+  const previous = registry.findMaterialArtifact(key);
+  if (
+    previous.ok &&
+    (previous.value.source !== shader.source ||
+      !sameSchemaValue(previous.value.paramSchema, shader.paramSchema) ||
+      !sameSchemaValue(previous.value.receipt, shader.receipt) ||
+      !sameSchemaValue(
+        previous.value.program.entryPoints,
+        shader.entryPoints ?? shader.receipt?.entryPoints,
+      ))
+  ) {
+    throw new RenderPublicationError({
+      reason: 'shape',
+      subject: `conflicting immutable shader ${key}`,
+    });
+  }
+  return previous.ok ? undefined : canonicalShaderEntry(shader);
+}
+
 /** Admit immutable producer artifacts before the full Renderer prepares their pipelines. */
 export function installPublicationPrograms(
   assets: AssetRegistry,
@@ -499,37 +526,38 @@ export function installPublicationPrograms(
         subject: 'duplicate or mismatched program key',
       });
     keys.add(row.key);
-    const previous = assets.shaderRegistry.findMaterialArtifact(row.key);
-    // The installed schema and program already own their immutable derivation.
-    // A Worker clone still compares all published content; its key alone is
-    // not evidence. The registry also owns the complete immutable receipt.
-    if (
-      previous.ok &&
-      (previous.value.source !== row.shader.source ||
-        !sameSchemaValue(previous.value.paramSchema, row.shader.paramSchema) ||
-        !sameSchemaValue(previous.value.receipt, row.shader.receipt) ||
-        !sameSchemaValue(
-          previous.value.program.entryPoints,
-          row.shader.entryPoints ?? row.shader.receipt?.entryPoints,
-        ))
-    ) {
-      throw new RenderPublicationError({
-        reason: 'shape',
-        subject: `conflicting immutable shader ${row.key}`,
-      });
-    }
-    if (!previous.ok) {
-      shaders ??= new ShaderRegistry({ manifestUrl: undefined });
-      shaders.installMaterialArtifact(
-        row.key,
-        canonicalShaderEntry(row.shader),
-        assets.shaderRegistry,
-      );
-    }
     if (row.artifact !== undefined) {
       const existing = assets.getMaterialArtifact(row.key);
       if (existing !== undefined) validation.register(existing).unwrap();
       validation.register(row.artifact).unwrap();
+    }
+    if ('sourceEncoding' in row.shader) {
+      if (row.shader.sourceEncoding !== 'utf8' || row.artifact?.digest === undefined)
+        throw new RenderPublicationError({
+          reason: 'shape',
+          subject: 'byte shader publication requires its complete artifact',
+        });
+      const input = {
+        ...canonicalShaderEntry(row.shader),
+        bytes: row.artifact.bytes,
+        digest: row.artifact.digest,
+      };
+      const accepted = assets.shaderRegistry.validateMaterialArtifactBytes(row.key, input);
+      if (!accepted.ok)
+        throw new RenderPublicationError({
+          reason: 'shape',
+          subject: `conflicting immutable shader ${row.key}`,
+        });
+      if (!accepted.value) {
+        shaders ??= new ShaderRegistry({ manifestUrl: undefined });
+        shaders.installMaterialArtifactBytes(row.key, input);
+      }
+    } else {
+      const source = publicationSourceEntry(assets.shaderRegistry, row.key, row.shader);
+      if (source !== undefined) {
+        shaders ??= new ShaderRegistry({ manifestUrl: undefined });
+        shaders.installMaterialArtifact(row.key, source, assets.shaderRegistry);
+      }
     }
   }
   if (shaders !== undefined) assets.shaderRegistry.installMaterialArtifactsFrom(shaders);

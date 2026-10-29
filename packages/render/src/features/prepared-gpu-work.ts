@@ -628,7 +628,7 @@ export function ownRenderFeatureProgramDataWith<T>(
   reuse?: (node: object) => object | undefined,
 ): T {
   if (isOwnedRenderFeatureProgramData(value)) return value;
-  const state = { plain: true, fragments: new Map<string, string>() };
+  const state = { plain: true };
   const owned = ownProgramNode(value, state, reuse) as T;
   if (state.plain && owned !== null && typeof owned === 'object') ownedProgramData.add(owned);
   return owned;
@@ -644,7 +644,7 @@ export function ownRenderFeatureProgramDataWith<T>(
  */
 function ownProgramNode(
   value: unknown,
-  state: { plain: boolean; fragments: Map<string, string> },
+  state: { plain: boolean },
   reuse: ((node: object) => object | undefined) | undefined,
 ): unknown {
   if (value === null || value === undefined) return value;
@@ -680,9 +680,7 @@ function ownProgramNode(
     : {};
   copyProgramProperties(node, out, keys, state, reuse);
   if (programNode && state.plain) {
-    const source = ShaderSource.is(out.wgsl)
-      ? out.wgsl
-      : ShaderSource.fromText(out.wgsl as string, state.fragments);
+    const source = ShaderSource.is(out.wgsl) ? out.wgsl : new ShaderSource([out.wgsl as string]);
     Object.defineProperty(out, 'wgsl', { enumerable: true, get: () => source.read() });
     ownedProgramSources.set(out, source);
     ownedProgramStates.set(
@@ -704,7 +702,7 @@ function copyProgramProperties(
   node: object,
   out: Record<string, unknown>,
   keys: readonly PropertyKey[],
-  state: { plain: boolean; fragments: Map<string, string> },
+  state: { plain: boolean },
   reuse: ((node: object) => object | undefined) | undefined,
 ): void {
   const array = Array.isArray(node);

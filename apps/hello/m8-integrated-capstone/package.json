@@ -132,7 +132,8 @@
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-state": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "@forgeax/engine-pack": "workspace:*"
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

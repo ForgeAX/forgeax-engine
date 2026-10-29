@@ -139,7 +139,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
       data: {
         pos: [0, 2, 5], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: Camera, data: { fov: 60, aspect: 800 / 600, near: 0.1, far: 100 } },
+    { component: Camera, data: { fov: Math.PI / 3, aspect: 800 / 600, near: 0.1, far: 100 } },
   );
 
   world.spawn({

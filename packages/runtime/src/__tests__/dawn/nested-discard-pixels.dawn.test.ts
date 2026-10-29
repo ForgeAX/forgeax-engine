@@ -9,6 +9,8 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
+  type Renderer,
+  type RenderWorldLease,
 } from '@forgeax/engine-render';
 import {
   attachRecorder,
@@ -20,8 +22,9 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import testQuality from '../../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { deviceOptionsForAdapter } from '../../../../render/src/assembly/device-feature-admission';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { testAssets } from '../helpers/runtime-assets';
@@ -187,11 +190,35 @@ function spawnScene(world: World, assets: Assets, scene: Scene): void {
       color: [1, 1, 1],
       intensity: 3,
       castShadow: scene.shadow !== undefined,
+      mapSize: testQuality.shadowMapSize,
+      cascadeCount: testQuality.cascadeCount,
     },
   });
 }
 
-async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
+interface SceneHost {
+  readonly renderer: Renderer;
+  readonly device: GPUDevice;
+  readonly target: GPUTexture | undefined;
+}
+
+let pixelHost: Promise<SceneHost> | undefined;
+let pixelDeviceRequests = 0;
+
+afterAll(async () => {
+  if (pixelHost !== undefined) await disposeSceneHost(await pixelHost);
+  // Ordinary pixel scenes share assembly; temporal captures retain fresh devices.
+  expect(pixelDeviceRequests).toBeLessThanOrEqual(1);
+});
+
+async function disposeSceneHost(host: SceneHost): Promise<void> {
+  const disposed = await host.renderer.dispose();
+  host.target?.destroy();
+  host.device.destroy();
+  expect(disposed.ok).toBe(true);
+}
+
+async function createSceneHost(recorder?: RecorderAttachment): Promise<SceneHost> {
   if (typeof globalThis.navigator?.gpu?.requestAdapter !== 'function')
     throw new Error('dawn-node WebGPU unavailable');
   let device: GPUDevice | undefined;
@@ -202,6 +229,7 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
     if (adapter === null) return adapter;
     const requestDevice = adapter.requestDevice.bind(adapter);
     adapter.requestDevice = async (descriptor) => {
+      if (recorder === undefined) pixelDeviceRequests++;
       const next = await requestDevice(descriptor);
       device ??= next;
       return next;
@@ -236,18 +264,38 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
   try {
     host = await constructRuntimeRendererHost(
       canvas,
-      probe.recorder === undefined ? {} : { rhi: probe.recorder.backend.rhi },
+      recorder === undefined ? {} : { rhi: recorder.backend.rhi },
       { shaderManifestUrl: ENGINE_MANIFEST_URL },
     );
   } finally {
     globalThis.navigator.gpu.requestAdapter = original;
   }
   if (!host.ok || device === undefined) throw new Error('runtime Dawn renderer not ready');
-  const { renderer } = host.value;
+  return {
+    renderer: host.value.renderer,
+    device,
+    get target() {
+      return target;
+    },
+  };
+}
+
+async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
+  const shared = probe.recorder === undefined;
+  let host: SceneHost;
+  if (shared) {
+    pixelHost ??= createSceneHost();
+    host = await pixelHost;
+  } else {
+    host = await createSceneHost(probe.recorder);
+  }
+  const { renderer, device } = host;
+  let attachment: RenderWorldLease | undefined;
   try {
     const world = new World();
-    const attachment = renderer.attach(world);
-    if (!attachment.ok) throw attachment.error;
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    attachment = attached.value;
     spawnScene(world, testAssets(world), scene);
     world.update().unwrap();
     propagateTransforms(world).unwrap();
@@ -263,21 +311,26 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
       if (pending !== undefined && probe.recorder !== undefined)
         (await probe.recorder.frameBoundary()).unwrap();
       await drawReadyFrame(renderer, {
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
+        leases: [attachment],
+        camera: { lease: attachment },
+        environment: { lease: attachment },
       });
       if (pending !== undefined && probe.recorder !== undefined)
         (await probe.recorder.frameBoundary()).unwrap();
       capture = pending ?? capture;
     }
     await device.queue.onSubmittedWorkDone();
+    if (scene.shadow !== undefined)
+      expect(renderer.inspect().directionalShadow).toMatchObject({
+        mapSize: testQuality.shadowMapSize,
+        cascadeCount: testQuality.cascadeCount,
+      });
+    const target = host.target;
     if (target === undefined) throw new Error('runtime Dawn render target not configured');
     return await probe.finish({ device, target, recorder: probe.recorder, capture });
   } finally {
-    const disposed = await renderer.dispose();
-    target?.destroy();
-    expect(disposed.ok).toBe(true);
+    attachment?.dispose();
+    if (!shared) await disposeSceneHost(host);
   }
 }
 
@@ -349,6 +402,8 @@ async function uncoveredTemporalFraction(scene: Scene): Promise<number> {
             return uncovered / total;
           } finally {
             (await replay.dispose()).unwrap();
+            webgpu.disposeDevice(device);
+            expect((await device.lost).reason).toBe('destroyed');
           }
         },
       },

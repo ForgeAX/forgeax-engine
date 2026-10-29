@@ -12,10 +12,10 @@ import {
   ColliderShapeValue,
   ManagedPhysicsError,
   type PhysicsWorld,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { startNativePlugin } from '@forgeax/engine-plugin';
 import { ChildOf, GlobalTransform, Name, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { type AnimationTargetIdValue, err } from '@forgeax/engine-types';
@@ -48,7 +48,7 @@ async function fixture(physical = false, installMotion = true) {
   const context = await createWorldContext(world, [
     scenePlugin(),
     animationPlugin({ cadence: 'fixed' }),
-    ...(physical ? [physicsPlugin('rapier-3d')] : []),
+    ...(physical ? [physics3d] : []),
     ...(installMotion ? [skeletalMotionPlugin({ physics: physical })] : []),
   ]);
   const parent = world
@@ -934,7 +934,7 @@ describe('managed skeletal motion through World schedules', () => {
       expect(bindSkeletalMotion(f.world, f.player, f.rig).ok).toBe(false);
       expect(f.world.hasResource('SkeletalMotion')).toBe(false);
       await pending.dispose();
-      (await startNativePlugin(f.context, physicsPlugin('rapier-3d'))).unwrap();
+      (await startNativePlugin(f.context, physics3d)).unwrap();
       expect(f.world.hasResource('SkeletalMotion')).toBe(false);
       (await startNativePlugin(f.context, skeletalMotionPlugin({ physics: true }))).unwrap();
       const binding = bindSkeletalMotion(f.world, f.player, f.rig).unwrap();

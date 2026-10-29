@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
 
 const action = readFileSync('.github/actions/prepare-ui-blitz/action.yml', 'utf8');
 
@@ -13,17 +14,44 @@ for (const [owner, command] of [
   ['collision', 'pnpm build:engine'],
 ]) {
   test(`SDK Candidate ${owner} prepares the current UI payload before source production`, () => {
-    const workflow = readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8');
-    const job = workflow.split(`\n  ${owner}:\n`)[1]?.split(/\n {2}[\w-]+:\n/)[0];
+    const workflow = parse(readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8'));
+    const job = workflow.jobs[owner];
     assert.ok(job, `missing ${owner} producer`);
-    const preparation = job.indexOf('      - name: Prepare current Blitz UI\n');
-    const build = job.indexOf(command);
+    assert.ok(job.needs.includes('native-inputs'));
+    const preparation = job.steps.findIndex((step) => step.name === 'Prepare current Blitz UI');
+    const build = job.steps.findIndex((step) => step.run?.includes(command));
     assert.ok(preparation >= 0 && build > preparation, 'prepare UI before building release bytes');
-    assert.ok(preparation > job.indexOf('run: pnpm install --frozen-lockfile --ignore-scripts'));
-    const step = job.slice(preparation).split('\n      - name: ')[0];
-    assert.match(step, /uses: \.\/\.github\/actions\/prepare-ui-blitz/);
-    assert.match(step, /if: hashFiles\('packages\/ui-blitz\/Cargo.toml'\) != ''/);
-    assert.match(step, /cache-scope: sdk-candidate-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}/);
+    const install = job.steps.findIndex((step) =>
+      step.run?.includes('pnpm install --frozen-lockfile --ignore-scripts'),
+    );
+    assert.ok(install >= 0 && preparation > install);
+    const step = job.steps[preparation];
+    assert.equal(step.uses, './.github/actions/prepare-ui-blitz');
+    assert.equal(
+      step.if.trim(),
+      "needs.native-inputs.outputs.ui-artifact-name == '' && hashFiles('packages/ui-blitz/Cargo.toml') != ''",
+    );
+    assert.equal(step.with['cache-scope'], `sdk-candidate-\${{ runner.os }}-\${{ runner.arch }}`);
+    const names = [
+      'Remove stale receiver Blitz UI payload',
+      'Download source-verified Blitz UI payload',
+      'Verify source-verified Blitz UI payload',
+    ];
+    let previous = install;
+    for (const name of names) {
+      const index = job.steps.findIndex((candidate) => candidate.name === name);
+      assert.ok(index > previous && index < preparation, `${name} before fallback or production`);
+      assert.equal(job.steps[index].if, "needs.native-inputs.outputs.ui-artifact-name != ''");
+      previous = index;
+    }
+    const [remove, download, verify] = names.map((name) =>
+      job.steps.find((candidate) => candidate.name === name),
+    );
+    assert.equal(remove.run.trim(), 'rm -rf packages/ui-blitz/pkg');
+    assert.equal(download.uses, 'actions/download-artifact@v4');
+    assert.equal(download.with.name, `\${{ needs.native-inputs.outputs.ui-artifact-name }}`);
+    assert.equal(download.with.path, 'packages/ui-blitz/pkg');
+    assert.equal(verify.run.trim(), 'node packages/ui-blitz/scripts/verify-current.mjs');
   });
 }
 

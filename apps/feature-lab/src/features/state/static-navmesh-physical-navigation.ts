@@ -13,10 +13,10 @@ import {
 import {
   Collider,
   ColliderShapeValue,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { Transform } from '@forgeax/engine/scene';
 import type { NavigationMeshAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
@@ -51,10 +51,7 @@ export default defineFeature({
     assets.installDecoder(navigationMeshContribution.kind, navigationMeshContribution.decoder);
     const surface = assets.create(asset).unwrap();
     const world = new World({ assets }),
-      ctx = await createWorldContext(world, [
-        physicsPlugin('rapier-3d'),
-        navigationCharacterPlugin(surface),
-      ]);
+      ctx = await createWorldContext(world, [physics3d, navigationCharacterPlugin(surface)]);
     assets.release(surface).unwrap();
     try {
       world

@@ -18,15 +18,13 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update, type World } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { vec3 } from '@forgeax/engine-math';
-import {
-  CharacterController,
+import { CharacterController,
   Collider,
   ColliderShapeValue,
   type PhysicsWorld,
-  physicsPlugin,
   RigidBody,
-  RigidBodyTypeValue,
-} from '@forgeax/engine-physics';
+  RigidBodyTypeValue } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -54,7 +52,7 @@ const JUMP_SPEED = 6; // units/second initial upward
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-character: missing <canvas id="app"> in index.html');
 
-const app = await createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] }, forgeaxBundlerAdapter());
+const app = await createApp(canvas, { plugins: [physics3d] }, forgeaxBundlerAdapter());
 if (!app.ok) {
   reportError(app.error);
 } else {

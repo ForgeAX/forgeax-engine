@@ -3,7 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { createRenderer } from '../assembly/factory';
-import { ANTIALIAS_NONE, Camera } from '../components/camera';
+import { ANTIALIAS_NONE, Camera, perspective } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { setActiveCamera } from '../systems/active-camera';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
@@ -29,7 +29,10 @@ it.each([
     world
       .spawn(
         { component: Transform, data: { pos: [x, 0, 4] } },
-        { component: Camera, data: { antialias: ANTIALIAS_NONE } },
+        {
+          component: Camera,
+          data: { ...perspective({ fov: Math.PI / 3, aspect: 1 }), antialias: ANTIALIAS_NONE },
+        },
       )
       .unwrap(),
   );
@@ -98,7 +101,10 @@ it('projects the fixed short-side budget through extraction and Render World wit
   const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 4] } },
-      { component: Camera, data: { antialias: ANTIALIAS_NONE } },
+      {
+        component: Camera,
+        data: { ...perspective({ fov: Math.PI / 3, aspect: 1 }), antialias: ANTIALIAS_NONE },
+      },
       { component: CameraView, data: { maxRenderShortSide: 720 } },
     )
     .unwrap();

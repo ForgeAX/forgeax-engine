@@ -18,14 +18,12 @@ import {
   pathPlugin,
   preparePath,
 } from '@forgeax/engine-path';
-import {
-  CharacterController,
+import { CharacterController,
   Collider,
   type PhysicsWorld,
-  physicsPlugin,
   RigidBody,
-  RigidBodyTypeValue,
-} from '@forgeax/engine-physics';
+  RigidBodyTypeValue } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import {
   ChildOf,
@@ -44,7 +42,7 @@ const app = (
   await createApp(
     canvas,
     {
-      plugins: [pathPlugin(), physicsPlugin('rapier-3d')],
+      plugins: [pathPlugin(), physics3d],
       ...(import.meta.env.DEV && runtimeBinding ? { assetRuntimeBinding: runtimeBinding } : {}),
       time: { fixedDeltaSeconds: 1 / 60 },
     },

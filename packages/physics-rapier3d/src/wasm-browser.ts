@@ -19,6 +19,21 @@ export type Rapier3DModule = any;
 /** Loading promise — ensures concurrent callers share one init. */
 let loadingPromise: Promise<Rapier3DModule | PhysicsError> | null = null;
 
+// A function returning i32x4.splat(0). Probe the actual WASM runtime rather
+// than assuming that a browser, device family, or native Host supports SIMD.
+const SIMD_PROBE = new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 8, 1, 6, 0, 65, 0, 253, 17,
+  11,
+]);
+
+function supportsSimd(): boolean {
+  try {
+    return typeof WebAssembly !== 'undefined' && WebAssembly.validate(SIMD_PROBE);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Load the Rapier 3D WASM module and initialise it.
  *
@@ -40,7 +55,9 @@ export function loadRapier3D(): Promise<Rapier3DModule | PhysicsError> {
 
 async function _doLoad(): Promise<Rapier3DModule | PhysicsError> {
   try {
-    const RAPIER = await import('../pkg/rapier.mjs');
+    const RAPIER = supportsSimd()
+      ? await import('../pkg/rapier-simd.mjs')
+      : await import('../pkg/rapier.mjs');
     await RAPIER.default.init();
     return RAPIER.default;
   } catch (cause) {

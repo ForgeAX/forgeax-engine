@@ -1,7 +1,16 @@
 # @forgeax/engine-physics-rapier3d
 
+```ts
+import physics3d from '@forgeax/engine/physics-rapier3d';
+
+const app = await createApp(canvas, { plugins: [physics3d] });
+```
+
+The default plugin owns only Rapier3D. Its module dependency is static;
+WASM initializes lazily during activation. The shared physics contract imports no backend.
+
 Pinned Rapier 0.35.1 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
-Install `physicsPlugin('rapier-3d')` in the World; game code consumes the optional
+Install `physics3d` in the World; game code consumes the optional
 `PhysicsWorld` capabilities rather than retaining Rapier objects.
 
 | Boundary | Owner behavior |
@@ -179,13 +188,17 @@ flowchart LR
 | Generated browser/native transports, bundled declarations and license | `pkg/` |
 
 `loadRapier3D()` selects the browser or native transport through the existing
-`wasm-runtime` export. Both are generated from the same patched WASM and bindings.
-The default browser/Node module `pkg/rapier.mjs` embeds those bytes and needs no
-network request or Rust toolchain. The native transport uses `rapier-native.mjs`
-and the identical external `rapier.wasm`. There is no unpatched npm 3D backend.
-SDK source includes the complete seven-file `pkg/` closure through
-`SDK_SOURCE_WASM`; npm packing carries the same module, declaration, WASM,
-license and provenance files.
+`wasm-runtime` export. Browser/Node loading probes the actual WebAssembly runtime
+once and selects the self-contained `rapier-simd.mjs` when SIMD is supported;
+otherwise it loads `rapier.mjs`. Both come from the same patched sources, retain
+scalar geometry math and use the same solver policy. SIMD accelerates the
+solver's packed arithmetic without reducing iterations, contacts or CCD.
+The native Host transport continues to use `rapier-native.mjs` and its identical
+external scalar `rapier.wasm`; it does not infer native capability from the JS
+runtime. No network request or Rust toolchain is needed by either browser payload.
+There is no unpatched npm 3D backend. SDK source includes the complete nine-file
+`pkg/` closure through `SDK_SOURCE_WASM`, including SIMD declarations and the
+shared license/provenance; npm packing carries the same closure.
 
 Contributor builds use `node scripts/build-wasm.mjs --ensure`: a current payload
 is checked and reused; a missing, stale or modified payload is rebuilt. Explicit
@@ -231,7 +244,7 @@ scene gates.
 
 A path-based Host selects the `forgeax-native` bundler condition and calls
 `initializeNativeRapier3D(host)` from `@forgeax/engine-physics-rapier3d/native`
-before activating `physicsPlugin('rapier-3d')`. The ordinary loader and plugin
+before activating `physics3d`. The ordinary loader and plugin
 then consume that same realm-local module. Missing initialization returns
 `PhysicsError` with `code: 'wasm-load-failed'`. Concurrent initialization shares
 one attempt. Failed reads, integrity checks and Host instantiations can retry;

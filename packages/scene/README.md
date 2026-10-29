@@ -305,7 +305,7 @@ sees both sides of each contract detects it:
 |:--|:--|:--|
 | `mobility-static-moved` | `scenePlugin` Update system | A `static` entity's `Transform` changes after the frame that declared it |
 | `mobility-invalid-kind` | Renderer source systems | `stationary` on an entity with `MeshFilter` |
-| `mobility-physics-conflict` | `physicsPlugin` | `static` with `RigidBody` type `dynamic` or `kinematic` |
+| `mobility-physics-conflict` | `physics backend plugin` | `static` with `RigidBody` type `dynamic` or `kinematic` |
 
 Diagnostics never change behaviour: a moved static entity still propagates and
 renders correctly. Repair by declaring `MobilityKindValue.movable` (or removing

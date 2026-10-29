@@ -73,12 +73,19 @@ fallback and binding substitutions. They share only the lexical host helpers;
 they do not create a second registry, executor, World, Renderer, or authoring
 session.
 
-The canonical environment's `sky.hdr` and `cook-receipt.json` are generated
-together by the Preview producer. Engine builds publish the complete staged kit,
-including its Meta, after both fresh builds and package cache hits. Public SDK
-source builds use the packaged source or the producer's neutral HDR fallback;
-each carries a receipt for its actual bytes. DevKit rejects source or Meta bytes
-that disagree with that receipt before project build or development startup.
+The Preview producer generates a compact 64 x 32 latitude-gradient environment
+and its `cook-receipt.json` together, with no bundled or private HDR library input.
+`sky.hdr` is the generated asset's transport encoding; the original library image
+is not a default dependency. Engine builds refresh and publish the complete kit,
+including its Meta, after fresh builds and package cache hits. Resource and workspace
+previews admit this kit; ordinary game builds and Play use only their declared asset
+roots and libraries. DevKit rejects preview source or Meta bytes that disagree
+with their receipt.
+
+A game that deliberately uses the canonical environment declares
+`"@forgeax/engine/preview"` in `forge.json#assetLibraries` alongside its other
+libraries. This is an explicit read-only asset mount; ordinary games do not
+inherit preview resources. The Game 3D template supplies its own generated sky.
 
 Resource domain execution consumes the mechanisms from one PreviewHost session. Material and Mesh read readiness from that session's Renderer, as Texture and VFX do; callers do not supply a second readiness projection. The Host supplies one fixed `{ guid, asset, digest?, ownerFacts? }` subject after Catalog admission. All four domains verify that identity before their inspection and render oracle; Preview has no loader or runtime asset catalogue. Resource requests, asset records and canonical kit receipts use the same object admission; arrays cannot stand in for records, even when they carry named fields.
 

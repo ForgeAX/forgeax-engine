@@ -53,7 +53,7 @@ export const Fog = defineComponent(
       recovery:
         'Use finite color channels >= 0 (scene-linear, HDR allowed), density >= 0, maxOpacity in [0, 1]; linear needs 0 <= near < far; heightFalloff applies to exp only.',
       boundaries:
-        'Fog tints rendered surfaces; the empty background only through a GradientSky horizon (fogBlend). VolumetricFog owns local lit media.',
+        'Fog tints rendered surfaces and leaves the background unchanged. VolumetricFog owns local lit media.',
     },
   },
 );

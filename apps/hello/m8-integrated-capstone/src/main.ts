@@ -9,7 +9,8 @@ import {
   type InputSnapshot,
 } from '@forgeax/engine-input';
 import { FixedTime, Update, FixedUpdate } from '@forgeax/engine-ecs';
-import { physicsPlugin, CollidingEntities } from '@forgeax/engine-physics';
+import { CollidingEntities } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { pick } from '@forgeax/engine-picking';
 import { MeshRenderer } from '@forgeax/engine-render';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -33,7 +34,7 @@ const appResult = await createApp(
   canvas,
   {
     time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.1 },
-    plugins: [webAudioPlugin(), audioPlugin(), physicsPlugin('rapier-3d')],
+    plugins: [webAudioPlugin(), audioPlugin(), physics3d],
   },
   { ...forgeaxBundlerAdapter(), importTransport: createRuntimeAssetImportTransport(runtimeBinding) },
 );

@@ -8,7 +8,7 @@ import { sceneAssetContribution,Name,Transform } from '../../scene/dist/index.mj
 import { SceneInstance } from '../../render/dist/index.mjs';
 import { AssetRegistry } from '../../assets-runtime/dist/index.mjs';
 import { ShaderRegistry } from '../../shader/dist/index.mjs';
-import { physicsPlugin } from '../../physics/dist/index.mjs';
+import physics3d from '../../physics-rapier3d/dist/index.mjs';
 import * as navigation from '../dist/index.mjs';
 import { bakeNavigationMesh } from '../../import/dist/navigation-bake.mjs';
 import { settings,box,floor,doorway,stairs,slope,actor } from './fixtures.mjs';
@@ -22,7 +22,7 @@ export async function runCrowd({name,geometry=[floor()],starts,goals,frames=1200
   const mesh=registry.create(asset).unwrap(),world=new World({assets:registry});
   const samples=[],stages={};let accumulated={};
   if(instrument){const wrap=system=>({...system,fn(...args){const start=performance.now();try{return system.fn(...args);}finally{accumulated[system.name]=(accumulated[system.name]??0)+performance.now()-start;}}}),add=world.addSystem.bind(world),adds=world.addSystems.bind(world);world.addSystem=(schedule,system)=>add(schedule,wrap(system));world.addSystems=(schedule,set,systems)=>adds(schedule,set,systems.map(wrap));}
-  const ctx=await createWorldContext(world,[physicsPlugin('rapier-3d'),nav.navigationCharacterPlugin(mesh,avoidanceOptions)]);
+  const ctx=await createWorldContext(world,[physics3d,nav.navigationCharacterPlugin(mesh,avoidanceOptions)]);
   registry.release(mesh).unwrap();registry.installDecoder(sceneAssetContribution.kind,sceneAssetContribution.decoder);world.components.register(SceneInstance).unwrap();
   const trajectories=[],heapBefore=process.memoryUsage();let motorMs=0;let minimum=Infinity,overlapFrames=0;
   try {

@@ -59,7 +59,7 @@ function measureStateProjection() {
           { component: Transform, data: { pos: [0, 0, 20] } },
           {
             component: Camera,
-            data: { near: 0.1, far: 100, aspect: 1 },
+            data: { fov: Math.PI / 3, near: 0.1, far: 100, aspect: 1 },
           },
         )
         .unwrap();

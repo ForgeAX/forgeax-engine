@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
-import { Camera } from '@forgeax/engine/render';
-import { defineFeature } from '../../lab/feature';
+import { Camera, CameraError, perspective } from '@forgeax/engine/render';
+import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
@@ -9,7 +9,7 @@ export default defineFeature({
   catalog: 'Perspective camera',
   kind: 'visual',
   summary:
-    'Camera fov/aspect/near/far with autoAspect drive a perspective projection; Transform supplies the pose. An NDC lens offset shifts the ON view independently of camera motion.',
+    'Camera fov uses radians strictly between zero and PI; aspect/near/far and autoAspect drive the lens. Transform supplies the pose. An NDC lens offset shifts the ON view independently of camera motion.',
   expect:
     'ON: fov = PI/4, the three cubes fill the frame and are shifted right by the lens offset. OFF: fov = PI/1.6, the same cubes shrink toward the center and more floor is visible.',
   setup({ world }) {
@@ -37,6 +37,28 @@ export default defineFeature({
           fov: on ? Math.PI / 4 : Math.PI / 1.6,
           projectionOffset: on ? [0.22, 0.08] : [0, 0],
         } as never);
+      },
+      checks() {
+        const checks = new CheckList();
+        for (const fov of [0, 74, Math.PI, NaN]) {
+          let rejected: unknown;
+          try {
+            perspective({ fov, aspect: 1 });
+          } catch (cause) {
+            rejected = cause;
+          }
+          checks.ok(
+            `invalid FOV ${String(fov)} has a structured projection error`,
+            rejected instanceof CameraError && rejected.code === 'camera-projection-invalid',
+          );
+        }
+        const radians = (74 * Math.PI) / 180;
+        checks.equal(
+          '74 degrees converted to radians is accepted',
+          perspective({ fov: radians, aspect: 1 }).fov,
+          radians,
+        );
+        return checks.items;
       },
     };
   },

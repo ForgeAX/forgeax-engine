@@ -45,6 +45,7 @@ ref-cast = "1"
 wasm-bindgen = "=0.2.121"
 js-sys = "=0.3.98"
 nalgebra = "0.35"
+glamx = { version = "0.3", default-features = false, features = ["scalar-math"] }
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = "1"
 palette = "0.7"

@@ -1,6 +1,10 @@
 import type { PipelineLibraryManifest, RenderPipelineDescriptor } from '@forgeax/engine-rhi';
 import { ownPipelineLibrary, pipelineDescriptorState } from '@forgeax/engine-rhi';
-import { ShaderSource, snapshotLoadTimeline } from '@forgeax/engine-types';
+import {
+  ShaderSource,
+  shaderSourceForDescriptor,
+  snapshotLoadTimeline,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { disposeDevice, makeRhiDevice } from '../device';
 import { createShaderModule, createShaderModuleImmediate } from '../index';
@@ -778,6 +782,77 @@ it('limits each complete export before source expansion and allows a retry witho
   expect(f.render).toHaveBeenCalledOnce();
 });
 
+it('receives cloned background sources without splitting or hashing unused WGSL', () => {
+  const text = 'fn background() {}\n\n'.repeat(2_000);
+  const input: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [{ code: text }, { code: text, label: 'same source' }],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  };
+  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const copy = vi.spyOn(String, 'fromCharCode');
+  try {
+    for (let realm = 0; realm < 3; realm++) {
+      const owned = ownPipelineLibrary(structuredClone(input));
+      const first = shaderSourceForDescriptor(owned.shaders[0] as object);
+      expect(first).toBeDefined();
+      expect(shaderSourceForDescriptor(owned.shaders[1] as object)).toBe(first);
+      expect(owned.shaders[0]?.code).toBe(text);
+      expect(Object.isFrozen(owned.shaders)).toBe(true);
+    }
+    expect(copy).not.toHaveBeenCalled();
+    expect(encode).not.toHaveBeenCalled();
+  } finally {
+    copy.mockRestore();
+    encode.mockRestore();
+  }
+});
+
+it('hashes background sources as modules are created, not in the complete source preflight', async () => {
+  const f = await fixture();
+  const texts = ['fn first() {}', 'fn second() {}', 'fn third() {}'];
+  const sources = texts.map((text) => new ShaderSource([text]));
+  const input = ownPipelineLibrary({
+    version: 1,
+    backend: 'webgpu',
+    shaders: sources.map((source) => source.descriptor()),
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  });
+  const hashed: string[] = [];
+  const encode = TextEncoder.prototype.encode;
+  const encoding = vi.spyOn(TextEncoder.prototype, 'encode').mockImplementation(function (
+    this: TextEncoder,
+    input,
+  ) {
+    if (typeof input === 'string' && texts.includes(input)) hashed.push(input);
+    return encode.call(this, input);
+  });
+  const create = f.raw.createShaderModule;
+  let firstCreation: string[] | undefined;
+  const creation = vi.spyOn(f.raw, 'createShaderModule').mockImplementation((descriptor) => {
+    firstCreation ??= [...hashed];
+    return create.call(f.raw, descriptor);
+  });
+  try {
+    expect((await f.device.pipelineLibrary.prepare(input, { background: true, sources })).ok).toBe(
+      true,
+    );
+    expect(firstCreation).toEqual([texts[0]]);
+    expect(hashed).toEqual(texts);
+  } finally {
+    creation.mockRestore();
+    encoding.mockRestore();
+    disposeDevice(f.device);
+  }
+});
+
 it('seals all input recipes even when their shader descriptors already have owners', () => {
   const source = new ShaderSource(['@compute @workgroup_size(1) fn main() {}']);
   const input: PipelineLibraryManifest = {
@@ -789,7 +864,14 @@ it('seals all input recipes even when their shader descriptors already have owne
     renderPipelines: [],
     computePipelines: [{ layout: 'auto', compute: { module: 0, entryPoint: 'main' } }],
   };
-  const owned = ownPipelineLibrary(input);
+  const reads = vi.spyOn(ShaderSource.prototype, 'read');
+  let owned: PipelineLibraryManifest;
+  try {
+    owned = ownPipelineLibrary(input);
+    expect(reads).not.toHaveBeenCalled();
+  } finally {
+    reads.mockRestore();
+  }
   (input.computePipelines as unknown[]).push({});
   expect(owned.computePipelines).toHaveLength(1);
   expect(Object.isFrozen(owned.computePipelines[0]?.compute)).toBe(true);

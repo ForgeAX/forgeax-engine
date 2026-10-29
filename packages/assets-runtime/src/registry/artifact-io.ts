@@ -1,5 +1,10 @@
 import { decompressZstd } from '@forgeax/engine-codec';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
+import {
+  decodedArtifactRangeIssue,
+  selectDecodedArtifactBytes,
+  storedArtifactRangeIssue,
+} from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@forgeax/engine-types';
 import { beginLoadTimeline, encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
@@ -78,7 +83,7 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await subtle.digest('SHA-256', input));
 }
 
-async function decodeOuter(
+export async function decodeArtifactTransport(
   bytes: Uint8Array,
   request: ArtifactReadRequest,
 ): Promise<Result<Uint8Array, AssetArtifactError>> {
@@ -108,6 +113,24 @@ async function decodeOuter(
     );
   }
   return ok(decoded.value);
+}
+
+export async function finishArtifactBytes(
+  bytes: Uint8Array,
+  request: ArtifactReadRequest,
+): Promise<Result<Uint8Array, AssetArtifactError>> {
+  const selected = selectDecodedArtifactBytes(bytes, request.descriptor);
+  if (!selected.ok)
+    return err(
+      failure(
+        'asset-artifact-integrity-mismatch',
+        request,
+        'a bounded decoded artifact window',
+        'rebuild the player package and retry',
+        selected.error,
+      ),
+    );
+  return verifyArtifactBytes(selected.value, request);
 }
 
 export async function verifyArtifactBytes(
@@ -240,20 +263,18 @@ export async function readArtifact(
   }
 
   const range = request.descriptor.byteRange;
-  if (
-    range !== undefined &&
-    (range === null ||
-      typeof range !== 'object' ||
-      typeof range.bundleDigest !== 'string' ||
-      !/^sha256:[a-f0-9]{64}$/.test(range.bundleDigest) ||
-      !Number.isSafeInteger(range.offset) ||
-      range.offset < 0 ||
-      !Number.isSafeInteger(range.length) ||
-      range.length <= 0 ||
-      !Number.isSafeInteger(range.offset + range.length) ||
-      request.descriptor.delivery !== undefined ||
-      request.descriptor.integrity === undefined)
-  )
+  const decodedIssue = decodedArtifactRangeIssue(request.descriptor);
+  if (decodedIssue !== undefined)
+    return err(
+      failure(
+        'asset-artifact-integrity-mismatch',
+        request,
+        'a bounded decoded artifact window',
+        'rebuild the player package and retry',
+        decodedIssue,
+      ),
+    );
+  if (storedArtifactRangeIssue(request.descriptor) !== undefined)
     return err(
       failure(
         'asset-artifact-integrity-mismatch',
@@ -315,7 +336,7 @@ export async function readArtifact(
     encoding,
     guid: request.guid,
   });
-  const decoded = await decodeOuter(bytes, request);
+  const decoded = await decodeArtifactTransport(bytes, request);
   if (!decoded.ok) return decoded;
   traceAssetLoadPhase('artifact.decode.complete', {
     guid: request.guid,
@@ -323,7 +344,7 @@ export async function readArtifact(
     artifactKey: request.artifactKey,
     detail: { byteLength: decoded.value.byteLength },
   });
-  const verified = await verifyArtifactBytes(decoded.value, request);
+  const verified = await finishArtifactBytes(decoded.value, request);
   endDecode(decoded.value.byteLength, { verified: verified.ok });
   traceAssetLoadPhase('artifact.verify.complete', {
     guid: request.guid,
@@ -397,9 +418,17 @@ export class ArtifactReadCache {
               ),
             );
           },
-          finish: (stored) => readArtifact(request, fetcher, async () => ok(stored)),
-          reuse: (copy) => verifyArtifactBytes(copy, request),
-          ...(integrity === undefined ? {} : { digest: integrity.digest }),
+          finish: (stored) =>
+            descriptor.decodedRange === undefined
+              ? readArtifact(request, fetcher, async () => ok(stored))
+              : decodeArtifactTransport(stored, request),
+          reuse: (copy) =>
+            descriptor.decodedRange === undefined
+              ? verifyArtifactBytes(copy, request)
+              : Promise.resolve(ok(copy)),
+          ...(integrity === undefined || descriptor.decodedRange !== undefined
+            ? {}
+            : { digest: integrity.digest }),
           invalid: (reason) =>
             failure(
               'asset-artifact-integrity-mismatch',
@@ -411,7 +440,9 @@ export class ArtifactReadCache {
         });
         // One Bundle read can fail several owners; each reports its own request.
         return read.ok
-          ? read
+          ? descriptor.decodedRange === undefined
+            ? read
+            : finishArtifactBytes(read.value, request)
           : err({
               ...read.error,
               detail: {

@@ -345,8 +345,8 @@ export interface App {
   /** AudioBackend handle when audio attach is enabled; undefined otherwise. */
   readonly audio?: AudioBackend;
   /**
-   * PhysicsWorld handle when physicsPlugin is loaded; undefined
-   * otherwise. physicsPlugin.build awaits the WASM import -- createApp
+   * PhysicsWorld handle when a physics backend plugin is active; undefined
+   * otherwise. Plugin activation awaits WASM initialization -- createApp
    * resolves ONLY after the WASM module is loaded, so this field is
    * populated immediately when createApp returns (AC-06: no timing gap).
    */

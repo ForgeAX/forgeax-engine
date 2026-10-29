@@ -1,5 +1,9 @@
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
-import { derive, type ShaderBindingReads } from '@forgeax/engine-types';
+import {
+  derive,
+  type MaterialResourceBindingLayout,
+  type ShaderBindingReads,
+} from '@forgeax/engine-types';
 import type { MaterialResource } from '../material-resource';
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
@@ -35,19 +39,37 @@ const contracts = new WeakMap<
   }[]
 >();
 /** Structural reads belong to the accepted Pass contract, not a frame probe. */
-function shadowResourceBindings(snapshot: MaterialSnapshot) {
+const NO_RESOURCE_BINDINGS: readonly MaterialResourceBindingLayout[] = Object.freeze([]);
+function shadowResourceBindings(
+  snapshot: MaterialSnapshot,
+): readonly MaterialResourceBindingLayout[] {
   const passes = shadowPasses(snapshot);
   const layout = derive(snapshot.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
-  const bindings = new Set<number>();
-  let unknown = false;
-  for (const pass of passes) {
-    if (pass.reads === undefined) unknown = true;
-    else for (const read of pass.reads) if (read.group === 1) bindings.add(read.binding);
+  const resources = layout.resourceBindings;
+  // derive emits resource bindings in increasing ABI order. Numeric-only reads
+  // before the first resource cannot select one. Sampler-only schemas can start at zero.
+  const firstResource = resources[0];
+  if (firstResource === undefined) return NO_RESOURCE_BINDINGS;
+  if (resources.length === 1) {
+    for (const pass of passes) {
+      if (pass.reads === undefined) return resources;
+      for (const read of pass.reads)
+        if (read.group === 1 && read.binding === firstResource.binding) return resources;
+    }
+    return NO_RESOURCE_BINDINGS;
   }
-  const resources = layout.resourceBindings.filter(
-    (binding) => unknown || bindings.has(binding.binding),
-  );
-  return resources;
+  let bindings: Set<number> | undefined;
+  for (const pass of passes) {
+    if (pass.reads === undefined) return resources;
+    for (const read of pass.reads) {
+      if (read.group !== 1 || read.binding < firstResource.binding) continue;
+      bindings ??= new Set<number>();
+      bindings.add(read.binding);
+    }
+  }
+  return bindings === undefined
+    ? NO_RESOURCE_BINDINGS
+    : resources.filter((binding) => bindings.has(binding.binding));
 }
 function shadowPasses(snapshot: MaterialSnapshot) {
   let contract = contracts.get(snapshot);

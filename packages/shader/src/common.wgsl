@@ -640,30 +640,3 @@ fn applyLodCoverage(position : vec2<f32>, fade : f32) {
 fn lightingChannelsMatch(light : u32, receiver : u32) -> bool {
   return (light & receiver) != 0u;
 }
-
-// True when the View carries a GradientSky law. The law rides the View atmosphere
-// block, unused while no Atmosphere is active: 292 zenith (w exponent), 296 mid
-// (w middle height), 300 horizon, 304 ground; lane 308 is 1 when present.
-fn viewHasGradientSky(v: View) -> bool {
-  return v.atmosphereControl.w < 0.5 && v.atmosphere.ground.x > 0.5;
-}
-
-// GradientSky colour along a world direction, the way Three.js reads scene.background
-// for a mirror; black when the View has no GradientSky. Engine models call this
-// directly, a Surface never sees it.
-fn gradientSkyColor(v: View, dir: vec3<f32>) -> vec3<f32> {
-  if !viewHasGradientSky(v) { return vec3<f32>(0.0); }
-  let h = clamp(dir.y, -1.0, 1.0);
-  let e = v.atmosphere.originRadius.w;
-  let m = v.atmosphere.rayleigh.w;
-  let zenith = v.atmosphere.originRadius.rgb;
-  let mid = v.atmosphere.rayleigh.rgb;
-  let horizon = v.atmosphere.mie.rgb;
-  let ground = v.atmosphere.absorption.rgb;
-  if h < 0.0 || m <= 0.0 {
-    let toward = select(ground, zenith, h >= 0.0);
-    return mix(horizon, toward, pow(abs(h), e));
-  }
-  if h < m { return mix(horizon, mid, pow(h / m, e)); }
-  return mix(mid, zenith, pow(min((h - m) / (1.0 - m), 1.0), e));
-}

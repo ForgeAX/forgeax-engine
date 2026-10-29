@@ -280,6 +280,12 @@ bytes. `inspectMaterialRuntime(ready)` returns detached diagnostic facts.
 publication and whether runtime content has changed since adoption. Runtime
 consumers use the program projection attached to that owned content.
 
+Adoption registers every cooked program's verified byte declaration and parameter
+contract. It does not decode or analyze every WGSL variant. The first selected-program
+lookup prepares that source in ShaderRegistry, and later users share its immutable
+CPU facts. All program bytes, references and receipts still pass the existing loader
+verification; asset readiness does not imply that every source has been analyzed.
+
 Runtime selects only prepared program contexts. Root and child source materials
 preserve explicit static choices; parent inheritance is flattened at admission.
 Ray-hit and Card-capture programs share the same complete artifact verification.
@@ -497,6 +503,15 @@ not Renderer field placement, streaming, GPU lifetime management or GI acceptanc
 
 ## Native package transport
 
+Shader delivery can share a compressed Bundle entry across complete programs.
+`byteRange` selects stored group bytes and `decodedRange` selects one original
+program after decompression; individual length and digest verification precede
+asset admission. The existing Bundle store coalesces concurrent group decodes.
+Selected artifacts own their bytes; decoded groups are weakly retained and can be
+collected. Fixed capture preserves the original group and descriptors, while CLI
+verification applies the same decoded-window validation. Other Bundle entries
+retain their ordinary per-artifact transport.
+
 `AssetRegistry.inspectSource()` includes `scopeId`, `generation`, the current
 realm tag, and `bundleTransfers`. Take two snapshots and subtract their monotonic
 counters to select one loading window in that source/realm. This is a low-frequency
@@ -508,7 +523,7 @@ inspection surface; no per-frame export or logging is installed.
 | `requestedRangeBytes` | Sum of requested entry lengths for those range reads |
 | `wholeBundleFallbacks` | A range request received HTTP 200 with more bytes than its entry |
 | `responseEntityBytes` | Bytes exposed by `arrayBuffer()`, after HTTP content decoding |
-| `decodedEntryBytes` | Verified entry bytes after outer artifact decoding |
+| `decodedEntryBytes` | Decoded transport-entry bytes; a shared compression group is counted once, before individual program window verification |
 | `declaredContentLengthBytes`, `declaredLengthResponses` | Sum and count of valid response `Content-Length` values |
 | `verifiedReuse`, `coalescedReads`, `residentHits` | Verified extracted reuse, joined entry/Bundle reads and resident entry reads |
 | `evictions`, `rereads` | Resident Bundle release by trim/budget and a released entry read after an earlier full fetch |

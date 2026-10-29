@@ -121,7 +121,7 @@ it('measures the real browser projection path', async () => {
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 4] } },
-          { component: Camera, data: { aspect: 1, near: 0.1, far: 20 } },
+          { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 20 } },
         )
         .unwrap();
       world

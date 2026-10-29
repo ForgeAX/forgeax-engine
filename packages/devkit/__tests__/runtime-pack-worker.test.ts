@@ -1,3 +1,4 @@
+import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -130,7 +131,7 @@ it.each([
     );
     await writeFile(
       resolve(root, 'index.html'),
-      '<link rel="icon" href="data:,"><style>body{margin:0;background:#151921}canvas{display:block;width:384px;height:384px}</style><canvas width="384" height="384"></canvas><script type="module" src="/main.js"></script>',
+      `<link rel="icon" href="data:,"><style>body{margin:0;background:#151921}canvas{display:block;width:384px;height:384px}</style><canvas width="384" height="384" data-forgeax-render-width-limit="${testQuality.squareSize}" data-forgeax-render-height-limit="${testQuality.squareSize}"></canvas><script type="module" src="/main.js"></script>`,
     );
     const config = {
       root,
@@ -226,6 +227,11 @@ it.each([
     await expect
       .poll(async () => (await inspect(page)).frames.ready, { timeout: 90000 })
       .toBeGreaterThan(2);
+    expect(
+      await page.locator('canvas').evaluate((canvas) => [
+        Number(canvas.getAttribute('width')), Number(canvas.getAttribute('height')),
+      ]),
+    ).toEqual([testQuality.squareSize, testQuality.squareSize]);
     const initial = await inspect(page);
     expect(initial).toMatchObject({
       packs: 0,

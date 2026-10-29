@@ -3,7 +3,8 @@ import { createCatalogHotSubscription, createCatalogSource } from '@forgeax/engi
 import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { vec3 } from '@forgeax/engine-math';
-import { physicsPlugin, type PhysicsWorld } from '@forgeax/engine-physics';
+import { type PhysicsWorld } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { replayCapturedFrameInBrowser } from '@forgeax/apps-shared/rhi-debug-browser-replay';
 import { querySubmittedTerrainHeight, type FrameReceipt } from '@forgeax/engine-render';
@@ -43,7 +44,7 @@ async function start() {
     await createApp(
       canvas!,
       {
-        plugins: [physicsPlugin('rapier-3d')],
+        plugins: [physics3d],
         rhiInstrumentation: {
           beforeSubmit() {
             if (!window.__terrainRejectNextSubmit) return;

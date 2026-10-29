@@ -6,6 +6,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { DEFAULT_UNLIT_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { assert, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
+import { perspective } from '../components/camera';
 import { Tilemap, TilemapSort } from '../components/tilemap';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
@@ -48,7 +49,10 @@ it.each([
     })
     .unwrap();
   world
-    .spawn({ component: Transform, data: { pos: [0.5, 0.5, 5] } }, { component: Camera, data: {} })
+    .spawn(
+      { component: Transform, data: { pos: [0.5, 0.5, 5] } },
+      { component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 1 }) },
+    )
     .unwrap();
   const maps = Array.from({ length: 64 }, () =>
     world

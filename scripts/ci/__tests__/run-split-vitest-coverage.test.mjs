@@ -139,6 +139,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     'packages/devkit/src/__tests__/project-play.e2e.test.ts',
     'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
     'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
+    'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
   ]) {
     assert.equal(groups.filter((group) => group.files.includes(file)).length, 1);
     assert.ok(

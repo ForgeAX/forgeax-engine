@@ -12,7 +12,6 @@ import { inspectCapsuleShadow } from '../capsule-shadow/inspection';
 import { PlanarCaptureState } from '../capture/planar-state';
 import { PlanarReflectionInvalidError } from '../components/planar-reflection';
 import { directMorphGeometry } from '../device/morph-geometry';
-import { gradientSkyClearColor } from '../environment/gradient-sky';
 import { RenderTargetLayerInvalidError } from '../errors/render';
 import { type FogFrame, fogIsActive } from '../extract/environment';
 import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from '../gpu-driven/draw-selection';
@@ -343,7 +342,7 @@ import {
 } from './helpers';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
 import { computeSplitLdrSprite } from './main-pass-sprite-draws';
-import { writeShadowCasterUniforms } from './shadow-pass';
+import { writeShadowCasterMatrices } from './shadow-caster-uniforms';
 import {
   type CubeCaptureGraphState,
   ensureCompiledFrameGraph,
@@ -2073,7 +2072,7 @@ function capsuleShadowLightFor(
 
 /**
  * View / mesh uniform uploads are needed when geometry or a feature consumes
- * View, or when a skybox, gradient sky, atmosphere or volume reads the View UBO. The
+ * View, or when a skybox, atmosphere or volume reads the View UBO. The
  * clear-pass-only path skips the writeBuffer round-trips.
  */
 function frameNeedsViewUploads(
@@ -2091,7 +2090,6 @@ function frameNeedsViewUploads(
     (raster !== undefined && materialSlotCount > 0) ||
     getRenderFeatureGraphState(internals).plans.some(({ plan }) => plan.passes.length > 0) ||
     skyboxActive ||
-    frameState.environmentFrame?.sky !== undefined ||
     frameState.environmentFrame?.source.kind === 'atmosphere' ||
     activeVolume !== undefined ||
     preparedVolume !== undefined
@@ -3052,8 +3050,7 @@ export function* prepareFrameRecording(
 
     // The clear color is read from the active CameraSnapshot's single
     // `clearColor` field; the zero-camera fallback carries [0, 0, 0, 1]. A
-    // GradientSky owns the background and clears transparent instead.
-    const clear = gradientSkyClearColor(frameState.environmentFrame?.sky, camera.clearColor);
+    const clear = camera.clearColor;
     publishShadowPassResources(pipelineState, lights, graphShadowMapSize);
 
     // Tonemap + skybox-active resolution (skybox requires tonemap HDR target +
@@ -3200,7 +3197,6 @@ export function* prepareFrameRecording(
           internals.captureView !== undefined,
           clock.elapsedSeconds,
           { width: targetW, height: targetH },
-          frameState.environmentFrame?.sky,
         );
         if (pipelineState.pointsLinesViewBuffer !== undefined) {
           writePointsLinesViewUbo(
@@ -3211,7 +3207,7 @@ export function* prepareFrameRecording(
             targetH,
           );
         }
-        writeShadowCasterUniforms(
+        writeShadowCasterMatrices(
           internals.device.queue,
           pipelineState.shadowCasterCascadeBuffer,
           lights,

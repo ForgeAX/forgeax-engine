@@ -226,7 +226,7 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
           scale: [1, 1, 1],
         },
       },
-      { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
+      { component: Camera, data: { fov: Math.PI / 3, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
     );
     world.spawn({
       component: DirectionalLight,

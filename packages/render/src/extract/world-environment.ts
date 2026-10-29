@@ -14,7 +14,6 @@ import { type ExtractedCloudLayer, extractCloudLayer } from '../cloud/extract';
 import {
   Atmosphere,
   DirectionalLight,
-  GradientSky,
   LightProbe,
   PointLight,
   PointLightShadow,
@@ -36,11 +35,7 @@ import { validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import { selectEnvironment } from '../environment/frame';
 import { createLightResourceUnavailable } from '../errors/render';
-import type {
-  EnvironmentCandidate,
-  EnvironmentFrame,
-  GradientSkyFrame,
-} from '../extract/environment';
+import type { EnvironmentCandidate, EnvironmentFrame } from '../extract/environment';
 import {
   COOKIE_SLICE_CAPACITY,
   IES_SLICE_HEIGHT,
@@ -1480,46 +1475,6 @@ function extractSkybox(world: World) {
   return { skybox, skyboxCount };
 }
 
-/** Every GradientSky owner; selection admits exactly one. */
-function extractGradientSkies(world: World): GradientSkyFrame[] {
-  const skies: GradientSkyFrame[] = [];
-  for (const row of world.query({ read: [GradientSky] }).unwrap()) {
-    const skyMidHeight = world[worldRead].getFieldValue(
-      row.entity,
-      GradientSky,
-      'midHeight',
-    ) as number;
-    const skyExponent = world[worldRead].getFieldValue(
-      row.entity,
-      GradientSky,
-      'exponent',
-    ) as number;
-    const skySunSize = world[worldRead].getFieldValue(row.entity, GradientSky, 'sunSize') as number;
-    const skySunGlow = world[worldRead].getFieldValue(row.entity, GradientSky, 'sunGlow') as number;
-    const skyFogBlend = world[worldRead].getFieldValue(
-      row.entity,
-      GradientSky,
-      'fogBlend',
-    ) as number;
-    const skyToneMapped =
-      world[worldRead].getFieldValue(row.entity, GradientSky, 'toneMapped') === 1;
-    skies.push({
-      entityKey: row.entity,
-      zenith: rgbTuple(world, row.entity, GradientSky, 'zenith'),
-      horizon: rgbTuple(world, row.entity, GradientSky, 'horizon'),
-      ground: rgbTuple(world, row.entity, GradientSky, 'ground'),
-      mid: rgbTuple(world, row.entity, GradientSky, 'mid'),
-      midHeight: skyMidHeight,
-      exponent: skyExponent,
-      sunSize: skySunSize,
-      sunGlow: skySunGlow,
-      fogBlend: skyFogBlend,
-      toneMapped: skyToneMapped,
-    });
-  }
-  return skies;
-}
-
 function atmosphereParametersOf(
   world: World,
   entity: EntityHandle,
@@ -1662,8 +1617,6 @@ function selectWorldEnvironment(
     environments: environmentCandidatesOf(world, skylight, skybox),
     fogs: fog === undefined ? [] : [fog],
     suns: sunCandidatesOf(directional),
-    skies: extractGradientSkies(world),
-    skyboxBackground: skybox !== undefined,
   });
   if (!environmentSelection.ok) {
     routeWorldError(world, environmentSelection.error, {

@@ -63,5 +63,8 @@
         "reason": "CPU navigation owner; reproducible query and agent benchmark via pnpm bench."
       }
     }
+  },
+  "devDependencies": {
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   }
 }

@@ -10,24 +10,15 @@ import type {
   EnvironmentSource,
   FogCandidate,
   FogFrame,
-  GradientSkyFrame,
 } from '../extract/environment';
 import {
   freezeAtmosphere,
   validateAtmosphereParameters,
   validateFogParameters,
-  validateGradientSky,
 } from '../extract/environment';
 import { environmentFactSignatures } from './signature';
 
-export type {
-  EnvironmentCandidate,
-  EnvironmentFrame,
-  EnvironmentSource,
-  FogCandidate,
-  FogFrame,
-  GradientSkyFrame,
-};
+export type { EnvironmentCandidate, EnvironmentFrame, EnvironmentSource, FogCandidate, FogFrame };
 
 /** Producer-local fallback while replacement environment storage is uninitialized. */
 export const SKYLIGHT_RECOVERY_FALLBACK = Object.freeze({
@@ -46,9 +37,6 @@ export interface EnvironmentSelectionInput {
   readonly environments: readonly EnvironmentCandidate[];
   readonly fogs: readonly FogCandidate[];
   readonly suns: readonly SunCandidate[];
-  /** GradientSky owners; a SkyboxBackground or Atmosphere also drawing the background conflicts. */
-  readonly skies?: readonly GradientSkyFrame[];
-  readonly skyboxBackground?: boolean;
 }
 
 export interface EnvironmentSelectionParameterDetail {
@@ -111,39 +99,29 @@ function freezeFog(candidate: FogCandidate): FogFrame {
   });
 }
 
-/** At most one valid GradientSky, and no other background owner beside it. */
-function selectGradientSky(
-  input: EnvironmentSelectionInput,
-  atmosphere: boolean,
-): Result<GradientSkyFrame | undefined, EnvironmentSelectionParameterError> {
-  const skies = input.skies ?? [];
-  const candidate = skies[0];
-  if (candidate === undefined) return ok(undefined);
-  if (skies.length > 1)
-    return err(
-      new EnvironmentSelectionParameterError('GradientSky', skies.length, 'one GradientSky'),
-    );
-  if (atmosphere || input.skyboxBackground === true) {
-    return err(
-      new EnvironmentSelectionParameterError(
-        'GradientSky',
-        1,
-        `no ${atmosphere ? 'Atmosphere' : 'SkyboxBackground'} beside a GradientSky (both draw the background)`,
-      ),
-    );
+type FogSelectionError = FogCardinalityError | EnvironmentSelectionParameterError;
+
+/** Admit the original candidate once; full selection still controls when values are copied. */
+function selectFogCandidate(
+  fogs: readonly FogCandidate[],
+): Result<FogCandidate | undefined, FogSelectionError> {
+  if (fogs.length > 1) return err(new FogCardinalityError(fogs.length));
+  const candidate = fogs[0];
+  if (candidate !== undefined) {
+    const issue = validateFogParameters(candidate);
+    if (issue !== undefined)
+      return err(new EnvironmentSelectionParameterError(issue.field, issue.value, issue.expected));
   }
-  const issue = validateGradientSky(candidate);
-  if (issue !== undefined)
-    return err(new EnvironmentSelectionParameterError(issue.field, issue.value, issue.expected));
-  return ok(
-    Object.freeze({
-      ...candidate,
-      zenith: Object.freeze([...candidate.zenith]) as unknown as GradientSkyFrame['zenith'],
-      horizon: Object.freeze([...candidate.horizon]) as unknown as GradientSkyFrame['horizon'],
-      ground: Object.freeze([...candidate.ground]) as unknown as GradientSkyFrame['ground'],
-      mid: Object.freeze([...candidate.mid]) as unknown as GradientSkyFrame['mid'],
-    }),
-  );
+  return ok(candidate);
+}
+
+/** Select an independent immutable Fog fact without constructing unused environment facts. */
+export function selectFog(
+  fogs: readonly FogCandidate[],
+): Result<FogFrame | undefined, FogSelectionError> {
+  const selected = selectFogCandidate(fogs);
+  if (!selected.ok) return selected;
+  return ok(selected.value === undefined ? undefined : freezeFog(selected.value));
 }
 
 /** Select one immutable frame fact set for every Standard lighting path. */
@@ -159,17 +137,10 @@ export function selectEnvironment(
       ),
     );
   }
-  if (input.fogs.length > 1) return err(new FogCardinalityError(input.fogs.length));
-  const selectedFog = input.fogs[0];
-  if (selectedFog !== undefined) {
-    const issue = validateFogParameters(selectedFog);
-    if (issue !== undefined) {
-      return err(new EnvironmentSelectionParameterError(issue.field, issue.value, issue.expected));
-    }
-  }
+  const fogSelection = selectFogCandidate(input.fogs);
+  if (!fogSelection.ok) return fogSelection;
+  const selectedFog = fogSelection.value;
   const selected = input.environments[0];
-  const sky = selectGradientSky(input, selected?.kind === 'atmosphere');
-  if (!sky.ok) return sky;
   if (selected?.kind === 'atmosphere') {
     const invalid = validateAtmosphereParameters(selected.atmosphere);
     if (invalid !== undefined) return err(invalid);
@@ -203,7 +174,6 @@ export function selectEnvironment(
   const result = {
     source: Object.freeze(source),
     fog,
-    ...(sky.value === undefined ? {} : { sky: sky.value }),
     ...signatures,
     revision: 0,
     sun,

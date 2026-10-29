@@ -16,6 +16,13 @@ fall back to private Broker access.
 
 ## Dependency floors
 
+The MCP SDK accepts `@hono/node-server` 2.x. Both workspace package-manager
+policies require 2.1.3 or later in that major to prevent static middleware from
+decoding a routed path a second time
+([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)).
+The real HTTP regression retains public encoded filenames and protected routes
+while rejecting malformed paths that could bypass prefix middleware.
+
 The workspace's npm/Bun and pnpm overrides require Zod 4.6.7, body-parser 2.4.0,
 qs 6.16.1 and fast-uri 3.1.9 within their existing major versions. The SDK's Express
 dependency accepts the patched body-parser minor; its older locked copy can

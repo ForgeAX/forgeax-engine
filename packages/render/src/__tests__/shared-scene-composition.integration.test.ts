@@ -7,7 +7,7 @@ import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
-import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import { ANTIALIAS_NONE, BLOOM_DISABLED, perspective } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { createRenderPublisher } from '../publication/publisher';
 import { renderPublicationTransfers } from '../publication/record';
@@ -63,7 +63,7 @@ it.each(
         {
           component: Camera,
           data: {
-            aspect: 1,
+            ...perspective({ fov: Math.PI / 3, aspect: 1 }),
             antialias: ANTIALIAS_NONE,
             bloom: BLOOM_DISABLED,
             target: world.allocSharedRef('RenderTarget', target),
@@ -77,7 +77,11 @@ it.each(
         { component: Transform, data: { pos: [0, 0, 8] } },
         {
           component: Camera,
-          data: { aspect: 1, antialias: ANTIALIAS_NONE, bloom: BLOOM_DISABLED },
+          data: {
+            ...perspective({ fov: Math.PI / 3, aspect: 1 }),
+            antialias: ANTIALIAS_NONE,
+            bloom: BLOOM_DISABLED,
+          },
         },
       )
       .unwrap();

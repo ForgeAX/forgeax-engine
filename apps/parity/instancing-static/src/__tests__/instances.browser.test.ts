@@ -1,3 +1,4 @@
+import testQuality from '../../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, DirectionalLight, Instances, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -8,12 +9,9 @@ import { page } from 'vitest/browser';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
-const LIGHTWEIGHT = import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1';
 const FRAME_COUNT = 60;
-// Sampling coordinates retain their reference extent; CI rasterizes one
-// quarter of each dimension while preserving every instance population.
-// Repeated steady frames only check unchanged residency; keep endurance local.
-const RENDER_SCALE = LIGHTWEIGHT ? 0.25 : 1;
+// Sampling coordinates retain their reference extent. Both local and CI use
+// the shared drawing buffer while preserving every instance population.
 const COUNTS = [1500, 10000, 20000] as const;
 const SAMPLE_POINTS = [
   { label: 'front-right-bottom', x: 300, y: 568 },
@@ -142,8 +140,8 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
 
       canvas = document.createElement('canvas');
       canvas.id = `instancing-static-browser-${count}`;
-      canvas.width = WIDTH * RENDER_SCALE;
-      canvas.height = HEIGHT * RENDER_SCALE;
+      canvas.width = testQuality.viewport.width;
+      canvas.height = testQuality.viewport.height;
       canvas.style.width = `${canvas.width}px`;
       canvas.style.height = `${canvas.height}px`;
       canvas.style.display = 'block';
@@ -179,7 +177,14 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
       );
       world.spawn({
         component: DirectionalLight,
-        data: { castShadow: true, direction: [-0.3, -1, -0.5], color: [1, 1, 1], intensity: 1 },
+        data: {
+          castShadow: true,
+          mapSize: testQuality.shadowMapSize,
+          cascadeCount: testQuality.cascadeCount,
+          direction: [-0.3, -1, -0.5],
+          color: [1, 1, 1],
+          intensity: 1,
+        },
       });
 
       world.spawn(
@@ -230,6 +235,10 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
       const stableInspection = renderer
         .inspect()
         .instanceCollections[0];
+      expect(renderer.inspect().directionalShadow).toMatchObject({
+        mapSize: testQuality.shadowMapSize,
+        cascadeCount: testQuality.cascadeCount,
+      });
       expect(firstUploadBytes).toBeGreaterThan(0);
       expect(stableUploadBytes).toBe(0);
       expect(stableInspection).toMatchObject({ count, uploadedBytes: 0 });

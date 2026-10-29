@@ -10,9 +10,9 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../.
 
 describe('public engine facades', () => {
   it('forwards default only for physical targets that declare one', async () => {
-    const members = await publicEngineMembers(repositoryRoot, ['ddc', 'physics', 'types']);
+    const members = await publicEngineMembers(repositoryRoot, ['ddc', 'physics', 'physics-rapier3d', 'physics-rapier2d', 'types']);
     const facades = publicEngineFacades(members);
-    const rapier3d = facades.find(({ source }) => source === '@forgeax/engine-physics/rapier3d');
+    const rapier3d = facades.find(({ source }) => source === '@forgeax/engine-physics-rapier3d');
     const types = facades.find(({ source }) => source === '@forgeax/engine-types');
 
     expect(rapier3d?.hasDefault).toBe(true);
@@ -36,9 +36,8 @@ describe('public engine facades', () => {
     expect(JSON.parse(result.stdout.trim())).toMatchObject({ name: 'physics', provide: 'physics' });
   });
 
-  it('keeps the Rapier3D preset on the root physics component-token instance', async () => {
-    const artifact = await readFile(resolve(repositoryRoot, 'packages/physics/dist/rapier3d.mjs'), 'utf8');
-    expect(artifact).not.toContain('CharacterController');
+  it('keeps the Rapier3D plugin on the root physics component-token instance', async () => {
+    const artifact = await readFile(resolve(repositoryRoot, 'packages/physics-rapier3d/dist/index.mjs'), 'utf8');
     expect(artifact).not.toContain('defineComponent');
 
     // Built native consumers share Node's ESM identity, not Vitest's transformed cache.

@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "forgeax-engine",
@@ -2492,6 +2493,7 @@
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-picking": "workspace:*",
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
@@ -2638,6 +2640,7 @@
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-runtime": "workspace:*",
         "@forgeax/engine-scene": "workspace:*",
@@ -2728,6 +2731,7 @@
         "@forgeax/engine-input": "workspace:*",
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-runtime": "workspace:*",
         "@forgeax/engine-scene": "workspace:*",
@@ -3384,6 +3388,7 @@
         "@forgeax/engine-input": "workspace:*",
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-picking": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-runtime": "workspace:*",
@@ -3553,6 +3558,7 @@
         "@forgeax/engine-geometry": "workspace:*",
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-runtime": "workspace:*",
         "@forgeax/engine-scene": "workspace:*",
@@ -5348,6 +5354,7 @@
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-path": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-runtime": "workspace:*",
         "@forgeax/engine-scene": "workspace:*",
@@ -5649,6 +5656,9 @@
         "@forgeax/engine-types": "workspace:*",
         "@noble/hashes": "^2.2.0",
       },
+      "devDependencies": {
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
+      },
     },
     "packages/app": {
       "name": "@forgeax/engine-app",
@@ -5829,7 +5839,7 @@
       "name": "@forgeax/engine-devkit",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/cli.mjs"
+        "forgeax": "./dist/cli.mjs",
       },
       "dependencies": {
         "@fontsource-variable/noto-sans-sc": "5.3.0",
@@ -5926,7 +5936,7 @@
       "name": "@forgeax/engine",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/bin/forgeax.mjs"
+        "forgeax": "./dist/bin/forgeax.mjs",
       },
       "dependencies": {
         "@forgeax/engine-animation": "workspace:*",
@@ -6251,6 +6261,9 @@
         "@forgeax/engine-scene": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
       },
+      "devDependencies": {
+        "@forgeax/engine-physics-rapier3d": "workspace:*",
+      },
     },
     "packages/net": {
       "name": "@forgeax/engine-net",
@@ -6334,18 +6347,8 @@
         "@forgeax/engine-types": "workspace:*",
       },
       "devDependencies": {
-        "@forgeax/engine-physics-rapier2d": "workspace:*",
-        "@forgeax/engine-physics-rapier3d": "workspace:*",
         "@forgeax/engine-shader": "workspace:*",
       },
-      "peerDependencies": {
-        "@forgeax/engine-physics-rapier2d": "workspace:*",
-        "@forgeax/engine-physics-rapier3d": "workspace:*",
-      },
-      "optionalPeers": [
-        "@forgeax/engine-physics-rapier2d",
-        "@forgeax/engine-physics-rapier3d",
-      ],
     },
     "packages/physics-rapier2d": {
       "name": "@forgeax/engine-physics-rapier2d",
@@ -6995,7 +6998,9 @@
       "name": "@forgeax/view",
       "version": "0.2.0",
       "bin": {
-        "forgeax-view": "./dist/modules/cli.mjs",        "forgeax-view-start": "./dist/modules/start-cli.mjs"      },
+        "forgeax-view": "./dist/modules/cli.mjs",
+        "forgeax-view-start": "./dist/modules/start-cli.mjs",
+      },
       "dependencies": {
         "@forgeax/engine": "workspace:*",
         "@forgeax/engine-host": "workspace:*",
@@ -7330,10 +7335,11 @@
     "@deepseek-ai/cordis@4.0.4": "patches/@deepseek-ai__cordis@4.0.4.patch",
   },
   "overrides": {
-    "zod": "^4.6.7",
-    "fast-uri": "^3.1.9",
+    "@hono/node-server": "^2.1.3",
     "body-parser": "^2.4.0",
+    "fast-uri": "^3.1.9",
     "qs": "^6.16.1",
+    "zod": "^4.6.7",
   },
   "packages": {
     "@actions/core": ["@actions/core@3.0.1", "", { "dependencies": { "@actions/exec": "^3.0.0", "@actions/http-client": "^4.0.0" } }, "sha512-a6d/Nwahm9fliVGRhdhofo40HjHQasUPusmc7vBfyky+7Z+P2A1J68zyFVaNcEclc/Se+eO595oAr5nwEIoIUA=="],
@@ -8250,7 +8256,7 @@
 
     "@hapi/topo": ["@hapi/topo@6.0.2", "", { "dependencies": { "@hapi/hoek": "^11.0.2" } }, "sha512-KR3rD5inZbGMrHmgPxsJ9dbi6zEK+C3ZwUwTa+eMwWLz7oijWUTWD2pMSNNYJAU6Qq+65NkxXjqHr/7LM2Xkqg=="],
 
-    "@hono/node-server": ["@hono/node-server@1.19.17", "", { "peerDependencies": { "hono": "^4" } }, "sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ=="],
+    "@hono/node-server": ["@hono/node-server@2.1.5", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="],
 
     "@hpcc-js/wasm-zstd": ["@hpcc-js/wasm-zstd@1.17.0", "", {}, "sha512-Kcj7hD+WKj48iVApd4Oswk8GmAz5HWU43HYaAW1OwqyTHtgXPs76RRmekqwSwGLZk7e137syTJdzuoTiYgLV/g=="],
 

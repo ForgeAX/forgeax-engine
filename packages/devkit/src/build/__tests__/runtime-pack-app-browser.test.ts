@@ -332,7 +332,7 @@ it.each([
         width: 2,
         position: [2, 0, 0],
         typed: true,
-        skyZenith: [0.125, 0.25, 0.5],
+        ambientColor: [0.125, 0.25, 0.5],
       });
       expect(await call(page, 'install')).toEqual({ lazy: true, lazyExecutor: true, members: 1 });
       expect(await call(page, 'tool')).toMatchObject({
@@ -423,7 +423,7 @@ it.each([
         width: 4,
         position: [2, 0, 0],
         typed: true,
-        skyZenith: [0.125, 0.25, 0.5],
+        ambientColor: [0.125, 0.25, 0.5],
       });
       expect(recovered.indices).toEqual(original.indices);
       expect(await call(restored, 'install')).toEqual({

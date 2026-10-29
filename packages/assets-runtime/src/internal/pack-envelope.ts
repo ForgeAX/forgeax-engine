@@ -1,3 +1,5 @@
+import { decodedArtifactRangeIssue, storedArtifactRangeIssue } from '@forgeax/engine-pack/bundle';
+import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { isValidAssetGuidString } from '@forgeax/engine-types';
 
 /** Shared admission for HTTP Pack envelopes, before any lookup or cache write. */
@@ -30,6 +32,8 @@ export function packEnvelopeIssue(value: unknown): string | undefined {
         return `artifacts.${key}`;
       }
       if (typeof descriptor.mediaType !== 'string') return `artifacts.${key}.mediaType`;
+      if (decodedArtifactRangeIssue(descriptor as ArtifactDescriptor) !== undefined)
+        return `artifacts.${key}.decodedRange`;
       if (
         descriptor.integrity !== undefined &&
         (descriptor.integrity === null ||
@@ -38,23 +42,8 @@ export function packEnvelopeIssue(value: unknown): string | undefined {
           descriptor.integrity.algorithm !== 'sha256')
       )
         return `artifacts.${key}.integrity`;
-      if (descriptor.byteRange !== undefined) {
-        const range = descriptor.byteRange;
-        if (
-          range === null ||
-          typeof range !== 'object' ||
-          !Number.isSafeInteger(range.offset) ||
-          range.offset < 0 ||
-          !Number.isSafeInteger(range.length) ||
-          range.length <= 0 ||
-          !Number.isSafeInteger(range.offset + range.length) ||
-          typeof range.bundleDigest !== 'string' ||
-          !/^sha256:[a-f0-9]{64}$/.test(range.bundleDigest) ||
-          descriptor.delivery !== undefined ||
-          descriptor.integrity === undefined
-        )
-          return `artifacts.${key}.byteRange`;
-      }
+      if (storedArtifactRangeIssue(descriptor as ArtifactDescriptor) !== undefined)
+        return `artifacts.${key}.byteRange`;
       if (typeof descriptor.path !== 'string' || descriptor.path.length === 0)
         return `artifacts.${key}.path`;
     }

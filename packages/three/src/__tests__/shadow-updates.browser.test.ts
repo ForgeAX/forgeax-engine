@@ -3,6 +3,7 @@ import { buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import OriginalRenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import { DirectionalLight, PointLight, RenderTarget, SpotLight } from 'three/src/Three.Core.js';
 import { expect, it } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
 import {
   browserRendererFixture,
@@ -43,6 +44,7 @@ it.each([
     const sun = new constructors[kind](0xffffff, kind === 'directional' ? 3 : 200);
     sun.position.set(-3, 6, 4);
     sun.castShadow = true;
+    sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize);
     sun.shadow.bias = -0.001;
     scene.add(ground, cube, sun);
     return { scene, camera, material, cube, sun };
@@ -104,11 +106,13 @@ it.each([
       f.sun.position.x = 1;
     }
     await frame('frozen-light');
-    for (const f of [native, reference]) f.sun.shadow.mapSize.set(256, 128);
+    for (const f of [native, reference])
+      f.sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize / 2);
     await frame('frozen-resize');
     // r184 retains stale GPU views after a live allocation resize. Restore
     // the admitted extent here; fresh rectangular maps are covered separately.
-    for (const f of [native, reference]) f.sun.shadow.mapSize.set(512, 512);
+    for (const f of [native, reference])
+      f.sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize);
     for (const f of [native, reference]) f.sun.shadow.needsUpdate = true;
     const updated = await frame('requested');
     expect(native.sun.shadow.needsUpdate).toBe(false);

@@ -2,11 +2,11 @@ import {
   Collider,
   ColliderShapeValue,
   CollidingEntities,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
 import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnCamera } from '../../lab/stage';
@@ -16,7 +16,7 @@ export default defineFeature({
   title: 'Collision events',
   catalog: 'Collision pairs/events',
   kind: 'probe',
-  appOptions: { plugins: [physicsPlugin('rapier-3d')] },
+  appOptions: { plugins: [physics3d] },
   summary:
     'The PhysicsCollisionSync phase writes CollidingEntities on entities that carry it, and the Rapier backend keeps started/stopped pair events (drainCollisionEvents / getCollisionEventHistory). Sensors report overlap without blocking.',
   expect:

@@ -68,17 +68,16 @@ async function measureReadySample(backend, phase, index) {
     if (rapier instanceof Error || rapier?.code === 'wasm-load-failed') throw rapier;
     stages.wasmInit = { durationMs: duration(stageStart), status: 'ready' };
 
-    const [{ createApp }, { World }, { physicsPlugin }] = await Promise.all([
+    const [{ createApp }, { World }] = await Promise.all([
       import(pathToFileURL(resolve(repoRoot, 'packages/app/dist/index.mjs')).href),
       import(pathToFileURL(resolve(repoRoot, 'packages/ecs/dist/index.mjs')).href),
-      import(pathToFileURL(resolve(repoRoot, 'packages/physics/dist/index.mjs')).href),
     ]);
     const world = new World();
     stageStart = now();
     const appResult = await createApp({ platform: createSmokePlatform({ width: 1, height: 1 }),
       renderer: rendererStub(),
       world,
-      plugins: [physicsPlugin(backend)],
+      plugins: [backendModule.default],
     });
     stages.pluginActivation = {
       durationMs: duration(stageStart),
@@ -228,7 +227,7 @@ if (process.argv[2] === '--child') {
       condition: 'Node ESM imports from built Engine packages and local backend payloads',
     },
     methodology: {
-      cold: '10 independent Node processes per backend; each process cold-imports the Engine backend, initializes its WASM, and activates physicsPlugin through createApp',
+      cold: '10 independent Node processes per backend; each process cold-imports the Engine backend, initializes its WASM, and activates the selected backend plugin through createApp',
       warm: '10 repeated samples per backend in one process after an uncounted successful prewarm; the loader and ESM modules remain ready',
       readySampleRule: 'Only samples whose createApp result is ok and whose World contains PhysicsWorld are counted; failures are retained separately',
     },

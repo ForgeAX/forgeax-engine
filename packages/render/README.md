@@ -96,8 +96,8 @@ switching a new mid-session loadout; retaining the previous selection until
 such acknowledgment is a separate game transition responsibility. It does not
 prepare an asset library that has not been requested.
 
-App options and recovery data retain compact source owners rather than expanded
-WGSL. Current startup/background rosters retain their device records; replacing or
+App options and recovery data retain immutable source owners. Received WGSL stays
+whole, without runtime fragmentation or eager source hashing. Current startup/background rosters retain their device records; replacing or
 disposing their generation releases that holding. A new local material/feature owner
 consumes completed device work without expanding its admitted source. Source or full
 state changes still create a distinct recipe; diagnostic labels are not identity.
@@ -181,6 +181,14 @@ program. Worker asset rows carry the accepted material context table when it
 changes; scalar rows reuse it and previously published program artifacts. The
 receiver binds that fixed table to its admitted payload, never the latest GUID
 entry, so old frames and later Mesh layout changes preserve the same source.
+
+Unselected cooked programs cross Worker publication as `sourceEncoding: 'utf8'`
+declarations, using the accompanying artifact as their sole byte payload. Receiver
+admission checks the complete batch, byte digests, schemas and ABI metadata before
+commit without decoding unused WGSL. Only selected material/pass lookups prepare
+source descriptions. Already prepared and directly authored source rows keep their
+existing form. Device recovery adopts pending declarations and prepared CPU facts
+after choosing replacement-device builtins; it does not prepare unused variants.
 
 Mesh rows contain only instance facts: current/previous transforms, temporal and
 surface metadata, and an optional Sprite region. A real draw stages its selected
@@ -1697,11 +1705,14 @@ Range order is irrelevant: Render joins each range to the admitted candidate by
 A Surface only defines material properties; it receives no sun, sky or camera data
 (`SurfaceInput` has no `light`). Sun glint, sky reflection and fog belong to the material
 model. The stock `model: 'single-layer-medium'` water adds the main `DirectionalLight`
-glint (Three.js `Water` specular, widened by the wave-normal footprint), reflects a
-`GradientSky` along the reflection direction when one is present (else the Skylight
-cubemap), and fogs its own light. The sky law rides the View atmosphere lanes
-(`gradientSkyColor` in `forgeax_view::common`), which are unused while no Atmosphere is
-active, so the View layout does not change.
+glint (Three.js `Water` specular, widened by the wave-normal footprint), samples the
+Skylight prefiltered environment along the reflection direction, and fogs its own light.
+Bind the same generated HDR equirect asset to `SkyboxBackground` and `Skylight` so
+the visible sky and water reflection share one source.
+Generate a fixed sky in a build-time Pack, as in the Game 3D template's
+`assets/environment.pack.ts`; use `Atmosphere` for a physical sky that changes
+with the sun. `GradientSky` and its presets have been removed. A solid fallback
+uses `Camera.clearColor` and passes through exposure and tone mapping.
 
 #### Visible surface observation
 
@@ -2267,6 +2278,12 @@ view-local resources cannot shadow frame resources. Different views may use the
 same local name because their physical resources have distinct scope identities.
 Each view receives its own logical targets and semantic scene-data catalog.
 Shared declarations do not repeat simulation when another camera is added.
+
+Standard target declarations are four immutable definitions: sample count 1 or
+4, with or without cloud-history aliases. Views select these shared declarations;
+their concrete graph textures and histories remain view-owned. Their logical
+rows are prepared once. Custom or borrowed target rosters still read their
+current handles, including getters and Proxies, on each projection.
 
 Frame work explicitly declares `scene-depth` with its simulation camera or
 `scene-noise` when those inputs are needed. The Renderer allocates them lazily;
@@ -3041,6 +3058,12 @@ The legacy volume `frameMs`/`totalMs`/cloud `totalMs` also describe derived pass
 before publication; an invalid update keeps the renderer's last-known-good
 fog frame and exposes the structured failure through the existing inspection
 path. There is no app-local fog state.
+
+Fog extraction produces that immutable fact directly, sharing its cardinality,
+parameter and value authority with full environment selection. It does not build
+an unused environment or its signatures. Fog admission remains independent:
+a full environment rejected for invalid sky or sun inputs publishes no partial
+environment, while the Fog owner keeps its own accepted value and failure.
 
 ### VolumetricFog authoring, World time, and recovery
 
@@ -4114,6 +4137,16 @@ for output facts; do not infer output state from renderer-level fields:
 | `output.endpoint` | `surface.storage.raw` | backend adapter |
 | `output.capability` / `output.error` | structured availability and recovery facts | RHI/render surface |
 | `observation.observationId` / `frameId` | stable correlation refs | renderer observation owner |
+
+### Perspective angles
+
+`perspective({ fov, aspect })` takes a vertical angle in radians. Convert degrees
+explicitly, for example `(74 * Math.PI) / 180`. The factory and shared lens
+projection reject non-finite or out-of-range Float32 angles with
+`CameraError.code === 'camera-projection-invalid'` and `detail.field === 'fov'`.
+The valid range is strictly between zero and `Math.PI`; passing `74` directly
+must not silently produce an inverted projection. Orthographic cameras keep
+their unused FOV sentinel.
 
 ### Auto exposure and 3D LUT authoring
 
@@ -5903,6 +5936,12 @@ entry, and its row is the schema-derived Unlit uniform layout. GPU batches encod
 before the CPU list, so a later-queue pass such as an x-ray overlay keeps its
 direct order.
 
+Each shadow-caster parameter buffer receives its fixed cascade indices and
+directional/spot modes at creation, including view and recovery replacements.
+Frame recording uploads only current spot matrices. Captures retain the fixed
+bytes through their ordinary resource bootstrap; they do not require per-frame
+header uploads.
+
 Morph weights are GPU Scene row inputs. Each Mesh version's target deltas live
 once in the shared input arena (`MeshGeometry.morph`); each morphed row owns a
 `(vertexCount, targetCount, deltas, weights...)` descriptor named by its instance
@@ -6454,64 +6493,15 @@ package does not duplicate those formulas.
 goes through exposure and the tone curve like any surface. This differs from
 Three.js, whose `scene.background` colour is display-referred. The default
 `[0, 0, 0, 0]` is transparent: on a premultiplied surface (the WebGPU canvas)
-the page behind the canvas shows through tone mapping, FXAA, TAA and bloom. A
-[`GradientSky`](#gradient-sky-background) is the in-engine display-referred background
-(the same composite, without page CSS). Analytic fog skips background pixels and tints
-geometry only, except a GradientSky horizon. A surface without premultiplied alpha
-presents opaque, where a transparent clear shows black.
+the page behind the canvas shows through tone mapping, FXAA, TAA and bloom.
+Analytic fog skips background pixels and tints geometry only. A surface without
+premultiplied alpha presents opaque, where a transparent clear shows black.
 
-### Gradient sky background
-
-`GradientSky { zenith, horizon, ground, mid, midHeight, exponent, sunSize, sunGlow, fogBlend, toneMapped }`
-is a procedural background with no geometry to build. Above the horizon the colour is
-`mix(horizon, zenith, pow(h, exponent))` for the view ray's elevation sine `h`; below it,
-`mix(horizon, ground, pow(-h, exponent))`. With `midHeight > 0` (default 0) the upper span
-has a third stop: `mix(horizon, mid, pow(h / midHeight, exponent))` up to `midHeight`, then
-`mix(mid, zenith, pow((h - midHeight) / (1 - midHeight), exponent))`. Two complementary
-stops (orange and violet) pass through grey mauve; a middle stop keeps the hue saturated.
-`exponent` below about 0.3 collapses the horizon colour into a thin line (0.13 is 59 %
-zenith 1 degree up). `GradientSkyPresets` exports tuned `daylight`, `dusk` (three stops,
-orange -> rose -> violet), `night` and `overcast` spawn data. The selected `DirectionalLight` places a disc
-of angular radius `sunSize` toward `-direction` with an exponential `sunGlow` halo in the
-light's hue; `sunSize: 0` or no light draws no disc. With an active `Fog`, the sky and
-glow blend to the Fog colour at the Fog's `maxOpacity` at and below the horizon, fading
-out by elevation sine `fogBlend` (0 never fogs the sky), so distant fogged geometry meets
-the sky without a seam. The disc is drawn over the haze and hidden below the horizon.
-
-A GradientSky replaces `Camera.clearColor`: the scene target clears transparent.
-
-App installs its schema through `renderComponentsPlugin()`, so authored Scene
-data can use `components: { GradientSky: { ... } }` before any runtime spawn.
-A standalone World installs that plugin before creating or loading the Scene.
-
-- `toneMapped: false` (default) is display-referred, like Three.js `scene.background`.
-  The `gradient-sky-display` pass runs after every output stage (tone mapping, LUT,
-  FXAA, encoded post effects) and fills the remaining transparent coverage of the
-  encoded surface (`blend: one-minus-dst-alpha, one`), exactly as a CSS page colour shows
-  behind the canvas. Linear colours are shown as set (clamped to [0, 1]); the disc is the
-  light hue mixed half-way to white. The fogged horizon uses the Fog colour mapped
-  through the camera's exposure and tone curve, which is how fogged geometry shows. The
-  sky is outside the HDR scene, so bloom, SSR, planar reflection and transmission do not
-  see it. The one exception is the sun disc under camera bloom: the `skybox` pass also adds
-  the disc as scene radiance (light hue times `intensity * 4`, as a `toneMapped` sky draws
-  it) with transparent alpha, so bloom spreads it exactly like the disc's specular
-  reflection on water and the display sky shows that glow over itself. Without bloom
-  nothing is added and the disc stays as authored.
-- `toneMapped: true` is scene-referred radiance drawn by the `skybox` pass into the HDR
-  scene before geometry, so exposure, the tone curve and bloom apply and screen-space
-  consumers see it. The disc radiance is the light hue times `intensity * 4`, so a 3 lux
-  sun reaches bloom thresholds.
-
-At most one GradientSky contributes. A second one, one beside `Atmosphere` or a
-`SkyboxBackground` (each draws the background), or an out-of-range field rejects the
-frame selection with `environment-selection-invalid` naming the field
-(`GradientSky.exponent` in [0.001, 64], `midHeight` in [0, 0.95], `sunSize` in [0, 0.5] radians, `sunGlow` in
-[0, 16], `fogBlend` in [0, 1], colour channels finite and >= 0). The sky does not light
-the scene; match `Skylight.color` / `groundColor` to it. Reflection probes and cube
-captures do not render it.
-
-A World containing only a Camera and GradientSky still renders the complete
-gradient and sun disc; the camera View upload does not require a mesh draw.
+For a procedural sky, generate an ordinary linear HDR `EquirectAsset` in a Pack
+and bind the same asset to `SkyboxBackground` and `Skylight`. This reuses the
+existing background, irradiance and prefiltered reflection route.
+`templates/game-3d/assets/environment.pack.ts` demonstrates this asset route.
+Use `Atmosphere` when the scene needs the physical atmosphere model.
 
 ### Material output and Forward graph composition
 
@@ -6831,6 +6821,12 @@ capabilities and logical targets for plan construction. The active RenderGraph
 owns the frame boundary; do not cast a plan context to a backend object or
 encoder. The executable contract examples live in the plan-focused tests under
 `src/record/__tests__` and `src/features`.
+
+The receiving material program domain selects from 30 immutable definitions:
+three normalized backends, five capability tiers and ordinary/visible-Surface
+forms. Selection rereads current capability and limit inputs; it retains no
+foreign device object or previous-frame observation. Null selects the WebGPU
+material domain for structural recording without claiming GPU validation.
 
 ### Failure and recovery
 

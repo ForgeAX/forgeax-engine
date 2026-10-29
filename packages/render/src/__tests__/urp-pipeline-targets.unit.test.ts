@@ -20,6 +20,89 @@ function targets(
 }
 
 describe('urp render feature targets', () => {
+  it('uses four immutable Standard definitions across equivalent configuration objects', () => {
+    const definitions = new Set<unknown>();
+    for (const tonemap of ['none', 'aces-filmic', 'agx', 'future-tonemap']) {
+      for (const antialias of ['none', 'fxaa', 'msaa', 'taa', 'smaa', 'future-aa']) {
+        for (const storageBuffer of [false, true]) {
+          for (const multisample of [false, true]) {
+            for (const cloudHistory of [false, true]) {
+              for (const colorAttachmentFormat of [
+                'bgra8unorm-srgb',
+                'rgba8unorm',
+                'rgba16float',
+              ] as const) {
+                const input = {
+                  tonemap,
+                  antialias,
+                  storageBuffer,
+                  multisample,
+                  cloudHistory,
+                  colorAttachmentFormat,
+                };
+                const targets = resolveStandardRenderFeatureTargets(input);
+                expect(resolveStandardRenderFeatureTargets({ ...input })).toBe(targets);
+                const logical = logicalRenderFeatureTargets(targets);
+                expect(logicalRenderFeatureTargets(targets)).toBe(logical);
+                expect(targets).toHaveLength(cloudHistory ? 13 : 7);
+                expect(targets[0]?.format).toBe('rgba16float');
+                expect(targets[1]?.format).toBe('depth32float-stencil8');
+                expect(
+                  targets
+                    .slice(0, 3)
+                    .every(
+                      (target) =>
+                        target.sampleCount === (antialias === 'msaa' && multisample ? 4 : 1),
+                    ),
+                ).toBe(true);
+                expect(targets.slice(3).every((target) => target.sampleCount === 1)).toBe(true);
+                expect(Object.isFrozen(targets)).toBe(true);
+                expect(Object.isFrozen(logical)).toBe(true);
+                expect(targets.every(Object.isFrozen)).toBe(true);
+                expect(logical.every(Object.isFrozen)).toBe(true);
+                definitions.add(targets);
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(definitions.size).toBe(4);
+  });
+
+  it('preserves live array methods and borrowed handle observations around Standard definitions', () => {
+    const owned = targets('none', 'none', true);
+    const fault = new Error('Borrowed roster read failed');
+    const borrowed = new Proxy(owned, {
+      get(owner, key, receiver) {
+        if (key === 'map') throw fault;
+        return Reflect.get(owner, key, receiver);
+      },
+    });
+    expect(() => logicalRenderFeatureTargets(borrowed)).toThrow(fault);
+    expect(logicalRenderFeatureTargets([...owned])).toEqual(logicalRenderFeatureTargets(owned));
+    expect(logicalRenderFeatureTargets([...owned])).not.toBe(logicalRenderFeatureTargets(owned));
+  });
+
+  it('preserves current configuration getter evaluation and unusual format selection', () => {
+    let reads = 0;
+    const input = {
+      get tonemap() {
+        return ++reads === 1 ? 'aces-filmic' : 'none';
+      },
+      antialias: 'none',
+      storageBuffer: true,
+      multisample: true,
+      colorAttachmentFormat: 'bgra8unorm-srgb' as const,
+    };
+    const publication = resolveStandardRenderFeatureTargets(input);
+    expect(reads).toBe(2);
+    expect(publication[0]?.format).toBe('bgra8unorm-srgb');
+    expect(publication[2]?.format).toBe('bgra8unorm-srgb');
+    expect(publication[3]?.format).toBe('bgra8unorm-srgb');
+    expect(logicalRenderFeatureTargets(publication)[0]?.format).toBe('bgra8unorm-srgb');
+  });
+
   it('keeps a logical row on its immutable target owner across independent rosters', () => {
     const input = {
       name: 'color',

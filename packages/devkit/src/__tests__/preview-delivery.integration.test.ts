@@ -1,7 +1,11 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { prepareDist } from '../delivery-dist.js';
 import { writeDistManifest } from '../dist.js';
@@ -55,6 +59,42 @@ it('previews the selected player bytes and validator instead of the diagnostic d
       headers: { 'If-None-Match': response.headers.get('etag') ?? '' },
     });
     expect(revalidated.status).toBe(304);
+    const cli = fileURLToPath(new URL('../../dist/cli.mjs', import.meta.url));
+    const child = spawn(
+      process.execPath,
+      [cli, 'project', 'preview', '--root', root, '--dist', player, '--port', '0', '--json'],
+      {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const exited = once(child, 'exit');
+    const output = createInterface({ input: child.stdout });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    try {
+      const [line] = await once(output, 'line', { signal: AbortSignal.timeout(10_000) });
+      const envelope = JSON.parse(String(line)) as {
+        ok: boolean;
+        value: { urls: { local: string[] } };
+      };
+      expect(envelope.ok, stderr).toBe(true);
+      const address = envelope.value.urls.local[0];
+      if (!address) throw new Error('CLI preview URL');
+      // The startup JSON is not a terminal result: subsequent HTTP reads still
+      // belong to this foreground process until its caller stops it.
+      for (let request = 0; request < 3; request++) {
+        const served = await fetch(new URL('pack-index.json', address));
+        expect(Buffer.from(await served.arrayBuffer())).toEqual(bytes);
+        expect(child.exitCode).toBeNull();
+      }
+    } finally {
+      output.close();
+      if (child.exitCode === null) child.kill('SIGTERM');
+      await exited;
+    }
   } finally {
     await disposeDevKitHosts();
     await rm(root, { recursive: true, force: true });

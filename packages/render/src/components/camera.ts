@@ -658,6 +658,20 @@ export const Camera = defineComponent('Camera', {
 export type CameraData = ShapeOf<SchemaOf<typeof Camera>>;
 type CameraPod = CameraData;
 
+/** Reject invalid Float32 lens angles before they invert or degenerate projection. */
+export function validateCameraPerspectiveFov(value: number): number {
+  const fov = Math.fround(value);
+  if (!Number.isFinite(fov) || fov <= 0 || fov >= Math.PI)
+    throw cameraError(
+      'camera-projection-invalid',
+      'fov',
+      value,
+      'a finite vertical angle in radians strictly between 0 and Math.PI',
+      'convert degrees to radians, for example (74 * Math.PI) / 180',
+    );
+  return value;
+}
+
 /** Validate and detach the two shared lens offsets before extraction/publication. */
 export function validateCameraProjectionOffset(
   value: ArrayLike<number>,
@@ -776,6 +790,7 @@ function cameraColorGradingColumns(
 // and default literals are derived from the Camera token (SSOT).
 
 interface CameraPerspectiveOpts {
+  /** Vertical angle in radians, strictly between 0 and Math.PI. */
   fov: number;
   aspect: number;
   near?: number;
@@ -874,7 +889,7 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
     // omitted opts.autoAspect lands the default-correct value; an explicit
     // false overrides it below (D-4: factory one-step opt-out, charter P1).
     ...cameraPodFromDefaults(),
-    fov: opts.fov,
+    fov: validateCameraPerspectiveFov(opts.fov),
     aspect: opts.aspect,
     ...(opts.near === undefined ? {} : { near: opts.near }),
     ...(opts.far === undefined ? {} : { far: opts.far }),

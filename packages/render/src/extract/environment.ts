@@ -87,23 +87,6 @@ export type EnvironmentSource =
 
 export interface FogFrame extends FogCandidate {}
 
-/** Extracted GradientSky facts; its sun is the selected environment sun. */
-export interface GradientSkyFrame {
-  readonly entityKey: number;
-  readonly zenith: readonly [number, number, number];
-  readonly horizon: readonly [number, number, number];
-  readonly ground: readonly [number, number, number];
-  /** Middle stop, used when `midHeight > 0`. */
-  readonly mid: readonly [number, number, number];
-  /** Elevation sine of the middle stop; 0 keeps the two-stop law. */
-  readonly midHeight: number;
-  readonly exponent: number;
-  readonly sunSize: number;
-  readonly sunGlow: number;
-  readonly fogBlend: number;
-  readonly toneMapped: boolean;
-}
-
 export interface FogParameterIssue {
   readonly field: string;
   readonly value: number;
@@ -127,8 +110,6 @@ export interface EnvironmentFrame {
     readonly bytesPerPixel: number;
   }>;
   readonly fog: FogFrame | undefined;
-  /** Procedural background; absent keeps the camera clear colour. */
-  readonly sky?: GradientSkyFrame | undefined;
   readonly environmentSignature: string;
   readonly fogSignature: string;
   readonly signature: string;
@@ -225,44 +206,6 @@ function validateFogLaw(candidate: FogCandidate): FogParameterIssue | undefined 
   }
   if (!Number.isFinite(candidate.far) || candidate.far <= candidate.near) {
     return { field: 'far', value: candidate.far, expected: 'a finite number greater than near' };
-  }
-  return undefined;
-}
-
-const SKY_COLOR_FIELDS = ['zenith', 'horizon', 'ground', 'mid'] as const;
-const SKY_SCALAR_RANGES = {
-  exponent: { min: 1e-3, max: 64, expected: 'a finite number in [0.001, 64]' },
-  midHeight: {
-    min: 0,
-    max: 0.95,
-    expected: 'a finite elevation sine in [0, 0.95] (0 = no mid stop)',
-  },
-  sunSize: { min: 0, max: 0.5, expected: 'a finite angular radius in [0, 0.5] radians' },
-  sunGlow: { min: 0, max: 16, expected: 'a finite number in [0, 16]' },
-  fogBlend: { min: 0, max: 1, expected: 'a finite elevation sine in [0, 1]' },
-} as const;
-
-/** Validate the bounded GradientSky domain at the frame-selection boundary. */
-export function validateGradientSky(sky: GradientSkyFrame): FogParameterIssue | undefined {
-  for (const field of SKY_COLOR_FIELDS) {
-    const color = sky[field];
-    for (let index = 0; index < 3; index += 1) {
-      const value = color[index];
-      if (value === undefined || !Number.isFinite(value) || value < 0) {
-        return {
-          field: `GradientSky.${field}[${index}]`,
-          value: value ?? Number.NaN,
-          expected: 'a finite linear channel >= 0',
-        };
-      }
-    }
-  }
-  for (const field of Object.keys(SKY_SCALAR_RANGES) as (keyof typeof SKY_SCALAR_RANGES)[]) {
-    const range = SKY_SCALAR_RANGES[field];
-    const value = sky[field];
-    if (!Number.isFinite(value) || value < range.min || value > range.max) {
-      return { field: `GradientSky.${field}`, value, expected: range.expected };
-    }
   }
   return undefined;
 }

@@ -123,9 +123,12 @@ if (rawArgs[0] === '--__forgeax-backend') {
     );
   }
   if (!result.ok) process.exitCode = result.error?.code === 'cli-parse-error' ? 2 : 1;
-  if (result.command === 'project play') {
-    // A timed-out playthrough module may still hold timers; its result is final.
+  // Preview publishes startup status while its foreground HTTP owner remains
+  // live. Every other command has a terminal result and a disposed command Host.
+  if (!result.ok || result.command !== 'project preview') {
+    // Imported extensions may retain timers after their command has completed.
     await new Promise<void>((resolveFlush) => process.stdout.write('', () => resolveFlush()));
+    await new Promise<void>((resolveFlush) => process.stderr.write('', () => resolveFlush()));
     process.exit();
   }
 }

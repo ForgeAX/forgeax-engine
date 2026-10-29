@@ -649,7 +649,7 @@ describe('canonical kit output override', () => {
     );
   });
 
-  it('uses the generated canonical fallback in a public SDK checkout without asset submodules', async () => {
+  it('generates the default environment independently of bundled or private sky files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-public-canonical-kit-test-'));
     tempRoots.push(root);
     const checkout = join(root, 'checkout');
@@ -691,6 +691,12 @@ describe('canonical kit output override', () => {
     const markedOutput = join(root, 'marked-public-output');
     await build(markedOutput);
     expect(await readFile(join(markedOutput, 'sky.hdr'))).toEqual(publicBytes);
+    await rm(marker);
+    await writeFile(join(packageKit, 'sky.hdr'), 'previous library HDR must not be selected\n');
+    const localOutput = join(root, 'local-output');
+    await build(localOutput);
+    expect(await readFile(join(localOutput, 'sky.hdr'))).toEqual(publicBytes);
+    expect(publicBytes.byteLength).toBeLessThan(4096);
   });
 });
 

@@ -41,6 +41,7 @@ patchedDependencies:
   '@deepseek-ai/cordis@4.0.4': patches/@deepseek-ai__cordis@4.0.4.patch
 
 overrides:
+  '@hono/node-server': "^2.1.3"
   body-parser: "^2.4.0"
   fast-uri: "^3.1.9"
   qs: "^6.16.1"

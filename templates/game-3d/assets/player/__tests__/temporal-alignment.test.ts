@@ -1,7 +1,8 @@
 import { animationPlugin, AnimationPlayer, deriveAnimationTargetId } from '@forgeax/engine/animation';
 import { FixedTime, Time } from '@forgeax/engine/ecs';
 import { createInputSnapshot, INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
-import { CharacterController, Collider, ColliderShapeValue, physicsPlugin, RigidBody, RigidBodyTypeValue } from '@forgeax/engine/physics';
+import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine/physics';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { GlobalTransform, sceneEntity, scenePlugin, Transform, worldInstantiateSceneAsset, worldResolveSceneEntity } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
 import { describe, expect, it, vi } from 'vitest';
@@ -14,7 +15,7 @@ async function temporalFixture() {
   const { world, ctx, asset, assets } = await sceneWorldFixture();
   await ctx.plugin(scenePlugin());
   await ctx.plugin(animationPlugin());
-  await ctx.plugin(physicsPlugin('rapier-3d'));
+  await ctx.plugin(physics3d);
   const source = assets.create(asset).unwrap();
   const root = worldInstantiateSceneAsset(world, source, asset, undefined, new Set(), undefined, 'scene/showcase').unwrap();
   assets.release(source).unwrap();

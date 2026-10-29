@@ -51,14 +51,12 @@ import {
 import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { installAudioControls } from './audio-controls';
 
-import {
-  Collider,
+import { Collider,
   ColliderShapeValue,
   CollidingEntities,
-  physicsPlugin,
   RigidBody,
-  RigidBodyTypeValue,
-} from '@forgeax/engine-physics';
+  RigidBodyTypeValue } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -77,7 +75,7 @@ if (!canvas) throw new Error('hello-audio: missing <canvas id="app"> in index.ht
 const hostAudio = new WebAudioEngine();
 const appRes = await createApp(canvas, {
   ...(runtimeBinding !== undefined && import.meta.env.DEV ? { assetRuntimeBinding: runtimeBinding } : {}),
-  plugins: [webAudioPlugin(hostAudio), audioPlugin(), physicsPlugin('rapier-3d')],
+  plugins: [webAudioPlugin(hostAudio), audioPlugin(), physics3d],
 }, {
   ...forgeaxBundlerAdapter(),
   importTransport: createRuntimeAssetImportTransport(runtimeBinding),

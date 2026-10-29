@@ -19,7 +19,6 @@ import type {
   RhiDevice,
   RenderPipeline as RhiRenderPipeline,
   Sampler,
-  ShaderModule,
   Texture,
   TextureFormat,
   TextureView,
@@ -351,8 +350,6 @@ export interface PerPassResources {
   readonly skyboxBindGroupLayout: BindGroupLayout | null;
   readonly skyboxSampler: Sampler | null;
   readonly skyboxRotationBuffer: Buffer | null;
-  /** Compiled skybox.wgsl, which also carries the GradientSky entries. */
-  readonly skyboxModule?: ShaderModule | null;
   bloomHorizontalPipeline: RhiRenderPipeline | null;
   bloomVerticalPipeline: RhiRenderPipeline | null;
   bloomCompositePipeline: RhiRenderPipeline | null;

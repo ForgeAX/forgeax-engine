@@ -11,7 +11,7 @@ function retainedProgram(index: number) {
   );
 }
 
-it('retains fragment owners without capturing complete analyzed bodies in lazy source accessors', () => {
+it('retains complete runtime sources without duplicating analyzed bodies in lazy accessors', () => {
   const programs = Array.from({ length: 3 }, (_, index) => retainedProgram(index));
   const directory = mkdtempSync(join(tmpdir(), 'forgeax-material-retention-'));
   try {
@@ -35,8 +35,10 @@ it('retains fragment owners without capturing complete analyzed bodies in lazy s
       )
         fullBodies++;
     }
-    // V8 may keep its latest RegExp input; it must not retain one body per program.
-    expect(fullBodies).toBeLessThanOrEqual(1);
+    // Raw runtime text stays whole. Keep one body per program; V8 may also
+    // retain its latest RegExp input, but analysis must not duplicate every body.
+    expect(fullBodies).toBeGreaterThanOrEqual(programs.length);
+    expect(fullBodies).toBeLessThanOrEqual(programs.length + 1);
     for (const program of programs) expect(program.source.length).toBeGreaterThan(2 * 1024 * 1024);
   } finally {
     rmSync(directory, { recursive: true, force: true });

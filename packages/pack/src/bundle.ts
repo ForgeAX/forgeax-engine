@@ -1,4 +1,56 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { type ArtifactDescriptor, err, ok, type Result } from '@forgeax/engine-types';
+
+export function storedArtifactRangeIssue(descriptor: ArtifactDescriptor): string | undefined {
+  const range = descriptor.byteRange;
+  if (range === undefined) return undefined;
+  return range === null ||
+    typeof range !== 'object' ||
+    !Number.isSafeInteger(range.offset) ||
+    range.offset < 0 ||
+    !Number.isSafeInteger(range.length) ||
+    range.length <= 0 ||
+    !Number.isSafeInteger(range.offset + range.length) ||
+    typeof range.bundleDigest !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(range.bundleDigest) ||
+    descriptor.delivery !== undefined ||
+    descriptor.integrity === undefined
+    ? 'invalid stored artifact range'
+    : undefined;
+}
+
+/** Shared range admission for runtime, fixed publications and offline verification. */
+export function decodedArtifactRangeIssue(descriptor: ArtifactDescriptor): string | undefined {
+  const range = descriptor.decodedRange;
+  if (range === undefined) return undefined;
+  return range === null ||
+    typeof range !== 'object' ||
+    !Number.isSafeInteger(range.offset) ||
+    range.offset < 0 ||
+    !Number.isSafeInteger(range.length) ||
+    range.length <= 0 ||
+    !Number.isSafeInteger(range.offset + range.length) ||
+    range.length !== descriptor.byteLength ||
+    descriptor.contentEncoding !== 'zstd' ||
+    descriptor.byteRange === undefined ||
+    descriptor.integrity === undefined ||
+    descriptor.delivery !== undefined
+    ? 'invalid decoded artifact range'
+    : undefined;
+}
+
+/** Select the original artifact bytes before its individual integrity check. */
+export function selectDecodedArtifactBytes(
+  bytes: Uint8Array,
+  descriptor: ArtifactDescriptor,
+): Result<Uint8Array, string> {
+  const issue = decodedArtifactRangeIssue(descriptor);
+  if (issue !== undefined) return err(issue);
+  const range = descriptor.decodedRange;
+  if (range === undefined) return ok(bytes);
+  if (range.offset + range.length > bytes.byteLength)
+    return err('decoded artifact range exceeds group');
+  return ok(bytes.slice(range.offset, range.offset + range.length));
+}
 
 /**
  * Asset Bundle file: `FXBUNDL1`, u32le entry count, u32le entry lengths, then

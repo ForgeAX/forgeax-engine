@@ -21,7 +21,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
-    "@forgeax/engine-geometry": "workspace:*"
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-shader": "workspace:*",

@@ -12,6 +12,7 @@ import {
 } from '@forgeax/engine-types';
 import { validateArtifactPath } from './artifact-path.js';
 import { validatePackBlob } from './blob.js';
+import { decodedArtifactRangeIssue } from './bundle.js';
 import { type PackProgramError, verifyPackProgram } from './program.js';
 import type { FixedPackExecution, FixedPackPublication } from './runtime-publication.js';
 import { validatePackV2 } from './schema-compiled.js';
@@ -153,6 +154,7 @@ function assertFixedArtifact(
   if (
     !validateArtifactPath(artifact.path, { packageRoot, guid, artifactKey }).ok ||
     !text(artifact.mediaType) ||
+    decodedArtifactRangeIssue(artifact) !== undefined ||
     !['identity', 'zstd'].includes(artifact.contentEncoding) ||
     !Number.isSafeInteger(artifact.byteLength) ||
     artifact.byteLength < 0 ||

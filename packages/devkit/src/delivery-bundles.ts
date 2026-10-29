@@ -5,6 +5,7 @@ import { compressZstd } from '@forgeax/engine-codec/encode';
 import { encodeAssetBundle, readAssetBundleTable } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { readDeliveryDocument } from './delivery-documents.js';
+import { compressShaderGroups } from './delivery-shader-groups.js';
 import type { DistArtifact } from './dist.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
 
@@ -48,6 +49,7 @@ interface Entry {
   readonly bytes: number;
   readonly decodedBytes: number;
   readonly owners: Set<string>;
+  shader: boolean;
 }
 
 interface Window {
@@ -56,6 +58,7 @@ interface Window {
   readonly length: number;
   readonly bundleDigest: string;
   readonly contentEncoding: 'identity' | 'zstd';
+  readonly decodedRange?: ArtifactDescriptor['decodedRange'];
 }
 
 type PackDocument = { assets?: unknown; pack?: { assets?: unknown } };
@@ -180,7 +183,11 @@ async function collectEntries(input: AssetBundleInput, packs: readonly string[])
           if (range.bundleDigest !== `sha256:${artifact.sha256}`)
             throw new Error(`${pack}: Bundle digest does not match ${path}`);
           const windows = existing.get(path) ?? new Map<string, number>();
-          windows.set(`${range.offset}:${range.length}`, descriptor.byteLength ?? range.length);
+          const decoded = descriptor.decodedRange;
+          windows.set(
+            `${range.offset}:${range.length}${decoded === undefined ? '' : `:${decoded.offset}:${decoded.length}`}`,
+            descriptor.byteLength ?? range.length,
+          );
           existing.set(path, windows);
         }
         continue;
@@ -193,7 +200,11 @@ async function collectEntries(input: AssetBundleInput, packs: readonly string[])
         bytes: artifact.bytes,
         decodedBytes: descriptor.byteLength ?? artifact.bytes,
         owners: new Set<string>(),
+        shader: true,
       };
+      entry.shader &&=
+        descriptor.mediaType === 'text/wgsl' &&
+        (descriptor.contentEncoding ?? 'identity') === 'identity';
       entry.paths.add(path);
       entry.owners.add(pack);
       entries.set(identity, entry);
@@ -284,7 +295,8 @@ async function existingBundleReport(
     if (!table.ok) throw new Error(`${path}: invalid Bundle: ${table.error}`);
     const available = new Set(table.value.map((window) => `${window.offset}:${window.length}`));
     for (const window of windows.keys())
-      if (!available.has(window)) throw new Error(`${path}: descriptor is not a Bundle entry`);
+      if (!available.has(window.split(':').slice(0, 2).join(':')))
+        throw new Error(`${path}: descriptor is not a Bundle entry`);
     storedBytes += bytes.byteLength;
     entries += windows.size;
     sourceBytes += [...windows.values()].reduce((sum, length) => sum + length, 0);
@@ -298,9 +310,19 @@ async function writeBundle(input: AssetBundleInput, entries: readonly Entry[]) {
   const members = [...entries].sort((a, b) => a.identity.localeCompare(b.identity));
   const stored: Uint8Array[] = [];
   const encodings: ('identity' | 'zstd')[] = [];
+  const locations = new Map<
+    string,
+    { index: number; decodedRange?: ArtifactDescriptor['decodedRange'] }
+  >();
+  const shaders = [];
   for (const entry of members) {
     const bytes = new Uint8Array(await readFile(resolve(input.sourceRoot, entry.path)));
     sourceBytes += entry.decodedBytes;
+    if (entry.shader && input.compressEntries !== false) {
+      shaders.push({ identity: entry.identity, bytes });
+      continue;
+    }
+    locations.set(entry.identity, { index: stored.length });
     const identity = entry.identity.endsWith(':identity');
     const compressed = identity
       ? await compressBundleEntry(bytes, input.compressEntries !== false)
@@ -313,6 +335,13 @@ async function writeBundle(input: AssetBundleInput, entries: readonly Entry[]) {
       encodings.push(identity ? 'identity' : 'zstd');
     }
   }
+  for (const group of await compressShaderGroups(shaders)) {
+    const index = stored.length;
+    stored.push(group.bytes);
+    encodings.push('zstd');
+    for (const member of group.members)
+      locations.set(member.identity, { index, decodedRange: member.decodedRange });
+  }
   const bundle = encodeAssetBundle(stored);
   const digest = sha256(bundle.bytes);
   const bundlePath = `assets/bundles/${digest}.bin`;
@@ -324,15 +353,18 @@ async function writeBundle(input: AssetBundleInput, entries: readonly Entry[]) {
     bytes: bundle.bytes.byteLength,
     sha256: digest,
   };
-  members.forEach((entry, index) => {
-    const window = bundle.windows[index];
-    const contentEncoding = encodings[index];
+  members.forEach((entry) => {
+    const location = locations.get(entry.identity);
+    if (location === undefined) return;
+    const window = bundle.windows[location.index];
+    const contentEncoding = encodings[location.index];
     if (window === undefined || contentEncoding === undefined) return;
     windows.set(entry.identity, {
       bundlePath,
       ...window,
       bundleDigest: `sha256:${digest}`,
       contentEncoding,
+      ...(location.decodedRange === undefined ? {} : { decodedRange: location.decodedRange }),
     });
   });
   return { artifact, windows, sourceBytes };
@@ -358,6 +390,7 @@ async function rewritePacks(
         ...descriptor,
         path: posix.relative(posix.dirname(pack), window.bundlePath),
         contentEncoding: window.contentEncoding,
+        ...(window.decodedRange === undefined ? {} : { decodedRange: window.decodedRange }),
         byteRange: {
           offset: window.offset,
           length: window.length,

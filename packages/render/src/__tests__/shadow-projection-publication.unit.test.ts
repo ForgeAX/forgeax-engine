@@ -17,6 +17,8 @@ it('publishes one read-only capability without exposing its owned map through it
   expect(publication.has(7)).toBe(true);
   expect(publication.size).toBe(1);
   expect(Object.isFrozen(publication)).toBe(true);
+  expect(Reflect.set(Object.getPrototypeOf(publication), 'get', () => undefined)).toBe(false);
+  expect(publication.get(7)).toBe(value);
   for (const method of ['set', 'delete', 'clear'])
     expect(Reflect.get(publication, method)).toBeUndefined();
   const receiver = {};
@@ -126,16 +128,15 @@ it('publishes independent owned maps while preserving ordered values', () => {
   expect(Reflect.get(wrapped, 'set')).toBeUndefined();
 });
 
-it('distinguishes missing keys from undefined values and preserves detached readers', () => {
+it('distinguishes missing keys from undefined values and retains old publications', () => {
   const first = publishReadonlyMap(new Map([[1, undefined]]));
   const changed = publishReadonlyMap(new Map([[2, undefined]]));
   expect(changed).not.toBe(first);
-  const { get, has, keys, entries } = first;
-  expect(get(1)).toBeUndefined();
-  expect(has(1)).toBe(true);
-  expect(has(2)).toBe(false);
-  expect([...keys()]).toEqual([1]);
-  expect([...entries()]).toEqual([[1, undefined]]);
+  expect(first.get(1)).toBeUndefined();
+  expect(first.has(1)).toBe(true);
+  expect(first.has(2)).toBe(false);
+  expect([...first.keys()]).toEqual([1]);
+  expect([...first.entries()]).toEqual([[1, undefined]]);
   const nan = publishReadonlyMap(new Map([[1, Number.NaN]]));
   const repeated = publishReadonlyMap(new Map([[1, Number.NaN]]));
   expect(repeated).not.toBe(nan);

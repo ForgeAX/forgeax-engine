@@ -85,8 +85,27 @@ describe('canonical kit admission', () => {
   ] as const)('admits a coherent public fallback for %s', async (command) => {
     const facts = await readProjectFacts(project);
     if (!facts.ok) throw facts.error;
-    const config = await createViteConfig(facts.value, command);
+    const config = await createViteConfig(facts.value, command, undefined, {
+      bootstrapRoot: 'resource-bootstrap',
+    });
     expect(config.root).toBeDefined();
+  });
+
+  it.each([
+    'build',
+    'serve',
+  ] as const)('does not admit Preview assets into an ordinary game %s', async (command) => {
+    const path = join(packageKit, 'sky.hdr');
+    const bytes = await readFile(path);
+    try {
+      await writeFile(path, Buffer.from('unused preview asset must not enter the game'));
+      const facts = await readProjectFacts(project);
+      if (!facts.ok) throw facts.error;
+      const config = await createViteConfig(facts.value, command);
+      expect(config.root).toBeDefined();
+    } finally {
+      await writeFile(path, bytes);
+    }
   });
 
   it.each([
@@ -101,7 +120,9 @@ describe('canonical kit admission', () => {
       await writeFile(path, Buffer.concat([bytes, Buffer.from('\n')]));
       const facts = await readProjectFacts(project);
       if (!facts.ok) throw facts.error;
-      await expect(createViteConfig(facts.value, command)).rejects.toMatchObject({
+      await expect(
+        createViteConfig(facts.value, command, undefined, { bootstrapRoot: 'resource-bootstrap' }),
+      ).rejects.toMatchObject({
         code: 'preview-kit-source-mismatch',
         detail: { file },
       });

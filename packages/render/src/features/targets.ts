@@ -87,6 +87,26 @@ export function resolveStandardRenderFeatureTargets(input: {
   const colorFormat =
     input.tonemap !== 'none' || linearLdr ? 'rgba16float' : input.colorAttachmentFormat;
   const cloudHistory = input.cloudHistory === true;
+  // Stable Standard configuration selects one of four static definitions.
+  // Keep current getter evaluation and the original projection for borrowed
+  // configuration whose reads select an unusual attachment format.
+  if (colorFormat === 'rgba16float') {
+    return sampleCount === 4
+      ? cloudHistory
+        ? MSAA_CLOUD_TARGETS
+        : MSAA_TARGETS
+      : cloudHistory
+        ? CLOUD_TARGETS
+        : TARGETS;
+  }
+  return standardTargets(sampleCount, cloudHistory, colorFormat);
+}
+
+function standardTargets(
+  sampleCount: 1 | 4,
+  cloudHistory: boolean,
+  colorFormat: TextureFormat,
+): readonly RenderFeatureTargetHandle[] {
   const targets = Object.freeze([
     createRenderFeatureTarget({
       name: 'color',
@@ -180,8 +200,36 @@ export function resolveStandardRenderFeatureTargets(input: {
   return targets;
 }
 
+const TARGETS = standardTargets(1, false, 'rgba16float');
+const CLOUD_TARGETS = standardTargets(1, true, 'rgba16float');
+const MSAA_TARGETS = standardTargets(4, false, 'rgba16float');
+const MSAA_CLOUD_TARGETS = standardTargets(4, true, 'rgba16float');
+const LOGICAL_TARGETS = projectLogicalTargets(TARGETS);
+const LOGICAL_CLOUD_TARGETS = projectLogicalTargets(CLOUD_TARGETS);
+const LOGICAL_MSAA_TARGETS = projectLogicalTargets(MSAA_TARGETS);
+const LOGICAL_MSAA_CLOUD_TARGETS = projectLogicalTargets(MSAA_CLOUD_TARGETS);
+
 /** Owned handles carry immutable logical rows; borrowed handles are read on every call. */
 export function logicalRenderFeatureTargets(
+  targets: readonly RenderFeatureTargetHandle[],
+): readonly RenderFeatureLogicalTarget[] {
+  // Exact static owner identity avoids reading private properties or array
+  // contents through borrowed proxies. Custom rosters retain their live map.
+  switch (targets) {
+    case TARGETS:
+      return LOGICAL_TARGETS;
+    case CLOUD_TARGETS:
+      return LOGICAL_CLOUD_TARGETS;
+    case MSAA_TARGETS:
+      return LOGICAL_MSAA_TARGETS;
+    case MSAA_CLOUD_TARGETS:
+      return LOGICAL_MSAA_CLOUD_TARGETS;
+    default:
+      return projectLogicalTargets(targets);
+  }
+}
+
+function projectLogicalTargets(
   targets: readonly RenderFeatureTargetHandle[],
 ): readonly RenderFeatureLogicalTarget[] {
   return Object.freeze(

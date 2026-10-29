@@ -79,5 +79,8 @@
         "reason": "not a spike package"
       }
     }
+  },
+  "devDependencies": {
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   }
 }

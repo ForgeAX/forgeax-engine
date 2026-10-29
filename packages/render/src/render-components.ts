@@ -13,7 +13,6 @@ import { DepthOfField } from './components/depth-of-field';
 import { DirectionalLight } from './components/directional-light';
 import { DynamicResolution } from './components/dynamic-resolution';
 import { Fog } from './components/fog';
-import { GradientSky } from './components/gradient-sky';
 import { Instances } from './components/instances';
 import { Layer } from './components/layer';
 import { LensEffects } from './components/lens-effects';
@@ -67,7 +66,6 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   DynamicResolution,
   DepthOfField,
   Fog,
-  GradientSky,
   Instances,
   Layer,
   LightProbe,

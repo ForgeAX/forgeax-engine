@@ -477,17 +477,13 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
       const activeShaderCatalog = getActiveShaderState().shaderInstance;
       if (activeShaderCatalog !== null) {
         const candidateShaderCatalog = getShader();
-        for (const identifier of activeShaderCatalog.materialShaderIdentifiers()) {
-          const entry = activeShaderCatalog.findMaterialArtifact(identifier);
-          if (entry.ok && !candidateShaderCatalog.findMaterialArtifact(identifier).ok) {
-            candidateShaderCatalog.installMaterialArtifact(identifier, {
-              source: entry.value.source,
-              sourceReference: entry.value.program.sourceReference,
-              paramSchema: entry.value.paramSchema,
-              ...(entry.value.receipt === undefined ? {} : { receipt: entry.value.receipt }),
-            });
-          }
-        }
+        const installed = new Set(candidateShaderCatalog.materialShaderIdentifiers());
+        candidateShaderCatalog.installMaterialArtifactsFrom(
+          activeShaderCatalog,
+          [...activeShaderCatalog.materialShaderIdentifiers()].filter(
+            (identifier) => !installed.has(identifier),
+          ),
+        );
       }
       setRecoveryPhase('compile-graph');
       const pipeline = await runRecoveryStep(

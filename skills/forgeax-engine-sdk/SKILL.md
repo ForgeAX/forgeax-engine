@@ -47,7 +47,7 @@ again before delivery, open the PNG and answer each question in one sentence; fi
 2. Saturation: are colours as vivid as the brief implies? A pale or grey frame usually
    means fog over the subject, a cool `Skylight` fill or AgX.
 3. Contrast: does the subject stand out from its background? A flat slab or empty void
-   behind it needs a `GradientSky`, `SkyboxBackground` or set dressing.
+   behind it needs a `SkyboxBackground` with an authored sky asset or set dressing.
 4. Mood: do palette and lighting match the brief's words (warm, eerie, neon, cosy)?
 5. Framing: does the subject fill about half the frame, with nothing clipping the near
    plane or blocking the camera, and the HUD off the subject?
@@ -129,6 +129,11 @@ prebuilt package outputs. For a focused Engine change, install source dependenci
 rebuild the changed owner and bind through `project engine use-local`; unchanged
 owners reuse their delivered builds. Follow the local-Engine guide
 for binding and the SDK README for the partial rebuild commands.
+
+If a source consumer with precompiled Rapier unexpectedly requests Rust, compare
+its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the
+3D SIMD glue and declarations. Follow [native artifact admission](../../scripts/ci/README.md#native-rapier-artifact-admission);
+repair missing exported files without bypassing source, inventory or digest checks.
 
 For an explicitly requested Engine/SDK change, SDK archive verification or SDK
 publication, read SDK production. Its exact-ZIP

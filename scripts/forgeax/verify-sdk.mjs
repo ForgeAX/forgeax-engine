@@ -1704,6 +1704,7 @@ if (selected('project')) {
         cwd: sdkRoot,
         env: {
           ...offlineEnv,
+          FORGEAX_INDEPENDENT_EVIDENCE_ROOT: resolve(dirname(archive), 'independent-run'),
           FORGEAX_INDEPENDENT_ENGINE_PACKAGE: resolve(
             sdkRoot,
             '.forgeax/cli-runtime/node_modules/@forgeax/engine',

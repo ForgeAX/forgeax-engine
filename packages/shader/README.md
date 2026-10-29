@@ -73,7 +73,7 @@ conservative binding policy. Registrations, selected
 variants and material passes share it; `forkForDevice()` retains these CPU facts
 while GPU modules are rebuilt. Reflected entry reads can complete a warmed description
 without rescanning its source. The registry owns that detached immutable contract;
-conflicting reads for the same source are rejected before shader publication, including
+conflicting reads for the same source are rejected before a prepared shader is returned, including
 contradictions between explicit reads and an ABI receipt. New source selects a new description. The runtime
 description retains the sampled user-region texture names too. Staged registration
 reuses these exact-source facts, while every schema still passes admission and
@@ -83,12 +83,32 @@ carries this description instead of independent
 WGSL, identity and optional binding-decision fields. Synthetic producers use
 `createMaterialShaderProgram()` when constructing an artifact, never while drawing.
 
+Cooked material programs use `installMaterialArtifactBytes()`. Admission verifies
+UTF-8 byte digests, retains read-only artifact views, admits schemas and ABI/read metadata,
+and rejects same-key conflicts without decoding WGSL. `materialArtifactDeclaration()`
+inspects this declaration without preparing it. The first `materialArtifact()` or
+`findMaterialArtifact()` lookup verifies a private snapshot against its digest, decodes that selected source and performs the same
+source analysis and sampled-texture/schema checks as direct registration. A source
+failure remains an explicit error on first use; no failed program becomes ready.
+Caller mutation of retained bytes fails closed before source preparation. Repeated
+lookups reuse the immutable result. Unselected variants retain the existing bytes and
+metadata only. Direct `installMaterialArtifact()` stays eager for authored source.
+
+Selected sources retain their complete decoded WGSL without runtime fragmentation.
+Byte owners
+weakly share pure CPU sources and descriptions across registries;
+registry adoption and device recovery preserve pending declarations without creating
+GPU objects. This does not defer artifact loading, decompression or digest validation,
+reduce delivered variants, or change the existing GPU pipeline compilation policy.
+
 `shaderSource()` admits material, utility and VFX text into the same CPU owner.
-`MaterialShaderProgram.sourceReference` retains its immutable fragments; `.source`
-borrows the complete string. Vertex entry locations, fragment/temporal presence and
+`MaterialShaderProgram.sourceReference` retains immutable source text; `.source`
+borrows the complete string. Runtime raw text is not split, copied or pooled as
+fragments. Build-produced manifest fragment references remain supported; their
+publication format and integrity checks are unchanged. Vertex entry locations, fragment/temporal presence and
 storage use are program facts, so managed pipeline validation does not rescan WGSL.
 
-Registered programs and their source fragments follow the existing Registry
+Registered programs and their source owners follow the existing Registry
 lifetime. Forks share these CPU facts and adoption validates the whole batch before
 publication. There is no cumulative source-byte or registration-count quota added
 by this storage change. `sourceInspection()` reports unique logical UTF-16 bytes,
@@ -109,8 +129,8 @@ retain `findMaterialArtifact(identifier)` and its structured Result/error.
 
 Material registration owns a detached, recursively frozen ABI receipt alongside
 the admitted schema and program. `installMaterialArtifactsFrom(sourceRegistry)`
-accepts only another registry's private registrations: it checks every identifier
-and retained schema conflict before installing any entry, then shares the validated
+accepts only another registry's private registrations, optionally a named subset: it checks every identifier
+and retained schema conflict before installing any entry, then shares pending byte owners or validated
 CPU facts without reparsing WGSL or deriving the interface again. Each receiving
 registry retains its own schema projections and GPU lifetime. Publication callers
 validate the complete batch in a temporary registry before this commit; no author

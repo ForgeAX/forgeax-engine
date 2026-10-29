@@ -7,6 +7,7 @@ import { build, version as esbuildVersion } from 'esbuild';
 import { assertPortableRustArtifact, portableRustFlags } from '../../../scripts/lib/rust-build-paths.mjs';
 import { gitHttpEnvironment } from '../../../scripts/lib/git-http-environment.mjs';
 import { bundleRapierDeclarations } from './build-declarations.mjs';
+import { buildSimdPayload } from './build-simd-payload.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const dimension = process.argv.includes('--2d') ? '2d' : '3d';
@@ -22,6 +23,7 @@ const inputs = [
   'scripts/build-wasm.mjs',
   'scripts/native-init.js',
   'scripts/build-declarations.mjs',
+  'scripts/build-simd-payload.mjs',
   'scripts/native-tests.Cargo.toml',
   'scripts/native-tests.Cargo.lock',
   bindingsManifest,
@@ -306,6 +308,7 @@ await writeFile(
 run('node', [fileURLToPath(import.meta.resolve('typescript/bin/tsc')), '-p', tsconfig], root);
 await cp(join(wasm, `${stem}.d.ts`), join(declarations, `${stem}.d.ts`));
 await bundleRapierDeclarations(declarations, staged, tsconfig);
+if (dimension === '3d') await buildSimdPayload({ root, work, bindings, staged, cache, run });
 await cp(join(bindings, 'LICENSE'), join(staged, 'LICENSE'));
 const artifacts = Object.fromEntries(
   await Promise.all(

@@ -5,7 +5,7 @@ import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runt
 import { readMaterialContent, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import * as naga from '@forgeax/engine-naga';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { type CookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import { Materials, MeshRenderer } from '@forgeax/engine-render';
@@ -13,7 +13,7 @@ import { sceneAssetContribution } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { type MaterialAsset, resolveMaterialAsset, type SceneAsset } from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
-import { afterAll, expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { AssetOutputProducerRegistry } from '../../../import/src/scriptable-pack';
@@ -28,9 +28,25 @@ import { materialSampledTextureBudget } from '../../../render/src/material-sampl
 import * as compiler from '../../../shader-compiler/src/compile.js';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/index';
 
-// This fixture observes Naga calls in its own realm; native pool parity has its own contract.
+// The observing realm's compiler is selected at import time. Restore ordinary
+// Worker admission before each case; only the two call-count cases opt back in.
 vi.hoisted(() => vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1'));
-afterAll(() => vi.unstubAllEnvs());
+beforeEach(() => vi.unstubAllEnvs());
+
+// These cases admit declared WebGPU publications. Portable backend composition
+// remains on the independent cold-cooker contracts below.
+const publicationCooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
+
+function expectWebGpuPublication(record: CookedMaterialRecord) {
+  const selections = record.programs.flatMap((program) => program.selections);
+  expect(selections.length).toBeGreaterThan(0);
+  expect(new Set(selections.map((selection) => selection.context.backend))).toEqual(
+    new Set(['webgpu']),
+  );
+  expect(selections.some((selection) => selection.context.capability === 'uniform-fallback')).toBe(
+    false,
+  );
+}
 
 it.each([
   ['arc-nova-shard.material.pack.json', 1, 0.035],
@@ -43,7 +59,7 @@ it.each([
     );
     const result = await prepareLegacyPackTransport(
       JSON.parse(await readFile(sourcePath, 'utf8')),
-      [createMaterialPackCooker()],
+      [publicationCooker],
       () => ({
         base: '/',
         packagePath: `assets/${file}`,
@@ -58,6 +74,7 @@ it.each([
     const cooked = (material.payload as { cooked?: unknown }).cooked;
     expect(cooked, 'explicit clearcoat requires a cooked material publication').toBeDefined();
     const record = validateCookedMaterialRecord(cooked).unwrap();
+    expectWebGpuPublication(record);
     expect(record.resolved.staticSwitches?.clearcoat).toBe(true);
     expect(record.resolved.values).toMatchObject({ clearcoat, clearcoatRoughness: roughness });
     const ready = await createMaterialLoader({
@@ -100,7 +117,7 @@ it('publishes the Bevy clearcoat material before admitting its physical layer', 
     sourcePath,
     outputs,
     publicationGeneration: 7,
-    cookers: [createMaterialPackCooker([dirname(sourcePath)])],
+    cookers: [publicationCooker],
   });
   expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
   if (!result.ok) throw result.error;
@@ -110,6 +127,7 @@ it('publishes the Bevy clearcoat material before admitting its physical layer', 
   const record = validateCookedMaterialRecord(
     (material.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  expectWebGpuPublication(record);
   expect(record.resolved.staticSwitches).toEqual({
     clearcoat: true,
     sheen: false,
@@ -173,10 +191,7 @@ it('publishes the declared Brotato Standard shorthand and its dependent particle
     projected: projectDirectPackJson(parsed),
     sourcePath,
     sourceRevision: 'declared-standard-regression',
-    cookers: [
-      createMaterialPackCooker(),
-      createParticleCodeNativeCookerFromRoots([dirname(sourcePath)]),
-    ],
+    cookers: [publicationCooker, createParticleCodeNativeCookerFromRoots([dirname(sourcePath)])],
     policy: {
       base: '/',
       packagePath: 'assets/declared.pack.json',
@@ -195,6 +210,7 @@ it('publishes the declared Brotato Standard shorthand and its dependent particle
   const record = validateCookedMaterialRecord(
     (material.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  expectWebGpuPublication(record);
   expect(record.resolved.values).toMatchObject({
     emissive: [0.05, 0.55, 1],
     emissiveIntensity: 8,
@@ -316,7 +332,7 @@ it('publishes the declared Unlit shorthand beside an explicit custom animation s
       projected: projectDirectPackJson(parsed),
       sourcePath,
       sourceRevision: 'declared-unlit-regression',
-      cookers: [createMaterialPackCooker([dirname(sourcePath)])],
+      cookers: [publicationCooker],
       policy: {
         base: '/',
         packagePath: `assets/${file}`,
@@ -331,6 +347,7 @@ it('publishes the declared Unlit shorthand beside an explicit custom animation s
     const record = validateCookedMaterialRecord(
       (material.payload as { cooked: unknown }).cooked,
     ).unwrap();
+    expectWebGpuPublication(record);
     const loaded = await createMaterialLoader({
       loadPublication: async () => ({ guid: material.guid, record, artifacts: material.artifacts }),
     }).load({ guid: material.guid, specializationKey: record.specializationKey ?? '' });
@@ -372,6 +389,8 @@ it('publishes the declared Unlit shorthand beside an explicit custom animation s
 }, 30_000);
 
 it('retains complete ordinary Standard programs across authored color changes', async () => {
+  // Only call-count observations require compilation in this test's realm.
+  vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1');
   const composition = vi.spyOn(naga, 'composeShader');
   const validation = vi.spyOn(compiler, 'compileShaderProgram');
   try {
@@ -398,6 +417,13 @@ it('retains complete ordinary Standard programs across authored color changes', 
     });
     const record = (draft: typeof first) =>
       validateCookedMaterialRecord((draft.payload as { cooked: unknown }).cooked).unwrap();
+    const selections = record(first).programs.flatMap((program) => program.selections);
+    expect(new Set(selections.map((selection) => selection.context.backend))).toEqual(
+      new Set(['webgpu', 'webgl2']),
+    );
+    expect(
+      selections.some((selection) => selection.context.capability === 'uniform-fallback'),
+    ).toBe(true);
     expect(record(second).programs).toEqual(record(first).programs);
     expect(record(second).resolved.values.baseColor).not.toEqual(
       record(first).resolved.values.baseColor,
@@ -407,6 +433,7 @@ it('retains complete ordinary Standard programs across authored color changes', 
   } finally {
     composition.mockRestore();
     validation.mockRestore();
+    vi.unstubAllEnvs();
   }
 });
 
@@ -420,10 +447,11 @@ it('admits the authored Lab clearcoat toggle after ordinary material cooking', a
   const authored = document.assets['material/blue-ball'];
   const source = { kind: authored.kind, ...authored.payload } as MaterialAsset;
   const guid = '5a90b107-fb75-4a62-9b08-520a8d153019';
-  const draft = await createMaterialPackCooker().cook({ guid, source });
+  const draft = await publicationCooker.cook({ guid, source });
   const record = validateCookedMaterialRecord(
     (draft.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  expectWebGpuPublication(record);
   const ready = await createMaterialLoader({
     loadPublication: async () => ({ guid, record, artifacts: draft.artifacts }),
   }).load({ guid, specializationKey: record.specializationKey ?? '' });
@@ -477,13 +505,14 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
   const selected = projected.assets.find((asset) => asset.guid === guid);
   if (selected?.kind !== 'material') throw new Error('actual BlueBall scene material must resolve');
   expect(selected.guid).toBe(intended.guid);
-  const draft = await createMaterialPackCooker().cook({
+  const draft = await publicationCooker.cook({
     guid: selected.guid,
     source: { kind: 'material', ...selected.payload } as MaterialAsset,
   });
   const record = validateCookedMaterialRecord(
     (draft.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  expectWebGpuPublication(record);
   const ready = await createMaterialLoader({
     loadPublication: async () => ({ guid: selected.guid, record, artifacts: draft.artifacts }),
   }).load({ guid: selected.guid, specializationKey: record.specializationKey ?? '' });
@@ -585,6 +614,7 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
 import { createHash } from 'node:crypto';
 
 it('retains actual Standard composition through clearcoat and skinned material schemas', async () => {
+  vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1');
   const composition = vi.spyOn(naga, 'composeShader');
   try {
     const cooker = createMaterialPackCooker();
@@ -627,5 +657,6 @@ it('retains actual Standard composition through clearcoat and skinned material s
     expect(hashes(repeated)).toEqual(hashes(first));
   } finally {
     composition.mockRestore();
+    vi.unstubAllEnvs();
   }
 }, 30_000);

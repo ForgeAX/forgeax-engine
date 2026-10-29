@@ -329,7 +329,10 @@ retain dependencies until settlement, and command/bundle owners retain them thro
 execution and queue completion. Disposal clears the device indices. Collected
 content keys are removed without requiring deterministic GC timing.
 
-Source bodies belong to immutable CPU fragment owners. Managed factory descriptors
+Source bodies belong to immutable CPU owners. Raw strings remain whole; runtime
+does not split or copy them into a fragment pool. Source hashing occurs once on
+actual identity demand, not while receiving unused startup/background libraries.
+Managed factory descriptors
 carry that owner through the existing code/label seam; a completed source hit does
 not expand or hash WGSL. Explicit raw-text calls remain a cold input path.
 

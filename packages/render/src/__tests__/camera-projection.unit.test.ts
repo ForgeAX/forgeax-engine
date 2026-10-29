@@ -1,9 +1,40 @@
 import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { expect, it } from 'vitest';
 import { cameraLensProjection, jitterCameraProjection } from '../camera-projection';
+import { perspective } from '../components/camera';
 import { activeFrustum, occlusionCamera } from '../gpu-driven/production-raster-camera';
 import type { CameraSnapshot } from '../render-contract';
 import { projectTemporalView } from '../temporal/temporal-view';
+
+it.each([
+  0,
+  -1,
+  Math.PI,
+  74,
+  180,
+  NaN,
+  Infinity,
+])('rejects invalid perspective angles before building an inverted lens: %s', (fov) => {
+  const error = expect.objectContaining({
+    code: 'camera-projection-invalid',
+    detail: expect.objectContaining({ field: 'fov' }),
+  });
+  expect(() => perspective({ fov, aspect: 1 })).toThrowError(error);
+  expect(() => cameraLensProjection({ ...camera('perspective'), fov }, mat4.create())).toThrowError(
+    error,
+  );
+});
+
+it('accepts a degree value explicitly converted to radians and leaves orthographic sentinels alone', () => {
+  const fov = (74 * Math.PI) / 180;
+  expect(perspective({ fov, aspect: 1 }).fov).toBe(fov);
+  const projection = cameraLensProjection({ ...camera('perspective'), fov }, mat4.create());
+  expect(projection[0]).toBeGreaterThan(0);
+  expect(projection[5]).toBeGreaterThan(0);
+  expect(() =>
+    cameraLensProjection({ ...camera('orthographic'), fov: 0 }, mat4.create()),
+  ).not.toThrow();
+});
 
 it('applies clip jitter to dense and perspective matrices with aliased output', () => {
   const dense = mat4.create();

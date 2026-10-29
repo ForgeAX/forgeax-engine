@@ -131,8 +131,7 @@ export async function prepareDevicePipelineLibrary(
 ): Promise<void> {
   if (device.pipelineLibrary === undefined) return;
   const sources = manifest.shaders.map(
-    (descriptor) =>
-      shaderSourceForDescriptor(descriptor) ?? ShaderSource.fromText(descriptor.code, new Map()),
+    (descriptor) => shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]),
   );
   const prepared = await device.pipelineLibrary.prepare(manifest, {
     ...(owner === undefined ? {} : { owner }),
@@ -196,8 +195,7 @@ export async function prepareBackgroundPipelineLibrary(
       const descriptor = manifest.shaders[module];
       if (descriptor !== undefined)
         shader().materialProgram(
-          shaderSourceForDescriptor(descriptor) ??
-            ShaderSource.fromText(descriptor.code, new Map()),
+          shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]),
         );
     }
   };
@@ -208,8 +206,7 @@ export async function prepareBackgroundPipelineLibrary(
         owner,
         sources: manifest.shaders.map(
           (descriptor) =>
-            shaderSourceForDescriptor(descriptor) ??
-            ShaderSource.fromText(descriptor.code, new Map()),
+            shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]),
         ),
       })
       .then((prepared) => {
@@ -827,7 +824,7 @@ export async function buildReadyWebGPU(
   const queue = rhiDevice.queue;
   const viewUniformBuffer = createViewUniformBuffer(createPersistentBuffer);
   const pointsLinesView = createPointsLinesViewBuffer(rhiDevice, rendererScope);
-  const shadowCasterCascadeBuffer = createShadowCasterCascadeBuffer(createPersistentBuffer);
+  const shadowCasterCascadeBuffer = createShadowCasterCascadeBuffer(createPersistentBuffer, queue);
   const meshSsboController = createReadyMeshSsboController(
     rhiDevice,
     rendererScope,

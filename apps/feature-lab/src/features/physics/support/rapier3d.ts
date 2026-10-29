@@ -23,7 +23,7 @@ export interface PhysicsHarness3D {
   dispose(): void;
 }
 
-/** A plain ECS World wired exactly like `physicsPlugin('rapier-3d')`, without an App. */
+/** A plain ECS World wired exactly like `physics3d`, without an App. */
 export async function createPhysicsHarness3D(): Promise<PhysicsHarness3D | string> {
   const rapier = await loadRapier3D();
   if ('code' in rapier) return `loadRapier3D failed: ${String(rapier.code)}`;

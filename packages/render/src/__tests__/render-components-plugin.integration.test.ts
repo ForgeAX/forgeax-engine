@@ -3,7 +3,7 @@ import { type Component, createWorldContext, World } from '@forgeax/engine-ecs';
 import { scenePlugin, worldDespawnScene } from '@forgeax/engine-scene';
 import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { GradientSky, GradientSkyPresets } from '../components/gradient-sky';
+import { Skylight } from '../components/skylight';
 import * as render from '../index';
 import { renderComponentsPlugin } from '../plugin';
 
@@ -34,7 +34,7 @@ describe('render component vocabulary', () => {
     }
   });
 
-  it('admits and instantiates a JSON Scene containing GradientSky before any runtime spawn', async () => {
+  it('admits and instantiates a JSON Scene containing Skylight before any runtime spawn', async () => {
     const assets = new AssetRegistry();
     const world = new World({ assets });
     const context = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
@@ -42,7 +42,9 @@ describe('render component vocabulary', () => {
       const source: SceneAsset = JSON.parse(
         JSON.stringify({
           kind: 'scene',
-          entities: { sky: { components: { GradientSky: GradientSkyPresets.dusk } } },
+          entities: {
+            sky: { components: { Skylight: { color: [0.125, 0.25, 0.5], intensity: 0.7 } } },
+          },
         }),
       );
       const handle = assets.create(source).unwrap();
@@ -50,15 +52,13 @@ describe('render component vocabulary', () => {
         const root = assets.instantiate(handle, world).unwrap();
         try {
           const sky = [...world.iterDescendants(root)].find((entity) =>
-            world.hasComponent(entity, GradientSky),
+            world.hasComponent(entity, Skylight),
           );
           expect(sky).toBeDefined();
-          if (sky === undefined) throw new Error('Scene did not instantiate its GradientSky');
-          const value = world.get(sky, GradientSky).unwrap();
-          expect([...value.zenith]).toEqual([...new Float32Array(GradientSkyPresets.dusk.zenith)]);
-          expect(value.exponent).toBeCloseTo(GradientSkyPresets.dusk.exponent);
-          expect(value.toneMapped).toBe(false);
-          expect(value.sunSize).toBeGreaterThan(0);
+          if (sky === undefined) throw new Error('Scene did not instantiate its Skylight');
+          const value = world.get(sky, Skylight).unwrap();
+          expect([...value.color]).toEqual([0.125, 0.25, 0.5]);
+          expect(value.intensity).toBeCloseTo(0.7);
         } finally {
           worldDespawnScene(world, root).unwrap();
         }

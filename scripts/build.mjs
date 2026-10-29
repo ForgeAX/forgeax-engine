@@ -88,14 +88,8 @@ function commandOutput(command, args) {
 }
 
 async function ensureCanonicalKitStage() {
-  const requiredFiles = ['sky.hdr', 'sky.hdr.meta.json', 'cook-receipt.json'];
-  if (requiredFiles.every((file) => existsSync(resolve(canonicalKitOutput, file)))) return;
-  console.error(
-    `[build] canonical kit staging is incomplete; invoking ${'packages/preview/scripts/build-canonical-kit.mjs'}`,
-  );
-  // Keep source selection, Meta/GUID identity, and cook receipt ownership in
-  // the Preview producer. This path is needed when package JavaScript is a
-  // cache hit but its fresh output staging directory is empty or partial.
+  // The compact generated environment is source-owned. Refresh it even when
+  // package JavaScript is a cache hit so old library HDR bytes cannot survive.
   await buildCanonicalKit({ outputRoot: canonicalKitOutput });
 }
 

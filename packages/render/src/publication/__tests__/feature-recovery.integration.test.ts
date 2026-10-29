@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
@@ -9,9 +10,9 @@ import {
   RhiNullQueue,
 } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
-import { ShaderRegistry } from '@forgeax/engine-shader';
+import { createMaterialProgramArtifactReceipt, ShaderRegistry } from '@forgeax/engine-shader';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { standardPbrManifestRow } from '../../__tests__/shader-manifest-fixture';
 import { Camera, perspective } from '../../components/camera';
 import { constructRendererHost } from '../../construct-renderer';
@@ -150,6 +151,13 @@ it('recovers without replaying submitted feature data and plans the next publica
   );
   if (!created.ok) throw created.error;
   const { renderer } = created.value;
+  const adopt = vi.spyOn(ShaderRegistry.prototype, 'installMaterialArtifactsFrom');
+  const pendingKey = 'game::unused-recovery-program';
+  const pendingReceipt = createMaterialProgramArtifactReceipt({
+    schema: [],
+    directEntry: 'vs_main',
+    vertexInputs: [],
+  });
   try {
     world.update(1 / 60).unwrap();
     const candidate = publisher.prepare(0).unwrap();
@@ -157,6 +165,22 @@ it('recovers without replaying submitted feature data and plans the next publica
       transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
+    const bytes = new TextEncoder().encode(
+      '@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); } // unused recovery',
+    );
+    Object.assign(packet, {
+      programs: [
+        {
+          key: pendingKey,
+          shader: { sourceEncoding: 'utf8', paramSchema: [], receipt: pendingReceipt },
+          artifact: {
+            key: pendingKey,
+            bytes,
+            digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          },
+        },
+      ],
+    });
     const drawn = renderer.draw({ publication: encodeRenderPublication(packet) });
     if (!drawn.ok) throw drawn.error;
     const frame = drawn.value;
@@ -177,11 +201,19 @@ it('recovers without replaying submitted feature data and plans the next publica
     device.loss.resolve({ reason: 'unknown', message: 'published feature recovery test' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(renderer.state()).toBe('device-lost');
+    adopt.mockClear();
     const recovered = await renderer.recover();
     expect(receiverExtracts).toBe(0);
     expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true });
     expect(seen).toHaveLength(1);
     expect(devices).toHaveLength(2);
+    const replacement = adopt.mock.contexts.find(
+      (registry) => registry.materialArtifactDeclaration(pendingKey)?.kind === 'bytes',
+    );
+    expect(replacement).toBeDefined();
+    const retained = replacement?.materialArtifactDeclaration(pendingKey);
+    expect(retained?.kind === 'bytes' ? retained.receipt : undefined).toEqual(pendingReceipt);
+    expect(replacement?.materialArtifactDeclaration(pendingKey)?.kind).toBe('bytes');
     expect(submitted).toBe(1);
     const next = renderer.draw({ publication: encodeRenderPublication(unsubmitted) });
     if (!next.ok) throw next.error;
@@ -195,6 +227,7 @@ it('recovers without replaying submitted feature data and plans the next publica
       devices[1]?.bookkeeper.allRecords().some((record) => record.kind === 'ComputePipeline'),
     ).toBe(true);
   } finally {
+    adopt.mockRestore();
     renderer.dispose();
     publisher.dispose();
   }

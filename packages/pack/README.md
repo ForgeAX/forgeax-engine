@@ -8,6 +8,15 @@ Malformed Meta diagnostics retain AJV instance paths, schema paths, keywords and
 
 ## Shared material program transport
 
+Player delivery may group complete WGSL artifacts into bounded Zstd streams.
+The existing stored `byteRange` locates a stream in an `FXBUNDL1` Bundle; optional
+`decodedRange { offset, length }` locates the original artifact inside that decoded
+stream. A decoded range requires Zstd, a stored Bundle range, an individual
+`byteLength` equal to the decoded range length, and individual SHA-256 integrity;
+streaming delivery is excluded. Readers reject unsafe or out-of-bounds windows.
+This is a transport descriptor extension: program identities, cooked records and
+the original WGSL bytes are unchanged. Source development remains per-artifact.
+
 Published packages with repeated cooked material programs or selection ABIs use
 the `pack-material-programs/2` envelope: one complete Pack plus package-local
 `programs` and `abis` tables. The transport replaces `material-cook/4` program

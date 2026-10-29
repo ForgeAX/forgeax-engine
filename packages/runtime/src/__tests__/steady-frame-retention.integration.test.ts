@@ -52,7 +52,15 @@ it('keeps steady frames free of prepared-plan, batch and shadow rebuilds', async
       { component: Transform, data: { pos: [0, 4, 12] } },
       {
         component: Camera,
-        data: { aspect: 1, near: 0.1, far: 80, antialias: 0, bloom: 0, tonemap: 7 },
+        data: {
+          fov: Math.PI / 3,
+          aspect: 1,
+          near: 0.1,
+          far: 80,
+          antialias: 0,
+          bloom: 0,
+          tonemap: 7,
+        },
       },
     )
     .unwrap();

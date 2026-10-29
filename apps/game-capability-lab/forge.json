@@ -4,5 +4,9 @@
   "schemaVersion": "3.0.0",
   "roots": {
     "engine": "bf92db2a-9ea6-5916-b1d7-778d50c972a3"
-  }
+  },
+  "assetLibraries": [
+    "@forgeax/engine/content",
+    "@forgeax/engine/preview"
+  ]
 }

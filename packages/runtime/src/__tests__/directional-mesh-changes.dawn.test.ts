@@ -99,7 +99,10 @@ it('retains native Frame Mesh dependencies and advances unrelated-change cursors
     world
       .spawn(
         { component: Transform, data: { pos: [0, 2, 6] } },
-        { component: Camera, data: { aspect: 1, near: 0.1, far: 60, antialias: 0, bloom: 0 } },
+        {
+          component: Camera,
+          data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 60, antialias: 0, bloom: 0 },
+        },
       )
       .unwrap();
     world

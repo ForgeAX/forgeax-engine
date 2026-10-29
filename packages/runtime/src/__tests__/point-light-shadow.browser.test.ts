@@ -1,5 +1,6 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { testAssets } from './helpers/runtime-assets';
 // point-light-shadow.browser.test.ts
 // feat-20260612-point-light-shadows-urp-hdrp M0 / T-M0-2.
@@ -55,8 +56,8 @@ describe('M0 cube_array comparison sampler (browser)', () => {
     expect(device).not.toBeNull();
     if (!device) throw new Error('device unavailable');
 
-    const WIDTH = 512;
-    const HEIGHT = 512;
+    const WIDTH = testQuality.squareSize;
+    const HEIGHT = testQuality.squareSize;
     const LAYERS = 6; // one cube (6 faces)
 
     // Create a depth32float 2D texture array (6 layers -> cube view).

@@ -1,5 +1,9 @@
 import type { TimeResource } from '@forgeax/engine-ecs';
-import type { MaterialRuntimeArtifact, MaterialShaderEntry } from '@forgeax/engine-shader';
+import type {
+  MaterialRuntimeArtifact,
+  MaterialShaderByteEntry,
+  MaterialShaderEntry,
+} from '@forgeax/engine-shader';
 import type { Asset, AssetHandle, MeshAsset, Result } from '@forgeax/engine-types';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import type { FrameReceipt, RenderFrameInput } from '../render-contract';
@@ -101,11 +105,21 @@ export interface RenderPublication extends RenderPublicationIdentity {
     /** Sent once per accepted declaration; enable state remains per frame. */
     readonly fullscreen?: import('../features/fullscreen').FullscreenRenderFeatureDeclaration;
   }[];
-  readonly programs: readonly {
-    readonly key: string;
-    readonly shader: MaterialShaderEntry;
-    readonly artifact?: MaterialRuntimeArtifact;
-  }[];
+  readonly programs: readonly (
+    | {
+        readonly key: string;
+        readonly shader: MaterialShaderEntry;
+        readonly artifact?: MaterialRuntimeArtifact;
+      }
+    | {
+        readonly key: string;
+        readonly shader: { readonly sourceEncoding: 'utf8' } & Omit<
+          MaterialShaderByteEntry,
+          'bytes' | 'digest'
+        >;
+        readonly artifact: MaterialRuntimeArtifact;
+      }
+  )[];
   /** entity, template index pairs. A publication source owns one World. */
   readonly upserts: Uint32Array;
   readonly removed: Uint32Array;

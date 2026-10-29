@@ -549,8 +549,8 @@ const LINEAR_RGB_SCRATCH = new Float32Array(4) as Color;
  * Linear `[r, g, b]` for a component colour field, from an sRGB source, matching
  * `THREE.Color` under ColorManagement: a `0xRRGGBB` number is `setHex`, a string is
  * `setStyle` (`#rgb`, `#rrggbb`, `rgb()`, `hsl()`, CSS names). Use it for every
- * `array<f32, 3>` colour (GradientSky, Fog, Skylight, lights, emissive) where Three code
- * passes a hex: `GradientSky.horizon = color.linearRgb(0xff9a6b)`.
+ * `array<f32, 3>` colour (Fog, Skylight, lights, emissive) where Three code
+ * passes a hex: `Fog.color = color.linearRgb(0xff9a6b)`.
  * Malformed input returns `[0, 0, 0]`. Already-linear tuples need no conversion.
  *
  * @example

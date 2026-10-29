@@ -42,6 +42,11 @@ export interface ArtifactDescriptor {
   readonly contentEncoding?: ContentEncoding;
   readonly byteLength?: number;
   readonly integrity?: Integrity;
+  /** Artifact window after decompressing a shared Bundle entry. Integrity covers this window. */
+  readonly decodedRange?: {
+    readonly offset: number;
+    readonly length: number;
+  };
   /** Stored window in a content-addressed transport chunk; integrity covers this artifact only. */
   readonly byteRange?: {
     readonly offset: number;

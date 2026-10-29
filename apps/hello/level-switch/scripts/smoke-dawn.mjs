@@ -234,9 +234,18 @@ async function readRenderSamples() {
       (bytes[offset + 2] ?? 0) / 255,
     ];
   };
+  let rgbSum = 0;
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const offset = y * bytesPerRow + x * bytesPerPixel;
+      rgbSum += bytes[offset] + bytes[offset + 1] + bytes[offset + 2];
+    }
+  }
   return {
+    meanRgbEnergy: rgbSum / (WIDTH * HEIGHT * 255),
     center: readRgba(Math.floor(WIDTH / 2), Math.floor(HEIGHT / 2)),
     corner: readRgba(Math.floor(WIDTH * 0.05), Math.floor(HEIGHT * 0.05)),
+    lower: readRgba(Math.floor(WIDTH / 2), Math.floor(HEIGHT * 0.8)),
   };
 }
 
@@ -315,7 +324,7 @@ if (!streetSceneHandleRes.ok) {
 // Camera + light.
 world.spawn(
   { component: Transform, data: { pos: [0, 2, 5], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
-  { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
+  { component: Camera, data: { fov: Math.PI / 3, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
 );
 world.spawn({
   component: DirectionalLight,
@@ -624,7 +633,7 @@ const drawM41 = async (label) => {
 };
 const pixelDelta = (left, right) => [...left.center, ...left.corner]
   .reduce((sum, value, index) => sum + Math.abs(value - [...right.center, ...right.corner][index]), 0);
-const pixelEnergy = (pixels) => [...pixels.center, ...pixels.corner].reduce((sum, value) => sum + value, 0);
+const pixelEnergy = (pixels) => pixels.meanRgbEnergy;
 
 const m41MainMenuExit = world.spawn().unwrap();
 despawnOnExit(world, m41MainMenuExit, LevelId, 'street-a');

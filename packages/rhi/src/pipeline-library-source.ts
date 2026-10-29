@@ -14,7 +14,7 @@ function freezeTree(value: unknown): void {
   Object.freeze(value);
 }
 
-/** Detach received WGSL bodies into the existing realm's immutable fragments.
+/** Snapshot recipes while retaining received immutable WGSL strings unchanged.
  * The portable manifest remains v1: serialization borrows complete code, while
  * App options and recovery closures retain these source owners inside a realm. */
 export function ownPipelineLibrary(
@@ -32,16 +32,16 @@ export function ownPipelineLibrary(
   }
   const snapshot = snapshotPipelineDescriptor(metadata) as Omit<PipelineLibraryManifest, 'shaders'>;
   freezeTree(snapshot);
-  const fragments = new Map<string, string>();
   const sources = new Map<string, ShaderSource>();
   const owned = Object.freeze({
     ...snapshot,
     shaders: Object.freeze(
       manifest.shaders.map((descriptor) => {
         const admitted = shaderSourceForDescriptor(descriptor);
-        const source = admitted ?? ShaderSource.fromText(descriptor.code, fragments);
-        const owner = sources.get(source.identity) ?? source;
-        sources.set(owner.identity, owner);
+        if (admitted !== undefined) return admitted.descriptor(descriptor.label);
+        const text = descriptor.code;
+        const owner = sources.get(text) ?? new ShaderSource([text]);
+        sources.set(text, owner);
         return owner.descriptor(descriptor.label);
       }),
     ),

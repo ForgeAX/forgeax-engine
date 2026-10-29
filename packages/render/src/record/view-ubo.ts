@@ -18,12 +18,7 @@ import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { LineCapValue, LineWidthUnitsValue } from '../components/lines';
 import { PointShapeValue } from '../components/points';
 import { writeAtmosphereUniform } from '../environment/uniform';
-import {
-  type AtmosphereParameters,
-  type FogFrame,
-  fogIsActive,
-  type GradientSkyFrame,
-} from '../extract/environment';
+import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import type { DirectionalLightSnapshot, SpotLightSnapshot } from '../render-system-extract';
@@ -243,8 +238,6 @@ export function writeViewUbo(
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
   frameTimeSeconds?: number,
   viewport?: { readonly width: number; readonly height: number },
-  /** GradientSky the engine models (single-layer-medium) mirror, via `gradientSkyColor`. */
-  sky?: GradientSkyFrame,
 ): void {
   // Borrow ordinary staging once; raw getter/queue callback reentry owns an
   // independent invocation and cannot overwrite the caller's pending upload.
@@ -274,7 +267,6 @@ export function writeViewUbo(
     writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
     if (atmosphere !== undefined)
       writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
-    else if (sky !== undefined) writeSkyLookupLanes(viewPayload, sky);
     writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport, scratch.words);
     writeCascadeProjectionLanes(viewPayload, lights, mainProjection, scratch.inverse);
     if (camera.screenSpaceReflection !== undefined)
@@ -318,19 +310,6 @@ function writeClippingLanes(
     ],
     280,
   );
-}
-
-/**
- * GradientSky law for engine models (`gradientSkyColor`), in the atmosphere block
- * that stays unused while no Atmosphere is active: zenith+exponent [292..295],
- * mid+height [296..299], horizon [300..303], ground [304..307], present flag [308].
- */
-export function writeSkyLookupLanes(viewPayload: Float32Array, sky: GradientSkyFrame): void {
-  viewPayload.set([...sky.zenith, sky.exponent], 292);
-  viewPayload.set([...sky.mid, sky.midHeight], 296);
-  viewPayload.set([...sky.horizon, 0], 300);
-  viewPayload.set([...sky.ground, 0], 304);
-  viewPayload[308] = 1;
 }
 
 /** Fog facts the View lanes carry. */

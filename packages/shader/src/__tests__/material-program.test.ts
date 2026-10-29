@@ -1,3 +1,4 @@
+import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
@@ -353,4 +354,19 @@ it('captures material source once before source-reference verification', () => {
     first,
   );
   expect(registry.materialProgram(second).source).toBe(second);
+});
+
+it('hashes a newly admitted raw source only once', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const text = 'fn singleHashSource() {}';
+  const expected = new ShaderSource([text]).identity;
+  const reads = vi.spyOn(ShaderSource.prototype, 'read');
+  try {
+    const source = registry.shaderSource(text);
+    expect(source.identity).toBe(expected);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(registry.shaderSource(source)).toBe(source);
+  } finally {
+    reads.mockRestore();
+  }
 });

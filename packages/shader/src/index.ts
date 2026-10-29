@@ -104,6 +104,7 @@ export {
 export {
   DEPTH_PYRAMID_SHADER_MODULES,
   FORGEAX_RESERVED_PATH_PREFIX,
+  type MaterialShaderByteEntry,
   type MaterialShaderEntry,
   type RegisteredMaterialShaderEntry,
   ShaderRegistry,

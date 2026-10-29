@@ -100,8 +100,7 @@ function resolveModuleSource(desc: {
   const sourceInput = shaderSourceForDescriptor(desc) ?? desc.code;
   let source: ShaderSource;
   try {
-    source =
-      typeof sourceInput === 'string' ? ShaderSource.fromText(sourceInput, new Map()) : sourceInput;
+    source = typeof sourceInput === 'string' ? new ShaderSource([sourceInput]) : sourceInput;
   } catch (cause) {
     if (cause instanceof RhiError) return err(cause);
     return err(
@@ -228,9 +227,7 @@ export function makeShaderDeviceAdapter(
     seedModule(label: string, module: ShaderModule, sourceInput: string | ShaderSource): void {
       if (disposed) return;
       const source =
-        typeof sourceInput === 'string'
-          ? ShaderSource.fromText(sourceInput, new Map())
-          : sourceInput;
+        typeof sourceInput === 'string' ? new ShaderSource([sourceInput]) : sourceInput;
       sources.set(label, source);
       errorCache.delete(label);
       pending.delete(label);

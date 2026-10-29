@@ -7,11 +7,18 @@ description: >-
 
 # forgeax-engine-physics
 
-> Physics attaches `Transform + RigidBody + Collider` to an entity. Static/kinematic colliders synchronize resolved world TRS; dynamic bodies write simulated pose back to `Transform`. `@forgeax/engine-physics` defines component schemas (`RigidBody` / `Collider` / `CollidingEntities`), `PhysicsWorld` / `PhysicsWorld2D` resources, and the closed `PhysicsErrorCode` union. Implementations live in the WASM backends `@forgeax/engine-physics-rapier2d` and `@forgeax/engine-physics-rapier3d`. `createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] })` dynamically imports the backend, registers the physics resource, and installs the three-phase tick systems.
+> Physics attaches `Transform + RigidBody + Collider` to an entity. Static/kinematic colliders synchronize resolved world TRS; dynamic bodies write simulated pose back to `Transform`. `@forgeax/engine-physics` defines component schemas (`RigidBody` / `Collider` / `CollidingEntities`), `PhysicsWorld` / `PhysicsWorld2D` resources, and the closed `PhysicsErrorCode` union. Implementations live in the WASM backends `@forgeax/engine-physics-rapier2d` and `@forgeax/engine-physics-rapier3d`. Import the default plugin from `@forgeax/engine/physics-rapier3d` or `@forgeax/engine/physics-rapier2d` and pass it in `createApp` plugins. The module statically selects one backend; activation initializes its WASM and installs the three-phase tick systems.
 
 ## Mental model
 
-Physics is component-driven: attach components instead of calling a body-creation API. `physicsSyncBackend` scans `(Transform, RigidBody, Collider)` archetypes and calls `ensureBody` for new entities; `physicsStepSimulation` advances simulation; `physicsWriteback` writes dynamic positions/rotations to `Transform`. After `propagateTransforms`, resolved world TRS supplies static and non-CharacterController kinematic collider poses, including hierarchy, rotation, and scale. Rapier owns dynamic pose after creation. The `createApp` physics selection (`'rapier-2d' | 'rapier-3d'`) injects `PhysicsWorld2D` or `PhysicsWorld`. World clamps host delta into `Time.delta`, then advances constant `FixedTime.delta` up to `maxStepsPerUpdate`. Discarded whole steps accumulate in `droppedSeconds` / `droppedUpdates`; only fractional `overstep` survives, with no later replay. All three systems safely return while WASM-backed resources load asynchronously. Read current collision pairs through read-only `CollidingEntities`.
+Physics is component-driven: attach components instead of calling a body-creation API. `physicsSyncBackend` scans `(Transform, RigidBody, Collider)` archetypes and calls `ensureBody` for new entities; `physicsStepSimulation` advances simulation; `physicsWriteback` writes dynamic positions/rotations to `Transform`. After `propagateTransforms`, resolved world TRS supplies static and non-CharacterController kinematic collider poses, including hierarchy, rotation, and scale. Rapier owns dynamic pose after creation. The selected backend publishes its ready resource under `PhysicsWorld`; the interfaces are `PhysicsWorld2D` and `PhysicsWorld`. World clamps host delta into `Time.delta`, then advances constant `FixedTime.delta` up to `maxStepsPerUpdate`. Discarded whole steps accumulate in `droppedSeconds` / `droppedUpdates`; only fractional `overstep` survives, with no later replay. Native plugin readiness completes before the App starts simulation. Read current collision pairs through read-only `CollidingEntities`.
+
+Browser/Node Rapier 3D loading selects the SIMD payload only after a WebAssembly
+feature probe succeeds; unsupported runtimes retain the scalar payload. Geometry
+math and solver policy remain unchanged. Explicit native Hosts continue to load
+their scalar transport and do not infer support from the JS runtime. Both browser
+payloads are producer-owned, verified SDK inputs; do not substitute a separately
+compiled WASM into a published game. See the backend README's Patched WASM delivery.
 
 ## Core API and components
 
@@ -111,10 +118,11 @@ flowchart TD
 
 ```ts
 import { createApp } from '@forgeax/engine-app';
-import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, physicsPlugin } from '@forgeax/engine-physics';
+import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { Transform } from '@forgeax/engine-runtime';
 
-const app = await createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] });
+const app = await createApp(canvas, { plugins: [physics3d] });
 const world = app.world;
 
 // dynamic body: falls under gravity
@@ -136,7 +144,7 @@ app.start();
 
 ## Pitfalls
 
-- **Components attached but no movement**: check `Transform` (writeback target) and `createApp({ plugins: [physicsPlugin(...)] })` (tick installation). All three components are required.
+- **Components attached but no movement**: check `Transform` (writeback target) and `createApp({ plugins: [the selected physics backend plugin] })` (tick installation). All three components are required.
 - **No physics in initial frames**: asynchronous WASM loading leaves PhysicsWorld temporarily unavailable; systems return early by design.
 - **Large host deltas**: never pass host delta directly into physics. World clamps `Time.delta` to `maxDeltaSeconds`, runs at most `maxStepsPerUpdate` fixed steps, and records dropped whole steps without later catch-up. The `physicsStepSimulation` guard for `dt <= 0` / `> 0.1s` is backend defense, not host-frame recovery.
 - **2D/3D mismatch**: `'rapier-2d'` uses `PhysicsWorld2D`; `'rapier-3d'` uses `PhysicsWorld`. Schemas are shared but coordinate dimensions differ.
@@ -147,7 +155,7 @@ app.start();
 |:--|:--|
 | Ordinary body joints | Check `PhysicsWorld.createManagedJoints`; create a bounded validated group over existing body entities and retain its disposable lease. Read `packages/physics/README.md` and `src/managed-joints.ts` for anchors, limits and recovery. |
 | Spring hair or tail | Import the motion API from `@forgeax/engine/animation/skeletal-motion`. Install `animationPlugin(lookup, { cadence: 'fixed' })` and `skeletalMotionPlugin()` in an assembled World. Bind saved plain-JSON `SkeletalMotionDefinition` to explicit animation targets. |
-| Physical skeleton blend | Add `physicsPlugin('rapier-3d')` and `skeletalMotionPlugin({ physics: true })`; use `bindSkeletalMotion`, exact `simulate(targets)` and visual weight controls. Read `packages/animation/README.md`, Managed skeletal motion. |
+| Physical skeleton blend | Add `physics3d` and `skeletalMotionPlugin({ physics: true })`; use `bindSkeletalMotion`, exact `simulate(targets)` and visual weight controls. Read `packages/animation/README.md`, Managed skeletal motion. |
 | Rig example and capture | Use `apps/hello/skin/skeletal-motion.html`; configuration, Scene, Mesh and Skin come through its ordinary Pack. Actual skin draw evidence follows `forgeax-engine-rhi-debug`. |
 
 > [!IMPORTANT]

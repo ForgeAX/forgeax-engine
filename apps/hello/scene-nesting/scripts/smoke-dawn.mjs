@@ -213,7 +213,7 @@ const outerHandle = assets.create(outerScene).unwrap();
 // scene's add override supplies a non-rendering Name component.
 world.spawn(
   { component: Transform, data: { pos: [0, 1, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
-  { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
+  { component: Camera, data: { fov: Math.PI / 3, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
 );
 
 const instRes = worldInstantiateScene(world, outerHandle);

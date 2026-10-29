@@ -86,6 +86,20 @@ const contentGuids = [
 ];
 
 describe('forge.json assetLibraries', () => {
+  it('admits the generated Preview environment through an explicit library declaration', async () => {
+    const root = await project(['@forgeax/engine/preview']);
+    const facts = await readProjectFacts(root);
+    if (!facts.ok) throw facts.error;
+    expect(facts.value.assetLibraries).toEqual([
+      {
+        specifier: '@forgeax/engine/preview',
+        root: await realpath(resolve(engineRoot, '../preview/assets/canonical-kit')),
+      },
+    ]);
+    const rows = await catalogRows(root);
+    expect(rows.some((row) => row.guid === '81eec382-392f-5a93-8998-0ecf11ef7990')).toBe(true);
+  });
+
   it('resolves Engine facades and bare packages to their declared library roots', async () => {
     const root = await project(['@forgeax/engine/content', 'studio-kit']);
     const facts = await readProjectFacts(root);

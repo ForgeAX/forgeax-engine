@@ -5,10 +5,10 @@ import {
   CharacterController,
   Collider,
   ColliderShapeValue,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { ChildOf, GlobalTransform, Transform } from '@forgeax/engine-scene';
 import type { NavigationMeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -43,7 +43,7 @@ async function setup(physics = true) {
   const mesh = assets.create(asset).unwrap();
   const world = new World({ assets });
   const ctx = await createWorldContext(world, [
-    ...(physics ? [physicsPlugin('rapier-3d')] : []),
+    ...(physics ? [physics3d] : []),
     navigationCharacterPlugin(mesh),
   ]);
   world
@@ -110,7 +110,7 @@ describe('navigation through real Rapier KCC', () => {
     try {
       const e = spawn(-2);
       setNavigationTarget(world, e, [2, 0.05, 0], { maxProjection: 0.2 }).unwrap();
-      const loading = ctx.plugin(physicsPlugin('rapier-3d'));
+      const loading = ctx.plugin(physics3d);
       for (let i = 0; i < 60; i++) world.update(1 / 60).unwrap();
       expect(world.get(e, Transform).unwrap().pos[0]).toBe(-2);
       const physics = await loading;

@@ -1402,7 +1402,7 @@ export class RenderPublicationReceiver {
     const programKnown = (key: string) =>
       packetPrograms.has(key) ||
       this.acceptedPrograms.has(key) ||
-      materialAssets?.shaderRegistry.materialArtifact(key) !== undefined;
+      materialAssets?.shaderRegistry.materialArtifactDeclaration(key) !== undefined;
     // Structured clone keeps one shared projection object per packet; content
     // repeated across packets reuses its validated owned copy by digest+equality.
     const projectionAliases = new Map<object, MaterialRenderProjection>();

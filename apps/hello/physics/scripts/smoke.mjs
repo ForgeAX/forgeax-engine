@@ -2,13 +2,13 @@
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // hello-physics headless smoke.
 //
-// Strategy: createApp with physicsPlugin('rapier-3d'), spawn a dynamic sphere +
+// Strategy: createApp with physics3d, spawn a dynamic sphere +
 // static ground scene, start the app, poll for PhysicsWorld (async WASM), then
 // run N frames with working tick systems, and assert the sphere's Transform pos y
 // has decreased (gravity-driven free-fall).
 //
 // This smoke verifies the full createApp -> physics tick pipeline:
-//   1. createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] }) succeeds.
+//   1. createApp(canvas, { plugins: [physics3d] }) succeeds.
 //   2. app.start() + N-frame loop + app.stop() succeeds.
 //   3. PhysicsWorld resource is inserted into World after WASM init.
 //   4. Dynamic RigidBody has Transform pos y strictly lower than initial
@@ -16,7 +16,7 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 //      -- physicsSyncBackend, physicsStepSimulation, physicsWriteback --
 //      are registered and running, AC-04).
 //
-// Note: physicsPlugin.apply awaits the Rapier WASM import -- Cordis activation in
+// Note: physics3d.apply awaits the Rapier WASM import -- Cordis activation in
 // createApp resolves after the WASM module is loaded, so PhysicsWorld is
 // populated before the first app frame. If the WASM fails to load within
 // the timeout, the smoke FAILs (non-vacuous PASS).
@@ -131,6 +131,7 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
+const { default: physics3d } = await import('@forgeax/engine-physics-rapier3d');
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { FixedTime, FixedUpdate, Time, Update } = await import('@forgeax/engine-ecs');
 
@@ -145,7 +146,7 @@ const {
   CollidingEntities,
   RigidBody,
   RigidBodyTypeValue,
-  physicsPlugin,
+
 } = physicsPkg;
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,7 +154,7 @@ const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 const appResult = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas),
-  plugins: [physicsPlugin('rapier-3d')],
+  plugins: [physics3d],
   time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.1 },
 }, { shaderManifestUrl: MANIFEST_URL }).catch((err) => {
   originalConsoleError(`[smoke] FAIL - createApp threw: ${err instanceof Error ? err.message : String(err)}`);
@@ -344,11 +345,11 @@ if (totalFrames < SMOKE_MIN_FRAMES) {
   failures.push(`(c) total frames=${totalFrames} < ${SMOKE_MIN_FRAMES}`);
 }
 
-// AC-04: PhysicsWorld must be present (physicsPlugin awaits WASM import before
+// AC-04: PhysicsWorld must be present (physics3d awaits WASM import before
 // createApp resolves). Dynamic RigidBody must have pos y strictly lower than
 // initial after simulation frames advance.
 if (!hasPhysicsWorld) {
-  failures.push(`(d) PhysicsWorld not present -- WASM did not load or physicsPlugin build failed`);
+  failures.push(`(d) PhysicsWorld not present -- WASM did not load or physics3d build failed`);
 } else if (finalPosY >= initialPosY) {
   failures.push(`(e) sphere pos y did not decrease: ${initialPosY} -> ${finalPosY} (delta=${(finalPosY - initialPosY).toFixed(4)})`);
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
 import { startNativePlugin } from '@forgeax/engine/plugin';
 import * as physics from '@forgeax/engine/physics';
-import preset from '@forgeax/engine/physics/rapier3d';
+import preset from '@forgeax/engine/physics-rapier3d';
 
 if (process.argv[2] === 'descriptor') {
   console.log(JSON.stringify({ name: preset.name, provide: preset.provide }));

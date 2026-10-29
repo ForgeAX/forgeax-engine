@@ -304,6 +304,12 @@ describe('GPU-driven shadow view owner contract', () => {
       expect(first?.cache).toBe('invalidated');
       expect(f.pool.submission(f.identity)).toBe(hit);
       expect(f.pool.topologySignature()).toBe(topology);
+      f.pool.invalidate('artifact-changed', f.identity);
+      const rebuilt = updateShadowView(f.pool, f.input).unwrap();
+      expect(rebuilt.cache).toBe('invalidated');
+      expect(rebuilt.identity).toBe(first.identity);
+      expect(f.pool.submission(f.identity)?.identity).toBe(first.identity);
+      expect(first.cache).toBe('invalidated');
       f.pool.retain([]);
       expect(f.pool.submission(f.identity)).toBeUndefined();
       expect(f.pool.topologySignature()).toBe('');

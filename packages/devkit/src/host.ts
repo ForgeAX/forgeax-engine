@@ -571,7 +571,11 @@ async function hostFrontendModuleAlias(
   }
 }
 
-async function resolveCanonicalKit(): Promise<CanonicalKitLocation> {
+async function resolveCanonicalKit(
+  bootstrapRoot: string,
+  workspacePreview: boolean,
+): Promise<CanonicalKitLocation | undefined> {
+  if (bootstrapRoot !== 'resource-bootstrap' && !workspacePreview) return undefined;
   const packageJson = hostRequire.resolve('@forgeax/engine-preview/package.json');
   const root = resolve(packageJson, '..', 'assets/canonical-kit');
   if (!existsSync(root)) throw new Error(`canonical preview kit root is missing: ${root}`);
@@ -3011,11 +3015,8 @@ export async function createViteConfig(
   const timing = createViteConfigTiming(facts, command, options.host);
   const bootstrapRoot = options.bootstrapRoot ?? 'project-bootstrap';
   await assertHostBindingAdmission(facts, command, bootstrapRoot, options.host);
-  // The canonical kit ships the engine's default environment (sky.hdr equirect).
-  // Authored scenes (e.g. the default game template) reference it as a Skylight /
-  // SkyboxBackground dependency, so a self-contained standalone build must catalog
-  // it on the game path too — not only the tool-preview (resource-bootstrap) path.
-  const canonicalKit = await resolveCanonicalKit();
+  const workspacePreview = isWorkspacePreview(options.host);
+  const canonicalKit = await resolveCanonicalKit(bootstrapRoot, workspacePreview);
   timing('canonical-kit');
   const serving = command === 'serve';
   const generated = await createGeneratedRoot(facts.root, serving, options.generatedRoot);
@@ -3026,7 +3027,6 @@ export async function createViteConfig(
     const projectRoots = facts.assetRoots.map((root) => resolve(facts.root, root));
     const libraryRoots = facts.assetLibraries.map((library) => library.root);
     const sourceRoots = [...projectRoots, ...libraryRoots];
-    const workspacePreview = isWorkspacePreview(options.host);
     const failedSources = new Set<string>();
     const ignorePath = projectSourceIgnorePath(bootstrapRoot, failedSources);
     const sourceSnapshot = await admitInitialSourceSnapshot(

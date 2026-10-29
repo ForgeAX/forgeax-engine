@@ -16,7 +16,9 @@ import {
   buildFrameModel,
   decodeTape,
   encodeTape,
+  type FrameModel,
   openReplay,
+  type ReplaySession,
   replayDeviceRequest,
   type V7Tape,
 } from '@forgeax/engine-rhi-debug';
@@ -37,6 +39,91 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
+
+async function verifyColdMaterialMips(
+  replay: ReplaySession,
+  tape: V7Tape,
+  model: FrameModel,
+  save: (name: string, bytes: Uint8Array) => void,
+) {
+  const mipWorks = model.works.filter((work) => {
+    const pass = model.passes[work.passIndex],
+      event = pass && tape.events[pass.beginEventIndex];
+    return (
+      event?.kind === 'beginRenderPass' &&
+      /^probe-card\.material\.\d+\.mip-\d+$/.test(event.desc.label ?? '')
+    );
+  });
+  const view = (id: string | null | undefined) => {
+    assert(id);
+    const descriptor = model.resources.find((resource) => resource.resourceId === id)
+      ?.descriptor as { sourceHandleId: string; desc: { baseMipLevel?: number } };
+    assert(descriptor?.sourceHandleId);
+    return descriptor;
+  };
+  const first = mipWorks[0];
+  assert(first);
+  const texture = view(first.attachments?.colorViewHandleIds[0]).sourceHandleId;
+  // Bootstrap and selected-work reads share one replay. Independent reads
+  // reset the device resource table and execute the same GPU prefix again.
+  const mipReads = (
+    await replay.readAtWorks([
+      { resourceId: texture, subresource: { mipLevel: 0, arrayLayer: 0 } },
+      ...mipWorks.map((_, index) => ({
+        resourceId: texture,
+        subresource: { mipLevel: index + 1, arrayLayer: 0 },
+      })),
+      ...mipWorks.map((work, index) => ({
+        resourceId: texture,
+        workIndex: work.workIndex,
+        subresource: { mipLevel: index + 1, arrayLayer: 0 },
+      })),
+    ])
+  ).unwrap();
+  const source = mipReads[0]?.unwrap().bytes;
+  assert(source);
+  expect(source).toHaveLength(64 * 64 * 4);
+  for (let pixel = 0; pixel < 64 * 64; pixel++) {
+    const red = ((pixel % 64) + Math.floor(pixel / 64)) % 2 === 0;
+    expect(Array.from(source.subarray(pixel * 4, pixel * 4 + 4))).toEqual(
+      red ? [254, 0, 0, 255] : [0, 254, 0, 255],
+    );
+  }
+  save('cold-material-source-mip-0.bin', source);
+  for (const [index, work] of mipWorks.entries()) {
+    const target = view(work.attachments?.colorViewHandleIds[0]),
+      source = view(work.bindings.find((binding) => binding.binding === 1)?.resourceId);
+    expect(target.sourceHandleId).toBe(texture);
+    expect(source.sourceHandleId).toBe(texture);
+    expect(source.desc.baseMipLevel).toBe(index);
+    expect(target.desc.baseMipLevel).toBe(index + 1);
+    const before = mipReads[index + 1]?.unwrap().bytes;
+    assert(before);
+    expect(before).toEqual(new Uint8Array(before.length));
+    save(`cold-material-unwritten-mip-${index + 1}.bin`, before);
+  }
+  const materialReads = model.works.filter(
+    (work) =>
+      work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_card') &&
+      work.bindings.some(
+        (binding) =>
+          binding.resourceKind === 'textureView' &&
+          view(binding.resourceId).sourceHandleId === texture,
+      ),
+  );
+  expect(materialReads).toHaveLength(6);
+  for (const work of materialReads)
+    expect(work.workIndex).toBeGreaterThan(mipWorks.at(-1)?.workIndex ?? -1);
+  for (const [index, work] of mipWorks.entries()) {
+    const read = mipReads[mipWorks.length + index + 1]?.unwrap();
+    assert(read);
+    expect(read.provenance.selectedWorkIndex).toBe(work.workIndex);
+    const after = read.bytes;
+    for (let pixel = 0; pixel < after.length / 4; pixel++)
+      expect(Array.from(after.subarray(pixel * 4, pixel * 4 + 4))).toEqual([127, 127, 0, 255]);
+    save(`cold-material-generated-mip-${index + 1}.bin`, after);
+  }
+}
 
 const manifest = shaderManifestUrl(await buildEngineShaderManifest());
 it.each([
@@ -724,80 +811,21 @@ it.each([
     ).unwrap();
     const raw = webgpu._internal_getRawDevice(device);
     assert(raw);
+    // Bound real native submissions so one prefix per inspected buffer cannot return.
+    let replaySubmissions = 0;
+    const submitReplay = raw.queue.submit.bind(raw.queue);
+    raw.queue.submit = (commands) => {
+      replaySubmissions++;
+      submitReplay(commands);
+    };
     raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
     const replay = (
       await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
     ).unwrap();
     try {
       const model = buildFrameModel(tape);
-      if (coldTexture && name === 'cold') {
-        const mipWorks = model.works.filter((work) => {
-          const pass = model.passes[work.passIndex],
-            event = pass && tape.events[pass.beginEventIndex];
-          return (
-            event?.kind === 'beginRenderPass' &&
-            /^probe-card\.material\.\d+\.mip-\d+$/.test(event.desc.label ?? '')
-          );
-        });
-        const view = (id: string | null | undefined) => {
-          assert(id);
-          const descriptor = model.resources.find((resource) => resource.resourceId === id)
-            ?.descriptor as { sourceHandleId: string; desc: { baseMipLevel?: number } };
-          assert(descriptor?.sourceHandleId);
-          return descriptor;
-        };
-        const first = mipWorks[0];
-        assert(first);
-        const texture = view(first.attachments?.colorViewHandleIds[0]).sourceHandleId;
-        const source = (await replay.readResource(texture, { mipLevel: 0, arrayLayer: 0 })).unwrap()
-          .bytes;
-        expect(source).toHaveLength(64 * 64 * 4);
-        for (let pixel = 0; pixel < 64 * 64; pixel++) {
-          const red = ((pixel % 64) + Math.floor(pixel / 64)) % 2 === 0;
-          expect(Array.from(source.subarray(pixel * 4, pixel * 4 + 4))).toEqual(
-            red ? [254, 0, 0, 255] : [0, 254, 0, 255],
-          );
-        }
-        save('cold-material-source-mip-0.bin', source);
-        for (const [index, work] of mipWorks.entries()) {
-          const target = view(work.attachments?.colorViewHandleIds[0]),
-            source = view(work.bindings.find((binding) => binding.binding === 1)?.resourceId);
-          expect(target.sourceHandleId).toBe(texture);
-          expect(source.sourceHandleId).toBe(texture);
-          expect(source.desc.baseMipLevel).toBe(index);
-          expect(target.desc.baseMipLevel).toBe(index + 1);
-          const before = (
-            await replay.readResource(texture, { mipLevel: index + 1, arrayLayer: 0 })
-          ).unwrap().bytes;
-          expect(before).toEqual(new Uint8Array(before.length));
-          save(`cold-material-unwritten-mip-${index + 1}.bin`, before);
-        }
-        const materialReads = model.works.filter(
-          (work) =>
-            work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_card') &&
-            work.bindings.some(
-              (binding) =>
-                binding.resourceKind === 'textureView' &&
-                view(binding.resourceId).sourceHandleId === texture,
-            ),
-        );
-        expect(materialReads).toHaveLength(6);
-        for (const work of materialReads)
-          expect(work.workIndex).toBeGreaterThan(mipWorks.at(-1)?.workIndex ?? -1);
-        for (const [index, work] of mipWorks.entries()) {
-          const after = (
-            await replay.readResourceAtWork(texture, work.workIndex, {
-              mipLevel: index + 1,
-              arrayLayer: 0,
-            })
-          ).unwrap().bytes;
-          for (let pixel = 0; pixel < after.length / 4; pixel++)
-            expect(Array.from(after.subarray(pixel * 4, pixel * 4 + 4))).toEqual([
-              127, 127, 0, 255,
-            ]);
-          save(`cold-material-generated-mip-${index + 1}.bin`, after);
-        }
-      }
+      if (coldTexture && name === 'cold') await verifyColdMaterialMips(replay, tape, model, save);
+      const requests: { key: string; resourceId: string; workIndex: number }[] = [];
       for (const [key, label, index] of [
         ['candidate', 'probe-placement.update', 7],
         ['rays', 'probe-global.emit-rays', 3],
@@ -820,14 +848,7 @@ it.each([
         assert(work);
         const bound = work.bindings.find((value) => value.binding === index);
         assert(bound?.resourceId);
-        const inspection = (
-          await replay.inspectWork(work.workIndex, ['pipeline', 'bindings'])
-        ).unwrap();
-        expect(inspection.workIndex).toBe(work.workIndex);
-        const bytes = (await replay.readResourceAtWork(bound.resourceId, work.workIndex)).unwrap()
-          .bytes;
-        expect(bytes).toEqual(outputs[key]);
-        save(`${name}-replay-${key}.bin`, bytes);
+        requests.push({ key, resourceId: bound.resourceId, workIndex: work.workIndex });
       }
       if (nativeCards) {
         const sample = model.works.find((work) =>
@@ -846,13 +867,25 @@ it.each([
         ].entries()) {
           const resource = sample.bindings.find((value) => value.binding === index + 9)?.resourceId;
           assert(resource);
-          const bytes = (
-            await replay.readResourceAtWork(resource, capture?.workIndex ?? sample.workIndex)
-          ).unwrap().bytes;
-          expect(bytes).toEqual(outputs[`cards.${key}`]);
-          save(`${name}-replay-cards.${key}.bin`, bytes);
+          requests.push({
+            key: `cards.${key}`,
+            resourceId: resource,
+            workIndex: capture?.workIndex ?? sample.workIndex,
+          });
         }
       }
+      const reads = (await replay.readAtWorks(requests)).unwrap();
+      for (const [index, request] of requests.entries()) {
+        const read = reads[index]?.unwrap();
+        assert(read);
+        expect(read.provenance.selectedWorkIndex).toBe(request.workIndex);
+        expect(read.bytes).toEqual(outputs[request.key]);
+        save(`${name}-replay-${request.key}.bin`, read.bytes);
+      }
+      // Allow staging variance, but reject the former 45/119/190-submit prefixes.
+      const replaySubmissionLimit =
+        (nativeCards ? 48 : 24) + (coldTexture && name === 'cold' ? 32 : 0);
+      expect(replaySubmissions).toBeLessThanOrEqual(replaySubmissionLimit);
     } finally {
       (await replay.dispose()).unwrap();
       raw.destroy();
@@ -976,15 +1009,23 @@ it.each([
             ).filter((state) => state === 2),
           ).toHaveLength(0);
         }
-        for (const [index, key] of [
-          [0, 'rays'],
-          [1, 'hits'],
-        ] as const) {
-          const input = support.bindings.find((binding) => binding.binding === index)?.resourceId;
-          assert(input);
-          expect(
-            (await replay.readResourceAtWork(input, support.workIndex)).unwrap().bytes,
-          ).toEqual(cold.outputs[key]);
+        const inputs = ['rays', 'hits'] as const;
+        const inputReads = (
+          await replay.readAtWorks(
+            inputs.map((_, index) => {
+              const resourceId = support.bindings.find(
+                (binding) => binding.binding === index,
+              )?.resourceId;
+              assert(resourceId);
+              return { resourceId, workIndex: support.workIndex };
+            }),
+          )
+        ).unwrap();
+        for (const [index, key] of inputs.entries()) {
+          const read = inputReads[index]?.unwrap();
+          assert(read);
+          expect(read.provenance.selectedWorkIndex).toBe(support.workIndex);
+          expect(read.bytes).toEqual(cold.outputs[key]);
         }
         save(`missing-${skipped}-support.bin`, bytes);
       } finally {

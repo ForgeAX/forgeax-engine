@@ -24,6 +24,8 @@ import type { CatalogSource } from '../catalog-source.js';
 import type { MeshGeometry } from '../mesh-geometry.js';
 import {
   type ArtifactReadRequest,
+  decodeArtifactTransport,
+  finishArtifactBytes,
   readArtifact,
   readStoredArtifact,
   verifyArtifactBytes,
@@ -247,15 +249,22 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           );
         },
         finish: async (stored) => {
+          if (descriptor.decodedRange !== undefined) {
+            const group = await decodeArtifactTransport(stored, request);
+            return group.ok ? group : err(decodeError(group.error));
+          }
           const decoded = await readArtifact(request, fetcher, async () => ok(stored));
           return decoded.ok ? decoded : err(decodeError(decoded.error));
         },
         reuse: async (copy) => {
+          if (descriptor.decodedRange !== undefined) return ok(copy);
           const verified = await verifyArtifactBytes(copy, request);
           return verified.ok ? verified : err(decodeError(verified.error));
         },
         invalid: (reason) => artifactError(request.guid, reason),
-        ...(descriptor.integrity === undefined ? {} : { digest: descriptor.integrity.digest }),
+        ...(descriptor.integrity === undefined || descriptor.decodedRange !== undefined
+          ? {}
+          : { digest: descriptor.integrity.digest }),
       });
       const decoded = await waitForAsset(reading, signal, request.guid);
       if (!decoded.ok)
@@ -263,6 +272,12 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           ? err({ ...decoded.error, detail: { ...decoded.error.detail, guid: request.guid } })
           : decoded;
       if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(request.guid));
+      if (descriptor.decodedRange !== undefined) {
+        const artifact = await finishArtifactBytes(decoded.value, request);
+        return artifact.ok
+          ? ok({ stored: artifact.value, decoded: artifact.value })
+          : err(decodeError(artifact.error));
+      }
       // Bundle entries move into their extracted value; there is no second stored copy.
       return ok({ stored: decoded.value, decoded: decoded.value });
     }

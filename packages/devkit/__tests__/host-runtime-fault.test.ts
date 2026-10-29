@@ -1,3 +1,5 @@
+import { applyTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
+import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -120,11 +122,20 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
     const options = runtimeBrowserLaunchOptions();
     browser = await chromium.launch({ ...options, chromiumSandbox: true });
     const page = await browser.newPage({ viewport: { width: 320, height: 320 } });
+    await page.addInitScript(applyTestCanvasBudget, {
+      width: testQuality.squareSize,
+      height: testQuality.squareSize,
+    });
     await page.goto(url);
     await page.waitForFunction(() => 'fixture' in globalThis);
     await expect
       .poll(async () => (await snapshot(page)).execution.render?.completedFrame, { timeout: 90000 })
       .toBeGreaterThanOrEqual(2);
+    expect(
+      await page.locator('#app').evaluate((canvas) => [
+        Number(canvas.getAttribute('width')), Number(canvas.getAttribute('height')),
+      ]),
+    ).toEqual([testQuality.squareSize, testQuality.squareSize]);
     await expect
       .poll(() => page.locator('#forgeax-loading').evaluate((el) => getComputedStyle(el).display))
       .toBe('none');

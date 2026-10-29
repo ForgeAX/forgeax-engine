@@ -1,4 +1,5 @@
 import { type Mat4, mat4 } from '@forgeax/engine-math';
+import { validateCameraPerspectiveFov } from './components/camera';
 import type { CameraSnapshot } from './render-contract';
 
 /**
@@ -34,7 +35,13 @@ export function cameraLensProjection(
       camera.far,
     );
   } else {
-    mat4.perspectiveReverseZ(out, camera.fov, camera.aspect, camera.near, camera.far);
+    mat4.perspectiveReverseZ(
+      out,
+      validateCameraPerspectiveFov(camera.fov),
+      camera.aspect,
+      camera.near,
+      camera.far,
+    );
   }
   const offset = camera.projectionOffset;
   const x = offset?.[0] ?? 0;

@@ -1417,7 +1417,7 @@ export class ShadowViewStatePool {
     const preparation = countRebuild(previous, invalidationReason);
     const record: ShadowViewRecord = {
       submission: createSubmission(
-        new OwnedShadowViewIdentity(input.identity),
+        previous?.submission.identity ?? new OwnedShadowViewIdentity(input.identity),
         view,
         selection.plan,
         generation,

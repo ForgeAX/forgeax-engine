@@ -15,7 +15,7 @@ import {
   startNativePlugin,
   startPluginAsset,
 } from '@forgeax/engine/plugin';
-import { GradientSky, MeshFilter } from '@forgeax/engine/render';
+import { MeshFilter, Skylight } from '@forgeax/engine/render';
 import { rhi } from '@forgeax/engine/rhi-null';
 import { Transform, worldDespawnScene } from '@forgeax/engine/scene';
 import { createRuntimePackOptions, prepareRuntimePackDelivery } from './runtime-packs';
@@ -111,7 +111,7 @@ export function sources(language) {
           scene: { kind: 'scene', entities: { box: { components: {
             Transform: { pos: [2, 0, 0] },
             MeshFilter: { assetHandle: AssetGuid.format(AssetGuid.derive(packageId, 'box')) }
-          } }, sky: { components: { GradientSky: { zenith: [0.125, 0.25, 0.5] } } } } },
+          } }, sky: { components: { Skylight: { color: [0.125, 0.25, 0.5] } } } } },
           behavior: { kind: 'plugin', module: { specifier: './${behavior}' },
             toolContract: { schemaVersion: '1.0.0', commands: [{ id: 'app.generated', title: 'Generated', summary: '', realm: 'engine', executor: values.broken ? './missing.js' : './${executor}', exportName: 'run' }] } }
         } };
@@ -166,7 +166,7 @@ export async function admit(programs, language) {
           { name: 'width', type: 'f32', default: 2, minimum: 1, maximum: 5 },
           { name: 'broken', type: 'bool', default: false },
         ],
-        sceneComponents: projectScriptablePackSceneComponents([Transform, MeshFilter, GradientSky]),
+        sceneComponents: projectScriptablePackSceneComponents([Transform, MeshFilter, Skylight]),
       },
       programs,
     })
@@ -206,13 +206,13 @@ export function inspect() {
   );
   const mesh = app.assets.read(world.get(member, MeshFilter).unwrap().assetHandle).unwrap();
   const sky = [...world.iterDescendants(root)].find((entity) =>
-    world.hasComponent(entity, GradientSky),
+    world.hasComponent(entity, Skylight),
   );
   const xs = Array.from(mesh.attributes.position).filter((_, index) => index % 3 === 0);
   return {
     width: Math.max(...xs) - Math.min(...xs),
     position: Array.from(world.get(member, Transform).unwrap().pos),
-    skyZenith: Array.from(world.get(sky, GradientSky).unwrap().zenith),
+    ambientColor: Array.from(world.get(sky, Skylight).unwrap().color),
     positions: Array.from(mesh.attributes.position),
     indices: Array.from(mesh.indices),
     typed: mesh.attributes.position instanceof Float32Array && ArrayBuffer.isView(mesh.indices),

@@ -21,10 +21,12 @@ import { type AssetHandle, createStandaloneRuntimeAssetBinding } from '@forgeax/
 import { createServer, loadConfigFromFile } from 'vite';
 import { expect, it } from 'vitest';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 import { verifyPlanarMultiCamera } from './planar-multi-camera.fixture';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 
 const PLANAR_REFLECTION_WARMUP_FRAMES = 60;
 
@@ -58,8 +60,8 @@ it('captures offscreen geometry, clips the opposite half space and records the w
   let surface: GPUTexture | undefined;
   const nativeErrors: string[] = [];
   const canvas = {
-    width: 256,
-    height: 256,
+    width: testQuality.squareSize,
+    height: testQuality.squareSize,
     getContext: () => ({
       configure: ({ device, format }: { device: GPUDevice; format: GPUTextureFormat }) => {
         nativeDevice = device;
@@ -67,7 +69,7 @@ it('captures offscreen geometry, clips the opposite half space and records the w
           nativeErrors.push(event.error.message),
         );
         surface = device.createTexture({
-          size: [256, 256],
+          size: [testQuality.squareSize, testQuality.squareSize],
           format,
           usage: 0x10 | 1,
           viewFormats: ['rgba8unorm-srgb'],
@@ -244,6 +246,8 @@ it('captures offscreen geometry, clips the opposite half space and records the w
       if (!result.ok) throw result.error;
       const observation = result.value.observations?.find((value) => value.domain === 'linear-hdr');
       if (observation === undefined) throw new Error('HDR pixels missing');
+      expect(observation.metadata.width).toBe(testQuality.squareSize);
+      expect(observation.metadata.height).toBe(testQuality.squareSize);
       const view = new DataView(
         observation.bytes.buffer,
         observation.bytes.byteOffset,
@@ -365,16 +369,15 @@ it('captures offscreen geometry, clips the opposite half space and records the w
       })
     ).unwrap();
     try {
-      const inspected = (
-        await replay.inspectWork(captureWork, ['pipeline', 'bindings', 'pixels'])
-      ).unwrap();
-      const pixels = inspected.attachment;
+      const capture = model.works[captureWork];
+      if (capture === undefined) throw new Error('Planar capture work metadata missing');
+      const [inspected, waterInspection] = await inspectReplayWorks(replay, [capture, waterWork]);
+      const pixels = inspected?.attachment;
       if (pixels === undefined) throw new Error('Replay attachment pixels unavailable');
       expect(countColors(pixels.bytes)).toEqual(baselineColors);
       expect(pixels.bytes).toEqual(baseline.bytes);
       writeFileSync(resolve(artifactDir, 'replay.rgba'), pixels.bytes);
-      const waterPixels = (await replay.inspectWork(waterWork.workIndex, ['pixels'])).unwrap()
-        .attachment;
+      const waterPixels = waterInspection?.attachment;
       if (waterPixels === undefined) throw new Error('Replayed water pixels missing');
       expect(waterPixels.bytes).toEqual(reflectedDisplay.bytes);
       writeFileSync(resolve(artifactDir, 'water-replay.rgba16f'), waterPixels.bytes);

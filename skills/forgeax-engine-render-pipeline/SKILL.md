@@ -23,11 +23,11 @@ Import components from `@forgeax/engine/render` and `Transform` from
 
 | Entity | Components and defaults | Limits |
 |:--|:--|:--|
-| Camera | `Transform` + `Camera { fov }` (vertical radians; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
+| Camera | `Transform` + `Camera { fov }` (vertical radians strictly in `(0, Math.PI)`; convert degrees with `degrees * Math.PI / 180`; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
 | Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | At most one: the first is used and others are dropped with a `render-system-multi-light` warning; no `Transform` needed. `Atmosphere` needs exactly one |
 | Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
 | Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
-| Sky | `GradientSky { zenith, horizon, ground }` or `GradientSkyPresets.dusk` etc. (display-referred like Three `scene.background`; optional third stop `mid` at elevation sine `midHeight`; `exponent` < 0.3 squeezes the horizon colour to a line; disc toward the `DirectionalLight`, `sunSize` radians, blooms with camera bloom like its reflection; `Fog` covers its horizon by `fogBlend`; `toneMapped: true` for HDR) | One per World; replaces `clearColor`; conflicts with `Atmosphere` / `SkyboxBackground`. [Contract](../../packages/render/README.md#gradient-sky-background) |
+| Sky | Generate a linear HDR `EquirectAsset` in a Pack; bind it to `SkyboxBackground` and `Skylight` | One asset supplies the background and IBL. Use `Atmosphere` for physical air. |
 | Mesh | `Transform` + `MeshFilter { assetHandle }` + `MeshRenderer { materials: [handle] }` | Handles come from `assets.load(guid, 'mesh' \| 'material')` |
 
 - Materials: build in a Pack with `Materials.standard({ baseColor, roughness, metallic,

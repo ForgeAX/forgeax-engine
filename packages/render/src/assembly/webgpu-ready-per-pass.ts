@@ -9,7 +9,6 @@ interface ReadyPerPassResourceInputs {
   readonly skyboxBindGroupLayout: PerPassResources['skyboxBindGroupLayout'];
   readonly skyboxSampler: PerPassResources['skyboxSampler'];
   readonly skyboxRotationBuffer: PerPassResources['skyboxRotationBuffer'];
-  readonly skyboxModule?: PerPassResources['skyboxModule'];
   readonly shadowSampler: PerPassResources['shadowSampler'];
   readonly bloomHorizontalPipeline: PerPassResources['bloomHorizontalPipeline'];
   readonly bloomVerticalPipeline: PerPassResources['bloomVerticalPipeline'];
@@ -46,7 +45,6 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     skyboxBindGroupLayout: input.skyboxBindGroupLayout,
     skyboxSampler: input.skyboxSampler,
     skyboxRotationBuffer: input.skyboxRotationBuffer,
-    skyboxModule: input.skyboxModule ?? null,
     shadowTexture: null,
     shadowMapSize: 0,
     shadowCascadeCount: 0,

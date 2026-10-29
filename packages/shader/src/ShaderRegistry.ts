@@ -11,6 +11,7 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   createMaterialShaderProgram,
   type MaterialShaderProgram,
+  sameMaterialShaderEntryPoints,
   withMaterialShaderEntryPoints,
 } from './material/program.js';
 // @forgeax/engine-shader/ShaderRegistry — runtime shader registry, instance-per-engine shape.
@@ -55,6 +56,15 @@ import {
   manifestShaderSource,
   readShaderManifestPublication,
 } from './manifest-publication.js';
+import {
+  equalMaterialArtifactBytes,
+  type MaterialArtifactConflictError,
+} from './material/artifact-registry.js';
+import {
+  type MaterialByteSource,
+  readMaterialByteSource,
+  retainMaterialByteSource,
+} from './material/byte-source.js';
 import type { MaterialShaderManifestEntry } from './types.js';
 
 interface AdmittedManifest {
@@ -189,6 +199,23 @@ export interface RegisteredMaterialShaderEntry extends MaterialShaderEntry {
   readonly program: MaterialShaderProgram;
 }
 
+/** Cooked byte views remain read-only for their retained lifetime; first use rechecks integrity. */
+export interface MaterialShaderByteEntry
+  extends Omit<MaterialShaderEntry, 'source' | 'sourceReference'> {
+  readonly bytes: Uint8Array;
+  readonly digest: string;
+}
+
+type MaterialRegistration =
+  | { readonly kind: 'ready'; readonly publication: ResultOk<RegisteredMaterialShaderEntry> }
+  | {
+      readonly kind: 'bytes';
+      readonly owner: MaterialByteSource;
+      readonly paramSchemaProjection: ImmutableParamSchemaProjection;
+      readonly receipt?: MaterialProgramAbi;
+      readonly entryPoints?: readonly ShaderEntryPointReads[];
+    };
+
 // ─── Public registry types ──────────────────────────────────────────────────────
 
 export interface ShaderRegistryOptions {
@@ -278,10 +305,9 @@ export class ShaderRegistry {
   readonly #moduleCache = new Map<string, ShaderModule>();
   // identifier → MaterialShaderEntry index (populated by
   // installMaterialArtifact; feat-20260523-shader-template-instance-split M5 / T05).
-  readonly #materialShaders = new Map<string, ResultOk<RegisteredMaterialShaderEntry>>();
+  readonly #materialShaders = new Map<string, MaterialRegistration>();
   readonly #materialPrograms = new Map<string, MaterialShaderProgram>();
   readonly #sources = new Map<string, ShaderSource>();
-  readonly #sourceFragments = new Map<string, string>();
   readonly #paramSchemaProjectionOwner = new ParamSchemaProjectionOwner();
   readonly #materialShaderManifestEntries = new Map<string, MaterialShaderManifestEntry>();
   #admitted: AdmittedManifest | undefined;
@@ -309,8 +335,6 @@ export class ShaderRegistry {
     for (const [source, program] of this.#materialPrograms)
       candidate.#materialPrograms.set(source, program);
     for (const [id, reference] of this.#sources) candidate.#sources.set(id, reference);
-    for (const [text, fragment] of this.#sourceFragments)
-      candidate.#sourceFragments.set(text, fragment);
     candidate.#sourceBytes = this.#sourceBytes;
     return candidate;
   }
@@ -658,11 +682,9 @@ export class ShaderRegistry {
     const source = typeof input === 'string' ? new ShaderSource([input]) : input;
     const previous = this.#sources.get(source.identity);
     if (previous !== undefined) return previous;
-    const owned =
-      typeof input === 'string' ? ShaderSource.fromText(input, this.#sourceFragments) : source;
-    this.#sources.set(owned.identity, owned);
-    this.#sourceBytes += owned.length * 2;
-    return owned;
+    this.#sources.set(source.identity, source);
+    this.#sourceBytes += source.length * 2;
+    return source;
   }
 
   materialProgram(
@@ -716,6 +738,16 @@ export class ShaderRegistry {
         `ShaderRegistry: material shader identifier '${identifier}' already registered; same-name re-register is forbidden (AGENTS.md "explicit registration" + Inspector "fail-fast no overwrite" pattern). Use findMaterialArtifact to read back the existing entry.`,
       );
     }
+    const publication = this.#prepareMaterialArtifact(identifier, entry, programSource);
+    this.#materialShaders.set(identifier, { kind: 'ready', publication });
+  }
+
+  #prepareMaterialArtifact(
+    identifier: string,
+    entry: MaterialShaderEntry,
+    programSource?: ShaderRegistry,
+    preparedProgram?: MaterialShaderProgram,
+  ): ResultOk<RegisteredMaterialShaderEntry> {
     const { source, paramSchema, receipt: inputReceipt } = entry;
     const sourceReference = materialEntrySource(entry, source);
     const receipt = inputReceipt === undefined ? undefined : ownMaterialReceipt(inputReceipt);
@@ -742,6 +774,7 @@ export class ShaderRegistry {
     // Each new schema is still admitted and checked before publishing the entry.
     const cached =
       this.#materialPrograms.get(sourceReference.identity) ??
+      preparedProgram ??
       (programSource === undefined
         ? undefined
         : programSource.#materialPrograms.get(sourceReference.identity));
@@ -763,65 +796,85 @@ export class ShaderRegistry {
     }
     this.shaderSource(program.sourceReference);
     this.#materialPrograms.set(sourceReference.identity, program);
-    this.#materialShaders.set(
-      identifier,
-      Object.freeze(
-        ok(
-          Object.freeze({
-            // Retained copies publish one composed program under many keys. Keep
-            // the program's first-admitted source, not each Worker-cloned copy.
-            get source() {
-              return program.source;
-            },
-            program,
-            paramSchema: paramSchemaProjection.schema,
-            paramSchemaProjection,
-            ...(receipt === undefined ? {} : { receipt }),
-          }),
-        ),
+    return Object.freeze(
+      ok(
+        Object.freeze({
+          get source() {
+            return program.source;
+          },
+          program,
+          paramSchema: paramSchemaProjection.schema,
+          paramSchemaProjection,
+          ...(receipt === undefined ? {} : { receipt }),
+        }),
       ),
     );
   }
 
   /** Atomically adopt complete CPU facts validated by another registry; never accept author tokens. */
-  installMaterialArtifactsFrom(source: ShaderRegistry): void {
-    const entries = [...source.#materialShaders];
-    for (const [identifier, publication] of entries) {
-      const entry = publication.value;
-      if (this.#materialShaders.has(identifier))
+  installMaterialArtifactsFrom(source: ShaderRegistry, identifiers?: readonly string[]): void {
+    const entries =
+      identifiers === undefined
+        ? [...source.#materialShaders]
+        : identifiers.map((identifier) => {
+            const entry = source.#materialShaders.get(identifier);
+            if (entry === undefined)
+              throw new Error(`ShaderRegistry: missing material shader '${identifier}'`);
+            return [identifier, entry] as const;
+          });
+    const keys = new Set<string>();
+    for (const [identifier, registration] of entries) {
+      if (keys.has(identifier) || this.#materialShaders.has(identifier))
         throw new Error(
           `ShaderRegistry: material shader identifier '${identifier}' already registered`,
         );
+      keys.add(identifier);
+      const schema =
+        registration.kind === 'ready'
+          ? registration.publication.value.paramSchema
+          : registration.paramSchemaProjection.schema;
+      const program =
+        registration.kind === 'ready'
+          ? registration.publication.value.program
+          : registration.owner.program;
       const previous = this.#paramSchemaProjectionOwner.get(identifier, 1);
-      const cached = this.#materialPrograms.get(entry.program.sourceReference.identity);
+      const cached =
+        program === undefined
+          ? undefined
+          : this.#materialPrograms.get(program.sourceReference.identity);
       if (cached?.entryPoints !== undefined)
-        withMaterialShaderEntryPoints(cached, entry.program.entryPoints);
-      if (
-        previous !== undefined &&
-        JSON.stringify(previous.schema) !== JSON.stringify(entry.paramSchema)
-      )
+        withMaterialShaderEntryPoints(cached, program?.entryPoints);
+      if (previous !== undefined && JSON.stringify(previous.schema) !== JSON.stringify(schema))
         throw new Error(`ShaderRegistry: ${identifier}@1 reused with different schema content`);
     }
-    // Only private registered entries reach this commit. Their source, schema
-    // and receipt are owned; admission reuses the existing immutable interface
-    // while recording the receiving registry's own projection and lifetime.
-    for (const [identifier, publication] of entries) {
-      const entry = publication.value;
+    for (const [identifier, registration] of entries) {
+      const schema =
+        registration.kind === 'ready'
+          ? registration.publication.value.paramSchema
+          : registration.paramSchemaProjection.schema;
       const projection = this.#paramSchemaProjectionOwner.admit({
         ownerId: identifier,
         revision: 1,
-        schema: entry.paramSchema,
+        schema,
       });
-      const cachedProgram = this.#materialPrograms.get(entry.program.sourceReference.identity);
+      if (registration.kind === 'bytes') {
+        this.#materialShaders.set(identifier, {
+          ...registration,
+          paramSchemaProjection: projection,
+        });
+        continue;
+      }
+      const entry = registration.publication.value;
+      const cached = this.#materialPrograms.get(entry.program.sourceReference.identity);
       const program =
-        cachedProgram?.entryPoints === undefined && entry.program.entryPoints !== undefined
+        cached?.entryPoints === undefined && entry.program.entryPoints !== undefined
           ? entry.program
-          : (cachedProgram ?? entry.program);
+          : (cached ?? entry.program);
       this.shaderSource(program.sourceReference);
       this.#materialPrograms.set(program.sourceReference.identity, program);
-      this.#materialShaders.set(
-        identifier,
-        Object.freeze(
+      this.#materialShaders.set(identifier, {
+        kind: 'ready',
+        publication: Object.freeze(
           ok(
             Object.freeze({
               ...entry,
@@ -834,8 +887,111 @@ export class ShaderRegistry {
             }),
           ),
         ),
-      );
+      });
     }
+  }
+
+  /** Preflight immutable byte/schema/receipt conflicts without preparing WGSL. */
+  validateMaterialArtifactBytes(
+    identifier: string,
+    entry: MaterialShaderByteEntry,
+  ): Result<boolean, MaterialArtifactConflictError> {
+    validateMaterialByteMetadata(entry);
+    if (retainMaterialByteSource(entry.bytes, entry.digest) === undefined)
+      return err({
+        code: 'material-artifact-conflict',
+        expected: 'shader bytes matching their published digest',
+        hint: 're-cook the conflicting program',
+        detail: { key: identifier, dimension: 'bytes' },
+      });
+    const registration = this.#materialShaders.get(identifier);
+    const prior = registration?.kind === 'ready' ? registration.publication.value : undefined;
+    const schema =
+      prior?.paramSchema ??
+      (registration?.kind === 'bytes'
+        ? registration.paramSchemaProjection.schema
+        : this.#paramSchemaProjectionOwner.get(identifier, 1)?.schema);
+    const receipt =
+      prior?.receipt ?? (registration?.kind === 'bytes' ? registration.receipt : undefined);
+    const previousBytes =
+      registration?.kind === 'bytes'
+        ? registration.owner.bytes
+        : prior === undefined
+          ? undefined
+          : new TextEncoder().encode(prior.source);
+    const conflictingReads =
+      registration !== undefined &&
+      !sameMaterialShaderEntryPoints(
+        materialRegistrationReads(registration),
+        entry.entryPoints ?? entry.receipt?.entryPoints,
+      );
+    const dimension =
+      previousBytes !== undefined && !equalMaterialArtifactBytes(previousBytes, entry.bytes)
+        ? 'bytes'
+        : schema !== undefined && JSON.stringify(schema) !== JSON.stringify(entry.paramSchema)
+          ? 'param-schema'
+          : registration !== undefined &&
+              (conflictingReads || JSON.stringify(receipt) !== JSON.stringify(entry.receipt))
+            ? 'receipt'
+            : undefined;
+    if (dimension !== undefined)
+      return err({
+        code: 'material-artifact-conflict',
+        expected: 'one immutable source, interface, and ABI receipt per program key',
+        hint: 're-cook the conflicting program',
+        detail: { key: identifier, dimension },
+      });
+    return ok(registration !== undefined);
+  }
+
+  /** Admit complete byte evidence now; source-dependent preparation occurs on lookup. */
+  installMaterialArtifactBytes(identifier: string, entry: MaterialShaderByteEntry): void {
+    if (this.validateMaterialArtifactBytes(identifier, entry).unwrap()) return;
+    if (entry.bytes.length === 0) throw new Error('ShaderRegistry: empty material program');
+    const projection = this.#paramSchemaProjectionOwner.admit({
+      ownerId: identifier,
+      revision: 1,
+      schema: entry.paramSchema,
+    });
+    const receipt = entry.receipt === undefined ? undefined : ownMaterialReceipt(entry.receipt);
+    const owner = retainMaterialByteSource(entry.bytes, entry.digest);
+    if (owner === undefined)
+      throw new Error('ShaderRegistry: program bytes changed during admission');
+    this.#materialShaders.set(identifier, {
+      kind: 'bytes',
+      owner,
+      paramSchemaProjection: projection,
+      ...(receipt === undefined ? {} : { receipt }),
+      ...(entry.entryPoints === undefined
+        ? {}
+        : { entryPoints: structuredClone(entry.entryPoints) }),
+    });
+  }
+
+  #resolveMaterialArtifact(
+    identifier: string,
+    registration: MaterialRegistration,
+  ): ResultOk<RegisteredMaterialShaderEntry> {
+    if (registration.kind === 'ready') return registration.publication;
+    const source = readMaterialByteSource(registration.owner, identifier);
+    const publication = this.#prepareMaterialArtifact(
+      identifier,
+      {
+        source: source.read(),
+        sourceReference: source,
+        paramSchema: registration.paramSchemaProjection.schema,
+        ...(registration.receipt === undefined ? {} : { receipt: registration.receipt }),
+        ...(registration.entryPoints === undefined
+          ? {}
+          : { entryPoints: registration.entryPoints }),
+      },
+      undefined,
+      registration.owner.program,
+    );
+    registration.owner.program = publication.value.program;
+    registration.owner.source = publication.value.program.sourceReference;
+    this.#materialShaders.set(identifier, { kind: 'ready', publication });
+    return publication;
   }
 
   /**
@@ -865,12 +1021,33 @@ export class ShaderRegistry {
         }),
       );
     }
-    return entry;
+    return this.#resolveMaterialArtifact(identifier, entry);
   }
 
   /** Optional immutable artifact lookup; normal misses do not construct diagnostics. */
   materialArtifact(identifier: string): RegisteredMaterialShaderEntry | undefined {
-    return this.#materialShaders.get(identifier)?.value;
+    const entry = this.#materialShaders.get(identifier);
+    return entry === undefined ? undefined : this.#resolveMaterialArtifact(identifier, entry).value;
+  }
+
+  /** Declaration-only inspection never decodes or analyzes a pending program. */
+  materialArtifactDeclaration(
+    identifier: string,
+  ):
+    | { readonly kind: 'ready'; readonly entry: RegisteredMaterialShaderEntry }
+    | ({ readonly kind: 'bytes' } & Omit<MaterialShaderByteEntry, 'bytes' | 'digest'>)
+    | undefined {
+    const entry = this.#materialShaders.get(identifier);
+    if (entry === undefined) return undefined;
+    if (entry.kind === 'ready') return { kind: 'ready', entry: entry.publication.value };
+    return {
+      kind: 'bytes',
+      paramSchema: entry.paramSchemaProjection.schema,
+      ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
+      ...(entry.entryPoints === undefined
+        ? {}
+        : { entryPoints: structuredClone(entry.entryPoints) }),
+    };
   }
 
   /**
@@ -971,4 +1148,26 @@ function buildMaterialShaderVariantKey(defines: Record<string, boolean>): string
   return entries.every(([, value]) => value)
     ? ''
     : entries.map(([key, value]) => `${key}=${value}`).join('+');
+}
+
+/** Metadata-only checks deliberately run before source preparation. */
+function validateMaterialByteMetadata(entry: MaterialShaderByteEntry): void {
+  if (entry.receipt !== undefined && !isMaterialProgramAbi(entry.receipt))
+    throw new Error('ShaderRegistry: invalid material ABI receipt');
+  if (entry.entryPoints !== undefined && !isShaderEntryPointReads(entry.entryPoints))
+    throw new Error('ShaderRegistry: invalid shader entry read contract');
+  if (
+    entry.entryPoints !== undefined &&
+    entry.receipt?.entryPoints !== undefined &&
+    !sameMaterialShaderEntryPoints(entry.entryPoints, entry.receipt.entryPoints)
+  )
+    throw new Error('ShaderRegistry: conflicting shader entry read contract for immutable source');
+}
+
+function materialRegistrationReads(
+  registration: MaterialRegistration,
+): readonly ShaderEntryPointReads[] | undefined {
+  return registration.kind === 'ready'
+    ? registration.publication.value.program.entryPoints
+    : (registration.entryPoints ?? registration.receipt?.entryPoints);
 }

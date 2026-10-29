@@ -102,8 +102,9 @@ describe('recovery generation contract', () => {
     expect(preparation).toBeGreaterThanOrEqual(0);
     expect(copy).toBeGreaterThan(preparation);
     const copyBlock = rendererRecoverySource.slice(copy);
-    expect(copyBlock).toContain('candidateShaderCatalog.findMaterialArtifact(identifier).ok');
-    expect(copyBlock).toContain('candidateShaderCatalog.installMaterialArtifact(identifier');
+    expect(copyBlock).toContain('candidateShaderCatalog.materialShaderIdentifiers()');
+    expect(copyBlock).toContain('candidateShaderCatalog.installMaterialArtifactsFrom(');
+    expect(copyBlock).not.toContain('findMaterialArtifact(');
   });
 
   it('keeps render-system residency bindings live across publication', () => {
@@ -115,10 +116,5 @@ describe('recovery generation contract', () => {
     expect(assembly).toContain('get dynamicTextureStore()');
     expect(assembly).not.toMatch(/\n\s*gpuStore,\n/);
     expect(assembly).not.toMatch(/\n\s*dynamicTextureStore,\n/);
-  });
-
-  it('rebuilds candidate shaders from accepted receipts', () => {
-    expect(rendererRecoverySource).toContain('entry.value.receipt === undefined');
-    expect(rendererRecoverySource).toContain('{ receipt: entry.value.receipt }');
   });
 });

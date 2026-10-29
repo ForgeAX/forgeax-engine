@@ -6,6 +6,7 @@ import { createBlitzUi, type UiWasmHost } from '../index.js';
 import { checkableHtml, checkableTrace } from './checkable-fixture.js';
 import { required, selectAllKeys, uiEvidenceDirectory } from './fixture.js';
 import { inputSubmitRasterCase } from './input-submit-fixture.js';
+import { mountViewportAsset } from './mount-viewport-fixture.js';
 
 const bytes = new Uint8Array(
   await (await fetch(new URL('../../pkg/ui_blitz_bg.wasm', import.meta.url))).arrayBuffer(),
@@ -42,6 +43,35 @@ async function pair(html: string, width = 200, height = 200, font?: Uint8Array) 
   cleanup.push(() => ui.dispose());
   return { native, ui, errors, iframe };
 }
+it('keeps mounted percentage-height content sized to its viewport in both hosts', async () => {
+  const { native, ui, iframe } = await pair(
+    '<!doctype html><style>body{margin:0}</style>',
+    200,
+    120,
+  );
+  const mounts = [native, ui.document].map((document) => {
+    const mounted = mountUi(mountViewportAsset, { root: document.body, layer: 1 });
+    if (!mounted.ok) throw mounted.error;
+    cleanup.push(() => mounted.value.dispose());
+    return mounted.value;
+  });
+  for (const [width, height] of [
+    [200, 120],
+    [160, 90],
+  ] as const) {
+    iframe.style.width = `${width}px`;
+    iframe.style.height = `${height}px`;
+    ui.resize(width, height);
+    for (const mounted of mounts) {
+      const main = required(mounted.host.shadowRoot?.querySelector('main'));
+      const rect = main.getBoundingClientRect();
+      expect([rect.width, rect.height]).toEqual([width, height]);
+      main.scrollTop = 40;
+      expect(main.scrollTop).toBe(40);
+      main.scrollTop = 0;
+    }
+  }
+});
 it('submits mixed forms from readonly controls with the same Enter semantics', async () => {
   const width = 540,
     height = 510;

@@ -4,6 +4,7 @@ import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../../../runtime/src/renderer-host';
 import { morphScene } from './morph-scene.fixture';
 import { renderValue } from './skinned-triangle-gpu.fixture';
@@ -12,7 +13,7 @@ it('renders distance UV on uneven and closed transported profiles for 60 complet
   timeout: 240000,
 }, async () => {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 512;
+  canvas.width = canvas.height = testQuality.squareSize;
   document.body.append(canvas);
   const host = renderValue(await constructRuntimeRendererHost(canvas));
   const errors: unknown[] = [];

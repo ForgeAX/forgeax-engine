@@ -1193,10 +1193,10 @@ Pass optional capabilities as native Cordis plugins. Providers are explicit:
 ```ts
 import { audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 
 const result = await createApp(canvas, {
-  plugins: [webAudioPlugin(), audioPlugin(), physicsPlugin('rapier-3d')],
+  plugins: [webAudioPlugin(), audioPlugin(), physics3d],
 });
 if (!result.ok) throw result.error;
 
@@ -1629,9 +1629,10 @@ scope on the current Renderer generation; `false` releases it. Inspection report
 must verify that it is still active before declaring a full current-device route.
 The option is diagnostic and is not enabled during ordinary play.
 
-Startup/background libraries retain compact realm-local source owners; transport
-borrows the portable full-text representation and each receiving realm owns its
-fragments. No cross-Worker string sharing is assumed. A startup `pipelineLibrary`
+Startup/background libraries retain immutable realm-local source owners; transport
+borrows the portable full-text representation. Receiving realms keep raw strings
+whole without runtime fragmentation or eager source hashing. No cross-Worker string
+sharing is assumed. A startup `pipelineLibrary`
 remains owned by the Host and the active Renderer.
 With a Render Worker, the Engine Worker forwards it during initialization and
 retains only the remaining startup facts. The Host resupplies the library for

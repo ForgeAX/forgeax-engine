@@ -12,17 +12,28 @@ export function browserFixtureSources(root, owners) {
     const text = readFileSync(file, 'utf8');
     sources.set(file, text);
     const ast = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
-    for (const node of ast.statements) {
-      if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) continue;
-      const specifier = node.moduleSpecifier.text;
-      if (!specifier.startsWith('.')) continue;
+    const follow = (specifier) => {
+      if (!specifier.startsWith('.')) return;
       const base = resolve(dirname(file), specifier).replace(/\.js$/, '');
       const imported = [base, `${base}.ts`, `${base}.mjs`, resolve(base, 'index.ts')].find(
         (path) => existsSync(path) && /\.(?:ts|mjs)$/.test(path),
       );
       if (imported && (imported.includes('/__tests__/') || imported.includes('/scripts/test/')))
         pending.push(imported);
-    }
+    };
+    const visit = (node) => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier))
+        follow(node.moduleSpecifier.text);
+      if (
+        ((ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) ||
+          (ts.isNewExpression(node) && node.expression.getText(ast) === 'URL')) &&
+        node.arguments?.[0] &&
+        ts.isStringLiteral(node.arguments[0])
+      )
+        follow(node.arguments[0].text);
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
   }
   return sources;
 }

@@ -76,7 +76,7 @@ const SECTIONS = [
       'MeshRenderer: materials',
       'Materials.standard(options): baseColor metallic roughness emissive emissiveIntensity baseColorTexture alphaCutoff renderState queue surfaceModule parameters values',
       'Materials: unlit',
-      '+setActiveCamera GradientSky SkyboxBackground Atmosphere TONEMAP_ACES_FILMIC ANTIALIAS_FXAA BLOOM_ENABLED FogModeValue VolumetricFog Lines Points Instances CanvasTexture PlanarReflection',
+      '+setActiveCamera SkyboxBackground Atmosphere TONEMAP_ACES_FILMIC ANTIALIAS_FXAA BLOOM_ENABLED FogModeValue VolumetricFog Lines Points Instances CanvasTexture PlanarReflection',
     ],
   ],
   [
@@ -104,7 +104,6 @@ const SECTIONS = [
   [
     'physics',
     [
-      'physicsPlugin',
       'RigidBody: type mass linearDamping gravityScale lockRotation',
       'RigidBodyTypeValue',
       'Collider: shape halfExtents radius halfHeight friction isSensor',
@@ -159,7 +158,7 @@ const GOTCHAS = [
   'Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for the ground. `pick` returns the nearest entity AABB hit.',
   'Input: in a system read `world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.',
   "Declare every service a plugin reads in `inject` (`inject: ['world', 'assets', 'gameHost']`); add systems inside `ctx.effect` and `yield` their removal.",
-  'Camera data: `{ ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), tonemap: TONEMAP_ACES_FILMIC }`; `fov` is radians. Sky: `{ component: GradientSky, data: GradientSkyPresets.dusk }` shows as set; an opaque `clearColor` is tone-mapped. `DirectionalLight.direction` points from the light (opposite of Three.js).',
+  'Camera data: `{ ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), tonemap: TONEMAP_ACES_FILMIC }`; `fov` is radians. Sky: bind a generated HDR equirect asset to `SkyboxBackground` and `Skylight`; an opaque `clearColor` is tone-mapped. `DirectionalLight.direction` points from the light (opposite of Three.js).',
   "No `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`; per entity: bind an `assets.copy`, `assets.update` its `baseColor`. Additive: `color: { srcFactor: 'src-alpha', dstFactor: 'one' }`.",
   '`SpotLight` takes its position from `Transform` but aims by its world `direction` field (not Transform rotation); cone angles are half-angles in degrees. Beam: `createConeGeometry(r, h, 48, 1, true)` (open-ended). Blended-only meshes cast no shadow unless `ShadowParticipation { cast: true }`.',
   'Particles (rain, snow, sparks, fire, dust): `point-list` mesh + `color`/`uv1` streams + `Points { size, sizeUnits: world, shape: soft }` + blended unlit material; `writeRange` per frame (see cookbook index). 10k+: VFX.',

@@ -12,12 +12,34 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
-For a Dawn lane reaching its job deadline, refresh placement costs only from
-complete successful children and owners through the [CI guide](../../scripts/ci/README.md).
-Retain four jobs, every native owner and its assertions; interrupted tails do
-not establish costs. For material-parity timeouts, inspect binary comparison
-overhead before changing compiler concurrency or deadlines. Keep exact byte and
-metadata equality, concurrent cooks, diagnostics and crash recovery.
+For an independent-run SDK UI color mismatch, inspect the retained PNG and the
+status footer at the actual CI viewport before assigning a Renderer cause.
+A full version can wrap into an authored UI color oracle. Preserve exact color
+and solid-patch assertions while reserving the fixture's minimum UI height;
+follow [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
+
+For instrumented global-probe partial-write recovery timeouts, keep the complete
+file in the existing exclusive GI coverage child rather than competing with broad
+DevKit coverage. For a Dawn lane cancellation, compare completed ordinary children
+and complete native-owner costs across all four lanes before adjusting owner
+reservations. Preserve cases, pixels and original deadlines; skipped or cancelled
+work supplies no completion sample. Follow
+[RC execution recovery](../../scripts/ci/README.md#rc-backport-execution-recovery).
+
+For slow material-publication fixtures, retain validated artifact byte views until
+the publication owner performs JSON encoding. A preliminary JSON roundtrip makes
+the publication digest traverse every byte as an ordinary numeric array. Preserve
+the real source/decode/adopt path and its artifact-integrity checks.
+
+For material-parity timeouts, inspect binary comparison overhead before changing
+compiler concurrency or deadlines. Keep exact byte and metadata equality,
+concurrent cooks, diagnostics and crash recovery.
+
+For declared-material publication timeouts in an already exclusive coverage
+child, check whether a file-wide spy setting disabled the normal Node material
+Worker route. Only Naga call-count cases need the observing realm. Keep every
+authored material, real cook, publication assertion and original deadline; see
+the [coverage guide](../../scripts/ci/README.md#coverage-execution).
 
 For Bun portability source-scan timeouts, compare visible CPUs with the admitted
 cgroup CPU/memory budget. The canary uses `resolve-vitest-workers.mjs` through the
@@ -31,6 +53,10 @@ versions with `.nvmrc`, `.npm-version` and `.pnpm-version` in the
 toolchain. Repair the owning operation while retaining sealed source, version
 and immutable package bytes.
 
+For cookbook missing-export diagnostics, repair the independently owned Harness
+recipes and compile the full cookbook against the current Engine. Then update
+the explicit Preflight documentation pin through the [input contract](../../scripts/ci/README.md#independently-owned-documentation-inputs).
+
 For a Pack draft that retains a source-declaration error after repair, compare
 the source digest with the draft revision. Explicit reopen uses Pack's serialized
 source refresh and preserves edits; verify the native authoring recovery gate
@@ -40,6 +66,12 @@ For Render's `No test suite found` on managed-asset benchmark `.test.mjs` files,
 run their native `node:test` owner in `primary-pnpm`; the Render Vitest project
 must retain its source tests and exclude only those benchmark contracts.
 See [CI reproduction](../../scripts/ci/README.md).
+
+For an empty-frame smoke result, compare the sampled coordinates with the full
+GPU readback before assigning a Renderer fault. A visible subject can lie outside
+two background probes. Keep the actual pixel threshold and lifecycle controls.
+Full local Smoke also needs the selected fixture producers; follow
+[CI reproduction](../../scripts/ci/README.md) for the LOD input directory.
 
 For native UI control failures, inspect the paired snapshots in `artifacts/ui-*/` before assigning a layout cause. Verify the UI WASM provenance and browser version, and use the Host platform's native edit modifier. Reproduce the exact file through CI Focus Browser with the `ci` profile; preserve geometry, pixel and lifecycle assertions. See [failure recovery](../../scripts/ci/README.md#failure-recovery).
 
@@ -135,6 +167,9 @@ reflog before pruning; preserve unrelated repositories and changed commits.
 For a Dawn overall job cancellation with passing groups, compare complete group
 costs, ordinary-file backfill and lane headroom in `dawn-gate-roster.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
 while preserving the full roster, native process isolation and existing deadlines.
+Compare complete child costs with their placement forecasts before changing lane
+membership; refresh stale file and owner costs first, then replay ordinary
+backfill. Keep an interrupted owner at its inherited forecast.
 Check serial Dawn's Mesa worker count against the admitted heavy CPU budget;
 CI and Dawn Focus use eight workers, while concurrent Browser processes retain
 four each. Preserve capacity admission and the single native Vitest worker.
@@ -157,6 +192,10 @@ for all four lanes before keeping that placement.
 
 For Linux software validation, use `pnpm ci:graphics setup` and the
 [isolated graphics contract](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
+For a native Rust GPU-owner crash, retain the failed process evidence and use
+the workflow's serial test entry, matching the upstream GPU suites. Preserve
+the complete target roster and required Ray Query admission; SIGSEGV is not
+an artifact transport failure or a passing GPU result.
 The pinned official archive snapshot retains package bytes after moving mirrors
 remove old releases; retain download/hash errors rather than bypassing setup.
 
@@ -361,7 +400,10 @@ For clearcoat publication timeouts in `declared-standard-material.integration.te
 use the existing exclusive coverage file owner in
 [CI operations](../../scripts/ci/README.md). Keep all material/compiler assertions
 and original test deadlines; verify the file has one owner and no competing
-instrumented child before changing runtime code.
+instrumented child before changing runtime code. Ordinary publication checks
+use the existing storage-WebGPU profile and file-owned cooker; the independent
+cold composition/cache contracts retain all portable backends. Verify actual
+program selections and the instrumented coverage path before claiming recovery.
 
 For a Three render/reference/replay timeout, retain its complete fresh Browser
 process and exclusive runner admission. Verify the native, reference and replay
@@ -601,7 +643,10 @@ shared Dawn owner before the receipt. Verify both the real 60-frame smoke and
 Missing outputs require [source build or verified producer artifacts](../../scripts/ci/README.md#cross-platform-host-build-inputs).
 CI artifact consumers restore and verify first; only a real source-build miss
 provisions the wgpu, Rapier, Blitz UI and Codec owners through the shared
-preparation Action. A clean
+preparation Action. For SDK Candidate UI contract failures, inspect parsed YAML
+conditions for both the verified shared-artifact branch and source fallback;
+retain receiver cleanup, source/byte verification and preparation-before-build.
+A clean
 worktree needs pinned submodules before frozen installation. A retained assets
 `shallow.lock` routes to `prepare-assets-checkout.mjs`: only an exclusive matching
 Actions workspace may recover a lock older than the current source checkout.
@@ -819,8 +864,17 @@ resources before reducing a smoke fixture. CI uses bounded native batches and
 the shared [test workload](../../scripts/test/render-quality.json) and
 [project reducer](../../scripts/test/reduce-test-project.mjs) for ordinary fixtures.
 Check captured dimensions when a scene omits quality fields: shared test reduction
-must also bound engine defaults. Keep explicit overrides for quality/capacity
-owners, complete assertions and the original deadlines.
+must also bound engine defaults. Follow literal `new URL` Worker bootstraps
+when auditing fixture quality; an ordinary geometry fixture must declare its
+shadow map and cascade workload too. Include the existing DevKit runtime-browser
+companion: Node filenames can own real Playwright drawing buffers. Keep explicit overrides for quality/capacity
+owners, complete assertions and the original deadlines. For native replay cost,
+check whether individual reads reset and replay the same GPU prefix. Batch
+independent selected-work reads while retaining exact provenance, intermediate
+bytes and fresh devices for independent falsifiers.
+For Nested Discard cost, retain its shared ordinary pixel assembly and bounded
+shadow declaration. Temporal captures and replays stay independently owned; the
+fixture's actual device and shadow inspections guard those boundaries.
 
 For native Host failures, follow the CI guide's
 [build-input](../../scripts/ci/README.md#cross-platform-host-build-inputs),

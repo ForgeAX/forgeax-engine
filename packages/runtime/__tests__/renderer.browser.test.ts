@@ -19,7 +19,7 @@
 // this case PASSES, AC-05 is delivered).
 
 import { World } from '@forgeax/engine-ecs';
-import { Camera, type Renderer, type RendererEvent } from '@forgeax/engine-render';
+import { Camera, perspective, type Renderer, type RendererEvent } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -86,7 +86,10 @@ describe('renderer.browser - WebGPU path RHI contract (AC-05)', () => {
     expect(drawn.value.presentation).toBe('ready');
     expect((await drawn.value.completed).ok).toBe(true);
     expect(events.filter((event) => event.kind === 'error')).toEqual([]);
-    const camera = world.spawn({ component: Transform }, { component: Camera });
+    const camera = world.spawn(
+      { component: Transform },
+      { component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 1 }) },
+    );
     const draw = async () => {
       world.update(1 / 60).unwrap();
       const result = created.value.draw({

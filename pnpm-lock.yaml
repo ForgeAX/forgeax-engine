@@ -163,6 +163,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@hono/node-server': ^2.1.3
   body-parser: ^2.4.0
   fast-uri: ^3.1.9
   qs: ^6.16.1
@@ -5464,6 +5465,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../../packages/physics
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../../packages/physics-rapier3d
       '@forgeax/engine-picking':
         specifier: workspace:*
         version: link:../../packages/picking
@@ -5782,6 +5786,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../../../packages/physics
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../../../packages/physics-rapier3d
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -5992,6 +5999,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../../../packages/physics
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../../../packages/physics-rapier3d
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -7390,6 +7400,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../../../packages/physics
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../../../packages/physics-rapier3d
       '@forgeax/engine-picking':
         specifier: workspace:*
         version: link:../../../packages/picking
@@ -7757,6 +7770,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../../../packages/physics
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../../../packages/physics-rapier3d
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -11747,6 +11763,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../../../packages/physics
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../../../packages/physics-rapier3d
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -12407,6 +12426,10 @@ importers:
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.2.0
+    devDependencies:
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../physics-rapier3d
 
   packages/app:
     dependencies:
@@ -13610,6 +13633,10 @@ importers:
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@forgeax/engine-physics-rapier3d':
+        specifier: workspace:*
+        version: link:../physics-rapier3d
 
   packages/net:
     dependencies:
@@ -13752,12 +13779,6 @@ importers:
         specifier: workspace:*
         version: link:../types
     devDependencies:
-      '@forgeax/engine-physics-rapier2d':
-        specifier: workspace:*
-        version: link:../physics-rapier2d
-      '@forgeax/engine-physics-rapier3d':
-        specifier: workspace:*
-        version: link:../physics-rapier3d
       '@forgeax/engine-shader':
         specifier: workspace:*
         version: link:../shader
@@ -16233,11 +16254,11 @@ packages:
   '@hapi/topo@6.0.2':
     resolution: {integrity: sha512-KR3rD5inZbGMrHmgPxsJ9dbi6zEK+C3ZwUwTa+eMwWLz7oijWUTWD2pMSNNYJAU6Qq+65NkxXjqHr/7LM2Xkqg==}
 
-  '@hono/node-server@1.19.17':
-    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
-    engines: {node: '>=18.14.1'}
+  '@hono/node-server@2.1.5':
+    resolution: {integrity: sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q==}
+    engines: {node: '>=20'}
     peerDependencies:
-      hono: ^4
+      hono: ^4 || ^5.0.0-0
 
   '@hpcc-js/wasm-zstd@1.17.0':
     resolution: {integrity: sha512-Kcj7hD+WKj48iVApd4Oswk8GmAz5HWU43HYaAW1OwqyTHtgXPs76RRmekqwSwGLZk7e137syTJdzuoTiYgLV/g==}
@@ -20416,7 +20437,7 @@ snapshots:
     dependencies:
       '@hapi/hoek': 11.0.7
 
-  '@hono/node-server@1.19.17(hono@4.13.13)':
+  '@hono/node-server@2.1.5(hono@4.13.13)':
     dependencies:
       hono: 4.13.13
 
@@ -20531,7 +20552,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.6.7)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.13)
+      '@hono/node-server': 2.1.5(hono@4.13.13)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5

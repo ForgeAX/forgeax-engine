@@ -10,7 +10,6 @@ export * from './depth-of-field';
 export * from './directional-light';
 export * from './dynamic-resolution';
 export * from './fog';
-export * from './gradient-sky';
 export { Instances, type InstancesData } from './instances';
 export { Layer } from './layer';
 export * from './lens-effects';

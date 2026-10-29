@@ -1,5 +1,6 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect, it } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
 import {
   browserRendererFixture,
@@ -92,7 +93,11 @@ export function testMaterialOutputPartition(partition: 0 | 1): void {
     }
     const mesh = new THREE.Mesh(
       name === 'normal' || name === 'double-sided'
-        ? new THREE.SphereGeometry(1.3, 48, 24)
+        ? new THREE.SphereGeometry(
+            1.3,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          )
         : new THREE.PlaneGeometry(3, 3),
       material,
     );

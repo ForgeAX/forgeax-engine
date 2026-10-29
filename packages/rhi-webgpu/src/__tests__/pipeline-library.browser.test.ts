@@ -2,6 +2,43 @@ import { expect, it } from 'vitest';
 import { WebGpuPipelineLibrary } from '../pipeline-library';
 import { verifyPipelineLibraryGpu } from './pipeline-library.fixture';
 
+it('receives raw background WGSL in fresh Workers without runtime fragmentation or hashing', async () => {
+  const code = 'fn background() {}\n\n'.repeat(16_000);
+  for (let realm = 0; realm < 3; realm++) {
+    const worker = new Worker(
+      new URL('./fixtures/pipeline-library-source.worker.ts', import.meta.url),
+      {
+        type: 'module',
+      },
+    );
+    try {
+      const result = new Promise<unknown>((resolve, reject) => {
+        worker.onmessage = ({ data }) => resolve(data);
+        worker.onerror = (event) => reject(new Error(event.message));
+      });
+      worker.postMessage({
+        version: 1,
+        backend: 'webgpu',
+        shaders: [{ code }, { code, label: 'same source' }],
+        bindGroupLayouts: [],
+        pipelineLayouts: [],
+        renderPipelines: [],
+        computePipelines: [],
+      });
+      expect(await result).toEqual({
+        reception: { encodes: 0, copies: 0 },
+        repeatedIdentity: true,
+        encodes: 1,
+        copies: 0,
+        shared: true,
+        code,
+      });
+    } finally {
+      worker.terminate();
+    }
+  }
+});
+
 it('imports a captured library on a fresh WebGPU device and reuses actual graphics and compute output', async () => {
   const evidence = await verifyPipelineLibraryGpu(navigator.gpu);
   expect(evidence.errors).toEqual([]);

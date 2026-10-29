@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { pnpmCommand } from '../../lib/pnpm-command.mjs';
 
 const ENGINE_ROOT = resolve(import.meta.dirname, '../..', '..');
 
 function runPackageBuild(stage) {
   // Every build mode executes the same canonical-kit staging recovery. The
   // package mode preserves that real path without compiling unrelated shaders.
-  return spawnSync('pnpm', ['build:packages'], {
+  const [manager, ...prefix] = pnpmCommand();
+  return spawnSync(manager, [...prefix, 'build:packages'], {
     cwd: ENGINE_ROOT,
     env: {
       ...process.env,
@@ -45,6 +47,11 @@ test('engine build recovers canonical-kit staging after package cache hits', () 
     );
     assert.deepEqual(readFileSync(join(stage, 'sky.hdr')), source);
     assert.deepEqual(readFileSync(join(stage, 'sky.hdr.meta.json')), meta);
+
+    writeFileSync(join(stage, 'sky.hdr'), Buffer.alloc(512 * 1024, 1));
+    const stale = runPackageBuild(stage);
+    assert.equal(stale.status, 0, stale.stderr);
+    assert.deepEqual(readFileSync(join(stage, 'sky.hdr')), source);
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }

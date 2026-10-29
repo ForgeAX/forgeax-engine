@@ -1,5 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
-import { PhysicsError, physicsPlugin } from '@forgeax/engine-physics';
+import { PhysicsError } from '@forgeax/engine-physics';
+import physics2d from '@forgeax/engine-physics-rapier2d';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import type { Renderer } from '@forgeax/engine-render';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../create-app';
@@ -17,17 +19,29 @@ const rapier2d = vi.hoisted(() => ({
   registerSystems: vi.fn(),
 }));
 
-vi.mock('@forgeax/engine-physics-rapier3d', () => ({
-  loadRapier3D: rapier3d.load,
-  createRapier3DPhysicsWorld: rapier3d.createWorld,
-  registerPhysicsSystems: rapier3d.registerSystems,
-}));
+vi.mock('@forgeax/engine-physics-rapier3d', async () => {
+  const { definePhysicsPlugin } = await import('@forgeax/engine-physics');
+  return {
+    default: definePhysicsPlugin({
+      name: 'rapier-3d',
+      load: rapier3d.load,
+      create: rapier3d.createWorld,
+      registerSystems: rapier3d.registerSystems,
+    }),
+  };
+});
 
-vi.mock('@forgeax/engine-physics-rapier2d', () => ({
-  loadRapier2D: rapier2d.load,
-  createRapier2DPhysicsWorld: rapier2d.createWorld,
-  registerPhysicsSystems2D: rapier2d.registerSystems,
-}));
+vi.mock('@forgeax/engine-physics-rapier2d', async () => {
+  const { definePhysicsPlugin } = await import('@forgeax/engine-physics');
+  return {
+    default: definePhysicsPlugin({
+      name: 'rapier-2d',
+      load: rapier2d.load,
+      create: rapier2d.createWorld,
+      registerSystems: rapier2d.registerSystems,
+    }),
+  };
+});
 
 function rendererStub(): Renderer {
   return {
@@ -78,7 +92,7 @@ describe('createApp Rapier 3D activation failure', () => {
       platform: testPlatform(),
       renderer: rendererStub(),
       world,
-      plugins: [physicsPlugin('rapier-3d')],
+      plugins: [physics3d],
     });
 
     expect(result.ok).toBe(false);
@@ -125,7 +139,7 @@ describe('createApp Rapier 2D activation failure', () => {
       platform: testPlatform(),
       renderer: rendererStub(),
       world,
-      plugins: [physicsPlugin('rapier-2d')],
+      plugins: [physics2d],
     });
 
     expect(result.ok).toBe(false);

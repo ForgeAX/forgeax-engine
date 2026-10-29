@@ -260,7 +260,6 @@ export type FullscreenPassResources = Pick<
   | 'skyboxBindGroupLayout'
   | 'skyboxSampler'
   | 'skyboxRotationBuffer'
-  | 'skyboxModule'
   | 'ssaoCalcPipeline'
   | 'ssaoBlurPipeline'
   | 'ssaoBgl'
@@ -276,7 +275,6 @@ export function emptyFullscreenPassResources(): FullscreenPassResources {
     skyboxBindGroupLayout: null,
     skyboxSampler: null,
     skyboxRotationBuffer: null,
-    skyboxModule: null,
     ssaoCalcPipeline: null,
     ssaoBlurPipeline: null,
     ssaoBgl: null,
@@ -417,7 +415,6 @@ function createSkyboxPassResources(
   | 'skyboxBindGroupLayout'
   | 'skyboxSampler'
   | 'skyboxRotationBuffer'
-  | 'skyboxModule'
 > {
   const bindGroupLayout = runShimSyncStep(
     () =>
@@ -490,7 +487,6 @@ function createSkyboxPassResources(
     skyboxBindGroupLayout: bindGroupLayout.value,
     skyboxSampler: sampler,
     skyboxRotationBuffer: rotationBuffer.value,
-    skyboxModule,
   };
 }
 
@@ -615,7 +611,6 @@ export function createFullscreenPassResources(
     skyboxBindGroupLayout: skybox.skyboxBindGroupLayout,
     skyboxSampler: skybox.skyboxSampler,
     skyboxRotationBuffer: skybox.skyboxRotationBuffer,
-    skyboxModule: skybox.skyboxModule ?? null,
     ssaoCalcPipeline: ssao.ssaoCalcPipeline,
     ssaoBlurPipeline: ssao.ssaoBlurPipeline,
     ssaoBgl: ssao.ssaoBgl,

@@ -8,6 +8,12 @@ description: >-
 
 # forgeax-engine-app
 
+For mounted HUD layout and actions, use the [UI contract](../../packages/ui/README.md).
+`mountUi` gives percentage-height content the host viewport height; keep scrolling
+on the authored element. Its `onAction` delegation reads `data-ui-action`, not an
+arbitrary `data-action` attribute. Verify real click acknowledgement and visible
+geometry rather than the presence of HTML text.
+
 ## Render happy path
 
 The app host follows `RenderScene -> Standard Pipeline -> DeviceScope -> FrameReceipt`.

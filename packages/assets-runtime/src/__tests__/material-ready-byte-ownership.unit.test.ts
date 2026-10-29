@@ -22,6 +22,32 @@ async function ready(index: number) {
   return loaded;
 }
 
+it('keeps unused cooked programs as bytes through admission and device adoption', async () => {
+  const loaded = await ready(101);
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const fork = shaders.forkForDevice({
+    createShaderModule() {
+      throw Error('CPU preparation must not create GPU modules');
+    },
+  });
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  try {
+    installMaterialReadyShaders(shaders, loaded, new MaterialArtifactRegistry());
+    expect(decode).not.toHaveBeenCalled();
+    fork.installMaterialArtifactsFrom(shaders);
+    expect(decode).not.toHaveBeenCalled();
+    const key = loaded.record.programs[0]?.specializationKey;
+    if (key === undefined) throw Error('Missing program');
+    const first = fork.findMaterialArtifact(key).unwrap();
+    expect(decode).toHaveBeenCalledTimes(1);
+    expect(fork.findMaterialArtifact(key).unwrap()).toBe(first);
+    expect(shaders.findMaterialArtifact(key).unwrap().program).toBe(first.program);
+    expect(decode).toHaveBeenCalledTimes(1);
+  } finally {
+    decode.mockRestore();
+  }
+});
+
 describe('actual material-ready caller byte ownership work', () => {
   it('keeps duplicate registrations on distinct buffers through preflight and publication', async () => {
     const shaders = new ShaderRegistry({ manifestUrl: undefined }),
@@ -80,11 +106,13 @@ describe('actual material-ready caller byte ownership work', () => {
     const existing = owner.getMaterialArtifact(key);
     if (existing === undefined) throw Error('Missing retained artifact');
     const second = await ready(2);
-    const original = shaders.findMaterialArtifact.bind(shaders);
-    const spy = vi.spyOn(shaders, 'findMaterialArtifact').mockImplementation((identifier) => {
-      existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
-      return original(identifier);
-    });
+    const original = shaders.validateMaterialArtifactBytes.bind(shaders);
+    const spy = vi
+      .spyOn(shaders, 'validateMaterialArtifactBytes')
+      .mockImplementation((identifier, entry) => {
+        existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
+        return original(identifier, entry);
+      });
     try {
       let thrown: unknown;
       try {

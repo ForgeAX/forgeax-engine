@@ -413,7 +413,7 @@ Glow meshes (beams, light pillars) add light: emission-only Surface (`return sur
 colour blend, `zero / one` alpha, peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
 height on an open tapered mesh (SDK beam-pillar).
 
-A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, `GradientSky` reflection, fog; render README "Sea sun and sky").
+A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, Skylight environment reflection, fog; render README "Sea sun and sky").
 
 Point and spot lights default to no distance cutoff. Use an explicit finite
 `range` to bound cluster membership and shading cost in many-light scenes.

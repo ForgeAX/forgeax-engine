@@ -26,7 +26,7 @@ for (const { name, instances, unique } of [
   const material = assets.create(Materials.standard({ baseColor: [0.6, 0.5, 0.4, 1] })).unwrap();
   const sharedMesh = assets.create(geometry).unwrap();
   world
-    .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {} })
+    .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: { fov: Math.PI / 3, aspect: 1 } })
     .unwrap();
   const entities = Array.from({ length: instances === 0 ? 1000 : 64 }, () => {
     const entity = world

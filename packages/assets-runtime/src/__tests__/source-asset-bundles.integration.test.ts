@@ -8,10 +8,16 @@ import { captureAssetPublication } from '../capture-publication';
 import { createCatalogSource } from '../catalog-source';
 import { defined } from './assert-defined';
 
-it('loads independent Bundle entries through the production source and captures the complete Bundle', async () => {
+it.each([
+  false,
+  true,
+])('loads and captures independent Bundle artifacts (grouped=%s)', async (grouped) => {
   const hash = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   const bodies = [Uint8Array.of(1, 2, 3), Uint8Array.of(4, 5)];
-  const { bytes: stored, windows } = encodeAssetBundle(bodies);
+  const { compressZstd } = await import('@forgeax/engine-codec/encode');
+  const compressed = await compressZstd(Uint8Array.of(1, 2, 3, 4, 5));
+  if (!compressed.ok) throw new Error(compressed.error.code);
+  const { bytes: stored, windows } = encodeAssetBundle(grouped ? [compressed.value] : bodies);
   const kind = defineAssetKind<Uint8Array>('bundle-binary');
   const ids = ['00000000-0000-7000-8000-000000000971', '00000000-0000-7000-8000-000000000972'];
   const packageUrl = 'https://source.invalid/map.pack.json';
@@ -29,11 +35,19 @@ it('loads independent Bundle entries through the production source and captures 
         artifacts: {
           body: {
             path: 'bundle.bin',
-            contentEncoding: 'identity',
+            contentEncoding: grouped ? 'zstd' : 'identity',
             mediaType: 'application/octet-stream',
             byteLength: defined(bodies[index]).byteLength,
             integrity: { algorithm: 'sha256', digest: hash(defined(bodies[index])) },
-            byteRange: { ...defined(windows[index]), bundleDigest: hash(stored) },
+            byteRange: { ...defined(windows[grouped ? 0 : index]), bundleDigest: hash(stored) },
+            ...(grouped
+              ? {
+                  decodedRange: {
+                    offset: index === 0 ? 0 : 3,
+                    length: defined(bodies[index]).length,
+                  },
+                }
+              : {}),
           },
         },
       })),

@@ -228,8 +228,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   }
   createShaderModule(descriptor: GPUShaderModuleDescriptor): GPUShaderModule {
     this.active();
-    const source =
-      shaderSourceForDescriptor(descriptor) ?? ShaderSource.fromText(descriptor.code, new Map());
+    const source = shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]);
     const known = this.shaders.find(source.identity);
     if (known !== undefined) {
       this.counts.shaderHits++;
@@ -1013,10 +1012,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         const source = entry(sources, i),
           descriptor = entry(manifest.shaders, i);
         if (!ShaderSource.is(source)) throw new Error('Unadmitted pipeline source reference');
-        if (
-          source.identity !==
-          (shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code])).identity
-        )
+        if (source !== shaderSourceForDescriptor(descriptor) && source.read() !== descriptor.code)
           throw new Error('Pipeline source identity mismatch');
       }
     }

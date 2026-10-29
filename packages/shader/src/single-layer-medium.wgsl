@@ -2,7 +2,7 @@
 
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_material::single_layer_medium_surface_v1::{SingleLayerMediumSurfaceInput, SingleLayerMediumSurfaceData}
-#import forgeax_view::common::{View, Mesh, InstanceData, view, viewHasGradientSky, gradientSkyColor}
+#import forgeax_view::common::{View, Mesh, InstanceData, view}
 #import forgeax_view::fog::{view_fog}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, SCENE_INDEX_LOCAL_IDENTITY}
@@ -472,11 +472,6 @@ fn sampleNearestCoverage(pixelPosition: vec4<f32>, rawDepth: f32) -> f32 {
 
 fn sampleSkyReflection(normal: vec3<f32>, viewDirection: vec3<f32>, roughness: f32) -> vec3<f32> {
   let reflectedDirection = environmentReflectionDirection(normal, viewDirection, roughness);
-  // A GradientSky background is what the water mirrors, the way a Three.js
-  // Water reflects scene.background; without one the Skylight cubemap stays.
-  if (viewHasGradientSky(view)) {
-    return gradientSkyColor(view, reflectedDirection);
-  }
   let rotated = inverseRotateEnvironment(reflectedDirection, mediumSkylight.rotation);
   let environment = samplePmrem(
     mediumPrefilterMap,

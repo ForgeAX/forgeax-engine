@@ -17,14 +17,7 @@ import type {
   RhiDevice,
   ShaderModule,
 } from '@forgeax/engine-rhi';
-import {
-  err,
-  ok,
-  ownPipelineLibrary,
-  PIPELINE_LIBRARY_LIMITS,
-  RhiError,
-  validateDrawArgs,
-} from '@forgeax/engine-rhi';
+import { err, ok, PIPELINE_LIBRARY_LIMITS, RhiError, validateDrawArgs } from '@forgeax/engine-rhi';
 import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
   type MaterialShaderEntry,
@@ -365,16 +358,6 @@ export async function tryCreateRendererFromBackend(
   pack: RhiBackendPack,
   bundler: BundlerOptions | undefined,
 ): Promise<WebGPUOutcome> {
-  if (options !== undefined)
-    options = {
-      ...options,
-      ...(options.pipelineLibrary === undefined
-        ? {}
-        : { pipelineLibrary: ownPipelineLibrary(options.pipelineLibrary) }),
-      ...(options.backgroundPipelineLibrary === undefined
-        ? {}
-        : { backgroundPipelineLibrary: ownPipelineLibrary(options.backgroundPipelineLibrary) }),
-    };
   return tryCreateRendererFromBackendBootstrap(canvas, options, pack, bundler, makeWebGPURenderer);
 }
 async function makeWebGPURenderer(

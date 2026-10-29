@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { selectEnvironment } from '../environment/frame';
+import { selectEnvironment, selectFog } from '../environment/frame';
 import type { EnvironmentCandidate, FogCandidate } from '../extract/environment';
 import { SunCardinalityError } from '../index';
 import { earthAtmosphere } from './atmosphere-fixture';
@@ -52,6 +52,62 @@ function selection(
 }
 
 describe('Environment and Fog selection (M2)', () => {
+  it('projects only Fog through the shared selection authority and detaches live input values', () => {
+    expect(selectFog([])).toEqual({ ok: true, value: undefined });
+    const candidate = { ...fog(8), color: [0.4, 0.5, 0.6] as [number, number, number] };
+    const first = selectFog([candidate]);
+    const complete = selection([], [candidate]);
+    expect(first.ok).toBe(true);
+    expect(complete.ok).toBe(true);
+    if (!first.ok || !complete.ok || first.value === undefined) throw new Error('missing Fog');
+    expect(first.value).toEqual(complete.value.fog);
+    expect(Object.isFrozen(first.value)).toBe(true);
+    expect(Object.isFrozen(first.value.color)).toBe(true);
+    candidate.color[0] = 0.9;
+    candidate.density = 0.2;
+    expect(first.value.color[0]).toBe(0.4);
+    expect(first.value.density).toBe(0.01);
+    const changed = selectFog([candidate]);
+    expect(changed.ok).toBe(true);
+    if (!changed.ok) throw changed.error;
+    expect(changed.value?.color[0]).toBe(0.9);
+    expect(changed.value?.density).toBe(0.2);
+  });
+
+  it('keeps Fog error details identical without accepting a partially invalid full environment', () => {
+    for (const candidates of [[fog(1, -1)], [fog(1), fog(2)]]) {
+      const dedicated = selectFog(candidates);
+      const complete = selection([], candidates);
+      expect(dedicated.ok).toBe(false);
+      expect(complete.ok).toBe(false);
+      if (dedicated.ok || complete.ok) throw new Error('invalid Fog accepted');
+      expect(dedicated.error.code).toBe(complete.error.code);
+      expect(dedicated.error.expected).toBe(complete.error.expected);
+      expect(dedicated.error.hint).toBe(complete.error.hint);
+      expect(dedicated.error.detail).toEqual(complete.error.detail);
+    }
+    expect(selectFog([fog(1)]).ok).toBe(true);
+    const invalidSun = selection([atmosphere(3, 'sky-a')], [fog(1)], []);
+    expect(invalidSun.ok).toBe(false);
+    if (invalidSun.ok) throw new Error('missing Sun accepted');
+    expect(invalidSun.error.code).toBe('sun-cardinality');
+  });
+
+  it('retains full environment validation order before copying Fog values', () => {
+    const candidate = fog(1);
+    const fault = new Error('Fog copied before full environment admission');
+    Object.defineProperty(candidate.color, Symbol.iterator, {
+      value() {
+        throw fault;
+      },
+    });
+    const invalidSun = selection([atmosphere(3, 'sky-a')], [candidate], []);
+    expect(invalidSun.ok).toBe(false);
+    if (invalidSun.ok) throw new Error('missing Sun accepted');
+    expect(invalidSun.error.code).toBe('sun-cardinality');
+    expect(() => selectFog([candidate])).toThrow(fault);
+  });
+
   it.each([
     ['none', [], undefined],
     ['image', [image(2, 'image-a')], undefined],

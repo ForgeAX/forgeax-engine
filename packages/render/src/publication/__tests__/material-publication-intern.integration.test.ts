@@ -172,6 +172,7 @@ async function fixture() {
         : [],
     );
   return {
+    assets,
     receiving,
     publish,
     copy,
@@ -404,4 +405,40 @@ it('shares the validated program closure across runtime copies with distinct val
       available,
     ),
   ).toBe(owned[5]);
+});
+
+it('keeps the complete cooked program closure lazy across Worker publication and device replacement', async () => {
+  const f = await fixture();
+  try {
+    expect(f.assets.shaderRegistry.sourceInspection().programs).toBe(0);
+    const packet = f.publish();
+    expect(packet.programs.length).toBeGreaterThan(2);
+    // Source extraction already selects two passes for the known device. The
+    // remaining six capability variants cross the Worker boundary as bytes.
+    expect(packet.programs.filter((row) => 'sourceEncoding' in row.shader)).toHaveLength(6);
+    expect(f.assets.shaderRegistry.sourceInspection().programs).toBe(2);
+    expect(f.receiving.shaderRegistry.sourceInspection().programs).toBe(2);
+    const selected = packet.programs.find((row) => !('sourceEncoding' in row.shader));
+    const unused = packet.programs.find((row) => 'sourceEncoding' in row.shader);
+    if (selected === undefined || unused === undefined) throw new Error('Missing variants');
+    const prepared = f.receiving.shaderRegistry.findMaterialArtifact(selected.key).unwrap();
+    expect(f.receiving.shaderRegistry.sourceInspection().programs).toBe(2);
+    expect(f.receiving.shaderRegistry.findMaterialArtifact(selected.key).unwrap()).toBe(prepared);
+    expect(f.receiving.shaderRegistry.materialArtifactDeclaration(unused.key)?.kind).toBe('bytes');
+    const replacement = f.receiving.shaderRegistry.forkForDevice({
+      createShaderModule() {
+        throw new Error('CPU adoption must not compile GPU modules');
+      },
+    });
+    replacement.installMaterialArtifactsFrom(f.receiving.shaderRegistry);
+    expect(replacement.sourceInspection().programs).toBe(2);
+    expect(replacement.materialArtifactDeclaration(unused.key)?.kind).toBe('bytes');
+    expect(replacement.findMaterialArtifact(selected.key).unwrap().program).toBe(prepared.program);
+    replacement.findMaterialArtifact(unused.key).unwrap();
+    expect(replacement.sourceInspection().programs).toBe(3);
+    expect(f.receiving.shaderRegistry.materialArtifactDeclaration(unused.key)?.kind).toBe('bytes');
+    expect(f.assets.shaderRegistry.sourceInspection().programs).toBe(2);
+  } finally {
+    f.dispose();
+  }
 });

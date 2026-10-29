@@ -83,7 +83,7 @@ import {
         const err = new PhysicsError({
           code: 'backend-not-registered',
           expected: 'PhysicsWorld resource to be registered',
-          hint: 'use createApp(canvas, { plugins: [physicsPlugin(...)] })',
+          hint: 'use createApp(canvas, { plugins: [the selected physics backend plugin] })',
           detail: {
             code: 'backend-not-registered',
             attemptedBackend: 'rapier-3d',

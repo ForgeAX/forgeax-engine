@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { createApp } from '@forgeax/engine-app/browser';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
 import { querySubmittedTerrainHeight } from '@forgeax/engine-render';
 import { vec3 } from '@forgeax/engine-math';
@@ -59,7 +59,7 @@ export async function terrainHarness({
   const app = (
     await createApp(
       shim.mockCanvas,
-      { platform: createSmokePlatform(shim.mockCanvas), plugins: [physicsPlugin('rapier-3d')], gpuPassTiming: {}, ...appOptions },
+      { platform: createSmokePlatform(shim.mockCanvas), plugins: [physics3d], gpuPassTiming: {}, ...appOptions },
       { shaderManifestUrl: manifest },
     )
   ).unwrap();

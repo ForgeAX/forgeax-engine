@@ -88,7 +88,7 @@ with the public entry, so SDK/archive consumers follow the same path. Generated 
 
 ```sh
 forgeax asset plugin create --path assets/movement/movement.pack.ts --json
-forgeax asset plugin create --path assets/physics.pack.json --module @forgeax/engine/physics/rapier3d --json
+forgeax asset plugin create --path assets/physics.pack.json --module @forgeax/engine/physics-rapier3d --json
 ```
 
 A `.pack.ts` path creates a native Cordis implementation and its asset definition in one file
@@ -120,6 +120,13 @@ reload; edits to authored files and observed external dependencies still invalid
 the session.
 
 ## Independent backend startup
+
+The one-shot CLI disposes its command Host, drains stdout and stderr, then exits
+with the terminal result's status. Timers retained by imported extensions cannot
+keep a completed command alive. `project preview` returns startup status while
+serving HTTP in its foreground process, so it stays alive until the caller stops
+it. Resident backend and live daemon modes retain their own process lifetimes;
+command completion does not stop those owners.
 
 ```sh
 forgeax backend start --root /path/to/workspace --json
@@ -1112,7 +1119,8 @@ server keeps its per-artifact transport. WeChat emits Bundles into its native pa
 | Named Bundle | A build root provides `ctx.devkitDelivery = { bundles: { dust2: ['assets/maps/dust2/'] } }`; every Pack whose source path starts with a listed prefix ships in that Bundle. |
 | Automatic Bundle | Unmatched Packs are grouped by stable `packageId`-path hash bits until each Bundle holds at most 8 MiB; a larger Pack ships alone and is never split. |
 | Conflict | A Pack matched by two Bundles, or a prefix matching no published Pack, fails packaging. |
-| Entry encoding | By default, each entry is zstd-compressed when that saves at least 10%; descriptor integrity still covers the decoded bytes. `compressEntries: false` keeps identity entries for a whole-file transport such as WeChat Brotli. |
+| Shader encoding | Complete `text/wgsl` programs share Zstd level-3 compression groups, bounded to 1 MiB of decoded source; a larger individual program remains indivisible. All backend, capability and pass selections remain published. |
+| Other entry encoding | Each other entry is zstd-compressed when that saves at least 10%; descriptor integrity still covers the decoded bytes. `compressEntries: false` keeps identity entries for a whole-file transport such as WeChat Brotli, including shader programs. |
 
 The Bundle file is `FXBUNDL1`, a u32 entry count, u32 entry lengths, then the entries
 (`@forgeax/engine-pack/bundle`). Rewritten descriptors keep their GUID, integrity and
@@ -1127,6 +1135,14 @@ least recently used first. The package JSON reports the file
 count and `bundles: { bundles, entries, storedBytes, sourceBytes }`. `sourceBytes` sums
 declared decoded entry lengths (stored length when absent), so preparing an already
 encoded build preserves the same statistics.
+
+Grouped shaders additionally carry `decodedRange { offset, length }`: `byteRange`
+addresses one compressed group, while `decodedRange` selects the complete original
+program after decompression. Individual program lengths and hashes are unchanged.
+Concurrent readers coalesce the group decode and independently verify each selected
+program. A reused prepared build retains the same logical program count and source
+byte totals. Grouping changes transport only; it does not parse WGSL, merge compiler
+interfaces, remove variants or require knowledge of the player's device.
 
 #### Compressed delivery documents
 
@@ -1262,6 +1278,11 @@ scheme, `en-US` locale and UTC timezone. Native Playwright screenshots wait for
 game-realm animation callbacks after the submitted-frame handshake. An unsized headed development
 session uses the native window and display density. Projects must ship the same
 Web font files on every machine; a system-font fallback is not a colour or layout parity contract.
+Solid-color UI validation must reserve space for the Engine status footer as well
+as authored HTML and Shadow DOM panels. The SDK independent-run fixture keeps a
+minimum 240-pixel CI height and exact center/5-by-5 patch oracles; full PR version
+text can wrap into a sample at the ordinary 180-pixel CI height. Its caller-owned
+evidence directory retains the full PNG and pixel/error receipt on failure.
 
 For local/remote pixel or colour comparison, add `--deterministic`. The command navigates with
 `?forgeaxCapture=1`. The Engine App retains the submitted and completed frame facts on
@@ -2500,12 +2521,12 @@ document within the existing startup deadline; other browser failures stay termi
 
 For a repository app using the canonical `vite build` entry, `readProjectFacts(root)` and `createViteConfig(facts, command)` expose the same project assembly used by the CLI. Keep the Vite config as an adapter; do not duplicate the plugin Catalog or bootstrap. `apps/showcase/palace/vite.config.ts` exercises this route.
 
-Before project build or development startup, DevKit verifies the packaged
+For resource and workspace previews, DevKit verifies the packaged
 canonical environment's source and Meta SHA-256 digests against its generated
 cook receipt. `preview-kit-source-mismatch` identifies the file and expected and
 actual digests. Regenerate and publish the complete Preview kit; an old receipt
-must never identify a replacement HDR or metadata file. A public SDK fallback
-with a receipt for its own bytes remains valid.
+must never identify a replacement HDR or metadata file. The default preview environment is generated from a compact procedural source.
+Ordinary game builds and Play do not automatically admit Preview assets.
 
 External frontend modules are trusted immutable product artifacts. Their `program`
 is opaque; `frontendModule.specifier/export` is the compile input, and the supplier

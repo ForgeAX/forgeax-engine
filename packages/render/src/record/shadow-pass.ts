@@ -7,7 +7,6 @@ import {
   type RenderPipeline,
   type RhiDevice,
   RhiError,
-  type RhiQueue,
   type RhiRenderPassEncoder,
   type TextureView,
 } from '@forgeax/engine-rhi';
@@ -57,7 +56,6 @@ import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../rend
 import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { MaterialDispatchPass } from '../scene/material-dispatch';
 import { matchPass } from '../systems/pass-selector';
-import type { ViewLights } from '../world/render-lights';
 import { FirstEntryMap } from './first-entry-map';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
 import type { MaterialBgAssemblyCacheEntry, ValidatedRenderable } from './frame-snapshot';
@@ -84,14 +82,12 @@ import {
 } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, MaterialShaderPipelineEntry } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
+import { directionalShadowCasterOffset, spotShadowCasterOffset } from './shadow-caster-uniforms';
 import { shadowViewContains } from './shadow-culling';
 import { capturesShadowBundleWorkload, recordShadowBundleWorkload } from './shadow-raster-ledger';
 import { SingleMaterialHandleSet } from './single-material-handle-set';
 import { submeshRange } from './submesh-range';
 import { POINTS_LINES_VIEW_BYTES, pointShadowViewOffset, VIEW_UNIFORM_BYTES } from './view-ubo';
-
-export const SHADOW_CASTER_SLOT_STRIDE = 256;
-export const SHADOW_CASTER_BUFFER_SIZE = SHADOW_CASTER_SLOT_STRIDE * 8;
 
 /**
  * Renderer-owned capable shadow submission. The view/counter/indirect ABI is
@@ -123,38 +119,6 @@ interface PreparedGpuDrivenShadowSubmission {
   readonly view: GpuDrivenView;
   readonly bundles: readonly RenderBundle[];
   readonly workload?: { readonly indirect: number; readonly indexedIndirect: number };
-}
-
-export function directionalShadowCasterOffset(cascadeIndex: number): number {
-  return SHADOW_CASTER_SLOT_STRIDE * cascadeIndex;
-}
-
-export function spotShadowCasterOffset(tile: number): number {
-  return SHADOW_CASTER_SLOT_STRIDE * (4 + tile);
-}
-
-export function writeShadowCasterUniforms(
-  queue: RhiQueue,
-  buffer: Buffer,
-  lights: ViewLights,
-): void {
-  for (let cascade = 0; cascade < 4; cascade += 1) {
-    const written = queue.writeBuffer(
-      buffer,
-      directionalShadowCasterOffset(cascade),
-      new Uint32Array([cascade, 0, 0, 0]),
-    );
-    if (!written.ok) throw written.error;
-  }
-  for (const snapshot of lights.spot) {
-    const tile = snapshot.shadowAtlasTile;
-    if (tile < 0 || tile >= 4 || snapshot.lightViewProj === undefined) continue;
-    const offset = spotShadowCasterOffset(tile);
-    const header = queue.writeBuffer(buffer, offset, new Uint32Array([0, 1, 0, 0]));
-    if (!header.ok) throw header.error;
-    const matrix = queue.writeBuffer(buffer, offset + 16, snapshot.lightViewProj);
-    if (!matrix.ok) throw matrix.error;
-  }
 }
 
 function ensureTypedShadowViewBg(

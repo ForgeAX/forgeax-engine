@@ -55,7 +55,8 @@
     "@forgeax/engine-state": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-vfx": "workspace:*",
-    "@forgeax/engine-vfx-render": "workspace:*"
+    "@forgeax/engine-vfx-render": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74"

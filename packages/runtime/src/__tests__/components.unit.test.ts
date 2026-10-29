@@ -1346,9 +1346,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.autoAspect).toBe(true);
     });
 
-    it('perspective({ fov: 45, aspect: 4/3, near: 0.01, far: 1000 }) — explicit overrides, rest defaults', () => {
-      const pod = perspective({ fov: 45, aspect: 4 / 3, near: 0.01, far: 1000 });
-      expect(pod.fov).toBe(45);
+    it('perspective({ fov: Math.PI / 4, aspect: 4/3, near: 0.01, far: 1000 }) — explicit overrides, rest defaults', () => {
+      const pod = perspective({ fov: Math.PI / 4, aspect: 4 / 3, near: 0.01, far: 1000 });
+      expect(pod.fov).toBe(Math.PI / 4);
       expect(pod.aspect).toBeCloseTo(4 / 3, 6);
       expect(pod.near).toBeCloseTo(0.01, 6);
       expect(pod.far).toBe(1000);
@@ -1415,7 +1415,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     });
 
     it('perspective + orthographic 32-field payload counts (32 factory Camera values)', () => {
-      const p = perspective({ fov: 60, aspect: 4 / 3 });
+      const p = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
       // Both return exactly 32 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
@@ -1752,9 +1752,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // Covers AC-05 + AC-06 (perspective + orthographic returns with defaults).
   // Plan-strategy section 5.2 unit-test requirement + section 5.3 testing points.
   describe('perspective factory', () => {
-    it('perspective({ fov: 60, aspect: 4/3 }) returns POD with projection=0, near=0.1, far=2000', () => {
-      const pod = perspective({ fov: 60, aspect: 4 / 3 });
-      expect(pod.fov).toBe(60);
+    it('perspective({ fov: Math.PI / 3, aspect: 4/3 }) returns POD with projection=0, near=0.1, far=2000', () => {
+      const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
+      expect(pod.fov).toBe(Math.PI / 3);
       expect(pod.aspect).toBeCloseTo(4 / 3, 6);
       expect(pod.near).toBeCloseTo(0.1, 6);
       expect(pod.far).toBe(2000);
@@ -1768,9 +1768,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.whitePoint).toBeCloseTo(4.0, 6);
     });
 
-    it('perspective({ fov: 45, aspect: 16/9, near: 0.01, far: 1000 }) returns explicit overrides', () => {
-      const pod = perspective({ fov: 45, aspect: 16 / 9, near: 0.01, far: 1000 });
-      expect(pod.fov).toBe(45);
+    it('perspective({ fov: Math.PI / 4, aspect: 16/9, near: 0.01, far: 1000 }) returns explicit overrides', () => {
+      const pod = perspective({ fov: Math.PI / 4, aspect: 16 / 9, near: 0.01, far: 1000 });
+      expect(pod.fov).toBe(Math.PI / 4);
       expect(pod.aspect).toBeCloseTo(16 / 9, 6);
       expect(pod.near).toBeCloseTo(0.01, 6);
       expect(pod.far).toBe(1000);
@@ -1783,7 +1783,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     });
 
     it('perspective return value has all 32 factory Camera fields', () => {
-      const pod = perspective({ fov: 60, aspect: 4 / 3 });
+      const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
         'antialias',

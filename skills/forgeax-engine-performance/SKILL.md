@@ -32,6 +32,7 @@ and reusable analysis, rather than another delivery state machine.
 | Sparse shader/layout caches, singleton fanout or cache lifetime | Cache shape |
 | Full index copies for transaction rollback or abort | Rollback maintenance |
 | Worker GC, short-lived allocation sources, heap/source attribution or retention | GC and allocation ownership |
+| Repeated allocations with a few stable logical values; choose producer redesign before bounded reuse | Working-set case |
 | Idle Render churn, empty feature transactions or unchanged Skin shadow invalidation | game-3d investigation |
 | Resident Worker heap versus GC sawtooth, retained-floor attribution or small CPU effects under workload noise | Heap floor case |
 | Million-entity CPU scaling, Render World row ownership or Worker publication transfer | [Change-propagation bench](../../packages/render/bench/change-propagation/README.md) and [ECS steady-state bench](../../packages/ecs/bench/steady-state.mjs): keep steady allocation proportional to changes, sparse tags for flipping membership, and name constructors with the heap census |

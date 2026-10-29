@@ -14,12 +14,14 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 
 it('retains the same ground shadow when its caster moves behind the camera', async () => {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 512;
+  const size = testQuality.squareSize;
+  canvas.width = canvas.height = size;
   document.body.append(canvas);
   const host = await constructRuntimeRendererHost(
     canvas,
@@ -53,9 +55,10 @@ it('retains the same ground shadow when its caster moves behind the camera', asy
         direction: [0, -1, 1],
         intensity: 4,
         castShadow: true,
+        // Keep all four shadow views in this caster-visibility regression.
         cascadeCount: 4,
         shadowDistance: 35,
-        mapSize: 1024,
+        mapSize: testQuality.shadowMapSize,
         depthBias: 0.00001,
         normalBias: 0.01,
       },
@@ -94,12 +97,12 @@ it('retains the same ground shadow when its caster moves behind the camera', asy
     await commands.writeFile(`artifacts/offscreen-shadow/${name}.png`, base64, 'base64');
     const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
     const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
-    const output = new OffscreenCanvas(512, 512);
+    const output = new OffscreenCanvas(size, size);
     const ctx = output.getContext('2d');
     if (ctx === null) throw new Error('pixel readback unavailable');
     ctx.drawImage(bitmap, 0, 0);
     bitmap.close();
-    const pixels = ctx.getImageData(252, 252, 9, 9).data;
+    const pixels = ctx.getImageData(size / 2 - 4, size / 2 - 4, 9, 9).data;
     let sum = 0;
     for (let i = 0; i < pixels.length; i += 4)
       sum +=

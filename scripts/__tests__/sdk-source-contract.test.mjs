@@ -84,6 +84,7 @@ test('SDK source contract keeps the source root and prebuilt WASM closure explic
     assert.deepEqual(entry.files, [
       'rapier-native.mjs',
       'rapier-native.d.mts',
+      ...(entry.package.endsWith('3d') ? ['rapier-simd.mjs', 'rapier-simd.d.mts'] : []),
       'rapier.wasm',
       'rapier.mjs',
       'rapier.d.mts',

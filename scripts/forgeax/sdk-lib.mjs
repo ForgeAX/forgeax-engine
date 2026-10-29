@@ -247,6 +247,7 @@ export const SDK_SOURCE_WASM = Object.freeze([
       files: Object.freeze([
         'rapier-native.mjs',
         'rapier-native.d.mts',
+        ...(dimension === '3d' ? ['rapier-simd.mjs', 'rapier-simd.d.mts'] : []),
         'rapier.wasm',
         'rapier.mjs',
         'rapier.d.mts',

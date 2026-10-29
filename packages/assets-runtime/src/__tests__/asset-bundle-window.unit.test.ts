@@ -31,6 +31,66 @@ function request(guid: string, entry = 0, bytes: Uint8Array = stored): ArtifactR
 const fetcher = () => vi.fn(async () => new Response(stored.slice()));
 
 describe('resident Asset Bundles', () => {
+  it('decodes a shared compressed group and verifies each selected program independently', async () => {
+    const { compressZstd } = await import('@forgeax/engine-codec/encode');
+    const programs = [new Uint8Array(2048).fill(17), new Uint8Array(1024).fill(29)];
+    const combined = new Uint8Array(3072);
+    combined.set(defined(programs[0]));
+    combined.set(defined(programs[1]), 2048);
+    const encoded = await compressZstd(combined);
+    if (!encoded.ok) throw new Error(encoded.error.code);
+    const compressed = encoded.value;
+    const packed = encodeAssetBundle([compressed]);
+    const fetch = vi.fn(async () => new Response(packed.bytes.slice()));
+    const requests = programs.map((bytes, index) => ({
+      guid: `group-${index}`,
+      packageUrl: 'https://game.test/group.pack.json',
+      artifactKey: 'body',
+      descriptor: {
+        path: 'bundles/group.bin',
+        mediaType: 'text/wgsl',
+        contentEncoding: 'zstd' as const,
+        byteLength: bytes.length,
+        integrity: { algorithm: 'sha256' as const, digest: hash(bytes) },
+        byteRange: { ...defined(packed.windows[0]), bundleDigest: hash(packed.bytes) },
+        decodedRange: { offset: index === 0 ? 0 : 2048, length: bytes.length },
+      },
+    }));
+    const cache = new ArtifactReadCache();
+    const results = await Promise.all(requests.map((r) => cache.readArtifact(r, fetch)));
+    expect(results.map((r) => r.unwrap())).toEqual(programs);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const bad = defined(requests[1]);
+    expect(
+      (
+        await readArtifact(
+          {
+            ...bad,
+            descriptor: {
+              ...bad.descriptor,
+              decodedRange: { offset: 2500, length: 1024 },
+            },
+          },
+          fetch,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(
+      (
+        await readArtifact(
+          {
+            ...bad,
+            descriptor: {
+              ...bad.descriptor,
+              integrity: { algorithm: 'sha256', digest: hash(defined(programs[0])) },
+            },
+          },
+          fetch,
+        )
+      ).ok,
+    ).toBe(false);
+  });
+
   it('fetches one Bundle for concurrent entries and reuses an extracted entry without refetching', async () => {
     const cache = new ArtifactReadCache(),
       fetch = fetcher();

@@ -4,11 +4,11 @@ import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   Collider,
   ColliderShapeValue,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
 import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { defineFeature } from '../../lab/feature';
 import { spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
 import { waitForPhysicsWorld } from './support/live';
@@ -25,9 +25,9 @@ export default defineFeature({
   title: 'Rapier 3D: gravity drops a cube stack',
   catalog: '3D Rapier backend',
   kind: 'visual',
-  appOptions: { plugins: [physicsPlugin('rapier-3d')] },
+  appOptions: { plugins: [physics3d] },
   summary:
-    'physicsPlugin("rapier-3d") loads Rapier WASM, then three dynamic cuboids with Collider and RigidBody are simulated. The toggle flips PhysicsWorld.setGravity and teleports the cubes back into the air.',
+    'physics3d loads Rapier WASM, then three dynamic cuboids with Collider and RigidBody are simulated. The toggle flips PhysicsWorld.setGravity and teleports the cubes back into the air.',
   expect:
     'ON: red, green and blue cubes fall and stack on the grey floor. OFF: gravity is zero and the three cubes hang still, spread out high in the air.',
   async setup({ world, frames, hud }) {

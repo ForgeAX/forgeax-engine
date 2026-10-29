@@ -172,9 +172,11 @@ const isolatedCoverageFileSets = [
     files: [
       'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
       'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
+      // Run 40742615957 crossed the unchanged 5 s partial-write recovery
+      // deadline beside broad DevKit coverage (58.078 s for the whole file).
       'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
     ],
-    weight: 10,
+    weight: 70,
   },
   {
     project: '@forgeax/engine-vite-plugin-shader',

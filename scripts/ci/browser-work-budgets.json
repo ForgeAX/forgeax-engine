@@ -1,8 +1,4 @@
 {
-  "packages/runtime/src/__tests__/gradient-sky.browser.test.ts": {
-    "deviceRequests": 1,
-    "minimumCases": 7
-  },
   "packages/runtime/src/__tests__/shadow-contact-column.browser.test.ts": {
     "deviceRequests": 1,
     "minimumCases": 4

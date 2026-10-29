@@ -185,7 +185,7 @@ import {
 } from './components/directional-shadow-filter';
 import type { LightValidationError } from './components/light-helpers';
 import { stereoEyeCamera } from './components/stereo-camera';
-import { selectEnvironment } from './environment/frame';
+import { selectFog } from './environment/frame';
 import { ShadowInvalidConfigError } from './errors/render';
 import {
   type DirectionalShadowCascadeFit,
@@ -3473,16 +3473,12 @@ export function selectFogFrame(world: World): FogFrame | undefined {
       far: valueFar,
     });
   }
-  const fogSelection = selectEnvironment({
-    environments: [],
-    fogs: fogCandidates,
-    suns: [],
-  });
+  const fogSelection = selectFog(fogCandidates);
   const state = fogState(world);
   if (fogSelection.ok) {
-    state.lkg = fogSelection.value.fog;
+    state.lkg = fogSelection.value;
     state.failure = undefined;
-    return fogSelection.value.fog;
+    return fogSelection.value;
   }
   state.failure = {
     code: fogSelection.error.code,

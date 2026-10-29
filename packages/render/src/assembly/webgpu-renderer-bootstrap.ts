@@ -1,4 +1,5 @@
 import type { RhiCanvasContext, RhiCanvasTarget, RhiDevice } from '@forgeax/engine-rhi';
+import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import {
   HealthListenerRegistry,
   LostListenerRegistry,
@@ -27,6 +28,16 @@ export async function tryCreateRendererFromBackend(
   bundler: BundlerOptions | undefined,
   createRenderer: WebGPURendererFactory,
 ): Promise<WebGPUOutcome> {
+  if (options !== undefined)
+    options = {
+      ...options,
+      ...(options.pipelineLibrary === undefined
+        ? {}
+        : { pipelineLibrary: ownPipelineLibrary(options.pipelineLibrary) }),
+      ...(options.backgroundPipelineLibrary === undefined
+        ? {}
+        : { backgroundPipelineLibrary: ownPipelineLibrary(options.backgroundPipelineLibrary) }),
+    };
   const importTransport = bundler?.importTransport;
   const adapterResult = await pack.rhi.requestAdapter(undefined, canvas);
   if (!adapterResult.ok) return { kind: 'rhi-err', error: adapterResult.error };

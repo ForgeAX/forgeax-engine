@@ -43,7 +43,6 @@ The SDK 0.4.19 capability additions use these examples and owner gates:
 
 | Catalog row | Entry | Evidence boundary |
 |:--|:--|:--|
-| Gradient Sky | `?f=lighting-shadows/gradient-sky` | Dusk gradient and sun disc versus clear background; 60 completed-frame ON/OFF pixels. |
 | Engine Content library | `packages/content/src/__tests__/content.test.ts`, `packages/devkit/src/__tests__/asset-libraries.integration.test.ts` | Real library sources, stable GUIDs, project mount and read-only authoring; registered in `GATE_PROVED_ROWS`. |
 | Load progress and timeline | `?f=app-execution/load-progress-and-timeline` | One headless example covers public work/byte progress and local timestamp marks. Cross-realm collection and page isolation stay with `packages/types/src/__tests__/load-progress.unit.test.ts` and `load-timeline.unit.test.ts`; generated startup and actual Engine producers retain their integration gates. |
 | Scripted gameplay verification | `packages/devkit/src/__tests__/project-play.e2e.test.ts`, `play.unit.test.ts`, `play-layout.e2e.test.ts` | A nested project/browser journey belongs to the DevKit gates, registered in `GATE_PROVED_ROWS`; unit summaries alone do not prove input, rendering or final runtime health. |

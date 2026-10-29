@@ -12,6 +12,7 @@ export default defineConfig({
     '@forgeax/engine-physics-rapier3d/wasm-runtime',
     '../pkg/rapier-native.mjs',
     '../pkg/rapier.mjs',
+    '../pkg/rapier-simd.mjs',
     '@forgeax/engine-ecs',
     '@forgeax/engine-math',
     '@forgeax/engine-physics',

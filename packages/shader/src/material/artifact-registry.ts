@@ -71,7 +71,7 @@ function ordinaryByteWords(value: Uint8Array, length: number): Uint32Array | und
   }
 }
 
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+export function equalMaterialArtifactBytes(left: Uint8Array, right: Uint8Array): boolean {
   const length = left.length;
   if (length !== right.length) return false;
   // Preserve TypedArray.every's detached/out-of-bounds validation without a byte callback.
@@ -121,7 +121,7 @@ export class MaterialArtifactRegistry {
   ): Result<MaterialRuntimeArtifact, MaterialArtifactConflictError> {
     const previous = this.#artifacts.get(artifact.key);
     if (previous !== undefined) {
-      if (equalBytes(previous.bytes, artifact.bytes)) {
+      if (equalMaterialArtifactBytes(previous.bytes, artifact.bytes)) {
         if (!equalParamSchema(previous, artifact)) {
           return err({
             code: 'material-artifact-conflict',

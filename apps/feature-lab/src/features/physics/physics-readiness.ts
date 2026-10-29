@@ -2,11 +2,11 @@ import {
   Collider,
   ColliderShapeValue,
   PhysicsError,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
 import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnCamera } from '../../lab/stage';
@@ -16,9 +16,9 @@ export default defineFeature({
   title: 'Physics readiness',
   catalog: 'Physics readiness',
   kind: 'probe',
-  appOptions: { plugins: [physicsPlugin('rapier-3d')] },
+  appOptions: { plugins: [physics3d] },
   summary:
-    'physicsPlugin activates asynchronously: the PhysicsWorld resource appears after WASM loads, and hasBody(entity) stays false until the next sync phase builds the body. Drivers guard with hasBody before moveAndSlide.',
+    'physics3d activates asynchronously: the PhysicsWorld resource appears after WASM loads, and hasBody(entity) stays false until the next sync phase builds the body. Drivers guard with hasBody before moveAndSlide.',
   expect:
     'All checks pass: the resource is observed as absent-then-present or present on first read, a new entity reports hasBody false then true, and moveAndSlide before the body exists throws PhysicsError body-not-found.',
   async setup({ world, frames }) {

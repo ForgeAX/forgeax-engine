@@ -70,7 +70,6 @@ describe('surface_v1 ABI', () => {
     expect(surfaceSource).not.toMatch(/\blight\s*:/);
     const common = readFileSync(fileURLToPath(new URL('../common.wgsl', import.meta.url)), 'utf8');
     expect(common).not.toContain('surfaceLightLanes');
-    expect(common).toContain('fn gradientSkyColor(');
   });
 
   it('keeps authored Surface entry points free of stage and resource ownership', () => {

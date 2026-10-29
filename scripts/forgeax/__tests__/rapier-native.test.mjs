@@ -8,6 +8,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { assertPortableRustArtifact } from '../../lib/rust-build-paths.mjs';
+import { SDK_SOURCE_WASM } from '../sdk-lib.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const execute = promisify(execFile);
@@ -62,10 +63,19 @@ for (const dimension of ['2d', '3d']) {
       'LICENSE',
       'rapier-native.d.mts',
       'rapier-native.mjs',
+      ...(dimension === '3d' ? ['rapier-simd.d.mts', 'rapier-simd.mjs'] : []),
       'rapier.d.mts',
       'rapier.mjs',
       'rapier.wasm',
     ]);
+    const publication = SDK_SOURCE_WASM.find(
+      (entry) => entry.package === `@forgeax/engine-physics-rapier${dimension}`,
+    );
+    assert.deepEqual(
+      [...(publication?.files ?? [])].sort(),
+      [...Object.keys(provenance.artifacts), 'provenance.json'].sort(),
+      'SDK source must retain the complete verified payload without requiring Rust',
+    );
     for (const [path, hash] of Object.entries(provenance.artifacts))
       assert.equal(sha256(await readFile(resolve(owner, 'pkg', path))), hash, path);
     const { artifact } = await import(pathToFileURL(resolve(owner, 'pkg/rapier-native.mjs')).href);

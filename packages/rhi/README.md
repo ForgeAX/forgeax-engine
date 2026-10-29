@@ -27,8 +27,12 @@ backend-owned.
 input action, with finite defaults in `PIPELINE_LIBRARY_LIMITS`; it does not limit
 live GPU resources. `prepare` accepts an independent `inputLimits` policy and an
 optional existing roster `owner` for generation-scoped retention. `ownPipelineLibrary`
-keeps realm-local fragment owners behind the same version-1 manifest descriptors;
-serialization borrows WGSL without changing the wire schema. Metadata and sources form one sealed snapshot. Diagnostic `collect()` retains the current and subsequent graph until its returned scope is disposed; ordinary runtime use has no history retainer. See the
+keeps received WGSL strings behind the same version-1 manifest descriptors without
+runtime fragmentation, string copying or eager source hashing. Equal complete strings
+share an owner; source identity is computed once on actual demand. Serialization
+borrows WGSL without changing the wire schema. Metadata and sources form one sealed
+snapshot. Diagnostic `collect()` retains the current and subsequent graph until its
+returned scope is disposed; ordinary runtime use has no history retainer. See the
 [backend contract](../rhi-webgpu/README.md#device-pipeline-library) for the failure,
 readback and dependency-lifetime rules.
 

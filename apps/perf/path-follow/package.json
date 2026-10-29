@@ -23,7 +23,8 @@
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/apps-shared": "workspace:*",
-    "@forgeax/engine-geometry": "workspace:*"
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

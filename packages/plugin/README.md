@@ -98,7 +98,7 @@ Export returns the exact portable `PackProgram` without evaluating its implement
 it does not capture native Fibers or installed services. The asset publication owner
 freezes membership and tool contracts before awaiting these producer exports.
 
-Source contracts and program compilation live in [Pack](../pack/README.md) and [DevKit](../devkit/README.md). The reviewed migration design is [plugin-assets-design.md](docs/plugin-assets-design.md).
+Source contracts and program compilation live in [Pack](../pack/README.md) and [DevKit](../devkit/README.md). The reviewed migration design is plugin-assets-design.md.
 
 ## Loader migration
 

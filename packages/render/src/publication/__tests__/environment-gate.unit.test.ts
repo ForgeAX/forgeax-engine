@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { Time, World } from '@forgeax/engine-ecs';
+import { defineComponent, Time, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform, TransformInterpolation } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -82,6 +82,27 @@ function session() {
 }
 
 describe('change-driven source environment', () => {
+  it('re-extracts conservatively for unrelated writes while preserving equal published values', () => {
+    const s = session();
+    const Clock = defineComponent('EnvironmentUnrelatedClock', { value: 'f32' });
+    const clock = s.world.spawn({ component: Clock, data: { value: 0 } }).unwrap();
+    try {
+      s.world.update(1 / 60).unwrap();
+      const first = s.frame();
+      extractions.mockClear();
+      for (let frame = 1; frame <= 3; frame += 1) {
+        s.world.set(clock, Clock, { value: frame }).unwrap();
+        s.world.update(1 / 60).unwrap();
+        const next = s.frame();
+        expect(next.metadata.lights).toBe(first.metadata.lights);
+        expect(next.metadata.cameras).toBe(first.metadata.cameras);
+      }
+      expect(extractions).toHaveBeenCalledTimes(3);
+    } finally {
+      s.dispose();
+    }
+  });
+
   it('extracts no environment while only renderables move', () => {
     const s = session();
     try {
@@ -138,6 +159,26 @@ describe('change-driven source environment', () => {
 });
 
 describe('EnvironmentGate inputs', () => {
+  it('conservatively observes every non-pose component for arbitrary extractors', () => {
+    const world = new World();
+    const Input = defineComponent('EnvironmentExplicitInput', { value: 'f32' });
+    const Other = defineComponent('EnvironmentOtherInput', { value: 'f32' });
+    const entity = world
+      .spawn({ component: Input, data: { value: 1 } }, { component: Other, data: { value: 1 } })
+      .unwrap();
+    const gate = new EnvironmentGate<number>();
+    gate.assetsChanged = false;
+    let runs = 0;
+    const read = () => gate.read(world, 'key', () => ({ value: ++runs, timeDependent: false }));
+    read();
+    world.set(entity, Other, { value: 2 }).unwrap();
+    read();
+    expect(runs).toBe(2);
+    world.set(entity, Input, { value: 2 }).unwrap();
+    read();
+    expect(runs).toBe(3);
+  });
+
   function gated() {
     const world = new World();
     const entity = world.spawn({ component: Transform, data: { pos: [0, 0, 0] } }).unwrap();

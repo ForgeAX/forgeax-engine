@@ -36,6 +36,13 @@ identity before reuse. Failed creations publish no reusable handle.
 
 ## Preparing hidden loadout pipelines
 
+> [!IMPORTANT]
+> Material pipeline `constants` are common to both stages; texture masks also
+> control vertex displacement. `vertexConstants` can explicitly select the vertex
+> values and participates in pipeline cache identity. Standard material assembly
+> removes its fragment-only Surface discard gate from that vertex projection,
+> including the fixed GPU Scene path, while retaining the complete fragment map.
+
 Set `MeshRenderer.preparePipelines: true` on the finite mesh roster that this
 session can select, including meshes with hidden `Visibility`. The renderer
 requests their authored color and active ShadowCaster PSOs through the same
@@ -88,6 +95,16 @@ that transition. This flag does not provide a Source Worker acknowledgment for
 switching a new mid-session loadout; retaining the previous selection until
 such acknowledgment is a separate game transition responsibility. It does not
 prepare an asset library that has not been requested.
+
+App options and recovery data retain compact source owners rather than expanded
+WGSL. Current startup/background rosters retain their device records; replacing or
+disposing their generation releases that holding. A new local material/feature owner
+consumes completed device work without expanding its admitted source. Source or full
+state changes still create a distinct recipe; diagnostic labels are not identity.
+
+`inspect({pipelineLibrary:true, pipelineLibraryLimits})` applies an optional policy
+to that single export and returns the actual `pipelineLibraryPolicy` alongside its
+complete manifest. A failed export does not alter readiness or recovery.
 
 An imported pipeline library also prepares CPU material-program facts for the
 shader sources referenced by its graphics recipes, after native preparation
@@ -200,6 +217,16 @@ actual draw demand: GPU candidates claim, deduplicate and resolve transient
 current/previous task output before culling, and Direct/uniform draws write
 transient task buffers. No binding retains a pose palette across frames.
 Physics keeps GlobalTransform.world; Render owns no interpolation history.
+
+Skin input frames capture their owner's logical content revision. Actual joint,
+Skeleton and Binding edits advance it; identical writes do not. Retaining an old
+frame preserves its captured revision even after newer edits. The revision is
+independent of recyclable GPU addresses and remains diagnostic metadata after
+release, without retaining input pages. A shadow view records this dependency
+with its retained depth and can reuse an unchanged Skin pose. Changed, missing
+or unknown Skin facts invalidate it; ordinary light, caster, material and graph
+invalidation still applies. New graphs explicitly initialize their physical
+Skin task resources even when depth itself is retained.
 
 ## Managed simulation scene SDF
 
@@ -359,7 +386,7 @@ submission membership index for affected primitives and reordered membership,
 without a second primitive-to-draw registry. Inspection reports successful view
 hit/rebuild decisions, first rebuild reasons and actual retained-content comparison
 work; those counters do not describe every preparation scan. Measured maintenance
-and negative outcomes are preserved in the [controlled game report](reports/shadow-preparation-20261014.md).
+and negative outcomes are preserved in the controlled game report.
 Shadow selection uses the native view's ordered candidate ranges and its existing
 slot/generation index. Material adoption changes shared execution rows; it does
 not rebuild entity claims, shader maps or a consumer index. The actual submesh
@@ -562,7 +589,11 @@ Atmosphere flag and retains ownership of native layouts and generation caches.
 An unused malformed Standard variant therefore fails when selected, rather than
 at initialization. Synchronous creation failures use the existing structured
 material-pipeline error; native WebGPU validation reaches `Renderer.onError`.
-Recovery builds fresh device-owned modules through the same preparation boundary.
+Explicitly prewarmed modules belong to the Renderer device generation. Its scope
+retains them until retirement. Runtime Feature installation uses a child scope
+that releases its modules on failed installation or uninstall. Adapter lookup
+uses weak handles and validates the seed source before reusing an alias. Recovery builds fresh
+device-owned modules through the same preparation boundary.
 
 Material graph projection and command recording consume the immutable
 `MaterialShaderArtifact.program` published by ShaderRegistry. Camera motion,
@@ -671,6 +702,13 @@ reused, and replaced table buffers retire after their last preparation and queue
 work finish. At most 128 material frames may be retained per GPU Scene. Unpinned
 values reuse storage and upload only changed rows. All this work scales with shared
 material bindings and changed material bytes, not the number of objects using them.
+
+Captured pin rosters share their fixed resource maps. Extending or releasing one
+preparation cannot change an earlier roster; adoption validates the complete
+material/Mesh versions and accepted input mapping before acquiring references.
+GPU passes borrow slot indices from the accepted material table. Fixed GPU-only
+binding rosters reuse that table while material versions and resource scopes
+match; mutable borrowed bindings remain observed on each preparation.
 
 Direct drawing queries the frame's shared GPU execution selection at the point
 of consumption. It does not retain a per-entity ownership or validation table.
@@ -1170,6 +1208,12 @@ affected surfaces locally; it must not reset the submitted camera or the entire
 TAA history. Explicit pause/resume and device/session recovery retain their
 global temporal cut semantics.
 
+The recorder compares normalized temporal input facts before publishing one final
+`TemporalView`. Staging detaches camera data once; commit adopts that private data
+and returns only success or failure. Public snapshots copy on observation. Native
+recording reuses the temporal producer's fixed camera projection; raw helpers
+keep their later camera observation.
+
 A solid-color Skylight or Atmosphere needs no image cube. Consumers requiring the ready picture must wait for a matching completed
 `ready` receipt, rather than counting clear-only submissions as scene readiness.
 
@@ -1185,6 +1229,12 @@ geometry/material bindings and the current validated source. Successful submissi
 consumes actual draws; rejected submissions produce no presentation or geometry
 receipt. Scene identity, World remapping and physical resource replacement remain
 part of the native geometry contract.
+
+Typed Scene Pass execution predicates borrow the common frame and receive the
+exact `ScenePassRequest` that owns their prepared draw work. Predicates that
+need CPU selection derive `scenePassContext(frame, request)` at that point;
+GPU/resolve checks need no copied draw context. Actual recording still owns a
+detached context for the selected pass.
 
 Shadow readiness records the shadow views actually bound by scene receivers in
 this frame. A later scene pass without shadow inputs, including Outline selection,
@@ -1422,7 +1472,7 @@ specular reflections. Its BRDF response uses the checked Three r184 16x16 GGX
 DFG data with the existing IBL sampling axes; roughness and view angle remain
 physical inputs even without an image. Panorama BRDF integration reuses
 Standard's correlated Smith visibility function. No Skylight means zero
-environment contribution. See [the uniform-environment comparison](../../apps/parity/color-lighting/ENVIRONMENT_RESPONSE.md)
+environment contribution. See the uniform-environment comparison
 for the measured scope and remaining LUT differences.
 
 `Materials.standard` uses the mobile-friendly DFG numerical fit by default.
@@ -2189,6 +2239,15 @@ plan. Register it at construction with
 `createRenderer(canvas, { features: [feature] })`. A feature never receives a
 device, queue, encoder, staging builder, or submit callback.
 
+Standard registers the static Outline, LensEffects, LensFlare and SMAA shader
+programs once through its existing built-in post-process owner. That owner keeps
+parameter buffers through empty Feature frames and recreates them on device
+recovery; camera snapshots and Standard topology still control activation,
+ordering and per-view parameter writes. These declarations do not require
+per-frame Feature extract/plan transactions. Required startup shader sources
+include them independently of active camera effects. BarrelDistortion retains
+its ordinary Feature plan and graph contribution.
+
 One Renderer owns one feature host and one instance of each installed feature.
 `extract` and `plan` run once per outer frame with the complete `context.views`
 roster. Each view has a stable `identity` and `render` flag; a held low-frequency
@@ -2226,6 +2285,12 @@ after the completion fence. Failure discards candidate allocations and restores
 the accepted resource indexes. Held graphics retain their shared buffer
 dependencies. Replacing one view's resources invalidates that view's graph,
 without resetting another view or shared simulation.
+
+Empty prepared-graphics transactions create their overlay and touched-resource
+collections only on actual admission or retention. The store owns one frozen
+snapshot per accepted generation and ordered resource roster; an unchanged
+commit reuses it, while removal, reordering or a generation cut publishes a new
+snapshot. Previously returned snapshots remain independent of later commits.
 
 ```mermaid
 flowchart LR
@@ -2372,7 +2437,7 @@ A Terrain root is a finite opaque height surface without holes or boundary walls
 
 The typed graph derives families from World plus entity identity, including different entities reusing one asset, before view culling. For C cascades and R roots it admits C(1+R) layers against the device and eight-bit carrier limits. Changing roots, cascades or map resolution prevents a failed candidate from falling back to an incompatible accepted graph. Root families copy the complete current GPU-only static layer and then add the role-specific dynamic, CPU and feature casters; their scheduling follows that static producer on abort/retry. They never copy the composed ordinary depth or retain only partial dirty rectangles.
 
-The detailed proof, finite-edge semantics, cost estimate and required falsifiers are in [the repair contract](../terrain/docs/material-id/terrain-self-shadow.md). The Standard WGSL helper `evalDirectionalShadowFactor(normal, worldPos, viewZ, layerBase)` requires the physical base; ordinary custom receivers pass `0u`. Root-family routing remains renderer-owned rather than an author-controlled material option.
+The detailed proof, finite-edge semantics, cost estimate and required falsifiers are in the repair contract. The Standard WGSL helper `evalDirectionalShadowFactor(normal, worldPos, viewZ, layerBase)` requires the physical base; ordinary custom receivers pass `0u`. Root-family routing remains renderer-owned rather than an author-controlled material option.
 
 #### Screen-space contact shadows
 
@@ -5490,7 +5555,7 @@ separate from persistent storage or change discovery. It compares/reuses
 queried output during culling rather than expanding the source roster first.
 
 These mechanisms do not establish a net performance or GC improvement. The
-[change-driven audit](reports/change-driven-update-audit-20261019/README.md)
+change-driven audit
 records the rejected source-only comparison and remaining rendering,
 fragmentation, retirement and matched performance gates.
 
@@ -5806,7 +5871,7 @@ declaration identity. Source edits, including same-length replacements, rebuild
 the digest. The weak cache retires with the declaration.
 
 For real CPU submission and completed-frame measurements, use the
-[repeated Dawn comparison](../../scripts/bench/standard-deferred.md). It covers
+repeated Dawn comparison. It covers
 both Standard render paths without treating software GPU FPS as hardware FPS.
 
 ```ts
@@ -6104,6 +6169,65 @@ resolved material/pipeline/mesh groups are unchanged replays its retained bundle
 so a steady frame re-encodes only runs holding an edited batch. Only the Surface
 `nearest-layer`/`color` passes, whose draws feed the in-order submission
 observation, record directly.
+
+Each pass encode resolves a distinct material or raster class at most once.
+After a recorded run's entire owner map matches, that immutable map witnesses
+those resolutions for the rest of the encode. New keys and partial failures use
+a lazy memo; successful prefix resolutions survive a throw or callback reentry.
+Every frame still rechecks physical buffers, material slots and selected pass
+membership. Those facts compare directly in their production order, including
+after a mismatch; only a newly recorded run captures a detached fact array.
+Failed encodes publish no partial retained runs.
+
+Shadow content retains selected texture/sampler versions and scope membership.
+When a shader reads no resource bindings and the selected immutable snapshot
+is the exact member of the fixed material frame, that frame already witnesses
+its numeric values; shadow preparation does not copy the same material state
+again. Raw or overridden snapshots retain their independent content capture.
+
+View uniform uploads borrow bounded numeric staging storage, clearing optional
+lanes per invocation. Getter or queue callback reentry uses independent storage;
+failed writes restore the invocation guard. Queue writes consume their bytes
+before returning, and public snapshots never retain the staging array. Matrix
+helpers accept explicit output while preserving fresh default and overlapping
+capture-input behavior.
+
+Material cook capability projections retain two immutable scalar domains for
+ordinary and visible-surface work. Device capabilities and limits are read on
+each call; a backend/capability change replaces the corresponding projection.
+Standard feature attachment rosters retain only the latest format/sample/history
+combination and its immutable logical projection. Borrowed target arrays keep
+the original getter-reading projection path and are never admitted by freezing
+or by a public marker.
+
+Reflection fallback tickets share only complete unchanged immutable projection
+and signature evidence. Tickets, frame/device generations, retirement and
+completion admission remain independent. Empty consumers share the fixed neutral
+projection and skip unused environment lookup/signature work. Camera frusta borrow
+bounded numeric intermediates while returning detached plane arrays; nested getter
+calls acquire independent scratch and exceptions restore the guard.
+
+The stock recorder retains one complete detached frame-graph key witness and
+reuses its canonical diagnostic string when every fact matches. Borrowed pipeline
+config remains natively serialized on every call. A profile can bypass repeated
+serialization only after deep-frozen plain-JSON qualification. Custom/opaque nodes
+refuse witness reuse; raw/custom recording keeps the original key path. Graph
+recovery/disposal drops the witness with the installed graph generation.
+
+The private recorder transfers its newly created shadow-view requests into the
+current pool read domain, filling the existing request rather than making rest
+and update copies. Static/final layers still own separate requests; lazy camera
+reads retain their frame lifetime. Borrowed updateShadowViews callers omit the
+internal ownership argument and keep the original copy/getter path. Transferred
+requests must be fresh and must not be reused by the producer.
+
+Prepared GPU frames expose internal topology and shadow-publication reads as
+explicit functions; assembly invokes them at the original consumption boundary.
+Published shadow maps have a frozen capability wrapper with no mutation methods.
+An unchanged ordered key/value roster reuses that wrapper, while changed or
+reordered entries publish a new one without mutating old frames. Shadow topology
+serialization retains one complete active-key/resource-generation witness per
+pool; each read checks the current values before reusing its string.
 
 The topology contributes each `(primitive, source draw, instance ordinal)` once.
 Prepared draw facts prove resource admission once per source draw; ownership
@@ -7420,7 +7544,10 @@ In the design language, `actual` and `bound` map to the public Barrel members
 
 `createBarrelDistortionMapping(outputWidth, outputHeight, data)` derives the
 immutable effective mapping. Reuse the mapping attached to the submitted
-`FrameReceipt` or the serialized worker frame signal. `mapDisplayToScene` and
+`FrameReceipt` or the serialized worker frame signal. Queue submission can keep
+its previous owned mapping when every viewport, warp and unjittered camera
+value matches; a changed camera, extent or effective warp publishes a detached
+replacement. Receipt frame identity remains independent of mapping identity. `mapDisplayToScene` and
 `mapSceneToDisplay` write continuous output-viewport physical pixels through
 out-parameters; inverse points cropped outside the display rectangle return
 `false`. The public `@forgeax/engine-picking` display entrypoints use this
@@ -8296,6 +8423,7 @@ buffers and indexed/non-indexed indirect methods do not define additional partit
 | No segment of the pass repeats for four drawing frames | Record the pass directly for a bounded backoff window, then probe again |
 | Data updates through retained uniform, vertex or indirect buffers | Keep the bundle and consume current contents |
 | GPU-driven batch bind groups (mesh/skin table plus lighting at group 2) | Cached device-scoped by their physical inputs, so an unchanged batch replays the same handle and keeps its bundle |
+| Native Skin runs | Replay only while current task buffers, ranges and dynamic offsets match, together with the existing physical, material and pipeline owners; updated palette contents remain live |
 | Unrelated feature graph replacement | Keep the view-owned scene cache and compare current physical commands |
 | Scene attachment format/sample/read-only changes | Replace only the incompatible pass cache |
 | Device replacement | Clear the segments, bundles and backoff state, then evaluate the new device from a cold frame |
@@ -8353,6 +8481,7 @@ A failed encode, finish or submit publishes none of the candidate histories.
 | `viewport` | Normalized `[x, y, width, height]`, with origin at the top left | Full screen |
 | `order` | Ascending composition order; entity identity breaks ties | `0` |
 | `resolutionScale` | Render resolution relative to the viewport; `(0, 1]` | `1` |
+| `maxRenderShortSide` | Cap the shorter render axis in pixels, preserving the viewport aspect ratio; `0` disables the cap | `0` |
 | `updateInterval` | Render once per this many draw calls; reuse the complete picture between updates | `1` |
 | `enabled` | Participate in output | `true` |
 
@@ -8380,6 +8509,41 @@ opaque black. Every view clears its private color/depth before rendering, so one
 camera cannot erase or depth-test against another. Resize forces a fresh render;
 `Camera.historyVersion` cuts only that camera's history, while frame `temporalReset`
 cuts all views. Removing or disabling a view retires its resources after GPU work.
+
+`CameraView.resolutionScale` also supplies fixed spatial upscaling for a single
+full-screen camera, including FXAA or no AA. The view renders and post-processes
+at its scaled extent; `camera-view-composite` samples the completed picture with
+linear minification/magnification into the output-sized presentation target.
+The shared submission then encodes screen UI once at the canvas dimensions.
+Canvas size, UI layout and input coordinates do not follow this scale. This uses
+ordinary GPU texture filtering; no dedicated display upscaler is required.
+
+For an output-independent spatial budget, set `maxRenderShortSide: 720` on that
+full-screen view. The effective scale is the smaller of `resolutionScale` and
+`720 / min(viewportWidth, viewportHeight)`, capped at one; both axes use that scale
+and round to whole pixels. A 3203×1440 output therefore renders 1602×720, portrait
+1440×3203 renders 720×1602, and 800×600 stays 800×600. A resize recomputes the
+extent from the viewport; frame timing never changes this fixed budget. The
+generic schema default stays uncapped; the game chooses its quality budget.
+An explicit Camera RenderTarget still owns its descriptor dimensions.
+
+Hosts can select the same spatial budget with `RendererOptions.maxRenderShortSide`
+(default `0`, uncapped), independently of the scene's camera components. A capped
+implicit camera uses the established ActiveCamera/FrameCamera selection and gains
+a Renderer-owned display view; source World components and published camera facts
+are not modified. Authored CameraViews retain the stricter positive cap. Explicit
+RenderTargets retain their descriptor sizes. When the full output already fits
+the Host budget, an implicit camera keeps the primary recording path. Canvas,
+screen UI and input coordinates remain native. The WeChat Host selects its own
+default through [DevKit's target configuration](../devkit/README.md#wechat-mini-game).
+
+For temporal upscaling, use the TAA camera's
+[DynamicResolution](#adaptive-dynamic-resolution) instead. Equal bounds select a
+fixed internal scale with output-sized temporal history/resolve. Adding a scaled
+`CameraView` would also reduce that view's output/history dimensions, followed by
+spatial composition; it is not equivalent to TAAU resolving to the canvas size.
+The final GLES surface presentation copy is a separate backend operation; lowering
+the scene resolution does not remove that output-sized copy.
 
 A `CameraView` camera with `Camera.target` renders into the existing Renderer-owned
 `RenderTarget` instead of a screen rectangle (2D, one mip, single-sample target;
@@ -9989,7 +10153,7 @@ Renderer 帧完成或退休后才可失效。实体的 `revision` 严格递增�
 [Browser](../../apps/hello/lod-occlusion/scripts/smoke-browser.mjs) 与
 [Dawn](../../apps/hello/lod-occlusion/scripts/smoke-dawn.mjs) 检查同次提交的逐视图
 选择及每阶段完成帧；实际通过结果以对应源码版本的报告为准。
-[增量输入说明](../../apps/hello/lod-occlusion/LOD-INCREMENTAL-INPUTS.md) 说明普通
+增量输入说明 说明普通
 Pack producer / Catalog 的准备方式。
 
 ## 完成帧的材质绘制观察
@@ -10200,3 +10364,7 @@ submission. Frozen captures import retained content and issue no caster draws.
 VSM adds two separable RG16F blur passes for updated directional/spot views;
 unused VSM allocates no moment targets. Native CSM fit, geometric receiver bias
 and default shadow filter are unchanged.
+
+The private presented-draw recorder exposes its live GPU selection through an
+explicit reader consumed at record completion. Published draw records retain a
+detached selection value; internal callback identity is not a selection key.

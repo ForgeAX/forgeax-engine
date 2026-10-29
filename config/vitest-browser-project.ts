@@ -300,6 +300,7 @@ export function createBrowserProject() {
     },
     test: {
       name: 'browser',
+      setupFiles: ['config/browser-work-guard.mjs'],
       include,
       exclude: [
         // These owners publish native artifacts, never Browser source tests.

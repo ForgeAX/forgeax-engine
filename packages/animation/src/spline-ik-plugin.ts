@@ -1,10 +1,12 @@
 import {
   defineComponent,
+  ENTITY_NULL_RAW,
   type EntityHandle,
   FixedUpdate,
   Update,
   type World,
 } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type Mat4, mat4 } from '@forgeax/engine-math';
 import { Path, PathAxis, type PreparedPath, preparePath } from '@forgeax/engine-path';
 import type { Plugin } from '@forgeax/engine-plugin';
@@ -87,6 +89,17 @@ export function splineIKPlugin(
         const rows = world.query({ read: [SplineIK] }).unwrap();
         const dirtyPaths = world.query({ read: [Path], changed: [Path] }).unwrap();
         const dirty = new Set<EntityHandle>();
+        function refreshDirtyPaths(): void {
+          dirty.clear();
+          for (const querySpan of dirtyPaths.spans().unwrap()) {
+            const queryEntities = querySpan.entities;
+            for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+              const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+              dirty.add(queriedEntity);
+            }
+          }
+        }
+
         const report = (entity: EntityHandle, cause: unknown) => {
           const failure =
             cause instanceof SplineIKError
@@ -128,16 +141,25 @@ export function splineIKPlugin(
               const live = new Set<EntityHandle>();
               const writers = new Set<EntityHandle>();
               for (const row of rows) {
-                const config = row.get(SplineIK),
-                  entity = row.entity;
+                const entity = row.entity;
+                const read = world[worldRead];
+                const configEnabled = read.getFieldValue(entity, SplineIK, 'enabled') === 1;
+                const configRoot = read.getFieldValue(entity, SplineIK, 'root') as EntityHandle;
+                const configTip = read.getFieldValue(entity, SplineIK, 'tip') as EntityHandle;
+                const configForwardAxis = read.getFieldValue(
+                  entity,
+                  SplineIK,
+                  'forwardAxis',
+                ) as number;
+                const configUpAxis = read.getFieldValue(entity, SplineIK, 'upAxis') as number;
                 live.add(entity);
-                if (!config.enabled) {
+                if (!configEnabled) {
                   const previous = bindings.get(entity);
                   if (previous) retire(entity, previous);
                   bindings.delete(entity);
                   continue;
                 }
-                if (config.root === null || config.tip === null) {
+                if (configRoot === ENTITY_NULL_RAW || configTip === ENTITY_NULL_RAW) {
                   const previous = bindings.get(entity);
                   if (previous) retire(entity, previous);
                   bindings.delete(entity);
@@ -152,10 +174,10 @@ export function splineIKPlugin(
                 let binding = bindings.get(entity);
                 if (
                   binding &&
-                  (binding.root !== config.root ||
-                    binding.tip !== config.tip ||
-                    binding.forward !== config.forwardAxis ||
-                    binding.up !== config.upAxis)
+                  (binding.root !== configRoot ||
+                    binding.tip !== configTip ||
+                    binding.forward !== configForwardAxis ||
+                    binding.up !== configUpAxis)
                 ) {
                   retire(entity, binding);
                   bindings.delete(entity);
@@ -163,18 +185,18 @@ export function splineIKPlugin(
                 }
                 if (!binding) {
                   try {
-                    const joints = chain(world, config.root, config.tip);
+                    const joints = chain(world, configRoot, configTip);
                     const solver = createSplineIKSolver(world, {
                       joints,
-                      forwardAxis: config.forwardAxis,
-                      upAxis: config.upAxis,
+                      forwardAxis: configForwardAxis,
+                      upAxis: configUpAxis,
                     }).unwrap();
                     binding = {
                       solver,
-                      root: config.root,
-                      tip: config.tip,
-                      forward: config.forwardAxis,
-                      up: config.upAxis,
+                      root: configRoot,
+                      tip: configTip,
+                      forward: configForwardAxis,
+                      up: configUpAxis,
                     };
                     bindings.set(entity, binding);
                   } catch (cause) {
@@ -211,23 +233,38 @@ export function splineIKPlugin(
                 : ['propagateTransforms'],
             queries: [],
             fn() {
-              dirty.clear();
-              for (const row of dirtyPaths) dirty.add(row.entity);
+              refreshDirtyPaths();
               const used = new Set<EntityHandle>();
               for (const row of rows) {
-                const config = row.get(SplineIK),
-                  entity = row.entity;
+                const entity = row.entity;
+                const read = world[worldRead];
+                const configEnabled = read.getFieldValue(entity, SplineIK, 'enabled') === 1;
+                const configPath = read.getFieldValue(entity, SplineIK, 'path') as EntityHandle;
+                const configLengthMode = read.getFieldValue(
+                  entity,
+                  SplineIK,
+                  'lengthMode',
+                ) as number;
+                const configWeight = read.getFieldValue(entity, SplineIK, 'weight') as number;
+                const configOffset = read.getFieldValue(entity, SplineIK, 'offset') as number;
+                const configReverse = read.getFieldValue(entity, SplineIK, 'reverse') === 1;
+                const configTwistStart = read.getFieldValue(
+                  entity,
+                  SplineIK,
+                  'twistStart',
+                ) as number;
+                const configTwistEnd = read.getFieldValue(entity, SplineIK, 'twistEnd') as number;
                 const binding = bindings.get(entity);
-                if (!binding || !config.enabled) continue;
+                if (!binding || !configEnabled) continue;
                 try {
-                  if (config.path === null || !world.hasComponent(config.path, Path))
+                  if (configPath === ENTITY_NULL_RAW || !world.hasComponent(configPath, Path))
                     throw new SplineIKError('spline-ik-stale', {
                       reason: 'path removed',
-                      ...(config.path === null ? {} : { entity: config.path }),
+                      ...(configPath === ENTITY_NULL_RAW ? {} : { entity: configPath }),
                     });
                   if (
-                    config.lengthMode !== SplineIKLength.preserve &&
-                    config.lengthMode !== SplineIKLength.fit
+                    configLengthMode !== SplineIKLength.preserve &&
+                    configLengthMode !== SplineIKLength.fit
                   )
                     throw new SplineIKError('spline-ik-invalid', {
                       reason: 'undeclared length mode',
@@ -235,7 +272,7 @@ export function splineIKPlugin(
                   // Check every binding, including bindings sharing an already cached Path.
                   {
                     const joints = new Set(binding.solver.joints);
-                    let parent: EntityHandle | null = config.path;
+                    let parent: EntityHandle | null = configPath;
                     const seen = new Set<EntityHandle>();
                     while (parent !== null) {
                       if (joints.has(parent) || seen.has(parent) || seen.size > 128)
@@ -247,46 +284,45 @@ export function splineIKPlugin(
                       parent = world.get(parent, ChildOf).unwrap().parent;
                     }
                   }
-                  let curve = curves.get(config.path);
+                  let curve = curves.get(configPath);
                   if (!curve) {
-                    const pose = new SkeletonPose(world, [config.path]);
+                    const pose = new SkeletonPose(world, [configPath]);
                     const matrix = pose.matrices[
-                      pose.indices.get(config.path) as number
+                      pose.indices.get(configPath) as number
                     ] as (typeof pose.matrices)[number];
                     curve = {
                       pose,
                       linear: mat4.clone(matrix),
-                      prepared: prepare(config.path, matrix),
+                      prepared: prepare(configPath, matrix),
                     };
-                    curves.set(config.path, curve);
-                    dirty.delete(config.path);
+                    curves.set(configPath, curve);
+                    dirty.delete(configPath);
                   } else {
                     curve.pose.read();
                     const matrix = curve.pose.matrices[
-                      curve.pose.indices.get(config.path) as number
+                      curve.pose.indices.get(configPath) as number
                     ] as (typeof curve.pose.matrices)[number];
-                    let changed = dirty.has(config.path);
+                    let changed = dirty.has(configPath);
                     for (let i = 0; i < 12; i++) if (matrix[i] !== curve.linear[i]) changed = true;
                     if (changed) {
-                      curve.prepared = prepare(config.path, matrix);
+                      curve.prepared = prepare(configPath, matrix);
                       curve.linear.set(matrix);
-                      dirty.delete(config.path);
+                      dirty.delete(configPath);
                     }
                   }
-                  used.add(config.path);
+                  used.add(configPath);
                   const matrix = curve.pose.matrices[
-                    curve.pose.indices.get(config.path) as number
+                    curve.pose.indices.get(configPath) as number
                   ] as (typeof curve.pose.matrices)[number];
                   binding.solver
                     .solve(curve.prepared, {
                       origin: matrix.subarray(12, 15),
-                      weight: config.weight,
-                      offset: config.offset,
-                      direction: config.reverse ? -1 : 1,
-                      lengthMode:
-                        config.lengthMode === SplineIKLength.preserve ? 'preserve' : 'fit',
-                      twistStart: config.twistStart,
-                      twistEnd: config.twistEnd,
+                      weight: configWeight,
+                      offset: configOffset,
+                      direction: configReverse ? -1 : 1,
+                      lengthMode: configLengthMode === SplineIKLength.preserve ? 'preserve' : 'fit',
+                      twistStart: configTwistStart,
+                      twistEnd: configTwistEnd,
                     })
                     .unwrap();
                 } catch (cause) {

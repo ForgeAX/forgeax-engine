@@ -147,8 +147,6 @@ afterEach(() => vi.restoreAllMocks());
         shadowMapSize: 0,
         shadowCascadeCount: 0,
         shadowSampler: { __label: 'shadow-sampler' },
-        shadowLightSpaceMatrix: null,
-        shadowCsmLightViewProj: null,
       },
     };
   }

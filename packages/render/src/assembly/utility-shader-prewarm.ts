@@ -1,11 +1,13 @@
 import { RhiError, type ShaderModule } from '@forgeax/engine-rhi';
-import type { ManifestEntry } from '@forgeax/engine-types';
+import { manifestShaderSource } from '@forgeax/engine-shader';
+import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
   SsrShaderSources,
   VolumetricFogShaderSources,
 } from '../render-contract';
+import type { SeedShaderModule } from './material-shader-policy';
 
 /** `[source key, pipeline label, WGSL entry point]`; the label equals the manifest stage. */
 type UtilityShaderStage<Key extends string> = readonly [Key, string, string];
@@ -45,13 +47,17 @@ export async function prewarmUtilityShaders<Key extends string>(
   bundle: string,
   stages: readonly UtilityShaderStage<Key>[],
   entries: readonly ManifestEntry[],
-  compile: (label: string, source: string) => Promise<ShaderModule>,
-  seed: (label: string, module: ShaderModule) => void,
-): Promise<Record<Key, string> | undefined> {
+  compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
+  seed: SeedShaderModule,
+): Promise<Record<Key, ShaderSource> | undefined> {
   const resolved = stages.map(([stage, label, entryPoint]) => ({
     stage,
     label,
-    entry: entries.find((entry) => entry.wgsl.includes(`fn ${entryPoint}(`)),
+    entry: entries.find((entry) =>
+      entry.entryPoints === undefined
+        ? entry.wgsl.includes(`fn ${entryPoint}(`)
+        : entry.entryPoints.some((point) => point.name === entryPoint),
+    ),
   }));
   if (resolved.every(({ entry }) => entry === undefined)) return undefined;
   const missing = resolved.find(({ entry }) => entry === undefined);
@@ -62,14 +68,15 @@ export async function prewarmUtilityShaders<Key extends string>(
       hint: `add the package-owned WGSL entry for '${missing.label}' to the engine shader manifest`,
     });
   }
-  const compiled: Array<{ label: string; module: ShaderModule }> = [];
-  const sources = {} as Record<Key, string>;
+  const compiled: Array<{ label: string; module: ShaderModule; source: ShaderSource }> = [];
+  const sources = {} as Record<Key, ShaderSource>;
   for (const { stage, label, entry } of resolved) {
     if (entry === undefined) throw new Error(`missing ${bundle} shader ${label}`);
-    compiled.push({ label, module: await compile(label, entry.wgsl) });
-    sources[stage] = entry.wgsl;
+    const source = manifestShaderSource(entry);
+    compiled.push({ label, module: await compile(label, source), source });
+    sources[stage] = manifestShaderSource(entry);
   }
-  for (const { label, module } of compiled) seed(label, module);
+  for (const { label, module, source } of compiled) seed(label, module, source);
   return sources;
 }
 
@@ -79,8 +86,8 @@ export async function prewarmUtilityShaders<Key extends string>(
  */
 export async function prewarmSsrWithDepthPyramid(
   entries: readonly ManifestEntry[],
-  compile: (label: string, source: string, bundle: string) => Promise<ShaderModule>,
-  seed: (label: string, module: ShaderModule) => void,
+  compile: (label: string, source: string | ShaderSource, bundle: string) => Promise<ShaderModule>,
+  seed: SeedShaderModule,
 ): Promise<{ ssr: SsrShaderSources; pyramid: DepthPyramidShaderSources } | undefined> {
   const pyramid = await prewarmUtilityShaders(
     'depth pyramid',

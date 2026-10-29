@@ -71,7 +71,7 @@ Web ZIPs require and preserve root README.md and docs/feedback.md.
 > A missing monitor alone does not require software rendering. It is separate from ordinary player/release acceptance.
 
 For Linux image preparation and writable XDG state, follow
-[Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md).
+Linux unattended validation.
 Read the actual OS before choosing Ubuntu apt or TencentOS dnf packages. Use
 `--headless true` to capture without X11/Xvfb; the default virtual headed route
 requires Xvfb when `DISPLAY` is absent. Run sandboxed Chromium as a non-root user.
@@ -212,7 +212,7 @@ forgeax-sdk/
 └── AGENTS.md
 ```
 
-Read [AGENTS.md](AGENTS.md), then the [SDK capability tour](skills/forgeax-engine-sdk/SKILL.md) and [feature catalog](skills/forgeax-engine-sdk/references/feature-catalog.md). The catalog records a historical audit commit, not current-HEAD proof; match the exact Engine commit and gate receipt before relying on it. It discovers capabilities, not game activation. New games receive ordinary AGENTS/skills files; project skill install/verify manages Agent discovery links.
+Read [AGENTS.md](AGENTS.md), then the [SDK capability tour](skills/forgeax-engine-sdk/SKILL.md) and feature catalog. The catalog records a historical audit commit, not current-HEAD proof; match the exact Engine commit and gate receipt before relying on it. It discovers capabilities, not game activation. New games receive ordinary AGENTS/skills files; project skill install/verify manages Agent discovery links.
 
 ## Source snapshot
 

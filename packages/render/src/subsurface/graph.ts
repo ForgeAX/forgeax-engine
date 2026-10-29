@@ -6,7 +6,7 @@ import {
   type RenderPipeline,
   RhiError,
 } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-types';
+import { ok, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
@@ -88,10 +88,9 @@ export function addSubsurfaceDiffusion(
               hint: 'rebuild shared shader inputs and initialize the Renderer',
             });
           const module = frame.runtime.shaderModuleFactory
-            ?.createShaderModule({
-              code,
-              label: 'forgeax::engine-subsurface-diffusion',
-            })
+            ?.createShaderModule(
+              shaderSourceDescriptor(code, 'forgeax::engine-subsurface-diffusion'),
+            )
             .unwrap();
           if (module === undefined)
             throw new RhiError({
@@ -185,7 +184,9 @@ export function addSubsurfaceDiffusion(
               hint: 'rebuild shared shader inputs and initialize the Renderer',
             });
           const module = factory
-            .createShaderModule({ code, label: 'forgeax::engine-subsurface-diffusion' })
+            .createShaderModule(
+              shaderSourceDescriptor(code, 'forgeax::engine-subsurface-diffusion'),
+            )
             .unwrap();
           const layout = device
             .createBindGroupLayout({

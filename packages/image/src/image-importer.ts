@@ -55,6 +55,7 @@ import type { CompressionMode, EncodedTexture } from './ktx2-encode.js';
 import { basisEncodeParamsFor, encodeTextureToKtx2 } from './ktx2-encode.js';
 import { importCubeSource } from './lut/cube-producer.js';
 import { parseImage } from './parse-image.js';
+import { deriveImageSourceKey } from './source-key.js';
 import { importTextureSource } from './texture/importer.js';
 
 /** Map a source path / mime hint to the parseImage mime literal. */
@@ -67,18 +68,49 @@ function mimeFromSource(source: string): 'image/png' | 'image/jpeg' | undefined 
 
 type RequiredImageOutputKind = 'texture' | 'equirect';
 
+const sourceFormats = [
+  {
+    extensions: ['.png', '.jpg', '.jpeg'],
+    kind: 'texture',
+    sourceKey: deriveImageSourceKey('texture'),
+    importSettings: {
+      colorSpace: 'srgb',
+      mipmap: true,
+      addressMode: 'repeat',
+      filterMode: 'linear',
+    },
+  },
+  {
+    extensions: ['.hdr'],
+    kind: 'equirect',
+    sourceKey: deriveImageSourceKey('equirect'),
+    importSettings: { colorSpace: 'linear' },
+  },
+  {
+    extensions: ['.cube'],
+    kind: 'texture',
+    sourceKey: deriveImageSourceKey('texture'),
+    importSettings: { colorSpace: 'linear', mipmap: false },
+  },
+  {
+    extensions: ['.ktx2', '.texture.json'],
+    kind: 'texture',
+    sourceKey: deriveImageSourceKey('texture'),
+    importSettings: {},
+  },
+  {
+    extensions: ['.basis'],
+    kind: 'texture',
+    sourceKey: deriveImageSourceKey('texture'),
+    importSettings: { colorSpace: 'srgb' },
+  },
+] as const satisfies NonNullable<NonNullable<Importer['capabilities']>['sourceFormats']>;
+
 function requiredImageOutputKind(source: string): RequiredImageOutputKind | undefined {
   const lower = source.toLowerCase();
-  if (lower.endsWith('.hdr')) return 'equirect';
-  if (
-    mimeFromSource(source) !== undefined ||
-    lower.endsWith('.basis') ||
-    lower.endsWith('.ktx2') ||
-    lower.endsWith('.cube')
-  ) {
-    return 'texture';
-  }
-  return undefined;
+  return sourceFormats.find((format) =>
+    format.extensions.some((extension) => lower.endsWith(extension)),
+  )?.kind;
 }
 
 function imageOutputTopologyActual(ctx: ImportContext): string {
@@ -794,7 +826,7 @@ export const decodeImageForImport: ImportContext['decodeImage'] = async (
 export const imageImporter: Importer = {
   key: 'image',
   import: importImage,
-  capabilities: { decodeImage: decodeImageForImport },
+  capabilities: { sourceFormats, decodeImage: decodeImageForImport },
 };
 
 export { cubeLutBytes, parseCubeLut } from './lut/cube-parser.js';

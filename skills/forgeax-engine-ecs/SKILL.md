@@ -207,6 +207,18 @@ filters are supported and yield only matching contiguous runs. Span columns
 are zero-copy transient TypedArray views and become invalid after a structure
 epoch change.
 
+For a read-only query with sparse membership or optional numeric data, use
+`query.batches().unwrap()`. Each batch exposes original physical columns through
+`read(Component, field)` and `stride(Component, field)`. A `range` batch uses
+`start <= row < end`; an `indexed` batch uses the valid `rows[0..count)` prefix.
+Index entities and columns with the physical row. Resolve optional columns once
+per batch; `undefined` means absent, while zero remains a value. Current batches
+reject write and changed/added descriptors explicitly. Keep their existing row,
+span or projection routes. Read/index arrays are borrowed, and structural
+mutation inside the raw loop is prohibited. Retained Query validation removes
+repeated setup allocation; traversal/batch allocation remains. Compare the
+[actual-API benchmark](../../packages/ecs/bench/query-batches.mjs) before migration.
+
 Relationship sources remain writable through `World.set` and row mutation so
 the ECS owner can update the source, materialized target list, and backpointer
 together. Relationship targets are read-only projections. Numeric writable
@@ -222,7 +234,7 @@ const query = world.query({ write: [Position], read: [Velocity] }).unwrap();
 for (const span of query.spans().unwrap()) {
   const position = span.mut(Position).x;
   const velocity = span.get(Velocity).x;
-  for (let i = 0; i < span.length; i++) position[i] = (position[i] ?? 0) + (velocity[i] ?? 0);
+  for (let i = 0; i < span.length; i++) position[i] = (position[i] as number) + (velocity[i] as number);
 }
 ```
 
@@ -239,7 +251,7 @@ const Selected = defineComponent('Selected', {}, { storage: 'sparse' });
 
 Use table storage for every data component and for stable identity tags. Use sparse only for frequently flipped membership. Sparse tags still participate in Archetype identity, hooks, cardinality, scene round-trip, inspection, and ordinary row queries, but Archetypes that differ only by sparse membership share the same physical Table.
 
-Sparse tags have no fields, so they belong in `with`, `without`, `changed`, or `added`, never `read`, `write`, or `optional`. A sparse predicate makes `query.spans()` return `query-span-unavailable` with reason `sparse-component`; use row iteration for that query. A writable relationship source or target makes both `query.spans()` and the internal derived writer return `query-span-unavailable` with reason `relationship-component`; route source changes through `World.set`, `row.mut`, or structural commands so the materialized mirror stays atomic. `Disabled` is always a table tag.
+Sparse tags have no fields, so they belong in `with`, `without`, `changed`, or `added`, never `read`, `write`, or `optional`. A sparse predicate makes `query.spans()` return `query-span-unavailable` with reason `sparse-component`; use read-only numeric batches when eligible, or row iteration for semantic/writable/temporal access. A writable relationship source or target makes both `query.spans()` and the internal derived writer return `query-span-unavailable` with reason `relationship-component`; route source changes through `World.set`, `row.mut`, or structural commands so the materialized mirror stays atomic. `Disabled` is always a table tag.
 
 ### Array fields: replace or write a range
 

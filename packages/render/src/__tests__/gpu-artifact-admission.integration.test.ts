@@ -139,7 +139,7 @@ it('preserves mesh content invalidation across missing-artifact failure and retr
     expect(f.scene.contentRevision).toBe(revision);
     const stableRevision = f.scene.contentRevision;
     const stable = f.prepare().unwrap();
-    expect(stable?.topologySignature).toBe(recovered?.topologySignature);
+    expect(stable?.topologySignature()).toBe(recovered?.topologySignature());
     expect(f.production.inspect().preparedBatchBuilds).toBe(0);
     expect(f.scene.contentRevision).toBe(stableRevision);
   } finally {

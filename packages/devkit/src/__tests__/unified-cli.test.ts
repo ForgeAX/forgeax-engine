@@ -423,7 +423,16 @@ describe('unified CLI', () => {
       '{"kind":"manual","multiplier":1}',
       '--json',
     ]);
-    expect(camera).toMatchObject({ ok: false, error: { code: 'live-not-running' } });
+    expect(camera).toMatchObject({
+      ok: false,
+      error: {
+        code: 'live-not-running',
+        detail: {
+          executionOwner: 'dev',
+          start: expect.arrayContaining(['dev', 'start', '--root']),
+        },
+      },
+    });
   });
 
   it('declares live-not-running on every live leaf that can return it', async () => {

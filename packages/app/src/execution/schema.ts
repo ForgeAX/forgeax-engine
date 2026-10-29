@@ -1,4 +1,5 @@
 import { isMusicState } from '@forgeax/engine-audio';
+import { AUDIO_ERROR_HINTS } from '@forgeax/engine-types';
 import {
   EXECUTION_CAPABILITY_NAMES,
   EXECUTION_WORKERS,
@@ -10,7 +11,7 @@ import {
   type ExecutionWorkerDecision,
 } from './types';
 
-export const EXECUTION_REPORT_SCHEMA_VERSION = 3 as const;
+export const EXECUTION_REPORT_SCHEMA_VERSION = 4 as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -258,19 +259,59 @@ function isAudioSection(audio: ExecutionAudioReport | undefined): boolean {
       'activeSourceCount',
       'lastError',
       ...('streaming' in audio ? ['streaming'] : []),
+      ...('preparation' in audio ? ['preparation'] : []),
       ...('music' in audio ? ['music'] : []),
       ...('cache' in audio ? ['cache'] : []),
     ])
   )
     return false;
   if (audio.owner !== 'host') return false;
-  if (!['running', 'suspended', 'closed'].includes(audio.contextState as string)) return false;
-  if (!Number.isInteger(audio.activeSourceCount) || (audio.activeSourceCount as number) < 0)
-    return false;
+  if (!isAudioContextState(audio)) return false;
+  if ('preparation' in audio && !isAudioPreparation(audio.preparation)) return false;
   if ('streaming' in audio && !isAudioStreaming(audio.streaming)) return false;
   if ('music' in audio && !isMusicState(audio.music)) return false;
   if ('cache' in audio && !isAudioCache(audio.cache)) return false;
   return audio.lastError === null || isAudioLastError(audio.lastError);
+}
+
+function isAudioContextState(audio: ExecutionAudioReport): boolean {
+  if (!['running', 'suspended', 'closed', 'unavailable'].includes(audio.contextState)) return false;
+  return audio.contextState === 'unavailable'
+    ? audio.activeSourceCount === null
+    : Number.isInteger(audio.activeSourceCount) && (audio.activeSourceCount as number) >= 0;
+}
+
+function isAudioPreparation(receipt: ExecutionAudioReport['preparation']): boolean {
+  if (
+    !isRecord(receipt) ||
+    !hasExactKeys(receipt, [
+      'requestId',
+      'status',
+      'sourceCount',
+      ...('failure' in receipt ? ['failure'] : []),
+    ]) ||
+    typeof receipt.requestId !== 'string' ||
+    !receipt.requestId ||
+    !['pending', 'ready', 'rejected'].includes(receipt.status as string) ||
+    !Number.isSafeInteger(receipt.sourceCount) ||
+    (receipt.sourceCount as number) < 0
+  )
+    return false;
+  const failure = receipt.failure;
+  return (
+    failure === undefined ||
+    (isRecord(failure) &&
+      hasExactKeys(failure, [
+        'code',
+        'expected',
+        'hint',
+        ...('detail' in failure ? ['detail'] : []),
+      ]) &&
+      typeof failure.code === 'string' &&
+      Object.hasOwn(AUDIO_ERROR_HINTS, failure.code) &&
+      typeof failure.expected === 'string' &&
+      typeof failure.hint === 'string')
+  );
 }
 
 function isAudioStreaming(streaming: ExecutionAudioReport['streaming']): boolean {
@@ -307,6 +348,7 @@ function isAudioLastError(lastError: NonNullable<ExecutionAudioReport['lastError
   if (!hasExactKeys(lastError, ['code', 'expected', 'hint', 'detail'])) return false;
   return (
     typeof lastError.code === 'string' &&
+    Object.hasOwn(AUDIO_ERROR_HINTS, lastError.code) &&
     typeof lastError.expected === 'string' &&
     typeof lastError.hint === 'string'
   );

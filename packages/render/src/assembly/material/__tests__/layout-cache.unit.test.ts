@@ -23,7 +23,7 @@ function setup() {
       source,
       receipt: { bindings },
       paramSchema: schema,
-      program: { materialBindings: undefined },
+      program: { identity: source, materialBindings: undefined },
     }),
   );
   const cache = createMaterialLayoutCache({

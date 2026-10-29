@@ -1055,7 +1055,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(warm?.topologySignature).toBe(prepared.topologySignature);
+    expect(warm?.topologySignature()).toBe(prepared.topologySignature());
     warm?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
     expect(production.inspect()).toMatchObject({ batchBindGroupCreates: 0 });
 
@@ -1084,7 +1084,7 @@ describe('GPU-driven production projection', () => {
       .unwrap();
     // Admission is a per-view GPU bitmap indexed by primitive slot: hiding an
     // entity uploads dirty words but must not rebuild the plan or the graph.
-    expect(suppressed?.topologySignature).toBe(prepared.topologySignature);
+    expect(suppressed?.topologySignature()).toBe(prepared.topologySignature());
     expect(production.inspect()).toMatchObject({ batchCount: 1 });
 
     suppressed?._commitResourceReplacement();
@@ -1110,7 +1110,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(restored?.topologySignature).toBe(prepared.topologySignature);
+    expect(restored?.topologySignature()).toBe(prepared.topologySignature());
     expect(production.inspect()).toMatchObject({ batchCount: 1 });
     // Selector accounting precedes suppression; suppression precedes the
     // compacted append in the early admission shared by both cull entry points.
@@ -1192,7 +1192,7 @@ describe('GPU-driven production projection', () => {
       filteredPlanBuilds: 0,
       suppressionUploadBytes: 4,
     });
-    expect(admitted?.topologySignature).toBe(prepared?.topologySignature);
+    expect(admitted?.topologySignature()).toBe(prepared?.topologySignature());
     production.dispose();
     availability.scene.dispose();
   });
@@ -1251,7 +1251,7 @@ describe('GPU-driven production projection', () => {
         )
         .unwrap();
       prepared?._commitResourceReplacement();
-      return prepared?.topologySignature;
+      return prepared?.topologySignature();
     };
     try {
       const first = spawn([1, 2, 3]);
@@ -1955,14 +1955,14 @@ describe('GPU-driven production projection', () => {
       expect(zeroPipeline).toBeDefined();
       first?._commitResourceReplacement();
       const stable = prepare();
-      expect(stable?.topologySignature).toBe(first?.topologySignature);
+      expect(stable?.topologySignature()).toBe(first?.topologySignature());
       stable?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
       stable?._commitResourceReplacement();
       pipelines.mockClear();
       availability.scene.sync(projection.apply([updateSnapshot(row(2, 0))])).unwrap();
       topology.rebuild(projection.slotsSnapshot());
       const changed = prepare();
-      expect(changed?.topologySignature).not.toBe(first?.topologySignature);
+      expect(changed?.topologySignature()).not.toBe(first?.topologySignature());
       // Converged materials share one batch; each row keeps its own material row.
       expect(production.inspect().batchCount).toBe(1);
       if (changed === undefined) throw new Error('expected changed GPU frame');
@@ -2550,7 +2550,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(stable?.topologySignature).toBe(prepared.topologySignature);
+    expect(stable?.topologySignature()).toBe(prepared.topologySignature());
     expect(production.inspect()).toMatchObject({
       gpuOwnedSnapshotsMaterialized: 0,
       filteredPlanBuilds: 0,
@@ -2780,7 +2780,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(replacementPrepared?.topologySignature).not.toBe(prepared.topologySignature);
+    expect(replacementPrepared?.topologySignature()).not.toBe(prepared.topologySignature());
 
     production.dispose();
     replacement.scene.dispose();

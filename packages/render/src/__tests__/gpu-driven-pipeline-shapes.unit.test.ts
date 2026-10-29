@@ -208,8 +208,8 @@ it('shares one pipeline preparation for 1025 distinct meshes across stable frame
     for (let generation = 0; generation < 2; generation += 1) {
       if (generation > 0) f.replaceFour();
       const prepared = f.prepare();
-      if (generation === 0) initialSignature = prepared.topologySignature;
-      else expect(prepared.topologySignature).not.toBe(initialSignature);
+      if (generation === 0) initialSignature = prepared.topologySignature();
+      else expect(prepared.topologySignature()).not.toBe(initialSignature);
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const copiesBefore = f.copies();
       const gpu = prepared

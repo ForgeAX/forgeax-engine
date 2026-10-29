@@ -19,8 +19,8 @@ The ordered-fragment source digest remains v4 because source identity is unchang
 hashes each pooled UTF-8 fragment once, then checks each source's domain-separated
 digest of its ordered fragment hashes before validating every entry, variant and
 receipt for atomic admission. It never joins complete sources for verification;
-composed strings are retained only when a consumer requests them. Duplicate source
-identities share the requested string; ABI receipts are shared immutable facts.
+composed strings are borrowed only when a consumer requests them. Selected sources
+share immutable fragment owners without memoizing expanded bodies; ABI receipts are shared immutable facts.
 Failed validation leaves the registry unchanged. The runtime does not compile
 WGSL. Digest verification runs in bounded batches and never skips unselected
 sources. Older compact profiles must be rebuilt by their producer.
@@ -60,7 +60,7 @@ prewarm may subsequently demand device-reachable variants; the admission memory
 budget does not claim that a complete renderer or GPU uses the same memory.
 
 `ShaderRegistry.materialProgram(source)` admits one immutable program description
-per composed source within the registry lifetime. The description owns the source,
+per composed source within the registry lifetime. The description owns a source reference,
 its identity, vertex UV count, group-2 contract, ProbeBlend requirement and whether
 the material uniform is referenced anywhere in the module. A declaration-only uniform keeps
 the shared layout without making scene-index commands depend on frame-local
@@ -82,6 +82,20 @@ can authorize a material registration. The runtime `MaterialShaderArtifact.progr
 carries this description instead of independent
 WGSL, identity and optional binding-decision fields. Synthetic producers use
 `createMaterialShaderProgram()` when constructing an artifact, never while drawing.
+
+`shaderSource()` admits material, utility and VFX text into the same CPU owner.
+`MaterialShaderProgram.sourceReference` retains its immutable fragments; `.source`
+borrows the complete string. Vertex entry locations, fragment/temporal presence and
+storage use are program facts, so managed pipeline validation does not rescan WGSL.
+
+Registered programs and their source fragments follow the existing Registry
+lifetime. Forks share these CPU facts and adoption validates the whole batch before
+publication. There is no cumulative source-byte or registration-count quota added
+by this storage change. `sourceInspection()` reports unique logical UTF-16 bytes,
+source/program counts and schema projections; these are not retained heap bytes.
+Utility module adapters retain sources with their device-generation owner and do
+not append them to a cross-generation Registry history. Input verification and
+per-action pipeline-library export limits retain their own existing boundaries.
 
 Canonical Standard pipeline and Sprite schemas enter the existing
 `ParamSchemaProjectionOwner` once at module initialization. Their immutable
@@ -451,7 +465,7 @@ and checks mode and terrain-layer independence.
 The real WebGL regression inspects the GLSL actually submitted to the driver,
 checks both providers numerically, and rejects reintroduced shader arrays or
 texture bindings on the default path. Simulator performance and delivery evidence
-are in [the platform verification report](../platform/VERIFICATION.md).
+are in the platform verification report.
 
 ## MaterialAsset and shader route
 
@@ -853,7 +867,7 @@ explicit null events, including finite mapped/smoothed normals across the geomet
 hemisphere. Surface admission validates values; BSDF value/PDF own directional
 hemisphere clipping. Existing Standard energy conventions remain unchanged.
 
-The [shader delivery audit](reports/shader-delivery-audit-2026-10-10.md)
+The shader delivery audit
 records publication, variant and memory evidence for the public Engine package.
 
 ## Direct material parameter regions

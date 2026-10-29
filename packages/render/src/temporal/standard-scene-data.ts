@@ -10,6 +10,7 @@ import type { RenderExtent } from '../pipeline/render-extent';
 import { renderExtentSize } from '../pipeline/render-extent';
 import { selectMainPassMaterials } from '../record/main-pass';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { scenePassContext } from '../record/scene-pass-work';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   RenderPipelineFrame,
@@ -228,9 +229,9 @@ export function addStandardSceneDataPass(
     executeIf:
       surfaces === 'opaque'
         ? undefined
-        : (frame) =>
+        : (frame, request) =>
             selectMainPassMaterials(
-              frame as _InternalRenderPipelineContext,
+              scenePassContext(frame as _InternalRenderPipelineContext, request),
               selector,
               'opaque',
               excludeSelector,

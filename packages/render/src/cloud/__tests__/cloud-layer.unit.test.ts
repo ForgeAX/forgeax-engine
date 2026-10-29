@@ -1,5 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CloudLayer, CloudQualityValue } from '../../components/cloud-layer';
 import { DirectionalLight } from '../../components/directional-light';
 import { validateRenderFeaturePlan } from '../../features/plan';
@@ -47,6 +47,17 @@ function params() {
 }
 
 describe('CloudLayer authoring and deterministic field', () => {
+  it('does not extract sun or time when no cloud owner exists', () => {
+    const world = new World();
+    world.components.register(CloudLayer).unwrap();
+    world.spawn({ component: DirectionalLight, data: {} }).unwrap();
+    const query = vi.spyOn(world, 'query');
+    const resource = vi.spyOn(world, 'getResource');
+    expect(extractCloudLayer(world).unwrap()).toBeUndefined();
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(resource).not.toHaveBeenCalled();
+  });
+
   it('publishes a closed schema and validates its source facts', () => {
     expect(CloudLayer.name).toBe('CloudLayer');
     expect(CloudLayer.fields).toMatchObject({

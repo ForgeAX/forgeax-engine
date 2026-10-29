@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest';
 import { cdp, commands, page, userEvent } from 'vitest/browser';
 import { createBlitzUi } from '../index.js';
 import { controlsWorkflowHtml, mountControlsWorkflow } from './controls-workflow-fixture.js';
-import { required, uiEvidenceDirectory } from './fixture.js';
+import { required, selectAllKeys, uiEvidenceDirectory } from './fixture.js';
 
 afterEach(async () => {
   await cdp().send('Emulation.setScrollbarsHidden', { hidden: false });
@@ -206,7 +206,7 @@ it('keeps dynamic inventory usable after repeated settings modal requests', asyn
     for (const flow of targets) flow.add.focus();
     await key('Enter');
     await key('Tab');
-    await userEvent.keyboard('{Control>}a{/Control}4');
+    await userEvent.keyboard(`${selectAllKeys()}4`);
     ui.input.text('4');
     for (const flow of targets) {
       expect(flow.form.reportValidity()).toBe(true);

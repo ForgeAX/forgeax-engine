@@ -21,6 +21,17 @@ backend-owned.
 
 > AI users: read [AGENTS.md §RHI / WebGPU](../../AGENTS.md) first; the铁律 (spec-alignment / capability-gated / opaque handle / math-free) is the SSOT and supersedes any divergence in this README.
 
+## Pipeline source and action ownership
+
+`pipelineLibrary` remains optional. `PipelineLibraryLimits` limits one export or
+input action, with finite defaults in `PIPELINE_LIBRARY_LIMITS`; it does not limit
+live GPU resources. `prepare` accepts an independent `inputLimits` policy and an
+optional existing roster `owner` for generation-scoped retention. `ownPipelineLibrary`
+keeps realm-local fragment owners behind the same version-1 manifest descriptors;
+serialization borrows WGSL without changing the wire schema. Metadata and sources form one sealed snapshot. Diagnostic `collect()` retains the current and subsequent graph until its returned scope is disposed; ordinary runtime use has no history retainer. See the
+[backend contract](../rhi-webgpu/README.md#device-pipeline-library) for the failure,
+readback and dependency-lifetime rules.
+
 ## Pipeline compilation inspection
 
 `RhiDevice.pipelineLibrary?.inspect().pending` is optional backend-owned data.

@@ -46,7 +46,7 @@ export interface MeshBuilderOptions {
 export interface MeshBuilder {
   /** Append one equally-cardinal attribute batch to the accumulated source. */
   appendVertices(attributes: VertexAttributeMap): Result<void, AssetError>;
-  /** Append raw index values; width is derived during build. */
+  /** Append mesh-global raw indices without rebasing; width is derived during build. */
   appendIndices(indices: ArrayLike<number>): Result<void, AssetError>;
   /** Add a draw range; omitted ranges are completed from the final source. */
   addSubmesh(submesh: MeshBuilderSubmesh): Result<void, AssetError>;

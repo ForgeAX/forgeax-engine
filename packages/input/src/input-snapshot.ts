@@ -515,6 +515,60 @@ function buildGamepadReader(
   });
 }
 
+// Immutable absence has no frame-owned data; real slots keep detached readers.
+const DISCONNECTED_GAMEPAD = buildGamepadReader(undefined);
+const EMPTY_ACTION: ReturnType<InputSnapshot['action']> = Object.freeze({
+  isPressed: () => false,
+  justPressed: () => false,
+  justReleased: () => false,
+  strength: 0,
+});
+
+function snapshotVirtualAxes(samples: readonly VirtualAxisSample[]) {
+  let index: Map<string, VirtualAxisSample> | undefined;
+  for (const sample of samples) {
+    index ??= new Map();
+    index.set(sample.name, Object.freeze({ ...sample }));
+  }
+  return index;
+}
+
+function snapshotGamepadSlots(samples: readonly GamepadSlotSample[]) {
+  let index: Map<number, ReturnType<InputSnapshot['gamepad']>> | undefined;
+  for (const sample of samples) {
+    index ??= new Map();
+    index.set(sample.index, buildGamepadReader(sample));
+  }
+  return index;
+}
+
+function snapshotPointers(samples: readonly PointerSample[]) {
+  let index: Map<number, PointerSample> | undefined;
+  for (const sample of samples) {
+    if (index?.has(sample.pointerId) === true) continue;
+    index ??= new Map();
+    index.set(
+      sample.pointerId,
+      Object.freeze({
+        ...sample,
+        delta: Object.freeze({ ...sample.delta }),
+      }),
+    );
+  }
+  return index;
+}
+
+function snapshotActionIndex(samples: readonly ActionState[] | undefined) {
+  let index: Map<string, ActionState> | undefined;
+  if (samples) {
+    for (const sample of samples) {
+      index ??= new Map();
+      index.set(sample.action, sample);
+    }
+  }
+  return index;
+}
+
 /**
  * Build an `InputSnapshot` from a backend sample.
  *
@@ -602,46 +656,11 @@ export function snapshotFromSample(
   // the snapshot closure below.
   const _virtualAxes: readonly VirtualAxisSample[] = sample.virtualAxes ?? [];
 
-  const virtualAxesMap = new Map<string, VirtualAxisSample>();
-  for (const va of _virtualAxes) {
-    virtualAxesMap.set(va.name, Object.freeze({ ...va }));
-  }
-
-  // Build index→slot map so gamepad(i) looks up by slot.index, not array position.
-  // The browser getGamepads() returns null-padded arrays where position IS the
-  // index, but the diffGamepadFrame output is a sparse list keyed by .index.
-  const gamepadSlotMap = new Map<number, ReturnType<InputSnapshot['gamepad']>>();
-  for (const slot of gamepadSlots) gamepadSlotMap.set(slot.index, buildGamepadReader(slot));
-  const disconnectedGamepad = buildGamepadReader(undefined);
-  const pointers = new Map<number, PointerSample>();
-  for (const pointer of sample.pointers ?? []) {
-    if (!pointers.has(pointer.pointerId))
-      pointers.set(
-        pointer.pointerId,
-        Object.freeze({
-          ...pointer,
-          delta: Object.freeze({ ...pointer.delta }),
-        }),
-      );
-  }
+  const virtualAxesMap = snapshotVirtualAxes(_virtualAxes);
+  const gamepadSlotMap = snapshotGamepadSlots(gamepadSlots);
+  const pointers = snapshotPointers(sample.pointers ?? []);
   const frozenActions = actionStates?.map((state) => Object.freeze({ ...state }));
-
-  // Build action lookup map for snap.action(name) readpoint.
-  const actionMap = new Map<string, ActionState>();
-  if (frozenActions) {
-    for (const a of frozenActions) {
-      actionMap.set(a.action, a);
-    }
-  }
-
-  function emptyActionReader(): ReturnType<InputSnapshot['action']> {
-    return Object.freeze({
-      isPressed: () => false,
-      justPressed: () => false,
-      justReleased: () => false,
-      strength: 0,
-    });
-  }
+  const actionMap = snapshotActionIndex(frozenActions);
 
   const snapshot: InputSnapshot = {
     keyboard: {
@@ -684,11 +703,11 @@ export function snapshotFromSample(
       wheelDelta,
     },
     gamepad(i) {
-      return gamepadSlotMap.get(i) ?? disconnectedGamepad;
+      return gamepadSlotMap?.get(i) ?? DISCONNECTED_GAMEPAD;
     },
     capabilities: caps,
     pointer(id) {
-      const entry = pointers.get(id);
+      const entry = pointers?.get(id);
       if (!entry) {
         return Object.freeze({
           active: false,
@@ -703,13 +722,13 @@ export function snapshotFromSample(
       return entry;
     },
     virtualAxis(name) {
-      const va = virtualAxesMap.get(name);
+      const va = virtualAxesMap?.get(name);
       if (!va) return Object.freeze({ x: 0, y: 0 });
       return Object.freeze({ x: va.x, y: va.y });
     },
     action(name) {
-      const s = actionMap.get(name);
-      if (!s) return emptyActionReader();
+      const s = actionMap?.get(name);
+      if (!s) return EMPTY_ACTION;
       return Object.freeze({
         isPressed: () => s.pressed,
         justPressed: () => s.justPressed,

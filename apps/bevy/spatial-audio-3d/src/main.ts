@@ -6,7 +6,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { AudioSource, audioPlugin } from '@forgeax/engine-audio';
+import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
 import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update, Time } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
@@ -152,7 +152,7 @@ if (!started.ok) {
   throw new Error('bevy-spatial-audio-3d: app.start failed');
 }
 (window as typeof window & {
-  __spatialAudioStop?: () => { contextState: string; activeSourceCount: number };
+  __spatialAudioStop?: () => AudioState;
 }).__spatialAudioStop = () => {
   const stopped = app.stop();
   if (!stopped.ok) throw new Error(`app.stop failed: ${stopped.error.code}`);

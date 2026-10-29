@@ -437,7 +437,7 @@ describe('GPU-driven mesh world identity', () => {
     expect(secondPrepared).toBeDefined();
     secondPrepared?._commitResourceReplacement();
     expect(fixture.production.inspect().filteredPlanBuilds).toBe(1);
-    expect(secondPrepared?.topologySignature).not.toBe(firstPrepared.topologySignature);
+    expect(secondPrepared?.topologySignature()).not.toBe(firstPrepared.topologySignature());
     // A fresh slots snapshot with the same structure and resident meshes is
     // not a structural edit: prepared rows and the filtered plan are retained.
     const retainedMeshes = () =>
@@ -530,11 +530,11 @@ describe('GPU-driven mesh world identity', () => {
           filteredPlanBuilds: 0,
           filteredBatchBuilds: 0,
         });
-        expect(next?.topologySignature).toBe(initial?.topologySignature);
+        expect(next?.topologySignature()).toBe(initial?.topologySignature());
       }
       const custom = prepare({ ...explicit, fragmentEntry: 'fs_custom' });
       expect(fixture.production.inspect().preparedBatchBuilds).toBe(source.plan.batches.length);
-      expect(custom?.topologySignature).not.toBe(initial?.topologySignature);
+      expect(custom?.topologySignature()).not.toBe(initial?.topologySignature());
     } finally {
       fixture.production.dispose();
       fixture.availability.scene.dispose();
@@ -605,7 +605,7 @@ describe('GPU-driven mesh world identity', () => {
           preparedBatchBuilds: source.plan.batches.length,
           filteredPlanBuilds: 1,
         });
-        expect(replaced?.topologySignature).not.toBe(original?.topologySignature);
+        expect(replaced?.topologySignature()).not.toBe(original?.topologySignature());
       }
     } finally {
       fixture.production.dispose();

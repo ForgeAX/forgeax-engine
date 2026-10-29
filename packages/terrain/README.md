@@ -68,7 +68,7 @@ Controls remain four bytes per texel. A selected Material and its five source-im
 
 Canonical closure admission re-derives controls and verifies each section's material, sampler and original author indices. The Renderer admits shared layer references and the per-Terrain source-byte budget before capture. Invalid candidates cannot publish a partially changed root.
 
-See [material ID implementation and verification](docs/material-id/implementation.md).
+See material ID implementation and verification.
 
 ## Runtime and queries
 
@@ -109,4 +109,4 @@ Collision adopts through its fixed-step publication; rendering and physics readi
 
 Pure kernels and compiler gates accompany the implementation. Real backend, browser pack-fetch, visual, timing, recovery and RHI Debug evidence belongs to the terrain scene and delivery report. Passing a pure-kernel test alone does not establish rendering acceptance.
 
-[Implementation, runtime evidence and performance boundaries](docs/landscape/implementation.md).
+Implementation, runtime evidence and performance boundaries.

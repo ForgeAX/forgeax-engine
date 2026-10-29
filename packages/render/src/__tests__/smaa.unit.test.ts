@@ -3,10 +3,14 @@ import { World } from '@forgeax/engine-ecs';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { parse, validate } from '../../../naga/src/index';
+import {
+  collectRequiredFullscreenPostProcesses,
+  withBuiltinRenderFeatures,
+} from '../assembly/render-feature-post-processes';
 import { ANTIALIAS_SMAA, antialiasFromF32, Camera } from '../components/camera';
 import { createRenderFeatureHost } from '../features/host';
 import { smaaLookupData } from '../features/smaa/lookup-data';
-import { createSmaaRenderFeature, SMAA_PROGRAMS } from '../features/smaa/shaders';
+import { SMAA_PROGRAMS } from '../features/smaa/shaders';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 
@@ -59,7 +63,7 @@ describe('SMAA authoring and production programs', () => {
     if (!validated.ok) throw validated.error;
     expect(validated.ok).toBe(true);
   });
-  it('prepares SMAA only for updating views that selected it', () => {
+  it('registers SMAA shaders without Feature work for updating or held views', () => {
     const world = new World();
     world
       .spawn(
@@ -70,7 +74,7 @@ describe('SMAA authoring and production programs', () => {
     propagateTransforms(world).unwrap();
     const selectedCamera = extractCameraSnapshots(world)[0];
     if (selectedCamera === undefined) throw new Error('Camera fixture missing');
-    const host = createRenderFeatureHost([createSmaaRenderFeature()]).unwrap();
+    const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
     const batch = host.runFrame(
       [
         {
@@ -91,7 +95,14 @@ describe('SMAA authoring and production programs', () => {
     try {
       expect(batch.frame.errors).toEqual([]);
       expect(batch.views.get('disabled')?.plans).toHaveLength(0);
-      expect(batch.views.get('active')?.plans).toHaveLength(1);
+      expect(batch.views.get('active')?.plans).toHaveLength(0);
+      const sources = new Map(
+        collectRequiredFullscreenPostProcesses(host.features).map((entry) => [
+          entry.identity,
+          entry.source,
+        ]),
+      );
+      for (const program of SMAA_PROGRAMS) expect(sources.get(program.name)).toBe(program.source);
       expect(batch.views.get('held')?.plans).toHaveLength(0);
     } finally {
       batch.onAborted();

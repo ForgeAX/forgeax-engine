@@ -1,4 +1,5 @@
 import type { PipelineLibraryManifest } from '@forgeax/engine-rhi';
+import { PipelineRecipeState } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
 import { buildFrameModel } from '../frame-model';
@@ -34,20 +35,35 @@ export async function verifyPreparedPipelineCapture() {
       ],
       computePipelines: [],
     };
-    (await library.prepare(manifest)).unwrap();
-    const prepared = library.inspect();
-    expect(prepared.compilationCompleted).toBeGreaterThan(0);
-    const vs = (await attachment.backend.createShaderModule(device, { code: vertex })).unwrap();
-    const fs = (await attachment.backend.createShaderModule(device, { code: fragment })).unwrap();
-    const pending = device.createRenderPipelineAsync?.({
-      layout: 'auto',
-      vertex: { module: vs, entryPoint: 'vs', buffers: [] },
-      fragment: { module: fs, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
-      primitive: { topology: 'triangle-list' },
-    });
-    if (pending === undefined) throw new Error('Recorder dropped asynchronous pipeline creation');
-    const pipeline = (await pending).unwrap();
-    expect(library.inspect().pipelineHits).toBeGreaterThan(prepared.pipelineHits);
+    const { bundle, prepared } = await (async () => {
+      const owner = {};
+      (await library.prepare(manifest, { owner })).unwrap();
+      const prepared = library.inspect();
+      expect(prepared.compilationCompleted).toBeGreaterThan(0);
+      const vs = (await attachment.backend.createShaderModule(device, { code: vertex })).unwrap();
+      const fs = (await attachment.backend.createShaderModule(device, { code: fragment })).unwrap();
+      const pending = library.selectRender?.(
+        new PipelineRecipeState('render', {
+          vertex: { entryPoint: 'vs', buffers: [] },
+          fragment: { entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
+          primitive: { topology: 'triangle-list' },
+        }),
+        { layout: 'auto', vertex: vs, fragment: fs },
+        true,
+      );
+      if (pending === undefined) throw new Error('Recorder dropped prepared pipeline selection');
+      const pipeline = (await pending).unwrap();
+      if (pipeline === undefined) throw new Error('Prepared pipeline was not selected');
+      const bundleEncoder = device
+        .createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] })
+        .unwrap();
+      bundleEncoder.setPipeline(pipeline);
+      bundleEncoder.draw(3);
+      const bundle = bundleEncoder.finish().unwrap();
+      expect(library.inspect().pipelineHits).toBeGreaterThan(prepared.pipelineHits);
+      return { bundle, prepared };
+    })();
+    // The warmup token, direct pipeline and temporary completion result are gone.
     const texture = device
       .createTexture({ size: { width: 128, height: 128 }, format: 'rgba8unorm', usage: 0x11 })
       .unwrap();
@@ -64,8 +80,7 @@ export async function verifyPreparedPipelineCapture() {
           { view, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } },
         ],
       });
-      pass.setPipeline(pipeline);
-      pass.draw(3);
+      pass.executeBundles([bundle]);
       pass.end();
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       await device.queue.onSubmittedWorkDone();

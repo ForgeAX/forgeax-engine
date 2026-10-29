@@ -42,6 +42,7 @@ async function executePyramidGraph(
   width: number,
   height: number,
   shaderSources = sources,
+  frames = 1,
 ) {
   type Frame = { encoder: RhiCommandEncoder };
   const graph = new RenderGraphBuilder<Frame>();
@@ -79,18 +80,29 @@ async function executePyramidGraph(
   }).unwrap();
   const compiled = graph.compile({ device, surfaceSize: { width, height } }).unwrap();
   try {
-    const encoder = device.createCommandEncoder().unwrap();
-    compiled
-      .execute({
-        encoder,
-        runtime,
-        depthPyramidShaders: shaderSources,
-        bindGroupCounts: { createBindGroup: 0, keys: [] },
-      } as Frame)
-      .unwrap();
-    device.queue.submit([encoder.finish().unwrap()]).unwrap();
-    await device.queue.onSubmittedWorkDone();
-    return { depthView, uniform, plan: projection.pyramid.plan, inspection: compiled.inspect() };
+    const creations: number[] = [];
+    for (let frameNumber = 0; frameNumber < frames; frameNumber++) {
+      const encoder = device.createCommandEncoder().unwrap();
+      const counts = { createBindGroup: 0, keys: [] as string[] };
+      compiled
+        .execute({
+          encoder,
+          runtime,
+          depthPyramidShaders: shaderSources,
+          bindGroupCounts: counts,
+        } as Frame)
+        .unwrap();
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      await device.queue.onSubmittedWorkDone();
+      creations.push(counts.createBindGroup);
+    }
+    return {
+      depthView,
+      uniform,
+      creations,
+      plan: projection.pyramid.plan,
+      inspection: compiled.inspect(),
+    };
   } finally {
     await compiled.retire();
     device.destroyTexture(depth).unwrap();
@@ -220,5 +232,22 @@ it('honors pending errors and actual module replacement behind an unchanged fact
   expect(replacement).not.toBe(first);
   expect(f.pipeline).toHaveBeenCalledTimes(2);
   expect(get(frame, sources.seed, [], 'seed')).toBe(replacement);
+  f.scope.dispose();
+});
+
+it('reuses exact seed and reduction resource bindings across repeated graph executions', async () => {
+  const serialization = vi.spyOn(JSON, 'stringify');
+  const f = await fixture();
+  const runtime = { device: f.device, deviceScope: f.scope, shaderModuleFactory: f.factory };
+  const result = await executePyramidGraph(f.device, runtime, 64, 32, sources, 3);
+  expect(result.creations).toEqual([result.plan.levels.length, 0, 0]);
+  expect(f.groups).toHaveBeenCalledTimes(result.plan.levels.length);
+  expect(f.factory.createShaderModule).toHaveBeenCalledTimes(6);
+  const entries = f.layouts.mock.calls.map(([descriptor]) => descriptor.entries);
+  expect(entries.every((layout) => Object.isFrozen(layout))).toBe(true);
+  expect(
+    serialization.mock.calls.filter(([value]) => entries.includes(value as never)),
+  ).toHaveLength(0);
+  serialization.mockRestore();
   f.scope.dispose();
 });

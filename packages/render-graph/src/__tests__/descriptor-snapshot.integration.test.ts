@@ -1,4 +1,4 @@
-import type { QuerySet, TextureFormat } from '@forgeax/engine-rhi';
+import type { ComputePassDescriptor, QuerySet, TextureFormat } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
@@ -196,6 +196,81 @@ describe('admitted graph descriptors', () => {
       { resource: 'color', usage: 'color-attachment' },
     ]);
     expect(Object.isFrozen(clear)).toBe(false);
+    (await compiled.retire()).unwrap();
+  });
+
+  it('refreshes compute begin and observation descriptors after quiet executions', async () => {
+    const device = await createDevice();
+    type Frame = RenderGraphFrame & { readonly writes?: ComputePassDescriptor['timestampWrites'] };
+    const builder = new RenderGraphBuilder<Frame>();
+    let begins = 0;
+    builder.addComputePass('quiet', { accesses: [], encode() {} }).unwrap();
+    builder
+      .addComputePass('compute', {
+        accesses: [],
+        begin(frame) {
+          begins++;
+          return frame.writes === undefined ? {} : { timestampWrites: frame.writes };
+        },
+        encode() {},
+      })
+      .unwrap();
+    const compiled = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    const querySet = {} as QuerySet;
+    const authored = { querySet, beginningOfPassWriteIndex: 2, endOfPassWriteIndex: 3 };
+    const timed = { querySet, beginningOfPassWriteIndex: 4, endOfPassWriteIndex: 5 };
+    const observed: ComputePassDescriptor[] = [];
+    for (const [writes, instrumentation] of [
+      [undefined, undefined],
+      [authored, undefined],
+      [undefined, timed],
+      [undefined, undefined],
+    ] as const) {
+      const encoder = device.createCommandEncoder().unwrap();
+      encoder.beginComputePass = (descriptor = {}) => {
+        observed.push(descriptor);
+        return { end() {} } as never;
+      };
+      compiled
+        .execute(
+          { encoder, writes },
+          undefined,
+          instrumentation === undefined
+            ? undefined
+            : {
+                begin: () => ({
+                  computePassDescriptor: (descriptor) => ({
+                    ...descriptor,
+                    timestampWrites: instrumentation,
+                  }),
+                }),
+              },
+        )
+        .unwrap();
+    }
+    expect(begins).toBe(4);
+    expect(observed.map((descriptor) => descriptor.label)).toEqual([
+      'quiet',
+      'compute',
+      'quiet',
+      'compute',
+      'quiet',
+      'compute',
+      'quiet',
+      'compute',
+    ]);
+    expect(observed.map((descriptor) => descriptor.timestampWrites)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      authored,
+      timed,
+      timed,
+      undefined,
+      undefined,
+    ]);
+    expect(observed[3]?.timestampWrites).toBe(authored);
+    expect(observed[4]?.timestampWrites).toBe(timed);
     (await compiled.retire()).unwrap();
   });
 

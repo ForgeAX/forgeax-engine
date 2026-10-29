@@ -94,6 +94,9 @@ test.each([
   { mode: 'rows', consumed: 4 },
   { mode: 'spans', consumed: 0 },
   { mode: 'spans', consumed: 2 },
+  { mode: 'combinations', consumed: 0 },
+  { mode: 'combinations', consumed: 1 },
+  { mode: 'combinations', consumed: 6 },
 ] as const)('$mode reject poisoned source before next/commit ($consumed consumed)', ({
   mode,
   consumed,
@@ -101,7 +104,11 @@ test.each([
   const { world } = fixture();
   const query = world.query({ read: [Value], changed: [Value] }).unwrap();
   const iterator =
-    mode === 'rows' ? query[Symbol.iterator]() : query.spans().unwrap()[Symbol.iterator]();
+    mode === 'rows'
+      ? query[Symbol.iterator]()
+      : mode === 'combinations'
+        ? query.combinations()[Symbol.iterator]()
+        : query.spans().unwrap()[Symbol.iterator]();
   for (let i = 0; i < consumed; i++) expect(iterator.next().done).toBe(false);
   const before = world[worldInternal].getMutationEpoch();
   const writer = getDerivedWriter(world.query({ write: [Value] }).unwrap(), Value).unwrap();

@@ -34,6 +34,7 @@ import {
 } from '../terrain/shadow-family';
 import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
 import type { ViewLights } from '../world/render-lights';
+import { serializeFrameGraphKey } from './frame-graph-key';
 import { resolveSpotShadowMapSize } from './frame-targets';
 import { flushMeshDrawUploads } from './mesh-ssbo';
 import { addReflectionProbePmremPasses } from './reflection-probe-pmrem';
@@ -1757,8 +1758,8 @@ function gpuDrivenTopologySignatureOf(
 ): string {
   if (gpuDriven === undefined) return '';
   return stockRecording
-    ? (gpuDriven._recordingTopologySignature ?? gpuDriven.topologySignature)
-    : gpuDriven.topologySignature;
+    ? (gpuDriven._recordingTopologySignature?.() ?? gpuDriven.topologySignature())
+    : gpuDriven.topologySignature();
 }
 
 function topologyOf(
@@ -2249,7 +2250,7 @@ function frameGraphCacheKey(
   const screenProbe = frameState.screenProbe?.ready;
   const bakedField = bakedFieldInput(internals, frameState);
   const probePlacement = frameState.probePlacementFrame;
-  return JSON.stringify({
+  const input = {
     topology: topologyIdentity,
     // Observation domains are an explicit per-frame graph demand.  They are
     // part of the cache identity so a request made after the ordinary graph
@@ -2296,7 +2297,8 @@ function frameGraphCacheKey(
       work.step?.faceIndex ?? -1,
       work.step?.mipLevel ?? -1,
     ]),
-  });
+  };
+  return serializeFrameGraphKey(input);
 }
 
 function graphClockMs(): number {

@@ -840,8 +840,14 @@ describe('SDK verifier template contract', () => {
     );
     expect(manifest.forgeax).not.toHaveProperty('assets');
     const host = await readFile(join(repositoryRoot, 'packages/devkit/src/host.ts'), 'utf8');
-    expect(host).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
-    expect(host).toContain('  createUiImporter(),');
+    const importers = await readFile(
+      join(repositoryRoot, 'packages/devkit/src/importers.ts'),
+      'utf8',
+    );
+    expect(host).toContain("import { DEFAULT_IMPORTERS } from './importers.js';");
+    expect(host).toContain('importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers]');
+    expect(importers).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
+    expect(importers).toContain('  createUiImporter(),');
     const html = await readFile(
       join(repositoryRoot, 'templates/game-3d/assets/guide.ui.html'),
       'utf8',

@@ -3,9 +3,10 @@ import {
   type EntityHandle,
   FixedTime,
   FixedUpdate,
+  type SystemDescriptor,
   World,
 } from '@forgeax/engine-ecs';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   ChildOf,
   readPresentationWorldMatrix,
@@ -14,6 +15,73 @@ import {
   Transform,
   TransformInterpolation,
 } from '../index';
+
+it('captures a moving fixed pose once while preserving the final stop settlement', async () => {
+  const world = new World();
+  const ctx = await createWorldContext(world, [scenePlugin()]);
+  const actor = world
+    .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
+    .unwrap();
+  let moving = true;
+  world
+    .addSystem(FixedUpdate, {
+      name: 'capture-copy-source',
+      queries: [],
+      fn: () => {
+        if (moving)
+          world.set(actor, Transform, { pos: [world.getResource(FixedTime).tick, 0, 0] }).unwrap();
+      },
+    })
+    .unwrap();
+  const internal = (
+    world as unknown as Record<
+      symbol,
+      {
+        getSchedules(): ReadonlyMap<
+          unknown,
+          { systems: Map<string, { descriptor: SystemDescriptor }> }
+        >;
+      }
+    >
+  )[Symbol.for('forgeax.ecs.worldInternal')];
+  if (internal === undefined) throw new Error('Expected the World schedule owner');
+  const capture = Array.from(internal.getSchedules().values())
+    .map((schedule) => schedule.systems.get('captureTransformCurrent'))
+    .find((record) => record !== undefined);
+  if (capture === undefined) throw new Error('Expected the Scene capture owner');
+  const descriptor = capture.descriptor;
+  let copies = 0;
+  try {
+    for (let tick = 0; tick < 4; tick++) world.update(1 / 60).unwrap();
+    capture.descriptor = {
+      ...descriptor,
+      fn: (...args) => {
+        const set = vi.spyOn(Float32Array.prototype, 'set');
+        try {
+          return descriptor.fn(...args);
+        } finally {
+          copies += set.mock.calls.length;
+          set.mockRestore();
+        }
+      },
+    };
+    world.update(1.5 / 60).unwrap();
+    expect(readPresentationWorldMatrix(world, actor)?.[12]).toBeCloseTo(4.5);
+    expect(copies).toBe(4);
+
+    moving = false;
+    const fixed = world.getResource(FixedTime);
+    world.update(fixed.delta - fixed.overstep).unwrap();
+    expect(readPresentationWorldMatrix(world, actor)?.[12]).toBeCloseTo(5);
+    moving = true;
+    world.update(1.5 / 60).unwrap();
+    expect(readPresentationWorldMatrix(world, actor)?.[12]).toBeCloseTo(6);
+    expect(copies).toBe(8);
+  } finally {
+    capture.descriptor = descriptor;
+    await ctx.fiber.dispose();
+  }
+});
 
 it('captures first movement after idle, settles stops and preserves source lifecycle discontinuities', async () => {
   const world = new World();

@@ -101,7 +101,7 @@ changed since production, set `FORGEAX_E03_PRODUCER_HEAD` to that exact producer
 commit; source, module, shader and payload verification still applies. Reports
 retain the actual producer HEAD and input digests. CPU admission does not prove GPU
 readiness; both backends must complete all five receipt phases. See
-[the input contract](LOD-INCREMENTAL-INPUTS.md).
+the input contract.
 
 The existing LOD inspection's `root.guid` is a diagnostic string:
 `asset-handle:<World assetHandle>`. It is not the source Pack `AssetGuid`.

@@ -1,9 +1,8 @@
 // RGBShiftShader channel sampling and FilmShader noise mixing are adapted from
 // Three.js b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2 (MIT; see ../../NOTICE).
 // VignetteShader supplies the centered RGB-mix model; the camera adds a soft edge.
-import { ok } from '@forgeax/engine-types';
 import type { LensEffectsSnapshot } from '../components/lens-effects';
-import type { RenderFeature } from './types';
+import type { RenderFeatureFullscreenProgramDeclaration } from './types';
 
 export const LENS_EFFECTS_POST_PROCESS_ID = 'forgeax.lens-effects';
 
@@ -61,38 +60,13 @@ fn grain_hash(pixel: vec2<u32>, frame: u32) -> f32 {
 }
 `;
 
-/** Standard owns placement; the ordinary feature host owns shader preparation. */
-export function createLensEffectsRenderFeature(): RenderFeature<readonly string[]> {
-  return {
-    identity: LENS_EFFECTS_POST_PROCESS_ID,
-    requiredCapabilities: ['rgba16floatRenderable'],
-    requiredFullscreenPostProcesses: [
-      { identity: LENS_EFFECTS_POST_PROCESS_ID, source: LENS_EFFECTS_WGSL },
-    ],
-    extract: (context) =>
-      ok(
-        context.views
-          .filter((view) => view.render && view.selectedCamera?.lensEffects !== undefined)
-          .map((view) => view.identity),
-      ),
-    plan: (views) =>
-      ok({
-        work: views.map((view) => ({
-          scope: { view },
-          resources: [
-            {
-              kind: 'fullscreen-program' as const,
-              name: LENS_EFFECTS_POST_PROCESS_ID,
-              source: LENS_EFFECTS_WGSL,
-              reads: ['scene-color' as const],
-              params: { byteSize: 48, defaultValue: packLensEffectsParams(undefined, 0) },
-            },
-          ],
-          passes: [],
-        })),
-      }),
-  };
-}
+export const LENS_EFFECTS_PROGRAM: RenderFeatureFullscreenProgramDeclaration = {
+  kind: 'fullscreen-program',
+  name: LENS_EFFECTS_POST_PROCESS_ID,
+  source: LENS_EFFECTS_WGSL,
+  reads: ['scene-color'],
+  params: { byteSize: 48, defaultValue: packLensEffectsParams(undefined, 0) },
+};
 
 /** The captured frame seed makes replay deterministic without a clock or texture. */
 export function packLensEffectsParams(

@@ -3,7 +3,7 @@ import type {} from '@vitest/browser-playwright';
 import { afterEach, expect, it } from 'vitest';
 import { cdp, commands, page, userEvent } from 'vitest/browser';
 import { createBlitzUi, type UiWasmHost } from '../index.js';
-import { required, uiEvidenceDirectory } from './fixture.js';
+import { required, selectAllKeys, uiEvidenceDirectory } from './fixture.js';
 
 const { inspectUi } = (await import(
   /* @vite-ignore */
@@ -22,6 +22,12 @@ const fontUrl = new URL(
   import.meta.url,
 );
 const font = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
+async function contentHash(body: BufferSource): Promise<string> {
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', body)))
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+}
+const [wasmSha256, fontSha256] = await Promise.all([contentHash(bytes), contentHash(font)]);
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) dispose();
@@ -263,6 +269,47 @@ it('uses the ordinary game guide keyboard form through scrolling, busy recovery 
       for (const node of result.value.nodes) expect(node.source?.guid).toBe('game-guide-keyboard');
       return result.value;
     });
+    // Preserve the measured state even when the first parity assertion fails.
+    // Painting afterward must not replace the CSSOM values under comparison.
+    const measurements = {
+      name,
+      browser: navigator.userAgent,
+      width,
+      height,
+      ratio,
+      wasmSha256,
+      fontSha256,
+      inspections,
+      inputs: instances.map(({ root }, index) =>
+        Array.from(root.querySelectorAll('input')).map((input) => {
+          const style =
+            index === 0
+              ? required(native.defaultView).getComputedStyle(input)
+              : ui.getComputedStyle(input);
+          return {
+            name: input.name,
+            value: input.value,
+            active: root.activeElement === input,
+            rectWidth: input.getBoundingClientRect().width,
+            clientWidth: input.clientWidth,
+            scrollWidth: input.scrollWidth,
+            styles: Object.fromEntries(
+              [
+                'width',
+                'box-sizing',
+                'padding-left',
+                'padding-right',
+                'border-left-width',
+                'border-right-width',
+                'font-family',
+                'font-size',
+              ].map((property) => [property, style.getPropertyValue(property)]),
+            ),
+          };
+        }),
+      ),
+    };
+    await commands.writeFile(`${evidence}/${name}-inspection.json`, JSON.stringify(measurements));
     const controls = inspections.map((value) =>
       value.nodes
         .filter((node) => node.control)
@@ -278,9 +325,37 @@ it('uses the ordinary game guide keyboard form through scrolling, busy recovery 
       const actual = required(
         required(inspections[1]).nodes.find((node) => node.path === expected.path),
       );
-      expect(actual.scroll.width, `${name}: ${expected.path} scrollWidth`).toBe(
-        expected.scroll.width,
-      );
+      const actualOverflow = actual.scroll.width - actual.scroll.clientWidth;
+      const expectedOverflow = expected.scroll.width - expected.scroll.clientWidth;
+      const differs =
+        expected.tag === 'input'
+          ? actualOverflow !== expectedOverflow
+          : actual.scroll.width !== expected.scroll.width;
+      if (differs) {
+        // biome-ignore lint/suspicious/noConsole: Preserve bounded failure facts when CI artifact transfer is unavailable.
+        console.log(
+          '[ui-game3d-input-widths]',
+          JSON.stringify({
+            name,
+            browser: navigator.userAgent,
+            wasmSha256,
+            fontSha256,
+            inputs: measurements.inputs,
+          }),
+        );
+      }
+      if (expected.tag === 'input') {
+        // Chromium 157 reports a different internal client box for number
+        // controls. Compare overflow in that space; outer widths below and
+        // ancestor extents still reject constrained inputs leaking parent width.
+        expect(actualOverflow, `${name}: ${expected.path} horizontal overflow`).toBe(
+          expectedOverflow,
+        );
+      } else {
+        expect(actual.scroll.width, `${name}: ${expected.path} scrollWidth`).toBe(
+          expected.scroll.width,
+        );
+      }
     }
     for (const { panel, radius } of instances) {
       const x = radius.getBoundingClientRect().x;
@@ -416,7 +491,7 @@ it('uses the ordinary game guide keyboard form through scrolling, busy recovery 
   const blitzRadius = required(instances[1]).radius;
   const edit = async (value: string) => {
     nativeRadius.focus();
-    await userEvent.keyboard(`{Control>}a{/Control}${value}`);
+    await userEvent.keyboard(`${selectAllKeys()}${value}`);
     blitzRadius.focus();
     ui.input.text(value);
   };

@@ -91,13 +91,13 @@ bytes and remain outside the engine's zero-binary source history.
 
 ## Measured run
 
-See [acceptance results and original evidence](results.md).
+See acceptance results and original evidence.
 
 ## Spatial source pose (G18)
 
 Run `node packages/audio-webaudio/bench/run.mjs --spatial` for native stereo
 signal, inverse-distance/cone falsifiers and production tick/Host CPU samples.
-The [spatial acceptance report](./spatial-results.md) separates native output,
+The spatial acceptance report separates native output,
 Worker evidence, allocation invariants and contended-host performance limits.
 
 ## Clip start and seek (G17)
@@ -111,4 +111,4 @@ and 120 measured batches, with raw samples retained. Active seek must create
 exactly one source per request; paused seeks and unchanged ticks create none;
 no workload decodes again or rebuilds gains, and despawn releases all sources.
 The declared p95 batch budget is $1000/60$ ms. This CPU workload does not measure
-audio-thread deadlines or device latency. See [results](./seek-results.md).
+audio-thread deadlines or device latency. See results.

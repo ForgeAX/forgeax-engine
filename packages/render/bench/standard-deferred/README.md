@@ -148,7 +148,7 @@ required on the final PR commit. See the PR checks for that execution evidence.
 
 ## RHI verification
 
-[Capture/replay verification](rhi-debug.md) records the per-work, integer
+Capture/replay verification records the per-work, integer
 attachment, cached depth, Surface lighting and Viewer/CLI evidence. The
 [seven Surface results](rhi-debug-surface-results.json) retain tape digests,
 work coordinates and measured whole-image errors.

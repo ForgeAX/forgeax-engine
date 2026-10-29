@@ -59,9 +59,15 @@ export * from './material-program-abi.js';
 export { createMeshMaterialSlotTable, type MeshMaterialSlotSource } from './mesh-material-slots.js';
 export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.js';
 export type { PackageFetcher, PackageRequest, PackageResponse } from './package-fetch.js';
+export { pipelineDescriptorJson, snapshotPipelineDescriptor } from './pipeline-descriptor.js';
 export * from './plugin-asset.js';
 export * from './runtime-contracts.js';
 export { sha256 } from './sha256.js';
+export {
+  ShaderSource,
+  shaderSourceDescriptor,
+  shaderSourceForDescriptor,
+} from './shader-source.js';
 export type {
   TerrainAsset,
   TerrainError,

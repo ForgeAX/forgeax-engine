@@ -12,6 +12,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -108,7 +109,7 @@ export async function verifyReverseZ(
     const receipt = await draw();
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
-    await save('frame.rhitape', capture.bytes);
+    await save('frame.rhitape', compactTape(capture).bytes);
     await save(
       'inspection.json',
       new TextEncoder().encode(JSON.stringify({ errors, inspection: renderer.inspect() }, null, 2)),
@@ -141,15 +142,19 @@ export async function verifyReverseZ(
         const inspected = (
           await replay.inspectWork(last.workIndex, ['pipeline', 'bindings'])
         ).unwrap();
-        const color = (await replay.readResourceAtWork(colorId, last.workIndex)).unwrap();
-        const depth = (
-          await replay.readResourceAtWork(depthId, last.workIndex, {
-            aspect: 'depth-only',
-            mipLevel: 0,
-            arrayLayer: 0,
-          })
+        const reads = (
+          await replay.readAtWorks([
+            { resourceId: colorId, workIndex: last.workIndex },
+            {
+              resourceId: depthId,
+              workIndex: last.workIndex,
+              subresource: { aspect: 'depth-only', mipLevel: 0, arrayLayer: 0 },
+            },
+            { resourceId: finalColorId, workIndex: final.workIndex },
+          ])
         ).unwrap();
-        const output = (await replay.readResourceAtWork(finalColorId, final.workIndex)).unwrap();
+        const [color, depth, output] = reads.map((result) => result.unwrap());
+        if (!color || !depth || !output) throw new Error('missing reverse-Z readback');
         return { inspected, color, depth, output };
       } finally {
         (await replay.dispose()).unwrap();
@@ -178,25 +183,28 @@ export async function verifyReverseZ(
     await save('replay-color.bin', replay.color.bytes);
     // Falsify the actual recorded scene clear: greater-depth writes must fail against 1.
     let changed = 0;
-    const invalid = encodeTape({
-      ...tape,
-      events: tape.events.map((event) => {
-        if (
-          event.kind !== 'beginRenderPass' ||
-          !event.desc.depthStencilAttachment ||
-          event.desc.depthStencilAttachment.depthLoadOp !== 'clear'
-        )
-          return event;
-        changed++;
-        return {
-          ...event,
-          desc: {
-            ...event.desc,
-            depthStencilAttachment: { ...event.desc.depthStencilAttachment, depthClearValue: 1 },
-          },
-        };
-      }),
-    }).unwrap();
+    const invalid = encodeTape(
+      {
+        ...tape,
+        events: tape.events.map((event) => {
+          if (
+            event.kind !== 'beginRenderPass' ||
+            !event.desc.depthStencilAttachment ||
+            event.desc.depthStencilAttachment.depthLoadOp !== 'clear'
+          )
+            return event;
+          changed++;
+          return {
+            ...event,
+            desc: {
+              ...event.desc,
+              depthStencilAttachment: { ...event.desc.depthStencilAttachment, depthClearValue: 1 },
+            },
+          };
+        }),
+      },
+      { compression: 'gzip' },
+    ).unwrap();
     expect(changed).toBeGreaterThan(0);
     const falsified = await replayFrame(decodeTape(invalid).unwrap());
     await save('falsified.rgba', falsified.output.bytes);

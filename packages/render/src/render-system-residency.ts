@@ -172,7 +172,9 @@ export function observeMaterialResidency(
       }
     }
 
-    for (const handle of materialTextureHandles(material)) {
+    const textureHandles = materialTextureHandles(material);
+    for (let index = 0; index < textureHandles.length; index += 1) {
+      const handle = textureHandles[index] as AssetHandle<'texture'>;
       const pod = world.resolveAsset<TextureAsset>(handle);
       if (!pod.ok) {
         const error = pod.error;
@@ -215,7 +217,9 @@ export function observeMaterialResidency(
       }
     }
 
-    for (const handle of materialSamplerHandles(material)) {
+    const samplerHandles = materialSamplerHandles(material);
+    for (let index = 0; index < samplerHandles.length; index += 1) {
+      const handle = samplerHandles[index] as AssetHandle<'sampler'>;
       const pod = world.resolveAsset<SamplerAsset>(handle);
       if (!pod.ok) {
         const error = pod.error;
@@ -248,9 +252,12 @@ export function observeMaterialResidency(
     // Video views are supplied by the renderer-owned dynamic store at record
     // time. A previously uploaded view is a producer-owned last-known-good
     // fact; absence means the visible workset still needs a decodable frame.
-    for (const clip of material.videoTextureFields?.values() ?? EMPTY_RESIDENCY_DETAILS) {
-      if (internals.dynamicTextureStore?.getView(clip) === undefined) pending = true;
-      else resident = true;
+    const videos = material.videoTextureFields;
+    if (videos) {
+      for (const clip of videos.values()) {
+        if (internals.dynamicTextureStore?.getView(clip) === undefined) pending = true;
+        else resident = true;
+      }
     }
   }
 

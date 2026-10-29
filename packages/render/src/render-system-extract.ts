@@ -1,3 +1,5 @@
+import { worldRead } from '@forgeax/engine-ecs/world-read';
+import { collectCameraSnapshots } from './extract/cameras';
 import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import type { FrameList } from './scene/frame-list';
 import type { DispatchList } from './scene/material-dispatch';
@@ -12,10 +14,6 @@ import {
 } from '@forgeax/engine-pack/material-cook';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { buildPlanarReflectionView } from './capture/planar-view';
-import { LensEffects, resolveLensEffects } from './components/lens-effects';
-import { LensFlare, resolveLensFlare } from './components/lens-flare';
-import { Outline, resolveOutline } from './components/outline';
-import { PlanarReflection, PlanarReflectionInvalidError } from './components/planar-reflection';
 import {
   MaterialResource,
   materialResource,
@@ -123,8 +121,11 @@ import {
 import {
   type Component,
   type ComponentSchema,
+  ENTITY_NULL_RAW,
   type EntityHandle,
   type Query,
+  type SchemaOf,
+  type ShapeOf,
   Time,
   type World,
 } from '@forgeax/engine-ecs';
@@ -167,34 +168,14 @@ import {
 } from '@forgeax/engine-types';
 import { buildCubeCameraFaceViews } from './capture/cube-views';
 import {
-  AmbientOcclusion,
-  antialiasFromF32,
-  BarrelDistortion,
-  CAMERA_EXPOSURE_MODE_MANUAL,
-  Camera,
-  CameraView,
   CubeCamera,
-  cameraExposureFromColumns,
-  cameraProjectionFromF32,
   cubeCameraUpdateIntentFromF32,
-  DynamicResolution,
   Fog,
   fogModeFromU32,
-  MotionBlur,
   ReflectionProbe,
   reflectionProbeUpdateIntentFromF32,
-  ScreenSpaceReflection,
-  tonemapFromF32,
   tonemapToU32,
-  transparencyFromF32,
-  validateCameraBloom,
-  validateCameraProjectionOffset,
-  validateDynamicResolutionCamera,
 } from './components';
-import { validateBarrelDistortionParameters } from './components/barrel-distortion';
-import { CAMERA_VIEW_DEFAULTS } from './components/camera-view';
-import { ClippingPlanes, extractClippingPlanes } from './components/clipping-planes';
-import { DepthOfField } from './components/depth-of-field';
 import { DirectionalLight } from './components/directional-light';
 import {
   type DirectionalShadowQuality,
@@ -203,7 +184,7 @@ import {
   SHADOW_RASTER_GUARD_TEXELS,
 } from './components/directional-shadow-filter';
 import type { LightValidationError } from './components/light-helpers';
-import { resolveStereoCamera, StereoCamera, stereoEyeCamera } from './components/stereo-camera';
+import { stereoEyeCamera } from './components/stereo-camera';
 import { selectEnvironment } from './environment/frame';
 import { ShadowInvalidConfigError } from './errors/render';
 import {
@@ -219,11 +200,6 @@ import type {
 import { readEnvironmentPose } from './extract/environment-gate';
 import type { GpuDrivenDrawSnapshot } from './extract/gpu-driven';
 import { resolveVisibility, type VisibilitySnapshot } from './extract/visibility';
-import {
-  depthOfFieldRequestFailure,
-  resolveDepthOfFieldParams,
-} from './features/depth-of-field/depth-of-field-params';
-import { resolveMotionBlurParams } from './features/motion-blur/motion-blur-params';
 import type {
   RenderFeatureHiddenEntityReport,
   RenderFeatureWorldVisibilitySnapshot,
@@ -1893,7 +1869,9 @@ export function pipelineRenderState(
     ...(frontFace !== undefined && { frontFace }),
     ...(fog !== undefined && { fog }),
   };
-  return Object.keys(projected).length === 0 ? undefined : projected;
+  // This root is our accepted projection. Borrowed nested author values keep
+  // their own mutability; do not freeze the input or its children.
+  return Object.keys(projected).length === 0 ? undefined : Object.freeze(projected);
 }
 
 export function resolveRuntimeAssetReference<K extends string>(
@@ -3146,239 +3124,33 @@ const ALL_VISIBLE: VisibilitySnapshot = {
   effective: () => 'visible',
 };
 
-function collectCameraSnapshots(world: World): CameraSnapshot[] {
-  const cameras: CameraSnapshot[] = [];
-  const cameraQuery = world
-    .query({
-      read: [Camera],
-      optional: [
-        CameraView,
-        MotionBlur,
-        DynamicResolution,
-        ScreenSpaceReflection,
-        AmbientOcclusion,
-        DepthOfField,
-        BarrelDistortion,
-        LensEffects,
-        LensFlare,
-        ClippingPlanes,
-        Outline,
-        PlanarReflection,
-        StereoCamera,
-      ],
-      with: [Transform, GlobalTransform],
-    })
-    .unwrap();
-  for (const row of cameraQuery) {
-    const cam = row.get(Camera);
-    const cameraView = row.get(CameraView);
-    const clipping = extractClippingPlanes(row.get(ClippingPlanes));
-    const planar = row.get(PlanarReflection);
-    if (planar !== undefined && cam.target !== 0 && cameraView === undefined)
-      throw new PlanarReflectionInvalidError('camera');
-    if (planar !== undefined && (planar.target === 0 || planar.updateIntervalFrames < 1))
-      throw new PlanarReflectionInvalidError(
-        planar.target === 0 ? 'target' : 'updateIntervalFrames',
-      );
-    const motionBlur = row.get(MotionBlur);
-    const barrelDistortion = row.get(BarrelDistortion);
-    const lensEffects = resolveLensEffects(row.get(LensEffects));
-    if (!lensEffects.ok) throw lensEffects.error;
-    const lensFlare = resolveLensFlare(row.get(LensFlare));
-    if (!lensFlare.ok) throw lensFlare.error;
-    const outline = resolveOutline(row.get(Outline));
-    if (!outline.ok) throw outline.error;
-    const motionBlurResult = resolveMotionBlurParams(motionBlur);
-    if (!motionBlurResult.ok) throw motionBlurResult.error;
-    const motionBlurParams = motionBlurResult.value;
-    const depthOfField = row.get(DepthOfField);
-    const dynamicResolution = row.get(DynamicResolution);
-    const screenSpaceReflection = row.get(ScreenSpaceReflection);
-    const ambientOcclusion = row.get(AmbientOcclusion);
-    const projection = cameraProjectionFromF32(cam.projection);
-    const depthOfFieldResult = resolveDepthOfFieldParams(depthOfField, {
-      projection,
-      fov: cam.fov,
-      near: cam.near,
-      far: cam.far,
-    });
-    const depthOfFieldError = depthOfFieldResult.ok
-      ? undefined
-      : depthOfFieldRequestFailure(depthOfFieldResult.error);
-    const entity = row.entity;
-    const view = readEnvironmentPose(world, entity);
-    if (view === undefined) continue;
-    const worldMat = new Float32Array(view);
-    const target = resolveCameraTarget(world, cam.target);
-    const hasNonDefaultOutput =
-      cam.exposureMode !== CAMERA_EXPOSURE_MODE_MANUAL ||
-      cam.exposure !== 1 ||
-      cam.temperature !== 6504 ||
-      cam.tint !== 0 ||
-      cam.colorLut !== 0 ||
-      cam.colorLutStrength !== Camera.fields.colorLutStrength.default;
-    const output = hasNonDefaultOutput
-      ? {
-          exposure: cameraExposureFromColumns(cam),
-          temperature: cam.temperature,
-          tint: cam.tint,
-          colorLut: cam.colorLut,
-          colorLutStrength: cam.colorLutStrength,
-        }
-      : undefined;
-    const antialias = antialiasFromF32(cam.antialias);
-    const dynamicResolutionResult = validateDynamicResolutionCamera(dynamicResolution, antialias);
-    if (!dynamicResolutionResult.ok) throw dynamicResolutionResult.error;
-    const barrelDistortionResult = validateBarrelDistortionParameters(barrelDistortion);
-    if (!barrelDistortionResult.ok) throw barrelDistortionResult.error;
-    const stereoData = row.get(StereoCamera);
-    const stereo =
-      stereoData === undefined
-        ? undefined
-        : resolveStereoCamera(stereoData, {
-            projection,
-            near: cam.near,
-            target: target !== undefined,
-            planarReflection: planar !== undefined,
-          });
-    // A stereo camera always composes as a view; without CameraView it covers the screen.
-    const composedView = cameraView ?? (stereo === undefined ? undefined : CAMERA_VIEW_DEFAULTS);
-    const snapshot: CameraSnapshot = {
-      entityKey: entity as number,
-      ...(composedView === undefined
-        ? {}
-        : {
-            view: {
-              viewport: new Float32Array(composedView.viewport),
-              order: composedView.order,
-              resolutionScale: composedView.resolutionScale,
-              updateInterval: composedView.updateInterval,
-              enabled: composedView.enabled,
-            },
-          }),
-      ...(stereo === undefined ? {} : { stereo }),
-      ...(target === undefined ? {} : { target }),
-      ...(target === undefined || cam.targetLayer === 0 ? {} : { targetLayer: cam.targetLayer }),
-      historyVersion: cam.historyVersion,
-      position: mat4.getTranslation(vec3.create(), worldMat),
-      world: worldMat,
-      fov: cam.fov,
-      aspect: cam.aspect,
-      autoAspect: cam.autoAspect,
-      projectionOffset: validateCameraProjectionOffset(cam.projectionOffset),
-      near: cam.near,
-      far: cam.far,
-      projection,
-      orthoLeft: cam.left,
-      orthoRight: cam.right,
-      orthoBottom: cam.bottom,
-      orthoTop: cam.top,
-      tonemap: tonemapFromF32(cam.tonemap),
-      exposure: cam.exposure,
-      whitePoint: cam.whitePoint,
-      ...(output === undefined ? {} : { output }),
-      antialias,
-      transparency: transparencyFromF32(cam.transparency),
-      ...(dynamicResolutionResult.value === undefined
-        ? {}
-        : { dynamicResolution: dynamicResolutionResult.value }),
-      bloom: validateCameraBloom(
-        cam.bloom,
-        cam.bloomThreshold,
-        cam.bloomIntensity,
-        cam.bloomSmoothWidth,
-        cam.bloomRadius,
-      ),
-      bloomThreshold: cam.bloomThreshold,
-      bloomIntensity: cam.bloomIntensity,
-      bloomSmoothWidth: cam.bloomSmoothWidth,
-      bloomRadius: cam.bloomRadius,
-      clearColor: [
-        cam.clearColor[0] ?? 0,
-        cam.clearColor[1] ?? 0,
-        cam.clearColor[2] ?? 0,
-        cam.clearColor[3] ?? 1,
-      ],
-      ...(depthOfFieldResult.ok && depthOfFieldResult.value !== undefined
-        ? { depthOfField: depthOfFieldResult.value }
-        : {}),
-      ...(depthOfFieldError === undefined ? {} : { depthOfFieldError }),
-      ...(motionBlurParams === undefined
-        ? {}
-        : {
-            motionBlur: {
-              shutterAngle: motionBlurParams.shutterAngle,
-              maxRadiusPixels: motionBlurParams.maxRadiusPixels,
-              sampleCount: motionBlurParams.sampleCount,
-              targetFps: motionBlurParams.targetFps,
-            },
-          }),
-      ...(clipping === undefined ? {} : { clipping }),
-      ...(outline.value === undefined ? {} : { outline: outline.value }),
-      ...(lensEffects.value === undefined ? {} : { lensEffects: lensEffects.value }),
-      ...(lensFlare.value === undefined ? {} : { lensFlare: lensFlare.value }),
-      ...(barrelDistortion === undefined ? {} : { barrelDistortion: barrelDistortionResult.value }),
-      ...(ambientOcclusion === undefined
-        ? {}
-        : {
-            ambientOcclusion: {
-              algorithm: ambientOcclusion.algorithm,
-              radius: ambientOcclusion.radius,
-              bias: ambientOcclusion.bias,
-              intensity: ambientOcclusion.intensity,
-              directLightingStrength: ambientOcclusion.directLightingStrength,
-              quality: ambientOcclusion.quality,
-              thickness: ambientOcclusion.thickness,
-              distanceExponent: ambientOcclusion.distanceExponent,
-              distanceFallOff: ambientOcclusion.distanceFallOff,
-              resolutionScale: ambientOcclusion.resolutionScale,
-            },
-          }),
-      ...(screenSpaceReflection === undefined
-        ? {}
-        : {
-            screenSpaceReflection: {
-              maxDistance: screenSpaceReflection.maxDistance,
-              thickness: screenSpaceReflection.thickness,
-              maxRoughness: screenSpaceReflection.maxRoughness,
-            },
-          }),
-    };
-    cameras.push(snapshot);
-    if (planar !== undefined) {
-      const reflectionTarget = resolveCameraTarget(world, planar.target);
-      if (reflectionTarget === undefined) throw new PlanarReflectionInvalidError('target');
-      const { view: _view, ...capture } = snapshot;
-      const { target: _target, ...reflection } = planar;
-      cameras.push({
-        ...capture,
-        target: reflectionTarget,
-        planarReflection: { ...reflection, normal: new Float32Array(planar.normal) },
-      });
-    }
-  }
-  const planarTargets = new Set<RenderTarget>();
-  const otherTargets = new Set(
-    cameras
-      .filter((camera) => camera.planarReflection === undefined)
-      .map((camera) => camera.target),
-  );
-  for (const camera of collectCubeCameraSnapshots(world)) otherTargets.add(camera.target);
-  for (const camera of cameras) {
-    if (camera.planarReflection === undefined || camera.target === undefined) continue;
-    if (planarTargets.has(camera.target) || otherTargets.has(camera.target))
-      throw new PlanarReflectionInvalidError('target-writer');
-    planarTargets.add(camera.target);
-  }
-  return cameras;
-}
-
 export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
   const snapshots: CubeCameraSnapshot[] = [];
   const query = world.query({ read: [CubeCamera], with: [Transform, GlobalTransform] }).unwrap();
   for (const row of query) {
-    const camera = row.get(CubeCamera);
-    const target = resolveCameraTarget(world, camera.target);
+    const cameraTarget = world[worldRead].getFieldValue(
+      row.entity,
+      CubeCamera,
+      'target',
+    ) as ShapeOf<SchemaOf<typeof CubeCamera>>['target'];
+    const cameraNear = world[worldRead].getFieldValue(row.entity, CubeCamera, 'near') as number;
+    const cameraFar = world[worldRead].getFieldValue(row.entity, CubeCamera, 'far') as number;
+    const cameraUpdateIntent = world[worldRead].getFieldValue(
+      row.entity,
+      CubeCamera,
+      'updateIntent',
+    ) as number;
+    const cameraRequestVersion = world[worldRead].getFieldValue(
+      row.entity,
+      CubeCamera,
+      'requestVersion',
+    ) as number;
+    const cameraFaceBudget = world[worldRead].getFieldValue(
+      row.entity,
+      CubeCamera,
+      'faceBudget',
+    ) as number;
+    const target = resolveCameraTarget(world, cameraTarget);
     if (target === undefined) continue;
     const view = readEnvironmentPose(world, row.entity);
     if (view === undefined) continue;
@@ -3386,11 +3158,11 @@ export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
       entityKey: row.entity as number,
       target,
       position: [view[12] ?? 0, view[13] ?? 0, view[14] ?? 0],
-      near: camera.near,
-      far: camera.far,
-      updateIntent: cubeCameraUpdateIntentFromF32(camera.updateIntent),
-      requestVersion: camera.requestVersion,
-      faceBudget: camera.faceBudget,
+      near: cameraNear,
+      far: cameraFar,
+      updateIntent: cubeCameraUpdateIntentFromF32(cameraUpdateIntent),
+      requestVersion: cameraRequestVersion,
+      faceBudget: cameraFaceBudget,
     });
   }
   return snapshots;
@@ -3402,7 +3174,33 @@ export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[]
     .query({ read: [ReflectionProbe], with: [Transform, GlobalTransform] })
     .unwrap();
   for (const row of query) {
-    const probe = row.get(ReflectionProbe);
+    const probePriority = world[worldRead].getFieldValue(
+      row.entity,
+      ReflectionProbe,
+      'priority',
+    ) as number;
+    const probeIntensity = world[worldRead].getFieldValue(
+      row.entity,
+      ReflectionProbe,
+      'intensity',
+    ) as number;
+    const probeResolution = world[worldRead].getFieldValue(
+      row.entity,
+      ReflectionProbe,
+      'resolution',
+    ) as number;
+    const probeBoxProjection =
+      world[worldRead].getFieldValue(row.entity, ReflectionProbe, 'boxProjection') === 1;
+    const probeInvalidationVersion = world[worldRead].getFieldValue(
+      row.entity,
+      ReflectionProbe,
+      'invalidationVersion',
+    ) as number;
+    const probeUpdateIntent = world[worldRead].getFieldValue(
+      row.entity,
+      ReflectionProbe,
+      'updateIntent',
+    ) as number;
     const view = readEnvironmentPose(world, row.entity);
     if (view === undefined) {
       continue;
@@ -3412,17 +3210,17 @@ export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[]
       entityKey: row.entity as number,
       center: [view[12] ?? 0, view[13] ?? 0, view[14] ?? 0],
       halfExtents: [
-        probe.halfExtents[0] ?? 0,
-        probe.halfExtents[1] ?? 0,
-        probe.halfExtents[2] ?? 0,
+        world[worldRead].getArrayElement(row.entity, ReflectionProbe, 'halfExtents', 0) as number,
+        world[worldRead].getArrayElement(row.entity, ReflectionProbe, 'halfExtents', 1) as number,
+        world[worldRead].getArrayElement(row.entity, ReflectionProbe, 'halfExtents', 2) as number,
       ],
-      priority: probe.priority,
-      intensity: probe.intensity,
-      resolution: probe.resolution,
-      boxProjection: probe.boxProjection,
-      revision: probe.invalidationVersion,
-      updateIntent: reflectionProbeUpdateIntentFromF32(probe.updateIntent),
-      invalidationVersion: probe.invalidationVersion,
+      priority: probePriority,
+      intensity: probeIntensity,
+      resolution: probeResolution,
+      boxProjection: probeBoxProjection,
+      revision: probeInvalidationVersion,
+      updateIntent: reflectionProbeUpdateIntentFromF32(probeUpdateIntent),
+      invalidationVersion: probeInvalidationVersion,
     });
   }
   return facts;
@@ -3466,7 +3264,7 @@ export function projectAuxiliaryCamerasForView(
     if (display === undefined || camera.entityKey !== display.entityKey) return [];
     const reflected = buildPlanarReflectionView({
       world: display.world,
-      projection: computeProjectionMatrix(display),
+      projection: computeProjectionMatrix(display, mat4.create()),
       plane: [...planar.normal, planar.distance],
       clipBias: planar.clipBias,
     });
@@ -3650,16 +3448,29 @@ export function selectFogFrame(world: World): FogFrame | undefined {
     fogQueries.set(world, fogQuery);
   }
   for (const row of fogQuery) {
-    const value = row.get(Fog);
+    const valueDensity = world[worldRead].getFieldValue(row.entity, Fog, 'density') as number;
+    const valueHeightFalloff = world[worldRead].getFieldValue(
+      row.entity,
+      Fog,
+      'heightFalloff',
+    ) as number;
+    const valueMaxOpacity = world[worldRead].getFieldValue(row.entity, Fog, 'maxOpacity') as number;
+    const valueMode = world[worldRead].getFieldValue(row.entity, Fog, 'mode') as number;
+    const valueNear = world[worldRead].getFieldValue(row.entity, Fog, 'near') as number;
+    const valueFar = world[worldRead].getFieldValue(row.entity, Fog, 'far') as number;
     fogCandidates.push({
       entityKey: row.entity,
-      color: [value.color[0] ?? 0, value.color[1] ?? 0, value.color[2] ?? 0],
-      density: value.density,
-      heightFalloff: value.heightFalloff,
-      maxOpacity: value.maxOpacity,
-      mode: fogModeFromU32(value.mode),
-      near: value.near,
-      far: value.far,
+      color: [
+        world[worldRead].getArrayElement(row.entity, Fog, 'color', 0) as number,
+        world[worldRead].getArrayElement(row.entity, Fog, 'color', 1) as number,
+        world[worldRead].getArrayElement(row.entity, Fog, 'color', 2) as number,
+      ],
+      density: valueDensity,
+      heightFalloff: valueHeightFalloff,
+      maxOpacity: valueMaxOpacity,
+      mode: fogModeFromU32(valueMode),
+      near: valueNear,
+      far: valueFar,
     });
   }
   const fogSelection = selectEnvironment({
@@ -3707,11 +3518,44 @@ export function extractVolumeSnapshot(
 
   for (const row of query) {
     selectedLight = undefined;
-    const source = row.get(VolumetricFog);
-    if (source.light === null) continue;
-    const selected = resolveSelectedVolumetricLight(world, source.light);
+    const sourceLightRaw = world[worldRead].getFieldValue(
+      row.entity,
+      VolumetricFog,
+      'light',
+    ) as number;
+    const sourceLight =
+      sourceLightRaw === ENTITY_NULL_RAW ? null : (sourceLightRaw as EntityHandle);
+    const sourceSpotLightRaw = world[worldRead].getFieldValue(
+      row.entity,
+      VolumetricFog,
+      'spotLight',
+    ) as number;
+    const sourceSpotLight =
+      sourceSpotLightRaw === ENTITY_NULL_RAW ? null : (sourceSpotLightRaw as EntityHandle);
+    const sourceDensity = world[worldRead].getFieldValue(
+      row.entity,
+      VolumetricFog,
+      'density',
+    ) as ShapeOf<SchemaOf<typeof VolumetricFog>>['density'];
+    const sourceAnisotropy = world[worldRead].getFieldValue(
+      row.entity,
+      VolumetricFog,
+      'anisotropy',
+    ) as number;
+    const sourceMaxDistance = world[worldRead].getFieldValue(
+      row.entity,
+      VolumetricFog,
+      'maxDistance',
+    ) as number;
+    const sourceSampling = world[worldRead].getFieldValue(
+      row.entity,
+      VolumetricFog,
+      'sampling',
+    ) as number;
+    if (sourceLight === null) continue;
+    const selected = resolveSelectedVolumetricLight(world, sourceLight);
     if (selected.status === 'available') {
-      const pairSpot = source.spotLight === null ? undefined : source.spotLight;
+      const pairSpot = sourceSpotLight === null ? undefined : sourceSpotLight;
       selectedLight ??= {
         entity: selected.entity,
         kind: selected.kind,
@@ -3719,7 +3563,7 @@ export function extractVolumeSnapshot(
         ...(pairSpot === undefined ? {} : { spotLightEntity: pairSpot }),
       };
     }
-    const densityHandle = Math.round(Number(source.density)) as AssetHandle<'texture'>;
+    const densityHandle = Math.round(Number(sourceDensity)) as AssetHandle<'texture'>;
     const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(densityHandle);
     if (!resolved.ok || resolved.value.kind !== 'texture') {
       worldInternal._routeError(
@@ -3772,19 +3616,39 @@ export function extractVolumeSnapshot(
             colorSpace: densityAsset.colorSpace,
           };
     const authoring: VolumetricFogAuthoring = {
-      light: source.light,
+      light: sourceLight,
       density,
       bounds: {
-        min: [source.boundsMin[0] ?? 0, source.boundsMin[1] ?? 0, source.boundsMin[2] ?? 0],
-        max: [source.boundsMax[0] ?? 0, source.boundsMax[1] ?? 0, source.boundsMax[2] ?? 0],
+        min: [
+          world[worldRead].getArrayElement(row.entity, VolumetricFog, 'boundsMin', 0) as number,
+          world[worldRead].getArrayElement(row.entity, VolumetricFog, 'boundsMin', 1) as number,
+          world[worldRead].getArrayElement(row.entity, VolumetricFog, 'boundsMin', 2) as number,
+        ],
+        max: [
+          world[worldRead].getArrayElement(row.entity, VolumetricFog, 'boundsMax', 0) as number,
+          world[worldRead].getArrayElement(row.entity, VolumetricFog, 'boundsMax', 1) as number,
+          world[worldRead].getArrayElement(row.entity, VolumetricFog, 'boundsMax', 2) as number,
+        ],
       },
-      extinction: [source.extinction[0] ?? 0, source.extinction[1] ?? 0, source.extinction[2] ?? 0],
-      albedo: [source.albedo[0] ?? 0, source.albedo[1] ?? 0, source.albedo[2] ?? 0],
-      emission: [source.emission[0] ?? 0, source.emission[1] ?? 0, source.emission[2] ?? 0],
-      anisotropy: source.anisotropy,
-      maxDistance: source.maxDistance,
+      extinction: [
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'extinction', 0) as number,
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'extinction', 1) as number,
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'extinction', 2) as number,
+      ],
+      albedo: [
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'albedo', 0) as number,
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'albedo', 1) as number,
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'albedo', 2) as number,
+      ],
+      emission: [
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'emission', 0) as number,
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'emission', 1) as number,
+        world[worldRead].getArrayElement(row.entity, VolumetricFog, 'emission', 2) as number,
+      ],
+      anisotropy: sourceAnisotropy,
+      maxDistance: sourceMaxDistance,
       sampling:
-        source.sampling === 2 ? 'density-albedo' : source.sampling === 1 ? 'density' : 'noise',
+        sourceSampling === 2 ? 'density-albedo' : sourceSampling === 1 ? 'density' : 'noise',
     };
     authorings.push(authoring);
     members.push({

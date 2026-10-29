@@ -25,6 +25,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -254,7 +255,7 @@ export async function verifyLensFlare(
       const live = await readLive(receipt);
       (await recorder.frameBoundary()).unwrap();
       const capture = (await pending).unwrap();
-      await save(`${name}.rhitape`, capture.bytes);
+      await save(`${name}.rhitape`, compactTape(capture).bytes);
       await save(`${name}-live.f32`, new Uint8Array(new Float32Array(live.pixels).buffer));
       await screenshot?.(name);
       images.set(name, live);
@@ -429,12 +430,15 @@ export async function verifyLensFlare(
       expect(oracleMaxError).toBeLessThanOrEqual(0.01);
       expect(flareEnergy).toBeGreaterThan(1);
       const withoutDraw = (index: number) =>
-        encodeTape({
-          ...tape,
-          events: tape.events.map((event, eventIndex) =>
-            eventIndex === index && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
-          ),
-        }).unwrap();
+        encodeTape(
+          {
+            ...tape,
+            events: tape.events.map((event, eventIndex) =>
+              eventIndex === index && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
+            ),
+          },
+          { compression: 'gzip' },
+        ).unwrap();
       const missingBlur = withoutDraw(blur.eventIndex);
       const blurFalsified = await replay(missingBlur, 'missing-bokeh');
       // Without the bokeh pass the composite adds the cleared (black) guard band.

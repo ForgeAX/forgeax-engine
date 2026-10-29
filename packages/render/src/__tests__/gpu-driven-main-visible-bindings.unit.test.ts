@@ -508,6 +508,55 @@ describe('Main GPU-driven prepared visible windows', () => {
     }
   });
 
+  it('re-records retained native runs when any Skin task physical fact changes', async () => {
+    const f = await fixture(false, 3, 64);
+    const initial = f.prepare();
+    const r = recorder(f, initial, true, true);
+    const buffer = () => f.device.createBuffer({ size: 4096, usage: 128 }).unwrap();
+    const allocated = [buffer(), buffer()];
+    const task = {
+      data: defined(allocated[0]),
+      auxiliary: defined(allocated[1]),
+      dataOffset: 0,
+      auxiliaryOffset: 256,
+      dataSize: 1024,
+      auxiliarySize: 16,
+    };
+    const taskBinding = vi
+      .spyOn(GpuDrivenView.prototype, 'skinTaskBinding')
+      .mockImplementation(() => task);
+    const recordings = observeRasterRecordings();
+    try {
+      r.record();
+      recordings.clear();
+      r.record(f.prepare());
+      expect(recordings.windows).toHaveLength(0);
+      for (const field of ['dataOffset', 'auxiliaryOffset', 'dataSize', 'auxiliarySize'] as const) {
+        task[field] += 256;
+        r.record(f.prepare());
+        expect(recordings.windows.length).toBeGreaterThan(0);
+        recordings.clear();
+        r.record(f.prepare());
+        expect(recordings.windows).toHaveLength(0);
+      }
+      for (const field of ['data', 'auxiliary'] as const) {
+        task[field] = buffer();
+        allocated.push(task[field]);
+        r.record(f.prepare());
+        expect(recordings.windows.length).toBeGreaterThan(0);
+        recordings.clear();
+        r.record(f.prepare());
+        expect(recordings.windows).toHaveLength(0);
+      }
+    } finally {
+      recordings.restore();
+      taskBinding.mockRestore();
+      await r.close();
+      await f.close();
+      for (const resource of allocated) f.device.destroyBuffer(resource).unwrap();
+    }
+  });
+
   it('retains native scene-owned sibling assembly after a local topology change', async () => {
     const f = await fixture(false, 3, 8);
     try {
@@ -587,7 +636,7 @@ describe('Main GPU-driven prepared visible windows', () => {
         slots: f.projection.slotsSnapshot(),
       };
       const changed = f.prepare({ scene });
-      expect(changed.topologySignature).toBe(initial.topologySignature);
+      expect(changed.topologySignature()).toBe(initial.topologySignature());
       lookup.mockClear();
       const next = r.record(changed);
       expect(lookup).toHaveBeenCalledTimes(resolvedWindows);
@@ -780,7 +829,7 @@ describe('Main GPU-driven prepared visible windows', () => {
     try {
       const first = r.record();
       const split = f.prepare({ materialBindingClasses: bindings });
-      expect(split.topologySignature).toBe(merged.topologySignature);
+      expect(split.topologySignature()).toBe(merged.topologySignature());
       const splitGroups = r.record(split);
       expect(splitGroups.length).toBeGreaterThan(first.length);
       lookup.mockClear();
@@ -816,7 +865,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       const bindings = new Map([['0:1', 'split']]);
       const grown = f.prepare({ materialBindingClasses: bindings });
       // View storage is resolved when the graph executes: growth keeps the graph.
-      expect(grown.topologySignature).toBe(initial.topologySignature);
+      expect(grown.topologySignature()).toBe(initial.topologySignature());
       expect(defined(f.input.scene).scene.instanceBuffer).toBe(instanceBuffer);
       r.record(grown);
       expect(oldWindows).toEqual(oldContents);

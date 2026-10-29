@@ -23,6 +23,7 @@ import {
   type QuerySpanUnavailableReason,
   RelationshipTargetReadonlyError,
 } from '../errors';
+import { QueryBatchUnavailableError } from '../errors/query-batch-errors';
 import { worldPoisonedError } from '../errors/shared-kernel-errors';
 import type { WorldExecutionState } from '../execution/shared-kernel';
 import { DERIVED_WRITER } from '../internal';
@@ -32,6 +33,7 @@ import { sparseTagIndex } from '../storage/change-detection';
 import type { FieldView, ManagedColumnReader } from '../storage/column';
 import type { Table } from '../storage/table';
 import { type WorldInternal, worldInternal } from '../world-internal';
+import { type BatchLease, IndexedBatch, type QueryBatch, RangeBatch } from './batch';
 import { type ChangedEntities, ChangedEntityOrder } from './change-order';
 import { createDerivedRangeWriter, type DerivedRangeWriter } from './derived-range-writer';
 
@@ -104,6 +106,8 @@ export interface Query<
    */
   at(entity: EntityHandle): QueryRow<R, W, O> | undefined;
   spans(): Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError>;
+  /** Borrow physical numeric columns with an explicit range or sparse row index. Read-only, non-temporal descriptors. */
+  batches(): Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError>;
   combinations(k?: number): Iterable<readonly QueryRow<R, W, O>[]>;
 }
 
@@ -220,11 +224,6 @@ class QueryRowFacade<
     this.entity = entity;
     this.archetype = archetype;
     return this;
-  }
-
-  snapshot(): QueryRowFacade<R, W, O> {
-    if (this.archetype === undefined) throw new Error('Query row is not bound.');
-    return new QueryRowFacade<R, W, O>(this.world).bind(this.entity, this.archetype);
   }
 
   has(component: R[number] | W[number] | O[number]): boolean {
@@ -388,6 +387,9 @@ class ExecutableQuery<
   private active = false;
   private spansResult: Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError> | undefined;
   private changedOrder: ChangedEntityOrder | undefined;
+  private batchesResult:
+    | Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError>
+    | undefined;
 
   constructor(
     private readonly world: WorldQueryAccess,
@@ -399,15 +401,22 @@ class ExecutableQuery<
   }
 
   [Symbol.iterator](): Iterator<QueryRow<R, W, O>> {
+    return this.rowIterator(false);
+  }
+
+  /** Shared matching and observation; combinations owns each returned facade. */
+  private rowIterator(ownedRows: boolean): Iterator<QueryRow<R, W, O>> {
     this.beginIteration();
     const structureEpoch = this.world[worldInternal].getStructureEpoch();
     const upperBound = this.world[worldInternal].getMutationEpoch();
     const changed = this.changedEntityCandidates(upperBound);
     if (changed === undefined) this.refreshMatches();
     let changedIndex = 0;
-    const row = new QueryRowFacade<R, W, O>(this.world);
-    // One mutable step per iteration: every row step carries the same facade.
-    const step = { done: false, value: row } as IteratorResult<QueryRow<R, W, O>>;
+    const row = ownedRows ? undefined : new QueryRowFacade<R, W, O>(this.world);
+    // The step is reused in both modes; only combinations owns stable facades.
+    const step = { done: false, value: row as QueryRow<R, W, O> } satisfies IteratorYieldResult<
+      QueryRow<R, W, O>
+    >;
     const unchanged = this.hasUnchangedInput();
     let archetypeIndex = unchanged ? this.matchedArchetypes.length : 0;
     let tableIndex = unchanged ? this.matchedTables.length : 0;
@@ -456,7 +465,7 @@ class ExecutableQuery<
               (!current && !this.changeMatches(entity, table, tableRow, upperBound))
             )
               continue;
-            row.bind(entity, archetype);
+            step.value = this.bindRow(entity, archetype, row);
             return step;
           }
           close(true);
@@ -475,7 +484,7 @@ class ExecutableQuery<
             if (!this.changeMatches(entity, table, currentTableRow, upperBound)) continue;
             const recordArchetype = this.world[worldInternal].getEntityArchetype(entity);
             if (recordArchetype === undefined) continue;
-            row.bind(entity, recordArchetype);
+            step.value = this.bindRow(entity, recordArchetype, row);
             return step;
           }
           close(true);
@@ -497,7 +506,7 @@ class ExecutableQuery<
           if (table === undefined) continue;
           const entity = (table.entities.view[currentTableRow] ?? 0) as EntityHandle;
           if (!this.changeMatches(entity, table, currentTableRow, upperBound)) continue;
-          row.bind(entity, archetype);
+          step.value = this.bindRow(entity, archetype, row);
           return step;
         }
         close(true);
@@ -508,6 +517,14 @@ class ExecutableQuery<
         return QUERY_DONE;
       },
     };
+  }
+
+  private bindRow(
+    entity: EntityHandle,
+    archetype: Archetype,
+    borrowed: QueryRowFacade<R, W, O> | undefined,
+  ): QueryRow<R, W, O> {
+    return (borrowed ?? new QueryRowFacade<R, W, O>(this.world)).bind(entity, archetype);
   }
 
   at(entity: EntityHandle): QueryRow<R, W, O> | undefined {
@@ -616,6 +633,107 @@ class ExecutableQuery<
     return this.spansResult;
   }
 
+  batches(): Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError> {
+    if (this.batchesResult !== undefined) return this.batchesResult;
+    const descriptor = this.compiled.descriptor;
+    if ((descriptor.write?.length ?? 0) > 0) {
+      this.batchesResult = err(new QueryBatchUnavailableError('write-access'));
+    } else if (this.compiled.changedIds.length > 0 || this.compiled.addedIds.length > 0) {
+      this.batchesResult = err(new QueryBatchUnavailableError('temporal-filter'));
+    } else {
+      const lease: BatchLease = {
+        structureEpoch: 0,
+        active: false,
+        generation: 0,
+        assertReadable: () => this.assertBatchReadable(lease.structureEpoch),
+      };
+      this.batchesResult = ok({ [Symbol.iterator]: () => this.batchIterator(lease) });
+    }
+    return this.batchesResult;
+  }
+
+  private assertBatchReadable(epoch: number): void {
+    const owner = this.world[worldInternal];
+    if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
+    const poisoned = worldPoisonedError(this.world.execution);
+    if (poisoned !== undefined) throw poisoned;
+    const current = owner.getStructureEpoch();
+    if (current !== epoch) throw new QueryIterationInvalidatedError(epoch, current);
+  }
+
+  private batchIterator(lease: BatchLease): Iterator<QueryBatch<R, W, O>> {
+    const epoch = this.world[worldInternal].getStructureEpoch();
+    this.assertBatchReadable(epoch);
+    this.beginIteration();
+    lease.structureEpoch = epoch;
+    lease.active = true;
+    // Expire the preceding traversal's batch even before the first next().
+    lease.generation++;
+    const iterator = this.iterateBatches(lease, this.world[worldInternal].getMutationEpoch());
+    let finished = false;
+    return {
+      next: () => {
+        if (finished) return QUERY_DONE;
+        try {
+          const next = iterator.next();
+          if (next.done) finished = true;
+          return next;
+        } catch (cause) {
+          finished = true;
+          throw cause;
+        }
+      },
+      return: () => {
+        if (finished) return QUERY_DONE;
+        finished = true;
+        try {
+          return iterator.return(undefined);
+        } finally {
+          lease.active = false;
+          this.active = false;
+        }
+      },
+    };
+  }
+
+  private *iterateBatches(
+    lease: BatchLease,
+    upperBound: number,
+  ): Generator<QueryBatch<R, W, O>, undefined> {
+    let complete = false;
+    try {
+      lease.assertReadable();
+      this.refreshMatches();
+      const descriptor = this.compiled.descriptor;
+      const graph = this.world[worldInternal].getGraph();
+      if (this.compiled.sparseRoute) {
+        for (let index = 0; index < this.matchedArchetypes.length; index++) {
+          lease.assertReadable();
+          const archetype = graph.archetypes[this.matchedArchetypes[index] as number];
+          if (archetype === undefined || archetype.size === 0) continue;
+          const table = graph.tables[archetype.tableId] as Table;
+          lease.generation++;
+          yield new IndexedBatch(table, descriptor, lease, archetype.rows, archetype.size);
+        }
+      } else {
+        for (let index = 0; index < this.matchedTables.length; index++) {
+          lease.assertReadable();
+          const table = this.matchedTables[index] as Table;
+          if (table.size === 0) continue;
+          lease.generation++;
+          yield new RangeBatch(table, descriptor, lease, 0, table.size);
+        }
+      }
+      lease.assertReadable();
+      complete = true;
+    } finally {
+      lease.active = false;
+      this.active = false;
+      if (complete) this.lastObservedEpoch = upperBound;
+    }
+    return undefined;
+  }
+
   [DERIVED_WRITER]<C extends W[number]>(
     component: C,
   ): Result<DerivedRangeWriter<R[number], C>, QuerySpanUnavailableError> {
@@ -645,15 +763,15 @@ class ExecutableQuery<
         const previousObservedEpoch = query.lastObservedEpoch;
         const structureEpoch = query.world[worldInternal].getStructureEpoch();
         const rows: QueryRow<R, W, O>[] = [];
-        for (const row of query) {
-          rows.push((row as QueryRowFacade<R, W, O>).snapshot());
-        }
+        const iterator = query.rowIterator(true);
+        for (let next = iterator.next(); !next.done; next = iterator.next()) rows.push(next.value);
         query.active = true;
         let completed = false;
         try {
           if (k <= rows.length) {
             const indices = Array.from({ length: k }, (_, index) => index);
             while (true) {
+              query.assertReadableChanges();
               if (query.world[worldInternal].getStructureEpoch() !== structureEpoch) {
                 throw new QueryIterationInvalidatedError(
                   structureEpoch,
@@ -670,6 +788,12 @@ class ExecutableQuery<
               }
             }
           }
+          query.assertReadableChanges();
+          if (query.world[worldInternal].getStructureEpoch() !== structureEpoch)
+            throw new QueryIterationInvalidatedError(
+              structureEpoch,
+              query.world[worldInternal].getStructureEpoch(),
+            );
           completed = true;
         } finally {
           query.active = false;

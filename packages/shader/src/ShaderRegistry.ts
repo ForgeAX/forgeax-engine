@@ -4,6 +4,7 @@ import {
   isShaderEntryPointReads,
   type MaterialProgramAbi,
   type ShaderEntryPointReads,
+  ShaderSource,
 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -49,7 +50,11 @@ import {
   type Result as ShaderResult,
   shaderNotFound,
 } from './errors.js';
-import { digestShaderBytes, readShaderManifestPublication } from './manifest-publication.js';
+import {
+  digestShaderBytes,
+  manifestShaderSource,
+  readShaderManifestPublication,
+} from './manifest-publication.js';
 import type { MaterialShaderManifestEntry } from './types.js';
 
 interface AdmittedManifest {
@@ -91,6 +96,12 @@ function ownMaterialReceipt(receipt: MaterialProgramAbi): MaterialProgramAbi {
 // Each registry holds its publication; the weak index releases it with the last
 // registry. Unselected capability permutations remain fragment references.
 const admittedManifests = new Map<string, WeakRef<AdmittedManifest>>();
+const admittedManifestCleanup = new FinalizationRegistry<{
+  url: string;
+  reference: WeakRef<AdmittedManifest>;
+}>(({ url, reference }) => {
+  if (admittedManifests.get(url) === reference) admittedManifests.delete(url);
+});
 
 // ─── Device dependency-injection interface ──────────────────────────────────────
 
@@ -166,6 +177,7 @@ export const SSR_SHADER_MODULES = Object.freeze({
 export interface MaterialShaderEntry {
   readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly source: string;
+  readonly sourceReference?: ShaderSource;
   readonly paramSchema: readonly ParamSchemaEntry[];
   /** Producer-published ABI facts for this exact artifact variant. */
   readonly receipt?: MaterialProgramAbi | undefined;
@@ -246,6 +258,16 @@ function markShaderManifestStage(
  * `static get` / module-level singletons are **forbidden** (plan-strategy
  * §S-10).
  */
+function materialEntrySource(entry: MaterialShaderEntry, source: string): ShaderSource {
+  const suppliedSource = new ShaderSource([source]);
+  if (entry.sourceReference !== undefined && !ShaderSource.is(entry.sourceReference))
+    throw new Error('ShaderRegistry: unadmitted source reference');
+  const sourceReference = entry.sourceReference ?? suppliedSource;
+  if (sourceReference.identity !== suppliedSource.identity)
+    throw new Error('ShaderRegistry: source reference does not match material source');
+  return sourceReference;
+}
+
 export class ShaderRegistry {
   readonly #device: ShaderRegistryDevice | undefined;
   readonly #manifestUrl: string | undefined;
@@ -258,10 +280,13 @@ export class ShaderRegistry {
   // installMaterialArtifact; feat-20260523-shader-template-instance-split M5 / T05).
   readonly #materialShaders = new Map<string, ResultOk<RegisteredMaterialShaderEntry>>();
   readonly #materialPrograms = new Map<string, MaterialShaderProgram>();
+  readonly #sources = new Map<string, ShaderSource>();
+  readonly #sourceFragments = new Map<string, string>();
   readonly #paramSchemaProjectionOwner = new ParamSchemaProjectionOwner();
   readonly #materialShaderManifestEntries = new Map<string, MaterialShaderManifestEntry>();
   #admitted: AdmittedManifest | undefined;
   #manifestLoaded = false;
+  #sourceBytes = 0;
 
   constructor(opts: ShaderRegistryOptions) {
     this.#device = opts.device;
@@ -283,6 +308,10 @@ export class ShaderRegistry {
     candidate.#admitted = this.#admitted;
     for (const [source, program] of this.#materialPrograms)
       candidate.#materialPrograms.set(source, program);
+    for (const [id, reference] of this.#sources) candidate.#sources.set(id, reference);
+    for (const [text, fragment] of this.#sourceFragments)
+      candidate.#sourceFragments.set(text, fragment);
+    candidate.#sourceBytes = this.#sourceBytes;
     return candidate;
   }
 
@@ -410,7 +439,9 @@ export class ShaderRegistry {
         );
       }
       admitted = { textDigest, manifest: parsed };
-      admittedManifests.set(url, new WeakRef(admitted));
+      const reference = new WeakRef(admitted);
+      admittedManifests.set(url, reference);
+      admittedManifestCleanup.register(admitted, { url, reference });
     }
     const parsed = admitted.manifest;
 
@@ -565,7 +596,20 @@ export class ShaderRegistry {
         }),
       );
     }
-    const result = this.#device.createShaderModule({ code: entry.wgsl, label: hash });
+    let source: ShaderSource;
+    try {
+      source = this.shaderSource(manifestShaderSource(entry));
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      return err(
+        new RhiError({
+          code: 'limit-exceeded',
+          expected: 'shader source admission capacity',
+          hint: String(cause),
+        }),
+      );
+    }
+    const result = this.#device.createShaderModule(source.descriptor(hash));
     if (!result.ok) {
       return result;
     }
@@ -592,17 +636,46 @@ export class ShaderRegistry {
   //   - `render-system-record`'s pipeline cache key (M4 / T06) — same
   //     identifier feeds the per-pipeline `(materialShaderId, stateHash)` key.
 
-  /** Publish source-derived facts once per composed program, independent of GPU lifetime. */
+  /** Logical unique source size; this is not retained heap or a capacity policy. */
+  sourceInspection(): {
+    readonly logicalBytes: number;
+    readonly sources: number;
+    readonly programs: number;
+    readonly schemas: number;
+  } {
+    return {
+      logicalBytes: this.#sourceBytes,
+      sources: this.#sources.size,
+      programs: this.#materialPrograms.size,
+      schemas: this.#paramSchemaProjectionOwner.stats().projections,
+    };
+  }
+
+  /** Share source storage for this Registry's registered CPU inputs. */
+  shaderSource(input: string | ShaderSource): ShaderSource {
+    if (typeof input !== 'string' && !ShaderSource.is(input))
+      throw new Error('ShaderRegistry: unadmitted source reference');
+    const source = typeof input === 'string' ? new ShaderSource([input]) : input;
+    const previous = this.#sources.get(source.identity);
+    if (previous !== undefined) return previous;
+    const owned =
+      typeof input === 'string' ? ShaderSource.fromText(input, this.#sourceFragments) : source;
+    this.#sources.set(owned.identity, owned);
+    this.#sourceBytes += owned.length * 2;
+    return owned;
+  }
+
   materialProgram(
-    source: string,
+    input: string | ShaderSource,
     entryPoints?: readonly ShaderEntryPointReads[],
   ): MaterialShaderProgram {
-    const cached = this.#materialPrograms.get(source);
+    const source = this.shaderSource(input);
+    const cached = this.#materialPrograms.get(source.identity);
     const program =
       cached === undefined
         ? createMaterialShaderProgram(source, entryPoints)
         : withMaterialShaderEntryPoints(cached, entryPoints);
-    if (program !== cached) this.#materialPrograms.set(source, program);
+    if (program !== cached) this.#materialPrograms.set(source.identity, program);
     return program;
   }
 
@@ -644,6 +717,7 @@ export class ShaderRegistry {
       );
     }
     const { source, paramSchema, receipt: inputReceipt } = entry;
+    const sourceReference = materialEntrySource(entry, source);
     const receipt = inputReceipt === undefined ? undefined : ownMaterialReceipt(inputReceipt);
     if (receipt !== undefined && !isMaterialProgramAbi(receipt)) {
       throw new Error(
@@ -667,12 +741,14 @@ export class ShaderRegistry {
     // Exact source facts can come from this registry or the receiving registry.
     // Each new schema is still admitted and checked before publishing the entry.
     const cached =
-      this.#materialPrograms.get(source) ??
-      (programSource === undefined ? undefined : programSource.#materialPrograms.get(source));
+      this.#materialPrograms.get(sourceReference.identity) ??
+      (programSource === undefined
+        ? undefined
+        : programSource.#materialPrograms.get(sourceReference.identity));
     const reads = entry.entryPoints ?? receipt?.entryPoints;
     const program =
       cached === undefined
-        ? createMaterialShaderProgram(source, reads)
+        ? createMaterialShaderProgram(this.shaderSource(entry.sourceReference ?? source), reads)
         : withMaterialShaderEntryPoints(cached, reads);
     if (entry.entryPoints !== undefined && receipt?.entryPoints !== undefined)
       withMaterialShaderEntryPoints(program, receipt.entryPoints);
@@ -685,7 +761,8 @@ export class ShaderRegistry {
         );
       }
     }
-    this.#materialPrograms.set(source, program);
+    this.shaderSource(program.sourceReference);
+    this.#materialPrograms.set(sourceReference.identity, program);
     this.#materialShaders.set(
       identifier,
       Object.freeze(
@@ -693,7 +770,9 @@ export class ShaderRegistry {
           Object.freeze({
             // Retained copies publish one composed program under many keys. Keep
             // the program's first-admitted source, not each Worker-cloned copy.
-            source: program.source,
+            get source() {
+              return program.source;
+            },
             program,
             paramSchema: paramSchemaProjection.schema,
             paramSchemaProjection,
@@ -714,7 +793,7 @@ export class ShaderRegistry {
           `ShaderRegistry: material shader identifier '${identifier}' already registered`,
         );
       const previous = this.#paramSchemaProjectionOwner.get(identifier, 1);
-      const cached = this.#materialPrograms.get(entry.source);
+      const cached = this.#materialPrograms.get(entry.program.sourceReference.identity);
       if (cached?.entryPoints !== undefined)
         withMaterialShaderEntryPoints(cached, entry.program.entryPoints);
       if (
@@ -733,19 +812,22 @@ export class ShaderRegistry {
         revision: 1,
         schema: entry.paramSchema,
       });
-      const cachedProgram = this.#materialPrograms.get(entry.source);
+      const cachedProgram = this.#materialPrograms.get(entry.program.sourceReference.identity);
       const program =
         cachedProgram?.entryPoints === undefined && entry.program.entryPoints !== undefined
           ? entry.program
           : (cachedProgram ?? entry.program);
-      this.#materialPrograms.set(entry.source, program);
+      this.shaderSource(program.sourceReference);
+      this.#materialPrograms.set(program.sourceReference.identity, program);
       this.#materialShaders.set(
         identifier,
         Object.freeze(
           ok(
             Object.freeze({
               ...entry,
-              source: program.source,
+              get source() {
+                return program.source;
+              },
               program,
               paramSchema: projection.schema,
               paramSchemaProjection: projection,

@@ -126,7 +126,13 @@ export function advanceAnimationPlayer(world: World, dt: number): void {
   try {
     // Structural author callbacks can change target membership while a player
     // advances. Collect handles before writes and keep nested evaluations isolated.
-    for (const row of query) scratch.entities.push(row.entity);
+    for (const querySpan of query.spans().unwrap()) {
+      const queryEntities = querySpan.entities;
+      for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+        const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+        scratch.entities.push(queriedEntity);
+      }
+    }
     for (const entityRaw of scratch.entities) advanceOnePlayer(world, entityRaw, dt, scratch);
   } finally {
     scratch.entities.length = 0;

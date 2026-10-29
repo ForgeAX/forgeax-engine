@@ -208,14 +208,15 @@ function createRawShaderModule(
       ]),
     );
   }
-  const rayQueryGate = validateRayQueryShader(device.caps.rayQuery, desc.code);
-  if (!rayQueryGate.ok) return rayQueryGate;
-  const mirrored: { label?: string; code: string } = { code: desc.code };
-  if ('label' in desc && desc.label !== undefined) mirrored.label = desc.label;
+
   try {
     const library = pipelineLibraryFor(device);
     if (library === undefined) throw new Error('WebGPU device pipeline library is unavailable');
-    return ok(library.createShaderModule(mirrored as GPUShaderModuleDescriptor));
+    const known = library.findShaderModule(desc);
+    if (known !== undefined) return ok(known);
+    const gate = validateRayQueryShader(device.caps.rayQuery, desc.code);
+    if (!gate.ok) return gate;
+    return ok(library.createShaderModule(desc as GPUShaderModuleDescriptor));
   } catch (e) {
     // The synchronous part of a real-device createShaderModule rarely throws
     // (spec: errors are surfaced asynchronously through getCompilationInfo);
@@ -570,7 +571,7 @@ export type {
 // Re-export Result factories + RhiError class as values (the rhi-webgpu
 // top-level surface stays single-import for both type-only and runtime
 // consumption).
-export { err, ok, RhiError as RhiErrorClass } from '@forgeax/engine-rhi';
+export { err, ok, RhiError as RhiErrorClass, validateRayQueryShader } from '@forgeax/engine-rhi';
 export {
   RHI_COMMAND_COUNT_KEYS,
   type RhiCommandCountKey,

@@ -248,19 +248,28 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     rhiCapture: boolean,
   }),
   'dev.status': schema({ ...root }),
-  'dev.verify': schema(
+  'dev.verify': schema({
+    ...root,
+    ...liveIdentity,
+    ...liveReady,
+    output: string,
+    checkpoint: string,
+    requireUi: boolean,
+    timeoutMs: { type: 'integer', minimum: 1 },
+  }),
+  'dev.pipelines.export': schema(
     {
       ...root,
       ...liveIdentity,
-      ...liveReady,
       output: string,
-      checkpoint: string,
-      requireUi: boolean,
-      timeoutMs: { type: 'integer', minimum: 1 },
+      limits: schema({
+        outputBytes: { type: 'integer', minimum: 1 },
+        temporaryBytes: { type: 'integer', minimum: 1 },
+        entries: { type: 'integer', minimum: 1 },
+      }),
     },
     ['revision'],
   ),
-  'dev.pipelines.export': schema({ ...root, ...liveIdentity, output: string }, ['revision']),
   'dev.reload': schema({ ...root }),
   'dev.stop': schema({ ...root }),
   'dev.eval': schema(
@@ -972,6 +981,13 @@ export function createUnifiedCommandContributions(
         return exportPipelineLibrary(projectRoot, {
           revision: args.revision as string,
           ...(typeof args.output === 'string' ? { output: args.output } : {}),
+          ...(args.limits === undefined
+            ? {}
+            : {
+                limits: args.limits as NonNullable<
+                  Parameters<typeof exportPipelineLibrary>[1]['limits']
+                >,
+              }),
         });
       },
       'host',

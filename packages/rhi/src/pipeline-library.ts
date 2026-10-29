@@ -1,4 +1,12 @@
-import type { Result, RhiError } from './index';
+import type {
+  ComputePipeline,
+  PipelineLayout,
+  RenderPipeline,
+  Result,
+  RhiError,
+  ShaderModule,
+} from './index';
+import type { PipelineRecipeState } from './pipeline-recipe-state';
 
 /** Portable creation recipes, never opaque handles or driver binaries. */
 export type PipelineLibraryStage = Omit<GPUProgrammableStage, 'module'> & {
@@ -144,6 +152,11 @@ export interface PipelineLibraryInspection {
 }
 
 export interface PipelineLibraryPrepareOptions {
+  /** Existing generation/roster owner; retention ends with this object. */
+  readonly owner?: object;
+  readonly inputLimits?: PipelineLibraryLimits;
+  /** Already admitted CPU source owners, in manifest module order. */
+  readonly sources?: readonly import('@forgeax/engine-types').ShaderSource[];
   /** Outstanding native compilations: background 1..4, blocking 1..16; backend default otherwise. */
   readonly concurrency?: number;
   /** Account the request on the background lane instead of the blocking startup warmup. */
@@ -155,10 +168,55 @@ export interface PipelineLibraryPrepareOptions {
  * prepare before drawing, and a background prepare may run after readiness.
  */
 export interface PipelineLibrary {
+  /** Diagnostic route scope: retain the current graph and subsequent records until disposal. */
+  collect?(): { dispose(): void };
+  /** @internal Borrow a previously admitted state using a lazy final-state projection. */
+  findRenderState?(
+    dependencies: {
+      readonly layout: PipelineLayout | 'auto';
+      readonly vertex: ShaderModule;
+      readonly fragment?: ShaderModule;
+    },
+    matches: (state: PipelineRecipeState) => boolean,
+  ): PipelineRecipeState | undefined;
+  /** @internal Query the existing record before materializing a native descriptor. */
+  selectRender?(
+    state: PipelineRecipeState,
+    dependencies: {
+      readonly layout: PipelineLayout | 'auto';
+      readonly vertex: ShaderModule;
+      readonly fragment?: ShaderModule;
+    },
+    completed: boolean,
+  ):
+    | Result<RenderPipeline | undefined, RhiError>
+    | Promise<Result<RenderPipeline | undefined, RhiError>>;
+  /** @internal Compute entry projection is applied before the same record query. */
+  selectCompute?(
+    state: PipelineRecipeState,
+    dependencies: { readonly layout: PipelineLayout | 'auto'; readonly compute: ShaderModule },
+    completed: boolean,
+  ):
+    | Result<ComputePipeline | undefined, RhiError>
+    | Promise<Result<ComputePipeline | undefined, RhiError>>;
   inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection;
-  export(): Result<PipelineLibraryManifest, RhiError>;
+  export(limits?: PipelineLibraryLimits): Result<PipelineLibraryManifest, RhiError>;
   prepare(
     manifest: PipelineLibraryManifest,
     options?: PipelineLibraryPrepareOptions,
   ): Promise<Result<PipelineLibraryInspection, RhiError>>;
 }
+
+/** Limits for one input/export action, never a device resource capacity. */
+export interface PipelineLibraryLimits {
+  readonly outputBytes?: number;
+  readonly temporaryBytes?: number;
+  readonly entries?: number;
+}
+
+/** Default finite policy shared by import, export and transport receipts. */
+export const PIPELINE_LIBRARY_LIMITS = Object.freeze({
+  outputBytes: 512 * 1024 * 1024,
+  temporaryBytes: 4 * 1024 * 1024 * 1024,
+  entries: 65_536,
+});

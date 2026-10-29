@@ -37,6 +37,37 @@ function expectPlaneValues(actual: Float32Array, expected: readonly number[]): v
 }
 
 describe('CameraSnapshot frustum policy', () => {
+  it('isolates nested getter work and retains independently owned public planes', () => {
+    const nestedCamera = camera({ fov: 0.7, aspect: 2, near: 0.3, far: 30 });
+    const nestedExpected = buildCameraFrusta([nestedCamera]);
+    const outerCamera = camera({ fov: 1.1, aspect: 1.2, near: 0.2, far: 80 });
+    const outerExpected = buildCameraFrusta([outerCamera]);
+    const retained = new Float32Array(outerExpected[0] as Float32Array);
+    const outer = buildCameraFrusta([
+      {
+        ...outerCamera,
+        get projectionOffset() {
+          expect(buildCameraFrusta([nestedCamera])).toEqual(nestedExpected);
+          return [0, 0] as const;
+        },
+      },
+    ]);
+    expect(outer).toEqual(outerExpected);
+    expect(outer[0]).not.toBe(outerExpected[0]);
+    expect(outerExpected[0]).toEqual(retained);
+    expect(() =>
+      buildCameraFrusta([
+        {
+          ...outerCamera,
+          get world(): Float32Array {
+            throw new Error('camera read failed');
+          },
+        },
+      ]),
+    ).toThrow('camera read failed');
+    expect(buildCameraFrusta([outerCamera])).toEqual(outerExpected);
+  });
+
   it('preserves ordered normalized plane values for a perspective camera', () => {
     const planes = buildCameraFrusta([
       camera({ fov: Math.PI / 3, aspect: 1.5, near: 0.5, far: 50 }),

@@ -3,7 +3,8 @@
  *
  * The Renderer already emits `frame-submitted` after its sole queue-submit
  * boundary. The canvas snapshot retains the latest submitted and completed
- * facts for late readers; events only notify current subscribers.
+ * facts for late readers; events only notify current subscribers. They cross
+ * open shadow roots so the stable page startup cover can observe its canvas.
  */
 
 import { freezeBarrelDistortionMapping } from '@forgeax/engine-render';
@@ -187,6 +188,7 @@ export function publishBrowserFrameSubmitted(
     canvas.dispatchEvent(
       new CustomEvent(FORGEAX_FRAME_SUBMITTED_EVENT, {
         detail: published,
+        composed: true,
       }),
     );
   }
@@ -222,6 +224,7 @@ export function publishBrowserFrameCompleted(
     canvas.dispatchEvent(
       new CustomEvent(FORGEAX_FRAME_COMPLETED_EVENT, {
         detail: published,
+        composed: true,
       }),
     );
   }

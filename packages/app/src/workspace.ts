@@ -1561,11 +1561,20 @@ export async function createEngineWorkspaceAppPreview(
         sceneRoot = nextRoot;
         loadedScene = nextScene;
         if (fallbackCamera !== undefined) {
-          for (const row of input.app.world.query({ with: [Camera] }).unwrap()) {
-            if (row.entity === fallbackCamera) continue;
-            input.app.world.despawn(fallbackCamera).unwrap();
-            fallbackCamera = undefined;
-            break;
+          querySpans: for (const querySpan of input.app.world
+            .query({ with: [Camera] })
+            .unwrap()
+            .spans()
+            .unwrap()) {
+            const queryEntities = querySpan.entities;
+            for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+              const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+
+              if (queriedEntity === fallbackCamera) continue;
+              input.app.world.despawn(fallbackCamera).unwrap();
+              fallbackCamera = undefined;
+              break querySpans;
+            }
           }
         }
         fallbackCamera ??= ensureFallbackCamera(

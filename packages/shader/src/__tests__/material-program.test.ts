@@ -325,3 +325,32 @@ describe('registry-owned material programs', () => {
     ).toBeUndefined();
   });
 });
+
+it('keeps source identity available beyond historical cumulative source quotas', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const common = `//${'x'.repeat(16 * 1024 * 1024)}\n`;
+  const sources = Array.from({ length: 9 }, (_, index) =>
+    registry.shaderSource(`${common}// ${index}`),
+  );
+  expect(registry.sourceInspection().logicalBytes).toBeGreaterThan(256 * 1024 * 1024);
+  const fork = registry.forkForDevice({ createShaderModule: vi.fn() });
+  for (const source of sources) expect(fork.shaderSource(source)).toBe(source);
+}, 60000);
+
+it('captures material source once before source-reference verification', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  let reads = 0;
+  const first = 'fn sourceA() {}';
+  const second = 'fn sourceB() {}';
+  registry.installMaterialArtifact('game::accessor-source', {
+    get source() {
+      return ++reads === 1 ? first : second;
+    },
+    paramSchema: [],
+  });
+  expect(reads).toBe(1);
+  expect(registry.findMaterialArtifact('game::accessor-source').unwrap().program.source).toBe(
+    first,
+  );
+  expect(registry.materialProgram(second).source).toBe(second);
+});

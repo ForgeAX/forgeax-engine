@@ -192,20 +192,22 @@ for (const file of await markdownFiles(skillsRoot)) {
   await checkLinks(file, source);
   checkPublicFacadeImports(file, source);
   checkGameExamples(file, source);
-  if (file === resolve(skillsRoot, 'forgeax-engine-sdk/references/feature-catalog.md')) {
-    const baseline = source.match(/Generation baseline commit:\s*`([0-9a-f]{40})`/u)?.[1];
-    if (baseline === undefined) {
-      fail(file, 'missing full capability baseline commit');
-    } else {
-      try {
-        await execFileAsync('git', ['merge-base', '--is-ancestor', baseline, 'HEAD'], {
-          cwd: root,
-        });
-      } catch {
-        fail(file, `capability baseline is not an ancestor of HEAD: ${baseline}`);
-      }
-    }
-  }
+}
+
+const capabilityCatalog = JSON.parse(
+  await readFile(resolve(root, 'schemas/engine-capabilities.json'), 'utf8'),
+);
+try {
+  await execFileAsync(
+    'git',
+    ['merge-base', '--is-ancestor', capabilityCatalog.generationBaselineCommit, 'HEAD'],
+    { cwd: root },
+  );
+} catch {
+  fail(
+    resolve(root, 'schemas/engine-capabilities.json'),
+    'capability baseline is not an ancestor of HEAD',
+  );
 }
 
 const projectDocumentation = [

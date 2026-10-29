@@ -491,13 +491,13 @@ it('uses the captured material frame for shadow projection and invalidates adopt
     old.updateShadowViews?.(views).unwrap();
     old._sealResourceReads().unwrap();
     f.adopt({ ...f.opaque, roughness: 0.8 });
-    const first = old.shadowBatchProjections?.values().next().value?.values().next().value;
+    const first = old.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     expect(first?.material.roughness).toBe(0.5);
     old._commitResourceReplacement?.();
     expect(() => old.updateShadowViews?.(views)).toThrow('open resource frame');
     const next = f.prepare();
     next?.updateShadowViews?.(views).unwrap();
-    const current = next?.shadowBatchProjections?.values().next().value?.values().next().value;
+    const current = next?.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     expect(current?.material.roughness).toBe(0.8);
     expect(next?.shadowViewPool?.invalidationReason(identity)).toBe('content-changed');
   } finally {
@@ -520,7 +520,7 @@ it('invalidates shadow depth when the shared mesh changes in place', async () =>
   try {
     const old = f.prepare();
     old?.updateShadowViews?.(views).unwrap();
-    const first = old?.shadowBatchProjections?.values().next().value?.values().next().value;
+    const first = old?.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     old?._commitResourceReplacement?.();
     const quiet = f.prepare();
     quiet?.updateShadowViews?.(views).unwrap();
@@ -529,7 +529,7 @@ it('invalidates shadow depth when the shared mesh changes in place', async () =>
     f.touchMesh();
     const next = f.prepare();
     next?.updateShadowViews?.(views).unwrap();
-    const changed = next?.shadowBatchProjections?.values().next().value?.values().next().value;
+    const changed = next?.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     expect(changed?.mesh).toBe(first?.mesh);
     expect(changed?.meshContentEpoch).toBe((first?.meshContentEpoch ?? -1) + 1);
     expect(next?.shadowViewPool?.invalidationReason(identity)).toBe('content-changed');
@@ -592,7 +592,7 @@ it('keeps the ShadowCaster GPU execution when Forward changes to a blended pass'
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     expect(frame?.project(graph, 'rgba8unorm', 1).ok).toBe(true);
     frame?.updateShadowViews?.(views).unwrap();
-    expect(frame?.shadowBatchProjections?.values().next().value?.size).toBe(1);
+    expect(frame?.shadowBatchProjections?.()?.values().next().value?.size).toBe(1);
   } finally {
     f.dispose();
   }

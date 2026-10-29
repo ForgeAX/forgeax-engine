@@ -167,7 +167,7 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
     const capture = async (label: string) => {
       await request(channel, { id: ++id, kind: 'begin-capture' });
       const captured = (await inspect(
-        `const { decodeTape } = await _import('@forgeax/engine-rhi-debug');
+        `const { decodeTape, encodeTape } = await _import('@forgeax/engine-rhi-debug');
          const pin = new BroadcastChannel(${JSON.stringify(name)});
          try {
            const r = await rhiCapture.captureFrame();
@@ -188,7 +188,7 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
              };
              pin.postMessage({ id: 1, kind: 'pin-capture', frameId });
            });
-           return { bytes: Array.from(bytes) };
+           return { bytes: Array.from(encodeTape(tape, { compression: 'gzip' }).unwrap()) };
          } finally { pin.close(); }`,
       )) as { bytes?: number[]; error?: unknown };
       if (captured.error !== undefined)

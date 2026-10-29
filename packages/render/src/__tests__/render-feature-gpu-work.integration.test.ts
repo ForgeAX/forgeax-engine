@@ -43,7 +43,7 @@ describe('RenderFeature persistent GPU work', () => {
         first.prepareProgram(`emitter-${index}`, program).unwrap(),
       );
       expect(createShaderModule).toHaveBeenCalledOnce();
-      expect(stringify.mock.calls.filter(([value]) => value === wgsl)).toHaveLength(1);
+      expect(stringify.mock.calls.filter(([value]) => value === wgsl)).toHaveLength(0);
       expect(new Set(references).size).toBe(8);
       const next = owner.beginFeature('owned', 1);
       const rebuilt = next.prepareProgram('emitter-0', program).unwrap();

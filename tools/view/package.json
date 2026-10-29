@@ -1,6 +1,7 @@
 {
   "name": "@forgeax/view",
   "version": "0.2.0",
+  "private": true,
   "type": "module",
   "description": "An optional display host for ForgeaX CLI runs",
   "bin": {
@@ -16,10 +17,6 @@
     "LICENSE",
     "scripts"
   ],
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
   "dependencies": {
     "@forgeax/engine": "workspace:*",
     "@forgeax/engine-host": "workspace:*",

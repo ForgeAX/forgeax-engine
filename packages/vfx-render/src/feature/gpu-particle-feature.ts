@@ -22,14 +22,8 @@ import {
   type MeshAsset,
   ok,
   type Result,
-  type TextureAsset,
 } from '@forgeax/engine-types';
-import type {
-  ParticleRendererSourceV3,
-  VfxDataInterfaceResource,
-  VfxDataInterfaceToken,
-  VfxForceFieldError,
-} from '@forgeax/engine-vfx';
+import type { ParticleRendererSourceV3, VfxForceFieldError } from '@forgeax/engine-vfx';
 import {
   buildVfxRecoveryIntents,
   isParticleTopologyRenderer,
@@ -41,7 +35,6 @@ import {
   type VfxGpuEffectAsset,
   type VfxGpuEmitterSource,
   type VfxGpuRuntime,
-  vfxForceFieldFailure,
 } from '@forgeax/engine-vfx';
 import { RenderFeatureStageFailedError } from '../../../render/src/errors/render';
 import type { RenderFeatureGpuProgramDescriptor } from '../../../render/src/features/prepared-gpu-work';
@@ -151,6 +144,7 @@ import {
   sortGroupDeclarations,
   type TickPassRange,
 } from './plan-order.js';
+import { resolveDataInterfaces, resolveFields } from './provider-resolution.js';
 import { coalesceVfxRasterPasses } from './raster-passes.js';
 import {
   type RetainedEmitterResources,
@@ -364,36 +358,6 @@ function resolveEmitter(
   return { effect, emitter: ownEmitter(emitter) };
 }
 
-function resolveFields(
-  emitter: VfxGpuTickIntent['emitter'],
-  input: SourceVfxGpuTickIntent['forceFields'],
-  sourceWorldIndex: number,
-  context: RenderFeaturePlanContext,
-  prepare: ReturnType<typeof createVfxForceFieldPreparation>,
-): Result<PreparedVfxForceFields, VfxForceFieldError> | undefined {
-  if (emitter.forceFields === undefined) return undefined;
-  if (input === undefined)
-    return vfxForceFieldFailure('vfx-field-asset-missing', 'forceFields', 'tick inputs');
-  if (!input.ok) return input;
-  const textures: {
-    handle: number;
-    revision: number;
-    value: TextureAsset;
-    delta?: import('@forgeax/engine-assets-runtime/internal').AssetVersionDelta;
-  }[] = [];
-  for (const reference of input.value) {
-    const asset = context.resolveAsset?.(sourceWorldIndex, reference.handle, reference.revision);
-    if (!asset?.ok || asset.value.kind !== 'texture')
-      return vfxForceFieldFailure(
-        'vfx-field-asset-missing',
-        'forceFields.texture',
-        'a retained exact Texture version',
-      );
-    textures.push({ ...reference, value: asset.value });
-  }
-  return prepare(emitter.forceFields, textures);
-}
-
 function resolveIntent(
   intent: PublishedIntent,
   sourceWorldIndex: number,
@@ -412,32 +376,6 @@ function resolveIntent(
   );
   const { forceFields: _input, ...tick } = intent;
   return { ...tick, ...definition, ...(forceFields === undefined ? {} : { forceFields }) };
-}
-
-function resolveDataInterfaces(
-  intent: Pick<VfxGpuTickIntent, 'emitter' | 'instanceGeneration'>,
-  registry: Pick<VfxDataInterfaceRegistry, 'resolve'> | undefined,
-): ReadonlyMap<VfxDataInterfaceToken, VfxDataInterfaceResource> | undefined {
-  const requirements = intent.emitter.reflection.dataInterfaces ?? [];
-  const resources = new Map<VfxDataInterfaceToken, VfxDataInterfaceResource>();
-  for (const requirement of requirements) {
-    const resolved = registry?.resolve([requirement], intent.instanceGeneration);
-    if (resolved === undefined) continue;
-    if (!resolved.ok) {
-      const error = resolved.error;
-      // Missing providers or resident payloads use Renderer-owned producers.
-      // Explicit unavailability and invalid provider contracts remain barriers.
-      if (
-        error?.code === 'vfx-data-interface-missing' &&
-        (error.detail.providerId === undefined || error.detail.expectedResourceKind !== undefined)
-      )
-        continue;
-      return undefined;
-    }
-    const resource = resolved.value.resources.find((entry) => entry.token === requirement.token);
-    if (resource?.resource !== undefined) resources.set(requirement.token, resource);
-  }
-  return resources;
 }
 
 function planFailure(cause?: unknown): RenderFeatureStageFailedError {
@@ -841,6 +779,8 @@ export function gpuParticleRenderFeature(
   let nextEmitterResourceId = 0;
   /** Plan invocations; ages stream program owners. */
   let planSerial = 0;
+  /** Before first emitter work there are no runtime, arena or program owners to retire. */
+  let planningStarted = false;
   /** Absent streams keep their identity briefly so a short gap does not rename storage. */
   const STREAM_RETENTION_PLANS = 8;
   const emitterResource = (states: RuntimeState['emitters'], key: string) => {
@@ -1480,8 +1420,14 @@ export function gpuParticleRenderFeature(
     const frameWork = nativePlan?.scope('frame');
     const resources: PlanResource[] = frameWork?.resources ?? [];
     const passes: PlanPass[] = frameWork?.passes ?? [];
+    // An empty producer still publishes frame feedback and retires old owners,
+    // but has no per-view resources or raster work to prepare.
+    const hasEmitters = frame.worlds.some(
+      (entry) =>
+        entry.emitterState.size > 0 || entry.intents.length > 0 || entry.retained.length > 0,
+    );
     const viewWork = context.views
-      .filter((view) => view.render)
+      .filter((view) => hasEmitters && view.render)
       .map((view): ViewWork => {
         const scope = nativePlan?.scope({ view: view.identity });
         const colorTarget =
@@ -3940,6 +3886,42 @@ export function gpuParticleRenderFeature(
       return false;
     },
     plan: (sourceFrame, context) => {
+      if (
+        !planningStarted &&
+        sourceFrame.worlds.every(
+          (entry) =>
+            entry.emitterState.size === 0 &&
+            entry.intents.length === 0 &&
+            entry.retained.length === 0 &&
+            (entry.preparationPlayers?.length ?? 0) === 0,
+        )
+      ) {
+        // Preserve the ordinary submission/abort and source-feedback barrier.
+        // First playback enters full planning; subsequent empty frames retain
+        // its normal retirement and recovery path.
+        pendingFrames.set(sourceFrame.frameNumber, {
+          entries: [],
+          fields: [],
+          generation: context.generation,
+        });
+        const native = context.createNativePlan?.();
+        const work = [
+          native?.scope('frame') ?? { scope: 'frame' as const, resources: [], passes: [] },
+        ];
+        const sourceFeedback = sourceFrame.worlds.map((entry) => ({
+          runtimeId: entry.runtimeId,
+          renderGeneration: entry.renderGeneration,
+          visibility: [],
+          acknowledged: [],
+          published: [],
+          missingRetained: [],
+          missingIntents: [],
+        }));
+        return ok(
+          native === undefined ? { work, sourceFeedback } : native.finish(work, sourceFeedback),
+        );
+      }
+      planningStarted = true;
       // Retained writes consume bytes now; declaration payloads remain independent.
       const runtimeScratch = createRuntimeStorage();
       const emitterVisible = createEmitterVisibility();

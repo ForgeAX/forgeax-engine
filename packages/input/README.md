@@ -17,6 +17,11 @@ documents supplied through the browser backend’s document/window options.
 `grantGame()` and `revokeGame()` transfer ownership and clear stale samples.
 Each consumer retains its own input gate when ownership changes.
 
+Empty device/action indexes are allocated only when their first entry arrives
+in the current snapshot. Immutable disconnected-gamepad and missing-action
+readers share neutral values; populated readers and backend data remain detached,
+and each frame still publishes a fresh frozen snapshot.
+
 ## 4 步 recipe
 
 ```ts

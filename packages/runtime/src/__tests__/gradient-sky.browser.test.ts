@@ -19,7 +19,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { constructRuntimeRendererHost } from '../renderer-host';
+import { browserRendererFixture } from './browser-renderer.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 // A GradientSky drawn through the real renderer, read back from the encoded
@@ -30,6 +30,7 @@ import { testAssets } from './helpers/runtime-assets';
 
 type Rgb = readonly [number, number, number];
 const SIZE = 64;
+const rendererFor = browserRendererFixture(SIZE);
 const FOV = Math.PI / 2;
 const SKY = {
   zenith: [0.05, 0.2, 0.7] as Rgb,
@@ -118,12 +119,7 @@ interface Scenario {
 }
 
 async function renderSky(scenario: Scenario) {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
-  document.body.append(canvas);
-  const host = await constructRuntimeRendererHost(canvas);
-  if (!host.ok) throw host.error;
-  const { renderer } = host.value;
+  const { renderer } = await rendererFor();
   const errors: unknown[] = [];
   const stop = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -224,8 +220,8 @@ async function renderSky(scenario: Scenario) {
   } finally {
     stop();
     lease.dispose();
-    value(await renderer.dispose());
-    canvas.remove();
+    assets.release(material).unwrap();
+    assets.release(box).unwrap();
   }
 }
 

@@ -6,6 +6,7 @@ export const CameraView = defineComponent('CameraView', {
   viewport: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 1, 1]) },
   order: { type: 'i32', default: 0 },
   resolutionScale: { type: 'f32', default: 1 },
+  maxRenderShortSide: { type: 'u32', default: 0 },
   updateInterval: { type: 'u32', default: 1 },
   enabled: { type: 'bool', default: true },
 });
@@ -16,9 +17,20 @@ export const CAMERA_VIEW_DEFAULTS: CameraViewData = Object.freeze({
   viewport: new Float32Array([0, 0, 1, 1]),
   order: 0,
   resolutionScale: 1,
+  maxRenderShortSide: 0,
   updateInterval: 1,
   enabled: true,
 });
+
+/** Shared validation for authored and Host-selected fixed scene budgets. */
+export function assertRenderShortSide(value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff)
+    throw new CameraViewInvalidError(
+      'maxRenderShortSide',
+      value,
+      'an unsigned integer; zero keeps the authored resolution scale',
+    );
+}
 
 export function cameraViewExtent(view: CameraViewData, width: number, height: number) {
   const [x = Number.NaN, y = Number.NaN, w = Number.NaN, h = Number.NaN] = view.viewport;
@@ -51,16 +63,23 @@ export function cameraViewExtent(view: CameraViewData, width: number, height: nu
   if (!Number.isInteger(view.updateInterval) || view.updateInterval < 1) {
     throw new CameraViewInvalidError('updateInterval', view.updateInterval, 'an integer >= 1');
   }
+  assertRenderShortSide(view.maxRenderShortSide);
   const left = Math.min(width - 1, Math.round(x * width)),
     top = Math.min(height - 1, Math.round(y * height));
   const viewportWidth = Math.min(width - left, Math.max(1, Math.round((x + w) * width) - left));
   const viewportHeight = Math.min(height - top, Math.max(1, Math.round((y + h) * height) - top));
+  const scale = Math.min(
+    view.resolutionScale,
+    view.maxRenderShortSide === 0
+      ? 1
+      : view.maxRenderShortSide / Math.min(viewportWidth, viewportHeight),
+  );
   return {
     x: left,
     y: top,
     width: viewportWidth,
     height: viewportHeight,
-    renderWidth: Math.max(1, Math.round(viewportWidth * view.resolutionScale)),
-    renderHeight: Math.max(1, Math.round(viewportHeight * view.resolutionScale)),
+    renderWidth: Math.max(1, Math.round(viewportWidth * scale)),
+    renderHeight: Math.max(1, Math.round(viewportHeight * scale)),
   };
 }

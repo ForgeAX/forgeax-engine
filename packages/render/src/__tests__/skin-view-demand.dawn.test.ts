@@ -5,14 +5,16 @@ import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import { GPU_DRIVEN_VIEW_WGSL, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
+import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
 import {
   runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
 } from './gpu-driven-view-gpu-evidence';
-import { updateGpuView } from './helpers/gpu-input-read-domain';
+import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { skinTaskFixture } from './skin-task-fixture';
 
@@ -20,6 +22,148 @@ function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing actual view Skin demand fact');
   return value;
 }
+
+it('refreshes active Skin shadow tasks each frame and recovers GPU output after pose loss and history reset', async () => {
+  const f = skinTaskFixture();
+  const { device, native } = await nativeDeviceFixture();
+  native.pushErrorScope('validation');
+  const module = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const available = GpuScene.create(device, 2, undefined, f.arena).unwrap();
+  if (available.status !== 'available') throw new Error('Missing actual GPU Scene');
+  const gpu = available.scene;
+  const topology = new BatchTopology();
+  const delta = f.scene.apply(
+    [f.first, f.second].map((slot) => ({
+      kind: 'update' as const,
+      worldId: 0,
+      entityKey: slot.entityKey,
+      snapshot: preparedPbrSnapshot({
+        ...slot.snapshot,
+        assetHandle: 3,
+        localAabb: new Float32Array([-0.1, -0.1, 0.1, 0.1, 0.1, 0.2]),
+        gpuDrivenDraws: [
+          {
+            kind: 'indexed',
+            first: 0,
+            count: 3,
+            baseVertex: 0,
+            materialSlot: 0,
+            topology: 'triangle-list',
+            pipelineClass: 'skin',
+            materialResourceClass: 'plain',
+          },
+        ],
+      }),
+    })),
+  );
+  gpu.sync(delta).unwrap();
+  topology.apply(delta);
+  const raw = topology.query(topology.sourcePlan(), undefined);
+  const prepared = required(f.scene.slotsSnapshot().at(0)?.snapshot.gpuDrivenDraws?.[0]?.prepared);
+  // The low-level selector fixture supplies the accepted Skin execution directly.
+  const sourcePlan = {
+    ...raw,
+    batches: raw.batches.map((batch) => ({
+      ...batch,
+      prepared: { ...prepared, identity: { ...prepared.identity, deformation: 'skin' as const } },
+      ...(batch.binding === undefined
+        ? {}
+        : {
+            binding: {
+              ...batch.binding,
+              geometry: { ...batch.binding.geometry, deformation: 'skin' as const },
+            },
+          }),
+    })),
+  };
+  const pool = ShadowViewStatePool.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(module) },
+  }).unwrap();
+  const identity = { kind: 'directional', index: 0 } as const;
+  const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+  const draw = async (x: number | undefined, forceCompute = false) => {
+    const frame =
+      f.frames.recordingFrame() ?? required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
+    const update = updateShadowView(
+      pool,
+      { identity, sourcePlan, scene: gpu, planes, skin: frame },
+      sourcePlan,
+    ).unwrap();
+    expect(update.cache).toBe('invalidated');
+    const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    const projection = pool.project(graph, identity, forceCompute).unwrap();
+    expect(projection.passNames.length).toBeGreaterThan(0);
+    const task = required(update.view.skinTaskBinding());
+    const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    const readback = device.createBuffer({ size: 40 + task.dataSize, usage: 9 }).unwrap();
+    try {
+      const encoder = device.createCommandEncoder().unwrap();
+      compiled.execute({ encoder }).unwrap();
+      encoder.copyBufferToBuffer(required(update.view.indirectBuffer), 0, readback, 0, 20);
+      encoder.copyBufferToBuffer(
+        required(update.view.overflowBuffer),
+        update.view.overflowByteOffset,
+        readback,
+        20,
+        4,
+      );
+      encoder.copyBufferToBuffer(task.auxiliary, task.auxiliaryOffset, readback, 24, 16);
+      encoder.copyBufferToBuffer(task.data, 0, readback, 40, task.dataSize);
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      await device.queue.onSubmittedWorkDone();
+      const mapped = (await readback.mapAsync(1)).unwrap();
+      try {
+        const words = new Uint32Array(mapped.getMappedRange().unwrap());
+        expect(words[1]).toBe(x === undefined ? 0 : 2);
+        expect(words[5]).toBe(0);
+        if (x !== undefined) {
+          const candidateBase = required(words[6]),
+            descriptorBase = required(words[7]);
+          const floats = new Float32Array(words.buffer);
+          for (let candidate = 0; candidate < 2; candidate++) {
+            const hash = required(words[10 + (candidateBase + candidate) * 4]);
+            const descriptor = 10 + (descriptorBase + hash) * 4;
+            expect(words[descriptor + 1]).toBe(1);
+            const base = required(words[descriptor + 2]);
+            expect(floats[10 + (base + 3) * 4]).toBe(x);
+          }
+        }
+      } finally {
+        mapped.unmap();
+      }
+      pool._commitResourceReplacement();
+      await f.frames.submitFrame(frame, Promise.resolve(), true);
+    } finally {
+      await compiled.retire();
+      device.destroyBuffer(readback).unwrap();
+    }
+  };
+  try {
+    await draw(3);
+    await draw(3);
+    await draw(3, true);
+    f.matrix[12] = 5;
+    f.skin.joint(0, 19, f.matrix);
+    await draw(5);
+    f.skin.joint(0, 19, undefined);
+    await draw(undefined);
+    f.matrix[12] = 9;
+    f.skin.joint(0, 19, f.matrix);
+    await draw(9);
+    await draw(9);
+    f.frames.resetHistory();
+    f.matrix[12] = 11;
+    f.skin.joint(0, 19, f.matrix);
+    await draw(11);
+    await draw(11);
+    expect(await native.popErrorScope()).toBeNull();
+  } finally {
+    pool.dispose();
+    gpu.dispose();
+    f.dispose();
+  }
+});
 
 it.each([
   [false, false],

@@ -74,7 +74,13 @@ export function currentMeshPositions(
   if (skin) {
     if (world.hasComponent(entity, Instances)) return { reason: 'skinned-pose-unavailable' };
     // Morph scratch is private and can become the world-pose output in place.
-    const pose = skinnedPositions(world, entity, mesh, positions, morphed ? positions : undefined);
+    const pose = skinnedPositions(
+      world,
+      entity,
+      mesh,
+      positions,
+      morphed ? positions : new Float32Array(positions.length),
+    );
     if (!pose) return { reason: 'skinned-pose-unavailable' };
     return { ...pose, worldSpace: true, deformed: true };
   }

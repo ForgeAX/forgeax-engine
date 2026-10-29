@@ -32,6 +32,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import threePixels from './continuous-lines-three.json';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -258,7 +259,7 @@ export async function verifyContinuousLines(options: {
       (await recorder.frameBoundary()).unwrap();
       const encoded = (await pending).unwrap();
       observe = false;
-      await options.save(`${name}.rhitape`, encoded.bytes);
+      await options.save(`${name}.rhitape`, compactTape(encoded).bytes);
       const tape = decodeTape(encoded.bytes).unwrap();
       const model = buildFrameModel(tape);
       const works = model.works.filter((work) => work.kind === 'drawIndexed');
@@ -291,12 +292,15 @@ export async function verifyContinuousLines(options: {
       for (const falsify of [false, true]) {
         const replayTape = falsify
           ? decodeTape(
-              encodeTape({
-                ...tape,
-                events: tape.events.map((event) =>
-                  event.kind === 'drawIndexed' ? { ...event, indexCount: 0 } : event,
-                ),
-              }).unwrap(),
+              encodeTape(
+                {
+                  ...tape,
+                  events: tape.events.map((event) =>
+                    event.kind === 'drawIndexed' ? { ...event, indexCount: 0 } : event,
+                  ),
+                },
+                { compression: 'gzip' },
+              ).unwrap(),
             ).unwrap()
           : tape;
         const adapter = (await webgpu.rhi.requestAdapter()).unwrap();

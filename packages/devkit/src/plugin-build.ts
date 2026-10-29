@@ -20,6 +20,11 @@ export type DevKitAppOptions = Pick<
   | 'backgroundPipelineLibrary'
   | 'time'
 > & {
+  /** WeChat-target Host defaults, independent of the shared game scene and other targets. */
+  readonly wechat?: {
+    /** Fixed scene short-axis budget; default 720, 0 selects native resolution. UI stays native. */
+    readonly maxRenderShortSide?: number;
+  };
   /**
    * Default sealed publications in flight between simulation, preparation and
    * GPU completion. Deeper pipelines overlap Workers at one frame of latency.

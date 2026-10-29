@@ -173,3 +173,34 @@ test('View focus retains the complete named owner and rejects partial or invente
   assert.throws(() => focusPlan('view', 'game3d --skip'), /unknown View integration group/);
   assert.throws(() => focusPlan('view', 'typo'), /unknown View integration group/);
 });
+
+test('FXAA sampler contracts are selectable by the shared full-coverage and focused project roster', () => {
+  const plan = focusPlan('unit', '@forgeax/hello-fxaa');
+  assert.deepEqual(plan.args.slice(0, 4), [
+    'scripts/ci/run-vitest-projects.mjs',
+    'run',
+    '--project',
+    '@forgeax/hello-fxaa',
+  ]);
+  assert.ok(plan.args.includes('--passWithNoTests=false'));
+});
+
+test('allocation focus selects bounded Math/ECS owners and preserves raw evidence without a new job', () => {
+  for (const selector of ['math', 'ecs', 'all'])
+    assert.deepEqual(focusPlan('allocation', selector).args, [
+      'scripts/ci/run-foundation-allocations.mjs',
+      '--select',
+      selector,
+      '--output',
+      'artifacts/ci-focus/foundation-allocation',
+    ]);
+  assert.throws(() => focusPlan('allocation', 'render'), /unknown foundation allocation selector/);
+  assert.throws(
+    () => focusPlan('allocation', 'math --skip'),
+    /unknown foundation allocation selector/,
+  );
+  const workflow = readFileSync('.github/workflows/ci-focus.yml', 'utf8');
+  assert.match(workflow, /view, allocation\]/);
+  assert.match(workflow, /path: artifacts\/ci-focus\/foundation-allocation\//);
+  assert.match(workflow, /inputs.kind != 'type' && inputs.kind != 'allocation'/);
+});

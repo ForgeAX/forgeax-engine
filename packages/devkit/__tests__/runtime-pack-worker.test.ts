@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import type { ExecutionReport } from '@forgeax/engine-app';
+import { parseImage } from '@forgeax/engine-image/parse-image';
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { chromium, type Page } from 'playwright';
@@ -64,44 +65,25 @@ const host = (page: Page, method: string, ...args: unknown[]) =>
     { method, args },
   );
 
-// Decode the actual compositor screenshot in a scratch 2D canvas. The fixture
-// uses a solid clear color; pixels must differ from its top-left background.
-const pixels = (page: Page, png: Buffer) =>
-  page.evaluate(
-    async (data) => {
-      const bitmap = await createImageBitmap(await (await fetch(data)).blob());
-      const canvas = document.createElement('canvas');
-      canvas.width = bitmap.width;
-      canvas.height = bitmap.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Screenshot decoder unavailable');
-      ctx.drawImage(bitmap, 0, 0);
-      const bytes = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let left = canvas.width,
-        right = -1,
-        top = canvas.height,
-        bottom = -1,
-        count = 0;
-      for (let y = 0; y < canvas.height; y++)
-        for (let x = 0; x < canvas.width; x++) {
-          const offset = (y * canvas.width + x) * 4;
-          if (
-            Math.max(
-              ...[0, 1, 2].map((c) => Math.abs((bytes[offset + c] ?? 0) - (bytes[c] ?? 0))),
-            ) <= 15
-          )
-            continue;
-          count++;
-          left = Math.min(left, x);
-          right = Math.max(right, x);
-          top = Math.min(top, y);
-          bottom = Math.max(bottom, y);
-        }
-      bitmap.close();
-      return { count, width: right - left + 1, height: bottom - top + 1 };
-    },
-    `data:image/png;base64,${png.toString('base64')}`,
-  );
+// Decode the same compositor PNG locally; no screenshot round trip back into Chromium.
+const pixels = (png: Buffer) => {
+  const decoded = parseImage(png, 'image/png');
+  if (!decoded.ok) throw decoded.error;
+  const { width, height, bytes } = decoded.value;
+  let left = width, right = -1, top = height, bottom = -1, count = 0;
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 4;
+      if (Math.max(...[0, 1, 2].map((c) => Math.abs((bytes[offset + c] ?? 0) - (bytes[c] ?? 0)))) <= 15)
+        continue;
+      count++;
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+  return { count, width: right - left + 1, height: bottom - top + 1 };
+};
 
 // Explicit graphics gate: run under an owned display (for example xvfb-run -a).
 // Mac/Windows use native Metal/D3D12; Linux uses SwiftShader for WebGPU correctness.
@@ -285,7 +267,7 @@ it.each([
     const narrowImage = await page.screenshot({
       path: resolve(evidence, `${mode}-${language}-width-2.png`),
     });
-    const narrowPixels = await pixels(page, narrowImage);
+    const narrowPixels = pixels(narrowImage);
     expect(await call(page, 'generate', 2)).toEqual({ ok: true });
     expect((await inspect(page)).builds).toBe(first.builds);
     expect(await call(page, 'generate', 4)).toEqual({ ok: true });
@@ -305,7 +287,7 @@ it.each([
     const wideImage = await page.screenshot({
       path: resolve(evidence, `${mode}-${language}-width-4.png`),
     });
-    const widePixels = await pixels(page, wideImage);
+    const widePixels = pixels(wideImage);
     expect(narrowPixels.count).toBeGreaterThan(1000);
     expect(widePixels.width).toBeGreaterThan(narrowPixels.width * 1.7);
     expect(widePixels.count).toBeGreaterThan(narrowPixels.count * 1.7);
@@ -416,7 +398,7 @@ it.each([
       const offlineImage = await restored.screenshot({
         path: resolve(evidence, `${mode}-${language}-offline.png`),
       });
-      const offlinePixels = await pixels(restored, offlineImage);
+      const offlinePixels = pixels(offlineImage);
       expect(offlinePixels).toEqual(narrowPixels);
       const offlineFinal = await inspect(restored);
       expect(offlineFinal.frames.errors).toEqual([]);

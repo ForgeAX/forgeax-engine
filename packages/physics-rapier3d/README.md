@@ -38,7 +38,7 @@ fixed-step publication and cancellation owner as geometry replacements. Shape
 revisions, constraints and body entities remain unchanged; copied, foreign or
 replaced receipts are stale. A cancelled or refused policy never retires accepted
 colliders. See the [physics contract](../physics/README.md#derived-shape-candidates-3d)
-and [real postshot producer evidence](reports/derived-body-type-reuse-20261015.json).
+and real postshot producer evidence.
 
 `getDerivedPublication` returns the existing immutable publication, including its
 frozen shape ID array. Repeated reads retain identity until a new fixed-step
@@ -69,7 +69,7 @@ target's complete old/new support, including two roots edited at different place
 Collider descriptors choose ordinary Shape or an explicit shared geometry/scale;
 there is no parallel JS Shape cache for managed collision roots.
 
-[Regional Terrain measurements](reports/terrain-regional-20261018.md) include the
+Regional Terrain measurements include the
 remaining ray/cell lookup overhead and the measured complete native contact step.
 
 A successful geometry commit can replace ordinary ECS colliders. The backend
@@ -137,15 +137,27 @@ Character push queries retain each collider's manifolds together with its body
 and world pose before querying another collider. Composite/voxel dispatchers may
 replace the scratch manifold vector, so its length is not an append cursor.
 Impulse points and normals include the manifold's subshape frame. Empty manifolds
-apply no impulse. The [multiple-collider regression](reports/kcc-manifold-ownership-20261020.md)
+apply no impulse. The multiple-collider regression
 retains the published-WASM panic and checks pushing plus local-origin invariance.
 
 Changed physics rows are decoded once per synchronization and that same descriptor
 is reconciled and retained. Pose-only edits keep primitive collision dimensions
 untouched, preserving Rapier's shape and contact caches; authored scale edits still
-update the native dimensions. Unchanged rows remain outside the ECS projection's
-work set. Run `node packages/physics-rapier3d/bench/pose-only-sync.mjs` after building
+update the native dimensions. The accepted descriptor also retains unchanged
+RigidBody / Collider / CharacterController inputs: pose writeback does not decode
+or copy these components again. Component writes and membership changes still
+reconcile through the same projection. Root poses use Transform directly; only
+parented bodies read GlobalTransform. Pose sync borrows only the required local
+TRS arrays or the parented world matrix, without materializing a component row.
+Unchanged rows remain outside the ECS projection's work set. Writeback compares
+only borrowed position/rotation arrays; changed poses still use World.set and publish ordinary
+component change evidence. Run `node packages/physics-rapier3d/bench/pose-only-sync.mjs` after building
 to measure sync and real fixed-step costs separately for a moving primitive scene.
+Add `--dynamic` for 2,304 dynamic cuboids with native pose writeback. This spaced
+CPU workload isolates synchronization; it does not measure a dense pile's solver
+cost or browser FPS. `node packages/physics-rapier3d/bench/writeback.mjs` measures
+the complete ECS physics schedule with native writeback and reports a final-pose
+digest for equivalent-work comparisons.
 
 ## Patched WASM delivery
 

@@ -69,8 +69,9 @@ function updateSnapshot(value: RenderableSnapshot) {
 }
 
 function preparedFrame(view: GpuDrivenView): PreparedGpuDrivenFrame {
+  const signature = `view-generation:${view.inspect().resourceGeneration}`;
   return {
-    topologySignature: `view-generation:${view.inspect().resourceGeneration}`,
+    topologySignature: () => signature,
     worldKeys: [],
     materialBindings: [],
     shadowDirectRequired: false,
@@ -226,7 +227,7 @@ describe('GpuDrivenView graph projection', () => {
     expect(first).not.toBeNull();
     if (first === null) return;
     const prepared: PreparedGpuDrivenFrame = {
-      topologySignature: 'stable-gpu-driven-test',
+      topologySignature: () => 'stable-gpu-driven-test',
       worldKeys: [],
       materialBindings: [],
       shadowDirectRequired: false,

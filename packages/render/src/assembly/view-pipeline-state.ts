@@ -95,9 +95,6 @@ export function createViewPipelineState(
     ...base.perPassResources,
     skyboxRotationBuffer:
       base.perPassResources.skyboxRotationBuffer === null ? null : allocate('skybox-rotation', 16),
-    shadowLightSpaceMatrix: null,
-    shadowCsmLightViewProj: null,
-    shadowCsmSelection: null,
     ensureBloomResources,
     getBloomResources: () => candidate ?? bloom ?? null,
     commitBloomResources: () => {

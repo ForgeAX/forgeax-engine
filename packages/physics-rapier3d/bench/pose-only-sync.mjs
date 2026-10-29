@@ -18,16 +18,20 @@ world.components.register(GlobalTransform).unwrap();
 registerPhysicsComponents(world);
 const physics = createRapier3DPhysicsWorld(rapier);
 const movers = [];
-for (let index = 0; index < 2048; index++) {
+const dynamic = process.argv.includes('--dynamic');
+const staticCount = dynamic ? 10 : 2048;
+const movingCount = dynamic ? 2304 : 128;
+for (let index = 0; index < staticCount; index++) {
   world.spawn(
     { component: Transform, data: { pos: [(index % 64) * 3, -0.5, Math.floor(index / 64) * 3] } },
     { component: Collider, data: { halfExtents: [1.4, 0.5, 1.4] } },
   ).unwrap();
 }
-for (let index = 0; index < 128; index++) {
+for (let index = 0; index < movingCount; index++) {
   movers.push(world.spawn(
     { component: Transform, data: { pos: [(index % 64) * 3, 0.5, Math.floor(index / 64) * 3] } },
-    { component: RigidBody, data: { type: RigidBodyTypeValue.kinematic } },
+      { component: GlobalTransform, data: {} },
+      { component: RigidBody, data: { type: dynamic ? RigidBodyTypeValue.dynamic : RigidBodyTypeValue.kinematic } },
     { component: Collider, data: { halfExtents: [0.5, 0.5, 0.5] } },
   ).unwrap());
 }
@@ -43,11 +47,20 @@ const sync = [], step = [];
 try {
   physics._syncFromEcs(world, Transform, GlobalTransform);
   for (let frame = 0; frame < 360; frame++) {
-    const offset = Math.sin(frame * 0.03) * 0.2;
-    for (let index = 0; index < movers.length; index++) {
-      world.set(movers[index], Transform, {
-        pos: [(index % 64) * 3 + offset, 0.5, Math.floor(index / 64) * 3],
-      }).unwrap();
+    if (dynamic) {
+      for (const value of physics.writebackDynamicBodies()) {
+        world.set(value.entity, Transform, {
+          pos: [value.pos.x, value.pos.y, value.pos.z],
+          quat: [value.rotation.x, value.rotation.y, value.rotation.z, value.rotation.w],
+        }).unwrap();
+      }
+    } else {
+      const offset = Math.sin(frame * 0.03) * 0.2;
+      for (let index = 0; index < movers.length; index++) {
+        world.set(movers[index], Transform, {
+          pos: [(index % 64) * 3 + offset, 0.5, Math.floor(index / 64) * 3],
+        }).unwrap();
+      }
     }
     const start = performance.now();
     physics._syncFromEcs(world, Transform, GlobalTransform);
@@ -60,8 +73,8 @@ try {
   }
   console.log(JSON.stringify({
     environment: { node: process.version, platform: platform(), arch: arch(), cpu: cpus()[0]?.model },
-    workload: { staticCuboids: 2048, kinematicCuboids: 128, measuredFixedSteps: 300, delta: 1 / 60 },
-    note: 'Real Rapier and ECS sync; pose-only movement retains identical geometry, contact policy and fixed delta. CPU microbenchmark, not game FPS.',
+    workload: { staticCuboids: staticCount, kinematicCuboids: dynamic ? 0 : movingCount, dynamicCuboids: dynamic ? movingCount : 0, measuredFixedSteps: 300, delta: 1 / 60 },
+    note: 'Real Rapier and ECS sync; dynamic mode writes back native poses. Spaced bodies isolate synchronization cost, not dense-pile solver cost or game FPS.',
     sync: stats(sync), step: stats(step),
   }, null, 2));
 } finally {

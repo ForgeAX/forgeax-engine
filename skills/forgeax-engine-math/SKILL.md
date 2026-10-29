@@ -7,7 +7,7 @@ description: >-
 
 # forgeax-engine-math
 
-> Pure functions, out-parameter-first, SoA-friendly math. Functions take `out` first to reuse buffers on allocation-free hot paths. Covers `@forgeax/engine-math`.
+> Pure functions, out-parameter-first, SoA-friendly math. Functions that write output storage require an explicit `out` to reuse caller-owned buffers. Returning the same `out` is allowed; optional/default output allocation is forbidden. Covers `@forgeax/engine-math`.
 
 ## Mental model
 
@@ -17,7 +17,7 @@ Namespaces (`vec3` / `mat4` / `quat` / `color` ...) group pure functions with `o
 
 | Namespace / function | Form | Purpose |
 |:--|:--|:--|
-| `vec3.add/sub/scale/dot/cross/normalize/lerp(out, ...)` | out-param | Vector operations (`vec2`/`vec4` follow the same pattern). |
+| `vec3.add/sub/scale/cross/normalize/lerp(out, ...)` | out-param | Vector operations (`vec2`/`vec4` follow the same pattern). |
 | `vec3.smoothDamp(out, current, target, decayRate, dt)` | `=> Vec3` | Frame-rate-independent exponential smoothing: `lerp(current, target, 1−exp(−decayRate·dt))`, equivalent to Bevy `Vec3::smooth_nudge` / Three.js `MathUtils.damp`; also available for `vec2`/`vec4`. Do not use `lerp(p, target, rate·dt)` for tracking: it varies between 30/60 fps and overshoots when `rate·dt>1`. |
 | `vec3.catmullRom(out, p0, p1, p2, p3, t)` | `=> Vec3` | Catmull-Rom spline sampling through control points, tension 0.5: `t=0` selects `p1`, `t=1` selects `p2`; `p0`/`p3` determine endpoint tangents. Uniform mode, equivalent to Bevy `CubicCardinalSpline::new_catmull_rom` / Three.js explicit `catmullrom`; Three.js defaults to centripetal; also available for `vec2`. Use for camera/animation paths and procedural curves instead of hand-written cubic matrices. Slide a four-point window `[pts[i-1..i+2]]` along the polyline. |
 | `mat4.multiply/invert/lookAt/perspective/compose(out, ...)` | out-param | Matrix operations. |
@@ -80,7 +80,7 @@ vec3.add(pos, pos, tmp);          // pos = pos + tmp (writes into pos, returns i
 ```ts
 import { screenToRay, rayAabbIntersects, ray as rayNs } from '@forgeax/engine-math';
 
-const r = screenToRay(rayNs.create(), mouseX, mouseY, vpW, vpH, viewMat, projMat);
+const r = screenToRay(rayNs.create(new Float32Array(6)), mouseX, mouseY, vpW, vpH, viewMat, projMat);
 const hit = rayAabbIntersects(r, entityAabb); // hit.hit -> boolean
 ```
 

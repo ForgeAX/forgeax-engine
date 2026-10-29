@@ -450,8 +450,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       }
     const live = this.session();
     return (
-      latest !== undefined &&
-      latest.ready &&
+      latest?.ready === true &&
       latest.revision === revision &&
       latest.ended === undefined &&
       latest.failure === undefined &&
@@ -489,9 +488,13 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     for (const request of this.requests.values()) {
       request.ready = false;
       request.ended = error;
-      request.fail(error);
-      if (request.receiverDisposed) request.release?.resolve();
-      else request.release?.reject(error);
+      if (request.receiverDisposed) {
+        request.finish(err(request.failure ?? error));
+        request.release?.resolve();
+      } else {
+        request.fail(error);
+        request.release?.reject(error);
+      }
     }
     this.requests.clear();
     this.credits.clear();

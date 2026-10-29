@@ -42,6 +42,7 @@ import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-e
 import { installCarriedGpuStub } from './gpu-stub';
 import type { SerializedRenderError } from './protocol';
 import { ownReceivedPublicationMaterials } from './received-publication-materials';
+import { drainRenderCompletion, joinRenderCompletion } from './render-completion';
 import { RenderDrawTiming } from './render-draw-timing';
 import { RenderMeshResidency } from './render-mesh-residency';
 import type {
@@ -334,6 +335,7 @@ async function completeFrame(
 ): Promise<void> {
   const submittedAt = performance.now();
   let creditReturned = false;
+  let previousSettled = false;
   try {
     // Observe this receipt immediately, before the next draw changes frame state.
     const observedTiming = gpuPassTimingEnabled
@@ -348,13 +350,15 @@ async function completeFrame(
         failCaptureDraw(captureDraw);
         throw result.error;
       }
+      return undefined;
     });
-    const [, timingResult] = await Promise.all([completion, observedTiming, snapshotBoundary]);
+    const timingResult = await joinRenderCompletion(completion, observedTiming, snapshotBoundary);
     settleCaptureDraw(captureDraw, receipt, timingResult);
     traceCompletion('render-own-composite-continuation', message, receipt);
     // Composite receipts/readbacks can finish out of order. The publisher and
     // Host advance only the contiguous completed prefix, never a newer frame.
     await previous;
+    previousSettled = true;
     traceCompletion('render-previous-prefix-passed', message, receipt);
     if (failed) return;
     const gpuPassTiming = timingResult?.ok === true ? timingResult.value.timings : undefined;
@@ -402,7 +406,7 @@ async function completeFrame(
     fail(message, cause);
   } finally {
     // Observation failure cannot let disposal outrun this frame or its predecessor.
-    await Promise.allSettled([previous, receipt.completed]);
+    await drainRenderCompletion(receipt.completed, previous, previousSettled);
     closeVideoFrames(message);
     unretiredReceipts--;
     if (!creditReturned) framesInFlight--;

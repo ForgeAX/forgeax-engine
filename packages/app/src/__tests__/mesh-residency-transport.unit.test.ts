@@ -222,11 +222,11 @@ it.each([
   const f = sourceFixture();
   const pending = f.source.prepare(f.input);
   if (state === 'preparing') {
-    const failed = expect(pending).rejects.toMatchObject({
-      code: 'dynamic-geometry-gpu-not-ready',
-    });
     f.source.confirmRetirement();
-    await failed;
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: 'dynamic-geometry-gpu-not-ready' },
+    });
   } else {
     f.respond('mesh-ready');
     const lease = (await pending).unwrap();

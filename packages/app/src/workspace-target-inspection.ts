@@ -109,7 +109,7 @@ export function createObservationInspection(
       pages: for (const query of [
         world.query({}).unwrap(),
         world.query({ with: [Disabled] }).unwrap(),
-      ])
+      ]) {
         for (const row of query) {
           if (index++ < offset) continue;
           if (nodes.length === limit) {
@@ -130,6 +130,7 @@ export function createObservationInspection(
                 : null,
           });
         }
+      }
       return {
         targetId,
         worldId: world.identity,

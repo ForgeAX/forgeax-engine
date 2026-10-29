@@ -26,8 +26,8 @@ export function executionAudioReport(state?: AudioState): ExecutionReport['audio
     ...(state?.preparation ? { preparation: state.preparation } : {}),
     ...(state?.music ? { music: state.music } : {}),
     ...(state?.streaming ? { streaming: state.streaming } : {}),
-    contextState: state?.contextState ?? 'suspended',
-    activeSourceCount: state?.activeSourceCount ?? 0,
+    contextState: state?.contextState ?? 'unavailable',
+    activeSourceCount: state?.activeSourceCount ?? null,
     lastError:
       error === null
         ? null

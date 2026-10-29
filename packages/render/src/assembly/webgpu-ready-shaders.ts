@@ -1,3 +1,6 @@
+import { manifestShaderSource, materialShaderSource } from '@forgeax/engine-shader';
+import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
+import type { SeedShaderModule } from './material-shader-policy';
 // Engine shader roster for one ready device generation: device variant axes,
 // manifest entry classification, capability variant patching and the eager
 // module compiles that keep first-frame lazy pipelines off async misses.
@@ -38,13 +41,11 @@ export type AsyncCreateShaderModule = (
 
 /** Compile one module or throw its structured failure; seeding stays with the caller. */
 export type CompileShaderModule = (
-  code: string,
+  code: string | ShaderSource,
   label: string,
   expected: string,
   hint: string,
 ) => Promise<ShaderModule>;
-
-type SeedShaderModule = (label: string, module: ShaderModule) => void;
 
 /**
  * Eagerly compiled engine modules. A null module means its manifest entry is
@@ -118,7 +119,7 @@ export function deriveReadyDeviceCapabilities(device: RhiDevice): ReadyDeviceCap
 export function createShaderModuleResult(
   device: RhiDevice,
   asyncCreateShaderModule: AsyncCreateShaderModule | undefined,
-  code: string,
+  code: string | ShaderSource,
   label: string,
   expected: string,
   hint: string,
@@ -126,8 +127,8 @@ export function createShaderModuleResult(
   return runShimStep(
     () =>
       asyncCreateShaderModule
-        ? asyncCreateShaderModule(device, { code, label })
-        : invokeDeviceCreateShaderModule(device, { code, label }),
+        ? asyncCreateShaderModule(device, shaderSourceDescriptor(code, label))
+        : invokeDeviceCreateShaderModule(device, shaderSourceDescriptor(code, label)),
     'shader-compile-failed',
     expected,
     hint,
@@ -137,7 +138,7 @@ export function createShaderModuleResult(
 export async function compileShaderModule(
   device: RhiDevice,
   asyncCreateShaderModule: AsyncCreateShaderModule | undefined,
-  code: string,
+  code: string | ShaderSource,
   label: string,
   expected: string,
   hint: string,
@@ -524,7 +525,7 @@ export async function prewarmPointsLinesProgram(
     `engine material shader '${POINTS_LINES_MATERIAL_SHADER_ID}' compiled`,
     `inspect the composed WGSL for '${POINTS_LINES_MATERIAL_SHADER_ID}' and check device.features`,
   );
-  seed(label, module);
+  seed(label, module, lookup.value.program.sourceReference);
 }
 
 /** Fullscreen feature modules compiled before the first synchronous frame. */
@@ -541,13 +542,13 @@ export async function prewarmFullscreenPostProcesses(
       `declared fullscreen render feature '${postProcess.identity}' compiled`,
       `inspect the composed WGSL for '${postProcess.identity}' and check device.features`,
     );
-    seed(label, module);
+    seed(label, module, postProcess.source);
   }
 }
 
 type CompileUtilityShader = (
   label: string,
-  source: string,
+  source: string | ShaderSource,
   context: string,
 ) => Promise<ShaderModule>;
 
@@ -567,7 +568,7 @@ export async function prewarmStandardDeferredPrograms(
 ): Promise<StandardDeferredShaderSources | undefined> {
   const deferred = findMaterialShaderEntry(registry, 'forgeax::engine-standard-deferred-lighting');
   if (deferred === undefined) return undefined;
-  const resolve = async (clustered: boolean, directDfgLut = false): Promise<string> => {
+  const resolve = async (clustered: boolean, directDfgLut = false): Promise<ShaderSource> => {
     const variant = deferred.variants.find((candidate) =>
       isDeferredLightingVariant(candidate.defines, clustered, directDfgLut, caps),
     );
@@ -578,22 +579,27 @@ export async function prewarmStandardDeferredPrograms(
         hint: 'rebuild the Engine shader manifest',
       });
     const label = `standard_deferred_${clustered}_${directDfgLut}`;
-    seed(label, await compileUtility(label, variant.composedWgsl, 'Deferred'));
-    return variant.composedWgsl;
+    seed(
+      label,
+      await compileUtility(label, materialShaderSource(variant), 'Deferred'),
+      materialShaderSource(variant),
+    );
+    return materialShaderSource(variant);
   };
   const companions: {
-    shadowVariance?: string;
-    decalProject?: string;
-    decalApply?: string;
-    subsurface?: string;
+    shadowVariance?: ShaderSource;
+    decalProject?: ShaderSource;
+    decalApply?: ShaderSource;
+    subsurface?: ShaderSource;
   } = {};
   for (const [field, identifier] of DEFERRED_COMPANION_PROGRAMS) {
     const entry = findMaterialShaderEntry(registry, identifier);
     if (entry === undefined) continue;
-    const source = entry.variants[0]?.composedWgsl ?? entry.composedWgsl;
+    const source = materialShaderSource(entry.variants[0] ?? entry);
     seed(
       identifier,
       await compileUtility(identifier, source, field === 'subsurface' ? 'Subsurface' : 'Decal'),
+      source,
     );
     companions[field] = source;
   }
@@ -637,7 +643,11 @@ export async function prewarmAtmospherePrograms(
     seed,
   );
   if (sources === undefined) return undefined;
-  const prefilter = manifestEntries.find((entry) => entry.wgsl.includes('fn prefilterEnv_fs('));
+  const prefilter = manifestEntries.find((entry) =>
+    entry.entryPoints === undefined
+      ? entry.wgsl.includes('fn prefilterEnv_fs(')
+      : entry.entryPoints.some((point) => point.name === 'prefilterEnv_fs'),
+  );
   if (prefilter === undefined) {
     throw new RhiError({
       code: 'shader-compile-failed',
@@ -645,8 +655,12 @@ export async function prewarmAtmospherePrograms(
       hint: 'include ibl-prefilter in the Engine shader manifest',
     });
   }
-  seed('ibl-prefilter', await compileUtility('ibl-prefilter', prefilter.wgsl, 'Atmosphere'));
-  return { ...sources, prefilter: prefilter.wgsl };
+  seed(
+    'ibl-prefilter',
+    await compileUtility('ibl-prefilter', manifestShaderSource(prefilter), 'Atmosphere'),
+    manifestShaderSource(prefilter),
+  );
+  return { ...sources, prefilter: manifestShaderSource(prefilter) };
 }
 
 /**
@@ -663,7 +677,11 @@ export function seedPbrSourceAliases(
   for (const materialEntry of registry.materialShaderManifestEntries()) {
     for (const variant of materialEntry.variants) {
       if (materialShaderSourceEquals(variant, pbrSource))
-        seed(`module-${materialEntry.identifier}#${variant.definesKey}`, pbrModule);
+        seed(
+          `module-${materialEntry.identifier}#${variant.definesKey}`,
+          pbrModule,
+          materialShaderSource(variant),
+        );
     }
   }
 }
@@ -686,8 +704,8 @@ export async function compileUnlitModules(
     'unlit shader module compiled',
     'inspect manifest unlit entry composed wgsl; check device.features',
   );
-  seed('unlit', unlitModule);
-  seed('module-forgeax::default-unlit', unlitModule);
+  seed('unlit', unlitModule, manifestShaderSource(unlitEntry));
+  seed('module-forgeax::default-unlit', unlitModule, manifestShaderSource(unlitEntry));
   const unlitMaterialEntry = findMaterialShaderEntry(registry, 'forgeax::default-unlit');
   const variantOf = (vertexColor: boolean, sceneIndex: boolean) =>
     selectBootVariant(unlitMaterialEntry, {
@@ -706,11 +724,19 @@ export async function compileUnlitModules(
       'colored unlit shader module compiled',
       'inspect the VERTEX_COLOR_AVAILABLE=true unlit variant and device.features',
     );
-    seed(`module-forgeax::default-unlit#${colored.definesKey}`, coloredModule);
+    seed(
+      `module-forgeax::default-unlit#${colored.definesKey}`,
+      coloredModule,
+      materialShaderSource(colored),
+    );
   }
   const uncolored = variantOf(false, false);
   if (uncolored !== undefined)
-    seed(`module-forgeax::default-unlit#${uncolored.definesKey}`, unlitModule);
+    seed(
+      `module-forgeax::default-unlit#${uncolored.definesKey}`,
+      unlitModule,
+      manifestShaderSource(unlitEntry),
+    );
   // Opaque unlit rows join the GPU-driven lane on storage devices; keep their
   // first scene-index frame off the lazy module path.
   if (caps.storageBuffer) {
@@ -725,6 +751,7 @@ export async function compileUnlitModules(
           'scene-index unlit shader module compiled',
           'inspect the GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true unlit variant and device.features',
         ),
+        materialShaderSource(scene),
       );
     }
   }
@@ -751,7 +778,11 @@ export async function prewarmShadowCasterModules(
     'shadow_caster shader module compiled',
     'inspect manifest shadow_caster entry composed wgsl; check device.features',
   );
-  seed('module-forgeax::default-shadow-caster', shadowCasterModule);
+  seed(
+    'module-forgeax::default-shadow-caster',
+    shadowCasterModule,
+    manifestShaderSource(shadowCasterEntry),
+  );
   const activeVariants = findMaterialShaderEntry(
     registry,
     'forgeax::default-shadow-caster',
@@ -763,7 +794,11 @@ export async function prewarmShadowCasterModules(
   );
   for (const variant of activeVariants ?? []) {
     if (variant.definesKey === '') {
-      seed('module-forgeax::default-shadow-caster#', shadowCasterModule);
+      seed(
+        'module-forgeax::default-shadow-caster#',
+        shadowCasterModule,
+        manifestShaderSource(shadowCasterEntry),
+      );
       continue;
     }
     const variantModule = await compile(
@@ -772,7 +807,11 @@ export async function prewarmShadowCasterModules(
       `shadow_caster variant ${variant.definesKey || '<default>'} compiled`,
       'inspect the selected shadow_caster storage/skinning variant and device.features',
     );
-    seed(`module-forgeax::default-shadow-caster#${variant.definesKey}`, variantModule);
+    seed(
+      `module-forgeax::default-shadow-caster#${variant.definesKey}`,
+      variantModule,
+      materialShaderSource(variant),
+    );
   }
 }
 
@@ -788,8 +827,8 @@ export async function compileSpriteModules(
   spriteEntry: ManifestEntry | undefined,
 ): Promise<ShaderModule | null> {
   const spriteModule = await compileManifestModule(compile, spriteEntry, 'sprite');
-  if (spriteModule === null) return null;
-  seed('module-forgeax::sprite', spriteModule);
+  if (spriteModule === null || spriteEntry === undefined) return null;
+  seed('module-forgeax::sprite', spriteModule, manifestShaderSource(spriteEntry));
   const regionVariant = selectBootVariant(findMaterialShaderEntry(registry, 'forgeax::sprite'), {
     PER_INSTANCE_REGION: true,
     STORAGE_BUFFER_AVAILABLE: caps.storageBuffer,
@@ -802,7 +841,11 @@ export async function compileSpriteModules(
       `sprite variant ${regionVariant.definesKey || '<default>'} compiled`,
       'inspect the selected sprite PER_INSTANCE_REGION variant and device.features',
     );
-    seed(`module-forgeax::sprite#${regionVariant.definesKey}`, regionModule);
+    seed(
+      `module-forgeax::sprite#${regionVariant.definesKey}`,
+      regionModule,
+      materialShaderSource(regionVariant),
+    );
   }
   return spriteModule;
 }
@@ -832,7 +875,7 @@ export async function compileSpriteLitModules(
     'sprite-lit shader module compiled',
     'inspect manifest sprite-lit entry composed wgsl; check device.features',
   );
-  seed('module-forgeax::sprite-lit', spriteLitModule);
+  seed('module-forgeax::sprite-lit', spriteLitModule, source);
   const modulesBySource = new Map<string, ShaderModule>([[source, spriteLitModule]]);
   const variants = findMaterialShaderEntry(registry, 'forgeax::sprite-lit')?.variants ?? [];
   for (const variant of variants) {
@@ -853,7 +896,7 @@ export async function compileSpriteLitModules(
       );
       modulesBySource.set(variantSource, variantModule);
     }
-    seed(moduleLabel, variantModule);
+    seed(moduleLabel, variantModule, variantSource);
   }
   return spriteLitModule;
 }

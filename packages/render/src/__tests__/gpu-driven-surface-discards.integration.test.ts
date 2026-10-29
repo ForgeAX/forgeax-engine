@@ -176,24 +176,24 @@ describe('GPU-driven Standard surface discard specialization', () => {
       plain?._commitResourceReplacement();
       expect(discards()).toEqual(new Set([0, 1]));
       for (const [descriptor] of pipelines.mock.calls)
-        expect(descriptor.vertex.constants?.[STANDARD_SURFACE_DISCARDS_OVERRIDE]).toBe(
-          descriptor.fragment?.constants?.[STANDARD_SURFACE_DISCARDS_OVERRIDE],
-        );
+        expect(descriptor.vertex.constants).not.toHaveProperty(STANDARD_SURFACE_DISCARDS_OVERRIDE);
       const repeated = prepare(camera);
-      expect(repeated?.topologySignature).toBe(plain?.topologySignature);
+      expect(repeated?.topologySignature()).toBe(plain?.topologySignature());
       repeated?._commitResourceReplacement();
 
       pipelines.mockClear();
       const clip = prepare(clipped);
-      expect(clip?.topologySignature).not.toBe(plain?.topologySignature);
-      expect(clip?._recordingTopologySignature).not.toBe(plain?._recordingTopologySignature);
+      expect(clip?.topologySignature()).not.toBe(plain?.topologySignature());
+      expect(clip?._recordingTopologySignature?.()).not.toBe(
+        plain?._recordingTopologySignature?.(),
+      );
       clip?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
       clip?._commitResourceReplacement();
       expect(discards()).toEqual(new Set([2, 3]));
 
       pipelines.mockClear();
       const restored = prepare(camera);
-      expect(restored?.topologySignature).toBe(plain?.topologySignature);
+      expect(restored?.topologySignature()).toBe(plain?.topologySignature());
       restored?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
       restored?._commitResourceReplacement();
       // Unclipped pipelines are cached by their discard bits and reused.

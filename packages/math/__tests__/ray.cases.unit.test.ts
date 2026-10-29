@@ -67,7 +67,7 @@ type __MergedKeep = EulerOrder | Mat3T | Mat4T | Vec3T;
 
 describe('ray.create', () => {
   it('returns Float32Array length 6 with zero origin + forward direction by default (normal)', () => {
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     expect(r).toBeInstanceOf(Float32Array);
     expect(r.length).toBe(6);
     // default origin = (0,0,0), default direction = (0,0,-1) normalized
@@ -81,14 +81,14 @@ describe('ray.create', () => {
 
   it('normalizes the supplied direction (normal)', () => {
     // (3,4,0) length 5 -> normalize to (0.6, 0.8, 0)
-    const r = ray.create(ray.create(), [1, 2, 3], [3, 4, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [1, 2, 3], [3, 4, 0]);
     expect(r[3]).toBeCloseTo(0.6, 5);
     expect(r[4]).toBeCloseTo(0.8, 5);
     expect(r[5]).toBe(0);
   });
 
   it('accepts explicit origin (normal)', () => {
-    const r = ray.create(ray.create(), [10, 20, 30], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [10, 20, 30], [0, 0, -1]);
     expect(r[0]).toBe(10);
     expect(r[1]).toBe(20);
     expect(r[2]).toBe(30);
@@ -96,14 +96,14 @@ describe('ray.create', () => {
 
   it('handles degenerate zero-length direction gracefully (degenerate)', () => {
     // Zero vector direction — should not throw; normalized to (0,0,0) per gl-matrix style
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 0, 0]);
     expect(r[3]).toBe(0);
     expect(r[4]).toBe(0);
     expect(r[5]).toBe(0);
   });
 
   it('returns the out parameter', () => {
-    const out = ray.create();
+    const out = ray.create(new Float32Array(6));
     const ret = ray.create(out, [1, 2, 3], [0, 1, 0]);
     expect(ret).toBe(out);
   });
@@ -111,7 +111,7 @@ describe('ray.create', () => {
 
 describe('ray.getOrigin', () => {
   it('copies origin into out Vec3 (normal)', () => {
-    const r = ray.create(ray.create(), [5, 6, 7], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [5, 6, 7], [0, 0, -1]);
     const out = vec3.create();
     ray.getOrigin(out, r);
     expect(out[0]).toBe(5);
@@ -120,7 +120,7 @@ describe('ray.getOrigin', () => {
   });
 
   it('returns the out parameter', () => {
-    const r = ray.create(ray.create(), [1, 2, 3], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [1, 2, 3], [0, 0, -1]);
     const out = vec3.create();
     const ret = ray.getOrigin(out, r);
     expect(ret).toBe(out);
@@ -129,7 +129,7 @@ describe('ray.getOrigin', () => {
 
 describe('ray.getDirection', () => {
   it('copies direction into out Vec3 (normal)', () => {
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 1, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 1, 0]);
     const out = vec3.create();
     ray.getDirection(out, r);
     expect(out[0]).toBe(0);
@@ -138,7 +138,7 @@ describe('ray.getDirection', () => {
   });
 
   it('returns the out parameter', () => {
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 0, -1]);
     const out = vec3.create();
     const ret = ray.getDirection(out, r);
     expect(ret).toBe(out);
@@ -147,7 +147,7 @@ describe('ray.getDirection', () => {
 
 describe('ray.setOrigin', () => {
   it('writes origin components into the ray (normal)', () => {
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 0, -1]);
     ray.setOrigin(r, [10, 20, 30]);
     expect(r[0]).toBe(10);
     expect(r[1]).toBe(20);
@@ -159,7 +159,7 @@ describe('ray.setOrigin', () => {
   });
 
   it('returns the ray parameter', () => {
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 0, -1]);
     const ret = ray.setOrigin(r, [1, 2, 3]);
     expect(ret).toBe(r);
   });
@@ -167,7 +167,7 @@ describe('ray.setOrigin', () => {
 
 describe('ray.setDirection', () => {
   it('writes direction and normalizes it (normal)', () => {
-    const r = ray.create(ray.create(), [1, 2, 3], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [1, 2, 3], [0, 0, -1]);
     ray.setDirection(r, [3, 4, 0]);
     expect(r[3]).toBeCloseTo(0.6, 5);
     expect(r[4]).toBeCloseTo(0.8, 5);
@@ -179,7 +179,7 @@ describe('ray.setDirection', () => {
   });
 
   it('returns the ray parameter', () => {
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 0, -1]);
     const ret = ray.setDirection(r, [1, 0, 0]);
     expect(ret).toBe(r);
   });
@@ -194,7 +194,7 @@ describe('ray.setDirection', () => {
 describe('rayAabbIntersects — ① hit from outside', () => {
   it('ray from outside toward box returns true + tmin > 0', () => {
     // origin = (-2, 0, 0), direction = (1, 0, 0) → hits near face at x=-1
-    const r = ray.create(ray.create(), [-2, 0, 0], [1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [-2, 0, 0], [1, 0, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -205,7 +205,7 @@ describe('rayAabbIntersects — ① hit from outside', () => {
 
   it('diagonal ray toward box returns true + tmin > 0', () => {
     // origin = (-2, -2, 0), direction toward origin → normalised
-    const r = ray.create(ray.create(), [-2, -2, 0], [1, 1, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [-2, -2, 0], [1, 1, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -217,7 +217,7 @@ describe('rayAabbIntersects — ① hit from outside', () => {
 describe('rayAabbIntersects — ② hit from inside', () => {
   it('ray origin inside box returns true + tmin = 0', () => {
     // origin at centre (0,0,0), any direction
-    const r = ray.create(ray.create(), [0, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [0, 0, -1]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -225,7 +225,7 @@ describe('rayAabbIntersects — ② hit from inside', () => {
   });
 
   it('ray origin inside box, facing rear (-z) still hit = true + tmin = 0', () => {
-    const r = ray.create(ray.create(), [0.5, 0.5, 0.5], [-1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0.5, 0.5, 0.5], [-1, 0, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -235,14 +235,14 @@ describe('rayAabbIntersects — ② hit from inside', () => {
 
 describe('rayAabbIntersects — ③ miss (ray points away)', () => {
   it('ray origin outside box, direction away → false', () => {
-    const r = ray.create(ray.create(), [-2, 0, 0], [-1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [-2, 0, 0], [-1, 0, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(false);
   });
 
   it('ray origin outside box on X, pointing wrong Y axis → false', () => {
-    const r = ray.create(ray.create(), [3, 0, 0], [0, 1, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [3, 0, 0], [0, 1, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(false);
@@ -252,7 +252,7 @@ describe('rayAabbIntersects — ③ miss (ray points away)', () => {
 describe('rayAabbIntersects — ④ parallel-axis miss', () => {
   it('ray parallel to X axis, origin offset on Y outside slab → false', () => {
     // direction (1,0,0) gives inv=(1,Inf,Inf); Y slab is [-1,1]; origin y=5 → 5/-Inf or 5/Inf → no overlap
-    const r = ray.create(ray.create(), [0, 5, 0], [1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 5, 0], [1, 0, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(false);
@@ -260,7 +260,7 @@ describe('rayAabbIntersects — ④ parallel-axis miss', () => {
 
   it('ray parallel to X axis, origin within Y/Z slab → true (X is infinite span)', () => {
     // direction (1,0,0); origin (0,0,0) inside the box YZ cross-section
-    const r = ray.create(ray.create(), [0, 0, 0], [1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, 0, 0], [1, 0, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     // origin at (0,0,0) is inside box → hit=true, tmin=0
@@ -273,7 +273,7 @@ describe('rayAabbIntersects — ⑤ edge/corner NaN-safe', () => {
   it('ray starting exactly on box surface (-x face) → true, no false negative from NaN', () => {
     // origin at (-1,0,0) = exactly on left face. direction (1,0,0) = into box.
     // On X axis: t1 = (-1-(-1))/1 = 0, t2 = (1-(-1))/1 = 2. Safe.
-    const r = ray.create(ray.create(), [-1, 0, 0], [1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [-1, 0, 0], [1, 0, 0]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -283,7 +283,7 @@ describe('rayAabbIntersects — ⑤ edge/corner NaN-safe', () => {
 
   it('ray from corner (-1,-1,-1) → true, no false negative', () => {
     // origin at exact min corner, direction toward centre
-    const r = ray.create(ray.create(), [-1, -1, -1], [1, 1, 1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [-1, -1, -1], [1, 1, 1]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -294,7 +294,7 @@ describe('rayAabbIntersects — ⑤ edge/corner NaN-safe', () => {
     // origin (1, 0, 0) on the +x face, direction (0,0,-1) parallel to face.
     // X axis: t1=( -1-1)/0 = -2/0 = -Inf, t2=(1-1)/0 = 0/0 = NaN.
     // Must be NaN-safe: NaN must not poison the interval.
-    const r = ray.create(ray.create(), [1, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [1, 0, 0], [0, 0, -1]);
     const aabb = box3.create(-1, -1, -1, 1, 1, 1);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
@@ -306,7 +306,7 @@ describe('rayAabbIntersects — ⑥ thin box (1D / 2D degenerate)', () => {
     // 2D box: plane at x=0 from y=[-1,1] z=[-1,1]
     const aabb = box3.create(0, -1, -1, 0, 1, 1);
     // ray from x=-2 toward +x
-    const r = ray.create(ray.create(), [-2, 0, 0], [1, 0, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [-2, 0, 0], [1, 0, 0]);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
     expect(result.tmin).toBeCloseTo(2, 5);
@@ -316,7 +316,7 @@ describe('rayAabbIntersects — ⑥ thin box (1D / 2D degenerate)', () => {
     // 1D degenerate box: y=[0,0], z=[0,0], x=[-1,1] → line segment on X axis
     const aabb = box3.create(-1, 0, 0, 1, 0, 0);
     // ray from (0,-5,0) pointing toward X axis at y=0
-    const r = ray.create(ray.create(), [0, -5, 0], [0, 1, 0]);
+    const r = ray.create(ray.create(new Float32Array(6)), [0, -5, 0], [0, 1, 0]);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(true);
   });
@@ -324,7 +324,7 @@ describe('rayAabbIntersects — ⑥ thin box (1D / 2D degenerate)', () => {
   it('thin box miss: ray parallel to the plane offset outside', () => {
     const aabb = box3.create(0, -1, -1, 0, 1, 1); // YZ plane at x=0
     // ray pointing in Y direction, offset on X at x=5, origin offset on Z
-    const r = ray.create(ray.create(), [5, 0, 0], [0, 0, -1]);
+    const r = ray.create(ray.create(new Float32Array(6)), [5, 0, 0], [0, 0, -1]);
     const result = ray.rayAabbIntersects(r, aabb);
     expect(result.hit).toBe(false);
   });
@@ -368,7 +368,7 @@ describe('screenToRay', () => {
   it('perspective screen-center produces ray direction ≈ camera forward', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, 300, 800, 600, view, proj);
     // Camera forward in world space = (0, 0, -1)
     const dirDot = (r[3] as number) * 0 + (r[4] as number) * 0 + (r[5] as number) * -1;
@@ -378,8 +378,8 @@ describe('screenToRay', () => {
   it('perspective off-center gives different direction', () => {
     const view = perspView();
     const proj = perspProj();
-    const rCenter = ray.create();
-    const rRight = ray.create();
+    const rCenter = ray.create(new Float32Array(6));
+    const rRight = ray.create(new Float32Array(6));
     ray.screenToRay(rCenter, 400, 300, 800, 600, view, proj);
     ray.screenToRay(rRight, 700, 300, 800, 600, view, proj);
     expect(rRight[3]).not.toBeCloseTo(rCenter[3] as number, 3);
@@ -390,7 +390,7 @@ describe('screenToRay', () => {
   it('ortho screen-center produces direction = camera forward', () => {
     const view = orthoView();
     const proj = orthoProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, 300, 800, 600, view, proj);
     const dirDot = (r[3] as number) * 0 + (r[4] as number) * 0 + (r[5] as number) * -1;
     expect(dirDot).toBeGreaterThan(0.99999);
@@ -399,8 +399,8 @@ describe('screenToRay', () => {
   it('ortho origin translates with screen coordinates (x direction)', () => {
     const view = orthoView();
     const proj = orthoProj();
-    const rLeft = ray.create();
-    const rRight = ray.create();
+    const rLeft = ray.create(new Float32Array(6));
+    const rRight = ray.create(new Float32Array(6));
     ray.screenToRay(rLeft, 200, 300, 800, 600, view, proj);
     ray.screenToRay(rRight, 600, 300, 800, 600, view, proj);
     expect(rRight[0]).toBeGreaterThan(rLeft[0] as number);
@@ -409,8 +409,8 @@ describe('screenToRay', () => {
   it('ortho origin translates with screen coordinates (y direction)', () => {
     const view = orthoView();
     const proj = orthoProj();
-    const rTop = ray.create();
-    const rBottom = ray.create();
+    const rTop = ray.create(new Float32Array(6));
+    const rBottom = ray.create(new Float32Array(6));
     ray.screenToRay(rTop, 400, 100, 800, 600, view, proj);
     ray.screenToRay(rBottom, 400, 500, 800, 600, view, proj);
     expect(rTop[1]).toBeGreaterThan(rBottom[1] as number);
@@ -419,8 +419,8 @@ describe('screenToRay', () => {
   it('ortho direction is identical regardless of screen position', () => {
     const view = orthoView();
     const proj = orthoProj();
-    const r1 = ray.create();
-    const r2 = ray.create();
+    const r1 = ray.create(new Float32Array(6));
+    const r2 = ray.create(new Float32Array(6));
     ray.screenToRay(r1, 200, 100, 800, 600, view, proj);
     ray.screenToRay(r2, 600, 500, 800, 600, view, proj);
     expect(r1[3]).toBeCloseTo(r2[3] as number, 10);
@@ -433,8 +433,8 @@ describe('screenToRay', () => {
   it('y-flip: lower screen y (near top) → higher world y', () => {
     const view = perspView();
     const proj = perspProj();
-    const rTop = ray.create();
-    const rBottom = ray.create();
+    const rTop = ray.create(new Float32Array(6));
+    const rBottom = ray.create(new Float32Array(6));
     ray.screenToRay(rTop, 400, 100, 800, 600, view, proj);
     ray.screenToRay(rBottom, 400, 500, 800, 600, view, proj);
     expect(rTop[1]).toBeGreaterThan(rBottom[1] as number);
@@ -445,7 +445,7 @@ describe('screenToRay', () => {
   it('negative screenX clamps to 0 without producing NaN', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, -100, 300, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -455,7 +455,7 @@ describe('screenToRay', () => {
   it('excessive screenX clamps to viewport width without producing NaN', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 900, 300, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -465,7 +465,7 @@ describe('screenToRay', () => {
   it('negative screenY clamps to 0 without producing NaN', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, -50, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -475,7 +475,7 @@ describe('screenToRay', () => {
   it('excessive screenY clamps to viewport height without producing NaN', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, 700, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -487,7 +487,7 @@ describe('screenToRay', () => {
   it('NaN screenX produces a defined Ray (no NaN components)', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, Number.NaN, 300, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -497,7 +497,7 @@ describe('screenToRay', () => {
   it('Infinity screenY produces a defined Ray (no Inf components)', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, Number.POSITIVE_INFINITY, 800, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -507,7 +507,7 @@ describe('screenToRay', () => {
   it('NaN viewport dimensions produce a defined Ray', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, 300, Number.NaN, 600, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -517,7 +517,7 @@ describe('screenToRay', () => {
   it('zero viewport dimensions produce a defined Ray (no division by zero)', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 0, 0, 0, 0, view, proj);
     for (let i = 0; i < 6; i++) {
       expect(Number.isFinite(r[i] as number)).toBe(true);
@@ -527,7 +527,7 @@ describe('screenToRay', () => {
   it('normalized direction is approximately unit length', () => {
     const view = perspView();
     const proj = perspProj();
-    const r = ray.create();
+    const r = ray.create(new Float32Array(6));
     ray.screenToRay(r, 400, 300, 800, 600, view, proj);
     const dirLen = Math.sqrt(
       (r[3] as number) * (r[3] as number) +

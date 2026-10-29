@@ -1,4 +1,5 @@
 import { err, RhiError } from '@forgeax/engine-rhi';
+import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createMockGpu } from '../../../rhi-webgpu/src/__tests__/__mocks__/gpu-device';
 import { makeRhiDevice } from '../../../rhi-webgpu/src/device';
@@ -6,8 +7,13 @@ import { createShaderModuleImmediate } from '../../../rhi-webgpu/src/index';
 import * as materialPrograms from '../../../shader/src/material/program';
 import { ShaderRegistry } from '../../../shader/src/ShaderRegistry';
 import { PreparedRenderPipelineOwner } from '../assembly/material/prepared-pipeline-owner';
+import { prepareLowLimitMaterialShaderEntry } from '../assembly/material-shader-policy';
 import { prepareDevicePipelineLibrary } from '../assembly/webgpu-ready';
-import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
+import {
+  createRenderFeatureGpuWorkOwner,
+  ownRenderFeatureProgramData,
+} from '../features/prepared-gpu-work';
+import { buildPipelineForMaterialShader } from '../pipeline-builder';
 
 async function fixture() {
   const raw = (await (
@@ -38,7 +44,7 @@ describe('physical-device completion is consumed in the first preparation frame'
     await expect(prepareDevicePipelineLibrary(target.device, manifest, registry)).rejects.toBe(
       failure,
     );
-    expect(prepare).toHaveBeenCalledWith(manifest);
+    expect(prepare).toHaveBeenCalledWith(manifest, { sources: [] });
   });
 
   it('prepares material source facts for the captured graphics roster before the first draw', async () => {
@@ -225,4 +231,161 @@ it('holds a mixed ready/pending compute program until every entry actually compl
   } finally {
     owner.dispose().unwrap();
   }
+});
+
+it('consumes a completed material recipe in a fresh local owner without reading its source body', async () => {
+  const f = await fixture();
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  registry.installMaterialArtifact('test::managed', {
+    source:
+      '@vertex fn vs_main(@builtin(vertex_index) i:u32)->@builtin(position) vec4f{return vec4f(0);}@fragment fn fs_main()->@location(0) vec4f{return vec4f(1);}',
+    paramSchema: [],
+  });
+  const entry = registry.findMaterialArtifact('test::managed').unwrap();
+  const layout = f.device.createPipelineLayout({ bindGroupLayouts: [] }).unwrap();
+  const ctx = {
+    device: f.device,
+    pipelineLayout: layout,
+    vertexBuffers: [],
+    colorFormat: 'rgba8unorm' as const,
+    depthFormat: undefined,
+    shaderModuleFactory: {
+      createShaderModule: (desc: { code: string; label?: string }) =>
+        createShaderModuleImmediate(f.device, desc),
+    },
+  };
+  const context = ctx;
+  const first = buildPipelineForMaterialShader('first', entry, context).unwrap();
+  // Qualify the same complete descriptor through the normal async owner.
+  const owner = new PreparedRenderPipelineOwner(f.device, () => true);
+  buildPipelineForMaterialShader('first', entry, {
+    ...context,
+    createRenderPipeline: (descriptor) =>
+      owner.request('first', entry.program.sourceReference, descriptor),
+  });
+  await vi.waitFor(() =>
+    expect(owner.lookup('first', entry.program.sourceReference, layout)?.ok).toBe(true),
+  );
+  const next = new PreparedRenderPipelineOwner(f.device, () => true);
+  const before = f.device.pipelineLibrary?.inspect();
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  const stringify = vi.spyOn(JSON, 'stringify');
+  const materialize = vi.fn(() => {
+    throw new Error('Ready must not materialize');
+  });
+  try {
+    const result = buildPipelineForMaterialShader('new-local-name', entry, {
+      ...context,
+      createRenderPipelineRecipeState: (state, dependencies) =>
+        next.requestState('next', entry.program.sourceReference, state, dependencies, materialize),
+    });
+    expect(result.ok).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    expect(f.device.pipelineLibrary?.inspect().asynchronousCreations).toBe(
+      before?.asynchronousCreations,
+    );
+    expect(first).toBeDefined();
+    expect(materialize).not.toHaveBeenCalled();
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    stringify.mockRestore();
+    read.mockRestore();
+  }
+});
+
+it('consumes an owned compute source in a fresh feature without expanding or rehashing WGSL', async () => {
+  const f = await fixture();
+  const descriptor = ownRenderFeatureProgramData({
+    wgsl: '@compute @workgroup_size(1) fn main() {}',
+    entryPoints: ['main'],
+  });
+  const factory = {
+    createShaderModule: (desc: { code: string; label?: string }) =>
+      createShaderModuleImmediate(f.device, desc),
+  };
+  const first = createRenderFeatureGpuWorkOwner({
+    getDevice: () => f.device,
+    getShaderModuleFactory: () => factory,
+  });
+  const prepare = first.beginFeature('warm', 0);
+  prepare.prepareProgram('compute', descriptor, true);
+  await vi.waitFor(() => expect(prepare.prepareProgram('compute', descriptor, true).ok).toBe(true));
+  prepare.commitFrame();
+  const next = createRenderFeatureGpuWorkOwner({
+    getDevice: () => f.device,
+    getShaderModuleFactory: () => factory,
+  });
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  try {
+    const session = next.beginFeature('new-feature', 0);
+    expect(session.prepareProgram('compute-alias', descriptor, true).ok).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    expect(f.compute).toHaveBeenCalledOnce();
+    session.commitFrame();
+  } finally {
+    read.mockRestore();
+    next.dispose().unwrap();
+    first.dispose().unwrap();
+  }
+});
+
+it('compacts programs nested inside deeply frozen containers and compares independent owned copies without reading WGSL', async () => {
+  const f = await fixture();
+  const raw = Object.freeze({
+    programs: Object.freeze([
+      Object.freeze({
+        wgsl: '@compute @workgroup_size(1) fn main() {}',
+        entryPoints: Object.freeze(['main']),
+      }),
+    ]),
+  });
+  const first = ownRenderFeatureProgramData(raw).programs[0];
+  const second = ownRenderFeatureProgramData(raw).programs[0];
+  if (first === undefined || second === undefined) throw new Error('Missing program fixture');
+  expect(first).not.toBe(raw.programs[0]);
+  expect(Object.getOwnPropertyDescriptor(first, 'wgsl')?.get).toBeTypeOf('function');
+  const owner = createRenderFeatureGpuWorkOwner({
+    getDevice: () => f.device,
+    getShaderModuleFactory: () => ({
+      createShaderModule: (desc) => createShaderModuleImmediate(f.device, desc),
+    }),
+  });
+  const session = owner.beginFeature('copies', 0);
+  session.prepareProgram('same-name', first, true);
+  await vi.waitFor(() => expect(session.prepareProgram('same-name', first, true).ok).toBe(true));
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    expect(session.prepareProgram('same-name', second, true).ok).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+    stringify.mockRestore();
+    owner.dispose().unwrap();
+  }
+});
+
+it('submits rewritten low-limit material code instead of the old registered program', async () => {
+  const f = await fixture();
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  registry.installMaterialArtifact('forgeax::cloud-test', {
+    source:
+      '@group(0) @binding(16) var cloudMap: texture_2d<f32>;\n@group(0) @binding(17) var cloudSampler: sampler;\n@vertex fn vs_main(@builtin(vertex_index) i:u32)->@builtin(position) vec4f{return vec4f(0);}',
+    paramSchema: [],
+  });
+  const original = registry.findMaterialArtifact('forgeax::cloud-test').unwrap();
+  const lowered = prepareLowLimitMaterialShaderEntry(original, 8);
+  const createShaderModule = vi.fn((desc) => createShaderModuleImmediate(f.device, desc));
+  const result = buildPipelineForMaterialShader('lowered', lowered, {
+    device: f.device,
+    pipelineLayout: f.device.createPipelineLayout({ bindGroupLayouts: [] }).unwrap(),
+    vertexBuffers: [],
+    colorFormat: 'rgba8unorm',
+    depthFormat: undefined,
+    shaderModuleFactory: { createShaderModule },
+  });
+  expect(result.ok).toBe(true);
+  expect(createShaderModule.mock.calls[0]?.[0].code).not.toContain('@binding(16)');
+  expect(createShaderModule.mock.calls[0]?.[0].code).not.toContain('@binding(17)');
 });

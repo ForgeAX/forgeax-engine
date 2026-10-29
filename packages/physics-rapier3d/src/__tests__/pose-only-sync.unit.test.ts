@@ -1,6 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
+  CharacterController,
   Collider,
   ColliderShapeValue,
   RigidBody,
@@ -11,6 +12,7 @@ import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { expect, test, vi } from 'vitest';
 import type { RigidBody as NativeBody, World as NativeWorld } from '../../pkg/rapier.mjs';
 import { createRapier3DPhysicsWorld, loadRapier3D } from '../index';
+import type { PhysicsSyncState } from '../physics-sync';
 
 const rapier = await loadRapier3D();
 if ('code' in rapier) throw rapier;
@@ -19,6 +21,65 @@ const shapes = ['cuboid', 'sphere', 'capsule', 'cylinder', 'cone'] as const;
 const cases = shapes.flatMap((shape) =>
   (['static', 'kinematic'] as const).map((bodyType) => ({ shape, bodyType })),
 );
+
+test('pose writeback does not decode unchanged body, collider or controller inputs', () => {
+  const world = new World();
+  world.components.register(Transform).unwrap();
+  world.components.register(GlobalTransform).unwrap();
+  registerPhysicsComponents(world);
+  const entity = world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: GlobalTransform, data: {} },
+      { component: RigidBody, data: { type: RigidBodyTypeValue.dynamic } },
+      { component: Collider, data: {} },
+      { component: CharacterController, data: {} },
+    )
+    .unwrap();
+  const physics = createRapier3DPhysicsWorld(rapier);
+  const reads = vi.fn();
+  const restorers: (() => void)[] = [];
+  try {
+    physics._syncFromEcs(world, Transform, GlobalTransform);
+    const state = (physics as unknown as { syncState: PhysicsSyncState }).syncState;
+    for (const query of state.queries) {
+      const at = query.at.bind(query);
+      const spy = vi.spyOn(query, 'at').mockImplementation((handle) => {
+        const row = at(handle);
+        return row === undefined
+          ? undefined
+          : {
+              entity: row.entity,
+              has: row.has.bind(row),
+              get(component) {
+                reads(component);
+                return row.get(component);
+              },
+            };
+      });
+      restorers.push(() => spy.mockRestore());
+    }
+    for (let frame = 1; frame <= 10; frame++) {
+      world.set(entity, Transform, { pos: [frame, 0, 0] }).unwrap();
+      physics._syncFromEcs(world, Transform, GlobalTransform);
+    }
+    expect(reads).not.toHaveBeenCalled();
+
+    world.set(entity, RigidBody, { linearDamping: 0.7 }).unwrap();
+    world.set(entity, Collider, { friction: 0.2 }).unwrap();
+    physics._syncFromEcs(world, Transform, GlobalTransform);
+    let body: NativeBody | undefined;
+    (physics.raw as NativeWorld).forEachRigidBody((candidate) => {
+      if (candidate.userData === entity) body = candidate;
+    });
+    expect(body?.linearDamping()).toBeCloseTo(0.7);
+    expect(body?.collider(0).friction()).toBeCloseTo(0.2);
+  } finally {
+    for (const restore of restorers) restore();
+    physics.dispose();
+  }
+});
+
 test.each(cases)('$bodyType $shape retains pose-only geometry and applies actual resize', ({
   shape,
   bodyType,

@@ -2,6 +2,7 @@ import { type Renderer, RendererOperationError, type RendererState } from '@forg
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executionBootstrapHostPlugin } from '../execution/bootstrap-entry';
+import { workerEngineProfile } from '../internal/worker-engine-profile';
 import { workerSelection } from './execution-fixtures';
 
 type RendererEventListener = Parameters<Renderer['subscribe']>[0];
@@ -553,6 +554,42 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
   function inspect(requestId: number, code = 'return world.identity;'): void {
     receive({ data: { kind: 'inspect', requestId, worldIdentity, code } } as MessageEvent<unknown>);
   }
+
+  it('exposes Host audio feedback in the Worker instead of placeholder state', async () => {
+    mocks.renderer.state.mockReturnValue('alive');
+    receive({
+      data: {
+        kind: 'frame',
+        worldIdentity,
+        frameId: 7,
+        deltaSeconds: 1 / 60,
+        inputSample: {
+          keyboard: [],
+          pointerButtons: [],
+          pointerPosition: [0, 0],
+          pointerDelta: [0, 0],
+          wheelDelta: [0, 0],
+          gamepads: [],
+          pointerLocked: false,
+        },
+        canvasWidth: 640,
+        canvasHeight: 480,
+        audioState: {
+          owner: 'host',
+          contextState: 'running',
+          activeSourceCount: 3,
+          lastError: null,
+        },
+      },
+    } as MessageEvent<unknown>);
+    await vi.waitFor(() =>
+      expect(globalThis.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'frame-complete', frameId: 7 }),
+      ),
+    );
+    const backend = vi.mocked(workerEngineProfile).mock.calls.at(-1)?.[0].audio;
+    expect(backend?.getState()).toMatchObject({ contextState: 'running', activeSourceCount: 3 });
+  });
 
   it('reads the actual local Renderer through the public execution script root without a draw', async () => {
     mocks.renderer.state.mockReturnValue('alive');

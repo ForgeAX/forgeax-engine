@@ -1854,10 +1854,64 @@ impl Node {
         crate::util::Point { x, y }
     }
 
-    /// CSSOM View's `clientWidth`: the width of the padding box (border box minus
-    /// borders and scrollbar)
+    /// Text-entry controls scroll their editor, not their outer layout box.
+    pub fn scroll_position(&self) -> crate::Point<f64> {
+        if let Some(input) = self
+            .element_data()
+            .and_then(|element| element.text_input_data())
+        {
+            return if input.is_multiline {
+                crate::Point {
+                    x: 0.0,
+                    y: f64::from(input.scroll_offset),
+                }
+            } else {
+                crate::Point {
+                    x: f64::from(input.scroll_offset),
+                    y: 0.0,
+                }
+            };
+        }
+        *self.scroll_offset()
+    }
+
+    /// The same editor viewport used by text clipping, caret reveal and scrolling.
+    pub fn text_input_viewport_size(&self) -> taffy::Size<f32> {
+        let layout = self.final_layout();
+        let decoration = self
+            .number_stepper_rect()
+            .map_or(0.0, |rect| rect.width() as f32);
+        taffy::Size {
+            width: (layout.content_box_width() - decoration).max(0.0),
+            height: layout.content_box_height().max(0.0),
+        }
+    }
+
+    pub fn client_left(&self) -> f32 {
+        let layout = self.final_layout();
+        let inline_padding = self
+            .element_data()
+            .and_then(|element| element.text_input_data())
+            .filter(|input| !input.is_multiline)
+            .map_or(0.0, |_| layout.padding.left);
+        layout.border.left + inline_padding
+    }
+
+    pub fn client_top(&self) -> f32 {
+        self.final_layout().border.top
+    }
+
+    /// Single-line inputs clip at the inline content edge; their block client
+    /// area and ordinary elements retain the padding box (CSSWG issue 13502).
     pub fn client_width(&self) -> f32 {
         let layout = self.final_layout();
+        if self
+            .element_data()
+            .and_then(|element| element.text_input_data())
+            .is_some_and(|input| !input.is_multiline)
+        {
+            return layout.content_box_width().max(0.0);
+        }
         layout.size.width - layout.border.left - layout.border.right - layout.scrollbar_size.width
     }
 
@@ -1871,6 +1925,29 @@ impl Node {
     /// CSSOM View's `scrollWidth`: the width of the node's content, including
     /// content not visible due to overflow
     pub fn scroll_width(&self) -> f32 {
+        if let Some(input) = self
+            .element_data()
+            .and_then(|element| element.text_input_data())
+        {
+            if !input.is_multiline {
+                let text = input
+                    .editor
+                    .try_layout()
+                    .map_or(0.0, |layout| layout.full_width() / layout.scale());
+                let decoration = self
+                    .number_stepper_rect()
+                    .map_or(0.0, |rect| rect.width() as f32);
+                return self.client_width().max(text + decoration);
+            }
+            // The editor owns wrapped text. Its intrinsic child measurement is
+            // not horizontal overflow of the authored textarea viewport.
+            let text = input
+                .editor
+                .try_layout()
+                .map_or(0.0, |layout| layout.full_width() / layout.scale());
+            let padding = self.final_layout().padding;
+            return self.client_width().max(text + padding.left + padding.right);
+        }
         self.client_width()
             .max(self.final_layout().scrollable_overflow_rect.right)
     }
@@ -1878,6 +1955,22 @@ impl Node {
     /// CSSOM View's `scrollHeight`: the height of the node's content, including
     /// content not visible due to overflow
     pub fn scroll_height(&self) -> f32 {
+        if let Some(input) = self
+            .element_data()
+            .and_then(|element| element.text_input_data())
+        {
+            if !input.is_multiline {
+                return self.client_height();
+            }
+            let text = input
+                .editor
+                .try_layout()
+                .map_or(0.0, |layout| layout.height() / layout.scale());
+            let padding = self.final_layout().padding;
+            return self
+                .client_height()
+                .max(text + padding.top + padding.bottom);
+        }
         self.client_height()
             .max(self.final_layout().scrollable_overflow_rect.bottom)
     }

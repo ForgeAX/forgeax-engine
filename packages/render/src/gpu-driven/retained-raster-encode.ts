@@ -1,18 +1,41 @@
 import type { RenderBundle } from '@forgeax/engine-rhi';
 
 type MaterialOwner = { readonly group: object; readonly offset: number };
-type ClassOwner = { readonly pipeline: object; readonly mesh: object };
+export type ClassOwner = { readonly pipeline: object; readonly mesh: object };
+
+/** Resolutions belong only to this encode and are discarded with it. */
+class ResolvedOwners<K, V> {
+  readonly #memo = new Map<K, V | undefined>();
+  constructor(
+    private readonly resolve: (key: K) => V | undefined,
+    private readonly equal: (actual: V | undefined, expected: V) => boolean,
+  ) {}
+  matches(expected: ReadonlyMap<K, V>): boolean {
+    for (const key of expected.keys()) {
+      if (!this.#memo.has(key)) this.#memo.set(key, this.resolve(key));
+      if (!this.equal(this.#memo.get(key), expected.get(key) as V)) return false;
+    }
+    return true;
+  }
+}
+
+function sameMaterial(actual: MaterialOwner | undefined, expected: MaterialOwner): boolean {
+  return actual?.group === expected.group && actual.offset === expected.offset;
+}
+
+function sameClass(actual: ClassOwner | undefined, expected: ClassOwner): boolean {
+  return actual?.pipeline === expected.pipeline && actual.mesh === expected.mesh;
+}
 
 /** Recorded inputs and output of one contiguous bundled run of live batches. */
 export interface RetainedRasterBlock {
   /** The live batch owners of the run, in encode order. */
   readonly lives: readonly object[];
-  /** Two physical buffer handles (vertex, index) per live batch. */
+  /** Ordered physical-buffer and material-selection facts of this run. */
   readonly physical: readonly unknown[];
   readonly materials: Map<number, MaterialOwner>;
   readonly classes: Map<object, ClassOwner>;
   bundle: RenderBundle | undefined;
-  /** NaN marks a run with per-frame inputs (Skin task offsets); it is never replayed. */
   draws: number;
 }
 
@@ -23,6 +46,27 @@ function sameList(left: readonly unknown[], right: readonly unknown[]): boolean 
   return true;
 }
 
+type FactConsumer = (value: unknown) => void;
+/** Emit all facts synchronously; the reader must not retain the consumer. */
+type ReadFacts = (live: object, consume: FactConsumer) => void;
+
+function sameFacts(
+  lives: readonly object[],
+  start: number,
+  end: number,
+  read: ReadFacts,
+  expected: readonly unknown[],
+): boolean {
+  let cursor = 0;
+  let same = true;
+  const consume = (value: unknown): void => {
+    if (!Object.is(expected[cursor++], value)) same = false;
+  };
+  // Finish the reads after a mismatch too, preserving their order and failures.
+  for (let index = start; index < end; index++) read(lives[index] as object, consume);
+  return same && cursor === expected.length;
+}
+
 /**
  * One pass encode's view of its retained runs. A run whose live owners,
  * physical buffers and re-resolved material, pipeline and mesh groups all
@@ -31,51 +75,32 @@ function sameList(left: readonly unknown[], right: readonly unknown[]): boolean 
  */
 export class RetainedPassEncode {
   readonly #next = new Map<object, RetainedRasterBlock>();
-  readonly #materials = new Map<number, MaterialOwner | undefined>();
-  readonly #classes = new Map<object, ClassOwner | undefined>();
-  readonly #physical: unknown[] = [];
+  readonly #materials: ResolvedOwners<number, MaterialOwner>;
+  readonly #classes: ResolvedOwners<object, ClassOwner>;
   constructor(
     private readonly previous: ReadonlyMap<object, RetainedRasterBlock> | undefined,
-    private readonly resolveMaterial: (slot: number) => MaterialOwner | undefined,
-    private readonly resolveClass: (rasterClass: object) => ClassOwner | undefined,
-  ) {}
+    resolveMaterial: (slot: number) => MaterialOwner | undefined,
+    resolveClass: (rasterClass: object) => ClassOwner | undefined,
+  ) {
+    this.#materials = new ResolvedOwners(resolveMaterial, sameMaterial);
+    this.#classes = new ResolvedOwners(resolveClass, sameClass);
+  }
 
   /** Retained output of the run `lives[start..end)`, if every input still matches. */
   reuse(
     lives: readonly object[],
     start: number,
     end: number,
-    physicalOf: (live: object, out: unknown[]) => void,
+    physicalOf: ReadFacts,
   ): RetainedRasterBlock | undefined {
     const first = lives[start];
     const block = first === undefined ? undefined : this.previous?.get(first);
-    if (block === undefined || Number.isNaN(block.draws) || block.lives.length !== end - start)
-      return undefined;
+    if (block === undefined || block.lives.length !== end - start) return undefined;
     for (let index = start; index < end; index++)
       if (block.lives[index - start] !== lives[index]) return undefined;
-    // One scratch list per encode: a replayed run allocates nothing.
-    const physical = this.#physical;
-    physical.length = 0;
-    for (let index = start; index < end; index++) physicalOf(lives[index] as object, physical);
-    const same = sameList(block.physical, physical);
-    physical.length = 0;
-    if (!same) return undefined;
-    for (const [slot, expected] of block.materials) {
-      let actual = this.#materials.get(slot);
-      if (!this.#materials.has(slot)) {
-        actual = this.resolveMaterial(slot);
-        this.#materials.set(slot, actual);
-      }
-      if (actual?.group !== expected.group || actual.offset !== expected.offset) return undefined;
-    }
-    for (const [rasterClass, expected] of block.classes) {
-      let actual = this.#classes.get(rasterClass);
-      if (!this.#classes.has(rasterClass)) {
-        actual = this.resolveClass(rasterClass);
-        this.#classes.set(rasterClass, actual);
-      }
-      if (actual?.pipeline !== expected.pipeline || actual.mesh !== expected.mesh) return undefined;
-    }
+    if (!sameFacts(lives, start, end, physicalOf, block.physical)) return undefined;
+    if (!this.#materials.matches(block.materials) || !this.#classes.matches(block.classes))
+      return undefined;
     this.#next.set(first as object, block);
     return block;
   }
@@ -85,10 +110,13 @@ export class RetainedPassEncode {
     lives: readonly object[],
     start: number,
     end: number,
-    physicalOf: (live: object, out: unknown[]) => void,
+    physicalOf: ReadFacts,
   ): RetainedRasterBlock {
     const physical: unknown[] = [];
-    for (let index = start; index < end; index++) physicalOf(lives[index] as object, physical);
+    const append = (value: unknown): void => {
+      physical.push(value);
+    };
+    for (let index = start; index < end; index++) physicalOf(lives[index] as object, append);
     const block: RetainedRasterBlock = {
       lives: lives.slice(start, end),
       physical,
@@ -171,20 +199,24 @@ export function classOwner(
   pipeline: { readonly ok: boolean; readonly value?: unknown },
   mesh: object | undefined,
 ): ClassOwner | undefined {
-  return pipeline.ok &&
-    mesh !== undefined &&
-    typeof pipeline.value === 'object' &&
-    pipeline.value !== null
-    ? { pipeline: pipeline.value, mesh }
-    : undefined;
+  if (
+    !pipeline.ok ||
+    mesh === undefined ||
+    typeof pipeline.value !== 'object' ||
+    pipeline.value === null
+  )
+    return undefined;
+  const current = pipeline.value;
+  return { pipeline: current, mesh };
 }
 
 /** Physical vertex and index handles of a live raster batch. */
-export function livePhysical(live: object, out: unknown[]): void {
+export function livePhysical(live: object, consume: FactConsumer): void {
   const binding = (
     live as { readonly meshBinding: { readonly vertex: unknown; readonly index: unknown } }
   ).meshBinding;
-  out.push(binding.vertex, binding.index);
+  consume(binding.vertex);
+  consume(binding.index);
 }
 
 interface RunLive {
@@ -204,9 +236,9 @@ export function runFacts(
   eligible: (live: object) => boolean,
   slotsByBinding: ReadonlyMap<object, ReadonlyMap<string, number>>,
   selected: ReadonlySet<number> | undefined,
-): (owner: object, out: unknown[]) => void {
-  return (owner, out) => {
-    livePhysical(owner, out);
+): ReadFacts {
+  return (owner, consume) => {
+    livePhysical(owner, consume);
     const live = owner as RunLive;
     const material = live.batch.binding?.material;
     const slot = !eligible(owner)
@@ -216,6 +248,6 @@ export function runFacts(
         : material === undefined
           ? undefined
           : slotsByBinding.get(material)?.get(live.materialBindingClass);
-    out.push(slot === undefined ? -1 : selected?.has(slot) === false ? -2 - slot : slot);
+    consume(slot === undefined ? -1 : selected?.has(slot) === false ? -2 - slot : slot);
   };
 }

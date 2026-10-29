@@ -73,6 +73,17 @@ function installFollower(world: World): () => void {
   const paths = new Map<EntityHandle, PathEntry>();
   const dirtyQuery = world.query({ read: [Path], changed: [Path] }).unwrap();
   const dirty = new Set<EntityHandle>();
+  function refreshDirtyPaths(): void {
+    dirty.clear();
+    for (const querySpan of dirtyQuery.spans().unwrap()) {
+      const queryEntities = querySpan.entities;
+      for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+        const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+        dirty.add(queriedEntity);
+      }
+    }
+  }
+
   const sample = createPathSample();
   const local = mat4.create(),
     parentRotation = quat.create(),
@@ -115,15 +126,14 @@ function installFollower(world: World): () => void {
       queries: [{ read: [Path, Transform] }, { write: [PathFollower, Transform] }],
       fn(world, [pathRows, followers]) {
         tick++;
-        dirty.clear();
-        for (const row of dirtyQuery) dirty.add(row.entity);
+        refreshDirtyPaths();
         // Prepare all changed paths before any follower writes. No old-table/new-
         // controls mixture; distance is retained in world units then wrapped/clamped.
         for (const row of pathRows) {
           const matrix = matrixFor(row.entity);
           let entry = paths.get(row.entity);
           if (!entry || dirty.has(row.entity) || !linearEqual(entry.linear, matrix)) {
-            const prepared = preparePath(row.get(Path), matrix).unwrap();
+            const prepared = preparePath(world.get(row.entity, Path).unwrap(), matrix).unwrap();
             entry = { prepared, linear: mat4.clone(matrix), tick };
             paths.set(row.entity, entry);
           }

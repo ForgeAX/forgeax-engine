@@ -954,7 +954,7 @@ function alphaMaskShadowSubmission(
 ): GpuDrivenShadowSubmission | undefined {
   const raster = alphaMaskRasterIdentity(identity);
   const submission = prepared.shadowViewPool?.submission(raster);
-  const projections = prepared.shadowBatchProjections?.get(shadowViewIdentityKey(raster));
+  const projections = prepared.shadowBatchProjections?.()?.get(shadowViewIdentityKey(raster));
   if (submission === undefined || projections === undefined) return undefined;
   const batches: GpuDrivenShadowBatch[] = [];
   for (const batch of submission.plan.batches) {
@@ -1372,7 +1372,7 @@ async function verifyCompiledAlphaMask(run: AlphaMaskRun): Promise<boolean> {
       opaqueReadbackBuffer: run.readbacks.opaque,
       setDiscardedTexture: run.setDiscardedTexture,
       shadowViews: run.shadowViews,
-      topologySignature: stablePrepared.topologySignature,
+      topologySignature: stablePrepared.topologySignature(),
     });
   }
   await expectAlphaMaskReadbacks(run);
@@ -1533,9 +1533,9 @@ describe('GPU-driven production PBR Dawn regression', () => {
 
     const shadowUpdated = preparedFrame.updateShadowViews?.(shadowViews);
     expect(shadowUpdated?.ok).toBe(true);
-    expect(preparedFrame.shadowBatchProjections?.get('directional:0:')).toBeDefined();
-    expect(preparedFrame.shadowBatchProjections?.get('point:0:0')).toBeDefined();
-    expect(preparedFrame.shadowBatchProjections?.get('spot:0:')).toBeDefined();
+    expect(preparedFrame.shadowBatchProjections?.()?.get('directional:0:')).toBeDefined();
+    expect(preparedFrame.shadowBatchProjections?.()?.get('point:0:0')).toBeDefined();
+    expect(preparedFrame.shadowBatchProjections?.()?.get('spot:0:')).toBeDefined();
 
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     const main = preparedFrame.project(graph, 'rgba8unorm', 1);

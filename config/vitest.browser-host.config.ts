@@ -40,7 +40,7 @@ const project = defineProject({
     passWithNoTests: false,
     teardownTimeout: 500,
     include,
-    setupFiles: ['config/browser-host-guard.mjs'],
+    setupFiles: ['config/browser-host-guard.mjs', 'config/browser-work-guard.mjs'],
     fileParallelism: false,
     maxWorkers: 1,
     deps: { optimizer: { client: { enabled: false } } },

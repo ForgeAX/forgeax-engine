@@ -1,7 +1,6 @@
 # @forgeax/feature-lab
 
 One page per row of the SDK feature catalog
-(`skills/forgeax-engine-sdk/references/feature-catalog.md`). Testers use it as the
 executable half of the feature checklist; the prose half is the tester manual in
 `<area>/<slug>` path as the feature id).
 

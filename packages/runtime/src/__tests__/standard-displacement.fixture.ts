@@ -28,7 +28,9 @@ import { derive, type MeshAsset, type TextureAsset } from '@forgeax/engine-types
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -372,7 +374,10 @@ export async function verifyStandardDisplacement(
           await draw();
           (await recorder.frameBoundary()).unwrap();
           writerCapture = await capture;
-          await save(`${renderPath}-${entry.name}-writer.rhitape`, writerCapture.unwrap().bytes);
+          await save(
+            `${renderPath}-${entry.name}-writer.rhitape`,
+            compactTape(writerCapture.unwrap()).bytes,
+          );
         }
         while (completedFrames < frameCount - 1) await draw();
         const capture = captureCase ? recorder.captureFrame() : undefined;
@@ -394,7 +399,7 @@ export async function verifyStandardDisplacement(
         };
         if (capture) {
           const encoded = (await capture).unwrap();
-          await save(`${renderPath}-${entry.name}.rhitape`, encoded.bytes);
+          await save(`${renderPath}-${entry.name}.rhitape`, compactTape(encoded).bytes);
           const writer = required(writerCapture).unwrap();
           const tape = decodeTape(writer.bytes).unwrap(),
             model = buildFrameModel(tape);
@@ -423,13 +428,6 @@ export async function verifyStandardDisplacement(
           ).unwrap();
           try {
             const work = sceneColorWork(model, renderPath);
-            const inspected = (
-              await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
-            ).unwrap();
-            if (!inspected.attachment) throw new Error('missing replay attachment');
-            const replayPixels = hdr(inspected.attachment.bytes, size * 8);
-            const replayDelta = difference(pixels, replayPixels);
-            expect(replayDelta).toBeLessThanOrEqual(0.005);
             const shadow = required(
               geometryWorks
                 .filter((w) => w.pipeline.shaders.some((s) => s.entryPoint === 'fs_shadow'))
@@ -437,9 +435,13 @@ export async function verifyStandardDisplacement(
             );
             const shadowId = shadow.attachments?.depthStencilViewHandleId;
             if (!shadowId) throw new Error('missing displaced shadow depth');
-            const shadowRead = (
-              await replay.readResourceAtWork(shadowId, shadow.workIndex)
-            ).unwrap();
+            const inspected = await inspectReplayWorks(replay, [work, shadow]);
+            const colorInspection = required(inspected[0]);
+            if (!colorInspection.attachment) throw new Error('missing replay attachment');
+            const replayPixels = hdr(colorInspection.attachment.bytes, size * 8);
+            const replayDelta = difference(pixels, replayPixels);
+            expect(replayDelta).toBeLessThanOrEqual(0.005);
+            const shadowRead = required(required(inspected[1]).attachment);
             expect(shadowRead.format).toBe('depth32float');
             const shadowFloats = Array.from(
               new Float32Array(
@@ -654,7 +656,10 @@ export async function verifyStandardDisplacement(
             }
             const validation = await raw.popErrorScope();
             expect(validation?.message).toBeUndefined();
-            await save(`${renderPath}-${entry.name}-replay.rgba16f`, inspected.attachment.bytes);
+            await save(
+              `${renderPath}-${entry.name}-replay.rgba16f`,
+              colorInspection.attachment.bytes,
+            );
             Object.assign(facts, {
               digest: tapeDigest(writer.bytes),
               replayDelta,
@@ -672,12 +677,15 @@ export async function verifyStandardDisplacement(
             raw.destroy();
           }
           if (entry.name === 'dense') {
-            const removed = encodeTape({
-              ...tape,
-              events: tape.events.map((event) =>
-                event.kind === 'drawIndexed' ? { ...event, indexCount: 0 } : event,
-              ),
-            }).unwrap();
+            const removed = encodeTape(
+              {
+                ...tape,
+                events: tape.events.map((event) =>
+                  event.kind === 'drawIndexed' ? { ...event, indexCount: 0 } : event,
+                ),
+              },
+              { compression: 'gzip' },
+            ).unwrap();
             await save(`${renderPath}-missing-geometry.rhitape`, removed);
             const changed = decodeTape(removed).unwrap();
             const changedAdapter = (await webgpu.rhi.requestAdapter()).unwrap();

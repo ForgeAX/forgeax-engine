@@ -9,7 +9,7 @@ import {
   RhiError,
   type Sampler,
 } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import type { GraphAtmosphere } from './luts';
@@ -60,7 +60,7 @@ export function addAtmosphereComposition(
             hint: 'rebuild the shader manifest',
           });
         const module = factory
-          .createShaderModule({ code: source, label: 'atmosphere_compose' })
+          .createShaderModule(shaderSourceDescriptor(source, 'atmosphere_compose'))
           .unwrap();
         const layout = device
           .createBindGroupLayout({

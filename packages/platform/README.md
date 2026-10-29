@@ -42,6 +42,6 @@ its own leases; the host disposes the platform after all consumers have retired.
 
 ## Cross-platform verification
 
-[The implementation verification record](./VERIFICATION.md) identifies the tested
+The implementation verification record identifies the tested
 browser and official WeChat simulator builds, retained evidence, and incomplete
 targets. It does not expand this package's runtime contract.

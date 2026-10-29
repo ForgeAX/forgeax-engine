@@ -142,7 +142,7 @@ realm before execution capability probing and forwards the profile to the Engine
 and Render Workers, which install it before their Renderer exists. Worker WebGPU
 counts as available, so the selected topology matches a GPU host. Generated hosts
 map `?forgeax-gpu-stub=1` to `DEFAULT_WEBGPU_STUB_PROFILE`. CPU attribution only;
-see the [performance skill](../forgeax-engine-performance/references/measurement.md#cpu-only-measurement-with-the-webgpu-stub).
+see the performance skill.
 
 ## Optional CPU profiling
 
@@ -172,7 +172,7 @@ Loading is recorded by default at negligible cost; nothing needs to be attached.
 Mark game milestones with `markLoadTimeline('home-ready')` / `markLoadTimeline('map-ready')`
 from `@forgeax/engine/app` in any realm, and read every realm with
 `await collectLoadTimeline()` or `globalThis.__forgeaxLoadTimeline.collect()`.
-Record kinds and limits: [performance measurement](../forgeax-engine-performance/references/measurement.md#load-timeline-startup-and-level-loading).
+Record kinds and limits: performance measurement.
 
 ## Render-owned evidence boundary
 

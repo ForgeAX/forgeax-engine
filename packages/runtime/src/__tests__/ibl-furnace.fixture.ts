@@ -25,6 +25,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { type SaveEvidence, unwrap } from './specular-aa.fixture';
 
@@ -292,7 +293,7 @@ export async function replayFurnace(
     await drawUntilIblActive(renderer, world, lease, false);
     (await recorder.frameBoundary()).unwrap();
     const encoded = (await capture).unwrap();
-    save('forward.rhitape', encoded.bytes);
+    save('forward.rhitape', compactTape(encoded).bytes);
     const tape = decodeTape(encoded.bytes).unwrap();
     const model = buildFrameModel(tape);
     const fragment = (work: WorkEntry) =>
@@ -325,7 +326,10 @@ export async function replayFurnace(
     };
     const compensated = await read(tape);
     const falsifier = withSingleScatter(tape, fragment(target)?.moduleHandleId);
-    save('single-scatter.falsifier.rhitape', encodeTape(falsifier).unwrap());
+    save(
+      'single-scatter.falsifier.rhitape',
+      encodeTape(falsifier, { compression: 'gzip' }).unwrap(),
+    );
     const single = await read(falsifier);
     return {
       digest: encoded.digest,

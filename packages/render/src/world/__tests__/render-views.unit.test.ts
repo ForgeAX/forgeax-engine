@@ -19,6 +19,7 @@ function camera(entityKey: number, view: Partial<NonNullable<CameraSnapshot['vie
       viewport: new Float32Array([0, 0, 1, 1]),
       order: 0,
       resolutionScale: 1,
+      maxRenderShortSide: 0,
       updateInterval: 1,
       enabled: true,
       ...view,
@@ -43,6 +44,54 @@ function fixture() {
 }
 
 describe('RenderViews', () => {
+  it('applies a host budget to selected display snapshots without changing source cameras', () => {
+    const { world, views } = fixture();
+    const { view: _view, ...display } = camera(7);
+    const cameras = Object.freeze([Object.freeze(display)]);
+    const sync = (maxRenderShortSide?: number) =>
+      views.sync({ cameras, captures: [], attachment: () => 'world-a', maxRenderShortSide });
+    sync();
+    expect(views.displayCount).toBe(0);
+    sync(720);
+    expect(views.displayCount).toBe(1);
+    const entity = views.ordered[0];
+    if (entity === undefined) throw Error('expected implicit display view');
+    expect(world.get(entity, RenderView).unwrap()).toMatchObject({
+      camera: 7,
+      maxRenderShortSide: 720,
+      resolutionScale: 1,
+    });
+    expect(display).not.toHaveProperty('view');
+    sync(0);
+    expect(views.displayCount).toBe(0);
+  });
+
+  it('keeps stricter authored budgets and target dimensions independent of the host budget', () => {
+    const { world, views } = fixture();
+    const target = { descriptor: { width: 2048, height: 1024 } } as unknown as RenderTarget;
+    const cameras = [camera(1, { maxRenderShortSide: 480 }), camera(2), { ...camera(3), target }];
+    views.sync({ cameras, captures: [], attachment: () => 'world-a', maxRenderShortSide: 720 });
+    expect(
+      views.ordered.map((entity) => world.get(entity, RenderView).unwrap().maxRenderShortSide),
+    ).toEqual([480, 720, 0]);
+    expect(cameras[1]?.view?.maxRenderShortSide).toBe(0);
+  });
+
+  it('carries a changed short-side cap into the existing Render World view', () => {
+    const { world, views, sync, spies, reset } = fixture();
+    sync([camera(1, { maxRenderShortSide: 720 })]);
+    const entity = views.ordered[0];
+    if (entity === undefined) throw Error('expected declared view');
+    expect(world.get(entity, RenderView).unwrap().maxRenderShortSide).toBe(720);
+    reset();
+    sync([camera(1, { maxRenderShortSide: 720 })]);
+    expect(spies.set).not.toHaveBeenCalled();
+    sync([camera(1, { maxRenderShortSide: 1080 })]);
+    expect(spies.set).toHaveBeenCalledTimes(1);
+    expect(views.ordered[0]).toBe(entity);
+    expect(world.get(entity, RenderView).unwrap().maxRenderShortSide).toBe(1080);
+  });
+
   it('spawns one entity per CameraView and composes them by order', () => {
     const { world, views, sync } = fixture();
     sync([camera(7, { order: 2 }), camera(3, { order: 1 }), { entityKey: 9 } as CameraSnapshot]);

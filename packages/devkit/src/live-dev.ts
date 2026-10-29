@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createWriteStream } from 'node:fs';
-import { access, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import {
   createServer,
   request as httpRequest,
@@ -28,6 +28,19 @@ import { executionHealth } from './execution-health.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { failureSummary } from './failure-summary.js';
 import { LIVE_BRIDGE_OWNER_PARAM, ownerPageUrl } from './live-bridge-url.js';
+import {
+  acquireStartLock,
+  changedLiveOptions,
+  exited,
+  type LiveOwnerOptions,
+  liveDaemonOrphans,
+  liveDaemonProcess,
+  liveDevBuildIdentity,
+  processAlive,
+  type RequestedOwnerOptions,
+  terminateLiveDaemon,
+  writeFileAtomic,
+} from './live-dev-owner.js';
 import {
   type LookDriver,
   LookRequestError,
@@ -106,6 +119,10 @@ interface LiveDevSessionFile {
   readonly pid: number;
   readonly revision: string;
   readonly loadId: string;
+  /** DevKit code identity; `dev start` replaces an owner from another build. */
+  readonly build?: string;
+  /** Normalized browser options; `dev start` replaces an owner on an explicit change. */
+  readonly options?: LiveOwnerOptions;
 }
 
 interface LiveEvaluation {
@@ -186,6 +203,11 @@ interface LiveDevDaemonState {
   inputTimer: ReturnType<typeof setTimeout> | undefined;
   reloadInFlight: Promise<void> | undefined;
   reloadRequested: boolean;
+  /** When the current page's App bridge closed without a reconnect yet. */
+  bridgeLostAt?: number | undefined;
+  /** Serializes session file writes so the last write carries the latest state. */
+  sessionWrite?: Promise<void>;
+  sessionWritten?: boolean;
 }
 
 // A first live launch may have to build the shader and Pack closure before
@@ -256,9 +278,54 @@ function commandError(code: string, hint: string, detail: Record<string, unknown
   return { code, expected: 'the live DevKit service to accept the request', hint, detail };
 }
 
-async function writeSessionFile(state: LiveDevDaemonState): Promise<void> {
-  await mkdir(dirname(state.sessionPath), { recursive: true });
-  await writeFile(
+/** Keep the realm owner's diagnostic across the live command boundary. */
+function operationError(error: unknown, code: string, hint: string): CommandError {
+  const diagnostic =
+    error !== null && typeof error === 'object'
+      ? (error as Partial<Record<keyof CommandError, unknown>>)
+      : undefined;
+  return {
+    code: typeof diagnostic?.code === 'string' ? diagnostic.code : code,
+    expected:
+      typeof diagnostic?.expected === 'string'
+        ? diagnostic.expected
+        : 'the live DevKit service to accept the request',
+    hint: typeof diagnostic?.hint === 'string' ? diagnostic.hint : hint,
+    detail:
+      diagnostic?.detail !== null &&
+      typeof diagnostic?.detail === 'object' &&
+      !Array.isArray(diagnostic.detail)
+        ? (diagnostic.detail as Record<string, unknown>)
+        : {},
+  };
+}
+
+/** The build identity of this DevKit, recorded by owners and compared by `dev start`. */
+export function currentLiveDevBuild(): Promise<string> {
+  return liveDevBuildIdentity(CLI_ENTRY);
+}
+
+function ownsSessionRecord(state: LiveDevDaemonState, recorded: unknown): boolean {
+  const record = recorded as Partial<LiveDevSessionFile> | undefined;
+  return record?.pid === state.status.pid && record.endpoint === state.status.endpoint;
+}
+
+async function writeSessionRecord(state: LiveDevDaemonState): Promise<void> {
+  // A stopped owner never publishes again: its record would outlive it.
+  if (isStopped(state)) return;
+  if (state.sessionWritten) {
+    const recorded = await readFile(state.sessionPath, 'utf8').then(
+      (raw) => JSON.parse(raw) as unknown,
+      () => undefined,
+    );
+    // Another owner replaced this one (or stop removed the record): never
+    // overwrite it. A displaced owner releases its browser and project child.
+    if (!ownsSessionRecord(state, recorded)) {
+      if (!isStopped(state)) void stopLiveDaemon(state).catch(() => {});
+      return;
+    }
+  }
+  await writeFileAtomic(
     state.sessionPath,
     `${JSON.stringify({
       root: state.root,
@@ -268,9 +335,25 @@ async function writeSessionFile(state: LiveDevDaemonState): Promise<void> {
       pid: state.status.pid,
       revision: state.status.revision,
       loadId: state.status.loadId,
+      build: await currentLiveDevBuild(),
+      options: {
+        headless: state.status.headless,
+        backend: state.status.backendRequested,
+        rhiCapture: state.rhiCapture,
+        workers: state.requestedWorkers ?? {},
+        animation: state.animation,
+      },
     } satisfies LiveDevSessionFile)}\n`,
-    { encoding: 'utf8', mode: 0o600 },
   );
+  state.sessionWritten = true;
+}
+
+function writeSessionFile(state: LiveDevDaemonState): Promise<void> {
+  const next = (state.sessionWrite ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => writeSessionRecord(state));
+  state.sessionWrite = next;
+  return next;
 }
 
 export async function waitForFirstFrame(
@@ -514,14 +597,8 @@ function bridgeRequest(
   }).then((payload) => {
     if (payload !== null && typeof payload === 'object' && Reflect.get(payload, 'ok') === false) {
       const error = Reflect.get(payload, 'error');
-      const errorRecord =
-        error !== null && typeof error === 'object'
-          ? (error as { readonly code?: unknown; readonly hint?: unknown })
-          : undefined;
-      throw bridgeError(
-        typeof errorRecord?.code === 'string' ? errorRecord.code : 'live-app-eval-failed',
-        typeof errorRecord?.hint === 'string' ? errorRecord.hint : 'The App evaluation failed.',
-      );
+      const failure = operationError(error, 'live-app-eval-failed', 'The App evaluation failed.');
+      throw Object.assign(new Error(failure.hint), failure);
     }
     return payload !== null && typeof payload === 'object' && Reflect.get(payload, 'ok') === true
       ? Reflect.get(payload, 'value')
@@ -767,6 +844,14 @@ function outcomeErrorCode(outcome: LiveOutcome): string | undefined {
     : undefined;
 }
 
+function outcomeErrorDetail(outcome: LiveOutcome): Record<string, unknown> | undefined {
+  const value = outcome.value as { readonly error?: { detail?: unknown } };
+  const detail = value?.error?.detail;
+  return typeof detail === 'object' && detail !== null
+    ? (detail as Record<string, unknown>)
+    : undefined;
+}
+
 /**
  * A rejection is retried only when repeating it cannot duplicate an effect or
  * change its target: an unadmitted request never touched the instance, and an
@@ -774,7 +859,7 @@ function outcomeErrorCode(outcome: LiveOutcome): string | undefined {
  * A pinned revision is never re-targeted; its disappearance is
  * `live-revision-stale`.
  */
-function retryable(
+export function retryable(
   outcome: LiveOutcome,
   operation: string,
   args: Record<string, unknown>,
@@ -782,6 +867,8 @@ function retryable(
   const code = outcomeErrorCode(outcome);
   if (code === undefined || !LIVE_TRANSIENT_CODES.has(code)) return false;
   if (!outcome.admitted) return true;
+  // A look that waited out the game's whole startup budget would only wait it again.
+  if (outcomeErrorDetail(outcome)?.startupWaited === true) return false;
   return LIVE_OBSERVATIONS.has(operation) && pinnedRevision(args) === undefined;
 }
 
@@ -792,6 +879,8 @@ async function awaitAdmissibleRuntime(
   deadline: number,
   abandoned: () => boolean,
 ): Promise<'ready' | 'stale' | 'settled'> {
+  // One reopen per request: a page that cannot keep a bridge ends at the deadline.
+  let reopened = false;
   for (;;) {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, LIVE_DEV_POLL_INTERVAL_MS));
     if (abandoned() || isStopped(state)) return 'settled';
@@ -806,10 +895,7 @@ async function awaitAdmissibleRuntime(
       // reconciliation starts that replacement and the wait continues.
       if (await reconcileProjectInputs(state)) return 'settled';
     }
-    // `waiting` advances to `ready` only through a bridge status refresh, as a
-    // `dev status` probe would perform; one outstanding probe is enough.
-    if (!replacing && state.status.phase === 'waiting' && state.bridgePending.size === 0)
-      await refreshBridgeStatus(state).catch(() => false);
+    if (!replacing) reopened = (await advanceWaitingBridge(state, reopened)) || reopened;
     if (
       !replacing &&
       state.status.phase === 'ready' &&
@@ -819,6 +905,36 @@ async function awaitAdmissibleRuntime(
       return 'ready';
     if (Date.now() >= deadline) return 'settled';
   }
+}
+
+/**
+ * A page normally reconnects its bridge within a few seconds (1 s backoff).
+ * A page that stays disconnected (closed, crashed, or navigated away) never
+ * will; reopen it through the ordinary reload instead of waiting out the
+ * caller's whole readiness budget. Reload reads the same inputs, so the
+ * replacement serves the same project; pinned requests end as stale.
+ */
+const LIVE_BRIDGE_REOPEN_MS = 5_000;
+
+/** Returns whether this call reopened the page. */
+async function advanceWaitingBridge(
+  state: LiveDevDaemonState,
+  reopened: boolean,
+): Promise<boolean> {
+  // `waiting` advances to `ready` only through a bridge status refresh, as a
+  // `dev status` probe would perform; one outstanding probe is enough.
+  if (state.status.phase === 'waiting' && state.bridgePending.size === 0)
+    await refreshBridgeStatus(state).catch(() => false);
+  return !reopened && reopenLostBridge(state);
+}
+
+function reopenLostBridge(state: LiveDevDaemonState): boolean {
+  if (state.bridgeLostAt === undefined || state.bridge !== undefined) return false;
+  if (state.session === undefined || state.status.phase !== 'waiting') return false;
+  if (Date.now() - state.bridgeLostAt < LIVE_BRIDGE_REOPEN_MS) return false;
+  state.bridgeLostAt = undefined;
+  void reloadSession(state).catch(() => undefined);
+  return true;
 }
 
 function withWaited(outcome: LiveOutcome, waitedMs: number): LiveOutcome {
@@ -866,7 +982,16 @@ async function runWhenReady(
   response.once('close', onClose);
   try {
     const abandoned = () => closed;
-    let outcome = await runLiveOperation(state, url, args, request, response, abandoned);
+    const remaining = () => Math.max(0, deadline - Date.now());
+    let outcome = await runLiveOperation(
+      state,
+      url,
+      args,
+      request,
+      response,
+      abandoned,
+      remaining(),
+    );
     let waited = false;
     while (budgetMs > 0 && retryable(outcome, operation, args)) {
       waited = true;
@@ -892,7 +1017,7 @@ async function runWhenReady(
         };
         break;
       }
-      outcome = await runLiveOperation(state, url, args, request, response, abandoned);
+      outcome = await runLiveOperation(state, url, args, request, response, abandoned, remaining());
       if (settled === 'settled' || Date.now() >= deadline) break;
     }
     return waited ? withWaited(outcome, Date.now() - startedAt) : outcome;
@@ -945,6 +1070,7 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
       );
     }
     state.bridge = client;
+    state.bridgeLostAt = undefined;
     state.status = { ...state.status, bridgeConnected: true };
     client.on('message', (raw) => {
       let message: {
@@ -993,6 +1119,7 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
     client.on('close', () => {
       if (state.bridge !== client) return;
       state.bridge = undefined;
+      state.bridgeLostAt = Date.now();
       state.status = {
         ...state.status,
         bridgeConnected: false,
@@ -1057,6 +1184,8 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
     // A reload opens its replacement page in the same warm browser.
     state.browser ??= createBrowserCapture(state.executionRoot, { retainBrowser: true });
     state.bridgeToken = randomUUID();
+    // Only a bridge this new page opened and then lost is reopened.
+    state.bridgeLostAt = undefined;
     state.session = await state.browser.open({
       backend: state.status.backendRequested,
       headless: state.status.headless,
@@ -1692,8 +1821,14 @@ async function runLiveOperation(
   request: IncomingMessage,
   response: ServerResponse,
   abandoned: () => boolean = () => false,
+  startupWaitMs?: number,
 ): Promise<LiveOutcome> {
-  const attempt: LiveAttempt = { outcome: undefined, admitted: false, abandoned };
+  const attempt: LiveAttempt = {
+    outcome: undefined,
+    admitted: false,
+    abandoned,
+    ...(startupWaitMs === undefined ? {} : { startupWaitMs }),
+  };
   await routeLiveOperation(state, url, input, request, response, attempt);
   return {
     ...(attempt.outcome ?? {
@@ -1713,6 +1848,8 @@ interface LiveAttempt {
   admitted: boolean;
   /** The caller disconnected; nothing may be admitted for it any more. */
   readonly abandoned: () => boolean;
+  /** What is left of the caller's ready budget; a look spends it waiting out a startup overlay. */
+  readonly startupWaitMs?: number;
 }
 
 /** Routes write their single response through `reply` and return early. */
@@ -1963,16 +2100,8 @@ async function routeLiveOperation(
         readonly timeoutMs?: number;
       };
       function validCaptureArgs(): boolean {
-        if (verifying && typeof args.revision !== 'string') {
-          reply(400, {
-            ok: false,
-            error: commandError(
-              'live-revision-required',
-              'Pass the revision of the execution to verify.',
-            ),
-          });
-          return false;
-        }
+        // Without a revision, verify checks whichever execution is current; the
+        // before/after identity check below still rejects a change during capture.
         if (
           verifying &&
           args.timeoutMs !== undefined &&
@@ -2020,14 +2149,11 @@ async function routeLiveOperation(
         try {
           await bridgeCall(state, 'return simulation.observation?.camera.get();', 5_000).promise;
         } catch (error) {
-          const code =
-            typeof (error as { readonly code?: unknown })?.code === 'string'
-              ? (error as { readonly code: string }).code
-              : 'live-camera-unavailable';
           reply(409, {
             ok: false,
-            error: commandError(
-              code,
+            error: operationError(
+              error,
+              'live-camera-unavailable',
               error instanceof Error ? error.message : 'The live World has no active camera.',
             ),
           });
@@ -2193,7 +2319,12 @@ async function routeLiveOperation(
         typeof input.output === 'string'
           ? resolve(state.root, input.output)
           : resolve(liveArtifactDirectory(before.revision), `look-${Date.now()}`);
-      const look = await lookAtLive(lookDriver(state, session, outputDir), request);
+      const look = await lookAtLive(
+        lookDriver(state, session, outputDir),
+        request,
+        undefined,
+        attempt.startupWaitMs,
+      );
       if (!(await requireCurrentBridge(state, reply))) return;
       await refreshFrameStatus(state);
       if (!sameLiveInstance(before, state.status)) {
@@ -2581,19 +2712,12 @@ async function routeLiveOperation(
   }
 
   function replyOperationFailure(error: unknown): void {
-    const diagnostic = error as { code?: unknown; hint?: unknown; detail?: unknown };
     reply(500, {
       ok: false,
-      error: commandError(
-        typeof diagnostic?.code === 'string' ? diagnostic.code : 'live-operation-failed',
-        typeof diagnostic?.hint === 'string'
-          ? diagnostic.hint
-          : error instanceof Error
-            ? error.message
-            : String(error),
-        diagnostic?.detail !== null && typeof diagnostic?.detail === 'object'
-          ? (diagnostic.detail as Record<string, unknown>)
-          : {},
+      error: operationError(
+        error,
+        'live-operation-failed',
+        error instanceof Error ? error.message : String(error),
       ),
     });
   }
@@ -2740,7 +2864,8 @@ function stopLiveDaemon(state: LiveDevDaemonState): Promise<void> {
         failures.push(error);
       }
     };
-    if (state.server?.listening) await release(() => writeSessionFile(state));
+    // Let queued record writes finish first; the owner check below removes the record.
+    await release(() => state.sessionWrite);
     await release(() => state.session?.close());
     await release(() => state.observationInFlight);
     rejectBridgePending(
@@ -2915,6 +3040,7 @@ async function requestJson(
   path: string,
   method: 'GET' | 'POST',
   value?: unknown,
+  timeoutMs?: number,
 ): Promise<unknown> {
   return new Promise((resolveResponse, rejectResponse) => {
     const request = httpRequest(
@@ -2946,7 +3072,7 @@ async function requestJson(
       typeof Reflect.get(value, 'readyTimeoutMs') === 'number'
         ? (Reflect.get(value, 'readyTimeoutMs') as number)
         : LIVE_READY_WAIT_MS;
-    request.setTimeout(path === '/status' ? 5_000 : 330_000 + readyTimeoutMs, () =>
+    request.setTimeout(timeoutMs ?? (path === '/status' ? 5_000 : 330_000 + readyTimeoutMs), () =>
       request.destroy(new Error(LIVE_DEV_REQUEST_TIMEOUT)),
     );
     request.on('error', rejectResponse);
@@ -2955,22 +3081,88 @@ async function requestJson(
   });
 }
 
+type SessionRecord =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'invalid'; readonly error: string }
+  | { readonly kind: 'record'; readonly session: LiveDevSessionFile };
+
+function validSessionRecord(value: unknown): value is LiveDevSessionFile {
+  const record = value as Partial<LiveDevSessionFile> | null;
+  return (
+    record !== null &&
+    typeof record === 'object' &&
+    typeof record.endpoint === 'string' &&
+    Number.isSafeInteger(record.pid)
+  );
+}
+
+/** Records are written atomically; an unreadable one is debris from a crash or an older writer. */
+async function readSessionRecord(root: string, snapshot = false): Promise<SessionRecord> {
+  let error = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    let raw: string;
+    try {
+      raw = await readFile(sessionPath(root, snapshot), 'utf8');
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'none' };
+      throw cause;
+    }
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (validSessionRecord(value)) return { kind: 'record', session: value };
+      error = 'live-session-invalid: the owner record has no endpoint';
+    } catch (cause) {
+      error = `live-session-invalid: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+  return { kind: 'invalid', error };
+}
+
+/** Remove a record only while it still names the given owner (or any unreadable record). */
+async function removeSessionRecord(
+  root: string,
+  snapshot: boolean,
+  expected: LiveDevSessionFile | undefined,
+): Promise<void> {
+  const current = await readSessionRecord(root, snapshot);
+  if (current.kind === 'none') return;
+  if (
+    current.kind === 'record' &&
+    (expected === undefined ||
+      current.session.pid !== expected.pid ||
+      current.session.endpoint !== expected.endpoint)
+  )
+    return;
+  await removeLiveDevSession(root, { snapshot });
+}
+
+function stoppedResult(root: string) {
+  return { ok: true, value: { root, phase: 'stopped' } };
+}
+
+function refused(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ECONNREFUSED';
+}
+
 export async function liveDevStatus(
   rootInput: string,
   options: { readonly snapshot?: boolean } = {},
 ): Promise<unknown> {
   const root = resolve(rootInput);
-  let session: LiveDevSessionFile;
-  try {
-    session = await readSession(root, options.snapshot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-      return { ok: true, value: { root, phase: 'stopped' } };
-    throw error;
-  }
+  const record = await readSessionRecord(root, options.snapshot);
+  if (record.kind === 'none') return stoppedResult(root);
+  if (record.kind === 'invalid')
+    return { ok: true, value: { root, phase: 'unreachable', error: record.error } };
+  const { session } = record;
   try {
     return await requestJson(session, '/status', 'GET');
   } catch (error) {
+    // Nothing listens and the recorded process is gone: a crash or reboot leftover.
+    if (refused(error) && !processAlive(session.pid)) {
+      await removeSessionRecord(root, options.snapshot === true, session);
+      return stoppedResult(root);
+    }
     return {
       ok: true,
       value: {
@@ -2981,6 +3173,132 @@ export async function liveDevStatus(
       },
     };
   }
+}
+
+async function projectRootSpellings(root: string): Promise<readonly string[]> {
+  const canonicalRoot = await realpath(root).catch(() => root);
+  return canonicalRoot === root ? [root] : [root, canonicalRoot];
+}
+
+/** Owners whose record was lost keep a browser and project child alive; release them. */
+async function terminateOrphanOwners(root: string, snapshot: boolean): Promise<void> {
+  const orphans = await liveDaemonOrphans(
+    await projectRootSpellings(root),
+    snapshot ? 'snapshot' : 'live',
+  );
+  await Promise.all(orphans.map((pid) => terminateLiveDaemon(pid).catch(() => false)));
+}
+
+const LIVE_STOP_REQUEST_TIMEOUT_MS = 30_000;
+const LIVE_UNRESPONSIVE_MS = 10_000;
+
+async function gracefulStop(session: LiveDevSessionFile): Promise<boolean> {
+  try {
+    const response = await requestJson(
+      session,
+      '/stop',
+      'POST',
+      undefined,
+      LIVE_STOP_REQUEST_TIMEOUT_MS,
+    );
+    return (response as { ok?: unknown } | null)?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * End the recorded owner process: graceful stop first, then a signal to a
+ * verified owner. A pid that belongs to another program (reused after a crash
+ * or reboot, or an embedding host) is never signalled.
+ */
+async function endOwnerProcess(
+  root: string,
+  session: LiveDevSessionFile,
+  graceful: boolean,
+): Promise<CommandError | undefined> {
+  const stopped = graceful && (await gracefulStop(session));
+  if (!processAlive(session.pid)) return undefined;
+  const kind = await liveDaemonProcess(session.pid, await projectRootSpellings(root));
+  if (kind === 'daemon') {
+    if (stopped && (await exited(session.pid, 10_000))) return undefined;
+    if (await terminateLiveDaemon(session.pid)) return undefined;
+  } else if (kind === 'other' || stopped) return undefined;
+  return commandError(
+    'live-unreachable',
+    'The recorded owner does not respond and could not be stopped.',
+    { pid: session.pid, endpoint: session.endpoint },
+  );
+}
+
+/** Retire the recorded owner and its leftovers so a new owner can start. */
+async function retireOwner(
+  root: string,
+  snapshot: boolean,
+  session: LiveDevSessionFile | undefined,
+  graceful: boolean,
+): Promise<CommandError | undefined> {
+  if (session !== undefined) {
+    const failure = await endOwnerProcess(root, session, graceful);
+    if (failure !== undefined) return failure;
+  }
+  await removeSessionRecord(root, snapshot, session);
+  await terminateOrphanOwners(root, snapshot);
+  if (snapshot) await clearDeadRunClaim(root).catch(() => {});
+  return undefined;
+}
+
+/** Status of a recorded owner, tolerating a briefly busy owner. */
+async function recordedOwnerStatus(session: LiveDevSessionFile): Promise<unknown> {
+  const deadline = Date.now() + LIVE_UNRESPONSIVE_MS;
+  for (;;) {
+    try {
+      return await requestJson(session, '/status', 'GET');
+    } catch (error) {
+      if (refused(error) || !processAlive(session.pid) || Date.now() >= deadline) return undefined;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    }
+  }
+}
+
+type RequestedLiveOptions = RequestedOwnerOptions;
+
+type OwnerDecision =
+  | { readonly action: 'none' }
+  | { readonly action: 'reuse'; readonly status: unknown }
+  | {
+      readonly action: 'replace';
+      readonly reason: string;
+      readonly session: LiveDevSessionFile | undefined;
+      readonly reachable: boolean;
+    };
+
+/** Whether `dev start` can reuse the recorded owner, or must replace it. */
+async function inspectOwner(
+  root: string,
+  snapshot: boolean,
+  requested: RequestedLiveOptions,
+): Promise<OwnerDecision> {
+  const record = await readSessionRecord(root, snapshot);
+  if (record.kind === 'none') return { action: 'none' };
+  if (record.kind === 'invalid')
+    return { action: 'replace', reason: record.error, session: undefined, reachable: false };
+  const { session } = record;
+  const status = await recordedOwnerStatus(session);
+  const phase = ownerPhase(status);
+  const replace = (reason: string, reachable = true): OwnerDecision => ({
+    action: 'replace',
+    reason,
+    session,
+    reachable,
+  });
+  if (status === undefined) return replace('unresponsive', false);
+  // A failed owner retries from scratch; start means a running owner afterwards.
+  if (phase === 'stopped' || phase === 'failed' || phase === undefined) return replace(`${phase}`);
+  if (session.build !== (await currentLiveDevBuild())) return replace('build');
+  const changed = changedLiveOptions(session.options, requested);
+  if (changed.length > 0) return replace(`options: ${changed.join(', ')}`);
+  return { action: 'reuse', status };
 }
 
 async function clearDeadRunClaim(root: string): Promise<void> {
@@ -3001,6 +3319,31 @@ async function clearDeadRunClaim(root: string): Promise<void> {
   }
 }
 
+/** `dev stop` is idempotent: any recorded, dead, unresponsive or unreadable owner ends stopped. */
+async function stopRecordedOwner(root: string, snapshot: boolean): Promise<unknown> {
+  const record = await readSessionRecord(root, snapshot);
+  if (record.kind === 'record') {
+    try {
+      const response = await requestJson(
+        record.session,
+        '/stop',
+        'POST',
+        undefined,
+        LIVE_STOP_REQUEST_TIMEOUT_MS,
+      );
+      if ((response as { ok?: unknown } | null)?.ok === true) {
+        if (snapshot) await clearDeadRunClaim(root).catch(() => {});
+        return response;
+      }
+    } catch {
+      // Retired below; a dead or unresponsive owner is still a stopped owner afterwards.
+    }
+  }
+  const session = record.kind === 'record' ? record.session : undefined;
+  const failure = await retireOwner(root, snapshot, session, false);
+  return failure === undefined ? stoppedResult(root) : { ok: false, error: failure };
+}
+
 export async function liveDevControl(
   rootInput: string,
   operation: Exclude<LiveOperation, 'status'>,
@@ -3008,37 +3351,67 @@ export async function liveDevControl(
   options: { readonly snapshot?: boolean } = {},
 ): Promise<unknown> {
   const root = resolve(rootInput);
+  if (operation === 'stop') return stopRecordedOwner(root, options.snapshot === true);
+  const onDemand = options.snapshot !== true && ON_DEMAND_OPERATIONS.has(operation);
+  const first = await sendToRecordedOwner(root, operation, value, options.snapshot);
+  if (first.kind === 'response') return first.value;
+  if (!onDemand || first.kind === 'unreachable') return first.result;
+  // Nothing received the request, so starting an owner and sending it once is
+  // the same operation the agent would get after `dev start`.
+  const started = (await startLiveDev(root)) as { readonly ok?: unknown };
+  if (started.ok !== true) return started;
+  const second = await sendToRecordedOwner(root, operation, value, options.snapshot);
+  return second.kind === 'response' ? second.value : second.result;
+}
+
+/** Observations whose result does not depend on who started the owner. */
+const ON_DEMAND_OPERATIONS: ReadonlySet<LiveOperation> = new Set([
+  'capture',
+  'look',
+  'verify',
+  'eval',
+]);
+
+type OwnerDelivery =
+  | { readonly kind: 'response'; readonly value: unknown }
+  /** No owner received the request; `result` is what a caller without on-demand start sees. */
+  | { readonly kind: 'absent'; readonly result: unknown }
+  /** The owner may have received the request; it must not be sent again. */
+  | { readonly kind: 'unreachable'; readonly result: unknown };
+
+async function sendToRecordedOwner(
+  root: string,
+  operation: Exclude<LiveOperation, 'status'>,
+  value: unknown,
+  snapshot: boolean | undefined,
+): Promise<OwnerDelivery> {
+  const record = await readSessionRecord(root, snapshot);
+  if (record.kind !== 'record') {
+    const result =
+      operation === 'observe'
+        ? { ok: true, value: { status: { root, phase: 'stopped' }, image: null, logs: [] } }
+        : {
+            ok: false,
+            error: commandError(
+              'live-not-running',
+              'Start the live execution owner for this project; static project preview serves sealed files and cannot accept live commands.',
+              {
+                root,
+                operation,
+                executionOwner: snapshot ? 'run' : 'dev',
+                start: ['forgeax', snapshot ? 'run' : 'dev', 'start', '--root', root],
+              },
+            ),
+          };
+    return { kind: 'absent', result };
+  }
   try {
-    return await requestJson(
-      await readSession(root, options.snapshot),
-      `/${operation}`,
-      'POST',
-      value,
-    );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      if (options.snapshot && operation === 'stop') await clearDeadRunClaim(root);
-      if (operation === 'observe')
-        return { ok: true, value: { status: { root, phase: 'stopped' }, image: null, logs: [] } };
-      return operation === 'stop'
-        ? { ok: true, value: { root, phase: 'stopped' } }
-        : { ok: false, error: commandError('live-not-running', 'Run forgeax dev start first.') };
-    }
-    if (operation === 'stop') {
-      const recorded = await readSession(root, options.snapshot).catch(() => undefined);
-      if (recorded !== undefined && Number.isSafeInteger(recorded.pid) && recorded.pid > 0) {
-        try {
-          process.kill(recorded.pid, 0);
-        } catch (cause) {
-          if ((cause as NodeJS.ErrnoException).code === 'ESRCH') {
-            await removeLiveDevSession(root, options);
-            if (options.snapshot) await clearDeadRunClaim(root);
-            return { ok: true, value: { root, phase: 'stopped' } };
-          }
-        }
-      }
-    }
     return {
+      kind: 'response',
+      value: await requestJson(record.session, `/${operation}`, 'POST', value),
+    };
+  } catch (error) {
+    const result = {
       ok: false,
       error: commandError(
         'live-unreachable',
@@ -3046,6 +3419,10 @@ export async function liveDevControl(
         { cause: error instanceof Error ? error.message : String(error) },
       ),
     };
+    // A refused connection never reached an owner; a dead recorded pid cannot answer.
+    return refused(error) && !processAlive(record.session.pid)
+      ? { kind: 'absent', result }
+      : { kind: 'unreachable', result };
   }
 }
 
@@ -3097,23 +3474,56 @@ async function awaitExistingOwner(
   return status;
 }
 
+interface LiveStartOptions {
+  readonly snapshot?: boolean;
+  readonly headless?: boolean;
+  readonly backend?: LiveDevBackend;
+  readonly workers?: ExecutionWorkersOptions;
+  readonly animation?: AnimationPlaybackOptions;
+  readonly rhiCapture?: boolean;
+  /** Explicit process-local composition; never sent through detached CLI arguments. */
+  readonly inProcess?: {
+    readonly carrier?: BrowserCarrierAdapter;
+    readonly signal: AbortSignal;
+    /** Attach the actual daemon lifetime to the embedding owner's existing cleanup. */
+    readonly onStart?: (closed: Promise<void>) => void;
+  };
+}
+
+function requestedOptions(options: LiveStartOptions): RequestedLiveOptions {
+  return {
+    headless: options.headless,
+    backend: options.backend,
+    rhiCapture: options.rhiCapture,
+    workers: options.workers,
+    animation: options.animation === undefined ? undefined : animationPlayback(options.animation),
+  };
+}
+
+function startLockPath(root: string, snapshot: boolean): string {
+  return snapshot
+    ? resolve(runStateDirectory(root), 'start.lock')
+    : resolve(root, '.forgeax', 'dev-start.lock');
+}
+
+function startTimeout(): CommandResult<never> {
+  return {
+    ok: false,
+    error: commandError(
+      'live-start-timeout',
+      'Startup did not finish before the deadline; dev status reports whether the owner is still running.',
+    ),
+  };
+}
+
+/**
+ * `dev start` is idempotent: it reuses a healthy owner of this build with the
+ * requested options and replaces any other recorded owner (dead, unresponsive,
+ * failed, from another DevKit build or with different explicit options).
+ */
 export async function startLiveDev(
   rootInput: string,
-  options: {
-    readonly snapshot?: boolean;
-    readonly headless?: boolean;
-    readonly backend?: LiveDevBackend;
-    readonly workers?: ExecutionWorkersOptions;
-    readonly animation?: AnimationPlaybackOptions;
-    readonly rhiCapture?: boolean;
-    /** Explicit process-local composition; never sent through detached CLI arguments. */
-    readonly inProcess?: {
-      readonly carrier?: BrowserCarrierAdapter;
-      readonly signal: AbortSignal;
-      /** Attach the actual daemon lifetime to the embedding owner's existing cleanup. */
-      readonly onStart?: (closed: Promise<void>) => void;
-    };
-  } = {},
+  options: LiveStartOptions = {},
 ): Promise<unknown> {
   const root = resolve(rootInput);
   if (options.snapshot && options.inProcess)
@@ -3121,38 +3531,37 @@ export async function startLiveDev(
       ok: false,
       error: commandError('run-owner-invalid', 'Independent runs require a detached Engine owner.'),
     };
+  const { readProjectStartupTimeoutMs } = await import('./project.js');
+  const startupPolicy = await readProjectStartupTimeoutMs(root);
+  if (!startupPolicy.ok) return startupPolicy;
+  const startupTimeout =
+    startupPolicy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : startupPolicy.value;
+  const deadline = startupTimeout === null ? Infinity : Date.now() + startupTimeout;
+  // Parallel starts for one project converge on one owner.
+  const release = await acquireStartLock(startLockPath(root, options.snapshot === true), deadline);
+  if (release === undefined) return startTimeout();
   try {
-    const existing = await liveDevStatus(root, options);
-    if (
-      existing !== null &&
-      typeof existing === 'object' &&
-      'value' in existing &&
-      existing.value !== null &&
-      typeof existing.value === 'object' &&
-      'phase' in existing.value &&
-      existing.value.phase !== 'stopped'
-    ) {
-      const configuration = existing.value as {
-        backendRequested?: LiveDevBackend;
-        headless?: boolean;
-      };
-      if (
-        (options.backend !== undefined && options.backend !== configuration.backendRequested) ||
-        (options.headless !== undefined && options.headless !== configuration.headless)
-      ) {
-        return {
-          ok: false,
-          error: commandError(
-            'live-configuration-conflict',
-            'This project already has an owner with different browser options. Stop it before starting with the requested options.',
-            {
-              current: configuration,
-              requested: { backend: options.backend, headless: options.headless },
-            },
-          ),
-        };
-      }
-      return readyResult(await awaitExistingOwner(root, options, existing));
+    return await startLocked(root, options, deadline);
+  } finally {
+    await release();
+  }
+}
+
+async function startLocked(
+  root: string,
+  options: LiveStartOptions,
+  deadline: number,
+): Promise<unknown> {
+  const snapshot = options.snapshot === true;
+  let decision: OwnerDecision;
+  try {
+    decision = await inspectOwner(root, snapshot, requestedOptions(options));
+    if (decision.action === 'reuse')
+      return readyResult(await awaitExistingOwner(root, options, decision.status));
+    if (decision.action === 'none') await terminateOrphanOwners(root, snapshot);
+    else {
+      const failure = await retireOwner(root, snapshot, decision.session, decision.reachable);
+      if (failure !== undefined) return { ok: false, error: failure };
     }
   } catch (error) {
     return {
@@ -3164,7 +3573,8 @@ export async function startLiveDev(
       ),
     };
   }
-  if (options.snapshot) {
+  if (snapshot) {
+    await clearDeadRunClaim(root).catch(() => {});
     const claimed = await access(resolve(runStateDirectory(root), 'owner.json')).then(
       () => true,
       (error: NodeJS.ErrnoException) => {
@@ -3181,36 +3591,86 @@ export async function startLiveDev(
         ),
       };
   }
-  const { readProjectStartupTimeoutMs } = await import('./project.js');
-  const startupPolicy = await readProjectStartupTimeoutMs(root);
-  if (!startupPolicy.ok) return startupPolicy;
-  const startupTimeout =
-    startupPolicy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : startupPolicy.value;
   const portProbe = createServer();
   await once(portProbe.listen(0, '127.0.0.1'), 'listening');
   const address = portProbe.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
   await new Promise<void>((resolveClose) => portProbe.close(() => resolveClose()));
-  if (options.inProcess !== undefined) {
-    const { inProcess, ...configuration } = options;
-    inProcess.signal.throwIfAborted();
-    const startup = new AbortController();
-    return new Promise((resolveReady, rejectReady) => {
-      const closed = runLiveDevDaemon(root, port, sessionPath(root, options.snapshot), {
-        ...configuration,
-        ...inProcess,
-        signal: AbortSignal.any([inProcess.signal, startup.signal]),
-        onReady: (status) => resolveReady(readyResult({ ok: true, value: publicStatus(status) })),
-      });
-      void closed.catch(rejectReady);
-      try {
-        inProcess.onStart?.(closed);
-      } catch (error) {
-        startup.abort(error);
-        rejectReady(error);
-      }
+  if (options.inProcess !== undefined) return startInProcess(root, options, port);
+  return startDetached(root, options, port, deadline);
+}
+
+function startInProcess(root: string, options: LiveStartOptions, port: number): Promise<unknown> {
+  const { inProcess, ...configuration } = options;
+  if (inProcess === undefined) throw new Error('Missing in-process owner composition.');
+  inProcess.signal.throwIfAborted();
+  const startup = new AbortController();
+  return new Promise((resolveReady, rejectReady) => {
+    const closed = runLiveDevDaemon(root, port, sessionPath(root, options.snapshot), {
+      ...configuration,
+      ...inProcess,
+      signal: AbortSignal.any([inProcess.signal, startup.signal]),
+      onReady: (status) => resolveReady(readyResult({ ok: true, value: publicStatus(status) })),
     });
-  }
+    void closed.catch(rejectReady);
+    try {
+      inProcess.onStart?.(closed);
+    } catch (error) {
+      startup.abort(error);
+      rejectReady(error);
+    }
+  });
+}
+
+function daemonEnvironment(options: LiveStartOptions): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...(options.headless === undefined ? {} : { FORGEAX_DEV_HEADLESS: String(options.headless) }),
+    ...(options.backend === undefined ? {} : { FORGEAX_DEV_BACKEND: options.backend }),
+    ...(options.workers === undefined
+      ? {}
+      : { FORGEAX_EXECUTION_WORKERS: JSON.stringify(options.workers) }),
+    ...(options.animation === undefined
+      ? {}
+      : { FORGEAX_ANIMATION_PLAYBACK: JSON.stringify(animationPlayback(options.animation)) }),
+    ...(options.rhiCapture === undefined
+      ? {}
+      : { FORGEAX_DEV_RHI_CAPTURE: options.rhiCapture ? '1' : '0' }),
+  };
+}
+
+function settledPhase(status: unknown): boolean {
+  const phase = ownerPhase(status);
+  return (
+    phase !== undefined && phase !== 'starting' && phase !== 'waiting' && phase !== 'reloading'
+  );
+}
+
+/** A short status timeout cannot decide the longer startup of our own still-live child. */
+async function ownStartupTimeout(
+  root: string,
+  options: LiveStartOptions,
+  status: unknown,
+  childPid: number | undefined,
+  port: number,
+): Promise<boolean> {
+  const value = (status as { value?: { phase?: unknown; error?: unknown } }).value;
+  if (value?.phase !== 'unreachable' || value.error !== LIVE_DEV_REQUEST_TIMEOUT) return false;
+  if (childPid === undefined) return false;
+  const recorded = await readSession(root, options.snapshot).catch(() => undefined);
+  return (
+    recorded?.pid === childPid &&
+    recorded.endpoint === `http://127.0.0.1:${port}` &&
+    processAlive(childPid)
+  );
+}
+
+async function startDetached(
+  root: string,
+  options: LiveStartOptions,
+  port: number,
+  deadline: number,
+): Promise<unknown> {
   const child = spawn(
     process.execPath,
     [
@@ -3220,26 +3680,7 @@ export async function startLiveDev(
       String(port),
       options.snapshot ? 'snapshot' : 'live',
     ],
-    {
-      detached: true,
-      stdio: 'ignore',
-      env: {
-        ...process.env,
-        ...(options.headless === undefined
-          ? {}
-          : { FORGEAX_DEV_HEADLESS: String(options.headless) }),
-        ...(options.backend === undefined ? {} : { FORGEAX_DEV_BACKEND: options.backend }),
-        ...(options.workers === undefined
-          ? {}
-          : { FORGEAX_EXECUTION_WORKERS: JSON.stringify(options.workers) }),
-        ...(options.animation === undefined
-          ? {}
-          : { FORGEAX_ANIMATION_PLAYBACK: JSON.stringify(animationPlayback(options.animation)) }),
-        ...(options.rhiCapture === undefined
-          ? {}
-          : { FORGEAX_DEV_RHI_CAPTURE: options.rhiCapture ? '1' : '0' }),
-      },
-    },
+    { detached: true, stdio: 'ignore', env: daemonEnvironment(options) },
   );
   child.unref();
   const file = sessionPath(root, options.snapshot);
@@ -3247,55 +3688,21 @@ export async function startLiveDev(
   // the same startup path as an ordinary `project preview`; a cold SDK tree
   // can take longer than a short CLI polling window. Keep the daemon detached
   // while the caller waits for its terminal starting state.
-  const deadline = startupTimeout === null ? Infinity : Date.now() + startupTimeout;
   while (Date.now() < deadline) {
     try {
       await access(file);
       const status = await liveDevStatus(root, options);
       if (
-        status !== null &&
-        typeof status === 'object' &&
-        'value' in status &&
-        status.value !== null &&
-        typeof status.value === 'object' &&
-        'phase' in status.value &&
-        status.value.phase !== 'starting' &&
-        status.value.phase !== 'waiting' &&
-        status.value.phase !== 'reloading'
-      ) {
-        // A short status timeout cannot decide the longer startup of our own
-        // still-live child. Other transport errors and replacement owners fail.
-        let ownStartupTimeout = false;
-        if (
-          status.value.phase === 'unreachable' &&
-          'error' in status.value &&
-          status.value.error === LIVE_DEV_REQUEST_TIMEOUT &&
-          child.pid !== undefined
-        ) {
-          const recorded = await readSession(root, options.snapshot).catch(() => undefined);
-          if (recorded?.pid === child.pid && recorded.endpoint === `http://127.0.0.1:${port}`) {
-            try {
-              process.kill(child.pid, 0);
-              ownStartupTimeout = true;
-            } catch {
-              // The recorded child exited; retain the original status failure.
-            }
-          }
-        }
-        if (!ownStartupTimeout) return readyResult(status);
-      }
+        settledPhase(status) &&
+        !(await ownStartupTimeout(root, options, status, child.pid, port))
+      )
+        return readyResult(status);
     } catch {
       // The daemon may not have published its session file yet.
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, LIVE_DEV_POLL_INTERVAL_MS));
   }
-  return {
-    ok: false,
-    error: commandError(
-      'live-start-timeout',
-      'Startup did not finish before the deadline; dev status reports whether the owner is still running.',
-    ),
-  };
+  return startTimeout();
 }
 
 export async function removeLiveDevSession(

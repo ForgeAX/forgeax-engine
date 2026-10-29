@@ -150,3 +150,21 @@ describe('Host feature signature admission', () => {
     expect(renderFeaturePlanSignatureEvidenceMatches(first, revision ?? '')).toBe(true);
   });
 });
+
+it('publishes detached signature counters while the installed feature keeps accumulating', () => {
+  const host = createRenderFeatureHost([
+    { identity: 'feature', extract: () => ok(undefined), plan: () => ok({ work: [] }) },
+  ]).unwrap();
+  const plan: RenderFeatureWorkPlan = { resources: [], passes: [] };
+  host.recordPlanSignature('feature', plan);
+  const before = host.inspection().signatures[0];
+  expect(before).toBeDefined();
+  host.recordPlanSignature('feature', plan);
+  host.recordPlanSignature('feature', plan);
+  const after = host.inspection().signatures[0];
+  expect(after?.cacheHits).toBe((before?.cacheHits ?? 0) + 2);
+  expect(before?.cacheHits).toBe(0);
+  expect(after).not.toBe(before);
+  expect(Object.isFrozen(before)).toBe(true);
+  expect(after?.nativeCalls).toBeUndefined();
+});

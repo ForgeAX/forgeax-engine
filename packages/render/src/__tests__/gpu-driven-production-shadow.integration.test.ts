@@ -6,6 +6,8 @@ import { createMaterialShaderProgram } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareBatchExecution } from '../gpu-driven/batch-execution';
 import * as batchTopology from '../gpu-driven/batch-topology';
+import * as cameraProjection from '../gpu-driven/production-raster-camera';
+import * as shadowLod from '../gpu-driven/production-raster-lod';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
@@ -24,6 +26,41 @@ import { mesh, preparedSnapshot, updateSnapshot } from './gpu-driven-production-
 import { productionShadowFixture } from './gpu-driven-production-shadow-fixture';
 
 describe('GPU-driven production shadow projection', () => {
+  it.each([
+    false,
+    true,
+  ])('derives shadow cameras only for consumed compute work, with camera cull %s', async (cameraCull) => {
+    const f = await productionShadowFixture(2, 3);
+    const derive = vi.spyOn(shadowLod, 'lodViewCameraFromMatrix');
+    const cull = vi.spyOn(cameraProjection, 'occlusionCamera');
+    if (cameraCull)
+      for (const request of f.requests)
+        Object.assign(request, { cameraCull: { ndcDilation: 0.01, worldDilation: 0.01 } });
+    try {
+      f.prepare();
+      if (cameraCull) f.prepare();
+      expect(derive).toHaveBeenCalled();
+      derive.mockClear();
+      cull.mockClear();
+      const steady = f.prepare();
+      expect(steady.views.every((view) => view.submission.cache === 'hit')).toBe(true);
+      expect(derive).not.toHaveBeenCalled();
+      // The main view still derives its camera; retained shadows need none.
+      expect(cull).toHaveBeenCalledTimes(1);
+      const request = required(f.requests[0]);
+      const matrix = required(request.matrix);
+      matrix[12] = 0.25;
+      request.planes.set(frustum.fromViewProjection(frustum.create(), matrix));
+      const changed = f.prepare();
+      expect(changed.views.some((view) => view.submission.cache === 'invalidated')).toBe(true);
+      expect(derive).toHaveBeenCalled();
+    } finally {
+      derive.mockRestore();
+      cull.mockRestore();
+      f.dispose();
+    }
+  });
+
   it('admits prepared Alpha Mask draws to the GPU shadow lane', async () => {
     const f = await productionShadowFixture(1);
     try {

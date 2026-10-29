@@ -12,6 +12,7 @@ import { OIT_COMPOSITE_EPSILON } from '../oit/weight';
 import { prepareMainPassPipelines, selectMainPassMaterials } from '../record/main-pass';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { scenePassContext } from '../record/scene-pass-work';
 import {
   createRenderPipelineTarget,
   type RenderPipelineFrame,
@@ -75,8 +76,8 @@ export function addStandardTransparentPasses(
       depth: input.depth,
       ...(input.resolve === undefined ? {} : { resolve: input.resolve }),
       selector: FORWARD_PASS_SELECTOR,
-      executeIf: (frame) => {
-        if (input.template.executeIf?.(frame) === false) return false;
+      executeIf: (frame, request) => {
+        if (input.template.executeIf?.(frame, request) === false) return false;
         // An empty load/store pass needlessly opens the full-size color/depth
         // attachments. The recorder's selector is the membership authority;
         // never infer GPU emptiness from it or discard an attachment resolve.
@@ -86,7 +87,7 @@ export function addStandardTransparentPasses(
           input.color.resolveTarget !== undefined
         )
           return true;
-        const context = frame as _InternalRenderPipelineContext;
+        const context = scenePassContext(frame as _InternalRenderPipelineContext, request);
         const selected = selectMainPassMaterials(
           context,
           FORWARD_PASS_SELECTOR,

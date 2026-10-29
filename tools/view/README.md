@@ -267,19 +267,23 @@ retain the backend by leaving a close handshake unanswered.
 The API/CLI operations can be composed by a caller. No startup operation
 implicitly runs the following steps on its behalf.
 
-## Source integration and publication
+## Source integration and distribution
 
 View retains its own repository and review boundary. Engine selects its exact source
 at `tools/view` and owns the workspace lock, integrated build, SDK inventory and publisher.
-The public tool is `@forgeax/view`, Apache-2.0, at the same distribution version as Engine.
-Games install `@forgeax/engine`; they do not acquire a View dependency.
+The public npm products are `@forgeax/engine` and `@forgeax/engine-sdk`. The SDK
+embeds View as a private local `@forgeax/view` package, using the same version as
+its Engine dependency. Historical standalone `@forgeax/view` prerelease tags are
+retired; do not use them to pair View with an Engine channel. Install the SDK
+channel to receive its matching View tool. Games install `@forgeax/engine`; they
+do not acquire a View dependency.
 
 ```mermaid
 flowchart LR
   Source["View repository"] --> Pin["Engine tools/view gitlink"]
   Pin --> Build["One Engine workspace and lockfile"]
   Plugins["Engine tools/view-plugins source"] --> Build
-  Build --> Tool["SDK cli-runtime: Engine plus View"]
+  Build --> Tool["SDK cli-runtime: Engine plus private View"]
   Engine["Engine runtime packages"] --> Game["Ordinary game project"]
 ```
 

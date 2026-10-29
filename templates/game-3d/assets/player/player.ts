@@ -73,10 +73,12 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
   provide: 'game3dPlayer',
   inject: ['world', 'physics', 'gameHost', 'gameScene'],
   async apply(ctx, config) {
+    const world = ctx.world;
     const host = ctx.gameHost;
     if (host === undefined) throw new Error('game-3d/player requires the App-owned GameHost');
-    const player = resolveGameEntity(ctx.world, ctx.gameScene, 'player');
-    const playerTransform = ctx.world.get(player, Transform).unwrap();
+    const readDrawingBufferSize = host.drawingBufferSize?.bind(host);
+    const player = resolveGameEntity(world, ctx.gameScene, 'player');
+    const playerTransform = world.get(player, Transform).unwrap();
     await ctx.effect(async function* () {
       const sampleInput = createPlayerInput();
       let frameInput: PlayerInput = { horizontal: 0, vertical: 0, lookX: 0, lookY: 0, run: false };
@@ -87,9 +89,9 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
         host.port?.removeEventListener('message', receive);
         sampleInput.reset();
       };
-      const lease = ctx.world.components.register(ThirdPersonRig).unwrap();
+      const lease = world.components.register(ThirdPersonRig).unwrap();
       yield () => lease.dispose().unwrap();
-      ctx.world
+      world
         .addComponent(player, {
           component: ThirdPersonRig,
           data: {
@@ -99,12 +101,12 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           },
         })
         .unwrap();
-      yield () => ctx.world.removeComponent(player, ThirdPersonRig).unwrap();
+      yield () => world.removeComponent(player, ThirdPersonRig).unwrap();
       const playerService: Game3dPlayerService = {
         entity: player,
         readInput: () => frameInput,
         readRig: () => {
-          const rig = ctx.world.get(player, ThirdPersonRig).unwrap();
+          const rig = world.get(player, ThirdPersonRig).unwrap();
           return {
             yaw: rig.yaw,
             pitch: rig.pitch,
@@ -114,48 +116,48 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           };
         },
         updateRig: (patch) => {
-          ctx.world.set(player, ThirdPersonRig, patch).unwrap();
+          world.set(player, ThirdPersonRig, patch).unwrap();
         },
       };
-      yield* installWalkAnimation(ctx.world, host, ctx.gameScene, player, config.walk);
-      ctx.world.addSystem(Update, {
+      yield* installWalkAnimation(world, host, ctx.gameScene, player, config.walk);
+      world.addSystem(Update, {
         name: 'game-3d-player-input',
         after: [FRAME_START_SCAN_SYSTEM_NAME],
         before: [FixedUpdate, ADVANCE_ANIMATION_PLAYER_SYSTEM],
         queries: [],
         fn: () => {
-          const size = host.drawingBufferSize?.();
+          const size = readDrawingBufferSize?.();
           frameInput = sampleInput.sample(
-            ctx.world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY),
+            world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY),
             size?.width ?? 0, size?.height ?? 0,
           );
           // Visual playback consumes this frame's input even when no fixed
           // step runs. Physics alone consumes the fixed-step movement delta.
-          ctx.world.set(player, AnimationPlayer, {
+          world.set(player, AnimationPlayer, {
             weights: [Math.hypot(frameInput.horizontal, frameInput.vertical) > 0.001 ? 1 : 0],
           }).unwrap();
         },
       }).unwrap();
-      yield () => ctx.world.removeSystem(Update, 'game-3d-player-input').unwrap();
-      installMovement(ctx.world, player, config, playerService.readInput, sampleInput.takeJump);
-      yield () => ctx.world.removeSystem(FixedUpdate, 'game-3d-player-movement').unwrap();
+      yield () => world.removeSystem(Update, 'game-3d-player-input').unwrap();
+      installMovement(world, player, config, playerService.readInput, sampleInput.takeJump);
+      yield () => world.removeSystem(FixedUpdate, 'game-3d-player-movement').unwrap();
       const unregisterRead = host.gameProjection?.registerRead({
         id: 'game-3d.player',
         title: 'Third-person player state',
         description: 'Resolved physics position, camera angles, facing, and grounded state.',
         read: () => {
-          const transform = ctx.world.get(player, Transform).unwrap();
-          const rig = ctx.world.get(player, ThirdPersonRig).unwrap();
-          const controller = ctx.world.get(player, CharacterController).unwrap();
-          const animation = ctx.world.get(player, AnimationPlayer).unwrap();
-          const input = ctx.world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+          const transform = world.get(player, Transform).unwrap();
+          const rig = world.get(player, ThirdPersonRig).unwrap();
+          const controller = world.get(player, CharacterController).unwrap();
+          const animation = world.get(player, AnimationPlayer).unwrap();
+          const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
           return {
             position: Array.from(transform.pos),
             facing: [rig.facingX, rig.facingZ],
             camera: { yaw: rig.yaw, pitch: rig.pitch, pointerLocked: input.mouse.pointerLocked },
             grounded: controller.grounded,
             controls: { horizontal: frameInput.horizontal, vertical: frameInput.vertical, run: frameInput.run },
-            simulation: { fixedTick: ctx.world.getResource(FixedTime).tick },
+            simulation: { fixedTick: world.getResource(FixedTime).tick },
             animation: { walkWeight: animation.weights[0] ?? 0, walkTime: animation.times[0] ?? 0 },
           };
         },

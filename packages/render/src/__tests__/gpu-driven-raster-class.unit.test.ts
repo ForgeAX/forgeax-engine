@@ -379,7 +379,7 @@ it.each([
     return current;
   };
   let current = prepare();
-  const firstSignature = current.topologySignature;
+  const firstSignature = current.topologySignature();
   const firstResourceGeneration = current.standardPbrFrameResources.resourceGeneration;
   const bound = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setBindGroup');
   const pipelines = vi.spyOn(device, 'createRenderPipeline');
@@ -470,7 +470,7 @@ it.each([
     apply(true);
     current = prepare();
     expect(topology.query(topology.sourcePlan(), undefined).batches.length).toBe(2);
-    expect(current.topologySignature).toBe(firstSignature);
+    expect(current.topologySignature()).toBe(firstSignature);
     encode(first).unwrap();
     expect(bound.mock.calls.some(([index, value]) => index === 1 && value === materialGroupB)).toBe(
       true,
@@ -938,7 +938,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     return prepared;
   };
   let current = prepare(first);
-  const beforeSignature = current.topologySignature;
+  const beforeSignature = current.topologySignature();
   const viewGroup = device.createBindGroup({ layout: viewLayout, entries: [] }).unwrap();
   const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const materialGroup = device.createBindGroup({ layout: materialLayout, entries: [] }).unwrap();
@@ -1042,7 +1042,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     // Graph passes resolve the current member-input arena when they execute,
     // so its capacity replacement alone keeps the compiled graph.
     expect(production.inspect().resourceGeneration).toBe(resourceGeneration);
-    expect(current.topologySignature).toBe(beforeSignature);
+    expect(current.topologySignature()).toBe(beforeSignature);
     const replacementGraph = compile();
     if (replacementGraph === null) throw Error('missing replacement graph');
     expect(replacementGraph).toBe(graph);

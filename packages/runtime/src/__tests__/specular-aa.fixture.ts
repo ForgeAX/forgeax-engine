@@ -25,6 +25,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 export type SaveEvidence = (name: string, bytes: Uint8Array) => void;
@@ -394,7 +395,7 @@ export async function verifySpecularAaGBuffer(
     await draw();
     (await recorder.frameBoundary()).unwrap();
     const encoded = (await capture).unwrap();
-    save('deferred.rhitape', encoded.bytes);
+    save('deferred.rhitape', compactTape(encoded).bytes);
     const tape = decodeTape(encoded.bytes).unwrap();
     const model = buildFrameModel(tape);
     const geometry = model.works.filter((work) =>
@@ -419,8 +420,15 @@ export async function verifySpecularAaGBuffer(
         await openReplay(source, { device, createShaderModule: webgpu.createShaderModule })
       ).unwrap();
       try {
-        const words = async (resourceId: string, format: 'r32uint' | 'rg32uint') => {
-          const texels = (await replay.readResourceAtWork(resourceId, target.workIndex)).unwrap();
+        const reads = (
+          await replay.readAtWorks([
+            { resourceId: normalRoughness, workIndex: target.workIndex },
+            { resourceId: reflectance, workIndex: target.workIndex },
+          ])
+        ).unwrap();
+        const words = (index: number, resourceId: string, format: 'r32uint' | 'rg32uint') => {
+          const texels = reads[index]?.unwrap();
+          if (texels === undefined) throw new Error('missing specular-AA readback');
           if (texels.format !== format) throw new Error(`expected ${format}, got ${texels.format}`);
           save(`${label}-${resourceId.replace(':', '-')}.${format}`, texels.bytes);
           const packed = new Uint32Array(
@@ -434,8 +442,8 @@ export async function verifySpecularAaGBuffer(
           return format === 'rg32uint' ? packed.filter((_, index) => index % 2 === 0) : packed;
         };
         return {
-          roughness: await words(normalRoughness, 'r32uint'),
-          f0: await words(reflectance, 'rg32uint'),
+          roughness: words(0, normalRoughness, 'r32uint'),
+          f0: words(1, reflectance, 'rg32uint'),
         };
       } finally {
         (await replay.dispose()).unwrap();
@@ -443,7 +451,10 @@ export async function verifySpecularAaGBuffer(
     };
     const live = await read(tape, 'captured');
     const falsifier = withoutSpecularAa(tape, target);
-    save('without-specular-aa.falsifier.rhitape', encodeTape(falsifier).unwrap());
+    save(
+      'without-specular-aa.falsifier.rhitape',
+      encodeTape(falsifier, { compression: 'gzip' }).unwrap(),
+    );
     const off = await read(falsifier, 'falsifier');
     // Metal writes a bright F0 byte; the dielectric backdrop keeps F0 near 0.04.
     const sphere: number[] = [];

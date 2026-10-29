@@ -1,6 +1,7 @@
 import { mountUi, type UiAsset, type UiInstance } from '@forgeax/engine-ui';
+import type {} from '@vitest/browser-playwright';
 import { afterEach, expect, it } from 'vitest';
-import { userEvent } from 'vitest/browser';
+import { cdp, page, userEvent } from 'vitest/browser';
 import { createBlitzUi, type UiWasmHost } from '../index.js';
 import { required } from './fixture.js';
 
@@ -32,6 +33,7 @@ afterEach(() => {
 });
 
 async function pair() {
+  await page.viewport(500, 500);
   const native = document.createElement('section');
   native.style.cssText =
     'position:absolute;left:0;top:0;width:500px;height:500px;background:white;z-index:100';
@@ -324,11 +326,22 @@ it('mounts the actual settings UiAsset and matches pointer, keyboard and cancele
     },
     (key) => userEvent.keyboard(`{${key}}`),
     async () => {
+      // Resolve a stable native hit region after keyboard defaults before the
+      // low-level drag bypasses Playwright's ordinary actionability checks.
+      await userEvent.hover(nativeField);
       const rect = nativeField.getBoundingClientRect();
-      await userEvent.dragAndDrop(nativeField, nativeField, {
-        sourcePosition: { x: 8, y: rect.height / 2 },
-        targetPosition: { x: rect.width - 8, y: rect.height / 2 },
-      });
+      // Send the same acknowledged pointer phases as Blitz below. The combined
+      // drag action left Chromium unchanged in the failing CI event trace.
+      for (const type of ['mousePressed', 'mouseMoved', 'mouseReleased'] as const)
+        await cdp().send('Input.dispatchMouseEvent', {
+          type,
+          x: type === 'mousePressed' ? rect.x + 8 : rect.right - 8,
+          y: rect.y + rect.height / 2,
+          button: 'left',
+          buttons: type === 'mouseReleased' ? 0 : 1,
+          clickCount: 1,
+        });
+      expect(nativeField.value).toBe('99');
     },
   );
   const blitzField = required(fields[1]);

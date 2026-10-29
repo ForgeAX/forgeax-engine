@@ -1,5 +1,10 @@
 import type { Result, RhiError, ShaderModule } from '@forgeax/engine-rhi';
-import { findVariantByKey, type MaterialShaderManifestEntry } from '@forgeax/engine-shader';
+import {
+  findVariantByKey,
+  type MaterialShaderManifestEntry,
+  materialShaderSource,
+} from '@forgeax/engine-shader';
+import type { SeedShaderModule } from './material-shader-policy';
 
 /** Minimum sampled-texture limit needed by Standard transmission variants. */
 export const STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES = 21;
@@ -191,7 +196,7 @@ export async function prewarmMaterialShaderVariants(
     variant: MaterialShaderManifestEntry['variants'][number],
     moduleLabel: string,
   ) => Promise<Result<ShaderModule, RhiError>>,
-  seed: (moduleLabel: string, module: ShaderModule) => void,
+  seed: SeedShaderModule,
   admits: VariantPrewarmAdmission,
 ): Promise<void> {
   const admitted = variants.filter(
@@ -226,7 +231,11 @@ export async function prewarmMaterialShaderVariants(
     for (const variant of batch) {
       const module = prewarmedModules.get(variant.composedWgsl);
       if (module === undefined) throw new Error('missing prepared material shader module');
-      seed(`module-${materialShaderId}#${variant.definesKey}`, module);
+      seed(
+        `module-${materialShaderId}#${variant.definesKey}`,
+        module,
+        materialShaderSource(variant),
+      );
     }
   }
 }

@@ -66,7 +66,7 @@ export async function verifyRetainedRasterClass(input: {
       .unwrap();
     if (prepared === undefined) throw new Error('missing updated GPU frame');
     prepared.updateShadowViews?.(input.shadowViews).unwrap();
-    expect(prepared.topologySignature).toBe(input.topologySignature);
+    expect(prepared.topologySignature()).toBe(input.topologySignature);
     const sourceDraw = input.source.gpuDrivenDraws?.[0];
     if (sourceDraw === undefined) throw Error('missing source draw');
     expect(prepared.selection.owns(input.source, sourceDraw, 0)).toBe(true);

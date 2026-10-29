@@ -18,6 +18,12 @@ roundoff from double-precision sources. Both routines retain
 caller-owned output storage; decomposition outputs must not overlap each other.
 `mat4.decompose` retains its existing best-effort TRS semantics.
 
+Functions that write output storage require the caller to provide it. Returning that same
+output is supported and does not allocate another result. Output parameters must
+not be optional or fall back to newly allocated storage. Pure allocation factories
+without an output parameter remain explicit allocation sites. `ray.create` and
+`ray2.create` initialize caller-provided six/five-float storage respectively.
+
 ## 30-second self-introduction
 
 - **ABI**: `Float32Array & { readonly __<dim>: void }` 七件套（`Vec2 / Vec3 / Vec4 / Quat / Mat3 / Mat4 / Color`）+ `Euler` plain-object；branded 维度互斥（编译期）+ TypedArray 即时上传 GPU（运行期）。
@@ -159,7 +165,7 @@ import { ray } from '@forgeax/engine-math';
 import { mat4 } from '@forgeax/engine-math';
 
 // Screen coordinate to world-space ray (for picking)
-const r = ray.create();
+const r = ray.create(new Float32Array(6));
 ray.screenToRay(r, mouseX, mouseY, canvasW, canvasH, view, proj);
 
 // Ray-AABB intersection (coarse entity culling)
@@ -189,7 +195,7 @@ import { box2, circle2, ray2, vec2 } from '@forgeax/engine-math';
 
 const aabb = box2.fromCenter(box2.create(), [0, 0], [20, 20]);
 const circle = circle2.create(35, 0, 12);
-const ray = ray2.create(undefined, [-80, 0], [1, 0], 200);
+const ray = ray2.create(new Float32Array(5), [-80, 0], [1, 0], 200);
 
 const aabbHit = ray2.rayAabbIntersects(ray, aabb);       // { hit, t }
 const circleHit = ray2.rayCircleIntersects(ray, circle); // { hit, t }

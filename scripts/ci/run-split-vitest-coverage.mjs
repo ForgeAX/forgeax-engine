@@ -78,6 +78,14 @@ const devkitNativeUnitFiles = devkitNativeUnitFileSets.flatMap(({ files }) => fi
 // the explicitly estimated cold-scene additions documented below.
 const isolatedCoverageFileSets = [
   {
+    // Run 40681888760 crossed the unchanged 5 s large-source identity deadline.
+    // Cold SHA-256 admission dominates the retained 30 MiB + 3 MiB workload;
+    // drain competing coverage children while keeping the complete file.
+    project: '@forgeax/engine-rhi-webgpu',
+    files: ['packages/rhi-webgpu/src/__tests__/pipeline-library.unit.test.ts'],
+    weight: 10,
+  },
+  {
     // Run 39497388005 shared cold 100k World initialization with Render's
     // instrumented child: 5.702 s at the original 5 s deadline. Keep all rows
     // and the same deadline, without competing with another coverage child.
@@ -101,6 +109,32 @@ const isolatedCoverageFileSets = [
       'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
     ],
+    weight: 35,
+  },
+  {
+    // Run 40650966486 spent 247.73 s in this file inside the shared Pack child;
+    // cold clearcoat cases exceeded their unchanged 30 s deadlines. Drain the
+    // neighboring instrumented child before admitting the complete file.
+    project: '@forgeax/engine-vite-plugin-pack',
+    files: [
+      'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
+    ],
+    weight: 250,
+  },
+  {
+    // Run 40646042246 crossed both 60 s deadlines while this instrumented
+    // source-quota / capability-matrix owner competed with broad Render.
+    project: '@forgeax/engine-shader',
+    files: [
+      'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
+      'packages/shader/src/__tests__/material-program.test.ts',
+    ],
+    weight: 100,
+  },
+  {
+    // The same run crossed the unchanged 30 s real material-cook deadline.
+    project: '@forgeax/engine-render',
+    files: ['packages/render/src/__tests__/gpu-driven-production.integration.test.ts'],
     weight: 35,
   },
   {
@@ -138,6 +172,7 @@ const isolatedCoverageFileSets = [
     files: [
       'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
       'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
+      'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
     ],
     weight: 10,
   },
@@ -193,7 +228,7 @@ const coverageProjectWeights = new Map([
   ['@forgeax/engine-shader-compiler', 170],
   ['@forgeax/engine-types', 15],
   ['@forgeax/engine-vfx-render', 30],
-  ['@forgeax/engine-vite-plugin-pack', 340],
+  ['@forgeax/engine-vite-plugin-pack', 90],
   ['@forgeax/engine-vite-plugin-shader', 75],
 ]);
 // The all-project preflight runs before any coverage child on shard 0.
@@ -340,6 +375,7 @@ function packageProjectNames() {
 export function allProjectNames() {
   return [
     ...packageProjectNames(),
+    '@forgeax/hello-fxaa',
     '@forgeax/hello-physical-material',
     '@forgeax/hello-triangle',
     'unit',

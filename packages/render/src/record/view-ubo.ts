@@ -124,8 +124,8 @@ export function writePointsLinesViewUbo(
   style?: PointsLinesStyle,
   byteOffset = 0,
 ): void {
-  const projection = computeProjectionMatrix(camera);
-  const view = computeViewMatrix(camera);
+  const projection = computeProjectionMatrix(camera, mat4.create());
+  const view = computeViewMatrix(camera, mat4.create());
   const worldViewProj = mat4.create();
   mat4.multiply(worldViewProj, projection, view);
   const payload = new Float32Array(POINTS_LINES_VIEW_BYTES / 4);
@@ -174,6 +174,23 @@ interface ViewCloudShadowProjection {
   readonly baseHeight?: number;
   readonly thickness?: number;
 }
+
+/** Synchronous queue writes consume staging bytes before returning. */
+function createViewUboScratch() {
+  const VIEW_PAYLOAD_FLOATS = VIEW_UNIFORM_BYTES / 4;
+  const payload = new Float32Array(VIEW_PAYLOAD_FLOATS);
+  return {
+    payload,
+    mainProjection: mat4.view(payload),
+    words: new Uint32Array(payload.buffer),
+    projection: mat4.create(),
+    view: mat4.create(),
+    inverse: mat4.create(),
+    auxiliary: new Float32Array(VIEW_PAYLOAD_FLOATS),
+  };
+}
+let viewUboScratch: ReturnType<typeof createViewUboScratch> | undefined;
+let writingViewUbo = false;
 
 /**
  * feat-20260704 M3/w18: assemble + upload the per-frame View UBO payload.
@@ -229,51 +246,60 @@ export function writeViewUbo(
   /** GradientSky the engine models (single-layer-medium) mirror, via `gradientSkyColor`. */
   sky?: GradientSkyFrame,
 ): void {
-  const byteOffset = typeof temporalOrOffset === 'number' ? temporalOrOffset : 0;
-  const resolvedTemporal = typeof temporalOrOffset === 'number' ? undefined : temporalOrOffset;
-  // Compose worldViewProj once per frame (view * proj).
-  const projMatrix = computeProjectionMatrix(camera);
-  const viewMatrix = computeViewMatrix(camera);
-  const unjitteredViewProjection = mat4.create();
-  mat4.multiply(unjitteredViewProjection, projMatrix, viewMatrix);
-  const jitteredProjection = jitterCameraProjection(
-    mat4.create(),
-    projMatrix,
-    resolvedTemporal?.currentJitterUv,
-  );
-  const mainProjection = mat4.create();
-  mat4.multiply(mainProjection, jitteredProjection, viewMatrix);
-
-  const VIEW_PAYLOAD_FLOATS = VIEW_UNIFORM_BYTES / 4;
-  const viewPayload = new Float32Array(VIEW_PAYLOAD_FLOATS);
-  if (camera.clipping !== undefined) writeClippingLanes(viewPayload, camera.clipping);
-  writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
-  if (atmosphere !== undefined)
-    writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
-  else if (sky !== undefined) writeSkyLookupLanes(viewPayload, sky);
-  writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport);
-  writeCascadeProjectionLanes(viewPayload, lights, mainProjection);
-  writeTemporalLanes(viewPayload, unjitteredViewProjection, camera, resolvedTemporal);
-  if (camera.screenSpaceReflection !== undefined)
-    writeScreenSpaceReflectionLanes(viewPayload, camera.screenSpaceReflection);
-  if (cloudShadowProjection !== undefined)
-    writeCloudShadowLanes(viewPayload, cloudShadowProjection);
-  writeDirectionalShadowLanes(viewPayload, lights, light);
-  writeSpotProjectionLanes(viewPayload, spotShadowSnapshots, projectorSpotIndex);
-
-  // Raw scene targets have no screen-space opaque Fog pass. Their surface
-  // writers evaluate the same medium inline, including analytic Fog alone.
-  if (sceneCapture) {
-    viewPayload[290] = 1;
-    viewPayload[317] = 0;
+  // Borrow ordinary staging once; raw getter/queue callback reentry owns an
+  // independent invocation and cannot overwrite the caller's pending upload.
+  const previousWriting = writingViewUbo;
+  let scratch = viewUboScratch;
+  if (previousWriting || scratch === undefined) {
+    scratch = createViewUboScratch();
+    if (!previousWriting) viewUboScratch = scratch;
   }
-  const viewUploadResult = queue.writeBuffer(viewUniformBuffer, byteOffset, viewPayload);
-  if (!viewUploadResult.ok) throw viewUploadResult.error;
+  writingViewUbo = true;
+  try {
+    const byteOffset = typeof temporalOrOffset === 'number' ? temporalOrOffset : 0;
+    const resolvedTemporal = typeof temporalOrOffset === 'number' ? undefined : temporalOrOffset;
+    const viewPayload = scratch.payload;
+    viewPayload.fill(0);
+    const projMatrix = computeProjectionMatrix(camera, scratch.projection);
+    const viewMatrix = computeViewMatrix(camera, scratch.view);
+    // The payload owns its matrix storage. Publish unjittered temporal lanes
+    // before reusing the main matrix window for the jittered picture.
+    const mainProjection = scratch.mainProjection;
+    mat4.multiply(mainProjection, projMatrix, viewMatrix);
+    writeTemporalLanes(viewPayload, mainProjection, camera, resolvedTemporal);
+    jitterCameraProjection(projMatrix, projMatrix, resolvedTemporal?.currentJitterUv);
+    mat4.multiply(mainProjection, projMatrix, viewMatrix);
 
-  // Auxiliary captures must not overwrite the display shadow view slots.
-  if (byteOffset !== 0) return;
-  uploadTranslucentFogViews(queue, viewUniformBuffer, viewPayload);
-  uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights);
+    if (camera.clipping !== undefined) writeClippingLanes(viewPayload, camera.clipping);
+    writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
+    if (atmosphere !== undefined)
+      writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
+    else if (sky !== undefined) writeSkyLookupLanes(viewPayload, sky);
+    writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport, scratch.words);
+    writeCascadeProjectionLanes(viewPayload, lights, mainProjection, scratch.inverse);
+    if (camera.screenSpaceReflection !== undefined)
+      writeScreenSpaceReflectionLanes(viewPayload, camera.screenSpaceReflection);
+    if (cloudShadowProjection !== undefined)
+      writeCloudShadowLanes(viewPayload, cloudShadowProjection);
+    writeDirectionalShadowLanes(viewPayload, lights, light);
+    writeSpotProjectionLanes(viewPayload, spotShadowSnapshots, projectorSpotIndex);
+
+    // Raw scene targets have no screen-space opaque Fog pass. Their surface
+    // writers evaluate the same medium inline, including analytic Fog alone.
+    if (sceneCapture) {
+      viewPayload[290] = 1;
+      viewPayload[317] = 0;
+    }
+    const viewUploadResult = queue.writeBuffer(viewUniformBuffer, byteOffset, viewPayload);
+    if (!viewUploadResult.ok) throw viewUploadResult.error;
+
+    // Auxiliary captures must not overwrite the display shadow view slots.
+    if (byteOffset !== 0) return;
+    uploadTranslucentFogViews(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
+    uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.auxiliary);
+  } finally {
+    writingViewUbo = previousWriting;
+  }
 }
 
 /** clippingPlanes at [256..279] and clippingControl at [280..283]. */
@@ -348,13 +374,13 @@ function writeCameraAndSunLanes(
   camera: CameraSnapshot,
   light: DirectionalLightSnapshot,
   viewport: { readonly width: number; readonly height: number } | undefined,
+  words: Uint32Array,
 ): void {
   for (let i = 0; i < 16; i++) viewPayload[i] = mainProjection[i] ?? 0;
   viewPayload[16] = light.direction[0] ?? 0;
   viewPayload[17] = light.direction[1] ?? -1;
   viewPayload[18] = light.direction[2] ?? 0;
-  new Uint32Array(viewPayload.buffer, viewPayload.byteOffset, viewPayload.length)[19] =
-    light.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  words[19] = light.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
   viewPayload[20] = light.color[0] ?? 0;
   viewPayload[21] = light.color[1] ?? 0;
   viewPayload[22] = light.color[2] ?? 0;
@@ -370,6 +396,7 @@ function writeCascadeProjectionLanes(
   viewPayload: Float32Array,
   lights: ViewLights,
   mainProjection: Mat4,
+  inverseViewProj: Mat4,
 ): void {
   // lightViewProj[0] at [28..43] (replaces lightSpaceMatrix).
   if (
@@ -381,7 +408,6 @@ function writeCascadeProjectionLanes(
   // inverseViewProj at [44..59] — unchanged position.
   // Host pre-computes mat4.invert so the skybox fragment shader avoids
   // per-pixel matrix inversion (charter P4 consistent abstraction).
-  const inverseViewProj = mat4.create();
   mat4.invert(inverseViewProj, mainProjection);
   for (let i = 0; i < 16; i++) viewPayload[44 + i] = inverseViewProj[i] ?? 0;
   if (lights.cascades?.lightViewProj === undefined) return;
@@ -540,9 +566,12 @@ function uploadTranslucentFogViews(
   queue: RhiQueue,
   viewUniformBuffer: Buffer,
   viewPayload: Float32Array,
+  translucentPayload: Float32Array,
 ): void {
-  for (const [index, composition] of TRANSLUCENT_FOG_COMPOSITIONS.entries()) {
-    const translucentPayload = viewPayload.slice();
+  // Each queued write copies its source before the next staging update.
+  translucentPayload.set(viewPayload);
+  for (let index = 0; index < TRANSLUCENT_FOG_COMPOSITIONS.length; index++) {
+    const composition = TRANSLUCENT_FOG_COMPOSITIONS[index] as TranslucentFogComposition;
     translucentPayload[290] = index + 1;
     const uploaded = queue.writeBuffer(
       viewUniformBuffer,
@@ -559,12 +588,13 @@ function uploadPointShadowFaceViews(
   viewUniformBuffer: Buffer,
   viewPayload: Float32Array,
   lights: ViewLights,
+  facePayload: Float32Array,
 ): void {
   for (const snapshot of lights.pointShadow ?? []) {
     if (snapshot.shadowAtlasLayer < 0 || snapshot.shadowAtlasLayer >= SHADOW_ATLAS_DEFAULT_LAYERS)
       continue;
     for (let face = 0; face < 6; face += 1) {
-      const facePayload = viewPayload.slice();
+      facePayload.set(viewPayload);
       const matrix = snapshot.shadowMatrices.subarray(face * 16, (face + 1) * 16);
       facePayload.set(matrix, 28);
       const uploaded = queue.writeBuffer(

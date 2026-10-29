@@ -9,6 +9,7 @@ export {
   type CompileOptions,
   type CompileResult,
   compileShader,
+  reachableShaderImportIds,
 } from './compile.js';
 export { getShaderCompilerFingerprint } from './compiler-fingerprint.js';
 export { projectShaderConditionals } from './conditionals.js';
@@ -78,6 +79,7 @@ export {
   collectMaterialSources,
   createMaterialPackCooker,
   listMaterialSourcePaths,
+  materialShaderSourceRoots,
 } from './material/pack-cooker.js';
 export {
   characterizeMaterialWgslProfile,

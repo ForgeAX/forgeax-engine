@@ -29,6 +29,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 export async function verifyMultiCamera(
@@ -335,7 +336,7 @@ export async function verifyMultiCamera(
           (await replay.dispose()).unwrap();
         }
       }
-      if (face === 0) await save('held-views-shared-captures.rhitape', captured.bytes);
+      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
     }
     expect(required(captureBrightness[0]) - required(captureBrightness[1])).toBeGreaterThan(60);
     world.despawn(litModel).unwrap();
@@ -409,7 +410,7 @@ export async function verifyMultiCamera(
     const receipt = await draw(['final-display']);
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
-    await save('split.rhitape', capture.bytes);
+    await save('split.rhitape', compactTape(capture).bytes);
     const observation = required(
       required(
         renderValue(await renderer.observe(receipt, { include: ['final-display'] })).observations,
@@ -504,12 +505,15 @@ export async function verifyMultiCamera(
       (await replay.dispose()).unwrap();
     }
     const last = required(composites.at(-1));
-    const falsified = encodeTape({
-      ...tape,
-      events: tape.events.map((event, index) =>
-        index === last.eventIndex && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
-      ),
-    }).unwrap();
+    const falsified = encodeTape(
+      {
+        ...tape,
+        events: tape.events.map((event, index) =>
+          index === last.eventIndex && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
+        ),
+      },
+      { compression: 'gzip' },
+    ).unwrap();
     await save('missing-composite.falsifier.rhitape', falsified);
     const falsifierAdapter = (await webgpu.rhi.requestAdapter()).unwrap();
     const falsifierDevice = (
@@ -621,7 +625,7 @@ export async function verifyMultiCamera(
     const caughtUpMap = await observeMap();
     (await recorder.frameBoundary()).unwrap();
     const minimapCapture = (await minimapPending).unwrap();
-    await save('minimap-catchup.rhitape', minimapCapture.bytes);
+    await save('minimap-catchup.rhitape', compactTape(minimapCapture).bytes);
     await save('minimap-catchup.rgba', caughtUpMap.bytes);
     await save(
       'minimap-catchup.json',
@@ -749,7 +753,7 @@ export async function verifyMultiCamera(
     const monitorReceipt = await draw(['final-display']);
     (await recorder.frameBoundary()).unwrap();
     const monitorCapture = (await monitorPending).unwrap();
-    await save('monitor.rhitape', monitorCapture.bytes);
+    await save('monitor.rhitape', compactTape(monitorCapture).bytes);
     const monitor = required(
       required(
         renderValue(await renderer.observe(monitorReceipt, { include: ['final-display'] }))
@@ -839,6 +843,21 @@ export async function verifyMultiCamera(
     for (let i = 0; i < 6; i++) await draw();
     expect(renderer.inspect().views).toHaveLength(1);
     expect(required(renderer.inspect().views)[0]?.frustum.total).toBeGreaterThan(0);
+    // The fixed pixel cap must survive both direct World extraction and the
+    // transferred publication, then retire/reallocate through the same view.
+    const cap = Math.min(size.width, size.height) / 2;
+    world.set(required(cameras[0]), CameraView, { maxRenderShortSide: cap }).unwrap();
+    await draw();
+    expect(required(renderer.inspect().views)[0]).toMatchObject({
+      width: Math.round(size.width / 2),
+      height: Math.round(size.height / 2),
+    });
+    world.set(required(cameras[0]), CameraView, { maxRenderShortSide: 0 }).unwrap();
+    await draw();
+    expect(required(renderer.inspect().views)[0]).toMatchObject({
+      width: size.width,
+      height: size.height,
+    });
     expect(errors).toEqual([]);
   } finally {
     off();

@@ -6,14 +6,14 @@ stop after their short start section unless the task needs more.
 
 ## Start here
 
-1. Imports and signatures: `skills/forgeax-engine-sdk/references/api-index.md` before searching `node_modules`.
-2. Effects in an `empty` project: `skills/forgeax-engine-sdk/references/effects-cookbook.md`
+1. Imports and signatures: the API index before searching `node_modules`.
+2. Effects in an `empty` project: the effects cookbook
    indexes topics; open ONLY one.
 3. Commands: the Quick contract atop [`forgeax-engine-cli`](skills/forgeax-engine-cli/SKILL.md);
    exact inputs come from `pnpm exec forgeax help <path> --json`, never guesses.
 4. Pick the route in [Run, test, build, and release](#run-test-build-and-release), then edit.
 5. Rendering has native equivalents for most Three.js core features: look an effect up in
-   `skills/forgeax-engine-sdk/references/three-equivalents.md` (with gaps) before simplifying it.
+   the Three.js equivalence guide (with gaps) before simplifying it.
 
 ## Hard rules
 
@@ -37,13 +37,13 @@ stop after their short start section unless the task needs more.
 - Expected failures return `Result`: branch on `.code`, keep `.expected`/`.hint`/`.detail`.
 - Run `pnpm exec forgeax <path> --json`; add `--detail` only for `omitted.fields` you need.
 - `game-3d` content is a reference, not the game: record its
-  [Template Disposition](skills/forgeax-engine-sdk/references/game-project-guide.md#game-3d-template-disposition) first.
+  Template Disposition first.
 - Before delivery, list each requested requirement; the playthrough asserts each through
   the read projection and saves one named screenshot per requirement (every ending, each
   object type, multi-enemy states, the core input's visible effect; failure and debug
   frames belong in `.forgeax/diag/`, not `artifacts/`). Never bend game code
   for the test (enemies spawned ahead, exposed aim targets). See
-  [Requirement coverage](skills/forgeax-engine-sdk/references/game-delivery.md#requirement-coverage).
+  Requirement coverage.
 - Append confirmed Engine/SDK issues to `docs/feedback.md` at once (no secrets);
   `project package` ships it.
 - Edit this project directly. A ForgeaX closed loop needs explicit user agreement.
@@ -55,9 +55,9 @@ stop after their short start section unless the task needs more.
 
 | User intent | Route |
 |:--|:--|
-| Create, change or locally play (default) | [Local playable delivery](skills/forgeax-engine-sdk/references/game-delivery.md#local-playable-delivery) |
-| Publish, deploy or distribute | [Game release](skills/forgeax-engine-sdk/references/game-delivery.md#game-release) |
-| Engine/SDK change, SDK publication, performance | Owning package, [SDK production](skills/forgeax-engine-sdk/references/sdk-production.md), performance skill |
+| Create, change or locally play (default) | Local playable delivery |
+| Publish, deploy or distribute | Game release |
+| Engine/SDK change, SDK publication, performance | Owning package, SDK production, performance skill |
 
 ```bash
 pnpm exec forgeax project check --json
@@ -65,21 +65,19 @@ pnpm test && pnpm typecheck
 pnpm exec forgeax project play scripts/playthrough.mjs --json
 ```
 
-Accept local delivery only on the final code: `project play` (or `dev verify` for the
-current revision) passes; you opened the PNG, see the requested scene/UI and passed the
+Accept local delivery only on the final code: `project play` (or `dev verify`) passes; you opened the PNG, see the requested scene/UI and passed the
 [visual self-review](skills/forgeax-engine-sdk/SKILL.md#visual-self-review); you drove
 the core input and saw its result; both survive a reload. A build, URL, HTTP 200 or unit
 test alone accepts nothing. A blocked check stays unverified: report it, never a pass.
 
 Evidence comes only from these commands' owner browser. Hand over the `dev status` URL;
 never open or drive another tab for acceptance (it may be backgrounded; its
-`live-bridge-not-owner` warning is expected). Run long commands in the foreground and wait:
-`project play` prints one JSON result (1-3 min; wait in one call) and at most one stderr progress line per
-30 s. Allow a harness timeout of 21+ min at default budgets (~14 per play, +7 when queued
-behind another play of this project), or lower `--timeout-ms`. For timers, day/night
-cycles or long waits, call `play.advance(seconds)` instead of `play.wait`/long `waitFor`
-timeouts; never poll a running play from the shell — run `project play` in the
-foreground with a timeout longer than the script. Fix its `layout` warnings (HUD text overlapping
+`live-bridge-not-owner` warning is expected). Run `project play` and `dev verify` blocking
+in one call with a large exec yield (21+ min at default budgets: ~14 per play, +7 when queued),
+or lower `--timeout-ms`; never background or poll them. Each prints one JSON result and at
+most one stderr progress line per 30 s. The live owner is optional: `dev` observations start
+it on demand; upkeep is only `dev start`/`dev stop`. For timers or long waits, call
+`play.advance(seconds)`, not `play.wait`/long `waitFor` timeouts. Fix its `layout` warnings (HUD text overlapping
 or clipped at 1280x720/1280x600) before committing.
 
 On an unchanged `empty` template, `play-runtime-failed` with reason `flat-canvas` is the
@@ -89,13 +87,13 @@ expected start, not an environment failure.
 
 | To | Read |
 |:--|:--|
-| Layout, SDK setup, skill links, Engine model, View | [project guide](skills/forgeax-engine-sdk/references/game-project-guide.md) |
-| Asset forms, import, verify | [Asset authority](skills/forgeax-engine-sdk/references/game-project-guide.md#asset-authority-and-formats), then `forgeax-engine-assets` |
-| Roots, plugins, third-party SDK startup | [Game code](skills/forgeax-engine-sdk/references/game-project-guide.md#game-code-and-plugins), `forgeax-engine-app` |
+| Layout, SDK setup, skill links, Engine model, View | project guide |
+| Asset forms, import, verify | Asset authority, then `forgeax-engine-assets` |
+| Roots, plugins, third-party SDK startup | Game code, `forgeax-engine-app` |
 | Pick Engine capabilities | [SDK skill](skills/forgeax-engine-sdk/SKILL.md) table; feature catalog on demand |
 | Camera, lights, shadows, post | Quick contract of `forgeax-engine-render-pipeline` |
 | Materials, textures, WGSL | `forgeax-engine-material`, `forgeax-engine-shader` |
 | Input, frame loop, HUD, pointer lock | `forgeax-engine-app`; cursor games call `gameHost.setPointerLockAllowed(false)` once |
 | Physics, character motion | `forgeax-engine-physics` |
-| Blocked checks, Linux headless, release | [delivery guide](skills/forgeax-engine-sdk/references/game-delivery.md) |
+| Blocked checks, Linux headless, release | delivery guide |
 | Scripted playthrough and acceptance | `forgeax project play` in the CLI skill quick contract; edit `scripts/playthrough.mjs` |

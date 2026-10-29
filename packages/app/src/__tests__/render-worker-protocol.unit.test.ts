@@ -174,10 +174,12 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function workerCaptureRecorder() {
@@ -2029,6 +2031,47 @@ it('installs game-owned fullscreen declarations before drawing and retires their
   } finally {
     receive({ data: { kind: 'dispose' } });
     await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it.each([
+  'resolve',
+  'reject',
+] as const)('joins composite retirement after returning credit even when retirement promises %s', async (terminal) => {
+  const credit = deferred<{ ok: true; value: undefined }>();
+  const completed = deferred<{ ok: true; value: undefined }>();
+  const close = vi.fn();
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: { deviceGeneration: 7, creditCompleted: credit.promise, completed: completed.promise },
+  });
+  const { post, receive } = await start();
+  try {
+    receive({ data: drawMessage(1, close) });
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith(expect.objectContaining({ kind: 'submitted' })),
+    );
+    credit.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'completed' }),
+        expect.any(Array),
+      ),
+    );
+    expect(close).not.toHaveBeenCalled();
+    receive({ data: { kind: 'dispose' } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    if (terminal === 'reject') completed.reject(new Error('retirement-only failure'));
+    else completed.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+  } finally {
+    credit.resolve({ ok: true, value: undefined });
+    completed.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
   }
 });
 

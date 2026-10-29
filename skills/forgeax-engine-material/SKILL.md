@@ -41,7 +41,7 @@ See [directional shadow units](../../packages/render/README.md#directional-shado
 
 ## Color-lighting parity handoff
 
-For a direct-light material issue, use the [color-lighting parity entry](../../apps/parity/color-lighting/README.md), then follow its [status recovery map](../../apps/parity/color-lighting/status-index.md). The `SceneCase` and `CaseReport` schemas are the report contract; repair the named material or producer owner and rerun the same case. Do not turn a missing producer capture into a material pass.
+For a direct-light material issue, use the [color-lighting parity entry](../../apps/parity/color-lighting/README.md), then follow its status recovery map. The `SceneCase` and `CaseReport` schemas are the report contract; repair the named material or producer owner and rerun the same case. Do not turn a missing producer capture into a material pass.
 
 ## Direct-light parity entry
 
@@ -408,10 +408,10 @@ still needs its static switch. Explicit zero intensity remains zero.
 Emissive is scene-linear and passes through exposure and the tone curve: under
 ACES, large emissive surfaces above about 1.5 clip toward white and lose hue;
 use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources
-([SDK runtime-light-emissive](../forgeax-engine-sdk/references/effects/runtime-light-emissive.md)).
+(SDK runtime-light-emissive).
 Glow meshes (beams, light pillars) add light: emission-only Surface (`return surfaceEmissionOnly(input, color, opacity)` from `forgeax_material::surface_v1`: the template still lights an additive Surface, the helper zeroes sun Fresnel glare and sky reflection), `one / one`
 colour blend, `zero / one` alpha, peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
-height on an open tapered mesh ([SDK beam-pillar](../forgeax-engine-sdk/references/effects/beam-pillar.md)).
+height on an open tapered mesh (SDK beam-pillar).
 
 A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, `GradientSky` reflection, fog; render README "Sea sun and sky").
 

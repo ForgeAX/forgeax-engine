@@ -1,5 +1,5 @@
 {
-  "contentKey": "71feed8041f9bce94d3e8df08a39152f8b7fd34a2e638b670282dc6033321ea0",
+  "contentKey": "76f99aecec083d6346adca2cf9016d81e5271b09e5a0b950f96da2cfd44475b8",
   "inputHashes": {
     "package.json": "859acdba61a35785482fca2a7e00a1695724ca2b9d01b55be7935d15962ad492",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
@@ -12,7 +12,7 @@
     "scripts/Cargo.lock": "c9ad0e8a54d33b98b7f1594cac10c84f0a692776c7f46eb2b9b8a105433aac50",
     "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
     "../../scripts/lib/git-http-environment.mjs": "b15a973b8718776c164a3a880f92d06b6dfc7faee1cfc8e616cf029ab1347758",
-    "patches/parry.patch": "5f14ed7c706b0836f4c4402f9e8aabe837dacd86b75d34b1cfa04c4b9149a860",
+    "patches/parry.patch": "ae85f4478702a4b8d6359f9b67f1dce7dcbc023170158b06db5e3b004a56181b",
     "patches/rapier.patch": "2a07475d7f9593963454db67aabb1b93ba805e54f46bf9c90196b392b63040e1"
   },
   "source": {
@@ -36,9 +36,9 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "c7efef51151630b4a6ea0f4b8bb24049d806e1b23b9ffad6f0e47d968b37854c",
+    "rapier-native.mjs": "bfa4f9b1e4d38a7798aaec34aa597e837fe8529470ab56206ba2d76d1c2a76cf",
     "rapier.d.mts": "2179facb53bf435e7f34ac97deaeafb27f60f7781b4df6cc693a1c0b9af77b46",
-    "rapier.mjs": "448b4589b71e3f8a4887b192158946409fbcccff17e496f3a9dc33cd9725e7eb",
-    "rapier.wasm": "fb4c8ddac7632000f46423bde949f4222e1579146541240e8f63b05271ab245b"
+    "rapier.mjs": "3dd7d52e626f5f8290be8e3b81202b2fa98bd1f5cfc00df0b2a93603beee67bb",
+    "rapier.wasm": "9eef8921efd7f6165e0bf6fd7729328a483c70a5b1ef7f9b5d867dab35493e9c"
   }
 }

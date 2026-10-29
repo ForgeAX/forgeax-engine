@@ -13,9 +13,9 @@ description: >-
 The game-root `AGENTS.md` already gives the hard rules, default commands and routing.
 Reach a first correct edit with this short path, not by reading large skills up front:
 
-1. Signatures and import paths: `references/api-index.md` before
+1. Signatures and import paths: the API index before
    searching `node_modules` READMEs or `.d.ts` files.
-2. Effect recipes for an `empty` project: `references/effects-cookbook.md` (~2 KB index: water -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
+2. Effect recipes for an `empty` project: the effects cookbook (~2 KB index: water -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
    `runtime-light-emissive`, rain/snow/fire/sparks -> `particles-*`). Open ONLY the file you need.
 3. Commands: the **Quick contract** at the top of
    [`forgeax-engine-cli`](../forgeax-engine-cli/SKILL.md); camera, lights and post
@@ -23,10 +23,10 @@ Reach a first correct edit with this short path, not by reading large skills up 
    [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md).
 4. Deeper needs: pick one row in the capability table below and read only that skill's
    relevant section. Project layout, assets and setup live in the
-   [game project guide](references/game-project-guide.md); acceptance, release and
-   blocked checks in the [game delivery guide](references/game-delivery.md).
+   game project guide; acceptance, release and
+   blocked checks in the game delivery guide.
 5. A Three.js effect: look up its native equivalent and gaps in
-   [`references/three-equivalents.md`](references/three-equivalents.md) before simplifying it.
+   `references/three-equivalents.md` before simplifying it.
 
 Large skills (`forgeax-engine-cli`, `forgeax-engine-render-pipeline`,
 `forgeax-engine-debug`, `forgeax-engine-material`, `forgeax-engine-app`) are references:
@@ -57,7 +57,7 @@ again before delivery, open the PNG and answer each question in one sentence; fi
 SDK `init` and project `new` return the local `AGENTS.md` and this skill in
 `onboarding.read`. Read those entries, select the requested delivery scope in the
 game's guide, and load only the focused skills/package contracts needed now.
-Use [the capability catalog](references/feature-catalog.md) on demand for discovery;
+Use the capability catalog on demand for discovery;
 its historical audit snapshot is neither current-HEAD proof nor an enablement list.
 
 For a new or resumed game task, read the game's local `AGENTS.md` before editing.
@@ -100,9 +100,9 @@ Create a game only after selecting its template: `forgeax project new <dir> --te
 > read the generated project's `README.md` and keep, adjust, replace, or remove starter content by
 > game goal; update scene, runtime, and pack references together when removing it.
 
-Use [the full capability catalog](references/feature-catalog.md) for less common areas such as animation/skinning, UI/font/video, picking, networking, intelligence, profiler, Remote, custom RenderGraph/RHI work, and source-mode Engine development. Then read only the focused skill and owning package README. The catalog is a discovery index, not a substitute for those precise contracts.
+Use the full capability catalog for less common areas such as animation/skinning, UI/font/video, picking, networking, intelligence, profiler, Remote, custom RenderGraph/RHI work, and source-mode Engine development. Then read only the focused skill and owning package README. The catalog is a discovery index, not a substitute for those precise contracts.
 
-For browser-compositor screenshots, software/hardware backend selection, Engine frame readiness, repeated play-test checkpoints, and local Engine binding, use [the browser capture and local-Engine guide](references/browser-capture-and-local-engine.md).
+For browser-compositor screenshots, software/hardware backend selection, Engine frame readiness, repeated play-test checkpoints, and local Engine binding, use the browser capture and local-Engine guide.
 
 The default game-consumer route is:
 
@@ -127,15 +127,15 @@ Successful `new` also performs a two-second, best-effort check of the configured
 Both SDK transports include editable `source/engine/` with the same release's
 prebuilt package outputs. For a focused Engine change, install source dependencies,
 rebuild the changed owner and bind through `project engine use-local`; unchanged
-owners reuse their delivered builds. Follow the [local-Engine guide](references/browser-capture-and-local-engine.md)
+owners reuse their delivered builds. Follow the local-Engine guide
 for binding and the SDK README for the partial rebuild commands.
 
 For an explicitly requested Engine/SDK change, SDK archive verification or SDK
-publication, read [SDK production](references/sdk-production.md). Its exact-ZIP
+publication, read SDK production. Its exact-ZIP
 subject is the SDK distribution. Game ZIP packaging belongs to the game's release
 route; ordinary game creation does not enter Candidate, Promotion or SDK consumers.
 For channel/source and publication ordering, read the
-[release contract](../../packages/engine/RELEASING.md): `main` publishes `next`,
+release contract: `main` publishes `next`,
 the weekly `rc` test line publishes `rc`, and `stable` publishes `latest`. GitHub
 and npm publish independently after source qualification of mirrored channels;
 the source mirror retains its formal GitHub Release identity check and advances
@@ -144,7 +144,7 @@ stage.
 
 > [!IMPORTANT]
 > Every SDK publication starts with
-> [Select the release flow first](references/sdk-production.md#select-the-release-flow-first):
+> Select the release flow first:
 > name the flow (development, rc cut/fix, rc promotion or stable hotfix), version,
 > source SHA and npm tag before pushing a release branch or dispatching a workflow.
 > If the user's request leaves any of them open, ask the user; never guess a

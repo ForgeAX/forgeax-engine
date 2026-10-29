@@ -121,12 +121,33 @@ export interface GpuSceneResourceFrame {
   submit(completed?: Promise<void>): void;
 }
 
+declare const sceneResourcePinsBrand: unique symbol;
+
 /** Opaque version roster captured from one resource frame. */
 export interface GpuSceneResourcePins {
-  readonly scene: object;
-  readonly materials: readonly (readonly [MaterialResource, MaterialVersion, MaterialSnapshot])[];
-  readonly meshes: readonly (readonly [string, MeshVersion, MeshGeometry])[];
+  readonly [sceneResourcePinsBrand]: void;
 }
+
+interface MaterialPin {
+  readonly version: MaterialVersion;
+  readonly snapshot: MaterialSnapshot;
+}
+interface MeshPin {
+  readonly version: MeshVersion;
+  readonly geometry: MeshGeometry;
+}
+
+/** Published maps are shared until a recording resolves another resource. */
+class ResourcePins implements GpuSceneResourcePins {
+  declare readonly [sceneResourcePinsBrand]: void;
+  constructor(
+    readonly scene: GpuScene,
+    readonly materials: ReadonlyMap<MaterialResource, MaterialPin>,
+    readonly meshes: ReadonlyMap<string, MeshPin>,
+  ) {}
+}
+const EMPTY_MATERIAL_PINS: ReadonlyMap<MaterialResource, MaterialPin> = new Map();
+const EMPTY_MESH_PINS: ReadonlyMap<string, MeshPin> = new Map();
 
 interface MeshVersion {
   readonly descriptor: number;
@@ -413,7 +434,7 @@ export class GpuScene {
   private transformView: DataView;
   private buffers: GpuSceneBuffers;
   private readonly retiredBuffers = new Set<Buffer>();
-  private readonly bufferHolders = new Map<Buffer, number>();
+  private readonly bufferHolders = new WeakMap<Buffer, number>();
   private resourceFrames = 0;
   private readonly pendingMaterials = new Set<MaterialVersion>();
   private readonly pendingMaterialRoots = new Set<MaterialAllocation>();
@@ -589,6 +610,45 @@ export class GpuScene {
     return version?.initialized === true ? version.descriptor : undefined;
   }
 
+  /** A failed adoption acquires no references and leaves ordinary reads available. */
+  private pinsMatchInputs(
+    pins: ResourcePins,
+    versions: ReadonlyMap<MaterialResource, MaterialPin>,
+    meshes: ReadonlyMap<string, MeshPin>,
+    inputs: GpuInputReadFrame,
+  ): boolean {
+    for (const resource of pins.materials.keys()) {
+      const pin = pins.materials.get(resource) as MaterialPin;
+      const version = pin.version;
+      if (versions.get(resource)?.version === version) continue;
+      const allocation = this.sharedMaterials.get(resource);
+      if (
+        allocation === undefined ||
+        allocation.version !== version ||
+        !version.initialized ||
+        version.snapshot !== pin.snapshot ||
+        versions.has(resource) ||
+        inputs.resource(allocation.logicalSlot) !== version.descriptor
+      )
+        return false;
+    }
+    for (const key of pins.meshes.keys()) {
+      const pin = pins.meshes.get(key) as MeshPin;
+      const version = pin.version;
+      if (meshes.get(key)?.version === version) continue;
+      const allocation = this.sharedMeshes.get(key);
+      if (
+        allocation === undefined ||
+        allocation.version !== version ||
+        version.geometry !== pin.geometry ||
+        meshes.has(key) ||
+        inputs.resource(allocation.logicalSlot) !== version.descriptor
+      )
+        return false;
+    }
+    return true;
+  }
+
   captureResources(): Result<GpuSceneResourceFrame, RhiError> {
     if (this.failure !== undefined) return err(this.failure);
     if (this.disposed || this.resourceFrames >= 128)
@@ -611,8 +671,24 @@ export class GpuScene {
         this.bufferHolders.set(buffer, (this.bufferHolders.get(buffer) ?? 0) + 1);
       }
     };
-    const versions = new Map<MaterialResource, MaterialVersion>();
-    const meshes = new Map<string, MeshVersion>();
+    let versions: ReadonlyMap<MaterialResource, MaterialPin> = EMPTY_MATERIAL_PINS;
+    let meshes: ReadonlyMap<string, MeshPin> = EMPTY_MESH_PINS;
+    let materialsShared = true;
+    let meshesShared = true;
+    const addMaterial = (resource: MaterialResource, pin: MaterialPin) => {
+      if (materialsShared) {
+        versions = new Map(versions);
+        materialsShared = false;
+      }
+      (versions as Map<MaterialResource, MaterialPin>).set(resource, pin);
+    };
+    const addMesh = (key: string, pin: MeshPin) => {
+      if (meshesShared) {
+        meshes = new Map(meshes);
+        meshesShared = false;
+      }
+      (meshes as Map<string, MeshPin>).set(key, pin);
+    };
     const inputs = this.inputs.capture();
     let state: 'prepared' | 'sealed' | 'submitted' | 'released' = 'prepared';
     const release = () => {
@@ -620,18 +696,15 @@ export class GpuScene {
       state = 'released';
       this.resourceFrames--;
       inputs.release();
-      for (const version of versions.values())
-        this.releaseMaterialVersion(version, this.writesByTable);
-      versions.clear();
-      for (const version of meshes.values()) this.releaseMeshVersion(version);
-      meshes.clear();
+      for (const pin of versions.values())
+        this.releaseMaterialVersion(pin.version, this.writesByTable);
+      versions = EMPTY_MATERIAL_PINS;
+      for (const pin of meshes.values()) this.releaseMeshVersion(pin.version);
+      meshes = EMPTY_MESH_PINS;
       for (const buffer of buffers) {
         const remaining = (this.bufferHolders.get(buffer) ?? 1) - 1;
-        if (remaining > 0) this.bufferHolders.set(buffer, remaining);
-        else {
-          this.bufferHolders.delete(buffer);
-          if (this.retiredBuffers.has(buffer)) this.retireBuffer(buffer);
-        }
+        this.bufferHolders.set(buffer, remaining);
+        if (remaining === 0 && this.retiredBuffers.has(buffer)) this.retireBuffer(buffer);
       }
       buffers.clear();
       generation = undefined;
@@ -639,7 +712,7 @@ export class GpuScene {
     const frame: GpuSceneResourceFrame = {
       indexForResource: (resource, snapshot) => {
         if (state !== 'prepared' || this.disposed || this.failure !== undefined) return undefined;
-        let version = versions.get(resource);
+        let version = versions.get(resource)?.version;
         if (version === undefined) {
           version = this.sharedMaterials.get(resource)?.version;
           if (
@@ -655,7 +728,7 @@ export class GpuScene {
             return undefined;
           pinBuffers();
           version.references++;
-          versions.set(resource, version);
+          addMaterial(resource, { version, snapshot: version.snapshot });
         }
         return snapshot === undefined || version.snapshot === snapshot
           ? version.descriptor
@@ -664,7 +737,7 @@ export class GpuScene {
       indexForGeometry: (worldId, handle, geometry) => {
         if (state !== 'prepared' || this.disposed || this.failure !== undefined) return undefined;
         const key = `${worldId}:${handle}`;
-        let version = meshes.get(key);
+        let version = meshes.get(key)?.version;
         if (version === undefined) {
           version = this.sharedMeshes.get(key)?.version;
           if (version === undefined || (geometry !== undefined && version.geometry !== geometry))
@@ -677,7 +750,7 @@ export class GpuScene {
             return undefined;
           pinBuffers();
           version.references++;
-          meshes.set(key, version);
+          addMesh(key, { version, geometry: version.geometry });
         }
         return geometry === undefined || version.geometry === geometry
           ? version.descriptor
@@ -701,53 +774,52 @@ export class GpuScene {
           ? undefined
           : slot;
       },
-      pins: () => ({
-        scene: this,
-        materials: Array.from(
-          versions,
-          ([resource, version]) => [resource, version, version.snapshot] as const,
-        ),
-        meshes: Array.from(meshes, ([key, version]) => [key, version, version.geometry] as const),
-      }),
+      pins: () => {
+        materialsShared = true;
+        meshesShared = true;
+        return new ResourcePins(this, versions, meshes);
+      },
       adoptPins: (pins) => {
         if (
+          !(pins instanceof ResourcePins) ||
           pins.scene !== this ||
           state !== 'prepared' ||
           this.disposed ||
           this.failure !== undefined
         )
           return false;
-        for (const [resource, version, snapshot] of pins.materials) {
-          if (versions.get(resource) === version) continue;
-          const allocation = this.sharedMaterials.get(resource);
-          if (
-            allocation === undefined ||
-            allocation.version !== version ||
-            !version.initialized ||
-            version.snapshot !== snapshot ||
-            versions.has(resource) ||
-            inputs.resource(allocation.logicalSlot) !== version.descriptor
-          )
-            return false;
-          pinBuffers();
-          version.references++;
-          versions.set(resource, version);
-        }
-        for (const [key, version, geometry] of pins.meshes) {
-          if (meshes.get(key) === version) continue;
-          const allocation = this.sharedMeshes.get(key);
-          if (
-            allocation === undefined ||
-            allocation.version !== version ||
-            version.geometry !== geometry ||
-            meshes.has(key) ||
-            inputs.resource(allocation.logicalSlot) !== version.descriptor
-          )
-            return false;
-          pinBuffers();
-          version.references++;
-          meshes.set(key, version);
-        }
+        // Validate the whole roster before acquiring its version references.
+        if (!this.pinsMatchInputs(pins, versions, meshes, inputs)) return false;
+        if (versions.size === 0) {
+          for (const pin of pins.materials.values()) {
+            pinBuffers();
+            pin.version.references++;
+          }
+          versions = pins.materials;
+          materialsShared = true;
+        } else
+          for (const resource of pins.materials.keys()) {
+            const pin = pins.materials.get(resource) as MaterialPin;
+            if (versions.get(resource)?.version === pin.version) continue;
+            pinBuffers();
+            pin.version.references++;
+            addMaterial(resource, pin);
+          }
+        if (meshes.size === 0) {
+          for (const pin of pins.meshes.values()) {
+            pinBuffers();
+            pin.version.references++;
+          }
+          meshes = pins.meshes;
+          meshesShared = true;
+        } else
+          for (const key of pins.meshes.keys()) {
+            const pin = pins.meshes.get(key) as MeshPin;
+            if (meshes.get(key)?.version === pin.version) continue;
+            pinBuffers();
+            pin.version.references++;
+            addMesh(key, pin);
+          }
         return true;
       },
       inputReads: () => {
@@ -2162,7 +2234,7 @@ export class GpuScene {
 
   private retireBuffer(buffer: Buffer): void {
     this.retiredBuffers.add(buffer);
-    if (this.bufferHolders.has(buffer)) return;
+    if ((this.bufferHolders.get(buffer) ?? 0) > 0) return;
     // Submitted frames hold their buffers through completion, so a disposed
     // scene's unheld table has no pending work and retires with its owner.
     if (this.disposed) {

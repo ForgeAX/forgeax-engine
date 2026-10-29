@@ -17,15 +17,20 @@ export function worldSceneEntityRefOf(
   const query = world.query({ read: [component] });
   if (!query.ok) return undefined;
   let nested: SceneEntityRef | undefined;
-  for (const row of query.value) {
-    const resolved = worldGetSceneInstanceState(world, row.entity);
-    if (!resolved.ok) continue;
-    const state = resolved.value;
-    for (const [key, bound] of state.bindings) {
-      if (bound !== entity) continue;
-      const ref = sceneEntity(state.sceneSourceKey ?? '', sceneEntityAddressFromKey(key));
-      if (state.instanceKey === undefined) return ref;
-      nested ??= ref;
+  for (const querySpan of query.value.spans().unwrap()) {
+    const queryEntities = querySpan.entities;
+    for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+      const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+
+      const resolved = worldGetSceneInstanceState(world, queriedEntity);
+      if (!resolved.ok) continue;
+      const state = resolved.value;
+      for (const [key, bound] of state.bindings) {
+        if (bound !== entity) continue;
+        const ref = sceneEntity(state.sceneSourceKey ?? '', sceneEntityAddressFromKey(key));
+        if (state.instanceKey === undefined) return ref;
+        nested ??= ref;
+      }
     }
   }
   return nested;

@@ -107,6 +107,11 @@ and output instances. Sorting or mesh projection in one view cannot mutate
 another view or the shared simulation. View order and cadence do not change
 the number of ticks consumed.
 
+Before the first emitter work, an empty source keeps the frame submission,
+abort and source-feedback boundary without preparing runtime/arena resources or
+empty view work. First playback enters ordinary planning; later empty frames
+retain the normal retirement and recovery path.
+
 A view plan includes only the shared resources its own declarations reference;
 per-tick simulation inputs stay in the frame graph. An emitter retains the tick slots of its largest admitted batch; fewer or zero queued ticks disable the unused simulation/history passes and omit their uploads. Fixed/render cadence changes do not rebuild that topology, and only submitted active ticks advance the source acknowledgement. View visibility toggles
 execution of retained copy/projection/raster declarations through `enabled`.
@@ -216,7 +221,7 @@ composition. Accepted replacement, failed preparation, rejected submission,
 detach and device recovery use the Renderer transaction and submission fence.
 There is no CPU particle mirror or per-frame particle readback. The ordinary
 Pack example is [`boss-lightning/sdf.html`](../../apps/hello/boss-lightning/sdf.html).
-The [collision evidence report](reports/scene-sdf-collision/README.md) retains
+The collision evidence report retains
 captured-input repairs, paired images, raw tapes, prior failures and the
 remaining delivery acceptance boundaries.
 

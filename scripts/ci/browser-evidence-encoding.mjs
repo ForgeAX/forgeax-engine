@@ -1,0 +1,57 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import ts from 'typescript';
+
+/** Follow the actual Browser fixture imports; protocol acceptance owns raw encoding. */
+export function browserFixtureSources(root, owners) {
+  const sources = new Map();
+  const pending = owners.map((owner) => resolve(root, owner));
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (sources.has(file) || !existsSync(file)) continue;
+    const text = readFileSync(file, 'utf8');
+    sources.set(file, text);
+    const ast = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    for (const node of ast.statements) {
+      if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) continue;
+      const specifier = node.moduleSpecifier.text;
+      if (!specifier.startsWith('.')) continue;
+      const base = resolve(dirname(file), specifier).replace(/\.js$/, '');
+      const imported = [base, `${base}.ts`, `${base}.mjs`, resolve(base, 'index.ts')].find(
+        (path) => existsSync(path) && /\.(?:ts|mjs)$/.test(path),
+      );
+      if (imported && (imported.includes('/__tests__/') || imported.includes('/scripts/test/')))
+        pending.push(imported);
+    }
+  }
+  return sources;
+}
+
+export function uncompressedFixtureEncodings(file, text) {
+  if (file.replaceAll('\\', '/').includes('/packages/rhi-debug/')) return [];
+  const ast = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const violations = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === 'encodeTape') {
+      const options = node.arguments[1];
+      const compression =
+        options && ts.isObjectLiteralExpression(options)
+          ? options.properties.find(
+              (property) =>
+                ts.isPropertyAssignment(property) && property.name.getText(ast) === 'compression',
+            )
+          : undefined;
+      if (
+        !compression ||
+        !ts.isStringLiteral(compression.initializer) ||
+        compression.initializer.text !== 'gzip'
+      )
+        violations.push(
+          `${file}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}`,
+        );
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return violations;
+}

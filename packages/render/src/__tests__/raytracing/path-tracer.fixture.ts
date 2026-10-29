@@ -2,8 +2,8 @@ import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import {
   attachRecorder,
   buildFrameModel,
+  decodeBufferRecords,
   decodeTape,
-  inspectBufferRecords,
   openReplay,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
@@ -107,12 +107,25 @@ export async function verifyRayPath(fixture: RayPathFixture) {
     assert(work);
     const accumulationId = work.bindings.find((b) => b.binding === 6)?.resourceId;
     assert(accumulationId);
-    expect(
-      Array.from((await replay.readResourceAtWork(accumulationId, firstAccumulate)).unwrap().bytes),
-    ).toEqual(Array.from(live));
-    expect(
-      Array.from((await replay.readResourceAtWork(accumulationId, lastAccumulate)).unwrap().bytes),
-    ).toEqual(Array.from(reset));
+    const pathId = work.bindings.find((b) => b.binding === 3)?.resourceId;
+    const inputId = work.bindings.find((b) => b.binding === 4)?.resourceId;
+    assert(pathId && inputId);
+    const reads = (
+      await replay.readAtWorks([
+        {
+          resourceId: accumulationId,
+          workIndex: firstAccumulate,
+          subresource: { offset: 0, size: 64 * 80 },
+        },
+        { resourceId: accumulationId, workIndex: lastAccumulate },
+        { resourceId: pathId, workIndex: firstAccumulate },
+        { resourceId: inputId, workIndex: 1, subresource: { offset: 0, size: 224 } },
+      ])
+    ).unwrap();
+    const [first, last, paths, primaryInput] = reads.map((read) => read.unwrap());
+    assert(first && last && paths && primaryInput);
+    expect(Array.from(first.bytes)).toEqual(Array.from(live));
+    expect(Array.from(last.bytes)).toEqual(Array.from(reset));
     const layout = {
       stride: 80,
       fields: [
@@ -122,19 +135,11 @@ export async function verifyRayPath(fixture: RayPathFixture) {
         { name: 'error', offset: 28, type: 'u32' as const, components: 1 as const },
       ],
     };
-    const records = (
-      await inspectBufferRecords(replay, accumulationId, firstAccumulate, layout, {
-        first: 0,
-        count: 64,
-      })
-    ).unwrap();
-    const pathId = work.bindings.find((b) => b.binding === 3)?.resourceId;
-    assert(pathId);
-    samples.push(
-      new Float32Array(
-        (await replay.readResourceAtWork(pathId, firstAccumulate)).unwrap().bytes.slice().buffer,
-      ),
-    );
+    const records = decodeBufferRecords(first, layout, {
+      first: 0,
+      count: 64,
+    }).unwrap();
+    samples.push(new Float32Array(paths.bytes.slice().buffer));
     for (const row of records.records) {
       expect(row.fields).toMatchObject({ count: [4], error: [0] });
       for (let c = 0; c < 3; c++) {
@@ -145,23 +150,17 @@ export async function verifyRayPath(fixture: RayPathFixture) {
         expect(row.fields.m2?.[c]).toBeCloseTo(m2, 5);
       }
     }
-    const inputId = work.bindings.find((b) => b.binding === 4)?.resourceId;
-    assert(inputId);
-    const primary = (
-      await inspectBufferRecords(
-        replay,
-        inputId,
-        1,
-        {
-          stride: 224,
-          fields: [
-            { name: 'normal', offset: 32, type: 'f32', components: 4 },
-            { name: 'uv', offset: 80, type: 'f32', components: 4 },
-            { name: 'identity', offset: 208, type: 'u32', components: 4 },
-          ],
-        },
-        { first: 0, count: 1 },
-      )
+    const primary = decodeBufferRecords(
+      primaryInput,
+      {
+        stride: 224,
+        fields: [
+          { name: 'normal', offset: 32, type: 'f32', components: 4 },
+          { name: 'uv', offset: 80, type: 'f32', components: 4 },
+          { name: 'identity', offset: 208, type: 'u32', components: 4 },
+        ],
+      },
+      { first: 0, count: 1 },
     ).unwrap();
     expect(primary.records[0]?.fields.normal).toEqual([0, 0, 1, 1]);
     expect(primary.records[0]?.fields.identity?.slice(0, 3)).toEqual([0, 1, 0]);

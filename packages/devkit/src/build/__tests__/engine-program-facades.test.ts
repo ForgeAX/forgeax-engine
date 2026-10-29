@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { build } from 'vite';
+import { build, createServer, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
 import { executionWorkerEntries } from '../execution-workers.js';
 
@@ -140,6 +140,127 @@ it('rejects conflicting Engine resolutions instead of silently replacing a nativ
       }),
     ).rejects.toThrow('Engine capability resolves to multiple modules in one player');
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ['?v=old', '?v=new'],
+  ['?raw&v=old', '?v=new&raw'],
+  ['?forgeax-program-session=one&v=old&worker', '?forgeax-program-session=one&v=new&worker'],
+  ['?v=old&v=older', '?v=new'],
+])('canonicalizes only development cache versions: %s and %s', async (first, second) => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-facade-version-')));
+  const entry = resolve(root, 'scene.mjs');
+  let query = first;
+  let selectedEntry = entry;
+  let server: ViteDevServer | undefined;
+  try {
+    await writeFile(resolve(root, 'package.json'), '{"name":"consumer","type":"module"}');
+    await writeFile(entry, 'export const token = {};');
+    const umbrella = resolve(root, 'node_modules/@forgeax/engine');
+    await mkdir(umbrella, { recursive: true });
+    await writeFile(
+      resolve(umbrella, 'package.json'),
+      '{"name":"@forgeax/engine","dependencies":{}}',
+    );
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      optimizeDeps: { noDiscovery: true, include: [] },
+      server: { watch: null, hmr: false, ws: false },
+      plugins: [
+        executionWorkerEntries([]),
+        {
+          name: 'fixture:facade-version',
+          enforce: 'pre',
+          resolveId(id) {
+            return id === '@forgeax/engine-scene' ? selectedEntry + query : null;
+          },
+        },
+      ],
+    });
+    const container = server.environments.client?.pluginContainer;
+    if (!container) throw new Error('missing client container');
+    const before = await container.resolveId(
+      '@forgeax/engine-scene',
+      resolve(root, 'bootstrap.js'),
+    );
+    query = second;
+    const after = await container.resolveId('@forgeax/engine-scene', resolve(root, 'game.pack.js'));
+    expect(before?.id).toBe(entry.replaceAll('\\', '/') + first);
+    expect(after?.id).toBe(before?.id);
+    for (const semantic of ['?forgeax-program-session=other', '?raw=changed', '?worker=other']) {
+      query = semantic;
+      await expect(
+        container.resolveId('@forgeax/engine-scene', resolve(root, 'child.js')),
+      ).rejects.toThrow('Engine capability resolves to multiple modules in one player');
+    }
+    selectedEntry = resolve(root, 'other-scene.mjs');
+    await writeFile(selectedEntry, 'export const token = {};');
+    query = first;
+    await expect(
+      container.resolveId('@forgeax/engine-scene', resolve(root, 'other.js')),
+    ).rejects.toThrow('Engine capability resolves to multiple modules in one player');
+  } finally {
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  false,
+  true,
+])('compares cache-independent identity while retaining Vite load URLs (conflict: %s)', async (conflictingSession) => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-engine-dev-facades-')));
+  let server: Awaited<ReturnType<typeof createServer>> | undefined;
+  try {
+    await writeFile(resolve(root, 'package.json'), '{"name":"consumer","type":"module"}');
+    const umbrella = resolve(root, 'node_modules/@forgeax/engine');
+    await mkdir(umbrella, { recursive: true });
+    await writeFile(
+      resolve(umbrella, 'package.json'),
+      '{"name":"@forgeax/engine","dependencies":{}}',
+    );
+    const file = resolve(root, 'scene.js');
+    await writeFile(file, 'export const token = {};');
+    const first = resolve(root, 'first.js');
+    const second = resolve(root, 'second.js');
+    await writeFile(first, '');
+    await writeFile(second, '');
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      server: { middlewareMode: true },
+      plugins: [
+        executionWorkerEntries([]),
+        {
+          name: 'fixture-engine-cache-resolution',
+          enforce: 'pre',
+          resolveId(id, importer) {
+            if (id !== '@forgeax/engine-scene') return null;
+            const session = conflictingSession && importer === second ? 'other' : 'same';
+            return `${file}?session=${session}&v=${importer === first ? 'one' : 'two'}`;
+          },
+        },
+      ],
+    });
+    const container = server.environments.client?.pluginContainer;
+    if (container === undefined) throw new Error('missing client environment');
+    const initial = await container.resolveId('@forgeax/engine-scene', first);
+    const repeated = container.resolveId('@forgeax/engine-scene', second);
+    if (conflictingSession) {
+      await expect(repeated).rejects.toThrow('Engine capability resolves to multiple modules');
+    } else {
+      expect(await repeated).toMatchObject({
+        id: `${file.replaceAll('\\', '/')}?session=same&v=one`,
+      });
+      expect(initial?.id).toBe(`${file.replaceAll('\\', '/')}?session=same&v=one`);
+    }
+  } finally {
+    await server?.close();
     await rm(root, { recursive: true, force: true });
   }
 });

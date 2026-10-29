@@ -24,7 +24,9 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { describeReplayWork } from './replay-inspections.fixture';
 
 export const DISPLAY_P3_SIZE = 64;
 /** One 8-bit step of dither plus one of float rounding. */
@@ -372,7 +374,7 @@ export async function captureDisplayP3(
     const receipt = await scene.draw();
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
-    await save('frame.rhitape', capture.bytes);
+    await save('frame.rhitape', compactTape(capture).bytes);
     const observations = value(
       await renderer.observe(receipt, { include: ['final-display'] }),
     ).observations;
@@ -400,9 +402,7 @@ export async function captureDisplayP3(
       for (const work of [...model.works].reverse()) {
         const colorId = work.attachments?.colorViewHandleIds[0];
         if (colorId == null) continue;
-        const candidate = (
-          await replay.inspectWork(work.workIndex, ['pipeline', 'bindings'])
-        ).unwrap();
+        const candidate = describeReplayWork(work);
         const fragment = candidate.pipeline?.shaders.find((shader) => shader.stage === 'fragment');
         if (fragment?.source?.includes('LINEAR_SRGB_TO_LINEAR_DISPLAY_P3')) {
           output = { workIndex: work.workIndex, colorId, inspected: candidate };
@@ -416,9 +416,18 @@ export async function captureDisplayP3(
       );
       if (binding?.resourceId == null) throw new Error('TonemapParams binding missing');
       const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0);
-      const uniform = (
-        await replay.readResourceAtWork(binding.resourceId, output.workIndex, { offset, size: 32 })
+      const reads = (
+        await replay.readAtWorks([
+          {
+            resourceId: binding.resourceId,
+            workIndex: output.workIndex,
+            subresource: { offset, size: 32 },
+          },
+          { resourceId: output.colorId, workIndex: output.workIndex },
+        ])
       ).unwrap();
+      const [uniform, replayed] = reads.map((result) => result.unwrap());
+      if (!uniform || !replayed) throw new Error('missing Display P3 readback');
       const view = new DataView(uniform.bytes.buffer, uniform.bytes.byteOffset, 32);
       const params = {
         exposure: view.getFloat32(0, true),
@@ -428,7 +437,6 @@ export async function captureDisplayP3(
         outputGamut: view.getUint32(16, true),
       };
       expect(params.outputGamut).toBe(1);
-      const replayed = (await replay.readResourceAtWork(output.colorId, output.workIndex)).unwrap();
       const bytesPerRow = replayed.bytes.byteLength / DISPLAY_P3_SIZE;
       const replayRgba = toRgba(replayed.bytes, bytesPerRow, replayed.format);
       let maxPixelError = 0;

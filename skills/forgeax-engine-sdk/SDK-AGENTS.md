@@ -16,7 +16,7 @@ Before creating or changing a game, read:
 2. [SDK skill](skills/forgeax-engine-sdk/SKILL.md): capability tour and need-to-skill-to-evidence selection.
 
 project init returns these two paths in value.onboarding.read and prints read lines
-in text mode. Consult the [feature catalog](skills/forgeax-engine-sdk/references/feature-catalog.md)
+in text mode. Consult the feature catalog
 only when the task needs broader discovery; select the smallest useful capability set.
 
 > [!IMPORTANT]
@@ -27,7 +27,7 @@ only when the task needs broader discovery; select the smallest useful capabilit
 
 ## Unattended Linux tests
 
-Before SDK initialization in a container, read [Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md).
+Before SDK initialization in a container, read Linux unattended validation.
 It covers writable history/pnpm lock directories, headless capture without Xvfb,
 virtual headed capture and non-root Chromium sandboxing. Preserve the first real
 failure; never shim installation into success. A static build with a blocked
@@ -171,7 +171,7 @@ Use Playwright to reproduce and verify real output after repair; HTTP 200, ports
 
 The generated game's delivery-scope section owns local and release acceptance.
 For producing/verifying the SDK distribution itself, use the SDK skill's
-[production guide](skills/forgeax-engine-sdk/references/sdk-production.md).
+production guide.
 
 ## Modify Engine source
 

@@ -1,4 +1,5 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
+import type { RenderFeatureLogicalTarget } from './plan';
 
 /** Render-owned logical targets exposed to producer-owned RenderFeatures. */
 
@@ -27,10 +28,33 @@ export interface RenderFeatureTargetInput {
   readonly sampleCount: 1 | 4;
 }
 
+const LOGICAL_TARGET = Symbol('render-feature-logical-target');
+type OwnedTarget = RenderFeatureTargetHandle & {
+  readonly [LOGICAL_TARGET]: {
+    readonly owner: RenderFeatureTargetInput;
+    readonly value: RenderFeatureLogicalTarget;
+  };
+};
+
+function projectLogicalTarget(target: RenderFeatureTargetInput): RenderFeatureLogicalTarget {
+  return {
+    name: target.name ?? (target.kind === 'scene-color' ? 'color' : 'depth'),
+    kind: target.kind === 'scene-color' ? ('color' as const) : ('depth' as const),
+    format: target.format,
+    sampleCount: target.sampleCount,
+  };
+}
+
 export function createRenderFeatureTarget(
   input: RenderFeatureTargetInput,
 ): RenderFeatureTargetHandle {
-  return Object.freeze({ ...input }) as RenderFeatureTargetHandle;
+  const target = { ...input };
+  // Both the value and its projection belong to this immutable target.
+  // A replacement target computes its own projection at creation.
+  Object.defineProperty(target, LOGICAL_TARGET, {
+    value: Object.freeze({ owner: target, value: Object.freeze(projectLogicalTarget(target)) }),
+  });
+  return Object.freeze(target) as OwnedTarget;
 }
 
 export function isRenderFeatureTargetHandle(value: unknown): value is RenderFeatureTargetHandle {
@@ -62,7 +86,8 @@ export function resolveStandardRenderFeatureTargets(input: {
     (input.antialias === 'msaa' && input.multisample);
   const colorFormat =
     input.tonemap !== 'none' || linearLdr ? 'rgba16float' : input.colorAttachmentFormat;
-  return [
+  const cloudHistory = input.cloudHistory === true;
+  const targets = Object.freeze([
     createRenderFeatureTarget({
       name: 'color',
       kind: 'scene-color',
@@ -111,7 +136,7 @@ export function resolveStandardRenderFeatureTargets(input: {
       format: 'rgba16float',
       sampleCount: 1,
     }),
-    ...(input.cloudHistory === true
+    ...(cloudHistory
       ? [
           createRenderFeatureTarget({
             name: 'cloud-history-radiance-previous',
@@ -151,5 +176,19 @@ export function resolveStandardRenderFeatureTargets(input: {
           }),
         ]
       : []),
-  ];
+  ]);
+  return targets;
+}
+
+/** Owned handles carry immutable logical rows; borrowed handles are read on every call. */
+export function logicalRenderFeatureTargets(
+  targets: readonly RenderFeatureTargetHandle[],
+): readonly RenderFeatureLogicalTarget[] {
+  return Object.freeze(
+    targets.map((target) => {
+      const projection = (target as Partial<OwnedTarget>)[LOGICAL_TARGET];
+      // A borrowed proxy may forward private properties without owning them.
+      return projection?.owner === target ? projection.value : projectLogicalTarget(target);
+    }),
+  );
 }

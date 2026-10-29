@@ -1,12 +1,34 @@
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { derivedRenderState } from '../material-render-state';
+import { derivedRenderState, renderStateSignature } from '../material-render-state';
 import { oitAccumulateRenderState } from '../oit/eligibility';
 import { renderStateHash } from '../pipeline-spec';
 import { geometryRenderStateForPass } from '../record/main-pass-geometry';
 import { geometryRenderStateForTopology } from '../record/main-pass-material';
 
 describe('derived render states', () => {
+  it('signs frozen plain data while continuing to observe nested mutable state and getters', () => {
+    const frozen = Object.freeze({
+      blend: Object.freeze({ color: Object.freeze({ operation: 'add' }) }),
+    });
+    expect(renderStateSignature(frozen)).toBe(JSON.stringify(frozen));
+    expect(renderStateSignature(frozen)).toBe(JSON.stringify(frozen));
+    const nested = { depthBias: 1 };
+    const shallow = Object.freeze({ nested });
+    const first = renderStateSignature(shallow);
+    nested.depthBias = 2;
+    expect(renderStateSignature(shallow)).not.toBe(first);
+    let reads = 0;
+    const getter = Object.freeze({
+      get depthBias() {
+        return ++reads;
+      },
+    });
+    expect(renderStateSignature(getter)).toBe('{"depthBias":1}');
+    expect(renderStateSignature(getter)).toBe('{"depthBias":2}');
+    expect(reads).toBe(2);
+  });
+
   it('returns one stable identity per authored state and derivation', () => {
     const authored: MaterialRenderState = { cullMode: 'back', depthWriteEnabled: true };
     const temporal = geometryRenderStateForPass(authored, 'temporal');

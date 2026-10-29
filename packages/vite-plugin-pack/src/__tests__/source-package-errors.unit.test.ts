@@ -48,7 +48,9 @@ describe('source package structured failures', () => {
 
     expect(error.code).toBe(code);
     expect(error.expected).toBeTruthy();
-    expect(error.hint).toMatch(/rebuild|cold-cook|repair/i);
+    expect(error.hint).toMatch(
+      code === 'source-package-ddc-failed' ? /inspect.*retry/i : /rebuild|cold-cook|repair/i,
+    );
     expect(error.detail).toMatchObject({
       sourceMeta: context.sourceMeta,
       anchorGuid: context.anchorGuid,
@@ -81,7 +83,9 @@ describe('source package structured failures', () => {
           affectedGuids: context.affectedGuids,
         },
       });
-      expect(error.hint).toMatch(/rebuild|cold-cook|repair/i);
+      expect(error.hint).toMatch(
+        code === 'source-package-ddc-failed' ? /inspect.*retry/i : /rebuild|cold-cook|repair/i,
+      );
     }
   });
 

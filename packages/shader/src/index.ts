@@ -447,6 +447,8 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
 export * from './cloud-programs';
+export { manifestShaderSource } from './manifest-publication';
+export { materialShaderSource } from './manifest-publication.js';
 export {
   createMaterialShaderProgram,
   type MaterialShaderProgram,
@@ -463,4 +465,5 @@ export {
   rayMaterialFailure,
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
+export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';

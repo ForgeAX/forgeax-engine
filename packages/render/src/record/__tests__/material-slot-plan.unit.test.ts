@@ -269,3 +269,52 @@ describe('shared GPU materials without CPU geometry', () => {
     ).toThrow('a fixed material version for every prepared binding');
   });
 });
+
+it('prepares current GPU tables while keeping material edits, scopes and older recordings independent', () => {
+  const a = material();
+  const before = a.snapshot;
+  let frame = new MaterialFrame(undefined).with(a);
+  const worlds = [row(0).world];
+  const bindings = Object.freeze([Object.freeze({ material: a, worldId: 0, resourceClass: '' })]);
+  const runtime = ceiling(0, 2);
+  const prepare = () =>
+    buildDispatchPlan(runtime, [], [], [], [], undefined, false, { bindings, worlds, frame });
+  const first = prepare();
+  const repeated = prepare();
+  expect(repeated.materialSlots).toEqual(first.materialSlots);
+  expect(repeated.materialSlots).not.toBe(first.materialSlots);
+  expect(repeated.materialBindings).toEqual(first.materialBindings);
+  expect(repeated.materialBindings).not.toBe(first.materialBindings);
+  expect(repeated.materialBindingSlots).toEqual(first.materialBindingSlots);
+  expect(first.materialBindingSlots.get(a)?.get('')).toBe(0);
+  a.adopt({ ...before, roughness: 0.125 });
+  frame = frame.with(a);
+  const edited = prepare();
+  expect(edited.materialSlots[0]).toBe(a.snapshot);
+  expect(first.materialSlots[0]).toBe(before);
+  const previousWorld = worlds[0];
+  worlds[0] = row(1).world;
+  const moved = prepare();
+  expect(moved.materialBindings[0]?.world).toBe(worlds[0]);
+  expect(first.materialBindings[0]?.world).toBe(previousWorld);
+  expect(moved.materialBindings).not.toBe(edited.materialBindings);
+});
+
+it('observes mutable members even in a frozen borrowed GPU binding array', () => {
+  const a = material();
+  const frame = new MaterialFrame(undefined).with(a);
+  const worlds = [row(0).world, row(1).world];
+  const binding = { material: a, worldId: 0, resourceClass: '' };
+  const bindings = Object.freeze([binding]);
+  const runtime = ceiling(0, 2);
+  const prepare = () =>
+    buildDispatchPlan(runtime, [], [], [], [], undefined, false, { bindings, worlds, frame });
+  const first = prepare();
+  binding.worldId = 1;
+  binding.resourceClass = 'probe:2';
+  const next = prepare();
+  expect(next.materialBindings[0]?.world).toBe(worlds[1]);
+  expect(next.materialBindingSlots.get(a)?.get('probe:2')).toBe(0);
+  expect(next.materialBindingSlots.get(a)?.has('')).toBe(false);
+  expect(first.materialBindings[0]?.world).toBe(worlds[0]);
+});

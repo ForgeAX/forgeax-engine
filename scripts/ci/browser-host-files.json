@@ -4,6 +4,7 @@
   "packages/audio-webaudio/src/__tests__/audio-webaudio.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/configurable-buses.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/control-ordering.browser.test.ts",
+  "packages/audio-webaudio/src/__tests__/first-gesture.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/music-transport.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/playback-controls.browser.test.ts",

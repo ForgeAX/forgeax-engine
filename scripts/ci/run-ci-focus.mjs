@@ -67,6 +67,19 @@ function unitFocusPlan(kind, selector) {
 export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCount = 1 } = {}) {
   if (typeof selector !== 'string' || !selector || selector.startsWith('-'))
     throw new Error('an exact selector is required');
+  if (kind === 'allocation') {
+    if (!['all', 'math', 'ecs'].includes(selector))
+      throw new Error(`unknown foundation allocation selector: ${selector}`);
+    return {
+      args: [
+        'scripts/ci/run-foundation-allocations.mjs',
+        '--select',
+        selector,
+        '--output',
+        'artifacts/ci-focus/foundation-allocation',
+      ],
+    };
+  }
   if (kind === 'dawn') {
     selectDawnGroups(selector);
     return { args: ['scripts/ci/run-dawn-gate.mjs', '--group', selector] };
@@ -128,7 +141,7 @@ export async function main(argv = process.argv.slice(2)) {
       options[arg.slice(2)] = argv[++i];
     else
       throw new Error(
-        'usage: run-ci-focus.mjs --kind unit|type|browser|dawn|smoke|view --select EXACT_SELECTOR [--dry-run]',
+        'usage: run-ci-focus.mjs --kind unit|type|browser|dawn|smoke|view|allocation --select EXACT_SELECTOR [--dry-run]',
       );
   }
   const frames = parseSmokeFrameBudget(options.frames ?? process.env.SMOKE_MIN_FRAMES);

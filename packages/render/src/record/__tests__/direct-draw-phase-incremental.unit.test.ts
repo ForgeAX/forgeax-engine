@@ -1,6 +1,6 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
-import { assert, expect, it } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
 import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
@@ -168,6 +168,37 @@ it('keeps a steady frame at zero phase work and returns the same output', () => 
   expect(phase.work.emitted).toBe(work.emitted);
   expect(phase.binWork).toEqual(bins);
   expect(phase.sortWork.changed).toBe(sort.changed);
+});
+
+it('observes mutable selection tokens and recovers after a partial iterator failure', () => {
+  const f = fixture(2, 0);
+  const phase = new DirectDrawPhase();
+  const input = f.input();
+  const tokens: unknown[] = [1];
+  const select = vi.fn(input.select);
+  const selected = { ...input, select, selection: tokens };
+  phase.sync(selected);
+  let evaluated = select.mock.calls.length;
+  phase.sync(selected);
+  expect(select.mock.calls.length).toBe(evaluated);
+  tokens[0] = 2;
+  phase.sync(selected);
+  expect(select.mock.calls.length).toBeGreaterThan(evaluated);
+  evaluated = select.mock.calls.length;
+  tokens.push(undefined);
+  phase.sync(selected);
+  expect(select.mock.calls.length).toBeGreaterThan(evaluated);
+  const failing = [3];
+  failing[Symbol.iterator] = function* () {
+    yield 3;
+    throw new Error('selection interrupted');
+  };
+  expect(() => phase.sync({ ...input, selection: failing })).toThrow('selection interrupted');
+  evaluated = select.mock.calls.length;
+  const recovered = phase.sync(selected);
+  expect(select.mock.calls.length).toBeGreaterThan(evaluated);
+  expect(order(recovered)).toEqual(order(new DirectDrawPhase().sync(selected)));
+  expect(phase.sync(selected)).toBe(recovered);
 });
 
 it.each([

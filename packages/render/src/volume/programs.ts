@@ -10,6 +10,7 @@ import type {
   ShaderModule,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
+import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { DeviceScope } from '../device/device-scope';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { VolumetricFogShaderSources } from '../render-contract';
@@ -21,6 +22,7 @@ export interface VolumeProgramContext {
   readonly device: RhiDevice;
   readonly deviceScope: DeviceScope;
   readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
+  readonly isCurrent?: () => boolean;
 }
 export interface ComputeState {
   readonly pipeline: ComputePipeline;
@@ -33,7 +35,7 @@ interface CompositeState {
 type ComputeLabel = 'volume_inject' | 'volume_integrate' | 'volume_temporal';
 type Neighbors = 2 | 4 | 8;
 interface Program<T> {
-  readonly source: string;
+  readonly source: string | ShaderSource;
   readonly factory: PipelineBuilderShaderModuleFactory;
   readonly factoryMethod: PipelineBuilderShaderModuleFactory['createShaderModule'];
   readonly module: ShaderModule;
@@ -58,7 +60,7 @@ function unavailable(stage: string): RhiError {
 }
 function programsFor(context: VolumeProgramContext): VolumePrograms {
   const { deviceScope: scope, device } = context;
-  if (!scope.isAlive()) throw unavailable('device scope');
+  if (!scope.isAlive() || context.isCurrent?.() === false) throw unavailable('device scope');
   let devices = programs.get(scope);
   if (devices === undefined) {
     devices = new WeakMap();
@@ -162,10 +164,10 @@ const computeEntries: Readonly<Record<ComputeLabel, readonly BindGroupLayoutEntr
     { binding: 4, visibility: 4, buffer: { type: 'uniform' } },
   ],
 };
-function witness(context: VolumeProgramContext, source: string, label: string) {
+function witness(context: VolumeProgramContext, source: string | ShaderSource, label: string) {
   const factory = context.shaderModuleFactory;
   const factoryMethod = factory.createShaderModule;
-  const result = factoryMethod.call(factory, { code: source, label });
+  const result = factoryMethod.call(factory, shaderSourceDescriptor(source, label));
   if (!result.ok) throw result.error;
   return { source, factory, factoryMethod, module: result.value };
 }
@@ -180,7 +182,11 @@ function sameWitness<T>(
     previous.module === current.module
   );
 }
-function computeProgram(context: VolumeProgramContext, source: string, label: ComputeLabel) {
+function computeProgram(
+  context: VolumeProgramContext,
+  source: string | ShaderSource,
+  label: ComputeLabel,
+) {
   const owner = programsFor(context);
   const current = witness(context, source, label);
   let entry = owner.compute.get(label);
@@ -192,7 +198,7 @@ function computeProgram(context: VolumeProgramContext, source: string, label: Co
 }
 function compositeProgram(
   context: VolumeProgramContext,
-  source: string,
+  source: string | ShaderSource,
   format: RenderPipelineTarget['format'],
   neighbors: Neighbors,
 ) {
@@ -276,7 +282,7 @@ function compositeDescriptor(
 }
 export function volumeComputeState(
   context: VolumeProgramContext,
-  source: string,
+  source: string | ShaderSource,
   label: ComputeLabel,
 ): ComputeState {
   const entry = computeProgram(context, source, label);
@@ -290,7 +296,7 @@ export function volumeComputeState(
 }
 export function volumeCompositeState(
   context: VolumeProgramContext,
-  source: string,
+  source: string | ShaderSource,
   format: RenderPipelineTarget['format'],
   neighbors: Neighbors,
 ): CompositeState {
@@ -308,13 +314,15 @@ async function prepare<T>(
   entry: Program<T>,
   create: () => Promise<T>,
 ): Promise<void> {
-  if (!context.deviceScope.isAlive()) throw unavailable('retired device scope');
+  if (!context.deviceScope.isAlive() || context.isCurrent?.() === false)
+    throw unavailable('retired device scope');
   if (entry.state !== undefined) return;
   entry.pending ??= create();
   const pending = entry.pending;
   try {
     const state = await pending;
-    if (!context.deviceScope.isAlive()) throw unavailable('retired device scope');
+    if (!context.deviceScope.isAlive() || context.isCurrent?.() === false)
+      throw unavailable('retired device scope');
     entry.state = state;
   } finally {
     if (entry.pending === pending) delete entry.pending;
@@ -365,7 +373,8 @@ export async function prepareVolumePrograms(
   await Promise.all(work.map((start) => start()));
   // A module can be invalidated while native PSOs settle. Such a generation
   // must not publish ready, even when the stale compilation succeeded.
-  if (!context.deviceScope.isAlive()) throw unavailable('retired device scope');
+  if (!context.deviceScope.isAlive() || context.isCurrent?.() === false)
+    throw unavailable('retired device scope');
   for (const { label, entry } of prepared) {
     if (!sameWitness(entry, witness(context, entry.source, label)))
       throw unavailable(`${label} module changed during preparation`);

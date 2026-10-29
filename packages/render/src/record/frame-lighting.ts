@@ -1,6 +1,7 @@
+import { mat4 } from '@forgeax/engine-math';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { fnv1a32 } from '@forgeax/engine-types';
-import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { standardBloomAdmitted } from '../bloom-admission';
 import {
   type AtmosphereViews,
@@ -85,9 +86,12 @@ import {
 } from './helpers';
 import { LightTable } from './light-table';
 import {
+  bindGroupChainLeaf2,
+  bindGroupChainLeaf3,
   getOrCreateFromChain,
   MESH_PER_ENTITY_STRIDE,
   MESH_UBO_FULL_ARRAY_BYTES,
+  rememberBindGroup,
 } from './mesh-ssbo';
 import type {
   _InternalRenderPipelineContext,
@@ -542,13 +546,13 @@ export function buildPerFrameBindGroups(
         // as the mesh path) so a grow event rotates the chain key.
         hdrpClusterBindGroup = getOrCreateFromChain(
           frameState.meshBindGroupCache,
-          [meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer, hdrpBuffers],
+          [meshSsboBuffer(pipelineState.meshStorageBuffer, 0), hdrpBuffers],
           'hdrp-unified',
           () => {
             const bg = createHdrpUnifiedBindGroup(
               internals,
               hdrpBuffers,
-              meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer,
+              meshSsboBuffer(pipelineState.meshStorageBuffer, 0),
             );
             if (bg === null) {
               throw new RhiError({
@@ -712,8 +716,8 @@ export function prepareFrameLighting(
   const prepared = prepareStandardLighting({
     directional: directionalLight,
     local,
-    view: computeViewMatrix(camera),
-    projection: computeProjectionMatrix(camera),
+    view: computeViewMatrix(camera, mat4.create()),
+    projection: computeProjectionMatrix(camera, mat4.create()),
     near: camera.near,
     far: camera.far,
     grid: clusterGrid,
@@ -1359,36 +1363,33 @@ export function meshSlotBindGroup(
   bindGroupCounts: BindGroupCounts,
   byteOffset: number,
 ): BindGroup {
-  const { buffer } = meshSsboBufferBinding(pipelineState.meshStorageBuffer, byteOffset);
-  return getOrCreateFromChain(
+  const buffer = meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset);
+  const bindings = bindGroupChainLeaf2(
     frameState.meshBindGroupCache,
-    [pipelineState.meshBindGroupLayout, buffer],
-    'mesh',
-    () => {
-      const result = device.createBindGroup({
-        label: 'pbr-mesh-bg',
-        layout: pipelineState.meshBindGroupLayout,
-        entries: [
-          {
-            binding: 0,
-            resource: {
-              kind: 'buffer',
-              value: {
-                buffer,
-                offset: 0,
-                size: device.caps.storageBuffer
-                  ? MESH_PER_ENTITY_STRIDE
-                  : MESH_UBO_FULL_ARRAY_BYTES,
-              },
-            },
-          },
-        ],
-      });
-      if (!result.ok) throw result.error;
-      return result.value;
-    },
-    bindGroupCounts,
+    pipelineState.meshBindGroupLayout,
+    buffer,
   );
+  const cached = bindings.get('mesh');
+  if (cached !== undefined) return cached;
+  const result = device.createBindGroup({
+    label: 'pbr-mesh-bg',
+    layout: pipelineState.meshBindGroupLayout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          kind: 'buffer',
+          value: {
+            buffer,
+            offset: 0,
+            size: device.caps.storageBuffer ? MESH_PER_ENTITY_STRIDE : MESH_UBO_FULL_ARRAY_BYTES,
+          },
+        },
+      },
+    ],
+  });
+  if (!result.ok) throw result.error;
+  return rememberBindGroup(bindings, 'mesh', result.value, bindGroupCounts);
 }
 
 /** Preserve the complete clustered lighting ABI while selecting a physical mesh page. */
@@ -1408,29 +1409,27 @@ export function clusteredMeshSlotBindGroup(
       hint: 'inspect prior cluster allocation errors',
     });
   }
-  const { buffer } = meshSsboBufferBinding(pipelineState.meshStorageBuffer, byteOffset);
-  return getOrCreateFromChain(
-    frameState.meshBindGroupCache,
-    [buffer, buffers, ...(hdrpSsaoBlurredView === undefined ? [] : [hdrpSsaoBlurredView])],
-    'hdrp-unified',
-    () => {
-      const group = createHdrpUnifiedBindGroup(
-        runtime,
-        buffers,
-        buffer,
-        hdrpSsaoBlurredView === undefined
-          ? { enabled: false }
-          : { enabled: true, ssaoBlurredView: hdrpSsaoBlurredView },
-      );
-      if (group === null) {
-        throw new RhiError({
-          code: 'webgpu-runtime-error',
-          expected: 'clustered draw bind group creation succeeds',
-          hint: 'inspect prior createBindGroup errors',
-        });
-      }
-      return group;
-    },
-    bindGroupCounts,
+  const buffer = meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset);
+  const bindings =
+    hdrpSsaoBlurredView === undefined
+      ? bindGroupChainLeaf2(frameState.meshBindGroupCache, buffer, buffers)
+      : bindGroupChainLeaf3(frameState.meshBindGroupCache, buffer, buffers, hdrpSsaoBlurredView);
+  const cached = bindings.get('hdrp-unified');
+  if (cached !== undefined) return cached;
+  const group = createHdrpUnifiedBindGroup(
+    runtime,
+    buffers,
+    buffer,
+    hdrpSsaoBlurredView === undefined
+      ? { enabled: false }
+      : { enabled: true, ssaoBlurredView: hdrpSsaoBlurredView },
   );
+  if (group === null) {
+    throw new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'clustered draw bind group creation succeeds',
+      hint: 'inspect prior createBindGroup errors',
+    });
+  }
+  return rememberBindGroup(bindings, 'hdrp-unified', group, bindGroupCounts);
 }

@@ -44,7 +44,7 @@ const EXPECTED_IN_POLICY_ORDER = [
 ] as const;
 
 const HINTS_IN_POLICY_ORDER = [
-  'check getState() before calling stop/pause/resume; rebuild the handle via createApp({...}) when the previous one terminated on device-lost',
+  'call start() before stop/pause/resume; rebuild the handle via createApp({...}) when the previous one terminated on device-lost',
   'call stop() first or audit start() call sites; the second start() is a no-op so state is preserved',
   'append the canvas to the document tree before calling createApp(canvas), or use the assemble entry createApp({ renderer, world }) when the host already manages canvas lifetime',
   'pause the App before deterministic stepping and pass an explicit finite delta; resume after the bounded step sequence completes',

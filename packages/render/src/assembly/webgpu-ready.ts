@@ -1,3 +1,5 @@
+import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
+import type { SeedShaderModule } from './material-shader-policy';
 // WebGPU generation-scoped ready-state builder.
 // This owner performs one complete device-generation promotion; it receives
 // policy/adapters and returns a fully prepared PipelineState.
@@ -125,9 +127,17 @@ export async function prepareDevicePipelineLibrary(
   device: RhiDevice,
   manifest: PipelineLibraryManifest,
   shader: Pick<ShaderCatalog, 'materialProgram'>,
+  owner?: object,
 ): Promise<void> {
   if (device.pipelineLibrary === undefined) return;
-  const prepared = await device.pipelineLibrary.prepare(manifest);
+  const sources = manifest.shaders.map(
+    (descriptor) =>
+      shaderSourceForDescriptor(descriptor) ?? ShaderSource.fromText(descriptor.code, new Map()),
+  );
+  const prepared = await device.pipelineLibrary.prepare(manifest, {
+    ...(owner === undefined ? {} : { owner }),
+    sources,
+  });
   if (!prepared.ok) throw prepared.error;
   // Native compilation and CPU source analysis share the captured graphics
   // roster. Keep first-use analysis out of draw even when the PSO is already
@@ -138,7 +148,7 @@ export async function prepareDevicePipelineLibrary(
     if (pipeline.fragment !== undefined) modules.add(pipeline.fragment.module);
   }
   for (const module of modules)
-    shader.materialProgram((manifest.shaders[module] as GPUShaderModuleDescriptor).code);
+    shader.materialProgram(sources[module] as import('@forgeax/engine-types').ShaderSource);
 }
 
 /** CPU analysis slice of the background lane; menu frames keep their task turns. */
@@ -159,6 +169,7 @@ export async function prepareBackgroundPipelineLibrary(
   shader: () => Pick<ShaderCatalog, 'materialProgram'>,
   active: () => boolean,
   report: (cause: unknown) => void,
+  owner: object,
 ): Promise<void> {
   const library = device.pipelineLibrary;
   if (library === undefined) return;
@@ -182,14 +193,28 @@ export async function prepareBackgroundPipelineLibrary(
         slice = performance.now();
       }
       if (!active()) return;
-      const code = manifest.shaders[module]?.code;
-      if (typeof code === 'string') shader().materialProgram(code);
+      const descriptor = manifest.shaders[module];
+      if (descriptor !== undefined)
+        shader().materialProgram(
+          shaderSourceForDescriptor(descriptor) ??
+            ShaderSource.fromText(descriptor.code, new Map()),
+        );
     }
   };
   await Promise.all([
-    library.prepare(manifest, { background: true }).then((prepared) => {
-      if (!prepared.ok) fail(prepared.error);
-    }, fail),
+    library
+      .prepare(manifest, {
+        background: true,
+        owner,
+        sources: manifest.shaders.map(
+          (descriptor) =>
+            shaderSourceForDescriptor(descriptor) ??
+            ShaderSource.fromText(descriptor.code, new Map()),
+        ),
+      })
+      .then((prepared) => {
+        if (!prepared.ok) fail(prepared.error);
+      }, fail),
     analyze().catch(fail),
   ]);
 }
@@ -366,7 +391,7 @@ export async function buildReadyWebGPU(
   // `module-forgeax::default-shadow-caster` so the lazy PSO build hits
   // OK on frame 1 (no 1-frame warmup for the engine-shipped shadow
   // caster).
-  seedShaderModule: (label: string, module: ShaderModule) => void,
+  seedShaderModule: SeedShaderModule,
   // M6 fix-up (feat-20260615-pipeline-spec-ssot): seed-pipeline hook the
   // outer `makeWebGPURenderer` exposes for `materialShaderPipelineCache`.
   // Invoked once per URP-variant SPEC_CONST entry after the boot-time
@@ -457,7 +482,7 @@ export async function buildReadyWebGPU(
   }
   const compileModule: CompileShaderModule = (code, label, expected, hint) =>
     compileShaderModule(rhiDevice, asyncCreateShaderModule, code, label, expected, hint);
-  const compileUtilityShader = (label: string, source: string, context: string) =>
+  const compileUtilityShader = (label: string, source: string | ShaderSource, context: string) =>
     compileModule(
       source,
       label,
@@ -576,7 +601,7 @@ export async function buildReadyWebGPU(
       'PBR shader module compiled',
       'inspect manifest pbr entry composed wgsl; check device.features',
     );
-    seedShaderModule('module-forgeax::default-standard-pbr', pbrModule);
+    seedShaderModule('module-forgeax::default-standard-pbr', pbrModule, entries.pbr.wgsl);
     const pbrManifestEntry = findMaterialShaderEntry(registry, 'forgeax::default-standard-pbr');
     const gpuDrivenModules = await buildGpuDrivenPbrReadyModules({
       registry,
@@ -599,7 +624,11 @@ export async function buildReadyWebGPU(
       materialShaderSourceEquals(variant, entries.pbr.wgsl),
     );
     if (pbrVariant !== undefined)
-      seedShaderModule(`module-forgeax::default-standard-pbr#${pbrVariant.definesKey}`, pbrModule);
+      seedShaderModule(
+        `module-forgeax::default-standard-pbr#${pbrVariant.definesKey}`,
+        pbrModule,
+        entries.pbr.wgsl,
+      );
     if (immediateCreateShaderModule === undefined)
       await prewarmStandardPbrVariants(pbrManifestEntry, entries.pbr, pbrModule);
     return { pbr: pbrModule, gpuDrivenPbrPrograms: gpuDrivenModules.gpuDrivenPbrPrograms };
@@ -621,7 +650,7 @@ export async function buildReadyWebGPU(
       'tonemap shader module compiled (unified post-process prewarm)',
       'inspect manifest tonemap entry composed wgsl; check device.features',
     );
-    seedShaderModule(tonemapLabel, tonemapModule);
+    seedShaderModule(tonemapLabel, tonemapModule, entries.tonemap.wgsl);
     registerBuiltinTonemap(entries.tonemap.wgsl);
     const prewarmTemporal = createTemporalShaderPrewarmer({
       device: rhiDevice,
@@ -651,7 +680,7 @@ export async function buildReadyWebGPU(
     const fxaaModule = await compileManifestModule(compileModule, fxaaEntry, 'fxaa');
     if (fxaaEntry === undefined || fxaaModule === null) return null;
     registerBuiltinFxaa(fxaaEntry.wgsl);
-    seedShaderModule(postProcessShaderModuleLabel(fxaaEntry.wgsl), fxaaModule);
+    seedShaderModule(postProcessShaderModuleLabel(fxaaEntry.wgsl), fxaaModule, fxaaEntry.wgsl);
     return fxaaModule;
   };
 
@@ -698,7 +727,11 @@ export async function buildReadyWebGPU(
       'static shadow depth-clear shader compiles before the first shadow frame',
       'inspect the static shadow clear program and backend compiler',
     );
-    seedShaderModule(STATIC_SHADOW_DEPTH_CLEAR_SHADER.label, staticClear);
+    seedShaderModule(
+      STATIC_SHADOW_DEPTH_CLEAR_SHADER.label,
+      staticClear,
+      STATIC_SHADOW_DEPTH_CLEAR_SHADER.code,
+    );
     await prewarmShadowCasterModules(
       registry,
       compileModule,
@@ -986,9 +1019,6 @@ export async function buildReadyWebGPU(
     perPassResources: createReadyPerPassResources({
       ...fullscreenPasses,
       shadowSampler: samplers.shadowSampler,
-      shadowLightSpaceMatrix: null,
-      shadowCsmLightViewProj: null,
-      shadowCsmSelection: null,
       // Bloom pipeline handles are generation-owned by the Bloom owner;
       // graph targets are frame-owned and are not stored here.
       bloomHorizontalPipeline: null,

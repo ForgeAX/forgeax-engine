@@ -1,6 +1,6 @@
 import { loadJson, requireFact } from './lib.mjs';
 
-export function heapNodes(profile) {
+export function heapNodes(profile, { allowOrphanSamples = false } = {}) {
   requireFact(
     profile?.head && Array.isArray(profile.samples),
     'Require SamplingHeapProfile head and samples',
@@ -35,7 +35,8 @@ export function heapNodes(profile) {
   }
   for (const sample of profile.samples)
     requireFact(
-      ids.has(sample.nodeId) && Number.isFinite(sample.size) && sample.size >= 0,
+      Number.isSafeInteger(sample?.nodeId) &&
+        (allowOrphanSamples || ids.has(sample.nodeId)) && Number.isFinite(sample.size) && sample.size >= 0,
       'Invalid heap sample',
     );
   return nodes;

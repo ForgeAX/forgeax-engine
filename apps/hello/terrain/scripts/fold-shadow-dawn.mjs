@@ -220,7 +220,7 @@ try {
           position[1],
           'the actual submitted receiver must agree with the endpoint reference',
         );
-        const lightRay = ray.create(undefined, position, [1, 1, 0]);
+        const lightRay = ray.create(new Float32Array(6), position, [1, 1, 0]);
         const intersections = [];
         for (let i = 0; i < grid.indices.length; i += 3) {
           const hit = ray.rayTriangleIntersects(

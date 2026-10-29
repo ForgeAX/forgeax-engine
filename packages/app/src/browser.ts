@@ -14,6 +14,7 @@ import type { Context, Fiber, Plugin } from '@forgeax/engine-plugin';
 import { createProfiler } from '@forgeax/engine-profiler';
 import type { Renderer } from '@forgeax/engine-render';
 import type { RendererHostAssembly } from '@forgeax/engine-render/internal/construct-renderer';
+import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import {
   attachRecorder,
   type CaptureFrameOptions,
@@ -156,6 +157,7 @@ export function createApp(
 ): Promise<Result<App, CanvasAppError>>;
 
 /** Construct a browser-owned World, Renderer, input and native platform. */
+
 export async function createApp(
   canvas: HTMLCanvasElement,
   opts?: CreateAppOptions,
@@ -175,6 +177,8 @@ export async function createApp(
       ),
     );
   }
+
+  opts = ownAppPipelineInputs(opts);
 
   // The DOM canvas starts with a 300x150 drawing buffer even when CSS lays it
   // out at a different size. Set the physical buffer before the renderer
@@ -1202,4 +1206,17 @@ function createPluginProjectionBridge(): PluginProjectionBridge {
       },
   };
   return bridge;
+}
+
+function ownAppPipelineInputs(opts: CreateAppOptions | undefined): CreateAppOptions | undefined {
+  if (opts === undefined) return undefined;
+  return {
+    ...opts,
+    ...(opts.pipelineLibrary === undefined
+      ? {}
+      : { pipelineLibrary: ownPipelineLibrary(opts.pipelineLibrary) }),
+    ...(opts.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: ownPipelineLibrary(opts.backgroundPipelineLibrary) }),
+  };
 }

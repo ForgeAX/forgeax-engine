@@ -1,5 +1,6 @@
 // @forgeax/engine-render — WebGPU renderer lifecycle/frame interpreter.
 // Runtime selects the backend; structured RHI errors and browser isolation stay intact.
+
 import {
   AssetRegistry,
   adaptDynamicTextureDevice,
@@ -14,13 +15,22 @@ import type {
   Result,
   RhiCanvasTarget,
   RhiDevice,
+  ShaderModule,
 } from '@forgeax/engine-rhi';
-import { err, ok, RhiError, validateDrawArgs } from '@forgeax/engine-rhi';
+import {
+  err,
+  ok,
+  ownPipelineLibrary,
+  PIPELINE_LIBRARY_LIMITS,
+  RhiError,
+  validateDrawArgs,
+} from '@forgeax/engine-rhi';
 import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   materialShaderSourceEquals,
+  type RegisteredMaterialShaderEntry,
   ShaderCatalog,
   TONEMAP_PARAMS_LAYOUT,
 } from '@forgeax/engine-shader';
@@ -34,6 +44,7 @@ import { isStripTopology } from '@forgeax/engine-types';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
 import { InstanceProjectionStore } from '../instances';
+import { materialVertexConstants } from '../material-stage-constants';
 import {
   isOutputColorSpace,
   OUTPUT_COLOR_SPACES,
@@ -98,17 +109,13 @@ import {
   RenderFeatureCapabilityMissingError,
   RenderFeatureStageFailedError,
 } from '../errors/render';
-import {
-  dofInspection,
-  registerDepthOfFieldBuiltins,
-} from '../features/depth-of-field/depth-of-field-assembly';
+import { registerDepthOfFieldBuiltins } from '../features/depth-of-field/depth-of-field-assembly';
 import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature, RenderFeatureShaderModuleMode } from '../features/types';
 import {
   type PostProcessShaderEntry,
   postProcessShaderModuleLabel,
 } from '../fullscreen-post-process-pass';
-import { type BloomInspection, emptyBloomInspection } from '../inspection-types';
 import { isCanonicalStandardPbrMaterialShader, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
 import { registerSingleLayerMediumBuiltins } from '../pipeline/single-layer-medium-passes';
 import { standardPipeline } from '../pipeline/standard-pipeline';
@@ -245,6 +252,7 @@ import {
 } from './recovery/renderer-recover';
 import {
   collectRequiredFullscreenPostProcesses,
+  registerStandardPostProcessBuiltins,
   withBuiltinRenderFeatures,
 } from './render-feature-post-processes';
 import { createRenderTargetHost } from './render-target-host';
@@ -270,7 +278,12 @@ import {
   rendererInitializationPipelineError,
   wrapDisposeError,
 } from './renderer-helpers';
-import { projectRendererOutputInspectionFromSurface } from './renderer-inspection';
+import {
+  projectRendererInspectionState,
+  projectRendererOutputInspectionFromSurface,
+  projectRendererOutputObservationInspection,
+  projectRenderSystemInspection,
+} from './renderer-inspection';
 import {
   createRecoveryContinuation,
   createRecoveryDeadline,
@@ -289,7 +302,7 @@ import {
 } from './webgpu-ready';
 import { DEPTH_TEXTURE_FORMAT, HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
 import {
-  tryCreateWebGPURenderer as tryCreateWebGPURendererBootstrap,
+  tryCreateRendererFromBackend as tryCreateRendererFromBackendBootstrap,
   type WebGPURendererInternals,
 } from './webgpu-renderer-bootstrap';
 import type { WebGPUOutcome } from './webgpu-renderer-contract';
@@ -302,6 +315,7 @@ import {
   type ObservationCaptureRead,
 } from './webgpu-renderer-observation-owner';
 import {
+  hasColorAttribute,
   isPreparedMaterialVertexLayout,
   materialPipelineVertexAttributes,
   particleMaterialInputVertexBuffers,
@@ -332,13 +346,6 @@ export {
   createMeshSsboGrowController,
   deriveStorageBufferCeiling,
   INITIAL_MESH_SSBO_SLOT_COUNT,
-  type MeshSsboBufferWrapper,
-  type MeshSsboGrowController,
-  type MeshSsboGrowControllerInit,
-  type MeshSsboGrowDevice,
-  type MeshSsboGrowErrorRegistry,
-  type MeshSsboGrowResult,
-  type MeshSsboState,
   requireMeshSsboBuffer,
 } from './mesh-ssbo-grow';
 export { exposeRenderer } from './renderer-facade';
@@ -349,27 +356,26 @@ export {
   selectSkinPrewarmVariants,
   selectStandardPbrTransmissionPrewarmVariants,
 } from './shader-prewarm-policy';
-export type { WebGPUOutcome, WebGPURendererInternals } from './webgpu-renderer-contract';
 export { disposeObservationCaptureSet } from './webgpu-renderer-observation';
 
-function projectRendererInspectionState(
-  disposed: boolean,
-  deviceLost: boolean,
-  faulted: boolean,
-): RenderInspection['state'] {
-  if (disposed) return 'disposed';
-  if (deviceLost) return 'device-lost';
-  return faulted ? 'faulted' : 'alive';
-}
-
-/** Bundler injection and the WebGPU renderer construction entry points. */
-export async function tryCreateWebGPURenderer(
+/** Bundler injection and construction from the selected backend pack. */
+export async function tryCreateRendererFromBackend(
   canvas: RhiCanvasTarget,
   options: RendererOptions | undefined,
   pack: RhiBackendPack,
   bundler: BundlerOptions | undefined,
 ): Promise<WebGPUOutcome> {
-  return tryCreateWebGPURendererBootstrap(canvas, options, pack, bundler, makeWebGPURenderer);
+  if (options !== undefined)
+    options = {
+      ...options,
+      ...(options.pipelineLibrary === undefined
+        ? {}
+        : { pipelineLibrary: ownPipelineLibrary(options.pipelineLibrary) }),
+      ...(options.backgroundPipelineLibrary === undefined
+        ? {}
+        : { backgroundPipelineLibrary: ownPipelineLibrary(options.backgroundPipelineLibrary) }),
+    };
+  return tryCreateRendererFromBackendBootstrap(canvas, options, pack, bundler, makeWebGPURenderer);
 }
 async function makeWebGPURenderer(
   internals: WebGPURendererInternals,
@@ -557,6 +563,9 @@ async function makeWebGPURenderer(
   // the active state continues serving frames. The two states are swapped
   // only by the synchronous generation publication boundary below; no
   // recovery await can expose a partially rebuilt adapter or catalog.
+  let activeDeviceScope = DeviceScope.create(0, 'renderer');
+  adoptBackendDevice(activeDeviceScope, internals.device, internals.pack.disposeDevice);
+  let candidateBuildState: RendererCandidateState | undefined;
   let activeShaderState: RendererShaderState = {
     device: internals.device,
     shaderInstance: null,
@@ -572,12 +581,19 @@ async function makeWebGPURenderer(
         internals.errorRegistry,
         internals.pack.createShaderModule,
         internals.pack.createShaderModuleImmediate,
+        'validated',
+      );
+      (candidateBuildState?.scope ?? activeDeviceScope)._adopt(
+        'shader',
+        state.sharedShaderModuleAdapter,
+        (adapter) => adapter.dispose(),
       );
     }
     return state.sharedShaderModuleAdapter;
   };
-  // The loading and live volume owners share the exact factory identity;
-  // the adapter is still selected at call time for recovery candidates.
+  // RenderSystem retains this factory across recovery. Module requests select
+  // the current adapter synchronously; volume preparation resolves all modules
+  // before its first await and shares this exact factory with live recording.
   const renderShaderModuleFactory = {
     createShaderModule: (
       descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
@@ -593,20 +609,30 @@ async function makeWebGPURenderer(
         internals.pack.createShaderModuleImmediate,
         'immediate',
       );
+      (candidateBuildState?.scope ?? activeDeviceScope)._adopt(
+        'shader',
+        state.sharedImmediateShaderModuleAdapter,
+        (adapter) => adapter.dispose(),
+      );
     }
     return state.sharedImmediateShaderModuleAdapter;
   };
+  const featureShaderScopes = new WeakMap<RenderFeature<unknown>, DeviceScope>();
   const prewarmFullscreenFeatureModules = async (
     feature: RenderFeature<unknown>,
+    device: RhiDevice,
+    adapter: ShaderDeviceAdapterInternal,
+    retain: (label: string, module: ShaderModule) => void,
+    generationIsCurrent: () => boolean,
   ): Promise<Result<void, RhiError>> => {
     for (const postProcess of feature.requiredFullscreenPostProcesses ?? []) {
       const label = postProcessShaderModuleLabel(postProcess.source);
       const shaderResult = internals.pack.createShaderModule
-        ? await internals.pack.createShaderModule(internals.device, {
+        ? await internals.pack.createShaderModule(device, {
             code: postProcess.source,
             label,
           })
-        : await invokeDeviceCreateShaderModule(internals.device, {
+        : await invokeDeviceCreateShaderModule(device, {
             code: postProcess.source,
             label,
           });
@@ -614,7 +640,16 @@ async function makeWebGPURenderer(
         internals.errorRegistry.fire(shaderResult.error);
         return err(shaderResult.error);
       }
-      getShaderModuleAdapter().seedModule(label, shaderResult.value);
+      if (!generationIsCurrent())
+        return err(
+          new RhiError({
+            code: 'rhi-not-available',
+            expected: 'the installing Feature keeps its device generation',
+            hint: 'retry Feature installation after Renderer recovery',
+          }),
+        );
+      retain(label, shaderResult.value);
+      adapter.seedModule(label, shaderResult.value, postProcess.source);
     }
     return ok(undefined);
   };
@@ -661,8 +696,6 @@ async function makeWebGPURenderer(
   // feat-20260601-device/gpu-residency-extraction M1: the GPU residency layer
   // lives in a standalone store; `assets` keeps the CPU POD registry only.
   let gpuStore = new GpuResidencyCache();
-  let activeDeviceScope = DeviceScope.create(0, 'renderer');
-  adoptBackendDevice(activeDeviceScope, internals.device, internals.pack.disposeDevice);
   // feat-20260623-world-space-video-asset M4 / w16 (D-3): transient per-frame
   // video texture store, fully independent of gpuStore (AC-08). Configured with
   // the device alongside gpuStore below; threaded into the record stage via the
@@ -888,7 +921,6 @@ async function makeWebGPURenderer(
   let candidateMaterialShaderUvSetCounts: Map<string, number> | undefined;
   let emptyPostProcessBgl: BindGroupLayout | null = null;
   let candidateEmptyPostProcessBgl: BindGroupLayout | null | undefined;
-  let candidateBuildState: RendererCandidateState | undefined;
   const currentPipelineCacheState = (): RendererPipelineCacheState =>
     candidatePipelineCacheState ?? activePipelineCacheState;
   const currentPipelineState = (): PipelineState | null =>
@@ -976,20 +1008,45 @@ async function makeWebGPURenderer(
     device: RhiDevice = currentBuildDevice(),
     residencyStore: GpuResidencyCache = gpuStore,
   ): Promise<PipelineState> => {
+    const buildState = candidateBuildState;
+    const registry = getShader();
+    const pipelineCache = currentPipelineCacheState().materialShaderPipelineCache;
+    const shaderAdapter = getShaderModuleAdapter();
+    const immediateAdapter = getImmediateShaderModuleAdapter();
+    const buildIsCurrent = () => scope.isAlive() && candidateBuildState === buildState;
+    const ensureBuildAlive = () => {
+      if (!buildIsCurrent())
+        throw new RhiError({
+          code: 'rhi-not-available',
+          expected: 'pipeline preparation keeps its device generation',
+          hint: 'discard the retired preparation and retry on the current Renderer',
+        });
+    };
     if (internals.options?.pipelineLibrary !== undefined)
-      await prepareDevicePipelineLibrary(device, internals.options.pipelineLibrary, getShader());
+      await prepareDevicePipelineLibrary(
+        device,
+        internals.options.pipelineLibrary,
+        registry,
+        scope.ref('pipeline', {}).value,
+      );
+    ensureBuildAlive();
+    const seededModules = new Map<string, ShaderModule>();
+    scope._adopt('shader', seededModules, (modules) => modules.clear());
     return buildReadyWebGPU(
       device,
       scope,
-      getShader,
+      () => {
+        ensureBuildAlive();
+        return registry;
+      },
       residencyStore,
       internals.pack.createShaderModule,
       internals.pack.createShaderModuleImmediate,
       internals.errorRegistry,
-      candidateBuildState === undefined
+      buildState === undefined
         ? requiredMaterialShaders
         : [
-            ...new Set([...requiredMaterialShaders, ...getShader().materialShaderIdentifiers()]),
+            ...new Set([...requiredMaterialShaders, ...registry.materialShaderIdentifiers()]),
           ].filter(
             // Material publication installs all cooked alternatives, including
             // optional outputs the active device never compiled. Recover only
@@ -1001,27 +1058,31 @@ async function makeWebGPURenderer(
       materialShaderUvSetCounts.get('forgeax::default-standard-pbr') ?? 0,
       requiredFullscreenPostProcesses,
       (hook, state) => {
-        if (candidateBuildState !== undefined) {
-          candidateBuildState.growMeshSsbo = hook;
-          candidateBuildState.meshSsboState = state;
+        ensureBuildAlive();
+        if (buildState !== undefined) {
+          buildState.growMeshSsbo = hook;
+          buildState.meshSsboState = state;
         } else {
           internals.growMeshSsbo = hook;
           internals.meshSsboState = state;
         }
       },
-      (label, module) => {
-        getShaderModuleAdapter().seedModule(label, module);
-        getImmediateShaderModuleAdapter().seedModule(label, module);
+      (label, module, source) => {
+        ensureBuildAlive();
+        seededModules.set(label, module);
+        shaderAdapter.seedModule(label, module, source);
+        immediateAdapter.seedModule(label, module, source);
       },
       (key, pso, group2Contract) => {
-        const pipelineCache = currentPipelineCacheState().materialShaderPipelineCache;
+        ensureBuildAlive();
         if (!pipelineCache.has(key)) {
           pipelineCache.set(key, pso);
         }
         materialShaderPipelineGroup2Contracts.set(pso as object, group2Contract);
       },
       (source: string) => {
-        if (candidateBuildState !== undefined || tonemapRegistered) return;
+        ensureBuildAlive();
+        if (buildState !== undefined || tonemapRegistered) return;
         renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, {
           source,
           params: {
@@ -1033,12 +1094,16 @@ async function makeWebGPURenderer(
         tonemapRegistered = true;
       },
       (source: string) => {
+        ensureBuildAlive();
         fxaaRegistered = registerFxaaPostProcess(renderSystem, source, fxaaRegistered);
       },
-      (source: string) =>
-        registerAnalyticFogPostProcess(renderSystem, source, candidateBuildState !== undefined),
+      (source: string) => {
+        ensureBuildAlive();
+        registerAnalyticFogPostProcess(renderSystem, source, buildState !== undefined);
+      },
       (entries: { readonly motionBlur?: string; readonly taaResolve?: string }) => {
-        if (candidateBuildState !== undefined || temporalPostProcessesRegistered) return;
+        ensureBuildAlive();
+        if (buildState !== undefined || temporalPostProcessesRegistered) return;
         if (entries.motionBlur !== undefined) {
           registerMotionBlurPostProcess(renderSystem, entries.motionBlur);
         }
@@ -1052,36 +1117,50 @@ async function makeWebGPURenderer(
         temporalPostProcessesRegistered = true;
       },
       (entries: { readonly singleSample?: string; readonly multisampled?: string }) => {
-        if (candidateBuildState !== undefined || depthOfFieldRegistered) return;
+        ensureBuildAlive();
+        if (buildState !== undefined || depthOfFieldRegistered) return;
         registerDepthOfFieldBuiltins(renderSystem, entries);
         depthOfFieldRegistered = true;
       },
       async (sources: VolumetricFogShaderSources) => {
+        ensureBuildAlive();
         await prepareVolumePrograms(
-          { device, deviceScope: scope, shaderModuleFactory: renderShaderModuleFactory },
+          {
+            device,
+            deviceScope: scope,
+            shaderModuleFactory: renderShaderModuleFactory,
+            isCurrent: buildIsCurrent,
+          },
           sources,
           HDR_COLOR_ATTACHMENT_FORMAT,
         );
+        ensureBuildAlive();
         internals.volumetricFogShaders = sources;
       },
       (sources: SsrShaderSources, pyramid: DepthPyramidShaderSources) => {
+        ensureBuildAlive();
         internals.ssrShaders = sources;
         internals.depthPyramidShaders = pyramid;
       },
       (sources: AtmosphereShaderSources) => {
+        ensureBuildAlive();
         internals.atmosphereShaders = sources;
       },
       (sources) => {
+        ensureBuildAlive();
         internals.standardDeferredShaders = sources;
       },
-      candidateBuildState === undefined ? ADMIT_EVERY_VARIANT : drewWithModule,
+      buildState === undefined ? ADMIT_EVERY_VARIANT : drewWithModule,
     ).then(async (state) => {
       // draw() is synchronous. Complete the opt-in capability probe before
       // publishing readiness, including when rebuilding a lost device.
+      ensureBuildAlive();
       await renderSystem.initializeSsr(device);
+      ensureBuildAlive();
       return state;
     });
   };
+  let pipelineLibraryCollection: { device: RhiDevice; dispose(): void } | undefined;
   let backgroundPipelineLibraryState: RenderInspection['backgroundPipelineLibraryState'];
   let backgroundPipelineLibraryRun = 0;
   // Started after first readiness and again on each recovered device, never
@@ -1107,6 +1186,7 @@ async function makeWebGPURenderer(
           cause,
         );
       },
+      activeDeviceScope.ref('pipeline', {}).value,
     ).then(() => {
       if (run === backgroundPipelineLibraryRun && backgroundPipelineLibraryState === 'running')
         backgroundPipelineLibraryState =
@@ -1263,6 +1343,31 @@ async function makeWebGPURenderer(
     RendererPipelineCacheState,
     PreparedRenderPipelineOwner
   >();
+  const updatePipelineLibraryCollection = (requested: boolean | undefined): void => {
+    if (requested === false) {
+      pipelineLibraryCollection?.dispose();
+      pipelineLibraryCollection = undefined;
+    } else if (requested === true && pipelineLibraryCollection?.device !== internals.device) {
+      if (internals.device.pipelineLibrary?.collect === undefined)
+        throw new RhiError({
+          code: 'feature-not-enabled',
+          expected: 'pipeline library route collection',
+          hint: 'Use a backend supporting explicit route retention.',
+        });
+      pipelineLibraryCollection?.dispose();
+      const retention = internals.device.pipelineLibrary.collect();
+      const child = activeDeviceScope.createChild('pipeline-library-route');
+      const scope = { device: internals.device, dispose: () => child.dispose() };
+      pipelineLibraryCollection = scope;
+      child._adopt('pipeline', retention, (value) => {
+        value.dispose();
+        if (pipelineLibraryCollection === scope) pipelineLibraryCollection = undefined;
+      });
+    }
+  };
+  const resolvePipelineEntryProgram = (entry: MaterialShaderEntry) =>
+    (entry as Partial<RegisteredMaterialShaderEntry>).program ??
+    getShader().materialProgram(entry.sourceReference ?? entry.source);
   const buildAndCachePipeline = (
     cacheKey: string,
     entry: MaterialShaderEntry,
@@ -1314,8 +1419,9 @@ async function makeWebGPURenderer(
     constants?: Readonly<Record<string, number>>,
     pipelinePreparation = false,
   ): RenderPipeline | null => {
+    const program = resolvePipelineEntryProgram(entry);
     const declaredGroup2Contract = resolveMaterialPipelineGroup2Contract(
-      getShader().materialProgram(entry.source).group2,
+      program.group2,
       layoutKindOverride,
     );
     const group2Contract =
@@ -1366,61 +1472,68 @@ async function makeWebGPURenderer(
         : undefined);
     // Public view clipping is dynamic coverage even on opaque casters.
     // Preserve the producer's fragment stage so depth and color agree.
-    const built =
-      prepared?.lookup(cacheKey, entry.source, ctx.pipelineLayout) ??
-      buildPipelineForMaterialShader(
-        cacheKey,
-        // The catalog entry is projected into the material-shader entry shape.
-        entry,
-        {
-          ...ctx,
-          createRenderPipeline:
-            prepared === undefined
-              ? undefined
-              : (descriptor) => prepared.request(cacheKey, entry.source, descriptor),
-          colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat,
-          colorFormats:
-            additionalColorFormats === undefined
-              ? undefined
-              : [
-                  renderState?.outputs?.[0]?.format ??
-                    (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
-                  ...additionalColorFormats,
-                ],
-          depthFormat:
-            depthFormatOverride === null
-              ? undefined
-              : passKindPolicyTable[passKind]?.shape === 'depth-only'
-                ? (depthFormatOverride ?? 'depth32float')
-                : (depthFormatOverride ?? DEPTH_TEXTURE_FORMAT),
-          coverageOnly,
-          ...(constants === undefined ? {} : { constants }),
-          label,
-          // feat-20260604 w16-b: the shader-MODULE cache identity. Stable across
-          // per variant. See PipelineBuilderContext.moduleLabel.
-          moduleLabel,
-        },
-        renderState,
-        // w8/w15: pack topology (+ stripIndexFormat) into the builder's geometry
-        // param. Strip topologies bake stripIndexFormat into the immutable PSO
-        // (WebGPU spec: only valid for line-strip / triangle-strip). The record
-        // stage (w9 + w15) threads each mesh's topology + indexFormat here; when
-        // the caller omits stripIndexFormat we fall back to 'uint32' (the engine
-        // procedural index width: createBoxGeometry etc. emit Uint32 indices).
-        topology !== undefined
-          ? {
-              topology,
-              ...(isStripTopology(topology)
-                ? { stripIndexFormat: stripIndexFormat ?? ('uint32' as const) }
-                : {}),
-            }
-          : undefined,
-        resolvedVertexEntry,
-        fragmentEntry,
-        undefined, // defines — none
-        passKind,
-        sampleCount,
-      );
+    const preparedSource = program.sourceReference;
+    const built = buildPipelineForMaterialShader(
+      cacheKey,
+      // The catalog entry is projected into the material-shader entry shape.
+      entry,
+      {
+        ...ctx,
+        ...(prepared === undefined
+          ? {}
+          : {
+              createRenderPipelineRecipeState: (state, dependencies, materialize) =>
+                prepared.requestState(cacheKey, preparedSource, state, dependencies, materialize),
+            }),
+        createRenderPipeline:
+          prepared === undefined
+            ? undefined
+            : (descriptor) => prepared.request(cacheKey, preparedSource, descriptor),
+        colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat,
+        colorFormats:
+          additionalColorFormats === undefined
+            ? undefined
+            : [
+                renderState?.outputs?.[0]?.format ??
+                  (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
+                ...additionalColorFormats,
+              ],
+        depthFormat:
+          depthFormatOverride === null
+            ? undefined
+            : passKindPolicyTable[passKind]?.shape === 'depth-only'
+              ? (depthFormatOverride ?? 'depth32float')
+              : (depthFormatOverride ?? DEPTH_TEXTURE_FORMAT),
+        coverageOnly,
+        ...(constants === undefined
+          ? {}
+          : { constants, vertexConstants: materialVertexConstants(constants) }),
+        label,
+        // feat-20260604 w16-b: the shader-MODULE cache identity. Stable across
+        // per variant. See PipelineBuilderContext.moduleLabel.
+        moduleLabel,
+      },
+      renderState,
+      // w8/w15: pack topology (+ stripIndexFormat) into the builder's geometry
+      // param. Strip topologies bake stripIndexFormat into the immutable PSO
+      // (WebGPU spec: only valid for line-strip / triangle-strip). The record
+      // stage (w9 + w15) threads each mesh's topology + indexFormat here; when
+      // the caller omits stripIndexFormat we fall back to 'uint32' (the engine
+      // procedural index width: createBoxGeometry etc. emit Uint32 indices).
+      topology !== undefined
+        ? {
+            topology,
+            ...(isStripTopology(topology)
+              ? { stripIndexFormat: stripIndexFormat ?? ('uint32' as const) }
+              : {}),
+          }
+        : undefined,
+      resolvedVertexEntry,
+      fragmentEntry,
+      undefined, // defines — none
+      passKind,
+      sampleCount,
+    );
     if (!built.ok) {
       if (candidatePipelineErrorScope && prepared?.isPending(built) !== true) throw built.error;
       reportMaterialPipelineFailure(cacheKey, built.error);
@@ -1693,17 +1806,31 @@ async function makeWebGPURenderer(
     // variant's composedWgsl; the pipeline layout itself is built by
     // buildPbrPipelineLayouts (M3 / w12). `''` is canonical all-true (HDRP)
     // and also enters the lookup; `undefined` keeps the boot-time entry.
-    let shaderEntry = manifestVariantShaderEntry(
+    const selectedEntry = manifestVariantShaderEntry(
       getShader(),
       pipelineShaderId,
       effectiveVariantSet,
       lookup.value,
     );
-    shaderEntry = prepareLowLimitMaterialShaderEntry(
-      shaderEntry,
+    const loweredEntry = prepareLowLimitMaterialShaderEntry(
+      selectedEntry,
       currentBuildDevice().limits.maxSampledTexturesPerShaderStage,
     );
-    shaderEntry = { ...shaderEntry, program: getShader().materialProgram(shaderEntry.source) };
+    const previousProgram = (loweredEntry as Partial<RegisteredMaterialShaderEntry>).program;
+    const program =
+      previousProgram ??
+      getShader().materialProgram(
+        (loweredEntry as MaterialShaderEntry).sourceReference ?? loweredEntry.source,
+      );
+    const shaderEntry = Object.defineProperties(
+      {},
+      {
+        ...Object.getOwnPropertyDescriptors(loweredEntry),
+        program: { value: program, enumerable: true },
+        sourceReference: { value: program.sourceReference, enumerable: true },
+        source: { get: () => program.source, enumerable: true },
+      },
+    ) as RegisteredMaterialShaderEntry;
     // feat-20260609 M4 / R3-fixup: append `-${passKind}` to the PSO label so
     // GPU debug captures make the cache variant visible.
     const passKindLabelSegment = passKind === 'forward' ? '' : `-${passKind}`;
@@ -2030,7 +2157,6 @@ async function makeWebGPURenderer(
     setFeatureHost: (host) => {
       internals.featureHost = host;
     },
-    // Resolve the adapter at call time so recovered devices get fresh modules.
     shaderModuleFactory: renderShaderModuleFactory,
     immediateShaderModuleFactory: {
       createShaderModule: (descriptor) =>
@@ -2280,7 +2406,11 @@ async function makeWebGPURenderer(
       internals.observationGraphGeneration = ui.generation;
     };
   }
-  const cameraViews = createCameraViews(renderInternals, renderSystem);
+  const cameraViews = createCameraViews(
+    renderInternals,
+    renderSystem,
+    internals.options?.maxRenderShortSide,
+  );
   internals.lossObserver.current = (detail) => {
     renderInternals.submittedPassNames = [];
     for (const continuation of frameContinuations.keys())
@@ -2290,6 +2420,7 @@ async function makeWebGPURenderer(
   attachGpuPassTimingSession(internals, gpuPassTimingSession);
   renderSystemForTargetPromotion = renderSystem;
   registerSingleLayerMediumBuiltins(renderSystem);
+  registerStandardPostProcessBuiltins(renderSystem);
   // The Standard pipeline is the sole built-in graph owner. Feature plans are
   // projected into that graph directly; no second post-process registry is
   // installed for fullscreen producers.
@@ -3073,7 +3204,11 @@ async function makeWebGPURenderer(
     currentDeviceGeneration: () => activeDeviceScope.generation,
     inspect(options): RenderInspection {
       const library = internals.device.pipelineLibrary;
-      const exported = options?.pipelineLibrary === true ? library?.export() : undefined;
+      updatePipelineLibraryCollection(options?.pipelineLibraryCollection);
+      const exported =
+        options?.pipelineLibrary === true
+          ? library?.export(options?.pipelineLibraryLimits)
+          : undefined;
       if (options?.pipelineLibrary === true && exported === undefined)
         throw new RhiError({
           code: 'feature-not-enabled',
@@ -3090,11 +3225,6 @@ async function makeWebGPURenderer(
         health.reason === 'internal-fault' || (!readySettled && ui === undefined),
       );
       const graph = deviceLost ? undefined : inspectedSystem.perFrameGraphInfo;
-      const graphResourceAllocation = graph?.resourceAllocation;
-      const graphGenerationAllocation = deviceLost
-        ? undefined
-        : inspectedSystem.renderGraphGenerationAllocation;
-      const standardLighting = deviceLost ? undefined : inspectedSystem.standardLightingInspection;
       const barrelDistortion = inspectBarrelDistortion(
         disposed,
         deviceLost,
@@ -3103,7 +3233,6 @@ async function makeWebGPURenderer(
         activeDeviceScope.generation,
         inspectedSystem.barrelDistortionInspection,
       );
-      const bloom: BloomInspection = deviceLost ? emptyBloomInspection() : inspectedSystem.bloom;
       const observationId = `${STANDARD_OUTPUT_TRANSFORM_FEATURE_ID}:frame-${frameId}`;
       const outputInspection = projectRendererOutputInspectionFromSurface({
         graph,
@@ -3115,9 +3244,6 @@ async function makeWebGPURenderer(
         standardLut: inspectedSystem.standardLut,
         presentationProof: internals.context?.presentationProof,
       });
-      const volumetricFog = inspectedSystem.volumetricFog;
-      const directionalShadow = inspectedSystem.directionalShadow;
-      const shadowRaster = inspectedSystem.shadowRaster;
       const recoveryEvidence = inspectedSystem.recoveryEvidence;
       const pointShadow = projectPointShadowInspection(
         inspectedSystem.pointShadowInspection,
@@ -3128,9 +3254,18 @@ async function makeWebGPURenderer(
           ? {}
           : {
               pipelineLibrary: library.inspect(options),
+              pipelineLibraryCollecting: pipelineLibraryCollection?.device === internals.device,
             }),
         ...(backgroundPipelineLibraryState === undefined ? {} : { backgroundPipelineLibraryState }),
-        ...(exported?.ok === true ? { pipelineLibraryManifest: exported.value } : {}),
+        ...(exported?.ok === true
+          ? {
+              pipelineLibraryManifest: exported.value,
+              pipelineLibraryPolicy: {
+                ...PIPELINE_LIBRARY_LIMITS,
+                ...options?.pipelineLibraryLimits,
+              },
+            }
+          : {}),
         state,
         views: cameraViews.inspect(),
         recovery: recoveryInspection,
@@ -3144,99 +3279,11 @@ async function makeWebGPURenderer(
         ),
         barrelDistortion,
         ...projectRendererFeatureInspection(internals.featureHost),
-        featureGraph: inspectedSystem.featureGraphInspection,
-        materialTextureSources: inspectedSystem.materialTextureSources,
-        frustumStats: Object.freeze({ ...inspectedSystem.frustumStats }),
-        visibilityStats: Object.freeze({ ...inspectedSystem.visibilityStats }),
-        instanceCollections: Object.freeze(
-          inspectedSystem.instanceCollectionsInspection.map((collection) =>
-            Object.freeze({
-              ...collection,
-              uploadRanges: Object.freeze(
-                collection.uploadRanges.map((range) => Object.freeze({ ...range })),
-              ),
-              ...(collection.error === undefined
-                ? {}
-                : {
-                    error: Object.freeze({
-                      ...collection.error,
-                      detail: Object.freeze({ ...collection.error.detail }),
-                    }),
-                  }),
-            }),
-          ),
-        ),
+        ...projectRenderSystemInspection(inspectedSystem, deviceLost),
         dynamicGeometry: dynamicGeometry.inspect(),
-        renderScene: inspectedSystem.renderScene,
-        ...(graphResourceAllocation === undefined
-          ? {}
-          : { renderGraphResourceAllocation: graphResourceAllocation }),
-        ...(graphGenerationAllocation === undefined
-          ? {}
-          : { renderGraphGenerationAllocation: graphGenerationAllocation }),
-        ...(inspectedSystem.iblBinding === undefined
-          ? {}
-          : { iblBinding: inspectedSystem.iblBinding }),
-        reflectionProbes: inspectedSystem.reflectionProbes,
-        ssrDependencies: inspectedSystem.ssrDependencies,
-        ssr: inspectedSystem.ssr,
-        ...(inspectedSystem.probePlacement === undefined
-          ? {}
-          : { probePlacement: inspectedSystem.probePlacement }),
-        ...(inspectedSystem.diffuseGi === undefined
-          ? {}
-          : { diffuseGi: inspectedSystem.diffuseGi }),
-        volumetricFog,
-        environment: inspectedSystem.environment,
-        temporal: inspectedSystem.temporal,
-        ...(inspectedSystem.dynamicResolution === undefined
-          ? {}
-          : { dynamicResolution: inspectedSystem.dynamicResolution }),
-        bloom,
         extendedLighting: projectExtendedLightingInspection(extendedLightingState),
-        directionalShadow,
-        shadowRaster,
-        ...(inspectedSystem.temporalTargetInspection === undefined
-          ? {}
-          : { temporalTarget: Object.freeze(inspectedSystem.temporalTargetInspection) }),
-        ...(inspectedSystem.motionBlurInspection === undefined
-          ? {}
-          : { motionBlur: Object.freeze(inspectedSystem.motionBlurInspection) }),
-        ...dofInspection(inspectedSystem.depthOfFieldInspection),
-        ...(inspectedSystem.lodOcclusion === undefined
-          ? {}
-          : { lodOcclusion: Object.freeze(inspectedSystem.lodOcclusion.value()) }),
-        ...(inspectedSystem.transmission === undefined
-          ? {}
-          : { transmission: inspectedSystem.transmission }),
-        ...(standardLighting === undefined
-          ? {}
-          : { standardLighting: Object.freeze({ ...standardLighting }) }),
         ...(pointShadow === undefined ? {} : { pointShadow: Object.freeze({ ...pointShadow }) }),
-        ...(inspectedSystem.capsuleShadowInspection === undefined
-          ? {}
-          : { capsuleShadow: inspectedSystem.capsuleShadowInspection }),
-        ...(inspectedSystem.transparencyInspection === undefined
-          ? {}
-          : { transparency: inspectedSystem.transparencyInspection }),
-        meshMaterialBindings: Object.freeze(
-          inspectedSystem.meshMaterialBindings.map((observation) =>
-            Object.freeze({
-              ...observation,
-              bindings: Object.freeze(
-                observation.bindings.map((binding) => Object.freeze({ ...binding })),
-              ),
-              diagnostics: Object.freeze(
-                observation.diagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
-              ),
-            }),
-          ),
-        ),
         perFramePassNames: Object.freeze([...cameraViews.perFramePassNames]),
-        bindGroupCounts: Object.freeze({
-          createBindGroup: inspectedSystem.bindGroupCounts.createBindGroup,
-          keys: Object.freeze([...inspectedSystem.bindGroupCounts.keys]),
-        }),
         recoveryEvidence: Object.freeze({
           ...recoveryEvidence,
           graph: deviceLost
@@ -3248,35 +3295,13 @@ async function makeWebGPURenderer(
             lastGeneration: latestReceipt?.deviceGeneration,
           }),
         }),
-        output: Object.freeze({
-          ...outputInspection,
-          graphPassNames: Object.freeze([...outputInspection.graphPassNames]),
-          ...(outputInspection.standardOutputColor === undefined
-            ? {}
-            : { standardOutputColor: Object.freeze({ ...outputInspection.standardOutputColor }) }),
-        }),
-        observation: Object.freeze({
+        ...projectRendererOutputObservationInspection({
           observationId,
           frameId,
-          ...(inspectedSystem.lastSuccessfulCameraAntialias === undefined
-            ? {}
-            : { antialias: inspectedSystem.lastSuccessfulCameraAntialias }),
-          ...(outputInspection.surfaceProfile === undefined
-            ? {}
-            : { surfaceProfile: outputInspection.surfaceProfile }),
+          antialias: inspectedSystem.lastSuccessfulCameraAntialias,
+          outputInspection,
           rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
-          passNames: Object.freeze([...outputInspection.graphPassNames]),
-          ...(outputInspection.standardOutputColor === undefined
-            ? {}
-            : { standardOutputColor: Object.freeze({ ...outputInspection.standardOutputColor }) }),
-          resourceStats: Object.freeze({
-            allocationCount: observationStats.allocationCount,
-            liveCount: observationStats.liveCount,
-            peakLiveCount: observationStats.peakLiveCount,
-            mapCount: observationStats.mapCount,
-            readbackCount: observationStats.readbackCount,
-            liveByteLength: observationStats.liveByteLength,
-          }),
+          resourceStats: observationStats,
         }),
       });
     },
@@ -3424,7 +3449,7 @@ async function makeWebGPURenderer(
     async installRenderFeature(
       feature: RenderFeature<unknown>,
     ): Promise<RenderResult<void, RenderError>> {
-      if (disposed) {
+      if (disposed || candidateShaderState !== undefined) {
         return err(
           new RenderFeatureStageFailedError(feature.identity, -1, 'extract', 'registration'),
         );
@@ -3466,54 +3491,87 @@ async function makeWebGPURenderer(
           new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
         );
       }
-      const fullscreenPrewarm = await prewarmFullscreenFeatureModules(feature);
-      if (!fullscreenPrewarm.ok) {
-        return err(
-          new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
+      const featureScope = activeDeviceScope;
+      const featureDevice = internals.device;
+      const featureCatalog = getShader();
+      const featureAdapter = getShaderModuleAdapter();
+      const generationIsCurrent = () =>
+        !disposed &&
+        featureScope.isAlive() &&
+        featureScope === activeDeviceScope &&
+        candidateShaderState === undefined;
+      const warmupScope = featureScope.createChild('render-feature-shaders');
+      const modules = new Map<string, ShaderModule>();
+      warmupScope._adopt('shader', modules, (retained) => retained.clear());
+      const retain = (label: string, module: ShaderModule) => {
+        if (warmupScope.isAlive()) modules.set(label, module);
+      };
+      let committed = false;
+      try {
+        const fullscreenPrewarm = await prewarmFullscreenFeatureModules(
+          feature,
+          featureDevice,
+          featureAdapter,
+          retain,
+          generationIsCurrent,
         );
-      }
-      for (const materialShaderId of feature.requiredMaterialShaders ?? []) {
-        const lookup = getShader().findMaterialArtifact(materialShaderId);
-        if (!lookup.ok) {
-          const error = new RhiError({
-            code: 'shader-compile-failed',
-            expected: `declared render feature material shader '${materialShaderId}' is present in the loaded manifest`,
-            hint: `add material shader '${materialShaderId}' to the shader manifest or remove it from the feature declaration`,
-          });
-          internals.errorRegistry.fire(error);
+        if (!fullscreenPrewarm.ok || !generationIsCurrent()) {
           return err(
             new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
           );
         }
-        const label = `module-${materialShaderId}`;
-        const moduleResult = internals.pack.createShaderModule
-          ? await internals.pack.createShaderModule(internals.device, {
-              code: lookup.value.source,
-              label,
-            })
-          : await invokeDeviceCreateShaderModule(internals.device, {
-              code: lookup.value.source,
-              label,
-            });
-        if (!moduleResult.ok) {
-          internals.errorRegistry.fire(moduleResult.error);
-          return err(
-            new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
-          );
-        }
-        getShaderModuleAdapter().seedModule(label, moduleResult.value);
-      }
-      const installed = host.install(feature);
-      if (!installed.ok) return installed;
-      if (installed.ok) {
         for (const materialShaderId of feature.requiredMaterialShaders ?? []) {
-          requiredMaterialShaderSet.add(materialShaderId);
+          const lookup = featureCatalog.findMaterialArtifact(materialShaderId);
+          if (!lookup.ok) {
+            const error = new RhiError({
+              code: 'shader-compile-failed',
+              expected: `declared render feature material shader '${materialShaderId}' is present in the loaded manifest`,
+              hint: `add material shader '${materialShaderId}' to the shader manifest or remove it from the feature declaration`,
+            });
+            internals.errorRegistry.fire(error);
+            return err(
+              new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
+            );
+          }
+          const label = `module-${materialShaderId}`;
+          const descriptor = lookup.value.program.sourceReference.descriptor(label);
+          const moduleResult = internals.pack.createShaderModule
+            ? await internals.pack.createShaderModule(featureDevice, descriptor)
+            : await invokeDeviceCreateShaderModule(featureDevice, descriptor);
+          if (!moduleResult.ok) {
+            internals.errorRegistry.fire(moduleResult.error);
+            return err(
+              new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
+            );
+          }
+          if (!generationIsCurrent())
+            return err(
+              new RenderFeatureStageFailedError(feature.identity, -1, 'prepare', 'registration'),
+            );
+          retain(label, moduleResult.value);
+          featureAdapter.seedModule(
+            label,
+            moduleResult.value,
+            lookup.value.program.sourceReference,
+          );
         }
-        requiredMaterialShaders = Object.freeze([...requiredMaterialShaderSet]);
-        requiredFullscreenPostProcesses = nextRequiredFullscreenPostProcesses;
-        cameraViews.reset();
+        const installed = host.install(feature);
+        if (!installed.ok) return installed;
+        if (installed.ok) {
+          featureShaderScopes.get(feature)?.dispose();
+          featureShaderScopes.set(feature, warmupScope);
+          committed = true;
+          for (const materialShaderId of feature.requiredMaterialShaders ?? []) {
+            requiredMaterialShaderSet.add(materialShaderId);
+          }
+          requiredMaterialShaders = Object.freeze([...requiredMaterialShaderSet]);
+          requiredFullscreenPostProcesses = nextRequiredFullscreenPostProcesses;
+          cameraViews.reset();
+        }
+        return installed;
+      } finally {
+        if (!committed) warmupScope.dispose();
       }
-      return installed;
     },
     async uninstallRenderFeature(
       feature: RenderFeature<unknown>,
@@ -3533,6 +3591,8 @@ async function makeWebGPURenderer(
       }
       const removed = host.uninstall(feature);
       if (removed.ok) {
+        featureShaderScopes.get(feature)?.dispose();
+        featureShaderScopes.delete(feature);
         requiredMaterialShaderSet.clear();
         for (const remaining of host.features) {
           for (const materialShaderId of remaining.requiredMaterialShaders ?? []) {
@@ -4035,18 +4095,4 @@ async function makeWebGPURenderer(
     publishAndRetireRendererGeneration,
   });
   return renderer;
-}
-
-const colorAttributes = new WeakMap<object, boolean>();
-
-/** Vertex layout projections are immutable; answer each one's color input once. */
-function hasColorAttribute(projection: {
-  readonly attributes: readonly { readonly key: string }[];
-}): boolean {
-  let color = colorAttributes.get(projection);
-  if (color === undefined) {
-    color = projection.attributes.some((attribute) => attribute.key === 'color');
-    colorAttributes.set(projection, color);
-  }
-  return color;
 }

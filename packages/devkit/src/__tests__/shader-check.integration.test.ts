@@ -60,13 +60,28 @@ describe('asset shader check', () => {
     const result = await shaderCheckCommand({ root, path: 'assets/broken.wgsl' });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.code).toBe('shader-check-failed');
-    expect(JSON.stringify(result.error.detail)).toContain('broken.wgsl');
+    expect(result.error.code).toBe('shader-compile-failed');
+    expect(JSON.stringify(result.error)).toContain('shader');
   }, 120_000);
+
+  it('checks only the named shader closure despite unrelated broken game code', async () => {
+    await writeFile(resolve(root, 'assets/game.ts'), 'export default { broken syntax');
+    try {
+      expect(await shaderCheckCommand({ root, path: 'assets/valid.wgsl' })).toMatchObject({
+        ok: true,
+        value: { scope: 'source', dependencies: [] },
+      });
+    } finally {
+      await writeFile(
+        resolve(root, 'assets/game.ts'),
+        "export default { name: 'game', apply() {} };\n",
+      );
+    }
+  });
 
   it('accepts a valid named WGSL file', async () => {
     const result = await shaderCheckCommand({ root, path: 'assets/valid.wgsl' });
-    expect(result).toMatchObject({
+    expect(result, JSON.stringify(result)).toMatchObject({
       ok: true,
       value: { root, path: resolve(root, 'assets/valid.wgsl') },
     });

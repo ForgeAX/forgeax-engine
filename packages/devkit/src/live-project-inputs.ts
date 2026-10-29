@@ -60,7 +60,26 @@ function isReferenceSource(name: string): boolean {
 
 function isTestSource(path: string): boolean {
   const normalized = path.replace(/\\/g, '/');
-  return normalized.includes('/__tests__/') || /(?:^|\/)[^/]+\.test\.[^/]+$/.test(normalized);
+  return (
+    normalized.includes('/__tests__/') || /(?:^|\/)[^/]+\.(?:test|spec)\.[^/]+$/.test(normalized)
+  );
+}
+
+/**
+ * With an accepted compiler scope, a test source (never a Pack: the scanner
+ * skips `__tests__` and only admits *.pack.* / *.meta.json) is a runtime input
+ * only when that compiler read it, which puts it in `inputPaths`. A runtime
+ * edit that starts importing a test file changes the hash itself, and the next
+ * scope then lists it. Without a scope every file stays an input.
+ */
+function testSourceOutsideScope(
+  projectRoot: string,
+  inputPaths: readonly string[] | undefined,
+): (key: string, path: string, canonicalPath: string) => boolean {
+  if (inputPaths === undefined || inputPaths.includes(projectRoot)) return () => false;
+  const scope = new Set(inputPaths.map((path) => resolve(path)));
+  return (key, path, canonicalPath) =>
+    isTestSource(key) && !scope.has(resolve(path)) && !scope.has(canonicalPath);
 }
 
 type InputFile = {
@@ -215,6 +234,7 @@ export async function readLiveProjectInputs(
   const hash = createHash('sha256');
   const authorFiles: InputFile[] = [];
   const documentationFiles: InputFile[] = [];
+  const outsideScope = testSourceOutsideScope(projectRoot, inputPaths);
   async function directory(
     path: string,
     relative: string,
@@ -249,6 +269,7 @@ export async function readLiveProjectInputs(
               mode: metadata.mode,
             },
           } satisfies InputFile;
+          if (outsideScope(key, file.path, join(canonical, name))) continue;
           if (isAuthorFile(name)) {
             authorFiles.push(file);
             hashFile(hash, file);

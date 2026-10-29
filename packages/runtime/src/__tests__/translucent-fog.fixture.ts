@@ -12,6 +12,7 @@ import {
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 export const TRANSLUCENT_FOG_SIZE = 64;
@@ -257,7 +258,7 @@ export async function renderFogFrames(
       unwrap(await frame.completed);
       if (pending !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
-        await options.capture?.((await pending).unwrap());
+        await options.capture?.(compactTape((await pending).unwrap()));
       }
       if (!last) continue;
       const observation = unwrap(

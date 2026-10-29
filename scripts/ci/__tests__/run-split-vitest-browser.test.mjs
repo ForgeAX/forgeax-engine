@@ -394,7 +394,6 @@ test('the measured video benchmark keeps neighboring render groups outside its m
   assert.equal(
     browserGroupRequiresExclusiveRunner([
       'packages/runtime/src/__tests__/wave1-rendering-p0.browser.test.ts',
-      'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
       'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
       'packages/ui/src/preview/__tests__/capture-determinism.browser.test.ts',
     ]),
@@ -430,9 +429,10 @@ test('the complete nine-light owner drains competing browser groups', () => {
   );
 });
 
-test('large render-worker owners retain singleton groups with exclusive runner admission', () => {
+test('dense Renderer owners retain singleton groups with exclusive runner admission', () => {
   const groups = dryRunGroups();
   for (const file of [
+    'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
     'packages/app/__tests__/engine-worker-asset-loss.browser.test.ts',
     'packages/app/__tests__/render-worker-environment.browser.test.ts',
     'packages/app/__tests__/render-worker-tiles.browser.test.ts',
@@ -1235,6 +1235,7 @@ test('the native PCM loop owner retains a fresh complete browser process', () =>
 // the environment/calibration neighbors passed their unchanged solo retries.
 test('exclusive renderer owners drain neighboring browser groups', async () => {
   const files = [
+    'packages/three/src/__tests__/render.browser.test.ts',
     'packages/three/src/__tests__/material-output-0.browser.test.ts',
     'packages/three/src/__tests__/material-output-1.browser.test.ts',
     'packages/app/__tests__/subsurface.browser.test.ts',

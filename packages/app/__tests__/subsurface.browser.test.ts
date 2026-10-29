@@ -61,7 +61,10 @@ it('publishes skinned Standard diffusion through both real Worker layouts', asyn
         const identity = app.execution?.report().world.identity;
         if (!app.remoteEval || identity == null) throw new Error('Missing public source inspection capability');
         const capture = await app.remoteEval(
-          'const result = await rhiCapture.captureFrame(); if (!result.ok) throw result.error; return result.value.bytes;', identity);
+          `const { decodeTape, encodeTape } = await _import('@forgeax/engine-rhi-debug');
+           const result = await rhiCapture.captureFrame();
+           if (!result.ok) throw result.error;
+           return encodeTape(decodeTape(result.value.bytes).unwrap(), { compression: 'gzip' }).unwrap();`, identity);
         expect(capture).toBeInstanceOf(Uint8Array);
         const model = buildFrameModel(decodeTape(capture as Uint8Array).unwrap());
         expect(model.works.some((work) => work.pipeline.shaders.some(shader => shader.entryPoint === 'cs_subsurface')),

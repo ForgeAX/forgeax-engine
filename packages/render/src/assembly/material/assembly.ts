@@ -46,7 +46,9 @@ export function assembleStandardPbrArtifact(
       : optionsOrVertexColor;
   const shaderEntry: ProgramEntry = !('program' in shaderEntryOrProgram)
     ? {
-        source: shaderEntryOrProgram.source,
+        get source() {
+          return shaderEntryOrProgram.source;
+        },
         program: shaderEntryOrProgram,
         paramSchema: [],
         receipt: createStandardPbrArtifactReceipt(skinned, options.vertexColorAvailable ?? false),
@@ -170,7 +172,9 @@ function selectedMaterialShaderEntry(
   receipt: MaterialProgramAbi | undefined,
 ): ProgramEntry {
   return {
-    source: program.source,
+    get source() {
+      return program.source;
+    },
     program,
     paramSchema: entry.paramSchema,
     ...(receipt === undefined ? {} : { receipt }),
@@ -343,57 +347,69 @@ export function resolveMaterialShaderArtifact(
     const cached = variantRequests?.get(requestKey);
     if (cached === ABSENT) continue;
     if (cached !== undefined) return cached;
-    const remember = (value: MaterialShaderArtifact | typeof ABSENT) => {
-      const shaders = shaderRequests ?? new Map();
-      const variants = variantRequests ?? new Map();
-      variants.set(requestKey, value);
-      shaders.set(variant, variants);
-      cache.requests.set(materialShaderId, shaders);
-    };
-    const selected =
-      manifestEntry === undefined || manifestEntry.variants.length === 0
-        ? undefined
-        : selectPublishedVariant(manifestEntry, options);
-    // A published variant set is an explicit producer contract. Falling back
-    // to the primary entry when the requested axes have no variant would pair
-    // one source with another artifact's receipt.
-    if (
-      manifestEntry !== undefined &&
-      manifestEntry.variants.length > 0 &&
-      selected === undefined
-    ) {
-      remember(ABSENT);
-      continue;
-    }
-    const selectedEntry =
-      selected === undefined
-        ? lookup.value
-        : selectedMaterialShaderEntry(
-            lookup.value,
-            shader.materialProgram(
-              selected.composedWgsl,
-              selected.entryPoints ?? selected.receipt?.entryPoints,
-            ),
-            selected.receipt,
-          );
-    const artifact = assemblePublishedArtifact(
-      lookupId === SHADOW_CASTER_SHADER_ID ? lookupId : materialShaderId,
-      selectedEntry,
+    const artifact = assembleRequestedArtifact(
+      materialShaderId,
+      lookupId,
+      lookup.value,
+      shader,
+      manifestEntry,
       options,
-      manifestEntry?.uvSetCount,
     );
-    if (artifact !== undefined) {
-      const published = {
-        ...artifact,
-        ...(selected === undefined ? {} : { variantSet: selected.definesKey }),
-        // The empty manifest key is the canonical all-true variant, so infer
-        // output support from its declared axes rather than from the key text.
-        reflectionFallbackOutputAvailable: selected?.defines.REFLECTION_FALLBACK_AVAILABLE === true,
-      };
-      remember(published);
-      return published;
-    }
-    remember(ABSENT);
+    const shaders = shaderRequests ?? new Map();
+    const variants = variantRequests ?? new Map();
+    variants.set(requestKey, artifact);
+    shaders.set(variant, variants);
+    cache.requests.set(materialShaderId, shaders);
+    if (artifact !== ABSENT) return artifact;
   }
   return undefined;
+}
+
+/** Cold artifact assembly stays outside the cache-hit loop's lexical scope. */
+function assembleRequestedArtifact(
+  materialShaderId: string,
+  lookupId: string,
+  entry: ProgramEntry,
+  shader: Pick<ShaderRegistry, 'materialProgram'>,
+  manifestEntry: MaterialShaderManifestEntry | undefined,
+  options: MaterialShaderArtifactRequest,
+): MaterialShaderArtifact | typeof ABSENT {
+  const selected =
+    manifestEntry === undefined || manifestEntry.variants.length === 0
+      ? undefined
+      : selectPublishedVariant(manifestEntry, options);
+  // A published variant set is an explicit producer contract. Falling back
+  // to the primary entry when the requested axes have no variant would pair
+  // one source with another artifact's receipt.
+  if (manifestEntry !== undefined && manifestEntry.variants.length > 0 && selected === undefined) {
+    return ABSENT;
+  }
+  const selectedEntry =
+    selected === undefined
+      ? entry
+      : selectedMaterialShaderEntry(
+          entry,
+          shader.materialProgram(
+            selected.composedWgsl,
+            selected.entryPoints ?? selected.receipt?.entryPoints,
+          ),
+          selected.receipt,
+        );
+  const artifact = assemblePublishedArtifact(
+    lookupId === SHADOW_CASTER_SHADER_ID ? lookupId : materialShaderId,
+    selectedEntry,
+    options,
+    manifestEntry?.uvSetCount,
+  );
+  if (artifact !== undefined) {
+    const published = {
+      ...artifact,
+      ...(selected === undefined ? {} : { variantSet: selected.definesKey }),
+      // The empty manifest key is the canonical all-true variant, so infer
+      // output support from its declared axes rather than from the key text.
+      reflectionFallbackOutputAvailable: selected?.defines.REFLECTION_FALLBACK_AVAILABLE === true,
+    };
+    return published;
+  }
+  return ABSENT;
 }

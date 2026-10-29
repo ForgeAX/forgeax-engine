@@ -13,6 +13,7 @@ import { buildFrameModel, decodeTape, type RecorderAttachment } from '@forgeax/e
 import { Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 /** Real public target pixels distinguish two reflections and a held resized view. */
@@ -128,7 +129,7 @@ export async function verifyPlanarMultiCamera(input: {
       .inspect()
       .perFramePassNames.filter((name) => name.startsWith('planar-reflection-face')),
   ).toHaveLength(2);
-  save('multi.rhitape', captured.bytes);
+  save('multi.rhitape', compactTape(captured).bytes);
   save('multi.json', new TextEncoder().encode(JSON.stringify(model, null, 2)));
   world.set(second, CameraView, { updateInterval: 1000 }).unwrap();
   await draw();

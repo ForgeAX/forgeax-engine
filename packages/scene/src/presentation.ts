@@ -326,7 +326,8 @@ function captureMember(
   let history = state.history.get(entity);
   const fresh = history === undefined;
   history ??= { previous: pose(), current: pose(), parent: undefined, tick };
-  if (!before && !fresh) copyPose(history.current, history.previous);
+  // Before-capture already settled the accepted current pose into previous.
+  // Preserve that snapshot while reading the fixed writer's final pose.
   if (before || fresh || state.source.changed(entity, Transform))
     readPose(world, entity, history.current);
   const nextParent = parent(world, entity);

@@ -121,9 +121,18 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
     const activeCamera = (): EntityHandle | undefined => {
       const active = getActiveCamera(ctx.world)?.entity;
       let first: EntityHandle | undefined;
-      for (const row of ctx.world.query({ with: [Camera, GlobalTransform] }).unwrap()) {
-        first ??= row.entity;
-        if (row.entity === active) return row.entity;
+      for (const querySpan of ctx.world
+        .query({ with: [Camera, GlobalTransform] })
+        .unwrap()
+        .spans()
+        .unwrap()) {
+        const queryEntities = querySpan.entities;
+        for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+          const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+
+          first ??= queriedEntity;
+          if (queriedEntity === active) return queriedEntity;
+        }
       }
       return first;
     };

@@ -112,8 +112,9 @@ export function collectGpuShadowMaterials(
   shadowMaterials: ShadowMaterialContent,
   meshReads: ShadowMeshInput | undefined,
 ): void {
-  for (const [binding, execution] of batchExecutions) {
-    if (execution.shadow.route === 'none') continue;
+  for (const binding of batchExecutions.keys()) {
+    const execution = batchExecutions.get(binding);
+    if (execution === undefined || execution.shadow.route === 'none') continue;
     const scope = worlds[binding.worldId];
     if (scope !== undefined)
       shadowMaterials.add(
@@ -380,11 +381,12 @@ export function prepareGpuDrivenOwner(
     : [];
   const updateShadowViews = prepared.value.updateShadowViews;
   if (updateShadowViews === undefined) return true;
-  const shadowUpdate = runRecordProfilePhase(
-    profilePhase,
-    'record/gpu-driven-prepare/shadow-views',
-    () => updateShadowViews(requests),
-  );
+  const shadowUpdate =
+    profilePhase === undefined
+      ? updateShadowViews(requests, true)
+      : runRecordProfilePhase(profilePhase, 'record/gpu-driven-prepare/shadow-views', () =>
+          updateShadowViews(requests, true),
+        );
   if (!shadowUpdate.ok) {
     internals.errorRegistry.fire(shadowUpdate.error);
     return false;

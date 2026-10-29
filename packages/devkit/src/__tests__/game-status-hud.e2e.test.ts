@@ -69,3 +69,52 @@ it('shows English version and completed-frame diagnostics without intercepting g
     await browser.close();
   }
 });
+
+it('admits gameplay when submitted and completed frame receipts cross an open shadow root', async () => {
+  const executablePath = [
+    process.env.FORGEAX_BROWSER_EXECUTABLE,
+    '/opt/google/chrome-beta/chrome',
+    chromium.executablePath(),
+  ].find((path): path is string => path !== undefined && existsSync(path));
+  const browser = await chromium.launch({
+    headless: true,
+    ...(executablePath ? { executablePath } : {}),
+    chromiumSandbox: true,
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(hostStartupDocument('Game'));
+    await page.addScriptTag({
+      content: `
+        const state = globalThis.__shadowStartupState = { inputEnabled: false };
+        const host = { document, events: window, surface: () => undefined,
+          now: () => performance.now(), visible: () => true, reducedMotion: true,
+          reload: () => {} };
+        const startup = globalThis.__shadowStartup = ${hostStartupScript(true, 'host')};
+        startup.bindInput(enabled => { state.inputEnabled = enabled; });
+        startup.bindSession('shadow-game');
+        startup.prepare();
+        const rootHost = document.createElement('div');
+        const shadow = rootHost.attachShadow({ mode: 'open' });
+        const canvas = document.querySelector('#app');
+        shadow.append(canvas);
+        document.body.append(rootHost);
+        const detail = { frameId: 1, deviceGeneration: 1,
+          presentation: 'ready', worldIdentity: 'shadow-game' };
+        canvas.dispatchEvent(new CustomEvent('forgeax:frame-submitted', {
+          detail, composed: true,
+        }));
+        canvas.dispatchEvent(new CustomEvent('forgeax:frame-completed', {
+          detail, composed: true,
+        }));
+      `,
+    });
+
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(globalThis, '__shadowStartupState').inputEnabled))
+      .toBe(true);
+    await page.evaluate(() => Reflect.get(globalThis, '__shadowStartup').destroy());
+  } finally {
+    await browser.close();
+  }
+});

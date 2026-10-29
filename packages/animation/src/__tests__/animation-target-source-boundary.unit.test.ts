@@ -42,7 +42,11 @@ describe('animation target source boundary', () => {
     );
 
     expect(evaluator).not.toMatch(/\bSkin\.joints\b|world\.get\([^)]*,\s*Skin\b/);
-    expect(membership).toContain('const skinJoints = skin.joints;');
+    expect(membership).toContain(
+      "const skinJoints = readRenderArrayView(scope.world, entity, read.skinComponent, 'joints');",
+    );
+    expect(membership).not.toMatch(/row\.get\(skinComponent\)|world\.get\([^)]*,\s*Skin\b/);
+    expect(membership).toContain('joints: Object.freeze(Array.from(skinJoints, Number))');
     expect(jointWiring).toContain('Skin');
     expect(jointWiring).toContain('joints');
   });

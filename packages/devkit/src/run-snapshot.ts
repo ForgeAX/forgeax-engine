@@ -1466,7 +1466,9 @@ async function planSnapshot(
       }
     }
   }
-  await tree(projectRoot, 'project');
+  // Doctor validates installed dependencies, not the mutable consumer tree.
+  // Real run snapshots still capture and compare every project runtime input.
+  if (!options.verifyLocalDependencies) await tree(projectRoot, 'project');
   await dependencies(projectRoot, 'project', true);
   const proofsByPath = new Map<string, SnapshotProof>();
   for (const context of contexts.values()) {
@@ -1498,14 +1500,29 @@ export async function inspectRunDependencyClosure(
   };
   const first = await planSnapshot(resolve(projectRoot), undefined, options);
   const second = await planSnapshot(resolve(projectRoot), undefined, options);
-  if (JSON.stringify(first) !== JSON.stringify(second))
+  if (JSON.stringify(first) !== JSON.stringify(second)) {
+    const inputs = (plan: SnapshotPlan) =>
+      new Map([
+        ...plan.files.map((file) => [file.source, file.stamp] as const),
+        ...plan.proofs.map((proof) => [proof.path, JSON.stringify(proof)] as const),
+        ...plan.links.map((link) => [resolve(projectRoot, link.target), link.destination] as const),
+        [resolve(projectRoot, '.forgeax/engine-binding.json'), plan.binding] as const,
+      ]);
+    const before = inputs(first),
+      after = inputs(second);
+    const changedPaths = [...new Set([...before.keys(), ...after.keys()])]
+      .filter((path) => before.get(path) !== after.get(path))
+      .sort();
     throw dependencyClosureError(
       'project-dependency-source-changed',
-      'Project files or installed dependency links changed during doctor inspection.',
+      'Installed dependency inputs or links changed during doctor inspection.',
       {
         root: resolve(projectRoot),
+        changedPaths: changedPaths.slice(0, 64),
+        omittedPathCount: Math.max(0, changedPaths.length - 64),
       },
     );
+  }
   await verifySnapshotProofs(second.proofs);
 }
 

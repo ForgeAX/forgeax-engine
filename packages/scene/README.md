@@ -84,6 +84,20 @@ materializing full component objects for joints and detached Children snapshots.
 TRS views returned by public World.get already borrow their current column bytes;
 this optimization does not claim to remove a byte copy from those TRS fields.
 
+Continuously moving fixed histories reuse the previous pose settled by
+before-capture. After-capture reads the final source pose without copying the
+same previous pose again; a stopped writer still receives its final settlement.
+
+```sh
+node packages/scene/bench/presentation.mjs
+```
+
+> [!NOTE]
+> This opt-in CPU benchmark requires `process.threadCpuUsage` and verifies four
+> fixed steps per update. It reports phase wall time and thread CPU separately,
+> with moving and stopped pose digests for equivalent-work comparisons. It does
+> not qualify browser FPS.
+
 ## Keyed SceneAsset authoring
 
 `SceneAsset` is authored as ordinary data. The key in `entities` is the only

@@ -12,7 +12,7 @@ export function skinnedPositions(
   entity: EntityHandle,
   mesh: MeshAsset,
   positions: Float32Array,
-  out?: Float32Array,
+  out: Float32Array,
 ): { positions: Float32Array; bounds: Float32Array } | undefined {
   const skin = world.get(entity, Skin);
   if (!skin.ok) return undefined;
@@ -51,7 +51,7 @@ export function skinnedPositions(
     palette.set(matrix, joint * 16);
   }
 
-  const posed = out ?? new Float32Array(positions.length);
+  const posed = out;
   const bounds = new Float32Array([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
   const point = new Float64Array(4);
   for (let vertex = 0; vertex < count; vertex++) {

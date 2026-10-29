@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { AUDIO_ERROR_HINTS } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   EXECUTION_CAPABILITY_NAMES,
@@ -7,6 +8,17 @@ import {
 } from '../index';
 
 describe('execution schema freshness', () => {
+  it('derives audio error catalogs from their source owner', () => {
+    const schema = JSON.parse(
+      readFileSync(new URL('../../schema/execution-report.schema.json', import.meta.url), 'utf8'),
+    );
+    const audio = schema.properties.audio.properties;
+    expect(audio.lastError.oneOf[1].properties.code.enum).toEqual(Object.keys(AUDIO_ERROR_HINTS));
+    expect(audio.preparation.properties.failure.properties.code.enum).toEqual(
+      Object.keys(AUDIO_ERROR_HINTS),
+    );
+  });
+
   it('keeps runtime catalogs aligned with the JSON schema authority', () => {
     const schema = JSON.parse(
       readFileSync(new URL('../../schema/execution-report.schema.json', import.meta.url), 'utf8'),

@@ -101,7 +101,7 @@ function missingInput(field: string): Result<never, RenderGraphError> {
 function shaderSource(
   frame: RenderGraphFrame,
   stage: keyof NonNullable<RenderPipelineFrame['ssrShaders']>,
-): string | undefined {
+): string | import('@forgeax/engine-types').ShaderSource | undefined {
   return (frame as RenderPipelineFrame).ssrShaders?.[stage];
 }
 

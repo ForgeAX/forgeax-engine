@@ -1,4 +1,4 @@
-import { isShaderEntryPointReads } from '@forgeax/engine-types';
+import { isShaderEntryPointReads, ShaderSource } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -35,6 +35,17 @@ export async function digestShaderBytes(bytes: Uint8Array<ArrayBuffer>): Promise
 // These are the same immutable fragments read by each row's lazy getter.
 // Weak row keys keep source queries from extending a publication's lifetime.
 const fragmentsByRow = new WeakMap<object, readonly string[]>();
+/** Utility rows use the same admitted source owner as material variants. */
+export function manifestShaderSource(row: { readonly wgsl: string }): ShaderSource {
+  return selectedSourcesByRow.get(row)?.() ?? ShaderSource.fromText(row.wgsl, new Map());
+}
+
+const selectedSourcesByRow = new WeakMap<object, () => ShaderSource>();
+
+/** Read the verified fragment owner without retaining its expanded body. */
+export function materialShaderSource(row: { readonly composedWgsl: string }): ShaderSource {
+  return selectedSourcesByRow.get(row)?.() ?? ShaderSource.fromText(row.composedWgsl, new Map());
+}
 
 /** Exact source matching for boot-module aliases and selected material variants. */
 export function materialShaderSourceEquals(
@@ -197,7 +208,8 @@ export function expandShaderManifestPublication(value: unknown): {
   }
   // Keep only sources actually requested by a renderer, instead of every
   // capability permutation. Verification below never populates this cache.
-  const decoded = new Map<string, string>();
+  const selected = new Map<string, ShaderSource>();
+  const manifest: Record<string, unknown> = {};
   const expand = (row: Record<string, unknown>, field: string) => {
     const { sourceDigest, receiptIndex, entryPointsIndex, ...metadata } = row;
     const digest = sourceDigest as string;
@@ -209,28 +221,33 @@ export function expandShaderManifestPublication(value: unknown): {
         : { entryPoints: entryPoints[entryPointsIndex as number] }),
     };
     fragmentsByRow.set(result, sourceFragments.get(digest) as readonly string[]);
+    const select = (): ShaderSource => {
+      let source = selected.get(digest);
+      if (source === undefined) {
+        source = new ShaderSource(sourceFragments.get(digest) as readonly string[]);
+        selected.set(digest, source);
+      }
+      return source;
+    };
+    selectedSourcesByRow.set(result, select);
     Object.defineProperty(result, field, {
       enumerable: true,
       get() {
-        let source = decoded.get(digest);
-        if (source === undefined) {
-          source = (sourceFragments.get(digest) as readonly string[]).join('');
-          decoded.set(digest, source);
-        }
-        return source;
+        return select().read();
       },
     });
     return result;
   };
+  Object.assign(manifest, {
+    entries: entries.map((row) => expand(row, 'wgsl')),
+    materialShaders: materials.map(({ row, variants }) =>
+      Object.assign(expand(row, 'composedWgsl'), {
+        variants: variants.map((variant) => expand(variant, 'composedWgsl')),
+      }),
+    ),
+  });
   return {
-    manifest: {
-      entries: entries.map((row) => expand(row, 'wgsl')),
-      materialShaders: materials.map(({ row, variants }) =>
-        Object.assign(expand(row, 'composedWgsl'), {
-          variants: variants.map((variant) => expand(variant, 'composedWgsl')),
-        }),
-      ),
-    },
+    manifest,
     sourceFragments,
     fragmentTable: fragments,
     sourceIndices,

@@ -19,6 +19,44 @@ async function fixture() {
   return { device, inputs, arena, skin, source };
 }
 
+it('preserves actual Skin values across page reuse and retained frame lifetimes', async () => {
+  const { inputs, arena, skin, source } = await fixture();
+  const frames: SkinInputFrame[] = [];
+  const capture = () => {
+    const frame = skin.capture();
+    frames.push(frame);
+    return frame;
+  };
+  const matrix = mat4.create();
+  try {
+    skin.setJoint(source, 7, world(1));
+    const first = capture();
+    const root = first.inputRoot();
+    expect(first.readJoint(source, 7, matrix)).toBe(true);
+    expect(matrix[12]).toBe(1);
+    first.release();
+    skin.setJoint(source, 7, world(2));
+    const changed = capture();
+    expect(changed.inputRoot()).toBe(root);
+    expect(changed.readJoint(source, 7, matrix)).toBe(true);
+    expect(matrix[12]).toBe(2);
+    const retained = changed.retain();
+    frames.push(retained);
+    changed.release();
+    skin.setJoint(source, 7, world(3));
+    const latest = capture();
+    expect(latest.readJoint(source, 7, matrix)).toBe(true);
+    expect(matrix[12]).toBe(3);
+    expect(retained.readJoint(source, 7, matrix)).toBe(true);
+    expect(matrix[12]).toBe(2);
+  } finally {
+    for (const frame of frames) frame.release();
+    skin.dispose();
+    inputs.dispose();
+    arena.dispose();
+  }
+});
+
 it('resolves equal full entity identities in separate source namespaces from one root', async () => {
   const { inputs, arena, skin, source } = await fixture();
   const other = skin.source();

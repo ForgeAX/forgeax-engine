@@ -242,8 +242,17 @@ export function extractGlyphSources(
     for (const entity of selected)
       if (world.hasComponent(entity as EntityHandle, GlyphText)) append(entity as EntityHandle);
   } else
-    for (const row of world.query({ read: [GlyphText, Transform, GlobalTransform] }).unwrap())
-      append(row.entity);
+    for (const querySpan of world
+      .query({ read: [GlyphText, Transform, GlobalTransform] })
+      .unwrap()
+      .spans()
+      .unwrap()) {
+      const queryEntities = querySpan.entities;
+      for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+        const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+        append(queriedEntity);
+      }
+    }
 }
 
 /** Actual draw work may scale with labels; an asset update only replaces its shared Font root. */

@@ -17,27 +17,27 @@ results, not a requirement to repeat every past experiment.
 
 | Task | Read |
 | --- | --- |
-| New session or an unfamiliar symptom | [Field guide](references/field-guide.md) |
-| Install/find official tools; connect a remote machine | [Setup](references/setup.md) |
-| Login QR, client authorization, pending tasks and tool-result handling | [Tooling](references/tooling.md) |
-| Build, compress, validate and transfer the ordinary publication | [Build](references/build.md) |
-| Own one simulator, find the actual game realm, inspect UI and drive controls | [Simulator](references/simulator.md) |
-| Discover a phone, use official preview, capture original failures and edit forms | [Android device](references/android-device.md) |
-| Startup stalls, missing native error fields, package reads or plugin waits | [Structured startup workflow](references/android-device.md#retrieve-structured-startup-errors) |
-| Prepare independent native contacts on Android | [Multi-touch](references/android-multitouch.md) |
-| WASM growth, native completion or resources not retiring | [Memory diagnosis](references/memory-diagnosis.md) |
-| Slow frames, host contention, UI/scene CPU and GPU attribution | [Performance](references/performance.md) |
+| New session or an unfamiliar symptom | Field guide |
+| Install/find official tools; connect a remote machine | Setup |
+| Login QR, client authorization, pending tasks and tool-result handling | Tooling |
+| Build, compress, validate and transfer the ordinary publication | Build |
+| Own one simulator, find the actual game realm, inspect UI and drive controls | Simulator |
+| Discover a phone, use official preview, capture original failures and edit forms | Android device |
+| Startup stalls, missing native error fields, package reads or plugin waits | Structured startup workflow |
+| Prepare independent native contacts on Android | Multi-touch |
+| WASM growth, native completion or resources not retiring | Memory diagnosis |
+| Slow frames, host contention, UI/scene CPU and GPU attribution | Performance |
 | Reusable Engine optimization techniques or offline CPU/GPU and A/B analysis | [Engine performance](../forgeax-engine-performance/SKILL.md) |
-| Repeatable walk/run/jump and camera rotation with completed-frame timing | [Gameplay benchmark](references/gameplay-performance.md) |
-| HTML/CSS layout, glyphs, controls and GPU UI parity | [Blitz](references/blitz.md) |
-| Joystick, run, jump, camera and input cancellation | [Mobile game](references/mobile-game.md) |
-| Clipped/missing pixels or an unexplained backend difference | [Canvas positive control](references/canvas-readback.md), then [RHI capture](references/rhi-capture.md) and [shader sources](references/shader-sources.md) |
-| Native clock/display, missing globals, resource startup or Host lifecycle | [Engine integration](references/engine-integration.md) |
-| Local execution, classic Worker or V2 admission and integration | [Worker execution](references/worker-execution.md) |
-| Native sockets, audio, remote resources or disk cache | [Native services](references/native-services.md) |
-| Select a reusable script or its regression suite | [Toolbox](references/toolbox.md) |
-| Decide what a result proves and publish evidence | [Verification](references/verification.md) |
-| Check official authorities or dated qualification | [Sources](references/sources.md) |
+| Repeatable walk/run/jump and camera rotation with completed-frame timing | Gameplay benchmark |
+| HTML/CSS layout, glyphs, controls and GPU UI parity | Blitz |
+| Joystick, run, jump, camera and input cancellation | Mobile game |
+| Clipped/missing pixels or an unexplained backend difference | Canvas positive control, then RHI capture and shader sources |
+| Native clock/display, missing globals, resource startup or Host lifecycle | Engine integration |
+| Local execution, classic Worker or V2 admission and integration | Worker execution |
+| Native sockets, audio, remote resources or disk cache | Native services |
+| Select a reusable script or its regression suite | Toolbox |
+| Decide what a result proves and publish evidence | Verification |
+| Check official authorities or dated qualification | Sources |
 
 ## Keep the actual game authoritative
 

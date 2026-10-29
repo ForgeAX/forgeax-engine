@@ -1,31 +1,25 @@
-import catalogSource from '../../../../skills/forgeax-engine-sdk/references/feature-catalog.md?raw';
+import catalog from '../../../../schemas/engine-capabilities.json';
 import type { FeatureForm } from './feature';
 
-/** A capability row of the SDK feature catalog: `| Name | **Form** | ... |`. */
-const ROW = /^\| ([^|]+?) \| \*\*([A-Za-z/-]+)\*\* \|/gm;
+const FORMS: ReadonlySet<string> = new Set([
+  'built-in',
+  'opt-in',
+  'build-time',
+  'host-side',
+  'development',
+  'test-experimental',
+]);
 
-const FORMS: Readonly<Record<string, FeatureForm>> = {
-  'Built-in': 'built-in',
-  'Opt-in': 'opt-in',
-  'Build-time': 'build-time',
-  'Host-side': 'host-side',
-  Development: 'development',
-  'Test/experimental': 'test-experimental',
-};
-
-function parseCatalog(source: string): ReadonlyMap<string, FeatureForm> {
+function capabilityRows(): ReadonlyMap<string, FeatureForm> {
   const rows = new Map<string, FeatureForm>();
-  for (const [, name, label] of source.matchAll(ROW) as IterableIterator<
-    [string, string, string]
-  >) {
-    const form = FORMS[label];
-    if (form === undefined)
-      throw new Error(`[feature-lab] catalog row '${name}': unknown form '${label}'`);
+  for (const { name, form } of catalog.capabilities) {
+    if (!FORMS.has(form))
+      throw new Error(`[feature-lab] catalog row '${name}': unknown form '${form}'`);
     if (rows.has(name)) throw new Error(`[feature-lab] catalog row '${name}' appears twice`);
-    rows.set(name, form);
+    rows.set(name, form as FeatureForm);
   }
   return rows;
 }
 
-/** Catalog row name -> form. The catalog is the SSOT; features name a row, never restate its form. */
-export const CATALOG_ROWS = parseCatalog(catalogSource);
+/** Machine-owned capability facts; narrative documentation lives in Harness. */
+export const CATALOG_ROWS = capabilityRows();

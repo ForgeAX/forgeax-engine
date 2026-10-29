@@ -809,3 +809,14 @@ export async function detectPnpmStoreFormat(storeRoot) {
   }
   return formats[0];
 }
+
+/** Generated discovery belongs to the installed release; narrative guides retain their owner. */
+export function localSdkDiscoveryLinks(source, prefix) {
+  return source.replaceAll(/\]\(([^)\s]+)\)/g, (link, target) => {
+    const file = target.slice(target.lastIndexOf('/') + 1);
+    return target.includes('/references/') &&
+      (file === 'api-index.md' || file === 'feature-catalog.md')
+      ? `](${prefix}${file})`
+      : link;
+  });
+}

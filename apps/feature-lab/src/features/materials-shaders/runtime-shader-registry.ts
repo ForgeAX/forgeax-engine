@@ -21,7 +21,7 @@ export default defineFeature({
   summary:
     'The player-side ShaderRegistry loads a content-addressed manifest and creates shader modules by hash, with no Naga or compiler dependency.',
   expect:
-    'All checks pass: the manifest loads, a known hash creates exactly one module (cached on the second get), and an unknown hash returns shader-not-found.',
+    'All checks pass: the manifest loads, a known hash creates exactly one module (cached on the second get), an unknown hash returns shader-not-found, equivalent source requests share immutable facts, and distinct sources keep separate identities without replacing the previous owner.',
   async run(checks) {
     const created: string[] = [];
     const device: ShaderRegistryDevice = {
@@ -51,6 +51,14 @@ export default defineFeature({
     );
     const miss = registry.get('deadbeef');
     checks.equal('unknown hash code', miss.ok ? 'ok' : miss.error.code, 'shader-not-found');
+
+    const sources = new ShaderRegistry({ manifestUrl: undefined });
+    const source = sources.shaderSource('a');
+    checks.ok('equivalent sources share one immutable owner', sources.shaderSource('a') === source);
+    const other = sources.shaderSource('b');
+    checks.ok('distinct sources retain distinct identities', other.identity !== source.identity);
+    checks.ok('new source preserves the previous owner', sources.shaderSource('a') === source);
+    checks.equal('logical bytes count unique sources', sources.sourceInspection().logicalBytes, 4);
 
     const empty = new ShaderRegistry({ manifestUrl: undefined });
     checks.ok(

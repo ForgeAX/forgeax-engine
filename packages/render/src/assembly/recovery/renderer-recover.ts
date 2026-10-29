@@ -29,7 +29,7 @@ import type { MeshSsboGrowResult, MeshSsboState } from '../mesh-ssbo-grow';
 import { structuredRendererCause } from '../renderer-facade';
 import { ensureContextConfigured } from '../renderer-helpers';
 import type { RecoveryContinuation, RecoveryDeadline, RecoveryPhase } from '../renderer-lifecycle';
-import type { WebGPURendererInternals } from '../webgpu-renderer';
+import type { WebGPURendererInternals } from '../webgpu-renderer-contract';
 import { attachDeviceLostFanout } from './device-loss-fanout';
 import type { RecoveryFailureLocation } from './failure-location';
 import { buildGenerationAggregate, type GenerationAggregate } from './generation';
@@ -280,7 +280,7 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     const candidateGpuStore = new GpuResidencyCache();
     const candidateDynamicTextureStore = new DynamicTextureStore();
     // Re-acquire through the SAME backend pack (the
-    // idempotent factory primitives tryCreateWebGPURenderer uses). On the
+    // idempotent factory primitives tryCreateRendererFromBackend uses). On the
     // adapter / device failure paths, health stays `device-lost` (A-AC-07):
     // recover() never fakes the renderer back to `alive`.
     const acquired = await acquireDeviceGeneration(
@@ -482,6 +482,7 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
           if (entry.ok && !candidateShaderCatalog.findMaterialArtifact(identifier).ok) {
             candidateShaderCatalog.installMaterialArtifact(identifier, {
               source: entry.value.source,
+              sourceReference: entry.value.program.sourceReference,
               paramSchema: entry.value.paramSchema,
               ...(entry.value.receipt === undefined ? {} : { receipt: entry.value.receipt }),
             });

@@ -49,7 +49,7 @@ import { gpuDrivenMeshesForFrame, querySceneExecution } from './resident-meshes'
 import { prepareScenePasses, scenePassRequests } from './scene-pass-work';
 import { shadowViewPlanesByView } from './shadow-culling';
 import { prepareShadowMaterialPipelines } from './shadow-pass';
-import { shadowUpdatePolicy } from './shadow-update-policy';
+import { createShadowUpdatePolicy } from './shadow-update-policy';
 import { disposeTargetCaptureLighting } from './target-capture-lighting';
 import { PLANAR_REFLECTION_UNIFORM_OFFSET } from './view-ubo';
 // @forgeax/engine-runtime - RenderSystem record stage: frame.
@@ -335,8 +335,7 @@ import {
 } from './frame-temporal';
 import { GpuTimingCapture } from './gpu-timing';
 import {
-  computeProjectionMatrix,
-  computeViewMatrix,
+  computeViewProjectionMatrix,
   driveLazyEquirectProjection,
   selectLazyEquirectHandles,
   warnMultiSkybox,
@@ -1976,35 +1975,11 @@ function stageFrameSsrHistory(
 function publishShadowPassResources(
   pipelineState: PipelineState,
   lights: ViewLights,
-  camera: CameraSnapshot,
   graphShadowMapSize: number | undefined,
 ): void {
   const resources = pipelineState.perPassResources;
   resources.shadowMapSize = graphShadowMapSize ?? 0;
   resources.shadowCascadeCount = lights.cascades?.cascadeCount ?? 0;
-  const firstDirectionalShadowMatrix = lights.cascades?.lightViewProj?.[0];
-  resources.shadowLightSpaceMatrix =
-    firstDirectionalShadowMatrix === undefined
-      ? null
-      : new Float32Array(firstDirectionalShadowMatrix);
-  if (lights.cascades?.lightViewProj === undefined) {
-    resources.shadowCsmLightViewProj = null;
-    resources.shadowCsmSelection = null;
-    return;
-  }
-  const csmMatrices = new Float32Array(64);
-  for (let cascade = 0; cascade < 4; cascade += 1) {
-    const matrix = lights.cascades?.lightViewProj[cascade];
-    if (matrix !== undefined) csmMatrices.set(matrix, cascade * 16);
-  }
-  resources.shadowCsmLightViewProj = csmMatrices;
-  resources.shadowCsmSelection =
-    lights.cascades?.splitPlanes === undefined
-      ? null
-      : {
-          viewMatrix: new Float32Array(computeViewMatrix(camera)),
-          splitPlanes: new Float32Array(lights.cascades?.splitPlanes),
-        };
 }
 
 /**
@@ -2188,13 +2163,7 @@ function writePlanarReflectionUniform(
   const planarUniform = new Float32Array(24);
   if (planarCapture?.camera.planarReflection !== undefined) {
     const reflected = planarCapture.camera;
-    planarUniform.set(
-      mat4.multiply(
-        mat4.create(),
-        computeProjectionMatrix(reflected),
-        computeViewMatrix(reflected),
-      ),
-    );
+    planarUniform.set(computeViewProjectionMatrix(reflected, mat4.create()));
     const config = planarCapture.camera.planarReflection;
     const length = Math.hypot(...config.normal);
     planarUniform.set(
@@ -2256,6 +2225,15 @@ function stageReflectionFallbackReadback(
   return request;
 }
 
+/** Native temporal work already projected this fixed camera; raw helpers read it here. */
+function frameViewProjection(
+  camera: CameraSnapshot,
+  prepared: Float32Array,
+  rendererRecording: boolean,
+): Float32Array {
+  return rendererRecording ? prepared : computeViewProjectionMatrix(camera, mat4.create());
+}
+
 function stageTemporalFrame(
   frameState: RenderFrameState,
   currentViewProjection: Float32Array,
@@ -2265,7 +2243,7 @@ function stageTemporalFrame(
 ): void {
   frameState.temporalFrameTransaction.stage({
     frameId: frameState.frameNumber,
-    currentViewProjection: new Float32Array(currentViewProjection),
+    currentViewProjection,
     jitter: [0, 0] as [number, number],
     viewport: { width: targetW, height: targetH },
     cameraPosition: [camera.position[0] ?? 0, camera.position[1] ?? 0, camera.position[2] ?? 0] as [
@@ -3076,7 +3054,7 @@ export function* prepareFrameRecording(
     // `clearColor` field; the zero-camera fallback carries [0, 0, 0, 1]. A
     // GradientSky owns the background and clears transparent instead.
     const clear = gradientSkyClearColor(frameState.environmentFrame?.sky, camera.clearColor);
-    publishShadowPassResources(pipelineState, lights, camera, graphShadowMapSize);
+    publishShadowPassResources(pipelineState, lights, graphShadowMapSize);
 
     // Tonemap + skybox-active resolution (skybox requires tonemap HDR target +
     // a resident cubemap view).
@@ -3182,11 +3160,10 @@ export function* prepareFrameRecording(
     // one color attachment; see computeSplitLdrSprite for the format contract.
     const splitLdrSprite = computeSplitLdrSprite(validatedOrdered, tonemapActive, sceneDispatch);
 
-    const currentViewProjection = mat4.create();
-    mat4.multiply(
-      currentViewProjection,
-      computeProjectionMatrix(camera),
-      computeViewMatrix(camera),
+    const currentViewProjection = frameViewProjection(
+      camera,
+      temporal.currentUnjitteredViewProjection,
+      rendererRecording,
     );
     const meshRows = validatedOrdered.length > 0 || shadowValidatedOrdered.length > 0;
     if (
@@ -3321,8 +3298,9 @@ export function* prepareFrameRecording(
       directShadowValidated !== undefined;
     const shadowDispatch = shadowCasterProjection?.dispatch;
     const passCtx: _InternalRenderPipelineContext = {
-      ...scenePassInputs(scenePassWork, visibleSurface, gi.probePlacement),
+      // Start with a fixed field: a leading spread grows this frame's storage.
       pipelinePreparationEntries,
+      ...scenePassInputs(scenePassWork, visibleSurface, gi.probePlacement),
       mainPassMaterialSelection: createMainPassMaterialSelectionOwner({
         dispatch: sceneDispatch,
         validatedOrdered,
@@ -3378,6 +3356,7 @@ export function* prepareFrameRecording(
       materialSlotIndices,
       materialSlots,
       materialBindings: dispatchPlan.materialBindings,
+      materialBindingSlots: dispatchPlan.materialBindingSlots,
       materialSlotCount,
       ...gpuDrivenPassContext(
         frameState,
@@ -3393,15 +3372,13 @@ export function* prepareFrameRecording(
       pointsLines: pointsLinesOwner,
       materialBgAssemblyCache: frameState.materialBgAssemblyCache,
       ...(onRenderableDraw === undefined ? {} : { onRenderableDraw }),
-      shadowUpdatePolicy: (identity) =>
-        shadowUpdatePolicy(
-          identity,
-          lights,
-          worlds,
-          effectiveShadowMapSize,
-          effectiveSpotShadowMapSize,
-          frameState.pointShadowAtlas?.getTexture() ?? undefined,
-        ),
+      shadowUpdatePolicy: createShadowUpdatePolicy(
+        lights,
+        worlds,
+        effectiveShadowMapSize,
+        effectiveSpotShadowMapSize,
+        () => frameState.pointShadowAtlas?.getTexture() ?? undefined,
+      ),
       directionalShadowCacheMiss: directionalShadowCache.miss,
       capsuleShadowDirectional,
       ...shadowPassContext(

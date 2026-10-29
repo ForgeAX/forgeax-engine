@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RasterGraphIdentity } from '../gpu-driven/raster-graph-identity';
 
-const resources = {
-  resourceGeneration: 1,
-  candidateCapacity: 64,
-  batchCapacity: 64,
-  indirectCapacity: 128,
-};
+const resources = 1;
 
 describe('raster graph dependency projections', () => {
   it('retains only the stock identity across physical mesh replacement', () => {
@@ -48,44 +43,14 @@ describe('raster graph dependency projections', () => {
   });
 
   it('invalidates both projections on a pass-list generation change', () => {
-    const field = 'resourceGeneration';
     const owner = new RasterGraphIdentity(),
       source = {},
       bindings = {},
       batches = [{ classKey: 'raw', recordingClassKey: 'stock' }];
     const first = { ...owner.update(source, 1, resources, batches, bindings, undefined) };
-    const replacement = owner.update(
-      source,
-      1,
-      { ...resources, [field]: resources[field] + 1 },
-      batches,
-      bindings,
-      undefined,
-    );
+    const replacement = owner.update(source, 1, resources + 1, batches, bindings, undefined);
     expect(replacement.raw).not.toBe(first.raw);
     expect(replacement.recording).not.toBe(first.recording);
-  });
-
-  it.each([
-    'candidateCapacity',
-    'batchCapacity',
-    'indirectCapacity',
-  ] as const)('keeps both projections when %s grows (view storage is resolved at execute time)', (field) => {
-    const owner = new RasterGraphIdentity(),
-      source = {},
-      bindings = {},
-      batches = [{ classKey: 'raw', recordingClassKey: 'stock' }];
-    const first = { ...owner.update(source, 1, resources, batches, bindings, undefined) };
-    const grown = owner.update(
-      source,
-      1,
-      { ...resources, [field]: resources[field] * 2 },
-      batches,
-      bindings,
-      undefined,
-    );
-    expect(grown.raw).toBe(first.raw);
-    expect(grown.recording).toBe(first.recording);
   });
 
   it('keeps the graph across table and skin binding replacement and observes scene identity', () => {
@@ -137,7 +102,7 @@ describe('stock-recorder raster classes', () => {
     const rebuilt = owner.update(
       {},
       1,
-      { ...resources, resourceGeneration: 2 },
+      2,
       [{ classKey: 'mesh/a', recordingClassKey: 'a' }],
       bindings,
       undefined,

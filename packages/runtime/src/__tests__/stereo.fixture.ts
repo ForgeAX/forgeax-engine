@@ -29,6 +29,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export type StereoSave = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -426,7 +427,7 @@ export async function verifyStereo(
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
     const sbs = await observeFinal(renderer, receipt, size);
-    await save('sbs.rhitape', capture.bytes);
+    await save('sbs.rhitape', compactTape(capture).bytes);
     await save('sbs.rgba', sbs.rgba);
     const eyeRect = (slot: 0 | 1): Rect => ({
       x: (slot * size.width) / 2,
@@ -556,46 +557,55 @@ async function inspectTape(
   let replayDelta = 0;
   try {
     const seen = new Set<string>();
-    for (const work of model.works) {
-      if (eyeUniforms.length === 2) break;
-      if (work.attachments?.depthStencilViewHandleId == null) continue;
-      for (const binding of work.bindings) {
-        if (binding.resourceKind !== 'buffer' || binding.resourceId === null) continue;
-        if ((binding.bufferSize ?? 0) < 232 * 4) continue;
+    const candidates = model.works.flatMap((work) => {
+      if (work.attachments?.depthStencilViewHandleId == null) return [];
+      return work.bindings.flatMap((binding) => {
+        if (binding.resourceKind !== 'buffer' || binding.resourceId === null) return [];
+        if ((binding.bufferSize ?? 0) < 232 * 4) return [];
         const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0);
         const key = `${binding.resourceId}@${offset}`;
-        if (seen.has(key)) continue;
+        if (seen.has(key)) return [];
         seen.add(key);
-        const read = await replay.readResourceAtWork(binding.resourceId, work.workIndex, {
-          offset,
-          size: 232 * 4,
-        });
-        if (!read.ok) continue;
-        const floats = new Float32Array(
-          read.value.bytes.buffer.slice(
-            read.value.bytes.byteOffset,
-            read.value.bytes.byteOffset + 232 * 4,
-          ),
-        );
-        if (Math.abs(required(floats[228]) - NEAR) > 1e-6) continue;
-        if (Math.abs(required(floats[229]) - FAR) > 1e-4) continue;
-        const x = required(floats[24]);
-        const eye = x < 0 ? 'left' : 'right';
-        if (eyeUniforms.some((row) => row.eye === eye)) continue;
-        const expected = expectedEyeViewProjection(eye, size.width / 2 / size.height);
-        let error = 0;
-        for (let i = 0; i < 16; i++)
-          error = Math.max(error, Math.abs(required(floats[196 + i]) - required(expected[i])));
-        eyeUniforms.push({
-          eye,
-          workIndex: work.workIndex,
-          position: [x, required(floats[25]), required(floats[26])],
-          near: required(floats[228]),
-          far: required(floats[229]),
-          viewProjectionMaxError: error,
-        });
-        break;
-      }
+        return [
+          {
+            resourceId: binding.resourceId,
+            workIndex: work.workIndex,
+            subresource: { offset, size: 232 * 4 },
+          },
+        ];
+      });
+    });
+    const reads = (await replay.readAtWorks(candidates)).unwrap();
+    const seenWorks = new Set<number>();
+    for (const [index, candidate] of candidates.entries()) {
+      if (eyeUniforms.length === 2) break;
+      if (seenWorks.has(candidate.workIndex)) continue;
+      const read = required(reads[index]);
+      if (!read.ok) continue;
+      const floats = new Float32Array(
+        read.value.bytes.buffer.slice(
+          read.value.bytes.byteOffset,
+          read.value.bytes.byteOffset + 232 * 4,
+        ),
+      );
+      if (Math.abs(required(floats[228]) - NEAR) > 1e-6) continue;
+      if (Math.abs(required(floats[229]) - FAR) > 1e-4) continue;
+      const x = required(floats[24]);
+      const eye = x < 0 ? 'left' : 'right';
+      if (eyeUniforms.some((row) => row.eye === eye)) continue;
+      const expected = expectedEyeViewProjection(eye, size.width / 2 / size.height);
+      let error = 0;
+      for (let i = 0; i < 16; i++)
+        error = Math.max(error, Math.abs(required(floats[196 + i]) - required(expected[i])));
+      eyeUniforms.push({
+        eye,
+        workIndex: candidate.workIndex,
+        position: [x, required(floats[25]), required(floats[26])],
+        near: required(floats[228]),
+        far: required(floats[229]),
+        viewProjectionMaxError: error,
+      });
+      seenWorks.add(candidate.workIndex);
     }
     eyeUniforms.sort((a, b) => a.eye.localeCompare(b.eye));
     expect(eyeUniforms.map((row) => row.eye)).toEqual(['left', 'right']);
@@ -620,12 +630,15 @@ async function inspectTape(
   }
   // Falsifier: dropping the right-eye composite draw must blank the right half on replay.
   const last = required(composites.at(-1));
-  const falsified = encodeTape({
-    ...tape,
-    events: tape.events.map((event, index) =>
-      index === last.eventIndex && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
-    ),
-  }).unwrap();
+  const falsified = encodeTape(
+    {
+      ...tape,
+      events: tape.events.map((event, index) =>
+        index === last.eventIndex && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
+      ),
+    },
+    { compression: 'gzip' },
+  ).unwrap();
   const falsifierAdapter = (await webgpu.rhi.requestAdapter()).unwrap();
   const falsifierDevice = (
     await falsifierAdapter.requestDevice(

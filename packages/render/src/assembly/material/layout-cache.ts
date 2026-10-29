@@ -6,7 +6,6 @@ import { MaterialSampledTextureBudgetExceededError } from '../../errors/render';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../../gpu-stage';
 import {
   createHdrpBindGroupLayoutDescriptor,
-  isCanonicalStandardPbrMaterialShader,
   isStandardPbrMaterialShader,
 } from '../../pbr-pipeline';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from '../../pipeline-spec';
@@ -173,14 +172,14 @@ export function createMaterialLayoutCache({
     ];
     const prepared = requests.get(facts);
     if (prepared !== undefined) return prepared;
-    const source = lookup.ok ? lookup.value.source : '';
+    const program = lookup.ok ? lookup.value.program : undefined;
+    const source = program?.identity ?? '';
     const bindings = (lookup.ok ? lookup.value.receipt?.bindings : undefined) ?? 'render-material';
     let shaderLayouts = cacheState.preparedMaterialPipelineLayoutCache.get(materialShaderId);
     if (
       shaderLayouts === undefined ||
       shaderLayouts.source !== source ||
-      shaderLayouts.bindings !== bindings ||
-      typeof source !== 'string'
+      shaderLayouts.bindings !== bindings
     ) {
       shaderLayouts = preparedMaterialLayoutFacts(source, bindings);
       cacheState.preparedMaterialPipelineLayoutCache.set(materialShaderId, shaderLayouts);
@@ -259,7 +258,9 @@ export function createMaterialLayoutCache({
     const currentState = currentPipelineState();
     if (currentState === null) return null;
     const lookup = getShader().findMaterialArtifact(materialShaderId);
-    const source = lookup.ok ? lookup.value.source : '';
+    const artifact = lookup.ok ? lookup.value : undefined;
+    const program = artifact?.program;
+    const source = program?.identity ?? '';
     const paramSchema = lookup.ok ? lookup.value.paramSchema : explicitParamSchema;
     if (
       isSharedLayoutMaterialShader(materialShaderId) &&
@@ -269,7 +270,7 @@ export function createMaterialLayoutCache({
       return null;
     const singleLayerMedium =
       materialShaderId === 'forgeax::single-layer-medium' ||
-      (lookup.ok && lookup.value.receipt?.surface?.model === 'single-layer-medium');
+      artifact?.receipt?.surface?.model === 'single-layer-medium';
     if (paramSchema === undefined) return null;
     const cacheKey = materialLayoutSlot(layoutKind, clustered);
     const cached = cacheState.perShaderMaterialLayoutCache.get(materialShaderId)?.get(cacheKey);
@@ -280,7 +281,6 @@ export function createMaterialLayoutCache({
     // binding is an identical canonical prefix. Otherwise build its own layout
     // so texture dimensions and sampler/storage shapes cannot drift.
     const requiresStandardMapLayout =
-      isCanonicalStandardPbrMaterialShader(materialShaderId) ||
       isStandardPbrMaterialShader(materialShaderId) ||
       standardPhysicalTextureFields(paramSchema).length > 0;
     const isStandardMapLayout = requiresStandardMapLayout;
@@ -352,7 +352,7 @@ export function createMaterialLayoutCache({
       layoutKind,
       currentState,
       clustered,
-      getShader().materialProgram(source).probeBlendRecordRequired,
+      program?.probeBlendRecordRequired ?? false,
     );
     if (bindGroups === null) return null;
     const plRes = currentBuildDevice().createPipelineLayout({

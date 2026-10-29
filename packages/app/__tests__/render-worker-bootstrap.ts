@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
+import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 
 /** Test-only access to the real child Worker, used to terminate its GPU owner. */
 const entry: ExecutionBootstrapEntry = (data) => {
@@ -117,7 +118,14 @@ const entry: ExecutionBootstrapEntry = (data) => {
               { component: Transform, data: {} },
               {
                 component: DirectionalLight,
-                data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3], color: [1, 1, 1] },
+                data: {
+                  castShadow: true,
+                  mapSize: testQuality.shadowMapSize,
+                  cascadeCount: testQuality.cascadeCount,
+                  intensity: 3,
+                  direction: [-0.5, -1, -0.3],
+                  color: [1, 1, 1],
+                },
               },
             )
             .unwrap();

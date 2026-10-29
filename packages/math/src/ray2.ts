@@ -23,12 +23,12 @@ export interface Ray2Intersection {
 
 /** Create a normalized finite 2D ray. `maxDistance` defaults to infinity. */
 export function create(
-  out?: Float32Array,
+  out: Float32Array,
   origin?: Vec2Like,
   direction?: Vec2Like,
   maxDistance = Number.POSITIVE_INFINITY,
 ): Ray2 {
-  const ray = out ?? new Float32Array(5);
+  const ray = out;
   ray[0] = origin ? (origin[0] as number) : 0;
   ray[1] = origin ? (origin[1] as number) : 0;
   const dx = direction ? (direction[0] as number) : 0;

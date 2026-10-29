@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { materialShaderSource } from '../manifest-publication';
 import {
   materialShaderSourceEquals,
   readShaderManifestPublication,
   shaderSourceDigestInput,
 } from '../manifest-publication.js';
+import { ShaderRegistry } from '../ShaderRegistry';
 
 const nativeSubtle = crypto.subtle;
 
@@ -164,7 +166,7 @@ describe('shader publication admission', () => {
       );
     }
   });
-  it('verifies every source but only retains composed strings selected by a consumer', async () => {
+  it('verifies every source and borrows only selected bodies without memoizing expanded text', async () => {
     const fragments = Array.from({ length: 40 }, (_, index) => `fn shader_${index}() {}\n`);
     const digests = fragments.map((source) => sourceDigest([source]));
     const joins: string[] = [];
@@ -193,8 +195,11 @@ describe('shader publication admission', () => {
       })) as { entries: { wgsl: string }[] };
       expect(joins).toEqual([]); // Admission hashes pooled fragments without composing WGSL.
       expect(expanded.entries[7]?.wgsl).toBe(fragments[7]);
+      const afterFirstRead = joins.length;
+      expect(afterFirstRead).toBeGreaterThan(0);
       expect(expanded.entries[7]?.wgsl).toBe(fragments[7]);
-      expect(joins).toEqual([fragments[7]]); // One selected source, cached once.
+      expect(joins.length).toBeGreaterThan(afterFirstRead);
+      expect(joins.every((body) => body === fragments[7])).toBe(true);
     } finally {
       spy.mockRestore();
     }
@@ -446,4 +451,27 @@ describe('shader publication admission', () => {
       );
     }
   });
+});
+
+it('shares selected publication source storage through ordinary registration and device forks', async () => {
+  const registry = new ShaderRegistry({
+    manifestUrl: 'memory:sealed-publication',
+    readText: async () => JSON.stringify(publication()),
+  });
+  expect((await registry.loadManifest()).ok).toBe(true);
+  const row = registry.materialShaderManifestEntry('material');
+  if (row === undefined) throw new Error('Missing publication row');
+  const source = materialShaderSource(row);
+  const program = registry.materialProgram(source);
+  expect(program.sourceReference).toBe(source);
+  expect(registry.sourceInspection()).toMatchObject({ logicalBytes: wgsl.length * 2, sources: 1 });
+  expect(
+    registry
+      .forkForDevice({
+        createShaderModule: () => {
+          throw Error('unused');
+        },
+      })
+      .materialProgram(source),
+  ).toBe(program);
 });

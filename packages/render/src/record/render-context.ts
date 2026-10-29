@@ -382,12 +382,6 @@ export interface PerPassResources {
   shadowMapSize: number;
   shadowCascadeCount: number;
   shadowSampler: Sampler | null;
-  shadowLightSpaceMatrix: Float32Array | null;
-  shadowCsmLightViewProj: Float32Array | null;
-  shadowCsmSelection: {
-    readonly viewMatrix: Float32Array;
-    readonly splitPlanes: Float32Array;
-  } | null;
 }
 
 /** Renderer-private Bloom bundle selected for one record transaction. */
@@ -668,13 +662,15 @@ export interface _StandardForwardSceneView {
   readonly materialSlotIndices: readonly (readonly number[])[];
   readonly materialSlots: readonly MaterialSnapshot[];
   readonly materialBindings: readonly import('./fold-buckets').MaterialBinding[];
+  /** Absent for a direct helper caller that has not prepared a native table. */
+  readonly materialBindingSlots?: import('./fold-buckets').MaterialBindingSlots;
   readonly materialSlotCount: number;
   /** Filled by main-pass material producers before the GPU-driven raster tail. */
   readonly gpuDrivenStandardPbrFrameResources?: GpuDrivenStandardPbrFrameResources;
   /** Scene table retained by the renderer even when no draw is GPU-admitted. */
   readonly gpuDrivenSceneMaterialBuffer?: Buffer;
   /** Accepted main-pass ownership shared with the post-submit draw receipts. */
-  readonly gpuDrivenSelection?: import('../gpu-driven/draw-selection').GpuDrawSelection;
+  readonly gpuDrivenSelection?: import('../gpu-driven/draw-selection').GpuDrawSelection | undefined;
   readonly gpuDrivenShadowViews?: ShadowViewStatePool;
   readonly shadowDirectRequired?: boolean;
   readonly gpuDrivenShadowBatchProjections?: ReadonlyMap<

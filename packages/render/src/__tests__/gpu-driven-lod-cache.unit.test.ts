@@ -698,7 +698,7 @@ describe('GPU-driven filtered-plan cache', () => {
         }
         if (!enabled) {
           expect(phases).toEqual([]);
-          expect(prepared.shadowBatchProjections?.size ?? 0).toBe(0);
+          expect(prepared.shadowBatchProjections?.()?.size ?? 0).toBe(0);
         }
         prepared._commitResourceReplacement();
       }
@@ -1148,7 +1148,7 @@ describe('GPU-driven dirty scene rows', () => {
           // The moved row and the row holding its submitted pose.
           expect(synced.get(gpuScene.transformBuffer)).toBe(2 * GPU_SCENE_LAYOUTS.transform.stride);
           const moved = frame(temporal);
-          expect(moved.prepared.topologySignature).toBe(first.prepared.topologySignature);
+          expect(moved.prepared.topologySignature()).toBe(first.prepared.topologySignature());
           expect(moved.inspection).toMatchObject({
             preparedBatchBuilds: 0,
             filteredBatchBuilds: 0,

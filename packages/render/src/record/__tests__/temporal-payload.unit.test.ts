@@ -1,4 +1,4 @@
-import { vec3 } from '@forgeax/engine-math';
+import { mat4, vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import { MaterialResource } from '../../material-resource';
@@ -7,6 +7,11 @@ import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-e
 import { materialSurfaceModel } from '../../render-system-extract';
 import type { TemporalView } from '../../temporal/temporal-view';
 import type { ValidatedRenderable } from '../frame-snapshot';
+import {
+  computeProjectionMatrix,
+  computeViewMatrix,
+  computeViewProjectionMatrix,
+} from '../helpers';
 import { MESH_PER_ENTITY_STRIDE, uploadMeshSsboBatch } from '../mesh-ssbo';
 import { VIEW_UNIFORM_BYTES, writeViewUbo } from '../view-ubo';
 
@@ -493,5 +498,170 @@ describe('temporal GPU payloads', () => {
       1,
     );
     expect(recording.uploads[3]?.byteLength).toBe(24 * MESH_PER_ENTITY_STRIDE);
+  });
+});
+
+describe('View upload invocation ownership', () => {
+  const light = {
+    kind: 'directional' as const,
+    direction: vec3.create(0, -1, 0),
+    color: vec3.create(1, 1, 1),
+    intensity: 1,
+    contactShadowLength: 0,
+  };
+  const lights = { point: [], spot: [], pointShadow: [] } as never;
+
+  it.each([
+    'camera-getter',
+    'queue-write',
+  ] as const)('keeps pending outer bytes across %s reentry', (at) => {
+    const recorded = recordingQueue();
+    const buffer = {} as Buffer;
+    let entered = false;
+    const reenter = () => {
+      if (entered) return;
+      entered = true;
+      writeViewUbo(
+        queue,
+        buffer,
+        { ...camera(), position: vec3.create(12, 13, 14), world: translatedMatrix(12) },
+        light,
+        lights,
+        [],
+        VIEW_UNIFORM_BYTES * 25,
+      );
+    };
+    const queue = {
+      writeBuffer(...args: Parameters<RhiQueue['writeBuffer']>) {
+        if (at === 'queue-write') reenter();
+        return recorded.queue.writeBuffer(...args);
+      },
+    } as unknown as RhiQueue;
+    const source = {
+      ...camera(),
+      clipping: { planes: [[2, 0, 0, -4]], clipShadows: true },
+    } as CameraSnapshot;
+    if (at === 'camera-getter')
+      Object.defineProperty(source, 'captureProjection', {
+        get() {
+          reenter();
+          return undefined;
+        },
+      });
+    writeViewUbo(queue, buffer, source, light, lights, []);
+    expect(entered).toBe(true);
+    expect(recorded.uploads).toHaveLength(5);
+    expect(recorded.offsets.slice(0, 2)).toEqual([VIEW_UNIFORM_BYTES * 25, 0]);
+    const inner = new Float32Array(recorded.uploads[0]?.buffer ?? new ArrayBuffer(0));
+    const outer = new Float32Array(recorded.uploads[1]?.buffer ?? new ArrayBuffer(0));
+    expect(Array.from(inner.slice(24, 27))).toEqual([12, 13, 14]);
+    expect(inner[280]).toBe(0);
+    expect(Array.from(outer.slice(24, 27))).toEqual([0, 0, 5]);
+    expect(Array.from(outer.slice(256, 260))).toEqual([1, 0, 0, -2]);
+    for (const bytes of recorded.uploads.slice(2))
+      expect(new Float32Array(bytes.buffer)[280]).toBe(1);
+  });
+
+  it('clears disabled lanes and preserves copied uploads after a failed write', () => {
+    const recorded = recordingQueue();
+    const buffer = {} as Buffer;
+    writeViewUbo(recorded.queue, buffer, camera(), light, lights, []);
+    const before = recorded.uploads[0]?.slice();
+    const source = {
+      ...camera(),
+      clipping: { planes: [[1, 0, 0, -3]], clipShadows: true },
+    } as CameraSnapshot;
+    writeViewUbo(recorded.queue, buffer, source, light, lights, []);
+    const failure = new Error('rejected View upload');
+    const rejecting = { writeBuffer: () => ({ ok: false, error: failure }) } as unknown as RhiQueue;
+    expect(() => writeViewUbo(rejecting, buffer, source, light, lights, [])).toThrow(failure);
+    writeViewUbo(recorded.queue, buffer, camera(), light, lights, []);
+    expect(recorded.uploads[recorded.uploads.length - 4]).toEqual(before);
+    expect(recorded.uploads[0]).toEqual(before);
+  });
+});
+
+it('writes capture projections into reused or aliased output with fresh zero tails', () => {
+  const out = computeProjectionMatrix(camera(), mat4.create());
+  out.fill(123);
+  const captured = new Float32Array([2, 3, 4]);
+  const source = { ...camera(), captureProjection: captured };
+  const expected = computeProjectionMatrix(source, mat4.create());
+  expect(computeProjectionMatrix(source, out)).toBe(out);
+  expect(Array.from(out)).toEqual(Array.from(expected));
+  out.set(computeProjectionMatrix(camera(), mat4.create()));
+  const original = out.slice();
+  expect(computeProjectionMatrix({ ...camera(), captureProjection: out }, out)).toBe(out);
+  expect(out).toEqual(original);
+  out.fill(0);
+  out.set([5, 6, 7], 8);
+  computeProjectionMatrix({ ...camera(), captureProjection: out.subarray(8, 11) }, out);
+  expect(Array.from(out)).toEqual([5, 6, 7, ...new Array(13).fill(0)]);
+});
+
+describe('camera matrix product scratch ownership', () => {
+  it.each([
+    'perspective',
+    'orthographic',
+    'stereo',
+    'capture',
+  ] as const)('preserves %s products and detached output after subsequent calls', (kind) => {
+    const world = mat4.identity(mat4.create());
+    world[12] = 4;
+    const source: CameraSnapshot = {
+      ...camera(),
+      world,
+      projection: kind === 'orthographic' ? 'orthographic' : 'perspective',
+      ...(kind === 'stereo' ? { projectionOffset: [-0.04, 0.01] as const } : {}),
+      ...(kind === 'capture' ? { captureProjection: new Float32Array([2, 3, 4]) } : {}),
+    };
+    const expected = mat4.multiply(
+      mat4.create(),
+      computeProjectionMatrix(source, mat4.create()),
+      computeViewMatrix(source, mat4.create()),
+    );
+    const output = mat4.create();
+    expect(computeViewProjectionMatrix(source, output)).toBe(output);
+    expect(output).toEqual(expected);
+    computeViewProjectionMatrix(camera(), mat4.create());
+    expect(output).toEqual(expected);
+    expect(computeViewProjectionMatrix(source, world)).toEqual(expected);
+  });
+
+  it('isolates getter reentry and restores scratch ownership after a throw', () => {
+    const source = camera();
+    const expected = mat4.multiply(
+      mat4.create(),
+      computeProjectionMatrix(source, mat4.create()),
+      computeViewMatrix(source, mat4.create()),
+    );
+    const nestedSource = { ...camera(), world: translatedMatrix(9) };
+    const nestedExpected = mat4.multiply(
+      mat4.create(),
+      computeProjectionMatrix(nestedSource, mat4.create()),
+      computeViewMatrix(nestedSource, mat4.create()),
+    );
+    const nested = mat4.create();
+    let reads = 0;
+    const reentrant = {
+      ...source,
+      get world() {
+        reads++;
+        computeViewProjectionMatrix(nestedSource, nested);
+        return source.world;
+      },
+    };
+    expect(computeViewProjectionMatrix(reentrant, mat4.create())).toEqual(expected);
+    expect(nested).toEqual(nestedExpected);
+    expect(reads).toBe(1);
+    const failure = new Error('camera getter failed');
+    const throwing = {
+      ...source,
+      get world(): Float32Array {
+        throw failure;
+      },
+    };
+    expect(() => computeViewProjectionMatrix(throwing, mat4.create())).toThrow(failure);
+    expect(computeViewProjectionMatrix(source, mat4.create())).toEqual(expected);
   });
 });

@@ -9,9 +9,37 @@ import {
   toRgba8,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { expect } from 'vitest';
+import { afterAll, expect } from 'vitest';
+import { compactTape } from '../../../runtime/src/__tests__/compact-tape.fixture';
 
 export const SIZE = 128;
+
+/** One GPU owner per immutable canvas configuration within a serial test file. */
+export function browserRendererFixture() {
+  const renderers = new Map<string, THREE.WebGPURenderer>();
+  afterAll(async () => {
+    for (const renderer of renderers.values()) {
+      try {
+        await renderer.dispose();
+      } finally {
+        (renderer.domElement as HTMLCanvasElement).remove();
+      }
+    }
+    renderers.clear();
+  });
+  return (options: { readonly stencil?: boolean; readonly antialias?: boolean } = {}) => {
+    const key = JSON.stringify([options.stencil === true, options.antialias === true]);
+    let renderer = renderers.get(key);
+    if (renderer === undefined) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = SIZE;
+      document.body.append(canvas);
+      renderer = new THREE.WebGPURenderer({ canvas, ...options });
+      renderers.set(key, renderer);
+    }
+    return renderer;
+  };
+}
 export function testScene() {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
@@ -70,7 +98,9 @@ export function comparePixels(actual: Uint8Array, expected: Uint8Array, epsilon 
 }
 
 export async function verifyReplay(capture: THREE.ThreeFrameCapture) {
-  const decoded = decodeTape(capture.tape.bytes).unwrap();
+  // Replay the same lossless container saved as evidence, without materializing
+  // a second uncompressed artifact for this capture.
+  const decoded = decodeTape(compactTape(capture.tape).bytes).unwrap();
   const model = buildFrameModel(decoded);
   const draws = model.works.filter((work) => work.attachments?.colorViewHandleIds.length);
   expect(draws.length).toBeGreaterThan(0);

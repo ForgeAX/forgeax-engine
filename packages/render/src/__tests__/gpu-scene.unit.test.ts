@@ -2272,6 +2272,49 @@ it('re-pins a resolved geometry version only while it remains current', () => {
   }
 });
 
+it('keeps published pin rosters fixed when their source or a borrowing frame reads another mesh', () => {
+  const available = GpuScene.create(createDevice(new RecordingQueue()), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const before = new MeshFrame().with(0, 9, BUILTIN_CUBE).with(0, 10, BUILTIN_CUBE);
+  try {
+    scene
+      .sync({
+        ...projection.apply([
+          updateSnapshot(snapshot(1)),
+          updateSnapshot({ ...snapshot(2), assetHandle: 10 }),
+        ]),
+        meshes: before,
+      })
+      .unwrap();
+    const first = scene.captureResources().unwrap();
+    first.logicalForGeometry(0, 9, before.get(0, 9));
+    const original = first.pins?.();
+    if (original === undefined) throw new Error('missing original pins');
+    first.logicalForGeometry(0, 10, before.get(0, 10));
+    const expanded = first.pins?.();
+    if (expanded === undefined) throw new Error('missing expanded pins');
+    first.release();
+    const borrowed = scene.captureResources().unwrap();
+    expect(borrowed.adoptPins?.(original)).toBe(true);
+    expect(borrowed.logicalForGeometry(0, 10, before.get(0, 10))).toBeDefined();
+    borrowed.seal().unwrap();
+    const after = before.with(0, 10, {
+      ...BUILTIN_CUBE,
+      aabb: new Float32Array([-9, -1, -1, 1, 1, 1]),
+    });
+    scene.sync({ ...projection.apply([]), meshes: after }).unwrap();
+    const current = scene.captureResources().unwrap();
+    expect(current.adoptPins?.(original)).toBe(true);
+    expect(current.adoptPins?.(expanded)).toBe(false);
+    current.release();
+    borrowed.release();
+  } finally {
+    scene.dispose();
+  }
+});
+
 it('starts material residency independently of a large primitive reservation', () => {
   const created = GpuScene.create(createDevice(new RecordingQueue()), 65536).unwrap();
   if (created.status !== 'available') throw new Error('expected GPU scene');

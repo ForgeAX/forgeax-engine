@@ -1,5 +1,11 @@
 # @forgeax/engine-pack
 
+## Authoring diagnostics and discovery
+
+Malformed Meta diagnostics retain AJV instance paths, schema paths, keywords and params, including `missingProperty`. Repair the reported field rather than assuming every schema failure is a GUID problem. Gateway scan failures retain their original structured code and detail under `detail.cause`.
+
+`PACK_AUTHORING_OPERATION_DESCRIPTORS` is the operation-semantic authority. Source operations may write; values/apply, rebuild and cold-cook require an inspected `expectedRevision`. Create, clone/import and draft operations retain their own identity and document revision contracts. DevKit projects this metadata into operation help and required inputs.
+
 ## Shared material program transport
 
 Published packages with repeated cooked material programs or selection ABIs use
@@ -54,7 +60,7 @@ and `createFileSystemPackDrafts`. Declaration reads parse literal descriptors
 without evaluating user modules. Dynamic TS stays supported by ordinary builds
 but is not automatically rewritten. Opted-in Worker builds remove live metadata
 from the execution closure and reject ambient source/reflection bypasses.
-Named Scene, light/sky, physics and Skin schemas used by Game3D are admitted as
+Named Scene, camera/view/resolution, light/sky, physics and Skin schemas used by Game3D are admitted as
 generation vocabulary; runtime service and plugin imports remain unavailable.
 
 A draft owns sparse edits, at most 256 undo steps and one reusable generation.

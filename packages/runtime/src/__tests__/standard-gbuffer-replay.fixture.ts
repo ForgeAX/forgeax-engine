@@ -21,16 +21,19 @@ import {
   openReplay,
   type RecorderAttachment,
   type ReplayReadbackResult,
+  type ReplaySession,
   replayDeviceRequest,
   tapeDigest,
   type V7Tape,
   type WorkEntry,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { expect } from 'vitest';
+import { assert, expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 
 type SaveEvidence = (name: string, bytes: Uint8Array) => void | Promise<void>;
 // Fixture-local admission identity; artifact reports separately retain checkout provenance.
@@ -64,6 +67,58 @@ const maxDifference = (a: readonly number[], b: readonly number[]) => {
 };
 const reflectance = (word: number) =>
   [0, 8, 16].map((shift) => (((word >>> shift) & 255) / 255) ** 2);
+
+function effectPixelWorks(works: readonly WorkEntry[], enabled: boolean) {
+  return enabled
+    ? works.filter((work) =>
+        work.pipeline.shaders.some((shader) =>
+          ['fs_ssao_calc', 'fs_ssr_compose'].includes(shader.entryPoint ?? ''),
+        ),
+      )
+    : [];
+}
+
+async function readGBufferStages(
+  replay: ReplaySession,
+  works: readonly WorkEntry[],
+  geometry: WorkEntry,
+  lighting: WorkEntry,
+  effects: boolean,
+) {
+  const stages = [geometry, lighting, ...effectPixelWorks(works, effects)];
+  const packedAttachments = geometry.attachments?.colorViewHandleIds.slice(1, 5) ?? [];
+  const stageRequests = stages.map((work) => {
+    const output = workOutputs(work).find((row) => row.role === 'color');
+    assert(output, 'missing GBuffer stage output');
+    return { ...output.request, workIndex: work.workIndex };
+  });
+  const trace = effects
+    ? works.find((work) =>
+        work.pipeline.shaders.some((shader) => shader.entryPoint === 'ssr_trace'),
+      )
+    : undefined;
+  const traceOutput = trace?.bindings.find(
+    (binding) => binding.groupIndex === 0 && binding.binding === 4,
+  )?.resourceId;
+  const traceRequests =
+    trace && traceOutput ? [{ resourceId: traceOutput, workIndex: trace.workIndex }] : [];
+  const results = (
+    await replay.readAtWorks([
+      ...stageRequests,
+      ...packedAttachments.map((resourceId) => ({ resourceId, workIndex: geometry.workIndex })),
+      ...traceRequests,
+    ])
+  ).unwrap();
+  return {
+    inspected: stages.map((work, index) => {
+      const result = results[index];
+      assert(result, 'missing GBuffer stage readback');
+      return describeReplayWork(work, result.unwrap());
+    }),
+    packedReads: results.slice(stages.length, stages.length + packedAttachments.length),
+    traced: traceRequests.length === 0 ? undefined : results.at(-1),
+  };
+}
 
 async function verifyMissingLightingFalsifier(
   tape: V7Tape,
@@ -398,10 +453,17 @@ export async function verifyStandardGBufferReplay(
       ).unwrap();
       const reads: unknown[] = [];
       try {
+        const stageReads = await readGBufferStages(
+          replay,
+          model.works,
+          geometry,
+          lighting,
+          effects,
+        );
+        const inspected = stageReads.inspected;
         const inspect = async (work: WorkEntry) => {
-          const inspection = (
-            await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
-          ).unwrap();
+          const inspection = inspected.find((row) => row.workIndex === work.workIndex);
+          if (inspection === undefined) throw new Error('missing GBuffer stage inspection');
           expect(inspection.eventIndex).toBe(work.eventIndex);
           const read = inspection.attachment;
           if (read === undefined) throw new Error('missing replay attachment');
@@ -429,10 +491,12 @@ export async function verifyStandardGBufferReplay(
         );
         const packed: number[] = [];
         let dielectricWord: number | undefined;
-        for (const [index, resourceId] of geometry.attachments.colorViewHandleIds
-          .slice(1, 5)
-          .entries()) {
-          const read = (await replay.readResourceAtWork(resourceId, geometry.workIndex)).unwrap();
+        const packedAttachments = geometry.attachments.colorViewHandleIds.slice(1, 5);
+        const packedReads = stageReads.packedReads;
+        for (const [index, resourceId] of packedAttachments.entries()) {
+          const result = packedReads[index];
+          assert(result, 'missing packed GBuffer readback');
+          const read = result.unwrap();
           const channels = index === 1 ? 2 : 1;
           expect(read.format).toBe(channels === 2 ? 'rg32uint' : 'r32uint');
           expect(read.bytes.byteLength).toBe(64 * 64 * 4 * channels);
@@ -511,9 +575,9 @@ export async function verifyStandardGBufferReplay(
           );
           if (traceOutput?.resourceId === undefined || traceOutput.resourceId === null)
             throw new Error('missing SSR trace output binding');
-          const traced = (
-            await replay.readResourceAtWork(traceOutput.resourceId, trace.workIndex)
-          ).unwrap();
+          const traceRead = stageReads.traced;
+          assert(traceRead, 'missing SSR trace readback');
+          const traced = traceRead.unwrap();
           const tracePixels = rgba(traced);
           expect(tracePixels.every(Number.isFinite)).toBe(true);
           expect(tracePixels.filter((value, i) => i % 4 === 3 && value > 0).length).toBeGreaterThan(

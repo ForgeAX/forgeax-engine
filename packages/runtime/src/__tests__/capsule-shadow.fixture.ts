@@ -21,6 +21,7 @@ import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { type LinearHdrImage, luminanceRgba16f } from './contact-shadow.fixture';
 
 export const CAPSULE_SHADOW_SIZE = testQuality.squareSize;
@@ -308,7 +309,7 @@ export async function verifyCapsuleShadow(
       );
       if (pending !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
-        await options.capture?.((await pending).unwrap(), variant);
+        await options.capture?.(compactTape((await pending).unwrap()), variant);
       }
       if (!last) continue;
       const observation = unwrap(

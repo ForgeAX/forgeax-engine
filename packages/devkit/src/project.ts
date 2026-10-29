@@ -196,31 +196,62 @@ export async function readProjectFacts(
   };
 }
 
-export function commandError(cause: unknown, fallbackCode: string): CommandError {
+/** Follow structured native error envelopes; never recover fields from message text. */
+function ownerFailures(cause: unknown, seen = new Set<object>()): CommandError[] {
+  if (cause === null || typeof cause !== 'object' || seen.has(cause)) return [];
+  seen.add(cause);
+  const value = cause as Record<string, unknown>;
+  const fields =
+    typeof value.expected === 'string' && typeof value.hint === 'string'
+      ? value
+      : value.meta !== null && typeof value.meta === 'object'
+        ? (value.meta as Record<string, unknown>)
+        : undefined;
   if (
-    cause !== null &&
-    typeof cause === 'object' &&
-    'code' in cause &&
-    'expected' in cause &&
-    'hint' in cause &&
-    'detail' in cause
+    typeof value.code === 'string' &&
+    fields !== undefined &&
+    typeof fields.expected === 'string' &&
+    typeof fields.hint === 'string'
   ) {
-    return cause as CommandError;
+    if (fields === value && typeof value.pluginCode !== 'string' && 'detail' in value)
+      return [cause as CommandError];
+    return [
+      {
+        code: typeof value.pluginCode === 'string' ? value.pluginCode : value.code,
+        expected: fields.expected,
+        hint: fields.hint,
+        detail:
+          fields.detail !== null && typeof fields.detail === 'object'
+            ? (fields.detail as Record<string, unknown>)
+            : {},
+      },
+    ];
   }
+  return [
+    ...(Array.isArray(value.errors)
+      ? value.errors.flatMap((error) => ownerFailures(error, seen))
+      : []),
+    ...ownerFailures(value.cause, seen),
+  ];
+}
+
+export function commandError(cause: unknown, fallbackCode: string): CommandError {
+  const failures = ownerFailures(cause);
+  const [first] = failures;
+  if (failures.length === 1 && first !== undefined) return first;
   return {
     code: fallbackCode,
     expected: 'the ForgeaX command to complete',
     hint: 'Inspect the underlying diagnostic and repair the owning input.',
     detail: {
+      ...(failures.length === 0 ? {} : { failures }),
       reason:
-        cause instanceof Error
+        cause !== null &&
+        typeof cause === 'object' &&
+        'message' in cause &&
+        typeof cause.message === 'string'
           ? cause.message
-          : cause !== null &&
-              typeof cause === 'object' &&
-              'message' in cause &&
-              typeof cause.message === 'string'
-            ? cause.message
-            : String(cause),
+          : String(cause),
     },
   };
 }

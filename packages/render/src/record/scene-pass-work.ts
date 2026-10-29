@@ -124,6 +124,23 @@ export interface ScenePassDraws {
   readonly mainPassMaterialSelection: ReturnType<typeof createMainPassMaterialSelectionOwner>;
 }
 
+const emptyDrawRows: readonly ValidatedRenderable[] = Object.freeze([]);
+const emptyDispatch: DispatchList = Object.freeze([]);
+const emptyMaterialSlots: readonly MaterialSnapshot[] = Object.freeze([]);
+const emptyMaterialIndices: readonly (readonly number[])[] = Object.freeze([]);
+const emptyScenePassDraws: ScenePassDraws = Object.freeze({
+  validatedOrdered: emptyDrawRows,
+  dispatch: emptyDispatch,
+  materialSlotIndices: emptyMaterialIndices,
+  foldDispatchPlan: null,
+  mainPassMaterialSelection: createMainPassMaterialSelectionOwner({
+    validatedOrdered: emptyDrawRows,
+    dispatch: emptyDispatch,
+    materialSlots: emptyMaterialSlots,
+    materialSlotIndices: emptyMaterialIndices,
+  }),
+});
+
 export interface ScenePassInputs {
   readonly scene: DirectDrawScene;
   readonly materials: MaterialFrame;
@@ -327,6 +344,14 @@ export function prepareScenePasses(requests: readonly ScenePassRequest[], inputs
       plan: ReturnType<typeof buildDispatchPlan>,
     ): ReadonlyMap<ScenePassRequest, ScenePassDraws> {
       const work = new Map<ScenePassRequest, ScenePassDraws>();
+      if (rows.length === 0) {
+        let empty = true;
+        for (const candidate of prepared.values()) empty &&= candidate.dispatch.length === 0;
+        if (empty) {
+          for (const request of prepared.keys()) work.set(request, emptyScenePassDraws);
+          return work;
+        }
+      }
       // Each combined row index belongs to one request's range; one ordered
       // walk of the submitted plan yields every request's ascending positions.
       const owners: (number[] | undefined)[] = new Array(rows.length);
@@ -400,6 +425,8 @@ export function scenePassContext(
       expected: 'prepared draw work for the executing Scene Pass',
       hint: 'prepare requests from the actual compiled graph before recording',
     });
-  const { gpuDrivenSelection: _gpu, ...context } = c;
-  return { ...context, ...work };
+  // Ownership was consumed while preparing this pass's CPU rows. Keep the
+  // complete detached frame shape and clear selection instead of rebuilding
+  // every property through object-rest exclusion.
+  return { ...c, ...work, gpuDrivenSelection: undefined };
 }

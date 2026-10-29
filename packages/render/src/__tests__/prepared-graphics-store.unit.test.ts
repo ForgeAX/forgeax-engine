@@ -14,6 +14,43 @@ function prepare(
 }
 
 describe('prepared graphics store transactions', () => {
+  it('retains the owner publication for unchanged commits and replaces changed generations', () => {
+    const store = createPreparedGraphicsStore();
+    const empty = store.beginFrame('quiet.feature', 4).commit().unwrap();
+    expect(store.snapshot('quiet.feature')).toBe(empty);
+    expect(Object.isFrozen(empty)).toBe(true);
+    expect(store.beginFrame('quiet.feature', 4).commit().unwrap()).toEqual(empty);
+    const active = store.beginFrame('quiet.feature', 4);
+    prepare(active, 'pipeline', 'forward').unwrap();
+    prepare(active, 'bindings', 'forward').unwrap();
+    const published = active.commit().unwrap();
+    const steady = store.beginFrame('quiet.feature', 4);
+    steady.retainResources(() => true);
+    const steadyPublished = steady.commit().unwrap();
+    expect(steadyPublished).toEqual(published);
+    expect(steadyPublished).toBe(published);
+    expect(empty.items).toEqual([]);
+    const aborted = store.beginFrame('quiet.feature', 4);
+    prepare(aborted, 'bindings', 'candidate').unwrap();
+    aborted.abort();
+    expect(store.snapshot('quiet.feature')).toBe(steadyPublished);
+    const reordered = store.beginFrame('quiet.feature', 4);
+    prepare(reordered, 'bindings', 'forward').unwrap();
+    prepare(reordered, 'pipeline', 'forward').unwrap();
+    const changedOrder = reordered.commit().unwrap();
+    expect(changedOrder).not.toBe(published);
+    expect(changedOrder.items.map((item) => item.kind)).toEqual(['bindings', 'pipeline']);
+    const retired = store.beginFrame('quiet.feature', 4).commit().unwrap();
+    expect(retired).not.toBe(published);
+    expect(retired.items).toEqual([]);
+    expect(published.items).toHaveLength(2);
+    expect(store.beginFrame('quiet.feature', 5).commit().unwrap()).toMatchObject({
+      generation: 5,
+      items: [],
+    });
+    expect(store.snapshot('quiet.feature')).not.toBe(retired);
+  });
+
   it('reuses committed same-generation resources and keeps new resources in the overlay', () => {
     const store = createPreparedGraphicsStore();
     const first = store.beginFrame('synthetic.feature', 4);

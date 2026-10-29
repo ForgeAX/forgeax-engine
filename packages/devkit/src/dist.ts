@@ -190,7 +190,7 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
           error: {
             code: 'dist-artifact-mismatch',
             expected: 'artifact bytes and SHA-256 to match forgeax-dist.json',
-            hint: 'Restore the built artifact or rebuild the complete dist.',
+            hint: 'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
             detail: { path: artifact.path },
           },
         };
@@ -201,7 +201,7 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
         error: {
           code: 'dist-artifact-missing',
           expected: 'every declared dist artifact to exist',
-          hint: 'Restore the built artifact or rebuild the complete dist.',
+          hint: 'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
           detail: { path: artifact.path },
         },
       };

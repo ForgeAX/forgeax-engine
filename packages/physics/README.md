@@ -49,6 +49,31 @@ Backend implementers use `definePhysicsPlugin({ name, load, create, registerSyst
 to share readiness, structured load failures, resource publication and Cordis cleanup.
 Its callbacks carry the implementation; the helper never discovers or imports backends.
 
+## Solver precision
+
+Configure either selected backend through native plugin configuration in your root plugin:
+
+```ts
+import physics3d from '@forgeax/engine/physics-rapier3d';
+
+// Inside the root plugin's apply(ctx):
+await ctx.plugin(physics3d, { solverIterations: 2 });
+```
+
+| Setting | Default | Contract |
+|:--|--:|:--|
+| `PhysicsOptions.solverIterations` | `4` | Integer [1,32], selected once at backend activation; shared by 2D and 3D. |
+| `RigidBody.additionalSolverIterations` | `0` | Adds iterations for the body's connected contact/joint island; does not lower the global setting. |
+
+Fewer iterations reduce contact/joint solve work but can increase penetration,
+soften stacks and joints, cause jitter, and delay sleep. More iterations improve
+constraint convergence at additional CPU cost. The fixed timestep, CCD, rendering
+and floating-point representation are unchanged. Invalid values reject activation
+with `PhysicsError` (`invalid-body-config`, detail field `solverIterations`).
+Changing startup configuration requires a fresh plugin activation. Manual backend
+constructors and `createRapier2DPhysicsWorld` / `createRapier3DPhysicsWorld` accept
+the same optional `PhysicsOptions` argument. Omission retains four iterations.
+
 ## Three-Phase Tick Pipeline
 
 Three ECS systems run in order every frame (registered by The selected backend plugin during `createApp`):

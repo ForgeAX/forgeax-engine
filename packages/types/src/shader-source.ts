@@ -29,6 +29,17 @@ export class ShaderSource {
     return this.#fragments.join('');
   }
 
+  /** Compare exact borrowed text without joining fragments or hashing. May scan all text. */
+  matches(text: string): boolean {
+    if (text.length !== this.length) return false;
+    let offset = 0;
+    for (const fragment of this.#fragments) {
+      if (!text.startsWith(fragment, offset)) return false;
+      offset += fragment.length;
+    }
+    return true;
+  }
+
   descriptor(label?: string): { readonly code: string; readonly label?: string } {
     const source = this;
     const descriptor = Object.freeze({

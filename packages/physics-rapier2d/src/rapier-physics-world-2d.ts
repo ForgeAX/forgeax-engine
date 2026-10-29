@@ -19,6 +19,7 @@ import { mat4, quat, type Vec2, type Vec3Like, vec2, vec3 } from '@forgeax/engin
 import type {
   ColliderData,
   ColliderSnapshot,
+  PhysicsOptions,
   PhysicsWorld2D,
   RaycastHit2D,
   RigidBodyType,
@@ -37,6 +38,7 @@ import {
   registerPhysicsComponents,
   rigidBodyTypeFromF32,
   validateAdditionalSolverIterations,
+  validateSolverIterations,
 } from '@forgeax/engine-physics';
 import { ChildOf, GlobalTransform, type Transform } from '@forgeax/engine-scene';
 import type { Rapier2DModule } from './wasm-loader';
@@ -183,10 +185,12 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
    */
   private moveContext: { world: World; transform: Component } | undefined;
 
-  constructor(rapier: Rapier2DModule) {
+  constructor(rapier: Rapier2DModule, options: PhysicsOptions = {}) {
+    const solverIterations = validateSolverIterations(options.solverIterations);
     this.rapierModule = rapier;
     // biome-ignore lint/suspicious/noExplicitAny: Rapier World constructor is a class exported from a namespace module
     this.raw = new (rapier as any).World({ x: 0, y: -9.81 }) as RapierWorld2D;
+    this.raw.integrationParameters.numSolverIterations = solverIterations;
     // biome-ignore lint/suspicious/noExplicitAny: Rapier EventQueue constructor comes from a namespace module
     this.eventQueue = new (rapier as any).EventQueue(true) as RapierEventQueue;
     this.currentGravity = { x: 0, y: -9.81 };
@@ -926,8 +930,11 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
   }
 }
 
-export function createRapier2DPhysicsWorld(rapier: Rapier2DModule): RapierPhysicsWorld2D {
-  return new RapierPhysicsWorld2D(rapier);
+export function createRapier2DPhysicsWorld(
+  rapier: Rapier2DModule,
+  options: PhysicsOptions = {},
+): RapierPhysicsWorld2D {
+  return new RapierPhysicsWorld2D(rapier, options);
 }
 
 function hasResolvedWorldPose(world: ArrayLike<number> | undefined, base: number): boolean {

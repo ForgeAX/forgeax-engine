@@ -22,9 +22,10 @@ For instrumented global-probe partial-write recovery timeouts, keep the complete
 file in the existing exclusive GI coverage child rather than competing with broad
 DevKit coverage. For a Dawn lane cancellation, compare completed ordinary children
 and complete native-owner costs across all four lanes before adjusting owner
-reservations. Preserve cases, pixels and original deadlines; skipped or cancelled
-work supplies no completion sample. Follow
-[RC execution recovery](../../scripts/ci/README.md#rc-backport-execution-recovery).
+reservations. Preserve cases, pixels and original deadlines. Interrupted or
+cancelled owners supply no completion sample; include skipped files in their
+completed ordinary child's process overhead. Follow
+[GI coverage and material publication](../../scripts/ci/README.md#gi-coverage-and-material-publication).
 
 For slow material-publication fixtures, retain validated artifact byte views until
 the publication owner performs JSON encoding. A preliminary JSON roundtrip makes

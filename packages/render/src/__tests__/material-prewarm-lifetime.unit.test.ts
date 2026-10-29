@@ -1,4 +1,5 @@
 import { err, ok, type Result, RhiError, type ShaderModule } from '@forgeax/engine-rhi';
+import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import {
@@ -12,6 +13,120 @@ const variant = (key: string, source = key) => ({
   definesKey: key,
   defines: {},
   composedWgsl: source,
+});
+
+it('reuses admitted source across string retries, cached hits and same-label replacement', () => {
+  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const descriptor = vi.spyOn(ShaderSource.prototype, 'descriptor');
+  const module = {} as ShaderModule;
+  const compile = vi.fn(() => ok(module));
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    undefined,
+    compile,
+    'immediate',
+  );
+  const code = '// repeated immutable source\n'.repeat(1024);
+  try {
+    for (let frame = 0; frame < 256; frame++)
+      expect(adapter.createShaderModule({ code, label: 'stable-source' })).toEqual(ok(module));
+    expect(encode).toHaveBeenCalledTimes(1);
+    expect(compile).toHaveBeenCalledTimes(1);
+    expect(descriptor).toHaveBeenCalledTimes(1);
+    // A same-length content change must still retire the cached module.
+    const changed = code.replace('repeated', 'replaced');
+    expect(changed.length).toBe(code.length);
+    expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
+      ok(module),
+    );
+    expect(encode).toHaveBeenCalledTimes(2);
+    expect(compile).toHaveBeenCalledTimes(2);
+    adapter.invalidateModule('stable-source');
+    expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
+      ok(module),
+    );
+    expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
+      ok(module),
+    );
+    expect(encode).toHaveBeenCalledTimes(3);
+    expect(compile).toHaveBeenCalledTimes(3);
+  } finally {
+    adapter.dispose();
+    descriptor.mockRestore();
+    encode.mockRestore();
+  }
+});
+
+it('reuses source admission while the async module is pending', async () => {
+  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const module = {} as ShaderModule;
+  let complete: ((result: Result<ShaderModule, RhiError>) => void) | undefined;
+  const compile = vi.fn(
+    () =>
+      new Promise<Result<ShaderModule, RhiError>>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    compile,
+    undefined,
+  );
+  try {
+    for (let frame = 0; frame < 256; frame++)
+      expect(adapter.createShaderModule({ code: 'pending source', label: 'pending' }).ok).toBe(
+        false,
+      );
+    expect(encode).toHaveBeenCalledTimes(1);
+    expect(compile).toHaveBeenCalledTimes(1);
+    complete?.(ok(module));
+    await Promise.resolve();
+    expect(adapter.createShaderModule({ code: 'pending source', label: 'pending' })).toEqual(
+      ok(module),
+    );
+    expect(encode).toHaveBeenCalledTimes(1);
+  } finally {
+    adapter.dispose();
+    encode.mockRestore();
+  }
+});
+
+it.each([
+  { path: 'labeled raw text', labeled: true, owned: false, hashes: 1, scans: 255 },
+  { path: 'unlabeled raw text', labeled: false, owned: false, hashes: 256, scans: 0 },
+  { path: 'labeled source owner', labeled: true, owned: true, hashes: 1, scans: 0 },
+  { path: 'unlabeled source owner', labeled: false, owned: true, hashes: 1, scans: 0 },
+])('bounds hashing and matching for $path', ({ labeled, owned, hashes, scans }) => {
+  // ShaderSource's SHA-256 path encodes its full input once per actual digest.
+  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const match = vi.spyOn(ShaderSource.prototype, 'matches');
+  const code = '// exact source hash counter\n'.repeat(1024);
+  const source = new ShaderSource([code]);
+  const module = {} as ShaderModule;
+  const compile = vi.fn(() => ok(module));
+  const adapter = makeShaderDeviceAdapter(
+    {} as never,
+    new RhiErrorListenerRegistry(),
+    undefined,
+    compile,
+    'immediate',
+  );
+  try {
+    for (let retry = 0; retry < 256; retry++) {
+      const label = labeled ? 'hash-counter' : undefined;
+      const desc = owned ? source.descriptor(label) : { code, label };
+      expect(adapter.createShaderModule(desc)).toEqual(ok(module));
+    }
+    expect(encode.mock.calls.filter(([input]) => input === code)).toHaveLength(hashes);
+    expect(match).toHaveBeenCalledTimes(scans);
+    expect(compile).toHaveBeenCalledTimes(1);
+  } finally {
+    adapter.dispose();
+    match.mockRestore();
+    encode.mockRestore();
+  }
 });
 
 describe('material prewarm candidate lifetime', () => {

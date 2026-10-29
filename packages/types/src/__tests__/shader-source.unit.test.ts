@@ -14,6 +14,22 @@ it('shares full-text identity across exact fragment partitions, including split 
   expect(Object.isFrozen(split)).toBe(true);
 });
 
+it('matches exact borrowed text across fragments without expanding its body', () => {
+  const text = 'a\ud83d\ude00b';
+  const source = new ShaderSource(['', 'a\ud83d', '\ude00b', '']);
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  try {
+    expect(source.matches(text)).toBe(true);
+    expect(source.matches('a\ud83d\ude00c')).toBe(false);
+    expect(source.matches(`${text}x`)).toBe(false);
+    expect(source.matches(text.slice(0, -1))).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+  }
+  expect(new ShaderSource([]).matches('')).toBe(true);
+});
+
 it('borrows raw text without runtime fragmentation and hashes only on first identity demand', () => {
   const encode = vi.spyOn(TextEncoder.prototype, 'encode');
   const copy = vi.spyOn(String, 'fromCharCode');

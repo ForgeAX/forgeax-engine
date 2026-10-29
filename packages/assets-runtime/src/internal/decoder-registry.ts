@@ -7,7 +7,7 @@ import type {
   AssetPreparationContext,
   Result,
 } from '@forgeax/engine-types';
-import { AssetError, err, ok } from '@forgeax/engine-types';
+import { AssetError, beginLoadTimeline, err, ok } from '@forgeax/engine-types';
 import { copyAssetData } from './asset-data';
 import { freezeRuntimePayload } from './immutable-payload.js';
 
@@ -170,8 +170,11 @@ export class DecoderRegistry {
   ): Promise<Result<unknown, AssetLoadError>> {
     if (this.disposed) return err(disposedError(this.scopeId));
     if (input.signal.aborted) return err(cancelledError(input.envelope.guid));
+    // The owner decoder span includes the artifact reads it awaits.
+    const endDecode = beginLoadTimeline('decode', input.envelope.guid, { stage: 'asset', kind });
     try {
       const result = await entry.decode(input);
+      endDecode(undefined, { ok: result.ok });
       if (this.disposed) return err(disposedError(this.scopeId));
       if (this.dispatch.get(kind)?.identity !== entry.identity) {
         return err(supersededError(input.envelope.guid, kind));
@@ -179,6 +182,7 @@ export class DecoderRegistry {
       if (input.signal.aborted) return err(cancelledError(input.envelope.guid));
       return result.ok ? ok(freezeRuntimePayload(copyAssetData(result.value))) : result;
     } catch {
+      endDecode(undefined, { ok: false });
       return err({
         code: 'asset-decode-failed',
         expected: `decoder for kind "${kind}" to return a Result`,

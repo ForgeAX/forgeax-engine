@@ -5,7 +5,9 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, version as esbuildVersion } from 'esbuild';
 import { assertPortableRustArtifact, portableRustFlags } from '../../../scripts/lib/rust-build-paths.mjs';
+import { gitHttpEnvironment } from '../../../scripts/lib/git-http-environment.mjs';
 import { bundleRapierDeclarations } from './build-declarations.mjs';
+import { buildSimdPayload } from './build-simd-payload.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const dimension = process.argv.includes('--2d') ? '2d' : '3d';
@@ -21,17 +23,25 @@ const inputs = [
   'scripts/build-wasm.mjs',
   'scripts/native-init.js',
   'scripts/build-declarations.mjs',
+  'scripts/build-simd-payload.mjs',
   'scripts/native-tests.Cargo.toml',
   'scripts/native-tests.Cargo.lock',
   bindingsManifest,
   lockfile,
   '../../scripts/lib/rust-build-paths.mjs',
+  '../../scripts/lib/git-http-environment.mjs',
   ...(dimension === '3d' ? (await readdir(join(root, 'patches'))).sort().map((name) => `patches/${name}`) : []),
 ];
 const inputHashes = Object.fromEntries(
   await Promise.all(inputs.map(async (name) => [name, sha256(await readFile(join(root, name)))])),
 );
 const contentKey = sha256(JSON.stringify(inputHashes));
+// The CI payload cache key prints this same value, so restore and verify
+// can never disagree about which inputs a payload was built from.
+if (process.argv.includes('--key')) {
+  process.stdout.write(`${contentKey}\n`);
+  process.exit(0);
+}
 const pkg = join(owner, 'pkg');
 async function files(directory) {
   const result = [];
@@ -77,6 +87,23 @@ function run(command, args, cwd, extraEnv = {}) {
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} exited with ${result.status}`);
 }
+// Anonymous GitHub fetches can transiently answer 401/5xx under load; retry a
+// bounded number of times and never fall back to an interactive prompt.
+function fetchPinned(checkout, commit, environment) {
+  const args = ['-c', 'core.longpaths=true', 'fetch', '--depth=1', 'origin', commit];
+  for (let attempt = 1; ; attempt += 1) {
+    const result = spawnSync('git', args, {
+      cwd: checkout,
+      env: { ...environment, GIT_TERMINAL_PROMPT: '0' },
+      stdio: 'inherit',
+    });
+    if (result.error) throw result.error;
+    if (result.status === 0) return;
+    if (attempt === 4) throw new Error(`git fetch ${commit} failed after ${attempt} attempts`);
+    process.stdout.write(`git fetch ${commit} failed (attempt ${attempt}/4); retrying\n`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 15_000);
+  }
+}
 function output(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`${command} unavailable`);
@@ -101,7 +128,7 @@ for (const name of ['rapier', 'parry']) {
   const checkout = join(work, name);
   run('git', ['init', checkout], root);
   run('git', ['remote', 'add', 'origin', source[name].url], checkout);
-  run('git', ['fetch', '--depth=1', 'origin', source[name].commit], checkout);
+  fetchPinned(checkout, source[name].commit, gitHttpEnvironment(root, source[name].url));
   run('git', ['checkout', '--detach', source[name].commit], checkout);
   // Preserve 2D's upstream behavior; the maintained solver patches belong to 3D.
   if (dimension === '3d') {
@@ -281,6 +308,7 @@ await writeFile(
 run('node', [fileURLToPath(import.meta.resolve('typescript/bin/tsc')), '-p', tsconfig], root);
 await cp(join(wasm, `${stem}.d.ts`), join(declarations, `${stem}.d.ts`));
 await bundleRapierDeclarations(declarations, staged, tsconfig);
+if (dimension === '3d') await buildSimdPayload({ root, work, bindings, staged, cache, run });
 await cp(join(bindings, 'LICENSE'), join(staged, 'LICENSE'));
 const artifacts = Object.fromEntries(
   await Promise.all(

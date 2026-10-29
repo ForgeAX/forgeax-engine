@@ -1,0 +1,69 @@
+{
+  "originalHead": "8f099053c57dce850479cb8be4a58de047145223",
+  "mergedBase": "83665a9",
+  "inheritedRepair": "5d61c35",
+  "localEngine": "284f102afad1c3d33527064ecc0b84b11262e2e9",
+  "ciEngine": "635e6bce68445fc4a22c9fa9dbd8a92b5c9fa778",
+  "unitTests": {
+    "passed": 623,
+    "failed": 0
+  },
+  "runtime": [
+    {
+      "language": "js",
+      "completedFrames": 65,
+      "requiredFrames": 60,
+      "resourceCycles": [
+        {
+          "retainedBuffers": 0,
+          "retainedTextures": 0
+        },
+        {
+          "retainedBuffers": 0,
+          "retainedTextures": 0
+        }
+      ],
+      "errors": [],
+      "workload": {
+        "runtimeViewport": {
+          "width": 1000,
+          "height": 700
+        },
+        "gameViewport": {
+          "width": 1000,
+          "height": 700
+        },
+        "sceneFrames": 60,
+        "resourceCycles": 2
+      }
+    },
+    {
+      "language": "ts",
+      "completedFrames": 67,
+      "requiredFrames": 60,
+      "resourceCycles": [
+        {
+          "retainedBuffers": 0,
+          "retainedTextures": 0
+        },
+        {
+          "retainedBuffers": 0,
+          "retainedTextures": 0
+        }
+      ],
+      "errors": [],
+      "workload": {
+        "runtimeViewport": {
+          "width": 1000,
+          "height": 700
+        },
+        "gameViewport": {
+          "width": 1000,
+          "height": 700
+        },
+        "sceneFrames": 60,
+        "resourceCycles": 2
+      }
+    }
+  ]
+}

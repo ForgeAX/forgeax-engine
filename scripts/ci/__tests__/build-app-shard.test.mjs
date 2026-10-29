@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BUILTIN_HANDLE_CUBE } from '@forgeax/engine-pack/builtin';
+
+const CUBE_MESH = 'cbe42beb-8975-5096-b3a1-3dda4cb4c077';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..', '..', '..');
@@ -379,11 +380,11 @@ test('repair: projects only roster-declared Pack JSON and body closure from a fr
   }
 });
 
-test('ordinary builtin descriptor references require their Pack closure', () => {
+test('ordinary mesh references require their Pack closure', () => {
   const root = fixture([]);
   writePackFixture(root);
   const guid = '019e4a26-3c29-7420-af5d-20f2724a16b0';
-  const cube = BUILTIN_HANDLE_CUBE;
+  const cube = CUBE_MESH;
   const packagePath = join(root, 'apps/pbr/dist/assets', `${guid}.pack-fixture.json`);
   const document = JSON.parse(readFileSync(packagePath, 'utf8'));
   document.assets[0].refs = [cube];
@@ -517,7 +518,7 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
           guid,
           packageUrl: '/assets/sdf.pack.json',
         })),
-        { guid: BUILTIN_HANDLE_CUBE, packageUrl: '/assets/builtin-cube.pack.json' },
+        { guid: CUBE_MESH, packageUrl: '/assets/cube.pack.json' },
         { guid: bossEffect, packageUrl: '/assets/boss-effect.pack.json' },
         { guid: bossMaterial, packageUrl: '/assets/boss-material.pack.json' },
         { guid: bossShader, packageUrl: '/assets/boss-shader.pack.json' },
@@ -546,7 +547,7 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
   const bossAssets = [
     {
       guid: bossEffect,
-      refs: [bossMaterial, bossShader, BUILTIN_HANDLE_CUBE],
+      refs: [bossMaterial, bossShader, CUBE_MESH],
       artifacts: { program: { path: 'boss/program.json' } },
     },
     { guid: bossMaterial, refs: [], artifacts: {} },
@@ -557,14 +558,14 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
     },
   ];
   writeFileSync(
-    join(dist, 'assets', 'builtin-cube.pack.json'),
+    join(dist, 'assets', 'cube.pack.json'),
     JSON.stringify({
       schemaVersion: '2.0.0',
       assets: [
         {
-          guid: BUILTIN_HANDLE_CUBE,
+          guid: CUBE_MESH,
           kind: 'mesh',
-          payload: { kind: 'mesh', geometry: 'procedural-cube' },
+          payload: { kind: 'mesh' },
           refs: [],
           artifacts: {},
         },
@@ -622,7 +623,7 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
     assert.equal(result.exitCode, 0, result.stderr || result.stdout);
     const retained = join(output, 'artifacts', 'apps', app, 'dist');
     assert.equal(existsSync(join(retained, 'pack-index.json')), true);
-    assert.equal(existsSync(join(retained, 'assets', 'builtin-cube.pack.json')), true);
+    assert.equal(existsSync(join(retained, 'assets', 'cube.pack.json')), true);
     assert.deepEqual(
       JSON.parse(readFileSync(join(retained, 'assets', 'sdf.pack.json'), 'utf8')).assets,
       assets,
@@ -1064,7 +1065,7 @@ test('shared material transport retains the declared artifact closure and reject
     if (scenario === 'missing-guid') pack.assets[0].guid = 'not-the-roster-guid';
     writeFileSync(
       path,
-      JSON.stringify({ schemaVersion: 'pack-material-programs/1', pack, programs: [{}] }),
+      JSON.stringify({ schemaVersion: 'pack-material-programs/2', pack, programs: [{}], abis: [] }),
     );
     try {
       const result = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);

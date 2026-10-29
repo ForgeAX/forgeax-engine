@@ -1,6 +1,7 @@
 import {
   err,
   ok,
+  PipelineRecipeState,
   type RenderPipeline,
   type RenderPipelineDescriptor,
   type RhiDevice,
@@ -179,4 +180,60 @@ it.each([
   );
   if (result.ok) throw new Error('pending PSO became ready');
   expect(result.error).toBe(pending);
+});
+
+it('checks state and both stage identities before reusing a local flight', async () => {
+  const createRenderPipelineAsync = vi.fn(async () => ok({} as RenderPipeline));
+  const selectRender = vi.fn(() => ok(undefined));
+  const owner = new PreparedRenderPipelineOwner(
+    { createRenderPipelineAsync, pipelineLibrary: { selectRender } } as unknown as RhiDevice,
+    () => true,
+  );
+  const desc = descriptor();
+  const dependencies = { layout: {} as never, vertex: desc.vertex.module };
+  const a = new PipelineRecipeState('render', {
+    vertex: { entryPoint: 'vertex', buffers: [] },
+    primitive: { cullMode: 'back' },
+  });
+  const b = new PipelineRecipeState('render', {
+    vertex: { entryPoint: 'vertex', buffers: [] },
+    primitive: { cullMode: 'front' },
+  });
+  const materialize = () => ({ ...desc, layout: dependencies.layout });
+  owner.requestState('same-local-key', 'same-source', a, dependencies, materialize);
+  await Promise.resolve();
+  const first = owner
+    .requestState('same-local-key', 'same-source', a, dependencies, materialize)
+    .unwrap();
+  expect(owner.requestState('same-local-key', 'same-source', b, dependencies, materialize).ok).toBe(
+    false,
+  );
+  await Promise.resolve();
+  const second = owner
+    .requestState('same-local-key', 'same-source', b, dependencies, materialize)
+    .unwrap();
+  expect(second).not.toBe(first);
+  expect(selectRender).toHaveBeenCalledTimes(2);
+  expect(createRenderPipelineAsync).toHaveBeenCalledTimes(2);
+});
+
+it('refuses a completed device hit after its local scope is retired', () => {
+  const selectRender = vi.fn(() => ok({} as RenderPipeline));
+  const owner = new PreparedRenderPipelineOwner(
+    { pipelineLibrary: { selectRender } } as unknown as RhiDevice,
+    () => false,
+  );
+  const state = new PipelineRecipeState('render', { vertex: { entryPoint: 'main' } });
+  const materialize = vi.fn();
+  expect(
+    owner.requestState(
+      'retired',
+      'source',
+      state,
+      { layout: {} as never, vertex: {} as never },
+      materialize,
+    ).ok,
+  ).toBe(false);
+  expect(selectRender).not.toHaveBeenCalled();
+  expect(materialize).not.toHaveBeenCalled();
 });

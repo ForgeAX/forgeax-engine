@@ -20,11 +20,12 @@ import { expect, it, vi } from 'vitest';
 import { createPreparedGraphicsStore } from '../../features/prepared-graphics-store';
 import type { SkylightBindGroupResources } from '../../ibl/skylight-bind-group';
 import { createPreparedGraphicsResolver } from '../../prepare/prepared-graphics-resolver';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { worldRenderResources } from '../../publication/resource-scope';
 import {
+  createPreparedResolverCaches,
   type PreparedMaterialBindingsScope,
   preparedMaterialBindings,
 } from '../prepared-material-bindings';
@@ -173,6 +174,26 @@ it('shares only live same-resolver material resources and releases the final bor
   expect(renewed.handle).not.toBe(first.handle);
   expect(f.createBuffer).toHaveBeenCalledTimes(3);
   renewed.release().unwrap();
+});
+
+it('lets the next frame borrow a still-retained prior-frame row from the shared resolver scope', () => {
+  const f = scopedMaterialFixture();
+  const rows = createPreparedResolverCaches().materialBindings;
+  const prior = f.acquire(rows);
+  const next = f.acquire(rows);
+  expect(next.handle).toBe(prior.handle);
+  expect(f.createBuffer).toHaveBeenCalledTimes(1);
+  expect(f.createBindGroup).toHaveBeenCalledTimes(1);
+  f.setValue(0.5);
+  const changed = f.acquire(rows);
+  expect(changed.handle).not.toBe(prior.handle);
+  expect(f.createBuffer).toHaveBeenCalledTimes(2);
+  prior.release().unwrap();
+  expect(f.destroyBuffer).not.toHaveBeenCalled();
+  next.release().unwrap();
+  changed.release().unwrap();
+  expect(f.destroyBuffer).toHaveBeenCalledTimes(2);
+  expect(rows).toHaveLength(0);
 });
 
 it('reobserves managed values and preserves prior borrowers when packed bytes or size change', () => {
@@ -520,8 +541,10 @@ it('retains the exact feature material when an independent ordinary root is reti
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, resources: accepted.resources };
   };
   const bind = (resources: ReturnType<typeof publish>['resources'], handle: number) => {

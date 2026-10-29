@@ -572,11 +572,14 @@ try {
       page.on('response', (response) => {
         if (response.status() === 404) notFound.push(response.url());
       });
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+      // Background dev-server requests do not establish scene readiness. Admit
+      // the actual capture owner within one unchanged 30-second bootstrap budget.
+      const bootstrapStartedAt = Date.now();
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await page.waitForFunction(
         () => typeof globalThis.__captureAntiAliasingMsaaFrame === 'function',
         undefined,
-        { timeout: 30_000 },
+        { timeout: Math.max(1, 30_000 - (Date.now() - bootstrapStartedAt)) },
       );
       await page.waitForTimeout(250);
 

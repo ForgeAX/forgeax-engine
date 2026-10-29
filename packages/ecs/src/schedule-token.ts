@@ -35,6 +35,24 @@ function createScheduleToken(name: ScheduleName): ScheduleToken {
 export const Update = createScheduleToken('Update');
 /** Fixed-rate World schedule and the intrinsic Update ordering anchor. */
 export const FixedUpdate = createScheduleToken('FixedUpdate');
+const domainSchedules = new WeakSet<object>();
+
+/**
+ * Explicitly run schedule for one domain (for example a renderer's frame
+ * phases). It never advances World time; `world.run(token)` executes it.
+ */
+export function defineSchedule(name: string): ScheduleToken {
+  if (name === 'Update' || name === 'FixedUpdate' || name.length === 0)
+    throw new RangeError(`Schedule name '${name}' is reserved or empty`);
+  const token = Object.freeze({ name });
+  domainSchedules.add(token);
+  return token;
+}
+
+export function isDomainSchedule(value: unknown): value is ScheduleToken {
+  return typeof value === 'object' && value !== null && domainSchedules.has(value);
+}
+
 export function isScheduleToken(value: unknown): value is ScheduleToken {
-  return value === Update || value === FixedUpdate;
+  return value === Update || value === FixedUpdate || isDomainSchedule(value);
 }

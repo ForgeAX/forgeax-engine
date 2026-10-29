@@ -10,10 +10,10 @@ import {
   submitFrameRecordings,
 } from '../assembly/frame-recording';
 import { Camera } from '../components/camera';
-import { CameraView, cameraViewExtent } from '../components/camera-view';
+import { CAMERA_VIEW_DEFAULTS, CameraView, cameraViewExtent } from '../components/camera-view';
 import { PlanarReflection } from '../components/planar-reflection';
 import { ProjectedDecalInvalidError } from '../decals/component';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
+import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature } from '../features/types';
 import { renderComponentsPlugin } from '../plugin';
 import {
@@ -144,7 +144,7 @@ describe('one feature host for the complete view roster', () => {
     const f = producer(),
       host = createRenderFeatureHost([f.feature]).unwrap();
     try {
-      const batch = runRenderFeatureFrame(host, inputs());
+      const batch = host.runFrame(inputs());
       expect(f.extract).toHaveBeenCalledTimes(1);
       expect(f.plan).toHaveBeenCalledWith(
         ['left', 'right'],
@@ -169,13 +169,13 @@ describe('one feature host for the complete view roster', () => {
     const f = producer(),
       host = createRenderFeatureHost([f.feature]).unwrap();
     try {
-      const rejected = runRenderFeatureFrame(host, inputs());
+      const rejected = host.runFrame(inputs());
       rejected.views.get('left')?.onSubmitted();
       rejected.onAborted();
       rejected.onSubmitted();
       expect(f.aborted).toHaveBeenCalledTimes(1);
       expect(f.acknowledged).not.toHaveBeenCalled();
-      const retry = runRenderFeatureFrame(host, inputs().reverse());
+      const retry = host.runFrame(inputs().reverse());
       retry.frame.onSubmitted();
       for (const view of retry.views.values()) view.onSubmitted();
       retry.onSubmitted();
@@ -190,8 +190,7 @@ describe('one feature host for the complete view roster', () => {
       host = createRenderFeatureHost([f.feature]).unwrap();
     const acknowledge = vi.fn();
     try {
-      const batch = runRenderFeatureFrame(
-        host,
+      const batch = host.runFrame(
         inputs().map((input) => ({
           ...input,
           publishedFeatures: [{ identity: f.feature.identity, data: ['left', 'right'] }],
@@ -365,6 +364,43 @@ it('keeps a subpixel viewport inside the physical surface and rejects invalid fi
   expect(() => cameraViewExtent({ ...config, updateInterval: 0 }, 100, 100)).toThrow(
     'updateInterval',
   );
+});
+
+it.each([
+  [3203, 1440, 1602, 720],
+  [1440, 3203, 720, 1602],
+  [1920, 1080, 1280, 720],
+  [800, 600, 800, 600],
+])('caps the short render side without scaling the %i x %i output', (width, height, renderWidth, renderHeight) => {
+  const view = { ...CAMERA_VIEW_DEFAULTS, maxRenderShortSide: 720 };
+  expect(cameraViewExtent(view, width, height)).toEqual({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    renderWidth,
+    renderHeight,
+  });
+});
+
+it('combines the short-side cap with the viewport and the stricter authored scale', () => {
+  const view = { ...CAMERA_VIEW_DEFAULTS, maxRenderShortSide: 720 };
+  expect(
+    cameraViewExtent({ ...view, viewport: new Float32Array([0, 0, 0.5, 1]) }, 3200, 1440),
+  ).toMatchObject({ width: 1600, height: 1440, renderWidth: 800, renderHeight: 720 });
+  expect(cameraViewExtent({ ...view, resolutionScale: 0.25 }, 3200, 1440)).toMatchObject({
+    renderWidth: 800,
+    renderHeight: 360,
+  });
+  expect(cameraViewExtent({ ...view, maxRenderShortSide: 0 }, 3200, 1440)).toMatchObject({
+    renderWidth: 3200,
+    renderHeight: 1440,
+  });
+  for (const maxRenderShortSide of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() => cameraViewExtent({ ...view, maxRenderShortSide }, 3200, 1440)).toThrow(
+      'maxRenderShortSide',
+    );
+  }
 });
 
 it('publishes CameraView through the installed render component vocabulary', async () => {

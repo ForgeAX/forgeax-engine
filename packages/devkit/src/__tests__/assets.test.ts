@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { compressZstd } from '@forgeax/engine-codec/encode';
+import { ImporterRegistry, runImport } from '@forgeax/engine-import';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { describe, expect, it } from 'vitest';
 import {
@@ -10,6 +12,7 @@ import {
   assetVerifyCommand,
 } from '../assets.js';
 import { writeDistManifest } from '../dist.js';
+import { DEFAULT_IMPORTERS } from '../importers.js';
 
 async function fixture(): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-assets-'));
@@ -97,6 +100,92 @@ describe('asset commands', () => {
     }
   });
 
+  it.each([
+    ['light.ies', 'ies', 'ies-profile'],
+    ['menu.ui.html', 'ui', 'ui'],
+    ['sky.hdr', 'image', 'equirect'],
+    ['grade.cube', 'image', 'texture'],
+    ['surface.ktx2', 'image', 'texture'],
+    ['surface.basis', 'image', 'texture'],
+    ['music.wav', 'audio', 'audio'],
+    ['music.mp3', 'audio', 'audio'],
+    ['music.ogg', 'audio', 'audio'],
+    ['music.flac', 'audio', 'audio'],
+  ])('adds %s with producer-owned topology and preserves identity', async (name, importer, kind) => {
+    const root = await fixture();
+    try {
+      const path = `assets/${name}`;
+      await writeFile(resolve(root, path), new Uint8Array([1]));
+      expect(await assetAddCommand({ root, path })).toMatchObject({ ok: true });
+      const before = await readFile(resolve(root, `${path}.meta.json`), 'utf8');
+      expect(JSON.parse(before)).toMatchObject({ importer, subAssets: [{ kind, sourceIndex: 0 }] });
+      expect(await assetAddCommand({ root, path })).toMatchObject({ ok: true });
+      expect(await readFile(resolve(root, `${path}.meta.json`), 'utf8')).toBe(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'sky.hdr',
+    'sound.wav',
+    'grade.cube',
+  ])('imports the producer output of asset add for %s', async (name) => {
+    const root = await fixture();
+    try {
+      let bytes: Uint8Array;
+      if (name.endsWith('.hdr')) {
+        const header = new TextEncoder().encode(
+          '#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 8\n',
+        );
+        bytes = new Uint8Array([...header, 2, 2, 0, 8, 136, 128, 136, 128, 136, 128, 136, 128]);
+      } else if (name.endsWith('.wav')) {
+        bytes = new Uint8Array(48);
+        const view = new DataView(bytes.buffer),
+          encoder = new TextEncoder();
+        bytes.set(encoder.encode('RIFF'), 0);
+        view.setUint32(4, 40, true);
+        bytes.set(encoder.encode('WAVEfmt '), 8);
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, 8000, true);
+        view.setUint32(28, 16000, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        bytes.set(encoder.encode('data'), 36);
+        view.setUint32(40, 4, true);
+      } else {
+        bytes = new TextEncoder().encode(
+          [
+            'LUT_3D_SIZE 16',
+            'DOMAIN_MIN 0 0 0',
+            'DOMAIN_MAX 1 1 1',
+            ...Array.from({ length: 4096 }, () => '0 0 0'),
+          ].join('\n'),
+        );
+      }
+      await writeFile(resolve(root, 'assets', name), bytes);
+      expect(await assetAddCommand({ root, path: `assets/${name}` })).toMatchObject({ ok: true });
+      const meta = JSON.parse(await readFile(resolve(root, 'assets', `${name}.meta.json`), 'utf8'));
+      const registry = new ImporterRegistry();
+      for (const importer of DEFAULT_IMPORTERS) registry.register(importer);
+      const imported = await runImport(meta, registry, {
+        readSource: async () => ({ ok: true, value: bytes }),
+      });
+      expect(imported, JSON.stringify(imported.ok ? {} : imported.error)).toMatchObject({
+        ok: true,
+      });
+      if (!imported.ok || 'skipped' in imported.value) throw new Error('expected a produced asset');
+      expect(imported.value.product.assets[0]).toMatchObject({
+        guid: meta.subAssets[0].guid,
+        kind: meta.subAssets[0].kind,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('adds an image once and reuses its GUID', async () => {
     const root = await fixture();
     const first = await assetAddCommand({ root, path: 'assets/hero.png' });
@@ -109,7 +198,7 @@ describe('asset commands', () => {
     expect(listed).toEqual({
       ok: true,
       value: {
-        items: [expect.objectContaining({ kind: 'texture', name: 'texture' })],
+        items: [expect.objectContaining({ kind: 'texture', name: 'image:texture' })],
         page: { cursor: 0, limit: 100, total: 1 },
       },
     });
@@ -258,7 +347,10 @@ describe('asset commands', () => {
     }
   });
 
-  it('projects current Pack outputs from the generated index into read commands', async () => {
+  it.each([
+    false,
+    true,
+  ])('projects current Pack outputs from the generated index into read commands (compressed=%s)', async (compressed) => {
     const root = await scriptablePackFixture(1);
     const packageId = '01900000-0000-7000-8000-000000000144';
     const parsedPackageId = PackageId.parse(packageId);
@@ -296,10 +388,30 @@ describe('asset commands', () => {
         name: 'Pack Game',
         roots: {},
         assetRoots: ['assets'],
+        assetLibraries: [],
         packageJson: {},
       },
       '/',
     );
+
+    if (compressed) {
+      const path = resolve(root, 'dist/pack-index.json');
+      const encoded = await compressZstd(await readFile(path));
+      if (!encoded.ok) throw encoded.error;
+      await writeFile(path, encoded.value);
+      await writeDistManifest(
+        {
+          root,
+          id: 'pack-game',
+          name: 'Pack Game',
+          roots: {},
+          assetRoots: ['assets'],
+          assetLibraries: [],
+          packageJson: {},
+        },
+        '/',
+      );
+    }
 
     const listed = await assetListCommand({ root });
     expect(listed).toMatchObject({
@@ -359,6 +471,7 @@ describe('asset commands', () => {
         name: 'Pack Game',
         roots: {},
         assetRoots: ['assets'],
+        assetLibraries: [],
         packageJson: {},
       },
       '/',

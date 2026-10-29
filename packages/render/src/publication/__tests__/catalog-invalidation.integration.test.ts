@@ -10,9 +10,13 @@ import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/f
 import { MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../../components';
 import { Materials } from '../../materials';
 import { PersistentRenderScene } from '../../scene/render-scene';
-import { renderPublicationAssetTransfers, renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
+import {
+  encodeRenderPublication,
+  renderPublicationAssetTransfers,
+  renderPublicationTransfers,
+} from '../record';
 
 function fixture() {
   const assets = new AssetRegistry({
@@ -42,14 +46,16 @@ function fixture() {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
       transfer: [
-        ...renderPublicationTransfers(candidate.packet),
-        ...renderPublicationAssetTransfers(candidate.packet),
+        ...renderPublicationTransfers(candidate.message),
+        ...renderPublicationAssetTransfers(candidate.message),
       ],
     });
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
+    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
     const frame = scene.consumePublication(accepted);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return { packet, frame, resources: accepted.resources };
   };
   return {
@@ -122,23 +128,23 @@ it('moves owned mesh buffers without detaching source or recycled receiver resid
     const published = candidate.packet.assets.find((row) => row.handle === handle)?.value;
     if (published?.kind !== 'mesh') throw Error('Missing owned mesh publication');
     expect(published.vertices.buffer).not.toBe(mesh.vertices.buffer);
-    const moved = renderPublicationAssetTransfers(candidate.packet);
+    const moved = renderPublicationAssetTransfers(candidate.message);
     expect(new Set(moved).size).toBe(moved.length);
     expect(moved).toContain(published.vertices.buffer);
     const packet = structuredClone(candidate.packet, {
-      transfer: [...renderPublicationTransfers(candidate.packet), ...moved],
+      transfer: [...renderPublicationTransfers(candidate.message), ...moved],
     });
     expect(published.vertices.byteLength).toBe(0);
     expect(mesh.vertices).toEqual(sourceBytes);
     candidate.accept();
-    const accepted = f.receiver.accept(packet).unwrap();
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const resident = accepted.resources.resolveAsset<MeshAsset>(handle).unwrap();
     expect(resident.vertices).toEqual(sourceBytes);
     expect(resident.attributes.position).toBeInstanceOf(Float32Array);
     expect(resident.attributes.position).toEqual(resident.vertices);
     expect((resident.attributes.position as Float32Array).buffer).not.toBe(mesh.vertices.buffer);
-    const returned = structuredClone(renderPublicationTransfers(packet), {
-      transfer: renderPublicationTransfers(packet),
+    const returned = structuredClone(renderPublicationTransfers(encodeRenderPublication(packet)), {
+      transfer: renderPublicationTransfers(encodeRenderPublication(packet)),
     });
     f.publisher.recycle(packet.revision, returned).unwrap();
     expect(resident.vertices).toEqual(sourceBytes);
@@ -243,19 +249,24 @@ it('retries explicit same-handle geometry edits and starts replacement epochs wi
     const publisher = createRenderPublisher(f.world, f.assets, identity);
     const receiver = new RenderPublicationReceiver(identity);
     try {
-      expect(receiver.accept(restored.packet).ok).toBe(false);
+      expect(receiver.accept(encodeRenderPublication(restored.packet)).ok).toBe(false);
       const candidate = publisher.prepare(0).unwrap();
       expect(candidate.packet.baseline).toBe(true);
       expect(candidate.packet.assets.some((row) => row.handle === handle)).toBe(true);
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       expect(
-        receiver.accept(packet).unwrap().resources.resolveAsset<MeshAsset>(handle).unwrap()
-          .vertices,
+        receiver
+          .accept(encodeRenderPublication(packet))
+          .unwrap()
+          .resources.resolveAsset<MeshAsset>(handle)
+          .unwrap().vertices,
       ).toEqual(mesh.vertices);
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
     } finally {
       publisher.dispose();
       receiver.dispose();

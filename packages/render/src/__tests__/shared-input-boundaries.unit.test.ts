@@ -3,6 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
+import { GpuInputArena } from '../gpu-input-arena';
 import { GpuScene } from '../gpu-scene';
 import { RenderScene } from '../scene/render-scene';
 import { receiptRow } from './gpu-draw-selection-fixture';
@@ -90,7 +91,8 @@ it('refreshes and leases current shared inputs only when a retained shadow actua
 
 it('poisons a partially updated Scene on a real mapping capacity failure and still releases held frames', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const created = GpuScene.create(device, 4).unwrap();
+  const arena = new GpuInputArena(8192);
+  const created = GpuScene.create(device, 4, undefined, arena).unwrap();
   if (created.status !== 'available') throw new Error('Scene unavailable');
   const gpu = created.scene,
     source = receiptRow().source,
@@ -104,11 +106,6 @@ it('poisons a partially updated Scene on a real mapping capacity failure and sti
   try {
     held.indexForResource(source.material, source.material.snapshot);
     held.seal().unwrap();
-    vi.spyOn(device, 'limits', 'get').mockReturnValue({
-      ...device.limits,
-      maxStorageBufferBindingSize: 8192,
-      maxBufferSize: 8192,
-    });
     source.material.adopt({ ...source.material.snapshot, roughness: 0.25 });
     const failed = gpu.sync({ ...scene.apply([]), materialUpdates: [source.material] });
     expect(failed.ok).toBe(false);
@@ -130,5 +127,6 @@ it('poisons a partially updated Scene on a real mapping capacity failure and sti
   } finally {
     held.release();
     gpu.dispose();
+    arena.dispose();
   }
 });

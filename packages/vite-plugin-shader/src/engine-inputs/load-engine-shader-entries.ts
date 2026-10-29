@@ -168,6 +168,7 @@ export async function loadEngineShaderEntries() {
     ),
   };
   const imports = {
+    'forgeax_skin::task': readSource('skin-task.wgsl'),
     'forgeax_material::terrain_vertex': readSource('terrain-vertex.wgsl'),
     'forgeax_material::terrain_layer_sampling': readSource('terrain-layer-sampling.wgsl'),
     'forgeax_material::terrain_surface': readSource('terrain-surface.wgsl'),

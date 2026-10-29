@@ -37,8 +37,11 @@ export { PointLightShadow } from './point-light-shadow';
 export {
   type PointShape,
   PointShapeValue,
+  type PointSizeUnits,
+  PointSizeUnitsValue,
   Points,
   pointShapeFromU32,
+  pointSizeUnitsFromU32,
 } from './points';
 export { PostProcessParams } from './post-process-params';
 export { RectAreaLight } from './rect-area-light';

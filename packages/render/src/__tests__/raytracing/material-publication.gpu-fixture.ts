@@ -12,10 +12,10 @@ import { loadMaterialFixture } from '../../../../assets-runtime/src/__tests__/fi
 import { MeshFilter, MeshRenderer } from '../../components';
 import { renderMaterialContext } from '../../extract/material-context';
 import { packMaterialProgramRow } from '../../material-row';
-import { renderPublicationTransfers } from '../../publication/contract';
 import { installPublicationPrograms } from '../../publication/programs';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import { createSubmittedRayPathTracer } from '../../raytracing/path-tracer';
 import { PersistentRenderScene } from '../../scene/render-scene';
@@ -100,11 +100,11 @@ export async function verifyPublishedRayMaterial(
       const start = performance.now();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       installPublicationPrograms(received, packet.programs);
-      const accepted = receiver.accept(packet, received).unwrap();
+      const accepted = receiver.accept(encodeRenderPublication(packet), received).unwrap();
       const frame = scene.consumePublication(accepted);
       const resource = frame.renderables.at(0)?.material;
       const snapshot =
@@ -214,7 +214,7 @@ export async function verifyPublishedRayMaterial(
       } finally {
         tracer.dispose();
       }
-      const transfers = renderPublicationTransfers(packet);
+      const transfers = renderPublicationTransfers(encodeRenderPublication(packet));
       publisher
         .recycle(packet.revision, structuredClone(transfers, { transfer: transfers }))
         .unwrap();
@@ -229,12 +229,12 @@ export async function verifyPublishedRayMaterial(
               assets.update(handle, { values: { emissiveIntensity: 8 } }).unwrap();
               const next = publisher.prepare(world.getResource(Time).elapsed).unwrap();
               const nextPacket = structuredClone(next.packet, {
-                transfer: renderPublicationTransfers(next.packet),
+                transfer: renderPublicationTransfers(next.message),
               });
               next.accept();
               installPublicationPrograms(received, nextPacket.programs);
-              receiver.accept(nextPacket).unwrap();
-              const transfers = renderPublicationTransfers(nextPacket);
+              receiver.accept(encodeRenderPublication(nextPacket)).unwrap();
+              const transfers = renderPublicationTransfers(encodeRenderPublication(nextPacket));
               publisher
                 .recycle(nextPacket.revision, structuredClone(transfers, { transfer: transfers }))
                 .unwrap();
@@ -312,7 +312,7 @@ export async function verifyPublishedRayMaterial(
       await openReplay(tape, { device: fresh, createShaderModule: gpu.createShaderModule })
     ).unwrap();
     try {
-      for (const [index, work] of works.entries()) {
+      const surfaceReads = works.flatMap((work, index) => {
         const output = work.bindings.find(
           (binding) => binding.groupIndex === 0 && binding.binding === 1,
         );
@@ -320,25 +320,32 @@ export async function verifyPublishedRayMaterial(
           (binding) => binding.groupIndex === 1 && binding.binding === 0,
         );
         assert(output?.resourceId && uniform?.resourceId);
-        expect(
-          (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
-        ).toEqual(outputs[index]);
-        expect(
-          (await replay.readResourceAtWork(uniform.resourceId, work.workIndex)).unwrap().bytes,
-        ).toEqual(rows[index]);
-      }
+        return [
+          { resourceId: output.resourceId, workIndex: work.workIndex, expected: outputs[index] },
+          { resourceId: uniform.resourceId, workIndex: work.workIndex, expected: rows[index] },
+        ];
+      });
       const accumulation = model.works.filter((work) =>
         work.pipeline.shaders.some((shader) => shader.entryPoint === 'accumulate'),
       );
       expect(accumulation).toHaveLength(4);
-      for (const [index, work] of accumulation.entries()) {
+      const transportReads = accumulation.map((work, index) => {
         const output = work.bindings.find(
           (binding) => binding.groupIndex === 0 && binding.binding === 6,
         );
         assert(output?.resourceId);
-        expect(
-          (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
-        ).toEqual(transportOutputs[index]);
+        return {
+          resourceId: output.resourceId,
+          workIndex: work.workIndex,
+          expected: transportOutputs[index],
+        };
+      });
+      const requests = [...surfaceReads, ...transportReads];
+      const reads = (await replay.readAtWorks(requests)).unwrap();
+      for (const [index, request] of requests.entries()) {
+        const read = reads[index];
+        assert(read);
+        expect(read.unwrap().bytes).toEqual(request.expected);
       }
     } finally {
       (await replay.dispose()).unwrap();

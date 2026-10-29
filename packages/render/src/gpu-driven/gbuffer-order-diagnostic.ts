@@ -1,3 +1,4 @@
+import { mat4 } from '@forgeax/engine-math';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -152,11 +153,11 @@ export function gbufferBatchDepth(
     if (candidate.primitiveIndex === previous) continue;
     previous = candidate.primitiveIndex;
     const source = slotAt(candidate.primitiveIndex)?.snapshot;
-    if (source === undefined || source.skin !== undefined || source.morph !== undefined) {
+    if (source === undefined || source.skinBinding !== undefined || source.morph !== undefined) {
       reject?.('source-or-deformation', {
         primitiveIndex: candidate.primitiveIndex,
         sourcePresent: source !== undefined,
-        skinPresent: source?.skin !== undefined,
+        skinPresent: source?.skinBinding !== undefined,
         morphPresent: source?.morph !== undefined,
       });
       return undefined;
@@ -273,7 +274,7 @@ export function orderGBufferDiagnostic<T>(
 
 export function gbufferDiagnosticView(camera: CameraSnapshot): Float32Array | undefined {
   if (camera.world.length !== 16 || !camera.world.every(Number.isFinite)) return undefined;
-  return computeViewMatrix(camera);
+  return computeViewMatrix(camera, mat4.create());
 }
 
 /** Stock six-target early GBuffer only; raw/late/shadow/direct lanes retain order. */

@@ -42,6 +42,10 @@ import { groupMeshPrimitives } from './mesh-primitives';
 import { deriveDefaultLodScreenCoverages } from '@forgeax/engine-import';
 import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { AssetGuid as AssetGuidCodec } from '@forgeax/engine-pack/guid';
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
 import type {
   AssetGuid,
   AssetHandle,
@@ -72,6 +76,7 @@ import {
 import { gltfErr } from './errors.js';
 import { extractImageBytes } from './extract-image-bytes.js';
 import { deriveTextureColorSpace } from './image-color-space.js';
+import type { GltfLodGroup } from './lod/parse-lod.js';
 import { GLTF_MATERIAL_TEXTURE_SLOTS, materialTextureBinding } from './material/parse-material.js';
 import { cookGltfMeshCards } from './mesh-cards';
 import { cookGltfMeshDistanceField } from './mesh-distance-field';
@@ -461,6 +466,772 @@ function rewriteMaterialAssetRefs(
   return { ...matAsset, values };
 }
 
+type GltfMeshPrimitive = GltfDoc['meshes'][number];
+type ImportStep<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: ImportError };
+
+interface MeshLodLevel {
+  readonly mesh: NonNullable<MeshAsset['lods']>[number]['mesh'];
+  readonly screenCoverage: number;
+  readonly guid: string;
+}
+
+/** Facts derived once per import that every sub-asset emitter reads. */
+interface GltfImportSession {
+  readonly ctx: ImportContext;
+  readonly doc: GltfDoc;
+  readonly maps: HandleMaps;
+  /** Single-asset sources carry no per-asset display name. */
+  readonly isMultiAsset: boolean;
+  readonly primitivesByMesh: ReadonlyMap<number, readonly GltfMeshPrimitive[]>;
+  readonly imageColorSpaces: ReturnType<typeof deriveTextureColorSpace>;
+  readonly extraction: ReturnType<typeof extractImageBytes>;
+  /**
+   * M4 (tweak-20260611-skin-fox-3clip-and-kb-sample-assets): SkinAsset.refs[]
+   * carries the skeleton GUID (each skin binds 1:1 to a SkeletonAsset; the
+   * skeletonGuid field is the on-asset cross-reference; refs[] is the runner-
+   * visible cross-edge used for pack-index ordering and integrity checks).
+   */
+  readonly skeletonGuidBySourceIndex: ReadonlyMap<number, string>;
+  /**
+   * feat-20260612 M2 fixup: parallel skin GUID index. Skins and skeletons
+   * share `sourceIndex` (toAssetPack emits 1:1 per SkeletonPod) but live
+   * as distinct `kind` sub-assets, so the SkinAsset GUIDs differ from the
+   * SkeletonAsset GUIDs. The scene emitter appends these GUIDs to both
+   * its refs[] (the runtime recursion source: source Scene loading walks
+   * envelope.refs to recursively pull every SkinAsset before instantiate) and
+   * its payload.skinGuids (the reverse-decode hint) -- without the refs[] edge,
+   * browser-async-pack-fetch never loads SkinAssets and Skin.joints stays
+   * length=0).
+   */
+  readonly skinGuidBySourceIndex: ReadonlyMap<number, string>;
+}
+
+function subAssetGuidsByKind(
+  subAssets: readonly ImportSubAsset[],
+  kind: string,
+): Map<number, string> {
+  const guids = new Map<number, string>();
+  for (const sub of subAssets) {
+    if (sub.kind === kind) guids.set(sub.sourceIndex, sub.guid);
+  }
+  return guids;
+}
+
+/**
+ * Extract image bytes (3 source paths) once. Failures here are surfaced
+ * per-image so a single bad row does not abort the whole importer.
+ */
+function extractDeclaredImages(
+  subAssets: readonly ImportSubAsset[],
+  doc: GltfDoc,
+): ReturnType<typeof extractImageBytes> {
+  if (subAssets.some((sub) => sub.kind === 'texture')) return extractImageBytes(doc.images ?? []);
+  return { extracted: new Map(), failures: [] };
+}
+
+function createImportSession(ctx: ImportContext, doc: GltfDoc): GltfImportSession {
+  return {
+    ctx,
+    doc,
+    maps: buildHandleMaps(ctx.subAssets, doc),
+    isMultiAsset: ctx.subAssets.length > 1,
+    primitivesByMesh: groupMeshPrimitives(doc.meshes),
+    // Pre-derive each images[] row's colorSpace from material slot bindings
+    // (D-3 / AC-08). orphan images default to 'linear' (AC-13).
+    imageColorSpaces: deriveTextureColorSpace({
+      imageCount: (doc.images ?? []).length,
+      textures: doc.textures,
+      materials: doc.materials,
+    }),
+    extraction: extractDeclaredImages(ctx.subAssets, doc),
+    skeletonGuidBySourceIndex: subAssetGuidsByKind(ctx.subAssets, 'skeleton'),
+    skinGuidBySourceIndex: subAssetGuidsByKind(ctx.subAssets, 'skin'),
+  };
+}
+
+function displayName(session: GltfImportSession, name: string | undefined): { name?: string } {
+  const shown = session.isMultiAsset ? name : undefined;
+  return shown !== undefined ? { name: shown } : {};
+}
+
+function meshCookError(
+  sourceIndex: number,
+  error: { readonly expected: string; readonly hint: string; readonly detail?: unknown },
+): ImportError {
+  return new ImportError({
+    code: 'import-internal-error',
+    expected: error.expected,
+    hint: error.hint,
+    detail: { reason: `mesh ${sourceIndex}: ${JSON.stringify(error.detail)}` },
+  });
+}
+
+function bridgeMeshPrimitives(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+  prims: readonly GltfMeshPrimitive[],
+): ImportStep<MeshAsset> {
+  const { doc, ctx } = session;
+  const materialNameByIndex = new Map<number, string>();
+  const materialSourceKeyByIndex = new Map<number, string>();
+  for (let materialIndex = 0; materialIndex < doc.materials.length; materialIndex++) {
+    const name = doc.materials[materialIndex]?.name;
+    if (typeof name === 'string') materialNameByIndex.set(materialIndex, name);
+  }
+  for (const material of ctx.subAssets) {
+    if (material.kind === 'material' && material.sourceKey !== undefined) {
+      materialSourceKeyByIndex.set(material.sourceIndex, material.sourceKey);
+    }
+  }
+  const bridged = meshIrToMeshAsset(prims, {
+    guidByIndex: session.maps.materialGuidByIndex,
+    nameByIndex: materialNameByIndex,
+    sourceKeyByIndex: materialSourceKeyByIndex,
+  });
+  if (bridged.ok) return { ok: true, value: bridged.value };
+  return {
+    ok: false,
+    error: new ImportError({
+      code: 'import-internal-error',
+      expected: 'gltf mesh bridge to produce a canonical MeshAsset',
+      actual: bridged.error.code,
+      hint: 'repair the source primitive and re-run the glTF importer',
+      detail: {
+        reason: `gltf mesh bridge rejected mesh ${sub.sourceIndex}; inspect the bridge error detail`,
+      },
+    }),
+  };
+}
+
+/** The MSFT_lod group rooted at this mesh: an explicit group first, then the legacy single root. */
+function meshLodGroup(doc: GltfDoc, meshIndex: number): GltfLodGroup | undefined {
+  const lod = doc.lod;
+  if (lod === undefined) return undefined;
+  const group = lod.groups?.find(
+    (candidate) => doc.nodes[candidate.rootNode]?.meshIndex === meshIndex,
+  );
+  if (group !== undefined) return group;
+  return lod.rootNode !== undefined && doc.nodes[lod.rootNode]?.meshIndex === meshIndex
+    ? lod
+    : undefined;
+}
+
+function validateLodGroupMeshes(
+  session: GltfImportSession,
+  meshIndex: number,
+  lodGroup: GltfLodGroup,
+): ImportError | undefined {
+  const { doc, maps } = session;
+  const referencedMeshIndices = [
+    meshIndex,
+    ...lodGroup.lodNodeIds.map((nodeIndex) => doc.nodes[nodeIndex]?.meshIndex),
+  ];
+  const missingMeshIndex = referencedMeshIndices.find(
+    (candidate) =>
+      !Number.isInteger(candidate) ||
+      candidate === null ||
+      candidate === undefined ||
+      maps.meshGuidByIndex.get(candidate) === undefined,
+  );
+  if (missingMeshIndex === undefined) return undefined;
+  return new ImportError({
+    code: 'import-internal-error',
+    expected: 'every MSFT_lod node to resolve a cooked mesh sub-asset',
+    actual: String(missingMeshIndex),
+    hint: 'repair the referenced glTF mesh primitives and re-run the importer',
+    detail: {
+      reason: `MSFT_lod group for mesh ${meshIndex} references an unprojected mesh`,
+    },
+  });
+}
+
+function authoredLodCoverage(authored: unknown): unknown {
+  return authored !== null && typeof authored === 'object'
+    ? (authored as { readonly screenCoverage?: unknown }).screenCoverage
+    : undefined;
+}
+
+/** Authored sourceOverrides coverage wins over the source group and the derived default. */
+function meshLodLevels(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+  lodGroup: GltfLodGroup,
+): MeshLodLevel[] {
+  const { doc, maps, ctx } = session;
+  const authoredLods =
+    sub.sourceKey === undefined ? undefined : ctx.sourceOverrides?.[sub.sourceKey]?.lods;
+  const lodEntries = Array.isArray(authoredLods) ? authoredLods : [];
+  return lodGroup.lodNodeIds.flatMap((nodeIndex, index) => {
+    const meshIndex = doc.nodes[nodeIndex]?.meshIndex;
+    const guid =
+      meshIndex === undefined || meshIndex === null
+        ? undefined
+        : maps.meshGuidByIndex.get(meshIndex);
+    if (guid === undefined) return [];
+    const authoredCoverage = authoredLodCoverage(lodEntries[index]);
+    const coverage =
+      typeof authoredCoverage === 'number'
+        ? authoredCoverage
+        : (lodGroup.screenCoverages[index] ??
+          deriveDefaultLodScreenCoverages(lodGroup.lodNodeIds.length + 1)[index]);
+    const parsed = AssetGuidCodec.parse(guid);
+    return parsed.ok && coverage !== undefined
+      ? [{ mesh: parsed.value, screenCoverage: coverage, guid }]
+      : [];
+  });
+}
+
+function resolveMeshLodLevels(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportStep<MeshLodLevel[]> {
+  const lodGroup = meshLodGroup(session.doc, sub.sourceIndex);
+  if (lodGroup === undefined) return { ok: true, value: [] };
+  const missing = validateLodGroupMeshes(session, sub.sourceIndex, lodGroup);
+  if (missing !== undefined) return { ok: false, error: missing };
+  return { ok: true, value: meshLodLevels(session, sub, lodGroup) };
+}
+
+/** Material slot defaults then LOD meshes, deduplicated case-insensitively by GUID. */
+function meshAssetRefs(meshPayload: MeshAsset, lodLevels: readonly MeshLodLevel[]): AssetRef[] {
+  const materialRefs: AssetRef[] = [];
+  const seenMaterialGuids = new Set<string>();
+  for (let slotIndex = 0; slotIndex < meshPayload.materialSlots.length; slotIndex++) {
+    const defaultMaterial = meshPayload.materialSlots[slotIndex]?.defaultMaterial;
+    const guid = defaultMaterial === undefined ? undefined : sourceMaterialGuid(defaultMaterial);
+    if (guid !== undefined && !seenMaterialGuids.has(guid.toLowerCase())) {
+      seenMaterialGuids.add(guid.toLowerCase());
+      materialRefs.push({
+        guid,
+        sourceField: { fieldName: 'materialSlots', arrayIndex: slotIndex },
+      });
+    }
+  }
+  for (const [lodIndex, level] of lodLevels.entries()) {
+    if (!seenMaterialGuids.has(level.guid.toLowerCase())) {
+      seenMaterialGuids.add(level.guid.toLowerCase());
+      materialRefs.push({
+        guid: level.guid,
+        sourceField: { fieldName: 'lods', arrayIndex: lodIndex },
+      });
+    }
+  }
+  return materialRefs;
+}
+
+function packMeshBody(
+  meshPayload: MeshAsset,
+  sourceKey: string,
+  materialRefs: readonly AssetRef[],
+): Uint8Array {
+  const packed = packMeshBin(
+    meshPayload as never,
+    sourceKey,
+    materialRefs.map((ref) => ref.guid),
+  );
+  if (!packed.ok) {
+    throw new ImportError({
+      code: 'import-internal-error',
+      expected: 'mesh-bin v5 producer to accept the canonical mesh projection',
+      hint: 're-cook the source with its Meta sidecar after fixing the mesh payload',
+      detail: { reason: `${packed.error.code}: ${packed.error.actual}` },
+    });
+  }
+  return packed.value;
+}
+
+async function importMeshSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): Promise<ImportStep<ImportedAsset<unknown> | undefined>> {
+  const { doc, ctx } = session;
+  // sub.sourceIndex now indexes glTF mesh-index (not flat GltfMeshIr index).
+  // parseGltf flattens N glTF meshes with M_i primitives into sum(M_i)
+  // GltfMeshIr rows, all sharing meshIndex; gather all rows whose
+  // meshIndex === sub.sourceIndex (preserving doc.meshes order so the
+  // bridge's positional materials[i] <-> submeshes[i] pairing aligns)
+  // and let meshIrToMeshAsset interleave them into one MeshAsset with
+  // N Submesh entries.
+  const prims = session.primitivesByMesh.get(sub.sourceIndex) ?? [];
+  if (prims.length === 0) return { ok: true, value: undefined };
+  const bridged = bridgeMeshPrimitives(session, sub, prims);
+  if (!bridged.ok) return bridged;
+  const cards = await cookGltfMeshCards(
+    bridged.value,
+    prims,
+    doc.materials,
+    ctx.importSettings.meshCards,
+  );
+  if (!cards.ok) return { ok: false, error: meshCookError(sub.sourceIndex, cards.error) };
+  const stabilizedMesh = stabilizeMeshMaterialSlots(cards.value, ctx, sub.guid, sub.sourceKey);
+  const distanceField = await cookGltfMeshDistanceField(
+    cards.value,
+    sub.guid,
+    prims,
+    doc.materials,
+    ctx.importSettings.meshDistanceField,
+  );
+  if (!distanceField.ok)
+    return { ok: false, error: meshCookError(sub.sourceIndex, distanceField.error) };
+  const lodLevels = resolveMeshLodLevels(session, sub);
+  if (!lodLevels.ok) return lodLevels;
+  const sourceMeshPayload: MeshAsset =
+    lodLevels.value.length === 0
+      ? stabilizedMesh
+      : {
+          ...stabilizedMesh,
+          lods: lodLevels.value.map(({ mesh, screenCoverage }) => ({ mesh, screenCoverage })),
+        };
+  const meshPayload = cookMeshCollision(
+    sourceMeshPayload,
+    ctx.importSettings.meshCollision,
+  ).unwrap();
+  const materialRefs = meshAssetRefs(meshPayload, lodLevels.value);
+  return {
+    ok: true,
+    value: {
+      guid: sub.guid,
+      kind: 'mesh',
+      ...displayName(session, prims[0]?.name),
+      payload: {
+        kind: 'mesh',
+        ...(distanceField.value === undefined
+          ? {}
+          : { distanceField: distanceField.value.payload }),
+      },
+      refs: materialRefs,
+      artifacts: {
+        ...distanceField.value?.artifacts,
+        body: {
+          mediaType: 'application/x-forgeax-mesh',
+          assetCodec: { name: 'mesh-binary', version: '5' },
+          bytes: packMeshBody(meshPayload, sub.sourceKey ?? ctx.source, materialRefs),
+        },
+      },
+    },
+  };
+}
+
+/**
+ * feat-20260611 w17-a: a material consumed by any primitive carrying JOINTS_0 +
+ * WEIGHTS_0 routes the emitted MaterialAsset to `forgeax::pbr-skin`. Mirrors
+ * the per-MeshAsset 18F-stride decision in meshIrToMeshAsset (D-2): a material
+ * consumed by any skinned primitive must use the skin shader so the runtime
+ * PSO chain (LayoutKind='pbr-skin' + 6-attribute deriveVertexBufferLayout) is
+ * exercised.
+ */
+function isMaterialSkinned(doc: GltfDoc, materialIndex: number): boolean {
+  return doc.meshes.some(
+    (meshIr) =>
+      meshIr.materialIndex === materialIndex &&
+      meshIr.joints0 !== undefined &&
+      meshIr.weights0 !== undefined,
+  );
+}
+
+function validateMaterialPrimitives(
+  mat: GltfMaterialIr,
+  doc: GltfDoc,
+  materialIndex: number,
+): void {
+  for (let primitiveIndex = 0; primitiveIndex < doc.meshes.length; primitiveIndex++) {
+    const meshIr = doc.meshes[primitiveIndex];
+    if (meshIr?.materialIndex !== materialIndex) continue;
+    const uvResult = validateMaterialUvSets(
+      mat,
+      `primitive-${primitiveIndex}`,
+      availableUvSets(meshIr),
+    );
+    if (!uvResult.ok) {
+      throw Object.assign(new Error(uvResult.error.message), uvResult.error);
+    }
+    const tangentResult = validateMaterialTangentInputs(mat, meshIr);
+    if (!tangentResult.ok) {
+      throw Object.assign(new Error(tangentResult.error.message), tangentResult.error);
+    }
+  }
+}
+
+function importMaterialSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportedAsset<unknown> | undefined {
+  const { doc, maps, ctx } = session;
+  const mat = doc.materials[sub.sourceIndex];
+  if (mat === undefined) return undefined;
+  const skinned = isMaterialSkinned(doc, sub.sourceIndex);
+  validateMaterialPrimitives(mat, doc, sub.sourceIndex);
+  const matAsset = toMaterialAsset(mat, {
+    textureHandles: maps.textureHandles,
+    samplerHandles: maps.samplerHandles,
+    skinned,
+    ...(typeof ctx.importSettings.standardMaterialGuid === 'string'
+      ? { standardRootGuid: ctx.importSettings.standardMaterialGuid as unknown as AssetGuid }
+      : {}),
+  });
+  const refs = materialRefsForPack(mat, doc, maps.textureGuidByIndex, maps.samplerGuidByIndex);
+  // D-8: if material has a parent, add parent edge to refs
+  const materialRefs: AssetRef[] = [...refs];
+  if (matAsset.parent !== undefined) {
+    materialRefs.push({
+      guid: matAsset.parent as unknown as string,
+      sourceField: { fieldName: 'parent' },
+    });
+  }
+  return {
+    guid: sub.guid,
+    kind: 'material',
+    ...displayName(session, mat.name),
+    payload: rewriteMaterialAssetRefs(matAsset, mat, doc, maps),
+    refs: materialRefs,
+    artifacts: {},
+  };
+}
+
+function extractedImageOrThrow(
+  session: GltfImportSession,
+  imageIndex: number,
+): NonNullable<ReturnType<GltfImportSession['extraction']['extracted']['get']>> {
+  const extracted = session.extraction.extracted.get(imageIndex);
+  if (extracted !== undefined) return extracted;
+  const failure = session.extraction.failures.find((f) => f.imageIndex === imageIndex);
+  const detail = failure ?? {
+    imageIndex,
+    source: 'bufferView' as const,
+    reason: 'image row missing from extraction map (no images[] entry?)',
+  };
+  const error = gltfErr('gltf-image-extract-failed', detail);
+  throw new Error(
+    `gltfImporter: ${error.code} on image ${imageIndex} (${detail.source}): ${detail.reason}`,
+  );
+}
+
+async function importTextureSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): Promise<ImportedAsset<unknown>> {
+  const { ctx } = session;
+  const imageIndex = sub.sourceIndex;
+  const extracted = extractedImageOrThrow(session, imageIndex);
+  const colorSpace = session.imageColorSpaces.get(imageIndex) ?? 'linear';
+  // Carry colorSpace + mipmap settings into decodeImage via a per-image
+  // settings record (mirror of importImageSettings — but here the importer
+  // owns the decision because the seam is in-bounds for AC-12 (c)).
+  const decodeSettings = {
+    ...ctx.importSettings,
+    colorSpace,
+    mipmap: ctx.importSettings.mipmap ?? true,
+  };
+  const decoded = await ctx.decodeImage(extracted.bytes, extracted.mimeType, decodeSettings);
+  if (!decoded.ok) {
+    const reason = `decodeImage failed: ${decoded.error.code}`;
+    const error = gltfErr('gltf-image-extract-failed', {
+      imageIndex,
+      source: extracted.source,
+      reason,
+    });
+    throw new Error(
+      `gltfImporter: ${error.code} on image ${imageIndex} (${extracted.source}): ${reason}`,
+    );
+  }
+  return {
+    guid: sub.guid,
+    kind: 'texture',
+    ...displayName(session, (session.doc.images ?? [])[imageIndex]?.name),
+    payload: decoded.value.texture,
+    refs: [],
+    artifacts: {
+      body: {
+        mediaType: decoded.value.mediaType ?? extracted.mimeType,
+        assetCodec: decoded.value.assetCodec ?? { name: 'rgba8', version: '1' },
+        bytes: decoded.value.bytes,
+      },
+    },
+  };
+}
+
+/** glTF NEAREST (9728) and the NEAREST_MIPMAP_* min filters sample texels with nearest filtering. */
+function samplerFilter(value: number | undefined): 'nearest' | 'linear' | undefined {
+  if (value === undefined) return undefined;
+  return value === 9728 || value === 9984 || value === 9986 || value === 9988
+    ? 'nearest'
+    : 'linear';
+}
+
+/** glTF *_MIPMAP_NEAREST min filters (9984, 9985) select the nearest mip. */
+function samplerMipmapFilter(value: number | undefined): 'nearest' | 'linear' | undefined {
+  if (value === undefined) return undefined;
+  return value === 9984 || value === 9985 ? 'nearest' : 'linear';
+}
+
+function samplerAddressMode(value: number): 'repeat' | 'mirror-repeat' | 'clamp-to-edge' {
+  if (value === 33071) return 'clamp-to-edge';
+  if (value === 33648) return 'mirror-repeat';
+  return 'repeat';
+}
+
+function importSamplerSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportedAsset<unknown> | undefined {
+  const sampler = session.doc.samplers?.[sub.sourceIndex];
+  if (sampler === undefined) return undefined;
+  const magFilter = samplerFilter(sampler.magFilter);
+  const minFilter = samplerFilter(sampler.minFilter);
+  const mipmap = samplerMipmapFilter(sampler.minFilter);
+  const payload = {
+    kind: 'sampler' as const,
+    ...(magFilter === undefined ? {} : { magFilter }),
+    ...(minFilter === undefined ? {} : { minFilter }),
+    ...(mipmap === undefined ? {} : { mipmapFilter: mipmap }),
+    addressModeU: samplerAddressMode(sampler.wrapS),
+    addressModeV: samplerAddressMode(sampler.wrapT),
+  };
+  return { guid: sub.guid, kind: 'sampler', payload, refs: [], artifacts: {} };
+}
+
+type SceneAssetPod = ReturnType<typeof gltfDocToSceneAsset>;
+
+interface SceneRefProvenance {
+  readonly meshFilterByHandle: ReadonlyMap<number, { readonly sceneEntityKey: string }>;
+  readonly skinBySkeletonGuid: ReadonlyMap<string, { readonly sceneEntityKey: string }>;
+}
+
+/**
+ * Walk keyed scene entities to find which entity authored each mesh handle
+ * (MeshFilter.assetHandle) and each skeleton GUID (Skin.skeleton).
+ */
+function sceneRefProvenance(scene: SceneAssetPod): SceneRefProvenance {
+  const meshFilterByHandle = new Map<number, { sceneEntityKey: string }>();
+  const skinBySkeletonGuid = new Map<string, { sceneEntityKey: string }>();
+  for (const [sceneEntityKey, entity] of Object.entries(scene.entities)) {
+    const comps = entity.components as Record<string, Record<string, unknown>>;
+    const mf = comps.MeshFilter;
+    if (mf !== undefined && typeof mf.assetHandle === 'number') {
+      meshFilterByHandle.set(mf.assetHandle, { sceneEntityKey });
+    }
+    const skin = comps.Skin;
+    if (skin !== undefined && typeof skin.skeleton === 'string') {
+      skinBySkeletonGuid.set(skin.skeleton, { sceneEntityKey });
+    }
+  }
+  return { meshFilterByHandle, skinBySkeletonGuid };
+}
+
+/**
+ * Scene refs contain only dependencies authored directly by the scene:
+ * mesh, skeleton, and skin assets. Imported material defaults belong to
+ * MeshAsset.materialSlots, and textures belong to MaterialAsset refs;
+ * repeating either here would create a second dependency owner.
+ * Skeleton GUIDs are appended so the runtime asset graph sees the
+ * cross-edge when a skinned mesh node carries Skin { skeleton:
+ * <guid-string> }; skin GUIDs (feat-20260612 M2 fixup) carry the
+ * SkinAsset cross-edge that has no entity-component representation but
+ * is required for postSpawnResolveJoints to resolve Skin.joints[] via
+ * SkinAsset.jointPaths.
+ *
+ * D-2 / D-3: refs carries structured edge metadata (AssetRef[]). Mesh
+ * handle values are refs[] indices, so a mesh ref's sourceField comes from
+ * the entity whose MeshFilter holds that index. Skeleton edges: sourceField
+ * from Skin.skeleton if an entity carries that GUID. Skin edges:
+ * sourceField=undefined (cross-edge with no entity-component representation).
+ */
+function sceneAssetRefs(session: GltfImportSession, scene: SceneAssetPod): AssetRef[] {
+  const provenance = sceneRefProvenance(scene);
+  const refs: AssetRef[] = [];
+  for (const [handle, guid] of [...session.maps.meshGuidByIndex.values()].entries()) {
+    const prov = provenance.meshFilterByHandle.get(handle);
+    refs.push(
+      prov !== undefined
+        ? {
+            guid,
+            sourceField: { componentName: 'MeshFilter', fieldName: 'assetHandle' },
+            sceneEntityKey: prov.sceneEntityKey,
+          }
+        : { guid },
+    );
+  }
+  for (const guid of session.skeletonGuidBySourceIndex.values()) {
+    const skProv = provenance.skinBySkeletonGuid.get(guid);
+    refs.push(
+      skProv !== undefined
+        ? {
+            guid,
+            sourceField: { componentName: 'Skin', fieldName: 'skeleton' },
+            sceneEntityKey: skProv.sceneEntityKey,
+          }
+        : { guid },
+    );
+  }
+  for (const guid of session.skinGuidBySourceIndex.values()) refs.push({ guid });
+  return refs;
+}
+
+function importSceneSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportedAsset<unknown> {
+  // #317 multi-material design: bridge accepts glTF mesh-index keyed
+  // meshHandles + materialHandles only; primitive merge happens via
+  // doc.meshes[] filtering on meshIndex inside the bridge.
+  // tweak-20260611 M6: also pass skeletonGuidBySkinIndex so the bridge
+  // can stamp Skin component (skeleton GUID string) onto skinned mesh
+  // entities. Skins are 1:1 with skeletons in toAssetPack so the same
+  // sourceIndex map serves both purposes (the field name says
+  // "BySkinIndex" because the bridge keys by GltfNodeIr.skinIndex).
+  const scene = gltfDocToSceneAsset(session.doc, {
+    meshHandles: session.maps.meshHandles,
+    materialHandles: session.maps.materialHandles,
+    skeletonGuidBySkinIndex: session.skeletonGuidBySourceIndex,
+  });
+  const refs = sceneAssetRefs(session, scene);
+  // Inject skinGuids into the scene payload as the reverse-decode hint; the
+  // SkinAsset GUIDs are already in the scene envelope's refs[] above, which
+  // is the runtime recursion source for the browser-async-pack-fetch path.
+  // Stored as inline GUID strings (in-memory dawn smoke path); the on-disk
+  // .pack.json round-trip preserves them as strings -- parseScenePayload's
+  // resolveSkinGuids accepts both string and refs[]-index shapes.
+  const skinGuidList = [...session.skinGuidBySourceIndex.values()];
+  const sceneWithSkinGuids =
+    skinGuidList.length > 0 ? { ...scene, skinGuids: skinGuidList } : scene;
+  return {
+    guid: sub.guid,
+    kind: 'scene',
+    ...displayName(session, session.doc.scenes[sub.sourceIndex]?.name),
+    payload: sceneWithSkinGuids,
+    refs,
+    artifacts: {},
+  };
+}
+
+/**
+ * tweak-20260611 M4: skeleton sub-asset POD emit. SkeletonPod (the
+ * gltf IR shape from parse-skin) carries inverseBindMatrices + jointCount
+ * + jointPaths; SkeletonAsset (the runtime POD) carries IBM + jointCount
+ * only — jointPaths live on the parallel SkinAsset (1:1 mapping per
+ * toAssetPack's emit policy). refs[] is empty (skeleton is leaf data).
+ */
+function importSkeletonSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportedAsset<unknown> | undefined {
+  const rec = session.doc.skeletons[sub.sourceIndex];
+  if (rec === undefined) return undefined;
+  const payload = {
+    kind: 'skeleton' as const,
+    inverseBindMatrices: rec.inverseBindMatrices,
+    jointCount: rec.jointCount,
+    ...(rec.bounds === undefined ? {} : { bounds: rec.bounds }),
+    ...(rec.shadowCapsules === undefined ? {} : { shadowCapsules: rec.shadowCapsules }),
+  };
+  return { guid: sub.guid, kind: 'skeleton', payload, refs: [], artifacts: {} };
+}
+
+/**
+ * tweak-20260611 M4: skin sub-asset POD emit. The 1:1 mapping with
+ * skeleton (toAssetPack emits one skin per SkeletonPod at the same
+ * sourceIndex) lets us pull the skeleton GUID out of the pre-built
+ * skeletonGuidBySourceIndex map. SkinAsset is the runtime POD, distinct
+ * from SkeletonPod: skeletonGuid + jointPaths only (zero entity refs
+ * at the asset layer per AC-06). refs[] carries the skeletonGuid so the
+ * runner sees the cross-edge.
+ */
+function importSkinSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportedAsset<unknown> | undefined {
+  const rec = session.doc.skeletons[sub.sourceIndex];
+  if (rec === undefined) return undefined;
+  const skeletonGuid = session.skeletonGuidBySourceIndex.get(sub.sourceIndex);
+  if (skeletonGuid === undefined) return undefined;
+  const payload = {
+    kind: 'skin' as const,
+    skeletonGuid,
+    jointPaths: rec.jointPaths,
+  };
+  return {
+    guid: sub.guid,
+    kind: 'skin',
+    payload,
+    refs: [{ guid: skeletonGuid, sourceField: { fieldName: 'skeleton' } }],
+    artifacts: {},
+  };
+}
+
+/**
+ * tweak-20260611 M4: animation-clip sub-asset POD emit. GltfAnimationClipRecord
+ * (gltf IR) and AnimationClip (runtime POD) are structurally compatible
+ * — both carry duration + channels[]; channels' inner shape matches
+ * (targetId / property / sampler). property is narrowed to the runtime
+ * closed union by the parser. refs[] is empty (animation clips reference joints by name path
+ * resolved at post-spawn time, not by sub-asset cross-edge).
+ */
+function importAnimationClipSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): ImportedAsset<unknown> | undefined {
+  const rec = session.doc.animationClips[sub.sourceIndex];
+  if (rec === undefined) return undefined;
+  const payload = {
+    kind: 'animation-clip' as const,
+    duration: rec.duration,
+    channels: rec.channels.map((ch) => ({
+      targetId: ch.targetId,
+      property: ch.property,
+      sampler: {
+        input: ch.sampler.input,
+        output: ch.sampler.output,
+        interpolation: ch.sampler.interpolation,
+      },
+    })),
+  };
+  const samples = encodeAnimationClipSamples(payload);
+  return {
+    guid: sub.guid,
+    kind: 'animation-clip',
+    payload: samples?.payload ?? payload,
+    refs: [],
+    artifacts:
+      samples === undefined
+        ? {}
+        : {
+            [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+              mediaType: 'application/octet-stream',
+              bytes: samples.bytes,
+            },
+          },
+  };
+}
+
+/** Emit one declared sub-asset; kinds without a doc counterpart emit nothing. */
+async function importSubAsset(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+): Promise<ImportStep<ImportedAsset<unknown> | undefined>> {
+  switch (sub.kind) {
+    case 'mesh':
+      return importMeshSubAsset(session, sub);
+    case 'material':
+      return { ok: true, value: importMaterialSubAsset(session, sub) };
+    case 'texture':
+      return { ok: true, value: await importTextureSubAsset(session, sub) };
+    case 'sampler':
+      return { ok: true, value: importSamplerSubAsset(session, sub) };
+    case 'scene':
+      return { ok: true, value: importSceneSubAsset(session, sub) };
+    case 'skeleton':
+      return { ok: true, value: importSkeletonSubAsset(session, sub) };
+    case 'skin':
+      return { ok: true, value: importSkinSubAsset(session, sub) };
+    case 'animation-clip':
+      return { ok: true, value: importAnimationClipSubAsset(session, sub) };
+    default:
+      return { ok: true, value: undefined };
+  }
+}
+
 async function importGltf(
   ctx: ImportContext,
   options: GltfParseOptions = {},
@@ -476,597 +1247,12 @@ async function importGltf(
   const doc = deriveGltfShadowCapsules(
     deriveGltfAnimatedBounds(applyImportSettingsBounds(parsed.value, ctx.importSettings)),
   );
-  const maps = buildHandleMaps(ctx.subAssets, doc);
-
-  // Pre-derive each images[] row's colorSpace from material slot bindings
-  // (D-3 / AC-08). orphan images default to 'linear' (AC-13).
-  const imageColorSpaces = deriveTextureColorSpace({
-    imageCount: (doc.images ?? []).length,
-    textures: doc.textures,
-    materials: doc.materials,
-  });
-
-  // Extract image bytes (3 source paths) once. Failures here are surfaced
-  // per-image so a single bad row does not abort the whole importer.
-  const declaredImageIndices = new Set<number>();
-  for (const sub of ctx.subAssets) {
-    if (sub.kind === 'texture') declaredImageIndices.add(sub.sourceIndex);
-  }
-  const extraction =
-    declaredImageIndices.size > 0
-      ? extractImageBytes(doc.images ?? [])
-      : {
-          extracted: new Map(),
-          failures: [] as readonly {
-            imageIndex: number;
-            source: 'bufferView' | 'data-uri' | 'external-uri';
-            reason: string;
-          }[],
-        };
-
-  // M4 (tweak-20260611-skin-fox-3clip-and-kb-sample-assets): SkinAsset.refs[]
-  // carries the skeleton GUID (each skin binds 1:1 to a SkeletonAsset; the
-  // skeletonGuid field is the on-asset cross-reference; refs[] is the runner-
-  // visible cross-edge used for pack-index ordering and integrity checks).
-  // Build the index now so the skin emit branch below can stamp it.
-  const skeletonGuidBySourceIndex = new Map<number, string>();
-  for (const sub of ctx.subAssets) {
-    if (sub.kind === 'skeleton') skeletonGuidBySourceIndex.set(sub.sourceIndex, sub.guid);
-  }
-  // feat-20260612 M2 fixup: parallel skin GUID index. Skins and skeletons
-  // share `sourceIndex` (toAssetPack emits 1:1 per SkeletonPod) but live
-  // as distinct `kind` sub-assets, so the SkinAsset GUIDs differ from the
-  // SkeletonAsset GUIDs. The scene branch below appends these GUIDs to both
-  // its refs[] (the runtime recursion source: source Scene loading walks
-  // envelope.refs to recursively pull every SkinAsset before instantiate) and
-  // its payload.skinGuids (the reverse-decode hint) -- without the refs[] edge,
-  // browser-async-pack-fetch never loads SkinAssets and Skin.joints stays
-  // length=0).
-  const skinGuidBySourceIndex = new Map<number, string>();
-  for (const sub of ctx.subAssets) {
-    if (sub.kind === 'skin') skinGuidBySourceIndex.set(sub.sourceIndex, sub.guid);
-  }
-
-  const primitivesByMesh = groupMeshPrimitives(doc.meshes);
+  const session = createImportSession(ctx, doc);
   const out: ImportedAsset<unknown>[] = [];
-  const isMultiAsset = ctx.subAssets.length > 1;
   for (const sub of ctx.subAssets) {
-    if (sub.kind === 'mesh') {
-      // sub.sourceIndex now indexes glTF mesh-index (not flat GltfMeshIr index).
-      // parseGltf flattens N glTF meshes with M_i primitives into sum(M_i)
-      // GltfMeshIr rows, all sharing meshIndex; gather all rows whose
-      // meshIndex === sub.sourceIndex (preserving doc.meshes order so the
-      // bridge's positional materials[i] <-> submeshes[i] pairing aligns)
-      // and let meshIrToMeshAsset interleave them into one MeshAsset with
-      // N Submesh entries.
-      const prims = primitivesByMesh.get(sub.sourceIndex) ?? [];
-      if (prims.length === 0) continue;
-      const meshName = isMultiAsset ? prims[0]?.name : undefined;
-      const materialNameByIndex = new Map<number, string>();
-      const materialSourceKeyByIndex = new Map<number, string>();
-      for (let materialIndex = 0; materialIndex < doc.materials.length; materialIndex++) {
-        const name = doc.materials[materialIndex]?.name;
-        if (typeof name === 'string') materialNameByIndex.set(materialIndex, name);
-      }
-      for (const material of ctx.subAssets) {
-        if (material.kind === 'material' && material.sourceKey !== undefined) {
-          materialSourceKeyByIndex.set(material.sourceIndex, material.sourceKey);
-        }
-      }
-      const bridged = meshIrToMeshAsset(prims, {
-        guidByIndex: maps.materialGuidByIndex,
-        nameByIndex: materialNameByIndex,
-        sourceKeyByIndex: materialSourceKeyByIndex,
-      });
-      if (!bridged.ok) {
-        return {
-          ok: false,
-          error: new ImportError({
-            code: 'import-internal-error',
-            expected: 'gltf mesh bridge to produce a canonical MeshAsset',
-            actual: bridged.error.code,
-            hint: 'repair the source primitive and re-run the glTF importer',
-            detail: {
-              reason: `gltf mesh bridge rejected mesh ${sub.sourceIndex}; inspect the bridge error detail`,
-            },
-          }),
-        };
-      }
-      const cards = await cookGltfMeshCards(
-        bridged.value,
-        prims,
-        doc.materials,
-        ctx.importSettings.meshCards,
-      );
-      if (!cards.ok)
-        return {
-          ok: false,
-          error: new ImportError({
-            code: 'import-internal-error',
-            expected: cards.error.expected,
-            hint: cards.error.hint,
-            detail: { reason: `mesh ${sub.sourceIndex}: ${JSON.stringify(cards.error.detail)}` },
-          }),
-        };
-      const stabilizedMesh = stabilizeMeshMaterialSlots(cards.value, ctx, sub.guid, sub.sourceKey);
-      const distanceField = await cookGltfMeshDistanceField(
-        cards.value,
-        sub.guid,
-        prims,
-        doc.materials,
-        ctx.importSettings.meshDistanceField,
-      );
-      if (!distanceField.ok)
-        return {
-          ok: false,
-          error: new ImportError({
-            code: 'import-internal-error',
-            expected: distanceField.error.expected,
-            hint: distanceField.error.hint,
-            detail: {
-              reason: `mesh ${sub.sourceIndex}: ${JSON.stringify(distanceField.error.detail)}`,
-            },
-          }),
-        };
-
-      const lodGroup =
-        doc.lod?.groups?.find(
-          (group) => doc.nodes[group.rootNode]?.meshIndex === sub.sourceIndex,
-        ) ??
-        (doc.lod?.rootNode !== undefined &&
-        doc.nodes[doc.lod.rootNode]?.meshIndex === sub.sourceIndex
-          ? doc.lod
-          : undefined);
-      const rootMeshIndex = lodGroup === undefined ? undefined : sub.sourceIndex;
-      if (lodGroup !== undefined) {
-        const referencedMeshIndices = [
-          sub.sourceIndex,
-          ...lodGroup.lodNodeIds.map((nodeIndex) => doc.nodes[nodeIndex]?.meshIndex),
-        ];
-        const missingMeshIndex = referencedMeshIndices.find(
-          (meshIndex) =>
-            !Number.isInteger(meshIndex) ||
-            meshIndex === null ||
-            meshIndex === undefined ||
-            maps.meshGuidByIndex.get(meshIndex as number) === undefined,
-        );
-        if (missingMeshIndex !== undefined) {
-          return {
-            ok: false,
-            error: new ImportError({
-              code: 'import-internal-error',
-              expected: 'every MSFT_lod node to resolve a cooked mesh sub-asset',
-              actual: String(missingMeshIndex),
-              hint: 'repair the referenced glTF mesh primitives and re-run the importer',
-              detail: {
-                reason: `MSFT_lod group for mesh ${sub.sourceIndex} references an unprojected mesh`,
-              },
-            }),
-          };
-        }
-      }
-      const authoredLods =
-        sub.sourceKey === undefined ? undefined : ctx.sourceOverrides?.[sub.sourceKey]?.lods;
-      const lodEntries = Array.isArray(authoredLods) ? authoredLods : [];
-      const lodLevels =
-        rootMeshIndex === sub.sourceIndex && lodGroup !== undefined
-          ? lodGroup.lodNodeIds.flatMap((nodeIndex, index) => {
-              const meshIndex = doc.nodes[nodeIndex]?.meshIndex;
-              const guid =
-                meshIndex === undefined || meshIndex === null
-                  ? undefined
-                  : maps.meshGuidByIndex.get(meshIndex);
-              if (guid === undefined) return [];
-              const authored = lodEntries[index];
-              const authoredCoverage =
-                authored !== null && typeof authored === 'object'
-                  ? (authored as { readonly screenCoverage?: unknown }).screenCoverage
-                  : undefined;
-              const coverage =
-                typeof authoredCoverage === 'number'
-                  ? authoredCoverage
-                  : (lodGroup.screenCoverages[index] ??
-                    deriveDefaultLodScreenCoverages(lodGroup.lodNodeIds.length + 1)[index]);
-              const parsed = AssetGuidCodec.parse(guid);
-              return parsed.ok && coverage !== undefined
-                ? [{ mesh: parsed.value, screenCoverage: coverage, guid }]
-                : [];
-            })
-          : [];
-      const sourceMeshPayload: MeshAsset =
-        lodLevels.length === 0
-          ? stabilizedMesh
-          : {
-              ...stabilizedMesh,
-              lods: lodLevels.map(({ mesh, screenCoverage }) => ({ mesh, screenCoverage })),
-            };
-      const meshPayload = cookMeshCollision(
-        sourceMeshPayload,
-        ctx.importSettings.meshCollision,
-      ).unwrap();
-      const materialRefs: AssetRef[] = [];
-      const seenMaterialGuids = new Set<string>();
-      for (let slotIndex = 0; slotIndex < meshPayload.materialSlots.length; slotIndex++) {
-        const defaultMaterial = meshPayload.materialSlots[slotIndex]?.defaultMaterial;
-        const guid =
-          defaultMaterial === undefined ? undefined : sourceMaterialGuid(defaultMaterial);
-        if (guid !== undefined && !seenMaterialGuids.has(guid.toLowerCase())) {
-          seenMaterialGuids.add(guid.toLowerCase());
-          materialRefs.push({
-            guid,
-            sourceField: { fieldName: 'materialSlots', arrayIndex: slotIndex },
-          });
-        }
-      }
-      for (const [lodIndex, level] of lodLevels.entries()) {
-        if (!seenMaterialGuids.has(level.guid.toLowerCase())) {
-          seenMaterialGuids.add(level.guid.toLowerCase());
-          materialRefs.push({
-            guid: level.guid,
-            sourceField: { fieldName: 'lods', arrayIndex: lodIndex },
-          });
-        }
-      }
-      out.push({
-        guid: sub.guid,
-        kind: 'mesh',
-        ...(meshName !== undefined ? { name: meshName } : {}),
-        payload: {
-          kind: 'mesh',
-          ...(distanceField.value === undefined
-            ? {}
-            : { distanceField: distanceField.value.payload }),
-        },
-        refs: materialRefs,
-        artifacts: {
-          ...distanceField.value?.artifacts,
-          body: {
-            mediaType: 'application/x-forgeax-mesh',
-            assetCodec: { name: 'mesh-binary', version: '5' },
-            bytes: (() => {
-              const packed = packMeshBin(
-                meshPayload as never,
-                sub.sourceKey ?? ctx.source,
-                materialRefs.map((ref) => ref.guid),
-              );
-              if (!packed.ok) {
-                throw new ImportError({
-                  code: 'import-internal-error',
-                  expected: 'mesh-bin v5 producer to accept the canonical mesh projection',
-                  hint: 're-cook the source with its Meta sidecar after fixing the mesh payload',
-                  detail: { reason: `${packed.error.code}: ${packed.error.actual}` },
-                });
-              }
-              return packed.value;
-            })(),
-          },
-        },
-      });
-    } else if (sub.kind === 'material') {
-      const mat = doc.materials[sub.sourceIndex];
-      if (mat === undefined) continue;
-      // feat-20260611 w17-a: scan doc.meshes[] for any primitive that (a)
-      // references this material and (b) carries JOINTS_0 + WEIGHTS_0. If
-      // found, route the emitted MaterialAsset to `forgeax::pbr-skin`.
-      // Mirrors the per-MeshAsset 18F-stride decision in meshIrToMeshAsset
-      // (D-2): a material consumed by any skinned primitive must use the
-      // skin shader so the runtime PSO chain (LayoutKind='pbr-skin' +
-      // 6-attribute deriveVertexBufferLayout) is exercised.
-      let skinned = false;
-      for (const meshIr of doc.meshes) {
-        if (meshIr.materialIndex !== sub.sourceIndex) continue;
-        if (meshIr.joints0 !== undefined && meshIr.weights0 !== undefined) {
-          skinned = true;
-          break;
-        }
-      }
-      for (let primitiveIndex = 0; primitiveIndex < doc.meshes.length; primitiveIndex++) {
-        const meshIr = doc.meshes[primitiveIndex];
-        if (meshIr?.materialIndex !== sub.sourceIndex) continue;
-        const uvResult = validateMaterialUvSets(
-          mat,
-          `primitive-${primitiveIndex}`,
-          availableUvSets(meshIr),
-        );
-        if (!uvResult.ok) {
-          throw Object.assign(new Error(uvResult.error.message), uvResult.error);
-        }
-        const tangentResult = validateMaterialTangentInputs(mat, meshIr);
-        if (!tangentResult.ok) {
-          throw Object.assign(new Error(tangentResult.error.message), tangentResult.error);
-        }
-      }
-      const matAsset = toMaterialAsset(mat, {
-        textureHandles: maps.textureHandles,
-        samplerHandles: maps.samplerHandles,
-        skinned,
-        ...(typeof ctx.importSettings.standardMaterialGuid === 'string'
-          ? { standardRootGuid: ctx.importSettings.standardMaterialGuid as unknown as AssetGuid }
-          : {}),
-      });
-      const refs = materialRefsForPack(mat, doc, maps.textureGuidByIndex, maps.samplerGuidByIndex);
-      // D-8: if material has a parent, add parent edge to refs
-      const materialRefs: AssetRef[] = [...refs];
-      if (matAsset.parent !== undefined) {
-        materialRefs.push({
-          guid: matAsset.parent as unknown as string,
-          sourceField: { fieldName: 'parent' },
-        });
-      }
-      const rewrittenAsset = rewriteMaterialAssetRefs(matAsset, mat, doc, maps);
-      const matName = isMultiAsset ? mat.name : undefined;
-      out.push({
-        guid: sub.guid,
-        kind: 'material',
-        ...(matName !== undefined ? { name: matName } : {}),
-        payload: rewrittenAsset,
-        refs: materialRefs,
-        artifacts: {},
-      });
-    } else if (sub.kind === 'texture') {
-      const imageIndex = sub.sourceIndex;
-      const extracted = extraction.extracted.get(imageIndex);
-      if (extracted === undefined) {
-        const failure = extraction.failures.find((f) => f.imageIndex === imageIndex);
-        const detail = failure ?? {
-          imageIndex,
-          source: 'bufferView' as const,
-          reason: 'image row missing from extraction map (no images[] entry?)',
-        };
-        const error = gltfErr('gltf-image-extract-failed', detail);
-        throw new Error(
-          `gltfImporter: ${error.code} on image ${imageIndex} (${detail.source}): ${detail.reason}`,
-        );
-      }
-      const colorSpace = imageColorSpaces.get(imageIndex) ?? 'linear';
-      // Carry colorSpace + mipmap settings into decodeImage via a per-image
-      // settings record (mirror of importImageSettings — but here the importer
-      // owns the decision because the seam is in-bounds for AC-12 (c)).
-      const decodeSettings = {
-        ...ctx.importSettings,
-        colorSpace,
-        mipmap: ctx.importSettings.mipmap ?? true,
-      };
-      const decoded = await ctx.decodeImage(extracted.bytes, extracted.mimeType, decodeSettings);
-      if (!decoded.ok) {
-        const reason = `decodeImage failed: ${decoded.error.code}`;
-        const error = gltfErr('gltf-image-extract-failed', {
-          imageIndex,
-          source: extracted.source,
-          reason,
-        });
-        throw new Error(
-          `gltfImporter: ${error.code} on image ${imageIndex} (${extracted.source}): ${reason}`,
-        );
-      }
-      const imageItem = (doc.images ?? [])[imageIndex];
-      const texName = isMultiAsset ? imageItem?.name : undefined;
-      out.push({
-        guid: sub.guid,
-        kind: 'texture',
-        ...(texName !== undefined ? { name: texName } : {}),
-        payload: decoded.value.texture,
-        refs: [],
-        artifacts: {
-          body: {
-            mediaType: decoded.value.mediaType ?? extracted.mimeType,
-            assetCodec: decoded.value.assetCodec ?? { name: 'rgba8', version: '1' },
-            bytes: decoded.value.bytes,
-          },
-        },
-      });
-    } else if (sub.kind === 'sampler') {
-      const sampler = doc.samplers?.[sub.sourceIndex];
-      if (sampler === undefined) continue;
-      const filter = (value: number | undefined): 'nearest' | 'linear' | undefined => {
-        if (value === undefined) return undefined;
-        return value === 9728 || value === 9984 || value === 9986 || value === 9988
-          ? 'nearest'
-          : 'linear';
-      };
-      const mipmapFilter = (value: number | undefined): 'nearest' | 'linear' | undefined => {
-        if (value === undefined) return undefined;
-        return value === 9984 || value === 9985 ? 'nearest' : 'linear';
-      };
-      const addressMode = (value: number): 'repeat' | 'mirror-repeat' | 'clamp-to-edge' => {
-        if (value === 33071) return 'clamp-to-edge';
-        if (value === 33648) return 'mirror-repeat';
-        return 'repeat';
-      };
-      const magFilter = filter(sampler.magFilter);
-      const minFilter = filter(sampler.minFilter);
-      const mipmap = mipmapFilter(sampler.minFilter);
-      const payload = {
-        kind: 'sampler' as const,
-        ...(magFilter === undefined ? {} : { magFilter }),
-        ...(minFilter === undefined ? {} : { minFilter }),
-        ...(mipmap === undefined ? {} : { mipmapFilter: mipmap }),
-        addressModeU: addressMode(sampler.wrapS),
-        addressModeV: addressMode(sampler.wrapT),
-      };
-      out.push({ guid: sub.guid, kind: 'sampler', payload, refs: [], artifacts: {} });
-    } else if (sub.kind === 'scene') {
-      // #317 multi-material design: bridge accepts glTF mesh-index keyed
-      // meshHandles + materialHandles only; primitive merge happens via
-      // doc.meshes[] filtering on meshIndex inside the bridge.
-      // tweak-20260611 M6: also pass skeletonGuidBySkinIndex so the bridge
-      // can stamp Skin component (skeleton GUID string) onto skinned mesh
-      // entities. Skins are 1:1 with skeletons in toAssetPack so the same
-      // sourceIndex map serves both purposes (the field name says
-      // "BySkinIndex" because the bridge keys by GltfNodeIr.skinIndex).
-      const scene = gltfDocToSceneAsset(doc, {
-        meshHandles: maps.meshHandles,
-        materialHandles: maps.materialHandles,
-        skeletonGuidBySkinIndex: skeletonGuidBySourceIndex,
-      });
-      // Scene refs contain only dependencies authored directly by the scene:
-      // mesh, skeleton, and skin assets. Imported material defaults belong to
-      // MeshAsset.materialSlots, and textures belong to MaterialAsset refs;
-      // repeating either here would create a second dependency owner.
-      // Skeleton GUIDs are appended so the runtime asset graph sees the
-      // cross-edge when a skinned mesh node carries Skin { skeleton:
-      // <guid-string> }; skin GUIDs (feat-20260612 M2 fixup) carry the
-      // SkinAsset cross-edge that has no entity-component representation but
-      // is required for postSpawnResolveJoints to resolve Skin.joints[] via
-      // SkinAsset.jointPaths.
-      //
-      // D-2 / D-3: refs carries structured edge metadata (AssetRef[]).
-      // Walk keyed scene entities to build a handle-value -> (entityKey,
-      // componentName, fieldName, arrayIndex?) provenance map, then
-      // produce AssetRef[] with sourceField / sceneEntityKey filled for mesh
-      // handle-field edges. Skeleton edges: sourceField from Skin.skeleton if entity
-      // carries that GUID. Skin edges: sourceField=undefined (cross-edge
-      // with no entity-component representation).
-      const handleValueProvenance = new Map<
-        number,
-        { sceneEntityKey: string; componentName: string; fieldName: string; arrayIndex?: number }
-      >();
-      const skeletonGuidProvenance = new Map<string, { sceneEntityKey: string }>();
-      for (const [sceneEntityKey, entity] of Object.entries(scene.entities)) {
-        const comps = entity.components as Record<string, Record<string, unknown>>;
-        const mf = comps.MeshFilter;
-        if (mf !== undefined && typeof mf.assetHandle === 'number') {
-          handleValueProvenance.set(mf.assetHandle, {
-            sceneEntityKey,
-            componentName: 'MeshFilter',
-            fieldName: 'assetHandle',
-          });
-        }
-        const skin = comps.Skin;
-        if (skin !== undefined && typeof skin.skeleton === 'string') {
-          skeletonGuidProvenance.set(skin.skeleton, { sceneEntityKey });
-        }
-      }
-
-      const meshGuidList = [...maps.meshGuidByIndex.values()];
-
-      function makeRef(guid: string, idx: number): AssetRef {
-        const prov = handleValueProvenance.get(idx);
-        if (prov !== undefined) {
-          return {
-            guid,
-            sourceField: {
-              componentName: prov.componentName,
-              fieldName: prov.fieldName,
-              ...(prov.arrayIndex !== undefined ? { arrayIndex: prov.arrayIndex } : {}),
-            },
-            sceneEntityKey: prov.sceneEntityKey,
-          };
-        }
-        return { guid };
-      }
-
-      const refs: AssetRef[] = [];
-      let cursor = 0;
-      for (const guid of meshGuidList) {
-        refs.push(makeRef(guid, cursor));
-        cursor++;
-      }
-      {
-        const skeletonGuidList = [...skeletonGuidBySourceIndex.values()];
-        for (const guid of skeletonGuidList) {
-          const skProv = skeletonGuidProvenance.get(guid);
-          refs.push(
-            skProv !== undefined
-              ? {
-                  guid,
-                  sourceField: { componentName: 'Skin', fieldName: 'skeleton' },
-                  sceneEntityKey: skProv.sceneEntityKey,
-                }
-              : { guid },
-          );
-          cursor++;
-        }
-      }
-      {
-        const skinGuidList = [...skinGuidBySourceIndex.values()];
-        for (const guid of skinGuidList) {
-          refs.push({ guid });
-          cursor++;
-        }
-      }
-      // Inject skinGuids into the scene payload as the reverse-decode hint; the
-      // SkinAsset GUIDs are already in the scene envelope's refs[] above, which
-      // is the runtime recursion source for the browser-async-pack-fetch path.
-      // Stored as inline GUID strings (in-memory dawn smoke path); the on-disk
-      // .pack.json round-trip preserves them as strings -- parseScenePayload's
-      // resolveSkinGuids accepts both string and refs[]-index shapes.
-      const skinGuidList = [...skinGuidBySourceIndex.values()];
-      const sceneWithSkinGuids =
-        skinGuidList.length > 0 ? { ...scene, skinGuids: skinGuidList } : scene;
-      const sceneName = isMultiAsset ? doc.scenes[sub.sourceIndex]?.name : undefined;
-      out.push({
-        guid: sub.guid,
-        kind: 'scene',
-        ...(sceneName !== undefined ? { name: sceneName } : {}),
-        payload: sceneWithSkinGuids,
-        refs,
-        artifacts: {},
-      });
-    } else if (sub.kind === 'skeleton') {
-      // tweak-20260611 M4: skeleton sub-asset POD emit. SkeletonPod (the
-      // gltf IR shape from parse-skin) carries inverseBindMatrices + jointCount
-      // + jointPaths; SkeletonAsset (the runtime POD) carries IBM + jointCount
-      // only — jointPaths live on the parallel SkinAsset (1:1 mapping per
-      // toAssetPack's emit policy). refs[] is empty (skeleton is leaf data).
-      const rec = doc.skeletons[sub.sourceIndex];
-      if (rec === undefined) continue;
-      const payload = {
-        kind: 'skeleton' as const,
-        inverseBindMatrices: rec.inverseBindMatrices,
-        jointCount: rec.jointCount,
-        ...(rec.bounds === undefined ? {} : { bounds: rec.bounds }),
-        ...(rec.shadowCapsules === undefined ? {} : { shadowCapsules: rec.shadowCapsules }),
-      };
-      out.push({ guid: sub.guid, kind: 'skeleton', payload, refs: [], artifacts: {} });
-    } else if (sub.kind === 'skin') {
-      // tweak-20260611 M4: skin sub-asset POD emit. The 1:1 mapping with
-      // skeleton (toAssetPack emits one skin per SkeletonPod at the same
-      // sourceIndex) lets us pull the skeleton GUID out of the pre-built
-      // skeletonGuidBySourceIndex map. SkinAsset is the runtime POD, distinct
-      // from SkeletonPod: skeletonGuid + jointPaths only (zero entity refs
-      // at the asset layer per AC-06). refs[] carries the skeletonGuid so the
-      // runner sees the cross-edge.
-      const rec = doc.skeletons[sub.sourceIndex];
-      if (rec === undefined) continue;
-      const skeletonGuid = skeletonGuidBySourceIndex.get(sub.sourceIndex);
-      if (skeletonGuid === undefined) continue;
-      const payload = {
-        kind: 'skin' as const,
-        skeletonGuid,
-        jointPaths: rec.jointPaths,
-      };
-      out.push({
-        guid: sub.guid,
-        kind: 'skin',
-        payload,
-        refs: [{ guid: skeletonGuid, sourceField: { fieldName: 'skeleton' } }],
-        artifacts: {},
-      });
-    } else if (sub.kind === 'animation-clip') {
-      // tweak-20260611 M4: animation-clip sub-asset POD emit. GltfAnimationClipRecord
-      // (gltf IR) and AnimationClip (runtime POD) are structurally compatible
-      // — both carry duration + channels[]; channels' inner shape matches
-      // (targetId / property / sampler). property is narrowed to the runtime
-      // closed union by the parser. refs[] is empty (animation clips reference joints by name path
-      // resolved at post-spawn time, not by sub-asset cross-edge).
-      const rec = doc.animationClips[sub.sourceIndex];
-      if (rec === undefined) continue;
-      const payload = {
-        kind: 'animation-clip' as const,
-        duration: rec.duration,
-        channels: rec.channels.map((ch) => ({
-          targetId: ch.targetId,
-          property: ch.property,
-          sampler: {
-            input: ch.sampler.input,
-            output: ch.sampler.output,
-            interpolation: ch.sampler.interpolation,
-          },
-        })),
-      };
-      out.push({ guid: sub.guid, kind: 'animation-clip', payload, refs: [], artifacts: {} });
-    }
+    const asset = await importSubAsset(session, sub);
+    if (!asset.ok) return asset;
+    if (asset.value !== undefined) out.push(asset.value);
   }
   return { ok: true, value: { assets: out, sourceDependencies: [] } };
 }

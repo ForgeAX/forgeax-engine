@@ -12,6 +12,7 @@ import {
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -24,7 +25,7 @@ it.each([
   vertexColor,
   lod,
 }) => {
-  const size = import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 256 : 512;
+  const size = testQuality.squareSize;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -88,9 +89,10 @@ it.each([
         direction: [0, -1, 1],
         intensity: 4,
         castShadow: true,
+        // Keep all four shadow views in this caster-visibility regression.
         cascadeCount: 4,
         shadowDistance: 35,
-        mapSize: import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 256 : 1024,
+        mapSize: testQuality.shadowMapSize,
         normalBias: 0.01,
         depthBias: 0.00001,
       },

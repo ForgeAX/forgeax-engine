@@ -111,6 +111,7 @@ export {
   type RelationshipTargetComponent,
 } from './relationship-index';
 export {
+  defineSchedule,
   FixedUpdate,
   type ScheduleName,
   type ScheduleToken,
@@ -354,3 +355,9 @@ export { ENTITY_MAX_GENERATION, ENTITY_MAX_INDEX, ENTITY_NULL_RAW } from './enti
 // deleted — routing layer (Registry / sandbox) is removed; eval is the sole
 // command channel.
 // w9: ECS_MUTATING_METHODS export deleted — sandbox dismantled; mutating-methods.ts removed.
+
+export {
+  QueryBatchUnavailableError,
+  type QueryBatchUnavailableReason,
+} from './errors/query-batch-errors';
+export type { NumericField, QueryBatch, QueryBatchColumns, ReadonlyColumn } from './query/batch';

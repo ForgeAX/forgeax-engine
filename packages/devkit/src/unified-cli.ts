@@ -9,6 +9,7 @@ import {
   type ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
 import { createDevkitCliStartup } from './cli-host.js';
+import { compactCliResult } from './cli-presentation.js';
 
 export interface UnifiedCliResult {
   readonly ok: boolean;
@@ -22,6 +23,16 @@ export interface UnifiedCliResult {
     readonly hint?: string;
     readonly detail?: unknown;
   };
+  /** Compact presentation only: value fields left out, restored by `flag`. */
+  readonly omitted?: { readonly fields: readonly string[]; readonly flag: '--detail' };
+}
+
+export interface UnifiedCliOptions {
+  /**
+   * `full` (default) returns owner values unchanged. `compact` is the `forgeax`
+   * process presentation: it bounds large values unless the call passes `--detail`.
+   */
+  readonly presentation?: 'full' | 'compact';
 }
 
 interface ParsedCli {
@@ -30,6 +41,7 @@ interface ParsedCli {
   readonly root: string;
   readonly json: boolean;
   readonly tree: boolean;
+  readonly detail: boolean;
   readonly helpRequested: boolean;
   readonly input?: unknown;
   readonly args: Record<string, unknown>;
@@ -50,75 +62,121 @@ function parseInput(raw: string, root: string): unknown {
   return JSON.parse(source) as unknown;
 }
 
+interface CliParseState {
+  readonly path: string[];
+  readonly args: Record<string, unknown>;
+  root: string;
+  json: boolean;
+  tree: boolean;
+  detail: boolean;
+  inputRaw: string | undefined;
+  inputSeen: boolean;
+  flagsSeen: boolean;
+}
+
+const CLI_BOOLEAN_FLAGS: ReadonlySet<string> = new Set(['--json', '--tree', '--detail', '--help']);
+
+/** `--name=value` splits at the first `=`; other tokens carry no inline value. */
+function splitCliToken(token: string): { readonly flag: string; readonly inline?: string } {
+  const equals = token.startsWith('--') ? token.indexOf('=') : -1;
+  return equals < 0
+    ? { flag: token }
+    : { flag: token.slice(0, equals), inline: token.slice(equals + 1) };
+}
+
+function applyBooleanFlag(state: CliParseState, flag: string, inline: string | undefined): void {
+  if (inline !== undefined && inline !== 'true' && inline !== 'false') {
+    throw new Error(`${flag} expects true or false`);
+  }
+  const enabled = inline !== 'false';
+  if (flag === '--json') state.json = enabled;
+  else if (flag === '--tree') state.tree = enabled;
+  else if (flag === '--detail') state.detail = enabled;
+  else state.args.help = enabled;
+}
+
+/** Applies one valued flag and returns how many following tokens it consumed. */
+function applyValueFlag(
+  state: CliParseState,
+  flag: string,
+  inline: string | undefined,
+  following: string | undefined,
+): number {
+  const key = flagKey(flag);
+  const next = inline ?? following;
+  if (next === undefined || (inline === undefined && next.startsWith('--'))) {
+    if (flag === '--root' || flag === '--input') throw new Error(`${flag} requires a value`);
+    state.args[key] = true;
+    state.flagsSeen = true;
+    return 0;
+  }
+  if (flag === '--root') state.root = next;
+  else if (flag === '--input') {
+    state.inputRaw = next;
+    state.inputSeen = true;
+  } else {
+    state.args[key] = next;
+    state.flagsSeen = true;
+  }
+  return inline === undefined ? 1 : 0;
+}
+
+/** Consumes the token at `index`; returns how many following tokens it also consumed. */
+function applyCliToken(
+  state: CliParseState,
+  tokens: readonly string[],
+  index: number,
+  helpRequested: boolean,
+): number {
+  const { flag, inline } = splitCliToken(tokens[index] as string);
+  if (flag === '-h') {
+    state.args.help = true;
+    return 0;
+  }
+  if (!flag.startsWith('--')) {
+    state.path.push(flag);
+    return 0;
+  }
+  if (CLI_BOOLEAN_FLAGS.has(flag)) {
+    applyBooleanFlag(state, flag, inline);
+    return 0;
+  }
+  if (helpRequested && flag !== '--root' && flag !== '--input') {
+    throw new Error(`unknown help flag ${flag}`);
+  }
+  return applyValueFlag(state, flag, inline, tokens[index + 1]);
+}
+
 function parseArgs(argv: readonly string[]): ParsedCli {
-  const path: string[] = [];
-  const args: Record<string, unknown> = {};
-  let root = process.cwd();
-  let json = false;
-  let tree = false;
-  let input: unknown;
-  let inputRaw: string | undefined;
-  let inputSeen = false;
-  let flagsSeen = false;
+  const state: CliParseState = {
+    path: [],
+    args: {},
+    root: process.cwd(),
+    json: false,
+    tree: false,
+    detail: false,
+    inputRaw: undefined,
+    inputSeen: false,
+    flagsSeen: false,
+  };
   const helpRequested = argv[0] === 'help';
   const tokens = helpRequested ? argv.slice(1) : argv;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index] as string;
-    const equals = token.startsWith('--') ? token.indexOf('=') : -1;
-    const value = equals < 0 ? token : token.slice(0, equals);
-    const inline = equals < 0 ? undefined : token.slice(equals + 1);
-    if (value === '-h') {
-      args.help = true;
-      continue;
-    }
-    if (!value.startsWith('--')) {
-      path.push(value);
-      continue;
-    }
-    if (value === '--json' || value === '--tree' || value === '--help') {
-      if (inline !== undefined && inline !== 'true' && inline !== 'false') {
-        throw new Error(`${value} expects true or false`);
-      }
-      const enabled = inline !== 'false';
-      if (value === '--json') json = enabled;
-      else if (value === '--tree') tree = enabled;
-      else args.help = enabled;
-      continue;
-    }
-    if (helpRequested && value !== '--root' && value !== '--input') {
-      throw new Error(`unknown help flag ${value}`);
-    }
-    const key = flagKey(value);
-    const next = inline ?? tokens[index + 1];
-    if (next === undefined || (inline === undefined && next.startsWith('--'))) {
-      if (value === '--root' || value === '--input') throw new Error(`${value} requires a value`);
-      args[key] = true;
-      flagsSeen = true;
-      continue;
-    }
-    if (inline === undefined) index += 1;
-    if (value === '--root') root = next;
-    else if (value === '--input') {
-      inputRaw = next;
-      inputSeen = true;
-    } else {
-      args[key] = next;
-      flagsSeen = true;
-    }
-  }
-  if (inputSeen && flagsSeen) {
+  for (let index = 0; index < tokens.length; index += 1)
+    index += applyCliToken(state, tokens, index, helpRequested);
+  if (state.inputSeen && state.flagsSeen) {
     throw new Error('--input cannot be combined with named command flags');
   }
-  if (inputRaw !== undefined) input = parseInput(inputRaw, root);
+  const input = state.inputRaw === undefined ? undefined : parseInput(state.inputRaw, state.root);
   return {
-    path,
+    path: state.path,
     positionals: [],
-    root,
-    json,
-    tree,
+    root: state.root,
+    json: state.json,
+    tree: state.tree,
+    detail: state.detail,
     helpRequested,
-    ...(inputSeen ? { input } : {}),
-    args,
+    ...(state.inputSeen ? { input } : {}),
+    args: state.args,
   };
 }
 
@@ -240,7 +298,10 @@ function strictInputSchema(schema: ToolJsonSchema | undefined): ToolJsonSchema |
   return { ...schema, additionalProperties: false };
 }
 
-export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCliResult> {
+export async function runUnifiedCli(
+  argv: readonly string[],
+  options: UnifiedCliOptions = {},
+): Promise<UnifiedCliResult> {
   let startup: Awaited<ReturnType<typeof createHostStartup>> | undefined;
   let cli: ReturnType<typeof createDevkitCliStartup> | undefined;
   let rawCommand = '';
@@ -261,16 +322,20 @@ export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCli
     startup = await createHostStartup({ startupPlugins: [createToolApiPlugin(), cli.plugin] });
     if (!parsedResult.ok) throw parsedResult.error;
     const parsed = parsedResult.value;
+    const present = (result: UnifiedCliResult, args?: unknown): UnifiedCliResult =>
+      options.presentation === 'compact' && !parsed.detail
+        ? compactCliResult(result, { root: parsed.root, args, tree: parsed.tree })
+        : result;
     rawCommand = parsed.path.join(' ');
     const client = await cli.service.ready();
     let commandPath = parsed.path;
     let positionals = parsed.positionals;
     if (parsed.helpRequested) {
-      return {
+      return present({
         ok: true,
         command: rawCommand || 'help',
         value: client.help(parsed.path, parsed.tree),
-      };
+      });
     }
     if (parsed.path.length > 0) {
       for (let length = parsed.path.length; length > 0; length -= 1) {
@@ -293,11 +358,15 @@ export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCli
     }
     const command = commandPath.join(' ');
     if (commandPath.length === 0 || parsed.args.help === true) {
-      return { ok: true, command: command || 'help', value: client.help(commandPath, parsed.tree) };
+      return present({
+        ok: true,
+        command: command || 'help',
+        value: client.help(commandPath, parsed.tree),
+      });
     }
     const help = client.help(commandPath, false);
     if (help.leaf === undefined) {
-      return { ok: true, command, value: client.help(commandPath, parsed.tree) };
+      return present({ ok: true, command, value: client.help(commandPath, parsed.tree) });
     }
     const effectiveSchema = strictInputSchema(help.leaf?.inputSchema as ToolJsonSchema | undefined);
     const positional = positionalArgs(command, parsed.args, positionals);
@@ -324,7 +393,7 @@ export async function runUnifiedCli(argv: readonly string[]): Promise<UnifiedCli
       if (!checked.ok) throw new Error(checked.error);
     }
     const terminal = await client.runPath(command, args);
-    return terminalResult(command, terminal);
+    return present(terminalResult(command, terminal), args);
   } catch (error) {
     return errorResult(error, rawCommand);
   } finally {
@@ -345,9 +414,11 @@ function positionalArgs(
         ? 'subject'
         : command === 'project new' || command === 'sdk install'
           ? 'root'
-          : command === 'project engine use-local'
-            ? 'path'
-            : undefined;
+          : command === 'project play'
+            ? 'script'
+            : command === 'project engine use-local'
+              ? 'path'
+              : undefined;
   if (positionalName === undefined) {
     if (positionals.length > 0) {
       throw new Error(`unexpected positional argument for ${command}: ${positionals[0]}`);

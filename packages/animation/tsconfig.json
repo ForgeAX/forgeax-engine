@@ -20,6 +20,9 @@
       "path": "../types"
     },
     {
+      "path": "../pack"
+    },
+    {
       "path": "../assets-runtime"
     },
     {
@@ -39,6 +42,9 @@
     },
     {
       "path": "../path"
+    },
+    {
+      "path": "../physics-rapier3d"
     }
   ]
 }

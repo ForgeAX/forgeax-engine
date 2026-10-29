@@ -620,7 +620,6 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
           if (frozenSource(url) === undefined) await warmup(url);
         };
         markDevProgramResources(environment.plugins);
-        await server.environments.client?.depsOptimizer?.init();
         await options.pack.ready();
         const inventory = await options.inventory();
         const tools =
@@ -797,10 +796,13 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
       );
       return `${command === 'serve' ? source.replace(JSON.stringify(nativeEntriesMarker), JSON.stringify(dev?.entries ?? [])) : source}\nexport const root = ${JSON.stringify(options.roots[target] ?? null)};\nexport const rootDescriptor = ${JSON.stringify(descriptor)};`;
     },
-    moduleParsed() {
-      if (command === 'build') archive.preserveModules(this);
+    moduleParsed(info) {
+      if (command === 'build') archive.preserveParsedModule(this, info.id);
     },
     async buildEnd(error) {
+      // One complete walk over the final graph keeps membership exact even if
+      // a module's parse facts were refined after its own moduleParsed hook.
+      if (!error && command === 'build') archive.preserveModules(this);
       if (!error) archive.prepareGroups(this);
       if (!error && command === 'build' && archive.entries.size) {
         const engineManifest = await this.resolve('@forgeax/engine/package.json', undefined, {

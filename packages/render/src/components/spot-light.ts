@@ -38,17 +38,6 @@
 import { defineComponent } from '@forgeax/engine-ecs';
 import { LIGHTING_CHANNELS_DEFAULT } from './lighting-channels';
 
-export interface SpotLightProjector {
-  readonly guid: string;
-  readonly generation: number;
-  readonly revision: number;
-}
-
-export interface SpotLightAuthoring {
-  /** Optional GUID-backed TextureAsset projector; absent keeps the normal spot path. */
-  readonly projector?: SpotLightProjector;
-}
-
 /**
  * Cone-restricted spot light (KHR_lights_punctual `spot` type).  Shadow maps
  * are opt-in (castShadow defaults to false); enabled lights project PCF
@@ -107,13 +96,13 @@ export interface SpotLightAuthoring {
  *     { component: SpotLight, data: { direction: [0, -1, 0], castShadow: true, depthBias: 0.01, normalBias: 0.08, mapSize: 1024 } },
  *   );
  *
- * @example Minimal spawn -- defaults give neutral white at full strength, no distance cutoff, hard 60-degree cone:
+ * @example Minimal spawn -- defaults give neutral white at full strength, no distance cutoff, 60-degree cone whose falloff spans the whole cone:
  *   world.spawn(
  *     { component: Transform, data: { pos: [0, 5, 0] } },
  *     { component: SpotLight, data: { direction: [0, -1, 0] } }, // [x, y, z]
  *   );
  *   // resolves to color=[1,1,1], intensity=1, range=Infinity,
- *   // innerConeDeg=60, outerConeDeg=60 (Three r184 angle=pi/3, penumbra=0).
+ *   // innerConeDeg=0, outerConeDeg=60 (Three r184 angle=pi/3, penumbra=1).
  */
 export const SpotLight = defineComponent('SpotLight', {
   // f64 preserves invalid author inputs until render validation (no u32 wrapping).
@@ -125,7 +114,10 @@ export const SpotLight = defineComponent('SpotLight', {
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
   intensity: { type: 'f32', default: 1 },
   range: { type: 'f32', default: Number.POSITIVE_INFINITY },
-  innerConeDeg: { type: 'f32', default: 60 },
+  // KHR_lights_punctual innerConeAngle default: falloff spans the whole cone,
+  // so authoring only outerConeDeg is always valid. Equal angles give Three's
+  // penumbra-0 hard edge.
+  innerConeDeg: { type: 'f32', default: 0 },
   outerConeDeg: { type: 'f32', default: 60 },
   iesProfile: { type: 'asset<ies-profile>' },
   cookie: { type: 'asset<texture>' },
@@ -157,7 +149,7 @@ export const SpotLight = defineComponent('SpotLight', {
   // extract/record transport this one fact to surface and volume consumers.
   shadowIntensity: { type: 'f32', default: 1 },
   shadowBlurSamples: { type: 'f32', default: 8 },
-  // Shared TextureAsset identity; publication and residency remain owned by
-  // the existing asset and GPU resource owners.
+  // Optional shared TextureAsset identity; absent keeps the normal spot path.
+  // Publication and residency remain owned by the asset and GPU resource owners.
   projector: { type: 'asset<texture>', simulationTransient: true },
 });

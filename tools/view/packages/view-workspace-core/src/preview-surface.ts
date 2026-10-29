@@ -22,7 +22,8 @@ function previewScope(state: WorkspaceState | null | undefined) {
 }
 type PreviewScope = NonNullable<ReturnType<typeof previewScope>>;
 type NativePreviewRequest = { protocol: typeof NATIVE_PREVIEW_PROTOCOL; scope: PreviewScope; leaseId: string;
-  target?: WorkspaceTarget; owner?: PreviewOwner; hidden?: boolean };
+  target?: WorkspaceTarget; owner?: PreviewOwner; hidden?: boolean; finishCamera?: boolean };
+type DocumentPreviewLease = { target: WorkspaceTarget; container: HTMLElement; owner: PreviewOwner };
 const samePreviewScope = (left: PreviewScope | undefined, right: PreviewScope | undefined) =>
   left !== undefined && right !== undefined && left.projectId === right.projectId && left.targetId === right.targetId
   && left.generation === right.generation && left.sessionId === right.sessionId && left.worldId === right.worldId
@@ -116,7 +117,8 @@ export function createNativePreviewPresentation({ presentation, client, document
     if (frame) {
       const box = anchor?.getBoundingClientRect();
       const style = { position: 'fixed', border: '0px', transform: 'none',
-        visibility: anchor ? 'visible' : 'hidden', 'pointer-events': selected ? 'none' : 'auto',
+        visibility: anchor ? 'visible' : 'hidden',
+        'pointer-events': !selected || selected.owner.pageType === 'mesh' ? 'auto' : 'none',
         ...(box ? { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px` } : {}) };
       for (const [key, value] of Object.entries(style)) if (frame.style.getPropertyValue(key) !== value) frame.style.setProperty(key, value);
     }
@@ -162,6 +164,14 @@ export function createNativePreviewPresentation({ presentation, client, document
       place();
       return () => { resize.unobserve(container); if (scene === container) scene = undefined; place(); };
     },
+    async finishPreviewCamera(target) {
+      const scope = previewScope(state);
+      if (!scope || disposed) return;
+      const entry = [...placements].find(item => String(item.target.targetId) === String(target.targetId)
+        && (target.generation === undefined || item.target.generation === target.generation));
+      if (!entry || active?.leaseId !== entry.leaseId) return;
+      await request(scope, { leaseId: entry.leaseId, finishCamera: true }, new AbortController().signal);
+    },
     attachPreview({ target, container, owner }) {
       let resolve!: () => void;
       let reject!: (error: unknown) => void;
@@ -197,20 +207,31 @@ export function createNativePreviewPresentation({ presentation, client, document
 }
 
 /** Install only in the document that owns the public Engine preview surfaces. */
-export function installNativePreviewHost({ presentation, client, document, window, createContainer }: {
+export function installNativePreviewHost({ presentation, client, document, window, createContainer, onPreview, onFinishCamera }: {
   presentation: ViewPresentation; client: ViewWorkspaceClient; document: Document; window: Window & typeof globalThis;
   createContainer(): HTMLElement;
+  onPreview?: (preview: DocumentPreviewLease | undefined) => Promise<void> | void;
+  onFinishCamera?: () => Promise<void> | void;
 }) {
   let state: WorkspaceState | null = null;
   let active: { leaseId: string; target: WorkspaceTarget; scope: PreviewScope; dispose(): Promise<void> } | undefined;
   let queue = Promise.resolve();
   const lifetime = new AbortController();
   const incoming = new Map<AbortController, MessagePort>();
-  const retire = async () => { const previous = active; active = undefined; await previous?.dispose(); };
+  const retire = async () => {
+    const previous = active;
+    active = undefined;
+    await onPreview?.(undefined);
+    await previous?.dispose();
+  };
   const current = (scope: PreviewScope) => samePreviewScope(scope, previewScope(state));
   const present = async (input: NativePreviewRequest, signal: AbortSignal) => {
     if (!current(input.scope)) throw retiredPreview();
     if (typeof input.leaseId !== 'string' || !input.leaseId || input.leaseId.length > 128) throw new Error('view-preview-lease-invalid');
+    if (input.finishCamera) {
+      if (active?.leaseId === input.leaseId) await onFinishCamera?.();
+      return;
+    }
     if (input.hidden) { if (active?.leaseId === input.leaseId) await retire(); return; }
     // The parent can receive the open receipt before this document's event pump.
     const latest = await client.getState({ signal });
@@ -254,6 +275,7 @@ export function installNativePreviewHost({ presentation, client, document, windo
       });
       signal.throwIfAborted();
       if (!current(input.scope)) throw retiredPreview();
+      await onPreview?.({ target, container, owner: input.owner });
     } catch (error) { await retire(); throw error; }
   };
   const receive = (event: MessageEvent<NativePreviewRequest>) => {
@@ -385,6 +407,12 @@ export function dedicatedPreviewPresentation(presentation: ViewPresentation | un
       return presentation.detach?.(input);
     },
     get attachPreview() { return presentation.attachPreview; },
+    resolveTarget(targetId) {
+      return presentation.resolveTarget?.(targetId);
+    },
+    async finishPreviewCamera(target) {
+      await presentation.finishPreviewCamera?.(target);
+    },
   };
 }
 

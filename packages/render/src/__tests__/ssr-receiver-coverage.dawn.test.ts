@@ -267,17 +267,20 @@ it('keeps the rough reflected lobe beyond a mirror miss without admitting disabl
 it('samples the roughness pyramid at pixel centers without a half-pixel drift', async () => {
   const source = readFileSync(resolve('packages/shader/src/ssr-compose.wgsl'), 'utf8');
   const radiance = Array.from({ length: 16 }, (_, i) => [i / 16, 0, 0, 1]).flat();
+  // At pixel (1,1), the mip-1 bilinear footprint has weights 9/16,3/16,3/16,1/16.
+  const mip1 = (2.5 * 9 + 4.5 * 3 + 10.5 * 3 + 12.5) / 256;
+  // Roughness 0.75 selects LOD ~1.12, a hardware trilinear blend of mips 1 and 2.
+  // WebGPU leaves the mip-blend weight precision implementation-defined (Apple
+  // GPUs truncate it to 1/64), so mip 2 carries the correct mip-1 footprint value:
+  // the pixel-center result is then independent of that weight, while a drifted
+  // footprint still moves the mip-1 term by ~0.14.
   const mips = [
     [2.5 / 16, 0, 0, 1, 4.5 / 16, 0, 0, 1, 10.5 / 16, 0, 0, 1, 12.5 / 16, 0, 0, 1],
-    [7.5 / 16, 0, 0, 1],
+    [mip1, 0, 0, 1],
   ];
   const normals = Array.from({ length: 16 }, () => [0.5, 1, 0.5, 0.75]).flat();
   const pixels = await composePixels(4, normals, radiance, { height: 4, mips });
-  const roughness = Math.round(0.75 * 255) / 255;
-  const lodFraction = roughness ** 2 * 2 - 1;
-  // At pixel (1,1), the mip-1 bilinear footprint has weights 9/16,3/16,3/16,1/16.
-  const mip1 = (2.5 * 9 + 4.5 * 3 + 10.5 * 3 + 12.5) / 256;
-  const expected = mip1 * (1 - lodFraction) + (7.5 / 16) * lodFraction - 0.0999755859375;
+  const expected = mip1 - 0.0999755859375;
   expect(pixels[64 + 4]).toBeCloseTo(expected, 3);
   const shifted = source.replace(
     'let uv = in.position.xy /',

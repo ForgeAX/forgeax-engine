@@ -35,6 +35,7 @@ export type {
   ExecutionOptions,
   ExecutionRenderCapabilities,
   ExecutionRendererInspectionContext,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
   ExecutionRenderLimits,
   ExecutionReport,
@@ -43,7 +44,6 @@ export type {
   ExecutionWorkerDecision,
   ExecutionWorkerPolicy,
   ExecutionWorkersOptions,
-  ExecutionWorldHealth,
   KernelDispatchReason,
 } from './types';
 export {

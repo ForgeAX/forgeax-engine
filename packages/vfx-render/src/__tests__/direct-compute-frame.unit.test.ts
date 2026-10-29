@@ -99,3 +99,49 @@ it('keeps views and fresh frames independent and emits no unused raw-only contro
   expect(table(main)).not.toBe(table(side));
   expect(table(main)?.name).not.toBe(table(side)?.name);
 });
+it('grows a job table on demand while declaring one full slab table', () => {
+  const frame = createVfxDirectComputeFrame();
+  const shared = Object.freeze(ranges(1));
+  const entries = Object.freeze(['spawn', 'update']);
+  for (let job = 0; job < 5; job++)
+    frame.simulation({
+      program: 'program',
+      ranges: shared,
+      entries,
+      runtime: new Uint8Array(new Uint32Array(76).fill(job + 1).buffer),
+      customStride: 24,
+      tick: 0,
+      reset: [],
+    });
+  const resources: Resource[] = [];
+  frame.finishFrame(resources, []);
+  const table = resources.find((r) => r.kind === 'buffer' && r.name.endsWith('.table'));
+  if (table?.kind !== 'buffer' || table.data === undefined) throw new Error('missing table');
+  expect(table.size).toBe(16 * 336);
+  expect(table.data.byteLength).toBe(5 * 336);
+  const words = new Uint32Array(table.data.buffer, table.data.byteOffset, (5 * 336) / 4);
+  for (let job = 0; job < 5; job++) {
+    expect(words[job * 84]).toBe(job + 1);
+    expect([...words.slice(job * 84 + 76, job * 84 + 84)]).toEqual([
+      256, 256, 256, 256, 256, 256, 256, 1,
+    ]);
+  }
+});
+it('keys retained range lists weakly so a dropped owner list is collectable', async () => {
+  const { setFlagsFromString } = await import('node:v8');
+  const { runInNewContext } = await import('node:vm');
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const released = (() => {
+    const shared = Object.freeze(ranges(1));
+    const frame = createVfxDirectComputeFrame();
+    frame.simulation({ ...input(1), ranges: shared, tick: 0, reset: [] });
+    frame.finishFrame([], []);
+    return new WeakRef(shared);
+  })();
+  for (let attempt = 0; attempt < 10 && released.deref() !== undefined; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+  }
+  expect(released.deref()).toBeUndefined();
+});

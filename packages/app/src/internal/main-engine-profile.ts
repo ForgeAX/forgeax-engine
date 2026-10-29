@@ -24,9 +24,9 @@ interface MainEngineProfileOptions extends EngineProfileBase {
   readonly rendererDebugDrawHost?: RendererDebugDrawHost;
   readonly rendererFeatureHost?: RenderFeatureHost;
   readonly onDebugDrawReady?: (debugDraw: DebugDraw) => void;
-  readonly input?: InputBackend;
-  readonly inputDispose?: () => void;
-  readonly inputMap?: readonly ActionConfig[];
+  readonly input?: InputBackend | undefined;
+  readonly inputDispose?: (() => void) | undefined;
+  readonly inputMap?: readonly ActionConfig[] | undefined;
 }
 
 function debugDrawPlugin(

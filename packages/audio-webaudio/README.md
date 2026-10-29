@@ -1,5 +1,9 @@
 # @forgeax/engine-audio-webaudio
 
+## First gesture and lazy creation
+
+An owning WebAudioEngine registers bounded gesture listeners before it creates an AudioContext. The first user gesture creates/resumes it synchronously, even when clip decode or Worker playback intents arrive later. Construction alone remains lazy. Refused resume attempts rearm; destruction removes listeners. A borrowed context retains caller ownership and is never resumed or closed by this path. Browser autoplay policy still applies.
+
 > **Host-owned Web Audio implementation for @forgeax/engine-audio.** Owns `AudioContext`, decode cache, bus topology, and source nodes. ECS tick and listener intent production remain in the realm-neutral audio package.
 
 ## Evidence and recovery
@@ -284,7 +288,7 @@ backend.seek(entityId, 12.5);
 
 Seeking preserves native effect history. A discontinuity in clip samples may
 produce a click; this API adds no crossfade and does not reset filter tails.
-Worker controls remain ordered POD. See [native samples and performance](./bench/seek-results.md).
+Worker controls remain ordered POD. See native samples and performance.
 
 ## Spatial validation
 
@@ -293,7 +297,7 @@ panner and ignores ended, stopped or 2D sources. Invalid finite-position or
 nonzero-forward requirements leave the native panner unchanged and report
 `control-failed` through `getState().lastError`; invalid initial poses or cone
 ranges are rejected before node creation. Native pose writes allocate no nodes
-and schedule no automation events. [G18 signal, performance and Worker evidence](./bench/spatial-results.md).
+and schedule no automation events. G18 signal, performance and Worker evidence.
 
 ## Long audio through source Meta and GUID
 
@@ -312,7 +316,7 @@ Dev and build finalizers preserve the descriptor and source bytes. GUID loading 
 
 `getStreamState(entityId)` exposes `buffering/playing/paused/ended/failed`, position, `pendingSeek`, byte/read counts, underruns and structured error. Seek rounds to the nearest source frame; while running it completes when a verified node is scheduled, and `playing` waits for its native start. Paused seek changes the retained position without I/O. Rate changes speed and pitch. Loop windows share the native scheduling clock; sufficient buffer permits a gap-free boundary, but network/Host stalls can cause a counted underrun. The playhead freezes during starvation, then resumes with a new verified window. No terminal network/integrity/Range/budget failure retries automatically; repair then seek or replay explicitly. Initial index-admission failure requires a fresh play after repairing the budget: seek/pause/rate cannot revive an uncharged player.
 
-The ten-second window timeout, corrupt/oversized body, unsupported Range and byte admission failures use the closed `stream-failed` detail reasons in Types. `AudioState.streaming` and App reports project aggregate counters; these account for Engine-held buffers and are **not a native process memory cap**. Browser/network/decoder/device memory is measured separately in [the acceptance report](bench/stream/results.md). Short and streamed sources share gain, panner, bus/send, filters, analyser and disposal. Stop/despawn/entity replacement/dispose/Worker rebuild fence late work by source and play generation.
+The ten-second window timeout, corrupt/oversized body, unsupported Range and byte admission failures use the closed `stream-failed` detail reasons in Types. `AudioState.streaming` and App reports project aggregate counters; these account for Engine-held buffers and are **not a native process memory cap**. Browser/network/decoder/device memory is measured separately in the acceptance report. Short and streamed sources share gain, panner, bus/send, filters, analyser and disposal. Stop/despawn/entity replacement/dispose/Worker rebuild fence late work by source and play generation.
 
 ## App Host effect assembly
 
@@ -382,7 +386,7 @@ The complete native owner uses the maintained bounded lease; its 45-minute
 process ceiling is a cleanup backstop, not a larger stage budget. Preparation
 records the exact source/site workload before admission. The native phase rejects
 changed inputs and saves each completed workload before continuing. Clean cost
-measurements also require the [frozen quiet admission](bench/music/contract.md#quiet-measurement-admission).
+measurements also require the frozen quiet admission.
 Final acceptance additionally runs the full
 Browser/Dawn/Smoke and SDK gates; these probes do not substitute for those gates.
 
@@ -422,7 +426,7 @@ failures. Native node/accounting probes measure Engine-owned connections; they
 cannot certify immediate browser audio-thread garbage collection.
 
 See [regional semantics and saved authoring](../audio/README.md#acoustic-regions),
-[fixed source mechanisms and acceptance](bench/acoustic-contract.md), and the
+fixed source mechanisms and acceptance, and the
 [public Pack/native evidence probe](bench/acoustic/run.mjs).
 
 If the caller closes a supplied native Context, the next state read or admitted playback/listener/acoustic control retires the old source taps, pending playback controls and bus graph through the existing destroy path. Closed listener access returns `undefined`; playback cannot create another Context. A rebuilt App creates its fresh Host owner explicitly. Native regressions cover both an active regional source at close and disposal while real clip decode is pending.

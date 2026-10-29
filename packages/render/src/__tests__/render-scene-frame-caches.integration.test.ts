@@ -72,7 +72,7 @@ describe('PersistentRenderScene frame caches', () => {
         owner,
         assets,
         (request) =>
-          extractFrames([world], owner, assets, undefined, scene.materialSnapshotCacheStore(), {
+          extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
@@ -163,7 +163,7 @@ describe('PersistentRenderScene frame caches', () => {
         owner,
         assets,
         (request: PersistentRenderCandidateRequest) =>
-          extractFrames([world], owner, assets, undefined, materialCaches, {
+          extractFrames([world], owner, assets, materialCaches, {
             cull: 'none',
             retainHidden: true,
             renderables: request,

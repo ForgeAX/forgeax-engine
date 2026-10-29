@@ -1,5 +1,5 @@
 import type { Component, EntityHandle, Query, World } from '@forgeax/engine-ecs';
-import { createStateProjection } from '@forgeax/engine-ecs/projection';
+import { createStateProjection, type StateProjectionBatch } from '@forgeax/engine-ecs/projection';
 import { ChildOf, GlobalTransform, Mobility, MorphWeights, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { Terrain } from '@forgeax/engine-terrain';
@@ -18,6 +18,77 @@ import {
 } from '../components';
 import { GlyphText } from '../components/glyph-text';
 import { Tilemap } from '../components/tilemap';
+export interface RenderSourceEntity {
+  readonly entity: EntityHandle;
+  /** Accepted presence only, needed because ECS value ticks omit removed components. */
+  readonly hierarchyPresence: number;
+}
+
+const EMPTY_SOURCE_ROWS: readonly (RenderSourceEntity | undefined)[] = Object.freeze([]);
+
+/**
+ * Accepted source rows keyed by entity slot, stored as typed columns: a
+ * million sources cost two typed cells each instead of one object each.
+ * `get` and `values` materialize transient rows.
+ */
+export class RenderSourceEntities {
+  private entities = new Uint32Array(64);
+  /** Hierarchy presence bits, or -1 for an absent slot. */
+  private presence = new Int8Array(64).fill(-1);
+  size = 0;
+
+  get(index: number): RenderSourceEntity | undefined {
+    const presence = this.presence[index];
+    return presence === undefined || presence < 0
+      ? undefined
+      : { entity: this.entities[index] as EntityHandle, hierarchyPresence: presence };
+  }
+
+  set(index: number, row: RenderSourceEntity): void {
+    if (index >= this.presence.length) this.grow(index);
+    if ((this.presence[index] as number) < 0) this.size++;
+    this.entities[index] = row.entity as number;
+    this.presence[index] = row.hierarchyPresence;
+  }
+
+  delete(index: number): void {
+    if ((this.presence[index] ?? -1) < 0) return;
+    this.presence[index] = -1;
+    this.size--;
+  }
+
+  *values(): IterableIterator<RenderSourceEntity> {
+    for (let index = 0; index < this.presence.length; index++) {
+      const row = this.get(index);
+      if (row !== undefined) yield row;
+    }
+  }
+
+  private grow(index: number): void {
+    let capacity = this.presence.length;
+    while (capacity <= index) capacity *= 2;
+    const entities = new Uint32Array(capacity);
+    entities.set(this.entities);
+    const presence = new Int8Array(capacity).fill(-1);
+    presence.set(this.presence);
+    this.entities = entities;
+    this.presence = presence;
+  }
+}
+
+function sourceEntity(
+  world: World,
+  entity: EntityHandle,
+  previous?: RenderSourceEntity,
+): RenderSourceEntity {
+  const hierarchyPresence =
+    (world.hasComponent(entity, ChildOf) ? 1 : 0) |
+    (world.hasComponent(entity, Visibility) ? 2 : 0);
+  return previous?.entity === entity && previous.hierarchyPresence === hierarchyPresence
+    ? previous
+    : { entity, hierarchyPresence };
+}
+
 export type GlobalTransformChangeQuery = Query<readonly [typeof GlobalTransform]>;
 
 // Retained geometry consumes these component changes. Camera, lighting and
@@ -70,12 +141,12 @@ export function createRenderSourceState(world: World, additional: readonly Compo
     Transform,
     GlobalTransform,
   ]);
-  const entities = new Map<number, EntityHandle>();
+  const entities = new RenderSourceEntities();
   const batch = projection.read();
   for (const index of batch.indices) {
     const entity = projection.entity(index);
     if (entity !== undefined) {
-      entities.set(index, entity);
+      entities.set(index, sourceEntity(world, entity));
     }
   }
   return {
@@ -98,4 +169,51 @@ export function isRenderableMember(world: World, entity: number): boolean {
       world.hasComponent(entity as EntityHandle, Terrain) ||
       world.hasComponent(entity as EntityHandle, MeshFilter))
   );
+}
+
+/** Capture only the known source changes, before producer callbacks or acceptance. */
+export function captureRenderSourceEntities(
+  world: World,
+  source: ReturnType<typeof createRenderSourceState>,
+  batch: StateProjectionBatch,
+): readonly (RenderSourceEntity | undefined)[] {
+  if (batch.indices.length === 0) return EMPTY_SOURCE_ROWS;
+  const rows: (RenderSourceEntity | undefined)[] = [];
+  for (const index of batch.indices) {
+    const entity = source.projection.entity(index);
+    rows.push(
+      entity === undefined ? undefined : sourceEntity(world, entity, source.entities.get(index)),
+    );
+  }
+  return rows;
+}
+
+export function renderSourceHierarchyChanged(
+  source: ReturnType<typeof createRenderSourceState>,
+  index: number,
+  current: RenderSourceEntity,
+): boolean {
+  const previous = source.entities.get(index);
+  return (
+    previous?.entity !== current.entity ||
+    previous.hierarchyPresence !== current.hierarchyPresence ||
+    source.projection.changed(current.entity, ChildOf) ||
+    source.projection.changed(current.entity, Visibility)
+  );
+}
+
+/** The caller accepts its source candidate first. Discard never advances these observations. */
+export function acceptRenderSourceEntities(
+  source: ReturnType<typeof createRenderSourceState>,
+  indices: readonly number[],
+  rows: readonly (RenderSourceEntity | undefined)[],
+): void {
+  if (rows.length !== indices.length)
+    throw new Error('Source observation extent does not match its accepted candidate');
+  let cursor = 0;
+  for (const index of indices) {
+    const row = rows[cursor++];
+    if (row === undefined) source.entities.delete(index);
+    else source.entities.set(index, row);
+  }
 }

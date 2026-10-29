@@ -15,7 +15,7 @@ export interface PreparedRasterBindings {
   readonly material: BindGroup;
   readonly materialOffset: number;
   readonly mesh: BindGroup;
-  readonly skin: boolean;
+  readonly meshOffsets: readonly number[];
   readonly vertex: Buffer;
   readonly index?: Buffer | undefined;
   readonly indexFormat: GPUIndexFormat;
@@ -49,13 +49,18 @@ function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
     a.material !== b.material ||
     a.materialOffset !== b.materialOffset ||
     a.mesh !== b.mesh ||
-    a.skin !== b.skin ||
     a.vertex !== b.vertex ||
     a.index !== b.index ||
     a.indexFormat !== b.indexFormat ||
     a.indirect !== b.indirect ||
     a.indirectOffset !== b.indirectOffset ||
     a.indexed !== b.indexed
+  )
+    return false;
+  if (
+    a.meshOffsets !== b.meshOffsets &&
+    (a.meshOffsets.length !== b.meshOffsets.length ||
+      a.meshOffsets.some((value, index) => value !== b.meshOffsets[index]))
   )
     return false;
   if (a.windows === b.windows) return true;
@@ -90,8 +95,13 @@ export function recordPreparedRasters(
       commands.setBindGroup(1, b.material, [b.materialOffset]);
       count++;
     }
-    if (pipelineChanged || previous?.mesh !== b.mesh || previous.skin !== b.skin) {
-      commands.setBindGroup(2, b.mesh, b.skin ? [0, 0, 0] : [0]);
+    if (
+      pipelineChanged ||
+      previous?.mesh !== b.mesh ||
+      previous.meshOffsets.length !== b.meshOffsets.length ||
+      previous.meshOffsets.some((value, index) => value !== b.meshOffsets[index])
+    ) {
+      commands.setBindGroup(2, b.mesh, b.meshOffsets);
       count++;
     }
     if (previous?.vertex !== b.vertex) {
@@ -204,7 +214,11 @@ type RasterRecordingEntry = Pick<PreparedRasterEntry, 'pass' | 'device'> &
   Partial<Pick<PreparedRasterEntry, 'bindings' | 'bundle'>>;
 
 function snapshotBindings(observed: PreparedRasterBindings): PreparedRasterBindings {
-  return { ...observed, windows: prepareRasterWindows(observed.windows) };
+  return {
+    ...observed,
+    meshOffsets: Object.freeze([...observed.meshOffsets]),
+    windows: prepareRasterWindows(observed.windows),
+  };
 }
 
 function buildEntry(

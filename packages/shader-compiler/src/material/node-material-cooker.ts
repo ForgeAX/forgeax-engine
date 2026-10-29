@@ -10,17 +10,19 @@ const GiB = 1024 ** 3;
 function workerCount(): number {
   if (!isMainThread) return 1;
   const requested = Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
-  const cpu = Math.max(1, Math.min(4, availableParallelism() - 1));
+  const limit = Number.isSafeInteger(requested) && requested > 0 ? requested : undefined;
+  const cpu = Math.max(1, Math.min(4, availableParallelism() - (limit === undefined ? 1 : 0)));
   const memory = Math.max(
     1,
     Math.floor(
       (Math.min(freemem(), process.availableMemory?.() ?? Infinity) - 2 * GiB) / (2 * GiB),
     ),
   );
-  return Math.min(cpu, memory, Number.isSafeInteger(requested) && requested > 0 ? requested : 4);
+  return Math.min(cpu, memory, limit ?? 4);
 }
 
 interface Job {
+  readonly affinity: string;
   readonly roots: readonly string[];
   readonly profile: 'webgpu-storage' | undefined;
   readonly input: unknown;
@@ -28,6 +30,7 @@ interface Job {
   readonly reject: (error: unknown) => void;
 }
 interface Lane {
+  affinity: string | undefined;
   readonly worker: Worker;
   job: Job | undefined;
 }
@@ -82,7 +85,17 @@ class MaterialCookPool {
 
   private pump(): void {
     while (this.queue.length > 0) {
-      let lane = this.lanes.find((candidate) => candidate.job === undefined);
+      // Uniform-only siblings reuse one lane's compiled variants. Other
+      // contracts can use idle lanes while that existing owner is occupied.
+      const index = this.queue.findIndex(
+        (job) =>
+          !this.lanes.some((lane) => lane.affinity === job.affinity && lane.job !== undefined),
+      );
+      const next = this.queue[index];
+      if (next === undefined) return;
+      let lane =
+        this.lanes.find((candidate) => candidate.affinity === next.affinity) ??
+        this.lanes.find((candidate) => candidate.job === undefined);
       if (lane === undefined) {
         if (this.lanes.length >= this.limit) return;
         const worker = new Worker(workerSource, {
@@ -92,7 +105,7 @@ class MaterialCookPool {
           env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: '1' },
           resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64 },
         });
-        lane = { worker, job: undefined };
+        lane = { worker, job: undefined, affinity: undefined };
         this.lanes.push(lane);
         const owner = lane;
         const fail = (error: Error): void => {
@@ -129,9 +142,10 @@ class MaterialCookPool {
           this.pump();
         });
       }
-      const job = this.queue.shift();
+      const [job] = this.queue.splice(index, 1);
       if (job === undefined) return;
       lane.job = job;
+      lane.affinity = job.affinity;
       lane.worker.ref();
       try {
         lane.worker.postMessage({ roots: job.roots, profile: job.profile, input: job.input });
@@ -166,8 +180,22 @@ export function withNodeMaterialWorkers(
       } catch {
         return cooker.cook(input);
       }
+      // Lane placement never admits output. Preserve the ordinary observation
+      // and diagnostic path for inputs without a detached JSON contract.
+      let affinity: string;
+      try {
+        const source =
+          captured !== null && typeof captured === 'object'
+            ? (captured as { readonly source?: unknown }).source
+            : undefined;
+        const contract =
+          source !== null && typeof source === 'object' ? { ...source, values: undefined } : source;
+        affinity = JSON.stringify([capturedRoots, profile, contract]);
+      } catch {
+        return cooker.cook(input);
+      }
       return new Promise((resolve, reject) => {
-        owner.run({ roots: capturedRoots, profile, input: captured, resolve, reject });
+        owner.run({ affinity, roots: capturedRoots, profile, input: captured, resolve, reject });
       });
     },
   };

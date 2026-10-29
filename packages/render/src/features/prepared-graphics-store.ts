@@ -1,6 +1,5 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { DeviceScope, LifecycleResourceSpec } from '../device/device-scope';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type {
   PreparedGraphicsValidationProjection,
@@ -107,11 +106,10 @@ export interface PreparedGraphicsStore {
   beginFrame(featureIdentity: string, generation: number): PreparedGraphicsTransaction;
   snapshot(featureIdentity: string): PreparedGraphicsStoreSnapshot;
   invalidate(featureIdentity: string, generation: number): void;
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown>;
 }
 
 interface Slot {
-  readonly generation: number;
+  readonly snapshot: PreparedGraphicsStoreSnapshot;
   readonly items: Map<string, PreparedGraphicsItem>;
 }
 
@@ -291,15 +289,65 @@ function normalizeDescriptor(
 function isNativeDataRecord(value: object): boolean {
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
-  return Reflect.ownKeys(value).every(
-    (key) => 'value' in (Object.getOwnPropertyDescriptor(value, key) ?? {}),
-  );
+  if (frozenNativeData.has(value)) return true;
+  const keys = Reflect.ownKeys(value);
+  for (let index = 0; index < keys.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, keys[index] as PropertyKey);
+    if (descriptor === undefined || !('value' in descriptor)) return false;
+  }
+  return true;
 }
+
+/**
+ * Deeply frozen plain data: a frozen ordinary object or array whose own
+ * properties are all data properties holding primitives or verified nodes.
+ * Such a node can never change, so verification happens once per node.
+ */
+const frozenNativeData = new WeakSet<object>();
+function isFrozenNativeData(value: object): boolean {
+  if (frozenNativeData.has(value)) return true;
+  if (!Object.isFrozen(value) || ArrayBuffer.isView(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    prototype !== (Array.isArray(value) ? Array.prototype : Object.prototype) &&
+    !(prototype === null && !Array.isArray(value))
+  )
+    return false;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return false;
+    const entry: unknown = descriptor.value;
+    if (typeof entry === 'function' || typeof entry === 'symbol') return false;
+    if (entry !== null && typeof entry === 'object' && !isFrozenNativeData(entry)) return false;
+  }
+  frozenNativeData.add(value);
+  return true;
+}
+
+/**
+ * The last immutable request node proven equal to a store-owned normalized node.
+ * Both sides are deeply frozen, so the proof holds until either is replaced;
+ * keys are store-owned nodes, so a retired item releases its entry.
+ */
+const provenNativeValues = new WeakMap<object, object>();
 
 function sameNativeValue(previous: unknown, value: unknown): boolean {
   // Functions/toJSON and other non-JSON leaves keep their normalization path.
   if (value === null || typeof value !== 'object')
     return typeof value !== 'function' && typeof value !== 'symbol' && previous === value;
+  if (
+    previous !== null &&
+    typeof previous === 'object' &&
+    provenNativeValues.get(previous) === value
+  )
+    return true;
+  if (!sameNativeNode(previous, value)) return false;
+  if (previous !== null && typeof previous === 'object' && isFrozenNativeData(value))
+    provenNativeValues.set(previous, value);
+  return true;
+}
+
+function sameNativeNode(previous: unknown, value: object): boolean {
   // Typed views keep their original byte/iterator conversion and live reads.
   if (ArrayBuffer.isView(value)) return false;
   if (
@@ -346,7 +394,21 @@ function sameNativeValue(previous: unknown, value: unknown): boolean {
   return true;
 }
 
+/** The last deeply frozen request proven to match one store item. */
+const provenNativeRequests = new WeakMap<PreparedGraphicsItem, object>();
+
 function matchesNativeRequest(
+  item: PreparedGraphicsItem,
+  kind: PreparedGraphicsKind,
+  request: PreparedGraphicsRequestByKind[PreparedGraphicsKind] | PreparedGraphicsSignature,
+): boolean {
+  if (provenNativeRequests.get(item) === request) return true;
+  if (!matchesNativeRequestContent(item, kind, request)) return false;
+  if (isFrozenNativeData(request)) provenNativeRequests.set(item, request);
+  return true;
+}
+
+function matchesNativeRequestContent(
   item: PreparedGraphicsItem,
   kind: PreparedGraphicsKind,
   request: PreparedGraphicsRequestByKind[PreparedGraphicsKind] | PreparedGraphicsSignature,
@@ -405,11 +467,27 @@ function matchesNativeRequest(
   }
 }
 
+const NO_ITEMS: readonly PreparedGraphicsItem[] = Object.freeze([]);
+const NO_OVERLAY: ReadonlyMap<string, PreparedGraphicsItem> = new Map();
+const NO_SNAPSHOT: PreparedGraphicsStoreSnapshot = Object.freeze({
+  generation: -1,
+  items: NO_ITEMS,
+});
+
+function sameItems(
+  a: readonly PreparedGraphicsItem[],
+  b: readonly PreparedGraphicsItem[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+  return true;
+}
+
 class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
   private aborted = false;
   private committed = false;
-  private readonly overlay = new Map<string, PreparedGraphicsItem>();
-  private readonly touchedCommitted = new Set<string>();
+  private overlay: Map<string, PreparedGraphicsItem> | undefined;
+  private touchedCommitted: Set<string> | undefined;
   private projection:
     | {
         readonly value: PreparedGraphicsValidationProjection;
@@ -456,10 +534,10 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
       const key = itemKey(kind, name),
         committed = this.committedSlot?.items.get(key);
       if (committed !== undefined && matchesNativeRequest(committed, kind, request)) {
-        this.touchedCommitted.add(key);
+        this.touch(key);
         return ok(committed.reference as RenderFeaturePreparedRef<Kind>);
       }
-      const existing = this.overlay.get(key);
+      const existing = this.overlay?.get(key);
       if (existing !== undefined && matchesNativeRequest(existing, kind, request))
         return ok(existing.reference as RenderFeaturePreparedRef<Kind>);
     }
@@ -494,10 +572,10 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
       committed.signature === normalized.signature &&
       sameReferences(committed)
     ) {
-      this.touchedCommitted.add(key);
+      this.touch(key);
       return ok(committed.reference as RenderFeaturePreparedRef<Kind>);
     }
-    const existing = this.overlay.get(key);
+    const existing = this.overlay?.get(key);
     if (existing !== undefined) {
       if (existing.signature !== normalized.signature || !sameReferences(existing)) {
         return err(
@@ -526,37 +604,51 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
       ...(normalized.descriptor === undefined ? {} : { descriptor: normalized.descriptor }),
       ...(normalized.uploadBytes === undefined ? {} : { uploadBytes: normalized.uploadBytes }),
     };
-    this.store.registerReference(reference, item);
-    this.overlay.set(key, item);
+    this.admitItem(key, item);
     return ok(reference);
   }
 
+  /** An actual resource admission creates this frame's overlay and reference. */
+  private admitItem(key: string, item: PreparedGraphicsItem): void {
+    this.store.registerReference(item.reference, item);
+    this.overlay ??= new Map();
+    this.overlay.set(key, item);
+  }
+
   retainResources(matches: (name: string) => boolean): void {
+    const committed = this.committedSlot?.items;
+    if (committed === undefined || committed.size === 0) return;
     const retain = (item: PreparedGraphicsItem): void => {
       const key = itemKey(item.kind, item.name);
-      if (this.touchedCommitted.has(key)) return;
-      this.touchedCommitted.add(key);
+      if (this.touchedCommitted?.has(key)) return;
+      this.touch(key);
       if (item.descriptor?.kind === 'bindings') {
         const pipeline = this.store.itemFor(item.descriptor.pipeline);
         if (pipeline !== undefined) retain(pipeline);
       }
     };
-    for (const item of this.committedSlot?.items.values() ?? []) {
-      if (matches(item.name)) retain(item);
-    }
+    for (const item of committed.values()) if (matches(item.name)) retain(item);
+  }
+
+  private touch(key: string): void {
+    this.touchedCommitted ??= new Set();
+    this.touchedCommitted.add(key);
   }
 
   committedItems(): readonly PreparedGraphicsItem[] {
-    return Object.freeze(
-      [...this.touchedCommitted].flatMap((key) => {
-        const item = this.committedSlot?.items.get(key);
-        return item === undefined ? [] : [item];
-      }),
-    );
+    if (this.touchedCommitted === undefined || this.touchedCommitted.size === 0) return NO_ITEMS;
+    const items: PreparedGraphicsItem[] = [];
+    for (const key of this.touchedCommitted) {
+      const item = this.committedSlot?.items.get(key);
+      if (item !== undefined) items.push(item);
+    }
+    return Object.freeze(items);
   }
 
   overlayItems(): readonly PreparedGraphicsItem[] {
-    return Object.freeze([...this.overlay.values()]);
+    return this.overlay === undefined || this.overlay.size === 0
+      ? NO_ITEMS
+      : Object.freeze([...this.overlay.values()]);
   }
 
   lookup(reference: RenderFeaturePreparedRef): PreparedGraphicsItem | undefined {
@@ -567,9 +659,9 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
     if (
       item?.featureIdentity === this.featureIdentity &&
       item.generation === this.generation &&
-      ((this.touchedCommitted.has(itemKey(item.kind, item.name)) &&
+      ((this.touchedCommitted?.has(itemKey(item.kind, item.name)) &&
         this.committedSlot?.items.get(itemKey(item.kind, item.name)) === item) ||
-        this.overlay.get(itemKey(item.kind, item.name)) === item)
+        this.overlay?.get(itemKey(item.kind, item.name)) === item)
     )
       return item;
     return undefined;
@@ -609,14 +701,14 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
   }
 
   private preparedProjection(): PreparedGraphicsValidationProjection {
+    const committedSize = this.touchedCommitted?.size ?? 0;
+    const overlaySize = this.overlay?.size ?? 0;
     if (
       this.projection !== undefined &&
-      this.touchedCommitted.size === this.projection.committedSize &&
-      this.overlay.size === this.projection.overlaySize
+      committedSize === this.projection.committedSize &&
+      overlaySize === this.projection.overlaySize
     )
       return this.projection.value;
-    const committedSize = this.touchedCommitted.size;
-    const overlaySize = this.overlay.size;
     const pipelines: RenderFeaturePreparedRef[] = [];
     const bindings: RenderFeaturePreparedRef[] = [];
     const vertexData: RenderFeaturePreparedRef[] = [];
@@ -639,11 +731,12 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
     // grow; overlay rows only grow until abort clears them and prevents prepare.
     // The two existing cardinalities separately fence the exact row set; a sum
     // would miss abort followed by an equal number of committed retains.
-    for (const key of this.touchedCommitted) {
-      const item = this.committedSlot?.items.get(key);
-      if (item !== undefined) append(item);
-    }
-    for (const item of this.overlay.values()) append(item);
+    if (this.touchedCommitted !== undefined)
+      for (const key of this.touchedCommitted) {
+        const item = this.committedSlot?.items.get(key);
+        if (item !== undefined) append(item);
+      }
+    if (this.overlay !== undefined) for (const item of this.overlay.values()) append(item);
     const projection: PreparedGraphicsValidationProjection = {
       generation: this.generation,
       pipelines: Object.freeze(pipelines),
@@ -671,14 +764,19 @@ class PreparedGraphicsTransactionImpl implements PreparedGraphicsTransaction {
     }
     this.committed = true;
     return ok(
-      this.store.commit(this.featureIdentity, this.generation, this.committedItems(), this.overlay),
+      this.store.commit(
+        this.featureIdentity,
+        this.generation,
+        this.committedItems(),
+        this.overlay ?? NO_OVERLAY,
+      ),
     );
   }
 
   abort(): void {
     if (this.committed) return;
     this.aborted = true;
-    this.overlay.clear();
+    this.overlay?.clear();
     // Do not retain overlay refs through an aborted transaction's memo.
     // Previously returned immutable states retain only their own publications.
     this.projection = undefined;
@@ -691,38 +789,19 @@ class PreparedGraphicsStoreImpl implements PreparedGraphicsStore {
 
   beginFrame(featureIdentity: string, generation: number): PreparedGraphicsTransaction {
     const slot = this.slots.get(featureIdentity);
-    const committedSlot = slot?.generation === generation ? slot : undefined;
+    const committedSlot = slot?.snapshot.generation === generation ? slot : undefined;
     return new PreparedGraphicsTransactionImpl(this, featureIdentity, generation, committedSlot);
   }
 
   snapshot(featureIdentity: string): PreparedGraphicsStoreSnapshot {
-    const slot = this.slots.get(featureIdentity);
-    return {
-      generation: slot?.generation ?? -1,
-      items: Object.freeze([...(slot?.items.values() ?? [])]),
-    };
+    return this.slots.get(featureIdentity)?.snapshot ?? NO_SNAPSHOT;
   }
 
   invalidate(featureIdentity: string, generation: number): void {
     const slot = this.slots.get(featureIdentity);
-    if (slot !== undefined && slot.generation < generation) {
+    if (slot !== undefined && slot.snapshot.generation < generation) {
       this.slots.delete(featureIdentity);
     }
-  }
-
-  createRecoveryRoot(scope: DeviceScope): LifecycleResourceSpec<unknown> {
-    return {
-      kind: 'buffer',
-      create: () => {
-        if (!scope.isAlive()) throw new Error('Prepared graphics candidate scope is not active.');
-        const itemCount = [...this.slots.values()].reduce(
-          (count, slot) => count + slot.items.size,
-          0,
-        );
-        return Object.freeze({ generation: scope.generation, itemCount });
-      },
-      cleanup: () => undefined,
-    };
   }
 
   registerReference(reference: object, item: PreparedGraphicsItem): void {
@@ -739,15 +818,24 @@ class PreparedGraphicsStoreImpl implements PreparedGraphicsStore {
     activeCommitted: readonly PreparedGraphicsItem[],
     overlay: ReadonlyMap<string, PreparedGraphicsItem>,
   ): PreparedGraphicsStoreSnapshot {
+    // This commit owns already-admitted items. An unchanged commit keeps the
+    // slot's authoritative publication; reads do not validate a second cache.
+    const previous = this.slots.get(featureIdentity);
+    if (
+      previous?.snapshot.generation === generation &&
+      overlay.size === 0 &&
+      sameItems(previous.snapshot.items, activeCommitted)
+    )
+      return previous.snapshot;
     const items = new Map<string, PreparedGraphicsItem>();
     for (const item of activeCommitted) items.set(itemKey(item.kind, item.name), item);
     for (const [key, item] of overlay) items.set(key, item);
-    const slot: Slot = { generation, items };
-    this.slots.set(featureIdentity, slot);
-    return {
+    const snapshot: PreparedGraphicsStoreSnapshot = Object.freeze({
       generation,
-      items: Object.freeze([...items.values()]),
-    };
+      items: items.size === 0 ? NO_ITEMS : Object.freeze([...items.values()]),
+    });
+    this.slots.set(featureIdentity, { snapshot, items });
+    return snapshot;
   }
 }
 

@@ -17,7 +17,7 @@ import {
   type VfxGpuTickIntent,
 } from '@forgeax/engine-vfx';
 import { afterEach } from 'vitest';
-import { freezeRenderFeaturePlan } from '../../../render/src/features/plan';
+import { validateRenderFeaturePlan } from '../../../render/src/features/plan';
 import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { prepareRuntimeParticleEffect } from '../../../vfx/src/runtime-prepare';
 import { gpuParticleRenderFeature as createFeature } from '../feature/gpu-particle-feature';
@@ -270,7 +270,7 @@ export function freezeVfxPlan(
             resources: [...(shared?.resources ?? []), ...work.resources],
             passes: [...(shared?.passes ?? []), ...work.passes],
           };
-    const result = freezeRenderFeaturePlan(identity, closure, targets);
+    const result = validateRenderFeaturePlan(identity, closure, targets);
     if (!result.ok) return result;
   }
   return ok(plan);

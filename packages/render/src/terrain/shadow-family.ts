@@ -3,7 +3,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { worldEntityKey } from '../record/frame-snapshot';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 
 export interface TerrainShadowReceiver {
   readonly worldId: number;
@@ -15,7 +15,7 @@ export function terrainShadowReceivers(
   sources: FrameList<RenderableSnapshot>,
 ): readonly TerrainShadowReceiver[] {
   const roots = new Map<number, TerrainShadowReceiver>();
-  for (const source of sources) {
+  for (const source of sparseRowsOf(sources, 'terrain')) {
     if (source.terrain === undefined || source.authorVisible === false) continue;
     roots.set(worldEntityKey(source.worldId, source.entityKey), {
       worldId: source.worldId,

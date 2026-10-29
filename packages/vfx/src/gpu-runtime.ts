@@ -2,8 +2,9 @@ import { type AssetVersion, runtimeAssets } from '@forgeax/engine-assets-runtime
 import {
   Disabled,
   type EntityHandle,
-  FixedTime,
   FixedUpdate,
+  Time,
+  Update,
   type World,
 } from '@forgeax/engine-ecs';
 import { createStateProjection } from '@forgeax/engine-ecs/projection';
@@ -24,6 +25,8 @@ import type { VfxGpuEffectAsset, VfxGpuEmitterProgram } from './gpu-program.js';
 import {
   ParticleEffectInstance,
   type VfxChannelCounters,
+  type VfxChannelInput,
+  type VfxInstanceCommit,
   type VfxReplayInput,
 } from './instance.js';
 import { ParticleEffectPlayer } from './player.js';
@@ -72,12 +75,15 @@ export interface VfxGpuTickIntent {
   readonly effect: VfxGpuEffectAsset;
   readonly programFingerprint: string;
   readonly reset: boolean;
-  readonly fixedDelta: number;
+  /** Simulated seconds of this dispatch: the Update frame delta times the player's timeScale. */
+  readonly delta: number;
   /** First dispatch delta in this play cycle, including zero-time admission. */
-  readonly initialFixedDelta: number;
+  readonly initialDelta: number;
+  /** Simulated seconds of this play cycle through this dispatch. */
+  readonly elapsed: number;
   /** Effect-relative dispatch, including initialization. Resets on replay and restart-on-visible. */
   readonly phaseTick: number;
-  /** World-global FixedTime tick retained for renderer ring selection and correlation. */
+  /** Runtime update count when the intent was queued, retained for renderer correlation. */
   readonly tick: number;
   readonly seed: number;
   readonly playCycle: number;
@@ -145,7 +151,7 @@ export interface VfxGpuPlayerInspectSnapshot {
   readonly assetGuid: string;
   readonly programFingerprint: string;
   readonly seed: number;
-  readonly fixedDelta: number;
+  readonly delta: number;
   readonly playing: boolean;
   readonly values: {
     readonly layoutFingerprint: string;
@@ -208,9 +214,65 @@ interface PlayerState {
   playCycles: number[];
   cameraVisible: boolean[];
   phaseTicks: number[];
-  initialFixedDeltas: number[];
+  initialDeltas: number[];
   hasCommitted: boolean;
   pendingResets: boolean[];
+}
+
+/** A new play cycle starts on first play, definition or seed change, replay, or resume. */
+function playerRestartRequested(
+  previous: PlayerState | undefined,
+  input: VfxGpuPlayerInput,
+  contentRevision: number,
+  replayRequested: boolean,
+): boolean {
+  return (
+    previous === undefined ||
+    previous.effect !== input.effect ||
+    previous.contentRevision !== contentRevision ||
+    previous.seed !== input.seed ||
+    replayRequested ||
+    (!previous.playing && input.playing)
+  );
+}
+
+function createPlayerState(
+  input: VfxGpuPlayerInput,
+  version: AssetVersion<VfxGpuEffectAsset>,
+  contentRevision: number,
+  playCycle: number,
+  delta: number,
+): PlayerState {
+  const asset = version.value;
+  return {
+    fields: new Map<VfxGpuEmitterProgram, VfxFieldInputs>(),
+    effect: input.effect,
+    asset,
+    version,
+    contentRevision,
+    emitterIds: new Set(asset.program.emitters.map((emitter) => emitter.id)),
+    seed: input.seed,
+    playing: input.playing,
+    playCycle,
+    elapsed: asset.program.emitters.map(() => 0),
+    rateRemainders: asset.program.emitters.map(() => 0),
+    nextParticleIds: asset.program.emitters.map(() => 0),
+    playCycles: asset.program.emitters.map(() => playCycle),
+    cameraVisible: asset.program.emitters.map(() => true),
+    phaseTicks: asset.program.emitters.map(() => 0),
+    initialDeltas: asset.program.emitters.map(() => delta * input.timeScale),
+    hasCommitted: false,
+    pendingResets: asset.program.emitters.map(() => false),
+  };
+}
+
+/** Event channels reach an emitter that produces events or consumes another emitter's events. */
+function emitterChannelInputs(
+  emitter: VfxGpuEmitterProgram,
+  eventSources: readonly ParticleEventSource[],
+  committedChannels: readonly VfxChannelInput[],
+): readonly VfxChannelInput[] {
+  return (emitter.events?.length ?? 0) > 0 || eventSources.length > 0 ? committedChannels : [];
 }
 
 function eventCounters(
@@ -274,6 +336,7 @@ export class VfxGpuRuntime {
   readonly #replayRequests = new Set<EntityHandle>();
   readonly #replayInputs = new Map<EntityHandle, VfxReplayInput<VfxValueMap>>();
   #sequence = 0;
+  #updates = 0;
   #renderGeneration = 0;
 
   constructor(options: VfxGpuRuntimeOptions = {}) {
@@ -353,8 +416,8 @@ export class VfxGpuRuntime {
    * World membership also retires removed players before rendering their last
    * committed state or pending work; removal is not a simulation-clock event.
    * New players prepare their authored time-zero state here so a render-only
-   * frame does not need a fabricated FixedUpdate. Existing players keep their
-   * patch and replay commits on the fixed boundary.
+   * frame does not need a fabricated update. Existing players keep their
+   * patch and replay commits on the update boundary.
    */
   forEachEmitterSource(world: World, visitor: (source: VfxGpuEmitterSource) => void): void {
     this.#refreshPlayers(world, true);
@@ -377,8 +440,8 @@ export class VfxGpuRuntime {
   }
 
   /**
-   * Return the last submitted fixed-tick state for one emitter.  Renderers
-   * retain this projection between fixed ticks; simulation intents are a
+   * Return the last submitted tick state for one emitter.  Renderers
+   * retain this projection between ticks; simulation intents are a
    * queue, while a drawable emitter remains live until the player is reset.
    */
   lastCommittedEmitter(player: EntityHandle, emitterId: string): VfxGpuTickIntent | undefined {
@@ -386,7 +449,7 @@ export class VfxGpuRuntime {
   }
 
   /**
-   * Rebuild the deterministic fixed-tick inputs needed to rehydrate one
+   * Rebuild the deterministic tick inputs needed to rehydrate one
    * retained emitter on a replacement GPU device. This is a renderer-only
    * projection: it does not enqueue work, advance World time, allocate a new
    * play cycle, or publish channel/event counters.
@@ -434,7 +497,7 @@ export class VfxGpuRuntime {
       assetGuid: state.asset.guid,
       programFingerprint: state.asset.program.fingerprint,
       seed: lastIntent?.seed ?? state.seed,
-      fixedDelta: lastIntent?.fixedDelta ?? 0,
+      delta: lastIntent?.delta ?? 0,
       playing: state.playing,
       values: Object.freeze({
         layoutFingerprint,
@@ -647,7 +710,7 @@ export class VfxGpuRuntime {
   /**
    * Drop every generation-owned VFX runtime value after device recovery.
    * Authored ParticleEffectPlayer state remains the restart source on the next
-   * FixedUpdate; no queued intent or stale instance crosses the boundary.
+   * update; no queued intent or stale instance crosses the boundary.
    */
   recover(): void {
     this.#renderGeneration += 1;
@@ -742,31 +805,38 @@ export class VfxGpuRuntime {
       this.#changedControls.add(index);
       if (input.playing) this.#playing.add(input);
       if (renderOnly && !this.#players.has(entity))
-        this.#preparePlayer(world, world.getResource(FixedTime).tick, 0, input, true);
+        this.#preparePlayer(world, this.#updates, 0, input, true);
       const state = this.#players.get(entity);
-      // Parking is resource intent; ordinary changes keep their FixedUpdate boundary.
+      // Parking is resource intent; ordinary changes keep their update boundary.
       if (state !== undefined && input.preparePipelines && !input.playing) state.playing = false;
     }
     changes.accept();
   }
 
-  advance(world: World, tick: number, fixedDelta: number): void {
+  /**
+   * Advance every player by one Update frame. `delta` is the World frame
+   * delta (`Time.delta`, already bounded by `TimePolicy.maxDeltaSeconds`);
+   * each simulating emitter queues one intent carrying exactly that interval.
+   */
+  advance(world: World, delta: number): void {
+    this.#updates += 1;
+    const tick = this.#updates;
     this.#refreshPlayers(world, false);
     // Only changed paused controls and explicit replay requests need work.
     for (const player of this.#replayRequests) this.#changedControls.add(unpackSlot(player));
     for (const index of this.#changedControls) {
       const input = this.#controls.get(index);
       if (input !== undefined && !input.playing)
-        this.#preparePlayer(world, tick, fixedDelta, input, false);
+        this.#preparePlayer(world, tick, delta, input, false);
     }
     this.#changedControls.clear();
-    for (const input of this.#playing) this.#preparePlayer(world, tick, fixedDelta, input, false);
+    for (const input of this.#playing) this.#preparePlayer(world, tick, delta, input, false);
   }
 
   #preparePlayer(
     world: World,
     tick: number,
-    fixedDelta: number,
+    delta: number,
     input: VfxGpuPlayerInput,
     initializing: boolean,
   ): void {
@@ -800,81 +870,22 @@ export class VfxGpuRuntime {
     this.#clearDiagnostics(input.player, 'vfx-effect-unavailable');
     const previous = this.#players.get(input.player);
     const replayRequested = !initializing && this.#replayRequests.delete(input.player);
-    const restartRequested =
-      previous === undefined ||
-      previous.effect !== input.effect ||
-      previous.contentRevision !== contentRevision.value ||
-      previous.seed !== input.seed ||
-      replayRequested ||
-      (!previous.playing && input.playing);
-    const restart = restartRequested;
-    let version = previous?.version;
-    if (
-      previous === undefined ||
-      previous.effect !== input.effect ||
-      previous.contentRevision !== contentRevision.value
-    ) {
-      const pinned = records.pin<VfxGpuEffectAsset>(input.effect);
-      if (!pinned.ok) {
-        this.#report({
-          code: 'vfx-effect-unavailable',
-          expected: 'available fixed asset version capacity',
-          hint: 'release completed work or increase the asset snapshot budget',
-          detail: { player: input.player },
-        });
-        return;
-      }
-      version = pinned.value;
-      this.#definitionVersions.set(version.value, {
-        handle: version.handle,
-        revision: version.revision,
-      });
-      // A definition change starts a new play cycle and rebuilds its reflected instance.
-      // Already queued work retains its exact definition and parameter bytes until ACK.
-      if (previous !== undefined) {
-        previous.version.dispose();
-        this.#instances.delete(input.player);
-        const liveIds = new Set(version.value.program.emitters.map((emitter) => emitter.id));
-        const committed = this.#lastCommittedByEmitter.get(input.player);
-        let latest: VfxGpuTickIntent | undefined;
-        if (committed !== undefined)
-          for (const [id, intent] of committed) {
-            if (!liveIds.has(id)) {
-              this.#releaseIntent(intent);
-              committed.delete(id);
-            } else if (latest === undefined || latest.sequence < intent.sequence) latest = intent;
-          }
-        if (latest === undefined) this.#lastCommitted.delete(input.player);
-        else this.#lastCommitted.set(input.player, latest);
-      }
-    }
-    if (version === undefined) throw new TypeError('VFX requires a fixed asset version');
-    const asset = version.value;
-    if (restartRequested) this.#releaseFields(previous);
-    const state = restartRequested
-      ? {
-          fields: new Map<VfxGpuEmitterProgram, VfxFieldInputs>(),
-          effect: input.effect,
-          asset,
-          version,
-          contentRevision: contentRevision.value,
-          emitterIds: new Set(asset.program.emitters.map((emitter) => emitter.id)),
-          seed: input.seed,
-          playing: input.playing,
-          playCycle: (previous?.playCycle ?? -1) + 1,
-          elapsed: asset.program.emitters.map(() => 0),
-          rateRemainders: asset.program.emitters.map(() => 0),
-          nextParticleIds: asset.program.emitters.map(() => 0),
-          playCycles: asset.program.emitters.map(() => (previous?.playCycle ?? -1) + 1),
-          cameraVisible: asset.program.emitters.map(() => true),
-          phaseTicks: asset.program.emitters.map(() => 0),
-          initialFixedDeltas: asset.program.emitters.map(() => fixedDelta * input.timeScale),
-          hasCommitted: false,
-          pendingResets: asset.program.emitters.map(() => false),
-        }
-      : previous;
+    const restart = playerRestartRequested(previous, input, contentRevision.value, replayRequested);
+    const version = this.#definitionVersion(world, input, previous, contentRevision.value);
+    if (version === undefined) return;
+    if (restart) this.#releaseFields(previous);
+    const state =
+      restart || previous === undefined
+        ? createPlayerState(
+            input,
+            version,
+            contentRevision.value,
+            (previous?.playCycle ?? -1) + 1,
+            delta,
+          )
+        : previous;
     this.#players.set(input.player, state);
-    // Replay is a one-FixedUpdate request, not a second persistent play-state
+    // Replay is a one-update request, not a second persistent play-state
     // authority. Inspection always returns the authored player state after
     // the requested reset intent has been emitted.
     state.playing = input.playing;
@@ -882,83 +893,162 @@ export class VfxGpuRuntime {
       if (restart) state.pendingResets.fill(true);
       return;
     }
-    const queuedForPlayer = this.#playerIntents.get(input.player)?.size ?? 0;
+    const instance = this.#simulationInstance(input.player, state, restart);
+    if (instance === undefined) return;
+    const committed = this.#commitInstance(input, tick, instance, state, restart);
+    if (committed === undefined) return;
+    this.#queueEmitterTicks(world, input, tick, delta, state, restart, committed);
+  }
+
+  /**
+   * The fixed definition version the player simulates. A definition change
+   * pins the new version and retires the previous one; `undefined` reports
+   * exhausted snapshot capacity.
+   */
+  #definitionVersion(
+    world: World,
+    input: VfxGpuPlayerInput,
+    previous: PlayerState | undefined,
+    contentRevision: number,
+  ): AssetVersion<VfxGpuEffectAsset> | undefined {
+    if (
+      previous !== undefined &&
+      previous.effect === input.effect &&
+      previous.contentRevision === contentRevision
+    )
+      return previous.version;
+    const pinned = runtimeAssets(world.assets).pin<VfxGpuEffectAsset>(input.effect);
+    if (!pinned.ok) {
+      this.#report({
+        code: 'vfx-effect-unavailable',
+        expected: 'available fixed asset version capacity',
+        hint: 'release completed work or increase the asset snapshot budget',
+        detail: { player: input.player },
+      });
+      return undefined;
+    }
+    const version = pinned.value;
+    this.#definitionVersions.set(version.value, {
+      handle: version.handle,
+      revision: version.revision,
+    });
+    if (previous !== undefined) this.#retireDefinition(input.player, previous, version);
+    return version;
+  }
+
+  /**
+   * A definition change starts a new play cycle and rebuilds its reflected instance.
+   * Already queued work retains its exact definition and parameter bytes until ACK.
+   */
+  #retireDefinition(
+    player: EntityHandle,
+    previous: PlayerState,
+    version: AssetVersion<VfxGpuEffectAsset>,
+  ): void {
+    previous.version.dispose();
+    this.#instances.delete(player);
+    const liveIds = new Set(version.value.program.emitters.map((emitter) => emitter.id));
+    const committed = this.#lastCommittedByEmitter.get(player);
+    let latest: VfxGpuTickIntent | undefined;
+    if (committed !== undefined)
+      for (const [id, intent] of committed) {
+        if (!liveIds.has(id)) {
+          this.#releaseIntent(intent);
+          committed.delete(id);
+        } else if (latest === undefined || latest.sequence < intent.sequence) latest = intent;
+      }
+    if (latest === undefined) this.#lastCommitted.delete(player);
+    else this.#lastCommitted.set(player, latest);
+  }
+
+  /**
+   * The instance that may simulate this tick, or `undefined` when the intent
+   * queue is full, the instance cannot be built, or no emitter is active.
+   * Every refusal keeps a requested restart pending.
+   */
+  #simulationInstance(
+    player: EntityHandle,
+    state: PlayerState,
+    restart: boolean,
+  ): ParticleEffectInstance | undefined {
+    const asset = state.asset;
+    const queuedForPlayer = this.#playerIntents.get(player)?.size ?? 0;
     if (queuedForPlayer >= this.#maxQueuedTicks * Math.max(1, asset.program.emitters.length)) {
       if (restart) state.pendingResets.fill(true);
       if (state.hasCommitted) {
         this.#report({
           code: 'vfx-intent-queue-overflow',
-          expected: `at most ${this.#maxQueuedTicks} unconsumed fixed ticks`,
+          expected: `at most ${this.#maxQueuedTicks} unconsumed simulation ticks`,
           hint: 'recover or restart the renderer; VFX does not silently discard simulation ticks',
-          detail: { player: input.player, maxQueuedTicks: this.#maxQueuedTicks },
+          detail: { player, maxQueuedTicks: this.#maxQueuedTicks },
         });
       }
-      return;
+      return undefined;
     }
-    const instance = this.#instances.get(input.player) ?? this.#createInstance(input.player, asset);
+    const instance = this.#instances.get(player) ?? this.#createInstance(player, asset);
     if (instance === undefined) {
       if (restart) state.pendingResets.fill(true);
-      return;
+      return undefined;
     }
     const hasActiveEmitter = asset.program.emitters.some((emitter) => {
-      if (!this.isEmitterSessionEnabled(input.player, emitter.id)) return false;
-      const cameraVisible = this.#cameraVisibility.get(input.player)?.get(emitter.id) ?? true;
+      if (!this.isEmitterSessionEnabled(player, emitter.id)) return false;
+      const cameraVisible = this.#cameraVisibility.get(player)?.get(emitter.id) ?? true;
       return cameraVisible || emitter.simulationWhenCulled === 'continue';
     });
     if (!hasActiveEmitter) {
       if (restart) state.pendingResets.fill(true);
       for (const [index, emitter] of asset.program.emitters.entries()) {
-        state.cameraVisible[index] =
-          this.#cameraVisibility.get(input.player)?.get(emitter.id) ?? true;
+        state.cameraVisible[index] = this.#cameraVisibility.get(player)?.get(emitter.id) ?? true;
       }
-      return;
+      return undefined;
     }
+    return instance;
+  }
+
+  /** Commit (or replay) the instance values for this tick; failure keeps a restart pending. */
+  #commitInstance(
+    input: VfxGpuPlayerInput,
+    tick: number,
+    instance: ParticleEffectInstance,
+    state: PlayerState,
+    restart: boolean,
+  ): VfxInstanceCommit<VfxValueMap> | undefined {
     const replayInput = this.#replayInputs.get(input.player);
     this.#replayInputs.delete(input.player);
     const committed =
       replayInput === undefined
         ? instance.commit({ seed: input.seed, tick })
         : instance.replay(replayInput);
-    if (!committed.ok) {
-      if (restart) state.pendingResets.fill(true);
-      this.#report({
-        code: 'vfx-instance-commit-failed',
-        expected: 'the current typed instance values to pack into the reflected GPU block',
-        hint: 'repair the instance patch and retry at the next FixedUpdate',
-        detail: { player: input.player },
-      });
-      return;
-    }
-    const delta = fixedDelta * input.timeScale;
-    const committedChannels = committed.value.channelInputs;
+    if (committed.ok) return committed.value;
+    if (restart) state.pendingResets.fill(true);
+    this.#report({
+      code: 'vfx-instance-commit-failed',
+      expected: 'the current typed instance values to pack into the reflected GPU block',
+      hint: 'repair the instance patch and retry at the next update',
+      detail: { player: input.player },
+    });
+    return undefined;
+  }
+
+  #queueEmitterTicks(
+    world: World,
+    input: VfxGpuPlayerInput,
+    tick: number,
+    frameDelta: number,
+    state: PlayerState,
+    restart: boolean,
+    committed: VfxInstanceCommit<VfxValueMap>,
+  ): void {
+    const asset = state.asset;
+    const delta = frameDelta * input.timeScale;
     for (const [index, emitter] of asset.program.emitters.entries()) {
-      const cameraVisible = this.#cameraVisibility.get(input.player)?.get(emitter.id) ?? true;
-      const becameVisible = cameraVisible && state.cameraVisible[index] === false;
-      state.cameraVisible[index] = cameraVisible;
-      const emitterRestart = restart || state.pendingResets[index] === true;
-      if (!this.isEmitterSessionEnabled(input.player, emitter.id)) {
-        if (emitterRestart) state.pendingResets[index] = true;
-        continue;
-      }
-      if (!cameraVisible && emitter.simulationWhenCulled !== 'continue') {
-        if (emitterRestart) state.pendingResets[index] = true;
-        continue;
-      }
-      const visibilityRestart =
-        becameVisible && emitter.simulationWhenCulled === 'restart-on-visible';
-      if (visibilityRestart) {
-        state.elapsed[index] = 0;
-        state.rateRemainders[index] = 0;
-        state.nextParticleIds[index] = 0;
-        state.playCycles[index] = (state.playCycles[index] ?? state.playCycle) + 1;
-        state.phaseTicks[index] = 0;
-      }
+      const reset = this.#emitterTickReset(input.player, state, index, emitter, restart);
+      if (reset === undefined) continue;
       if (
         delta === 0 &&
-        !emitterRestart &&
-        !visibilityRestart &&
-        committed.value.patchCount === 0 &&
-        committedChannels.length === 0
+        !reset &&
+        committed.patchCount === 0 &&
+        committed.channelInputs.length === 0
       )
         continue;
       const previousElapsed = state.elapsed[index] ?? 0;
@@ -966,22 +1056,18 @@ export class VfxGpuRuntime {
         emitter,
         previousElapsed,
         previousElapsed + delta,
-        emitterRestart || visibilityRestart,
+        reset,
         state.rateRemainders[index] ?? 0,
       );
       state.rateRemainders[index] = scheduled.remainder;
       const firstParticleId = state.nextParticleIds[index] ?? 0;
       state.nextParticleIds[index] = firstParticleId + scheduled.count;
-      const consumesEvent = asset.program.emitters.some((source) =>
-        (source.events ?? []).some((event) => event.subEmitter === emitter.id),
-      );
       const eventSources = asset.program.emitters.flatMap((source) =>
         (source.events ?? []).filter((event) => event.subEmitter === emitter.id),
       );
-      const channelInputs =
-        (emitter.events?.length ?? 0) > 0 || consumesEvent ? committedChannels : [];
+      const channelInputs = emitterChannelInputs(emitter, eventSources, committed.channelInputs);
       const phaseTick = state.phaseTicks[index] ?? 0;
-      if (emitterRestart || visibilityRestart) state.initialFixedDeltas[index] = delta;
+      if (reset) state.initialDeltas[index] = delta;
       const fields = this.#captureFields(world, state, emitter);
       const intent: VfxGpuTickIntent = Object.freeze({
         ...(fields === undefined ? {} : { forceFields: fields.input }),
@@ -990,43 +1076,88 @@ export class VfxGpuRuntime {
         emitter,
         effect: asset,
         programFingerprint: asset.program.fingerprint,
-        reset: emitterRestart || visibilityRestart,
-        fixedDelta: delta,
-        initialFixedDelta: state.initialFixedDeltas[index] ?? delta,
+        reset,
+        delta,
+        initialDelta: state.initialDeltas[index] ?? delta,
+        elapsed: previousElapsed + delta,
         phaseTick,
         tick,
         seed: input.seed,
         playCycle: state.playCycles[index] ?? state.playCycle,
         spawnCount: scheduled.count,
         firstParticleId,
-        instanceGeneration: committed.value.generation,
-        instancePatchCount: committed.value.patchCount,
-        parameterBlock: committed.value.parameterBlock,
-        canonicalPayload: committed.value.canonicalPayload,
-        replayInput: committed.value.replayInput,
+        instanceGeneration: committed.generation,
+        instancePatchCount: committed.patchCount,
+        parameterBlock: committed.parameterBlock,
+        canonicalPayload: committed.canonicalPayload,
+        replayInput: committed.replayInput,
         channelInputs,
         eventCounters: eventCounters(
           { channelInputs, emitter },
-          channelInputs.length === 0 ? 0 : committed.value.droppedCount,
+          channelInputs.length === 0 ? 0 : committed.droppedCount,
           eventSources,
         ),
       });
-      this.#intentVersions.set(intent, {
-        effect: state.version.retain(),
-        fields: fields?.textures.map((texture) => texture.retain()) ?? [],
-      });
-      this.#intents.set(intent.sequence, intent);
-      let owned = this.#playerIntents.get(intent.player);
-      if (owned === undefined) {
-        owned = new Set();
-        this.#playerIntents.set(intent.player, owned);
-      }
-      owned.add(intent.sequence);
-      this.#intentSnapshot = undefined;
+      this.#queueIntent(intent, state.version, fields);
       state.elapsed[index] = previousElapsed + delta;
       state.phaseTicks[index] = phaseTick + 1;
       state.pendingResets[index] = false;
     }
+  }
+
+  /**
+   * Whether this emitter's tick resets its simulation, or `undefined` when the
+   * emitter does not simulate (session-disabled or culled without `continue`).
+   * Becoming visible under `restart-on-visible` restarts the emitter's cycle.
+   */
+  #emitterTickReset(
+    player: EntityHandle,
+    state: PlayerState,
+    index: number,
+    emitter: VfxGpuEmitterProgram,
+    restart: boolean,
+  ): boolean | undefined {
+    const cameraVisible = this.#cameraVisibility.get(player)?.get(emitter.id) ?? true;
+    const becameVisible = cameraVisible && state.cameraVisible[index] === false;
+    state.cameraVisible[index] = cameraVisible;
+    const emitterRestart = restart || state.pendingResets[index] === true;
+    if (!this.isEmitterSessionEnabled(player, emitter.id)) {
+      if (emitterRestart) state.pendingResets[index] = true;
+      return undefined;
+    }
+    if (!cameraVisible && emitter.simulationWhenCulled !== 'continue') {
+      if (emitterRestart) state.pendingResets[index] = true;
+      return undefined;
+    }
+    const visibilityRestart =
+      becameVisible && emitter.simulationWhenCulled === 'restart-on-visible';
+    if (visibilityRestart) {
+      state.elapsed[index] = 0;
+      state.rateRemainders[index] = 0;
+      state.nextParticleIds[index] = 0;
+      state.playCycles[index] = (state.playCycles[index] ?? state.playCycle) + 1;
+      state.phaseTicks[index] = 0;
+    }
+    return emitterRestart || visibilityRestart;
+  }
+
+  #queueIntent(
+    intent: VfxGpuTickIntent,
+    effect: AssetVersion<VfxGpuEffectAsset>,
+    fields: VfxFieldInputs | undefined,
+  ): void {
+    this.#intentVersions.set(intent, {
+      effect: effect.retain(),
+      fields: fields?.textures.map((texture) => texture.retain()) ?? [],
+    });
+    this.#intents.set(intent.sequence, intent);
+    let owned = this.#playerIntents.get(intent.player);
+    if (owned === undefined) {
+      owned = new Set();
+      this.#playerIntents.set(intent.player, owned);
+    }
+    owned.add(intent.sequence);
+    this.#intentSnapshot = undefined;
   }
 
   #createInstance(
@@ -1119,39 +1250,49 @@ export function vfxGpuRuntimePlugin(options: VfxGpuRuntimeOptions = {}): Plugin 
       }, 'vfx/runtime-resource');
       ctx.effect(() => {
         world
-          .addSystem(FixedUpdate, {
+          .addSystem(Update, {
             name: 'vfx-gpu-runtime',
             queries: [],
-            fn: (world) => {
-              const fixed = world.getResource(FixedTime);
-              runtime.advance(world, fixed.tick, fixed.delta);
-            },
+            // Players that this frame's simulation spawns or moves advance in the same frame.
+            after: [FixedUpdate],
+            fn: (world) => runtime.advance(world, world.getResource(Time).delta),
           })
           .unwrap();
-        return () => world.removeSystem(FixedUpdate, 'vfx-gpu-runtime');
+        return () => world.removeSystem(Update, 'vfx-gpu-runtime');
       }, 'vfx/tick-system');
     },
   };
 }
 
-/** Reconstruct GPU inputs from submitted POD without owning World time or event queues. */
+/**
+ * Reconstruct GPU inputs from submitted POD without owning World time or event
+ * queues. Frame deltas vary, so recovery quantizes: it replays the same number
+ * of dispatches over the same cycle time, keeping the exact initial delta and
+ * splitting the rest of `elapsed` evenly. Dispatch count, cycle time, spawn
+ * total and particle ids match the live cycle; motion integrates over the even
+ * steps rather than the recorded frame partition.
+ */
 export function buildVfxRecoveryIntents<T extends Omit<VfxGpuTickIntent, 'effect' | 'forceFields'>>(
   latest: T | undefined,
 ): readonly T[] {
   if (latest === undefined) return [];
   const intents: T[] = [];
+  const step =
+    latest.phaseTick === 0 ? 0 : (latest.elapsed - latest.initialDelta) / latest.phaseTick;
   let elapsed = 0;
   let remainder = 0;
   let firstParticleId = 0;
   for (let phaseTick = 0; phaseTick <= latest.phaseTick; phaseTick += 1) {
-    const fixedDelta = phaseTick === 0 ? latest.initialFixedDelta : latest.fixedDelta;
-    const next = elapsed + fixedDelta;
+    const delta = phaseTick === 0 ? latest.initialDelta : step;
+    // The last dispatch ends exactly at the recorded cycle time.
+    const next = phaseTick === latest.phaseTick ? latest.elapsed : elapsed + delta;
     const scheduled = spawnCount(latest.emitter, elapsed, next, phaseTick === 0, remainder);
     intents.push(
       Object.freeze({
         ...latest,
         reset: phaseTick === 0,
-        fixedDelta,
+        delta,
+        elapsed: next,
         phaseTick,
         tick: latest.tick - latest.phaseTick + phaseTick,
         spawnCount: scheduled.count,

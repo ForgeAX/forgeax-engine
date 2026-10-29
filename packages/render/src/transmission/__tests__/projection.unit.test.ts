@@ -2,13 +2,14 @@ import { expect, it } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { MaterialResource } from '../../material-resource';
 import type { RenderableSnapshot } from '../../render-system-extract';
+import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
 import { MaterialDispatch } from '../../scene/material-dispatch';
 import { SceneSlots } from '../../scene/scene-slots';
 
 function query(dispatch: MaterialDispatch, sources: readonly RenderableSnapshot[]) {
   const slots = new SceneSlots();
   for (const snapshot of sources)
-    slots.set(snapshot.entityKey, {
+    setSceneRow(slots, snapshot.entityKey, {
       slot: snapshot.entityKey,
       generation: 1,
       worldId: snapshot.worldId,

@@ -1,10 +1,12 @@
 import type { DockviewApi } from 'dockview';
 
+import { WORKBENCH_EDGES } from './constants.ts';
 import { provisionEdgeGroupIfMissing } from './dock-edges.ts';
 import { rectOf } from '../ue-drag/drop-target.ts';
 import type { Point, Rect } from '../ue-drag/geometry.ts';
+import type { WorkbenchEdge } from './types.ts';
 
-const EDGE_SIDES = ['bottom', 'left', 'right'] as const;
+const EDGE_SIDES = ['bottom', 'left', 'right'] as const satisfies readonly WorkbenchEdge[];
 const EMPTY_EDGE_BAND = 18;
 const STRIP_SLACK = 12;
 
@@ -74,8 +76,10 @@ function probeEdgeStripHit(
   api: DockviewApi,
   wrapRect: Rect,
   pointer: Point,
+  edges: readonly WorkbenchEdge[],
 ): { side: (typeof EDGE_SIDES)[number]; rect: Rect } | null {
   for (const side of EDGE_SIDES) {
+    if (!edges.includes(side)) continue;
     const group = findEdgeGroupForSide(api, side);
     const occupied = edgeStripOccupied(group);
     let rect: Rect | null = null;
@@ -108,11 +112,12 @@ export function resolveEdgeStripHit(
   root: HTMLElement,
   pointer: Point,
   title: string,
+  edges: readonly WorkbenchEdge[] = WORKBENCH_EDGES,
 ): EdgeStripHitInput | null {
   const wrapRect = shellRect(root);
   if (!wrapRect) return null;
 
-  const probe = probeEdgeStripHit(api, wrapRect, pointer);
+  const probe = probeEdgeStripHit(api, wrapRect, pointer, edges);
   if (!probe) return null;
 
   provisionEdgeGroupIfMissing(api, probe.side);

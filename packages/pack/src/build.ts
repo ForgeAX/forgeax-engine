@@ -171,4 +171,4 @@ export {
   type ScriptablePackReadError,
   type ScriptablePackSourceClosureEntry,
 } from './scriptable-pack.js';
-export { calculateTopologyDiff, diffTopology } from './topology.js';
+export { diffTopology } from './topology.js';

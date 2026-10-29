@@ -12,15 +12,6 @@ export type PrimitiveMeshKind =
   | 'cylinder'
   | 'nine-slice-quad';
 
-const PROCEDURAL_MESH_KINDS: Readonly<Record<string, PrimitiveMeshKind>> = {
-  'procedural-cube': 'cube',
-  'procedural-triangle': 'triangle',
-  'procedural-quad': 'quad',
-  'procedural-sphere': 'sphere',
-  'procedural-cylinder': 'cylinder',
-  'procedural-nine-slice-quad': 'nine-slice-quad',
-};
-
 /** Create one ordinary mesh payload for allocation or interning by an owning World. */
 export function createPrimitiveMesh(kind: PrimitiveMeshKind): Result<MeshAsset, AssetError> {
   switch (kind) {
@@ -42,14 +33,4 @@ export function createPrimitiveMesh(kind: PrimitiveMeshKind): Result<MeshAsset, 
     case 'nine-slice-quad':
       return createPlaneGeometry(1, 1, 3, 3);
   }
-}
-
-/** Resolve the canonical Pack v2 procedural mesh descriptor without duplicating its alias table. */
-export function createProceduralMesh(payload: unknown): Result<MeshAsset, AssetError> | undefined {
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
-  const geometry = (payload as { readonly geometry?: unknown }).geometry;
-  if (typeof geometry !== 'string') return undefined;
-  const kind = PROCEDURAL_MESH_KINDS[geometry];
-  if (kind === undefined) return undefined;
-  return createPrimitiveMesh(kind);
 }

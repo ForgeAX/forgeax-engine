@@ -1,11 +1,82 @@
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { SDK_SOURCE_EXCLUDED_PATHS, SDK_SOURCE_GIT_DEPENDENCIES } from './sdk-lib.mjs';
+import {
+  artifact,
+  mapConcurrent,
+  SDK_SOURCE_EXCLUDED_PATHS,
+  SDK_SOURCE_GIT_DEPENDENCIES,
+  SDK_SOURCE_ROOT,
+  SDK_SOURCE_WASM,
+} from './sdk-lib.mjs';
 
 const execFileAsync = promisify(execFile);
+
+/** Verify the editable source delivered by either transport before installing dependencies. */
+export async function verifySdkSource(sdkRoot, manifest) {
+  const source = manifest.source;
+  if (source?.root !== SDK_SOURCE_ROOT) throw new Error('sdk-source-root');
+  const entries = manifest.artifacts.filter(({ path }) => path.startsWith(`${source.root}/`));
+  if (entries.length === 0 || entries.length !== source.fileCount)
+    throw new Error('sdk-source-file-count');
+  if (entries.reduce((sum, entry) => sum + entry.bytes, 0) !== source.byteCount)
+    throw new Error('sdk-source-byte-count');
+  assertSourceDependencyInventory(source, entries);
+  const required = [
+    '.forgeax-public-distribution',
+    'package.json',
+    'pnpm-lock.yaml',
+    'pnpm-workspace.yaml',
+    'scripts/build.mjs',
+    ...SDK_SOURCE_WASM.flatMap((entry) => entry.files.map((file) => `${entry.root}/${file}`)),
+    ...manifest.packages
+      .filter((entry) => entry.role === 'runtime')
+      .map((entry) => `${entry.root}/package.json`),
+  ];
+  const paths = new Set(entries.map((entry) => entry.path));
+  for (const path of required) {
+    if (!paths.has(`${source.root}/${path}`)) throw new Error(`sdk-source-required-file: ${path}`);
+  }
+  for (const entry of entries) {
+    if (entry.path.split('/').some((part) => part === '..' || part === ''))
+      throw new Error(`sdk-source-path: ${entry.path}`);
+  }
+  await mapConcurrent(entries, async (expected) => {
+    const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
+    if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+      throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
+  });
+  return { root: source.root, fileCount: source.fileCount, byteCount: source.byteCount };
+}
+
+/** Seed editable packages with the release's builds so only changed owners need rebuilding. */
+export async function seedSourcePackageBuilds({ repositoryRoot, sdkRoot, sourceRoot }) {
+  for (const entry of await readdir(resolve(sourceRoot, 'packages'), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const target = resolve(sourceRoot, 'packages', entry.name);
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(resolve(target, 'package.json'), 'utf8'));
+    } catch (cause) {
+      if (cause.code === 'ENOENT') continue;
+      throw cause;
+    }
+    if (!manifest.name?.startsWith('@forgeax/engine')) continue;
+    // Public owners use the normalized package bytes also bundled into Engine.
+    // Private native wrappers keep their ordinary JS build, without an addon.
+    const builtRoot = manifest.private === true ? repositoryRoot : sdkRoot;
+    const dist = resolve(builtRoot, 'packages', entry.name, 'dist');
+    await cp(dist, resolve(target, 'dist'), {
+      recursive: true,
+      filter: (path) =>
+        path !== resolve(dist, 'native') &&
+        !path.endsWith('.tsbuildinfo') &&
+        !/\.(node|dll|dylib|so)$/.test(path),
+    });
+  }
+}
 
 export async function archiveEngineSource({ root, destination, commit }) {
   const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-source-'));
@@ -68,6 +139,15 @@ export async function archiveEngineSource({ root, destination, commit }) {
 
 /** Validate each expanded repository against its own public source contract. */
 export function assertSourceDependencyInventory(source, artifacts) {
+  for (const { path } of artifacts) {
+    const relative = path.slice(source.root.length + 1);
+    if (
+      SDK_SOURCE_EXCLUDED_PATHS.some(
+        (excluded) => relative === excluded || relative.startsWith(`${excluded}/`),
+      )
+    )
+      throw new Error(`sdk-source-excluded-path: ${relative}`);
+  }
   if (
     JSON.stringify(source.gitDependencies.map((entry) => entry.root)) !==
     JSON.stringify(SDK_SOURCE_GIT_DEPENDENCIES)

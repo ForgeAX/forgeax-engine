@@ -352,3 +352,51 @@ it('preserves ArrayBuffer channel storage through validation and range writes', 
   snapshot.dispose();
   assets.dispose();
 });
+
+it('commits interleaved rows, indices and attribute ranges of one mesh at one revision', () => {
+  const assets = new AssetRegistry();
+  const handle = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
+  const records = runtimeAssets(assets);
+  const original = records.borrow<MeshAsset>(handle).unwrap();
+  const layout = deriveVertexLayoutProjection(original.attributes);
+  const floats = layout.arrayStride / 4;
+  const before = records.version(handle).unwrap();
+  const observer = assets.observe().unwrap();
+  // Two complete rows copied from vertices 4 and 5, with the first moved outward.
+  const rows = original.vertices.slice(4 * floats, 6 * floats);
+  rows[0] = 3;
+  const indices =
+    original.indices instanceof Uint16Array ? Uint16Array.of(1, 1, 1) : Uint32Array.of(1, 1, 1);
+  assets
+    .writeRange(handle, [
+      { first: 1, vertices: rows },
+      { first: 0, indices },
+      { attribute: 'normal', first: 0, values: Float32Array.of(0, 1, 0) },
+    ])
+    .unwrap();
+  const current = records.borrow<MeshAsset>(handle).unwrap();
+  expect(records.version(handle).unwrap()).toBe(before + 1);
+  expect(current.vertices.slice(floats, 3 * floats)).toEqual(rows);
+  expect((current.attributes.position as Float32Array)[3]).toBe(3);
+  expect(Array.from(current.indices?.slice(0, 3) ?? [])).toEqual([1, 1, 1]);
+  expect(Array.from((current.attributes.normal as Float32Array).slice(0, 3))).toEqual([0, 1, 0]);
+  expect(current.aabb?.[3]).toBe(3);
+  expect(prepareMeshData(current, 'range').ok).toBe(true);
+  const changes = observer.read().unwrap().changes;
+  expect(changes).toHaveLength(1);
+  expect(changes[0]?.fields).toEqual(['aabb']);
+  expect(changes[0]?.ranges.map((range) => range.path.join('.'))).toEqual(
+    expect.arrayContaining(['vertices', 'indices', 'attributes.position', 'attributes.normal']),
+  );
+  // One invalid member refuses the whole list without changing any byte.
+  const refused = assets.writeRange(handle, [
+    { first: 0, indices },
+    { first: 23, vertices: rows },
+  ]);
+  expect(refused.ok).toBe(false);
+  expect(records.version(handle).unwrap()).toBe(before + 1);
+  expect(assets.writeRange(handle, []).ok).toBe(true);
+  expect(records.version(handle).unwrap()).toBe(before + 1);
+  observer.dispose();
+  assets.dispose();
+});

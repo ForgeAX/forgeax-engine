@@ -54,15 +54,18 @@ export async function verifyMeshDecalReplay(
       0,
     );
     expect(maximum).toBeLessThanOrEqual(0.002);
-    const removed = encodeTape({
-      ...tape,
-      events: tape.events.map((event, i) => {
-        if (i !== mesh.eventIndex) return event;
-        if (event.kind === 'drawIndexed') return { ...event, indexCount: 0 };
-        if (event.kind === 'draw') return { ...event, vertexCount: 0 };
-        throw new Error('expected direct mesh decal draw');
-      }),
-    }).unwrap();
+    const removed = encodeTape(
+      {
+        ...tape,
+        events: tape.events.map((event, i) => {
+          if (i !== mesh.eventIndex) return event;
+          if (event.kind === 'drawIndexed') return { ...event, indexCount: 0 };
+          if (event.kind === 'draw') return { ...event, vertexCount: 0 };
+          throw new Error('expected direct mesh decal draw');
+        }),
+      },
+      { compression: 'gzip' },
+    ).unwrap();
     const falsifier = (
       await openReplay(decodeTape(removed).unwrap(), {
         device,

@@ -16,6 +16,7 @@ import {
   decodeTape,
   openReplay,
   replayDeviceRequest,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -24,6 +25,7 @@ import { assert, expect } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -53,6 +55,28 @@ function ggxAlbedoAtNormalIncidence(f0: number, roughness: number): number {
     sum += (fresnel * g * vh) / nh;
   }
   return sum / steps;
+}
+
+type FrameModel = ReturnType<typeof buildFrameModel>;
+type FrameWork = FrameModel['works'][number];
+
+/** Scene-color writers before the composite: the deferred lighting work and the last one. */
+function sceneProducers(model: FrameModel, composite: FrameWork, sceneHandle: number) {
+  const writers = model.works.filter(
+    (work) =>
+      work.workIndex < composite.workIndex &&
+      work.attachments?.colorViewHandleIds?.includes(sceneHandle),
+  );
+  const lighting = writers.find((work) =>
+    work.pipeline.shaders.some(
+      (shader) =>
+        shader.stage === 'fragment' &&
+        shader.entryPoint?.startsWith('fs_standard_deferred') === true,
+    ),
+  );
+  const beforeComposite = writers.at(-1);
+  assert(lighting && beforeComposite && beforeComposite !== lighting);
+  return { lighting, beforeComposite };
 }
 
 /** Ordinary Renderer, real cooked materials, production passes only. */
@@ -342,7 +366,7 @@ export async function verifyRendererReflections(
     const captured = await hdr('captured');
     (await recorder.frameBoundary()).unwrap();
     const encoded = (await pending).unwrap();
-    await save('renderer.rhitape', encoded.bytes);
+    await save('renderer.rhitape', compactTape(encoded).bytes);
     const tape = decodeTape(encoded.bytes).unwrap();
     const model = buildFrameModel(tape);
     const entry =
@@ -373,17 +397,35 @@ export async function verifyRendererReflections(
         },
       };
     };
+    // Scene-color producers before the composite: deferred direct lighting, then the
+    // diffuse-GI composite. With reflections the latter also adds the inter-microfacet
+    // (multi-scattering) GI term d * multi, which is nonzero wherever the DFG lookup
+    // reports missing GGX energy and a 1 spp GI path found radiance (host-dependent:
+    // a few grazing pixels on Apple Metal, none on the Linux CI runner).
+    const { lighting, beforeComposite } = sceneProducers(model, composite, sceneHandle);
     const exact = await replayOf(tape);
     let fallbackCenter: Rgb;
+    let preComposite: Uint8Array;
     try {
-      const inspected = (
-        await exact.replay.inspectWork(composite.workIndex, ['pipeline', 'bindings', 'pixels'])
+      const output = workOutputs(composite).find((row) => row.role === 'color');
+      assert(output);
+      const reads = (
+        await exact.replay.readAtWorks([
+          { resourceId: sceneHandle, workIndex: lighting.workIndex },
+          { resourceId: sceneHandle, workIndex: beforeComposite.workIndex },
+          { resourceId: fallbackHandle, workIndex: composite.workIndex },
+          { ...output.request, workIndex: composite.workIndex },
+        ])
       ).unwrap();
-      assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(captured.bytes);
-      const fallback = (
-        await exact.replay.readResourceAtWork(fallbackHandle, composite.workIndex)
-      ).unwrap();
+      const [lit, before, fallback, composed] = reads.map((result) => result.unwrap());
+      assert(lit);
+      assert(before);
+      assert(fallback);
+      assert(composed);
+      // Reflections leave direct lighting untouched.
+      expect(lit.bytes).toEqual(direct.bytes);
+      preComposite = before.bytes;
+      expect(composed.bytes).toEqual(captured.bytes);
       await save('reflection-fallback.rgba16float', fallback.bytes);
       const data = new DataView(
         fallback.bytes.buffer,
@@ -412,7 +454,8 @@ export async function verifyRendererReflections(
       const without = (
         await falsifier.replay.readResourceAtWork(sceneHandle, last.workIndex)
       ).unwrap();
-      expect(without.bytes).toEqual(direct.bytes);
+      // Omitting the composite leaves exactly the scene its producers wrote.
+      expect(without.bytes).toEqual(preComposite);
       expect(without.bytes).not.toEqual(captured.bytes);
     } finally {
       await falsifier.dispose();

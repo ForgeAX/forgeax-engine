@@ -1,11 +1,11 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { mat4, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
 import { Instances } from '@forgeax/engine-render';
-import type { AssetHandle } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { isTriangleTopology } from '@forgeax/engine-types';
 import { currentMeshPositions, type PoseUnavailableReason } from './current-positions';
 import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
-import { computeScreenRay, rayHitsMeshBounds } from './pick-core';
+import { computeScreenRay, rayHitsMeshBounds, type ScreenRay } from './pick-core';
 import { meshQueryEntities, queryMesh, queryMeshMatrix } from './query-mesh';
 
 // pick-triangle.ts — precise screen ray / triangle query.
@@ -46,6 +46,8 @@ export type TrianglePickResult =
       readonly entities: readonly EntityHandle[];
     };
 
+type MeshInstances = readonly [transforms: Float32Array | undefined, count: number];
+
 function pointOnRay(screenRay: ray.Ray, point: Vec3Like): number {
   const dx = (point[0] as number) - (screenRay[0] as number);
   const dy = (point[1] as number) - (screenRay[1] as number);
@@ -53,6 +55,43 @@ function pointOnRay(screenRay: ray.Ray, point: Vec3Like): number {
   return (
     dx * (screenRay[3] as number) + dy * (screenRay[4] as number) + dz * (screenRay[5] as number)
   );
+}
+
+function queryInstances(world: World, entity: EntityHandle): MeshInstances | undefined {
+  const result = world.get(entity, Instances);
+  if (!result.ok) return [undefined, 1];
+  const transforms = result.value.transforms;
+  if (transforms.length % 16 !== 0 || !transforms.every(Number.isFinite)) return undefined;
+  return [transforms, transforms.length / 16];
+}
+
+function drawWorldMatrix(
+  entityWorldMatrix: mat4.Mat4Like,
+  transforms: Float32Array | undefined,
+  instanceIndex: number,
+  worldSpace = false,
+): mat4.Mat4Like {
+  if (worldSpace) return mat4.identity(mat4.create());
+  if (transforms === undefined) return entityWorldMatrix;
+  return mat4.multiply(
+    mat4.create(),
+    entityWorldMatrix,
+    transforms.subarray(instanceIndex * 16, instanceIndex * 16 + 16),
+  );
+}
+
+function intersectsCpuUnavailableBounds(
+  origin: ray.Ray,
+  mesh: MeshAsset,
+  entityWorldMatrix: mat4.Mat4Like,
+  instances: MeshInstances,
+): boolean {
+  const [transforms, count] = instances;
+  for (let instanceIndex = 0; instanceIndex < count; instanceIndex += 1) {
+    const drawWorld = drawWorldMatrix(entityWorldMatrix, transforms, instanceIndex);
+    if (rayHitsMeshBounds(origin, mesh.aabb, drawWorld)) return true;
+  }
+  return false;
 }
 
 /**
@@ -80,6 +119,11 @@ export function pickTriangle(
   );
   if (screen === undefined) return { status: 'miss', precision: 'triangle' };
 
+  return pickTriangleWithScreenRay(world, screen);
+}
+
+/** Query exact triangles against a ray derived from the accepted display frame. */
+export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): TrianglePickResult {
   const origin = screen.ray;
   let best: TriangleHit | undefined;
   let unsupportedReason: TrianglePickUnavailableReason | undefined;
@@ -91,19 +135,13 @@ export function pickTriangle(
     const { mesh, assetHandle } = value;
     const entityWorldMatrix = queryMeshMatrix(world, entity, screen);
     if (entityWorldMatrix === undefined) continue;
-    const instancesResult = world.get(entity, Instances);
-    const instancesData = instancesResult.ok ? instancesResult.value : undefined;
-    let instanceTransforms: Float32Array | undefined;
-    let instanceCount = 1;
-    if (instancesData !== undefined) {
-      instanceTransforms = instancesData.transforms;
-      if (instanceTransforms.length % 16 !== 0 || !instanceTransforms.every(Number.isFinite)) {
-        unsupportedReason ??= 'instance-transforms-unavailable';
-        unsupportedEntities.push(entity);
-        continue;
-      }
-      instanceCount = instanceTransforms.length / 16;
+    const instances = queryInstances(world, entity);
+    if (instances === undefined) {
+      unsupportedReason ??= 'instance-transforms-unavailable';
+      unsupportedEntities.push(entity);
+      continue;
     }
+    const [instanceTransforms, instanceCount] = instances;
 
     const pose = currentMeshPositions(world, entity, mesh);
     if ('reason' in pose) {
@@ -112,22 +150,15 @@ export function pickTriangle(
         unsupportedEntities.push(entity);
         continue;
       }
-      let intersects = false;
-      for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
-        const drawWorld =
-          instanceTransforms === undefined
-            ? (entityWorldMatrix as unknown as mat4.Mat4Like)
-            : mat4.multiply(
-                mat4.create(),
-                entityWorldMatrix as unknown as mat4.Mat4Like,
-                instanceTransforms.subarray(instanceIndex * 16, instanceIndex * 16 + 16),
-              );
-        if (rayHitsMeshBounds(origin, mesh.aabb, drawWorld)) {
-          intersects = true;
-          break;
-        }
-      }
-      if (!intersects) continue;
+      if (
+        !intersectsCpuUnavailableBounds(
+          origin,
+          mesh,
+          entityWorldMatrix as unknown as mat4.Mat4Like,
+          instances,
+        )
+      )
+        continue;
       unsupportedReason ??= 'cpu-geometry-unavailable';
       unsupportedEntities.push(entity);
       continue;
@@ -135,15 +166,12 @@ export function pickTriangle(
 
     const { positions, bounds, worldSpace } = pose;
     for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
-      const drawWorld = worldSpace
-        ? mat4.identity(mat4.create())
-        : instanceTransforms === undefined
-          ? (entityWorldMatrix as unknown as mat4.Mat4Like)
-          : mat4.multiply(
-              mat4.create(),
-              entityWorldMatrix as unknown as mat4.Mat4Like,
-              instanceTransforms.subarray(instanceIndex * 16, instanceIndex * 16 + 16),
-            );
+      const drawWorld = drawWorldMatrix(
+        entityWorldMatrix as unknown as mat4.Mat4Like,
+        instanceTransforms,
+        instanceIndex,
+        worldSpace,
+      );
       if (!rayHitsMeshBounds(origin, bounds, drawWorld)) continue;
 
       const worldA = vec3.create();

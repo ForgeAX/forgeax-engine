@@ -46,7 +46,7 @@ describe('texture usage owner', () => {
   it('keeps typed pipelines on graph access declarations instead of physical usage bits', async () => {
     const graphOwners = await Promise.all([
       readFileSync(new URL('../pipeline/standard-forward-lane.ts', import.meta.url), 'utf8'),
-      readFileSync(new URL('../pipeline/standard-pipeline.ts', import.meta.url), 'utf8'),
+      readFileSync(new URL('../pipeline/standard-deferred-lane.ts', import.meta.url), 'utf8'),
       readFileSync(new URL('../typed-shadow-passes.ts', import.meta.url), 'utf8'),
     ]);
     for (const source of graphOwners) {

@@ -8,6 +8,7 @@ The realm-neutral schema and injected JSON reader for `forge.json`. Its strict s
   "name": "My Game",
   "schemaVersion": "3.0.0",
   "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"],
   "roots": { "engine": "00000000-0000-4000-8000-000000000001" }
 }
 ```
@@ -24,6 +25,14 @@ paths, backslashes, empty path segments and `.`/`..` segments are rejected. DevK
 uses these same roots for source discovery and transfer, and workspace project
 facts expose them to consumers such as View.
 
+`assetLibraries` (default `[]`) explicitly mounts read-only asset libraries by package
+specifier: `@forgeax/engine/<package-directory>` selects an Engine member through the
+project's Engine binding, and a bare npm package name is resolved from the project.
+The package manifest declares its library directory as `forgeax.library.assetRoot`.
+The Engine Content library is `@forgeax/engine/content`; both SDK templates mount it.
+Library assets keep their own Pack GUIDs and Catalog source identities of the form
+`<specifier>/<relative path>`; project authoring never writes them.
+
 Plugin configuration belongs in the referenced Pack asset. Native plugin code composes children. A scene is instantiated and released by a scene-owner plugin. The project manifest remains outside the asset Catalog.
 
 ## Read a project
@@ -37,6 +46,9 @@ else console.error(result.error.code, result.error.hint);
 ```
 
 `loadGameProjectSync` accepts the equivalent synchronous reader. `GameProjectSchema` and its inferred `GameProject` type are the field authority. Unknown fields and malformed GUIDs fail before any plugin is installed. Closed errors and their narrowed detail are defined in [errors.ts](src/errors.ts).
+
+Validation issues use Zod 4's issue vocabulary. Branch on the Engine error code
+before reading `zodErrors` or another narrowed error detail.
 
 ## Migration
 

@@ -96,7 +96,8 @@ export function projectFailureCause(value: unknown): CatalogDiagnosticCause | un
             .filter((entry): entry is string => typeof entry === 'string')
             .map((entry) => entry.slice(0, 2000));
       }
-      for (const key of ['propertyPath', 'actual', 'diagnostic', 'phase']) {
+      // `producer` carries a native cooker's own message (e.g. a WGSL composer error).
+      for (const key of ['propertyPath', 'actual', 'diagnostic', 'phase', 'producer']) {
         if (typeof source[key] === 'string') detail[key] = source[key].slice(0, 2000);
       }
       if (Object.keys(detail).length) result.detail = detail;

@@ -1,7 +1,7 @@
 # Saved path following demo
 
 > [!IMPORTANT]
-> Rendering, replay and complete GPU acceptance are pending. See the [Path validation contract](../../../packages/path/VALIDATION.md) for the frozen numerical and timing budgets.
+> Rendering, replay and complete GPU acceptance are pending. See the Path validation contract for the frozen numerical and timing budgets.
 
 This scene loads the ordinary authored [Pack](assets/path.pack.json) through App assets by GUID. Eight patrols retain independent world-distance progress; a camera follows the same rail; a kinematic platform consumes `DesiredPathPose` through the existing physics motor. Meshes show forward orientation and equal-distance markers.
 

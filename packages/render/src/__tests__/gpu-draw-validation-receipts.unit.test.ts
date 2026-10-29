@@ -4,7 +4,7 @@ import { EMPTY_GPU_DRAW_SELECTION } from '../gpu-driven/draw-selection';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
 import { createDynamicGeometryFrameBindings } from '../record/dynamic-geometry-consumption';
-import { emitGpuDrivenDrawReceipts } from '../record/gpu-draw-receipts';
+import { emitGpuDrivenDrawReceipts, summarizeGpuDrivenDraws } from '../record/gpu-draw-receipts';
 import { receiptRow, receiptSelection } from './gpu-draw-selection-fixture';
 
 describe('shared GPU draw selection and submitted receipts', () => {
@@ -13,13 +13,17 @@ describe('shared GPU draw selection and submitted receipts', () => {
     const selection = receiptSelection(rows, (batch) => batch.binding?.drawItemIndex === 7);
     const owns = vi.spyOn(selection, 'owns');
     const drawn = vi.fn();
-    const summary = emitGpuDrivenDrawReceipts(
+    emitGpuDrivenDrawReceipts(
       rows.map((row) => row.source),
       selection,
       drawn,
     );
     expect(owns).toHaveBeenCalledTimes(2);
     expect(drawn).toHaveBeenCalledExactlyOnceWith(rows[0], 7, { lane: 'gpu', ready: true });
+    const summary = summarizeGpuDrivenDraws(
+      rows.map((row) => row.source),
+      selection,
+    );
     expect(summary).toMatchObject({
       gpuDraws: 1,
       gpuEntities: 1,
@@ -91,7 +95,7 @@ describe('shared GPU draw selection and submitted receipts', () => {
     });
   });
 
-  it('does not publish a partial summary when the requested receipt callback fails', () => {
+  it('summarizes independently of a failing receipt callback', () => {
     const row = receiptRow();
     const selection = receiptSelection([row], () => true);
     const failure = new Error('receipt consumer failed');
@@ -100,9 +104,35 @@ describe('shared GPU draw selection and submitted receipts', () => {
     });
     expect(() => emitGpuDrivenDrawReceipts([row.source], selection, drawn)).toThrow(failure);
     expect(drawn).toHaveBeenCalledTimes(1);
-    expect(emitGpuDrivenDrawReceipts([row.source], selection, () => {})).toMatchObject({
+    expect(summarizeGpuDrivenDraws([row.source], selection)).toMatchObject({
       gpuDraws: 2,
     });
+  });
+
+  it('answers GPU-owned rows on demand and combines them with CPU receipts', () => {
+    const world = worldRenderResources(new World());
+    const bindings = createDynamicGeometryFrameBindings();
+    const owns = vi.fn(
+      (_worldId: number, entity: number, mesh: number) => entity === 42 && mesh === 9,
+    );
+    bindings.begin();
+    bindings.onRenderableDraw([world]);
+    bindings.onGpuOwnedDraws([world], owns);
+    bindings.commit(true);
+    expect(owns).not.toHaveBeenCalled();
+    expect(bindings.recordStageLane(world, 42, 9)).toBe('gpu');
+    expect(bindings.isConsumed(world, 42, 10)).toBe(false);
+    bindings.begin();
+    const cpu = bindings.onRenderableDraw([world]);
+    cpu({ source: receiptRow().source }, 'cpu');
+    bindings.onGpuOwnedDraws([world], owns);
+    bindings.commit(true);
+    expect(bindings.recordStageLane(world, 42, 9)).toBe('mixed');
+    bindings.begin();
+    bindings.onRenderableDraw([world]);
+    bindings.onGpuOwnedDraws([world], owns);
+    bindings.commit(false);
+    expect(bindings.isConsumed(world, 42, 9)).toBe(false);
   });
 
   it('keeps a rejected submission unconsumed and permits retry after a newer preparation', () => {

@@ -12,6 +12,7 @@ import scenePack from '../scene.pack.ts';
 import gamePack from '../game.pack.ts';
 import uiPack from '../ui/ui.pack.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
+import { EngineContent } from '@forgeax/engine/content';
 import { assetGuid, guidText, PACKAGE_IDS, RUSTED_IRON_MATERIAL_GUID } from '../shared/asset-refs.ts';
 import { PLAYER_RIG } from '../player/player-rig.ts';
 import {
@@ -241,6 +242,15 @@ describe('game-3d starter', () => {
         engine: AssetGuid.format(AssetGuid.derive(gamePack.packageId, 'plugin/engine')),
       },
     });
+  });
+
+  it('mounts the Engine Content library and references its default material by GUID', async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL('../../forge.json', import.meta.url), 'utf8'),
+    );
+    expect(manifest.assetLibraries).toEqual(['@forgeax/engine/content']);
+    expect(AssetGuid.parse(EngineContent.materials.default).ok).toBe(true);
+    expect(AssetGuid.parse(EngineContent.meshes.cube).ok).toBe(true);
   });
 
   it('keeps one source per asset owner and a readable UI authoring pair', async () => {

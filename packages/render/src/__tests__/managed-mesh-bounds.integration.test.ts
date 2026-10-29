@@ -2,13 +2,14 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { box3 } from '@forgeax/engine-math';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
@@ -51,8 +52,12 @@ it.each([
       const packet = structuredClone(candidate.packet);
       candidate.accept();
       work += packet.upserts.length;
-      const frame = scene.consumePublication(receiver.accept(packet).unwrap());
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      const frame = scene.consumePublication(
+        receiver.accept(encodeRenderPublication(packet)).unwrap(),
+      );
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return frame;
     }
     return scene.extractComposition(
@@ -63,7 +68,7 @@ it.each([
         if (request === 'full') work += 1000;
         else if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) work += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
@@ -80,19 +85,26 @@ it.each([
     const originalSlot = scene.compositionSlot(0, original.entityKey);
     assert(originalSlot);
     work = 0;
+    const topologyBefore = scene.inspect().topology;
+    assert(topologyBefore.contentPatches !== undefined);
     assets
       .writeRange(mesh, { attribute: 'position', first: 0, values: new Float32Array([-100, 0, 0]) })
       .unwrap();
     expect(draw().renderables).toHaveLength(1000);
     expect(work).toBe(0);
+    // A same-handle content patch keeps draw facts: no topology revision or patch.
+    const topologyAfter = scene.inspect().topology;
+    expect(topologyAfter.revision).toBe(topologyBefore.revision);
+    expect(topologyAfter.patches).toBe(topologyBefore.patches);
+    expect(topologyAfter.contentPatches).toBe(topologyBefore.contentPatches + 1);
     // Draw facts capture a new Mesh root; author records keep their physical address.
     expect(scene.shadowCasterProjection()?.renderables).not.toBe(before?.renderables);
     expect(scene.compositionSlot(0, original.entityKey)).toBe(originalSlot);
     expect(before?.renderables.at(0)).toBe(original);
     expect(original.localAabb?.[0]).toBeGreaterThan(-1);
     expect(scene.shadowCasterProjection()?.renderables.at(0)?.localAabb?.[0]).toBe(-100);
-    expect(original && before?.worldBoundsOf(original)?.min[0]).toBeGreaterThan(99);
-    expect(original && scene.shadowCasterProjection()?.worldBoundsOf(original)?.min[0]).toBe(0);
+    expect(original && readBounds(before, original)?.min[0]).toBeGreaterThan(99);
+    expect(original && readBounds(scene.shadowCasterProjection(), original)?.min[0]).toBe(0);
   } finally {
     publisher.dispose();
     receiver.dispose();
@@ -101,3 +113,13 @@ it.each([
     assets.dispose();
   }
 });
+
+function readBounds(
+  projection: ReturnType<PersistentRenderScene['shadowCasterProjection']>,
+  source: import('../render-system-extract').RenderableSnapshot,
+) {
+  const out = box3.create();
+  return projection?.worldBoundsOf(source, out)
+    ? { min: [out[0], out[1], out[2]], max: [out[3], out[4], out[5]] }
+    : undefined;
+}

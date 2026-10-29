@@ -297,69 +297,6 @@ export function reconcileMeshMaterialSlotTopology(
   return { ok: true, slots: stable, currentToStableSlot: mapping };
 }
 
-export interface MeshMaterialOverrideMigrationContext {
-  readonly meshGuid: string;
-  readonly sceneGuid: string;
-  readonly entityId: number;
-}
-
-export interface MeshMaterialOverrideConflict extends MeshMaterialOverrideMigrationContext {
-  readonly code: 'mesh-material-slot-override-conflict';
-  readonly materialSlot: number;
-  readonly submeshIndices: readonly number[];
-  readonly overrideHandles?: readonly number[];
-  readonly overrideGuids?: readonly string[];
-  readonly hint: string;
-}
-
-export type MeshMaterialOverrideMigrationResult<T extends number | string = number> =
-  | { readonly ok: true; readonly overrides: readonly T[] }
-  | { readonly ok: false; readonly error: MeshMaterialOverrideConflict };
-
-/**
- * Collapse legacy per-submesh overrides into v3 per-slot overrides.
- * Conflicting section overrides fail atomically with full dependency context.
- */
-export function migrateLegacyMeshMaterialOverrides<T extends number | string>(
-  legacyOverrides: readonly T[],
-  submeshes: readonly Pick<Submesh, 'materialSlot'>[],
-  materialSlotCount: number,
-  context: MeshMaterialOverrideMigrationContext,
-): MeshMaterialOverrideMigrationResult<T> {
-  const inherited = (typeof legacyOverrides[0] === 'string' ? '' : 0) as T;
-  const overrides = new Array<T>(materialSlotCount).fill(inherited);
-  const sectionsBySlot = new Map<number, number[]>();
-  for (let submeshIndex = 0; submeshIndex < submeshes.length; submeshIndex++) {
-    const materialSlot = submeshes[submeshIndex]?.materialSlot;
-    if (materialSlot === undefined || materialSlot < 0 || materialSlot >= materialSlotCount)
-      continue;
-    const sections = sectionsBySlot.get(materialSlot) ?? [];
-    sections.push(submeshIndex);
-    sectionsBySlot.set(materialSlot, sections);
-  }
-  for (const [materialSlot, submeshIndices] of sectionsBySlot) {
-    const handles: T[] = submeshIndices.map((index) => legacyOverrides[index] ?? inherited);
-    const distinct = [...new Set(handles)];
-    if (distinct.length > 1) {
-      return {
-        ok: false,
-        error: {
-          code: 'mesh-material-slot-override-conflict',
-          ...context,
-          materialSlot,
-          submeshIndices,
-          ...(typeof handles[0] === 'string'
-            ? { overrideGuids: handles as string[] }
-            : { overrideHandles: handles as number[] }),
-          hint: 'split the source slot or choose one override explicitly before v2 to v3 recook',
-        },
-      };
-    }
-    overrides[materialSlot] = distinct[0] ?? inherited;
-  }
-  return { ok: true, overrides };
-}
-
 export interface MeshCardProjection {
   readonly origin: readonly [number, number, number];
   readonly u: readonly [number, number, number];

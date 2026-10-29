@@ -65,17 +65,23 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
       owner,
       assets,
       (request) => {
-        const frame = extractFrames(
-          [world],
-          owner,
-          assets,
-          undefined,
-          scene.materialSnapshotCacheStore(),
-          { cull: 'none', retainHidden: true, renderables: request },
-        );
+        const frame = extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
         return {
           ...frame,
-          lights: { ...frame.lights, lightViewProj: [lightMatrix], cascadeCount: 1 },
+          // One shadow-casting spot whose projection the test moves.
+          lights: {
+            ...frame.lights,
+            spot: [
+              {
+                castShadow: true,
+                lightViewProj: lightMatrix,
+              } as unknown as (typeof frame.lights.spot)[number],
+            ],
+          },
         };
       },
       [lease],

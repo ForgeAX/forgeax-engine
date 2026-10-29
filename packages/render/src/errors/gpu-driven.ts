@@ -1,5 +1,3 @@
-import type { MaterialProgramAbi } from '@forgeax/engine-types';
-
 export type GpuDrivenPreparationErrorCode =
   | 'missing-material-receipt'
   | 'material-abi-not-executable'
@@ -22,6 +20,7 @@ export type GpuDrivenPreparationReason =
   | 'material-resource-missing'
   | 'generation-stale'
   | 'skin-address-missing'
+  | 'skin-inputs-missing'
   | 'shadow-ownership-missing';
 
 /** Closed next action; AI callers never need to parse an error message. */
@@ -122,12 +121,4 @@ export class GpuDrivenPreparationError extends Error {
       recovery: detail.recovery ?? policy.recovery,
     });
   }
-}
-
-export interface GpuDrivenPreparedMaterial {
-  readonly receipt: MaterialProgramAbi;
-  readonly resourceSlots: MaterialProgramAbi['resourceSlots'];
-  readonly uvSets: MaterialProgramAbi['uvSets'];
-  readonly vertexInputs: MaterialProgramAbi['vertexInputs'];
-  readonly alphaMask: MaterialProgramAbi['alphaMask'];
 }

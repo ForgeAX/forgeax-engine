@@ -18,6 +18,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
@@ -222,7 +223,7 @@ export async function verifyStandardDeferredParity(
       );
       if (capture !== undefined && options.recorder !== undefined) {
         (await options.recorder.frameBoundary()).unwrap();
-        await options.capture?.((await capture).unwrap(), renderPath);
+        await options.capture?.(compactTape((await capture).unwrap()), renderPath);
         capturedPaths.add(renderPath);
       }
       if (index !== testQuality.staticFrames - 1) continue;

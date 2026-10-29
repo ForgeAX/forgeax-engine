@@ -88,14 +88,8 @@ function commandOutput(command, args) {
 }
 
 async function ensureCanonicalKitStage() {
-  const requiredFiles = ['sky.hdr', 'sky.hdr.meta.json', 'cook-receipt.json'];
-  if (requiredFiles.every((file) => existsSync(resolve(canonicalKitOutput, file)))) return;
-  console.error(
-    `[build] canonical kit staging is incomplete; invoking ${'packages/preview/scripts/build-canonical-kit.mjs'}`,
-  );
-  // Keep source selection, Meta/GUID identity, and cook receipt ownership in
-  // the Preview producer. This path is needed when package JavaScript is a
-  // cache hit but its fresh output staging directory is empty or partial.
+  // The compact generated environment is source-owned. Refresh it even when
+  // package JavaScript is a cache hit so old library HDR bytes cannot survive.
   await buildCanonicalKit({ outputRoot: canonicalKitOutput });
 }
 
@@ -197,6 +191,19 @@ if (mode !== 'packages-only') {
     throw new Error('shared producer completed without its manifest and facts');
   const producerFacts = JSON.parse(readFileSync(producerFactsPath, 'utf8'));
   summary.engineShaderCompileCount = producerFacts.engineShaderCompileCount ?? 0;
+}
+
+if (mode === 'engine') {
+  // Registry releases ship precompiled engine shader profiles; without them a
+  // game bound to this source Engine recompiles every engine entry on each
+  // build. The producer verifies its inputs by fingerprint, reusing the shared
+  // manifest above or its previous output, and compiles only what changed.
+  await runStage('shader-profiles', process.execPath, [
+    'scripts/forgeax/prepare-shader-release-inputs.mjs',
+    '--build',
+    '--shared-input-manifest',
+    sharedManifest,
+  ]);
 }
 
 if (mode === 'full') {

@@ -1,5 +1,6 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
 import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
@@ -25,6 +26,8 @@ export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot
         : new THREE.SpotLight(0xffffff, 200);
   sun.position.set(-3, 6, 4);
   sun.castShadow = true;
+  // Keep the later 256-square and rectangular resize transitions distinct.
+  sun.shadow.mapSize.set(testQuality.squareSize, testQuality.squareSize);
 
   scene.add(ground, cube, sun, new THREE.AmbientLight(0xffffff, 0.4));
   const canvas = document.createElement('canvas');

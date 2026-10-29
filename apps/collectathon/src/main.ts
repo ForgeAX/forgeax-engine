@@ -24,7 +24,7 @@ import { AudioListener, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import {
   ANTIALIAS_FXAA,
   BLOOM_ENABLED,
@@ -131,7 +131,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const appResult = await createApp(
     target,
     {
-      plugins: [physicsPlugin('rapier-3d'), webAudioPlugin(), audioPlugin(), skinningPlugin()],
+      plugins: [physics3d, webAudioPlugin(), audioPlugin(), skinningPlugin()],
       ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }),
     },
     {

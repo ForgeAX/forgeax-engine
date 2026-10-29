@@ -90,6 +90,11 @@
       "material": "材质",
       "mesh": "网格",
       "texture": "纹理",
+      "image": "图片",
+      "equirect": "环境贴图",
+      "audio": "音频",
+      "model": "模型",
+      "plugin": "插件",
       "asset": "资产",
       "html": "HTML 界面",
       "history": "操作历史"
@@ -110,6 +115,7 @@
       "texturePreview": "纹理预览",
       "textureProperties": "纹理属性",
       "assetProperties": "资产属性",
+      "parameters": "运行时参数设置",
       "htmlPreview": "HTML 预览",
       "htmlInspector": "HTML 源码"
     },

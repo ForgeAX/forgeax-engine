@@ -6,7 +6,7 @@
 // lanes) and flushes it in one queue.writeBuffer round-trip. Kept as a
 // standalone function so recordFrame stays an orchestration skeleton (D-2).
 
-import { mat4 } from '@forgeax/engine-math';
+import { type Mat4, mat4 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { normalizeClippingPlanes } from '@forgeax/engine-types';
 import { jitterCameraProjection } from '../camera-projection';
@@ -16,18 +16,16 @@ import {
 } from '../components/directional-shadow-filter';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { LineCapValue, LineWidthUnitsValue } from '../components/lines';
+import { PointShapeValue } from '../components/points';
 import { writeAtmosphereUniform } from '../environment/uniform';
-import type { AtmosphereParameters, FogFrame } from '../extract/environment';
+import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
 import type { CameraSnapshot } from '../render-contract';
-import type {
-  DirectionalLightSnapshot,
-  ExtractedLights,
-  SpotLightSnapshot,
-} from '../render-system-extract';
+import type { DirectionalLightSnapshot, SpotLightSnapshot } from '../render-system-extract';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import type { TemporalView as LegacyTemporalView } from '../temporal/temporal-view';
 import type { TemporalView } from '../temporal/view';
+import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
 export const VIEW_UNIFORM_BYTES = 1280;
@@ -121,8 +119,8 @@ export function writePointsLinesViewUbo(
   style?: PointsLinesStyle,
   byteOffset = 0,
 ): void {
-  const projection = computeProjectionMatrix(camera);
-  const view = computeViewMatrix(camera);
+  const projection = computeProjectionMatrix(camera, mat4.create());
+  const view = computeViewMatrix(camera, mat4.create());
   const worldViewProj = mat4.create();
   mat4.multiply(worldViewProj, projection, view);
   const payload = new Float32Array(POINTS_LINES_VIEW_BYTES / 4);
@@ -139,18 +137,17 @@ export function writePointsLinesViewUbo(
   }
   payload[32] = width;
   payload[33] = height;
+  // World sizes and widths scale by the projection's vertical focal factor;
+  // the shader divides by each vertex's clip w (1 for orthographic cameras).
+  const worldScale = Math.abs(projection[5] ?? 0) * height * 0.5;
   if (style?.kind === 'points') {
-    payload[36] = style.sizePx;
-    payload[38] = style.shape === 'circle' ? 1 : 0;
+    payload[36] = style.size;
+    payload[38] = PointShapeValue[style.shape];
+    payload[39] = style.sizeUnits === 'world' ? worldScale : 0;
   } else if (style?.kind === 'lines') {
     payload[36] = style.width;
     payload[37] = 1;
-    // World widths scale by the projection's vertical focal factor; the shader
-    // divides by each endpoint's clip w (1 for orthographic cameras).
-    payload[39] =
-      style.widthUnits === LineWidthUnitsValue.world
-        ? Math.abs(projection[5] ?? 0) * height * 0.5
-        : 0;
+    payload[39] = style.widthUnits === LineWidthUnitsValue.world ? worldScale : 0;
     payload[40] = style.dashSize ?? 1;
     payload[41] = style.gapSize ?? 0;
     payload[42] = style.dashOffset ?? 0;
@@ -161,6 +158,34 @@ export function writePointsLinesViewUbo(
   const uploaded = queue.writeBuffer(buffer, byteOffset, payload);
   if (!uploaded.ok) throw uploaded.error;
 }
+
+/** Cloud shadow plane the View tail carries at floats [240..255]. */
+interface ViewCloudShadowProjection {
+  readonly origin: readonly [number, number, number];
+  readonly right: readonly [number, number, number];
+  readonly up: readonly [number, number, number];
+  readonly range: number;
+  readonly lowSun: boolean;
+  readonly baseHeight?: number;
+  readonly thickness?: number;
+}
+
+/** Synchronous queue writes consume staging bytes before returning. */
+function createViewUboScratch() {
+  const VIEW_PAYLOAD_FLOATS = VIEW_UNIFORM_BYTES / 4;
+  const payload = new Float32Array(VIEW_PAYLOAD_FLOATS);
+  return {
+    payload,
+    mainProjection: mat4.view(payload),
+    words: new Uint32Array(payload.buffer),
+    projection: mat4.create(),
+    view: mat4.create(),
+    inverse: mat4.create(),
+    auxiliary: new Float32Array(VIEW_PAYLOAD_FLOATS),
+  };
+}
+let viewUboScratch: ReturnType<typeof createViewUboScratch> | undefined;
+let writingViewUbo = false;
 
 /**
  * feat-20260704 M3/w18: assemble + upload the per-frame View UBO payload.
@@ -202,73 +227,139 @@ export function writeViewUbo(
   viewUniformBuffer: Buffer,
   camera: CameraSnapshot,
   light: DirectionalLightSnapshot,
-  lights: ExtractedLights,
+  lights: ViewLights,
   spotShadowSnapshots: readonly SpotLightSnapshot[],
   temporalOrOffset?: TemporalView | LegacyTemporalView | number,
   projectorSpotIndex?: number,
-  cloudShadowProjection?: {
-    readonly origin: readonly [number, number, number];
-    readonly right: readonly [number, number, number];
-    readonly up: readonly [number, number, number];
-    readonly range: number;
-    readonly lowSun: boolean;
-    readonly baseHeight?: number;
-    readonly thickness?: number;
-  },
-  fog?: Pick<FogFrame, 'color' | 'density' | 'heightFalloff' | 'maxOpacity'>,
+  cloudShadowProjection?: ViewCloudShadowProjection,
+  fog?: ViewFog,
   atmosphere?: AtmosphereParameters,
   sceneCapture = false,
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
   frameTimeSeconds?: number,
   viewport?: { readonly width: number; readonly height: number },
 ): void {
-  const byteOffset = typeof temporalOrOffset === 'number' ? temporalOrOffset : 0;
-  const resolvedTemporal = typeof temporalOrOffset === 'number' ? undefined : temporalOrOffset;
-  // Compose worldViewProj once per frame (view * proj).
-  const projMatrix = computeProjectionMatrix(camera);
-  const viewMatrix = computeViewMatrix(camera);
-  const unjitteredViewProjection = mat4.create();
-  mat4.multiply(unjitteredViewProjection, projMatrix, viewMatrix);
-  const jitteredProjection = jitterCameraProjection(
-    mat4.create(),
-    projMatrix,
-    resolvedTemporal?.currentJitterUv,
-  );
-  const mainProjection = mat4.create();
-  mat4.multiply(mainProjection, jitteredProjection, viewMatrix);
-
-  const VIEW_PAYLOAD_FLOATS = VIEW_UNIFORM_BYTES / 4;
-  const viewPayload = new Float32Array(VIEW_PAYLOAD_FLOATS);
-  if (camera.clipping !== undefined) {
-    const planes = normalizeClippingPlanes(camera.clipping.planes);
-    for (const [index, plane] of planes.entries()) viewPayload.set(plane, 256 + index * 4);
-    viewPayload.set(
-      [
-        planes.length,
-        camera.clipping.intersection === true ? 1 : 0,
-        camera.clipping.clipShadows === true ? 1 : 0,
-        0,
-      ],
-      280,
-    );
+  // Borrow ordinary staging once; raw getter/queue callback reentry owns an
+  // independent invocation and cannot overwrite the caller's pending upload.
+  const previousWriting = writingViewUbo;
+  let scratch = viewUboScratch;
+  if (previousWriting || scratch === undefined) {
+    scratch = createViewUboScratch();
+    if (!previousWriting) viewUboScratch = scratch;
   }
+  writingViewUbo = true;
+  try {
+    const byteOffset = typeof temporalOrOffset === 'number' ? temporalOrOffset : 0;
+    const resolvedTemporal = typeof temporalOrOffset === 'number' ? undefined : temporalOrOffset;
+    const viewPayload = scratch.payload;
+    viewPayload.fill(0);
+    const projMatrix = computeProjectionMatrix(camera, scratch.projection);
+    const viewMatrix = computeViewMatrix(camera, scratch.view);
+    // The payload owns its matrix storage. Publish unjittered temporal lanes
+    // before reusing the main matrix window for the jittered picture.
+    const mainProjection = scratch.mainProjection;
+    mat4.multiply(mainProjection, projMatrix, viewMatrix);
+    writeTemporalLanes(viewPayload, mainProjection, camera, resolvedTemporal);
+    jitterCameraProjection(projMatrix, projMatrix, resolvedTemporal?.currentJitterUv);
+    mat4.multiply(mainProjection, projMatrix, viewMatrix);
+
+    if (camera.clipping !== undefined) writeClippingLanes(viewPayload, camera.clipping);
+    writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
+    if (atmosphere !== undefined)
+      writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
+    writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport, scratch.words);
+    writeCascadeProjectionLanes(viewPayload, lights, mainProjection, scratch.inverse);
+    if (camera.screenSpaceReflection !== undefined)
+      writeScreenSpaceReflectionLanes(viewPayload, camera.screenSpaceReflection);
+    if (cloudShadowProjection !== undefined)
+      writeCloudShadowLanes(viewPayload, cloudShadowProjection);
+    writeDirectionalShadowLanes(viewPayload, lights, light);
+    writeSpotProjectionLanes(viewPayload, spotShadowSnapshots, projectorSpotIndex);
+
+    // Raw scene targets have no screen-space opaque Fog pass. Their surface
+    // writers evaluate the same medium inline, including analytic Fog alone.
+    if (sceneCapture) {
+      viewPayload[290] = 1;
+      viewPayload[317] = 0;
+    }
+    const viewUploadResult = queue.writeBuffer(viewUniformBuffer, byteOffset, viewPayload);
+    if (!viewUploadResult.ok) throw viewUploadResult.error;
+
+    // Auxiliary captures must not overwrite the display shadow view slots.
+    if (byteOffset !== 0) return;
+    uploadTranslucentFogViews(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
+    uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.auxiliary);
+  } finally {
+    writingViewUbo = previousWriting;
+  }
+}
+
+/** clippingPlanes at [256..279] and clippingControl at [280..283]. */
+function writeClippingLanes(
+  viewPayload: Float32Array,
+  clipping: NonNullable<CameraSnapshot['clipping']>,
+): void {
+  const planes = normalizeClippingPlanes(clipping.planes);
+  for (const [index, plane] of planes.entries()) viewPayload.set(plane, 256 + index * 4);
+  viewPayload.set(
+    [
+      planes.length,
+      clipping.intersection === true ? 1 : 0,
+      clipping.clipShadows === true ? 1 : 0,
+      0,
+    ],
+    280,
+  );
+}
+
+/** Fog facts the View lanes carry. */
+type ViewFog = Pick<
+  FogFrame,
+  'color' | 'density' | 'heightFalloff' | 'maxOpacity' | 'mode' | 'near' | 'far'
+>;
+
+/**
+ * fogColorDensity at [284..287], fogHeightOpacity at [288..290], frame time at [291].
+ * The law is signed into the existing lanes (fog.wgsl decodes it):
+ *   exp:    (rgb, density),  (heightFalloff, maxOpacity)
+ *   exp2:   (rgb, -density), (0, maxOpacity)
+ *   linear: (rgb, far),      (near, -maxOpacity)
+ */
+function writeFogAndClockLanes(
+  viewPayload: Float32Array,
+  fog: ViewFog | undefined,
+  frameTimeSeconds: number | undefined,
+): void {
   // Analytic fog is one per-view fact: the opaque fog pass and every
   // translucent writer evaluate the same lanes at their own depth.
-  if (fog !== undefined && fog.density > 0 && fog.maxOpacity > 0) {
-    viewPayload.set([fog.color[0], fog.color[1], fog.color[2], fog.density], 284);
-    viewPayload.set([fog.heightFalloff, fog.maxOpacity, 0, 0], 288);
+  if (fog !== undefined && fogIsActive(fog)) {
+    const linear = fog.mode === 'linear';
+    const law = linear ? fog.far : fog.mode === 'exp2' ? -fog.density : fog.density;
+    viewPayload.set([fog.color[0], fog.color[1], fog.color[2], law], 284);
+    viewPayload.set(
+      [linear ? fog.near : fog.heightFalloff, linear ? -fog.maxOpacity : fog.maxOpacity, 0, 0],
+      288,
+    );
   }
   // The clock is available even when fog is disabled; no per-material publication.
   const frameTime = Math.fround(frameTimeSeconds ?? 0);
   viewPayload[291] = Number.isFinite(frameTime) ? frameTime : 0;
-  if (atmosphere !== undefined)
-    writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
+}
+
+/** worldViewProj [0..15], sun direction/channels/color [16..22], camera and viewport [23..27]. */
+function writeCameraAndSunLanes(
+  viewPayload: Float32Array,
+  mainProjection: ArrayLike<number>,
+  camera: CameraSnapshot,
+  light: DirectionalLightSnapshot,
+  viewport: { readonly width: number; readonly height: number } | undefined,
+  words: Uint32Array,
+): void {
   for (let i = 0; i < 16; i++) viewPayload[i] = mainProjection[i] ?? 0;
   viewPayload[16] = light.direction[0] ?? 0;
   viewPayload[17] = light.direction[1] ?? -1;
   viewPayload[18] = light.direction[2] ?? 0;
-  new Uint32Array(viewPayload.buffer, viewPayload.byteOffset, viewPayload.length)[19] =
-    light.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  words[19] = light.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
   viewPayload[20] = light.color[0] ?? 0;
   viewPayload[21] = light.color[1] ?? 0;
   viewPayload[22] = light.color[2] ?? 0;
@@ -277,31 +368,48 @@ export function writeViewUbo(
   viewPayload[25] = camera.position[1] ?? 0;
   viewPayload[26] = camera.position[2] ?? 0;
   viewPayload[27] = viewport?.height ?? 1;
+}
+
+/** lightViewProj[0] at [28..43], inverseViewProj at [44..59], lightViewProj[1..3] at [60..107]. */
+function writeCascadeProjectionLanes(
+  viewPayload: Float32Array,
+  lights: ViewLights,
+  mainProjection: Mat4,
+  inverseViewProj: Mat4,
+): void {
   // lightViewProj[0] at [28..43] (replaces lightSpaceMatrix).
-  if (lights.lightViewProj !== undefined && lights.lightViewProj[0] !== undefined) {
-    for (let i = 0; i < 16; i++) viewPayload[28 + i] = lights.lightViewProj[0][i] ?? 0;
+  if (
+    lights.cascades?.lightViewProj !== undefined &&
+    lights.cascades?.lightViewProj[0] !== undefined
+  ) {
+    for (let i = 0; i < 16; i++) viewPayload[28 + i] = lights.cascades?.lightViewProj[0][i] ?? 0;
   }
   // inverseViewProj at [44..59] — unchanged position.
   // Host pre-computes mat4.invert so the skybox fragment shader avoids
   // per-pixel matrix inversion (charter P4 consistent abstraction).
-  const inverseViewProj = mat4.create();
   mat4.invert(inverseViewProj, mainProjection);
   for (let i = 0; i < 16; i++) viewPayload[44 + i] = inverseViewProj[i] ?? 0;
-  // lightViewProj[1..3] at [60..107].
-  if (lights.lightViewProj !== undefined) {
-    for (let c = 1; c <= 3; c++) {
-      const base = 60 + (c - 1) * 16;
-      const lvp = lights.lightViewProj[c];
-      if (lvp !== undefined) {
-        for (let i = 0; i < 16; i++) viewPayload[base + i] = lvp[i] ?? 0;
-      }
+  if (lights.cascades?.lightViewProj === undefined) return;
+  for (let c = 1; c <= 3; c++) {
+    const base = 60 + (c - 1) * 16;
+    const lvp = lights.cascades?.lightViewProj[c];
+    if (lvp !== undefined) {
+      for (let i = 0; i < 16; i++) viewPayload[base + i] = lvp[i] ?? 0;
     }
   }
+}
 
-  // Temporal ABI tail: current and last-successful unjittered projections
-  // stay separate from the jittered main projection and never advance on a
-  // failed submission. The fixed 240-float payload already reserves these
-  // 36 slots at byte offsets 784..920.
+/** Temporal ABI tail [196..235]: unjittered projections, camera range and previous position. */
+function writeTemporalLanes(
+  viewPayload: Float32Array,
+  unjitteredViewProjection: ArrayLike<number>,
+  camera: CameraSnapshot,
+  resolvedTemporal: TemporalView | LegacyTemporalView | undefined,
+): void {
+  // Current and last-successful unjittered projections stay separate from
+  // the jittered main projection and never advance on a failed submission.
+  // The fixed 240-float payload already reserves these 36 slots at byte
+  // offsets 784..920.
   const previous = resolvedTemporal?.previousUnjitteredViewProjection;
   for (let i = 0; i < 16; i += 1) {
     viewPayload[196 + i] = unjitteredViewProjection[i] ?? 0;
@@ -322,37 +430,55 @@ export function writeViewUbo(
     viewPayload[234] = previousCameraPosition[2] ?? 0;
     viewPayload[235] = 1;
   }
-  // SSR uses the fixed View tail as its single per-camera parameter carrier.
-  // Admission has already validated these values; the enabled lane remains
-  // zero when the component is absent so disabled frames carry no demand.
-  const ssr = camera.screenSpaceReflection;
-  if (ssr !== undefined) {
-    viewPayload[236] = ssr.maxDistance;
-    viewPayload[237] = ssr.thickness;
-    viewPayload[238] = ssr.maxRoughness;
-    viewPayload[239] = 1;
-  }
-  if (cloudShadowProjection !== undefined) {
-    viewPayload[240] = cloudShadowProjection.origin[0] ?? 0;
-    viewPayload[241] = cloudShadowProjection.origin[1] ?? 0;
-    viewPayload[242] = cloudShadowProjection.origin[2] ?? 0;
-    viewPayload[243] = cloudShadowProjection.baseHeight ?? 0;
-    viewPayload[247] = cloudShadowProjection.thickness ?? 0;
-    viewPayload[244] = cloudShadowProjection.right[0] ?? 0;
-    viewPayload[245] = cloudShadowProjection.right[1] ?? 0;
-    viewPayload[246] = cloudShadowProjection.right[2] ?? 0;
-    viewPayload[248] = cloudShadowProjection.up[0] ?? 0;
-    viewPayload[249] = cloudShadowProjection.up[1] ?? 0;
-    viewPayload[250] = cloudShadowProjection.up[2] ?? 0;
-    viewPayload[252] = cloudShadowProjection.range;
-    viewPayload[253] = cloudShadowProjection.lowSun ? 0 : 1;
-    viewPayload[254] = cloudShadowProjection.lowSun ? 1 : 0;
-  }
+}
+
+/**
+ * SSR uses the fixed View tail [236..239] as its single per-camera parameter
+ * carrier. Admission has already validated these values; the enabled lane
+ * remains zero when the component is absent so disabled frames carry no demand.
+ */
+function writeScreenSpaceReflectionLanes(
+  viewPayload: Float32Array,
+  ssr: NonNullable<CameraSnapshot['screenSpaceReflection']>,
+): void {
+  viewPayload[236] = ssr.maxDistance;
+  viewPayload[237] = ssr.thickness;
+  viewPayload[238] = ssr.maxRoughness;
+  viewPayload[239] = 1;
+}
+
+/** Cloud shadow projection at [240..255]. */
+function writeCloudShadowLanes(
+  viewPayload: Float32Array,
+  projection: ViewCloudShadowProjection,
+): void {
+  viewPayload[240] = projection.origin[0] ?? 0;
+  viewPayload[241] = projection.origin[1] ?? 0;
+  viewPayload[242] = projection.origin[2] ?? 0;
+  viewPayload[243] = projection.baseHeight ?? 0;
+  viewPayload[247] = projection.thickness ?? 0;
+  viewPayload[244] = projection.right[0] ?? 0;
+  viewPayload[245] = projection.right[1] ?? 0;
+  viewPayload[246] = projection.right[2] ?? 0;
+  viewPayload[248] = projection.up[0] ?? 0;
+  viewPayload[249] = projection.up[1] ?? 0;
+  viewPayload[250] = projection.up[2] ?? 0;
+  viewPayload[252] = projection.range;
+  viewPayload[253] = projection.lowSun ? 0 : 1;
+  viewPayload[254] = projection.lowSun ? 1 : 0;
+}
+
+/** splitPlanes [108..123], cascade count/blend [124..125], bias [126..127], filter [128..131]. */
+function writeDirectionalShadowLanes(
+  viewPayload: Float32Array,
+  lights: ViewLights,
+  light: DirectionalLightSnapshot,
+): void {
   // splitPlanes at [108..123] (four vec4 lanes: split/world texel/depth span/reserved).
-  if (lights.splitPlanes !== undefined) {
+  if (lights.cascades?.splitPlanes !== undefined) {
     for (let s = 0; s < 4; s++) {
       for (let lane = 0; lane < 4; lane++) {
-        viewPayload[108 + s * 4 + lane] = lights.splitPlanes[s * 4 + lane] ?? 0;
+        viewPayload[108 + s * 4 + lane] = lights.cascades?.splitPlanes[s * 4 + lane] ?? 0;
       }
     }
   }
@@ -362,66 +488,69 @@ export function writeViewUbo(
   viewPayload[119] = (lights.directionalCsmConfig?.shadowRadius ?? 1) - 1;
   viewPayload[123] = lights.directionalCsmConfig?.shadowMapAspect ?? 1;
   // cascadeCount / cascadeBlend at [124..125].
-  viewPayload[124] = lights.cascadeCount ?? 0;
-  viewPayload[125] = lights.cascadeBlend ?? 0;
+  viewPayload[124] = lights.cascades?.cascadeCount ?? 0;
+  viewPayload[125] = lights.cascades?.cascadeBlend ?? 0;
   // M1 directional shadow carrier: bias remains at [126]/[127], while the
   // accepted quality union occupies the existing four-float tail [128..131].
   // Point and Spot pcfKernelSize stay in their own snapshot paths and never
   // enter this Directional View projection.
   viewPayload[126] = lights.depthBias ?? 0.00001;
   viewPayload[127] = lights.normalBias ?? 0.05;
-  const filterCarrier = directionalShadowFilterCarrier(lights.directionalShadowQuality);
+  const filterCarrier = directionalShadowFilterCarrier(lights.cascades?.directionalShadowQuality);
   viewPayload[128] = filterCarrier[0] ?? 0;
   viewPayload[129] = filterCarrier[1] ?? 0;
   viewPayload[130] = filterCarrier[2] ?? 0;
   viewPayload[131] = light.contactShadowLength;
+}
 
-  // feat-20260625-spot-light-shadow-mapping w25 (scope-amend webkit-fallback):
-  // spotLightViewProj array<mat4x4<f32>, 4> at floats [132..195] (byte 528,
-  // 16 B-aligned after directionalShadowFilter). Lane N = the spot with
-  // `shadowAtlasTile === N` (cap = 4); the perspective matrix was already
-  // computed by the extract stage (SpotLightSnapshot.lightViewProj) — record
-  // never recomputes it (Derive). The accepted projector is identified by its
-  // spot index, not by a negative shadow tile: a projector-only spot publishes
-  // its matrix in lane 0 so the shader never samples a zero matrix. Shadowed
-  // projector spots keep their shadow tile lane and carry the projector bit in
-  // the DirectLightSlot identity word.
-  // Folded from the former standalone binding 9 UBO to keep the WebGL2
-  // fallback fragment uniform-buffer count <= 11 (GLES 3.0).
-  {
-    const SPOT_LVP_BASE_FLOAT = 132;
-    const SPOT_LVP_LANE_COUNT = 4;
-    const SPOT_LVP_FLOATS_PER_LANE = 16;
-    const spotSnaps = spotShadowSnapshots;
-    for (let i = 0; i < spotSnaps.length; i++) {
-      const ss = spotSnaps[i];
-      if (ss === undefined) continue;
-      const tile = ss.shadowAtlasTile;
-      const lvp = ss.lightViewProj;
-      if (lvp === undefined) continue;
-      const lane =
-        tile >= 0 && tile < SPOT_LVP_LANE_COUNT ? tile : i === projectorSpotIndex ? 0 : -1;
-      if (lane < 0) continue;
-      const base = SPOT_LVP_BASE_FLOAT + lane * SPOT_LVP_FLOATS_PER_LANE;
-      for (let f = 0; f < SPOT_LVP_FLOATS_PER_LANE; f++) {
-        viewPayload[base + f] = lvp[f] ?? 0;
-      }
+/**
+ * feat-20260625-spot-light-shadow-mapping w25 (scope-amend webkit-fallback):
+ * spotLightViewProj array<mat4x4<f32>, 4> at floats [132..195] (byte 528,
+ * 16 B-aligned after directionalShadowFilter). Lane N = the spot with
+ * `shadowAtlasTile === N` (cap = 4); the perspective matrix was already
+ * computed by the extract stage (SpotLightSnapshot.lightViewProj) — record
+ * never recomputes it (Derive). The accepted projector is identified by its
+ * spot index, not by a negative shadow tile: a projector-only spot publishes
+ * its matrix in lane 0 so the shader never samples a zero matrix. Shadowed
+ * projector spots keep their shadow tile lane and carry the projector bit in
+ * the DirectLightSlot identity word.
+ * Folded from the former standalone binding 9 UBO to keep the WebGL2
+ * fallback fragment uniform-buffer count <= 11 (GLES 3.0).
+ */
+function writeSpotProjectionLanes(
+  viewPayload: Float32Array,
+  spotSnaps: readonly SpotLightSnapshot[],
+  projectorSpotIndex: number | undefined,
+): void {
+  const SPOT_LVP_BASE_FLOAT = 132;
+  const SPOT_LVP_LANE_COUNT = 4;
+  const SPOT_LVP_FLOATS_PER_LANE = 16;
+  for (let i = 0; i < spotSnaps.length; i++) {
+    const ss = spotSnaps[i];
+    if (ss === undefined) continue;
+    const tile = ss.shadowAtlasTile;
+    const lvp = ss.lightViewProj;
+    if (lvp === undefined) continue;
+    const lane = tile >= 0 && tile < SPOT_LVP_LANE_COUNT ? tile : i === projectorSpotIndex ? 0 : -1;
+    if (lane < 0) continue;
+    const base = SPOT_LVP_BASE_FLOAT + lane * SPOT_LVP_FLOATS_PER_LANE;
+    for (let f = 0; f < SPOT_LVP_FLOATS_PER_LANE; f++) {
+      viewPayload[base + f] = lvp[f] ?? 0;
     }
   }
+}
 
-  // Raw scene targets have no screen-space opaque Fog pass. Their surface
-  // writers evaluate the same medium inline, including analytic Fog alone.
-  if (sceneCapture) {
-    viewPayload[290] = 1;
-    viewPayload[317] = 0;
-  }
-  const viewUploadResult = queue.writeBuffer(viewUniformBuffer, byteOffset, viewPayload);
-  if (!viewUploadResult.ok) throw viewUploadResult.error;
-
-  // Auxiliary captures must not overwrite the display shadow view slots.
-  if (byteOffset !== 0) return;
-  for (const [index, composition] of TRANSLUCENT_FOG_COMPOSITIONS.entries()) {
-    const translucentPayload = viewPayload.slice();
+/** One display View copy per translucent fog composition, tagged in lane 290. */
+function uploadTranslucentFogViews(
+  queue: RhiQueue,
+  viewUniformBuffer: Buffer,
+  viewPayload: Float32Array,
+  translucentPayload: Float32Array,
+): void {
+  // Each queued write copies its source before the next staging update.
+  translucentPayload.set(viewPayload);
+  for (let index = 0; index < TRANSLUCENT_FOG_COMPOSITIONS.length; index++) {
+    const composition = TRANSLUCENT_FOG_COMPOSITIONS[index] as TranslucentFogComposition;
     translucentPayload[290] = index + 1;
     const uploaded = queue.writeBuffer(
       viewUniformBuffer,
@@ -430,11 +559,21 @@ export function writeViewUbo(
     );
     if (!uploaded.ok) throw uploaded.error;
   }
+}
+
+/** One display View copy per point-shadow atlas face, with that face matrix in lane 28. */
+function uploadPointShadowFaceViews(
+  queue: RhiQueue,
+  viewUniformBuffer: Buffer,
+  viewPayload: Float32Array,
+  lights: ViewLights,
+  facePayload: Float32Array,
+): void {
   for (const snapshot of lights.pointShadow ?? []) {
     if (snapshot.shadowAtlasLayer < 0 || snapshot.shadowAtlasLayer >= SHADOW_ATLAS_DEFAULT_LAYERS)
       continue;
     for (let face = 0; face < 6; face += 1) {
-      const facePayload = viewPayload.slice();
+      facePayload.set(viewPayload);
       const matrix = snapshot.shadowMatrices.subarray(face * 16, (face + 1) * 16);
       facePayload.set(matrix, 28);
       const uploaded = queue.writeBuffer(

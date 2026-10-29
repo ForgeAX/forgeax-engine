@@ -12,20 +12,24 @@ it('path-copies resource mappings, preserves descriptor zero and reclaims empty 
   const inputs = new GpuSceneInputs(device, (slot) => slot);
   const bytes = new Map<Buffer, Uint32Array>();
   const write = device.queue.writeBuffer.bind(device.queue);
-  vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data) => {
-    const result = write(buffer, offset, data);
-    if (!result.ok) return result;
-    const source =
-      data instanceof ArrayBuffer
-        ? new Uint8Array(data)
-        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    const previous = bytes.get(buffer);
-    const next = new Uint32Array(Math.max(previous?.length ?? 0, (offset + source.byteLength) / 4));
-    if (previous !== undefined) next.set(previous);
-    new Uint8Array(next.buffer).set(source, offset);
-    bytes.set(buffer, next);
-    return result;
-  });
+  vi.spyOn(device.queue, 'writeBuffer').mockImplementation(
+    (buffer, offset, data, start = 0, size) => {
+      const result = write(buffer, offset, data, start, size);
+      if (!result.ok) return result;
+      const source =
+        data instanceof ArrayBuffer
+          ? new Uint8Array(data, start, size ?? data.byteLength - start)
+          : new Uint8Array(data.buffer, data.byteOffset + start, size ?? data.byteLength - start);
+      const previous = bytes.get(buffer);
+      const next = new Uint32Array(
+        Math.max(previous?.length ?? 0, (offset + source.byteLength) / 4),
+      );
+      if (previous !== undefined) next.set(previous);
+      new Uint8Array(next.buffer).set(source, offset);
+      bytes.set(buffer, next);
+      return result;
+    },
+  );
   const slots = Array.from({ length: 257 }, (_, index) => inputs.allocateResource(index));
   const held = inputs.capture();
   try {
@@ -142,17 +146,49 @@ it.each([
     const address = frame.members(batch.candidates);
     const buffer = frame.buffer().unwrap();
     frame.seal().unwrap();
-    expect(inputs.memberNodesWritten).toBe(1);
+    // One member node and its one-record page.
+    expect(inputs.memberNodesWritten).toBe(2);
     expect(buffer.byteLength).toBe(1024);
     const uploaded = writes.mock.calls.find(([target]) => target === buffer.buffer)?.[2];
     if (!(uploaded instanceof Uint32Array)) throw new Error('Missing actual shared input words');
     expect(uploaded[address + 3]).toBe(count);
-    expect(uploaded[address + 4]).toBe(10);
+    expect(uploaded[(uploaded[address + 4] as number) + 1]).toBe(10);
     expect(iterator).not.toHaveBeenCalled();
   } finally {
     iterator.mockRestore();
     writes.mockRestore();
     frame?.release();
+    inputs.dispose();
+  }
+});
+
+it('keeps descriptor patches on the owned dirty range through release and reuse', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const inputs = new GpuSceneInputs(device, (slot) => slot);
+  const first = inputs.arena.allocateDescriptor(256);
+  const frame = inputs.capture();
+  frame.buffer().unwrap();
+  frame.seal().unwrap();
+  frame.release();
+  const write = vi.spyOn(device.queue, 'writeBuffer');
+  try {
+    for (let index = 0; index < 256; index++)
+      inputs.arena.writeDescriptorWord(first, 256, index, index + 1);
+    expect(() => inputs.arena.writeDescriptorWord(first, 256, 256, 1)).toThrow();
+    inputs.arena.releaseDescriptor(first, 256);
+    const reused = inputs.arena.allocateDescriptor(1);
+    expect(reused).toBe(first);
+    const next = inputs.capture();
+    next.buffer().unwrap();
+    next.seal().unwrap();
+    next.release();
+    // No abandoned interior patch is uploaded into a released/reused range.
+    expect(
+      write.mock.calls.map(([, offset, data, , size]) => [offset, size ?? data.byteLength]),
+    ).toEqual([[reused * 4, 4]]);
+    inputs.arena.releaseDescriptor(reused, 1);
+  } finally {
+    write.mockRestore();
     inputs.dispose();
   }
 });

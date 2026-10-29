@@ -12,7 +12,7 @@
 //   - the release asset is the WHOLE pkg/ packed as a .tar.gz, and
 //   - the content key hashes every input that changes that output:
 //     src/**/*.rs + Cargo.toml + Cargo.lock + rust-toolchain.toml + build.sh +
-//     the complete pinned third_party/wgpu source.
+//     the pinned third_party/wgpu source without Git/CI metadata or target outputs.
 //
 // Both scripts/fetch-wasm.mjs (consumer) and the CI publish job import this
 // module so producer and consumer never disagree on the asset name (Pipeline
@@ -41,7 +41,7 @@ async function hashExpandedWgpuSource(root) {
   async function walk(directory) {
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
-      if (entry.name === '.git' || entry.name === 'target') continue;
+      if (entry.name === '.git' || entry.name === '.github' || entry.name === 'target') continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) await walk(path);
       else {

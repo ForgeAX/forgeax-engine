@@ -16,6 +16,7 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { type OitFragment, oitComposite, sortedComposite } from '../../../render/src/oit/weight';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -231,16 +232,18 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
   }> => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    unwrap(renderer.requestObservation?.(['linear-hdr']));
     const pending = capture?.recorder.captureFrame();
     if (pending !== undefined) (await capture?.recorder.frameBoundary())?.unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!drawn.ok)
+    // Asynchronous pipeline preparation may hold early scene pictures pending.
+    const frame = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      ['linear-hdr'],
+    ).catch((cause: unknown) => {
       throw new Error(
-        `draw failed: ${JSON.stringify(drawn.error)} events=${JSON.stringify(errors, (_k, v) => (v instanceof Error ? { ...v, message: v.message, stack: v.stack } : v))}`,
+        `draw failed: ${String(cause)} events=${JSON.stringify(errors, (_k, v) => (v instanceof Error ? { ...v, message: v.message, stack: v.stack } : v))}`,
       );
-    const frame = drawn.value;
-    unwrap(await frame.completed);
+    });
     completedFrames++;
     if (pending !== undefined) (await capture?.recorder.frameBoundary())?.unwrap();
     const observation = unwrap(

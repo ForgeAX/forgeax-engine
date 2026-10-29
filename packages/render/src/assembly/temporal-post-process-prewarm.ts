@@ -1,6 +1,7 @@
 import type { Result, RhiDevice, RhiError, ShaderModule } from '@forgeax/engine-rhi';
 import type { ManifestEntry } from '@forgeax/engine-types';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
+import type { SeedShaderModule } from './material-shader-policy';
 import { invokeDeviceCreateShaderModule } from './material-shader-policy';
 import { runShimStep } from './renderer-helpers';
 
@@ -15,7 +16,7 @@ type AsyncShaderModuleFactory =
 export function createTemporalShaderPrewarmer(input: {
   readonly device: RhiDevice;
   readonly asyncCreateShaderModule: AsyncShaderModuleFactory;
-  readonly seedShaderModule: (label: string, module: ShaderModule) => void;
+  readonly seedShaderModule: SeedShaderModule;
 }): (entry: ManifestEntry | undefined, id: string) => Promise<void> {
   return async (entry, id): Promise<void> => {
     if (entry === undefined) return;
@@ -35,6 +36,6 @@ export function createTemporalShaderPrewarmer(input: {
       `inspect manifest ${id} entry composed wgsl; check device.features`,
     );
     if (!prewarm.ok) throw prewarm.error;
-    input.seedShaderModule(postProcessShaderModuleLabel(entry.wgsl), prewarm.value);
+    input.seedShaderModule(postProcessShaderModuleLabel(entry.wgsl), prewarm.value, entry.wgsl);
   };
 }

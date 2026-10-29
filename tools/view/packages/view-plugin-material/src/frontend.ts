@@ -18,9 +18,9 @@ const viewMaterialFrontendPlugin = {
     const panelHost = config.panelHost ?? ctx.get('panelHost', false);
     if (!panelHost) return;
     const dispose = await panelHost.mountPanel({
-      id: identity.STATS_SLOT, pageType: identity.PAGE_TYPE, titleKey: 'view.slots.materialStats', closable: true,
+      id: identity.STATS_SLOT, home: { kind: 'page', pageType: identity.PAGE_TYPE }, titleKey: 'view.slots.materialStats', closable: true,
       activity: { labelKey: 'view.slots.materialStats', icon: 'detail' },
-      layout: { dock: 'bottom', size: { value: 200, unit: 'px' }, stack: 'tabs', order: 2 },
+      layout: { dock: 'right-bottom', stack: 'tabs', order: 2 },
       panel: 'MaterialStats', props: { client: ctx.get('viewOperationClient') },
     });
     ctx.effect(() => dispose);

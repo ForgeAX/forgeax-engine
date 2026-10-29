@@ -1,11 +1,15 @@
 import { spawnSync } from 'node:child_process';
-import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  engineShaderSourceDigest,
-  PACKAGED_SOURCE_RECORD,
-} from '../../packages/vite-plugin-shader/dist/source-digest.mjs';
+  decodePackagedProfiles,
+  encodePackagedProfiles,
+  PACKAGED_PROFILE_NAMES,
+  PACKAGED_PROFILES_FILE,
+  packagedProfilePublication,
+} from '../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
+import { engineShaderSourceDigest } from '../../packages/vite-plugin-shader/dist/source-digest.mjs';
 import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -29,7 +33,7 @@ const profileFlags = {
   'point-ssao': [],
 };
 const profileIndex = process.argv.indexOf('--profile');
-const profiles = profileIndex < 0 ? Object.keys(profileFlags) : [process.argv[profileIndex + 1]];
+const profiles = profileIndex < 0 ? [...PACKAGED_PROFILE_NAMES] : [process.argv[profileIndex + 1]];
 for (const profile of profiles) {
   if (!Object.hasOwn(profileFlags, profile)) throw new Error(`unknown shader profile: ${profile}`);
 }
@@ -142,30 +146,38 @@ if (shaderSourceDigest === undefined) {
 }
 
 await mkdir(outputRoot, { recursive: true });
-// These generated copies differ only by the optional SSAO utility.
-for (const redundant of ['base-base', 'point-base']) {
-  await rm(resolve(outputRoot, redundant), { recursive: true, force: true });
+const containerPath = resolve(outputRoot, PACKAGED_PROFILES_FILE);
+// A single-profile preparation keeps the other profile only when it was
+// compiled from the same WGSL; a stale sibling would be rejected at load.
+let previous;
+try {
+  previous = decodePackagedProfiles(await readFile(containerPath));
+} catch (cause) {
+  if (cause?.code !== 'ENOENT')
+    console.log(`[shader-profile] replacing unreadable ${containerPath}`);
 }
-await Promise.all(
-  profiles.map(async (profile) => {
-    const target = resolve(outputRoot, profile);
-    // Replace only generated profile payloads, never package declarations or
-    // an independently prepared profile beside them.
-    await rm(target, { recursive: true, force: true });
-    await mkdir(target, { recursive: true });
-    await Promise.all([
-      cp(
+const publications = {};
+for (const profile of PACKAGED_PROFILE_NAMES) {
+  if (profiles.includes(profile)) {
+    publications[profile] = JSON.parse(
+      await readFile(
         shaderManifests.get(profile) ?? resolve(inputRoot, profile, 'shaders/manifest.json'),
-        resolve(target, 'manifest.json'),
+        'utf8',
       ),
-      writeFile(resolve(target, 'imports.json'), `${JSON.stringify(imports, null, 2)}\n`),
-      writeFile(
-        resolve(target, PACKAGED_SOURCE_RECORD),
-        `${JSON.stringify({ shaderSourceDigest }, null, 2)}\n`,
-      ),
-    ]);
-  }),
+    );
+  } else if (previous?.shaderSourceDigest === shaderSourceDigest) {
+    const retained = packagedProfilePublication(previous, profile);
+    if (retained !== undefined) publications[profile] = retained;
+  }
+}
+await writeFile(
+  containerPath,
+  encodePackagedProfiles({ shaderSourceDigest, imports, publications }),
 );
+// Per-profile directories are the previous packaged layout.
+for (const retired of ['base-base', 'point-base', ...PACKAGED_PROFILE_NAMES]) {
+  await rm(resolve(outputRoot, retired), { recursive: true, force: true });
+}
 
 process.stdout.write(
   `${JSON.stringify({ outputRoot, profiles, imports: Object.keys(imports).length }, null, 2)}\n`,

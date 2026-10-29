@@ -11,7 +11,10 @@ realm-local physics module's clock.
 ## Bootstrap standards and published text
 
 Load `@forgeax/engine/platform-wechat/standards` in the generated bootstrap and call
-`installWechatStandards()` before the game module. Missing `TextEncoder` and
+`installWechatStandards()` before the game module. Its publication bundles its
+complete portable dependency closure, so loading standards cannot first evaluate
+a shared Engine chunk that already needs those standards. The ordinary platform
+entry retains its normal package dependencies. Missing `TextEncoder` and
 `TextDecoder` are supplied by exact-pinned `@exodus/bytes`, bundled through the
 package's neutral build so its browser shortcuts cannot require absent native
 encoders. UTF-8 streaming, fatal errors, BOM handling and bounded `encodeInto`
@@ -129,7 +132,9 @@ Pass `{ ui: blitzUi.input, keyboard: wx, onError }` to `createWechatInputBackend
 to route UI input before gameplay acquisition. UI focus/contacts revoke previous
 gameplay contacts; the independent `setInputAllowed` startup policy never disables
 UI controls. Logical coordinates feed UI hit testing while drawing coordinates feed
-gameplay. Hide, resize and detach cancel UI contacts and the current editor.
+gameplay. Display changes cancel old UI contacts while preserving editing focus:
+native keyboard opening can itself emit a resize. Hide, surface loss and detach
+also retire the current editor.
 Gameplay contacts are revoked before UI cancellation runs. A failing UI cancel
 still leaves no held gameplay input, and detach attempts every native release
 while retaining cleanup failures.

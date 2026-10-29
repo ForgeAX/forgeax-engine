@@ -550,6 +550,31 @@ export class DebugDraw implements DebugDrawInterface {
 // createDebugDraw factory (w12)
 // ==========================================================================
 
+/**
+ * Create an immediate-mode debug-draw instance.
+ *
+ * Async because GPU shader module compilation (createShaderModule)
+ * must be awaited. Returns Promise<Result<DebugDraw, DebugDrawError>>.
+ *
+ * @example Low-path usage
+ * ```ts
+ * const r = await createDebugDraw({ device, queue });
+ * if (!r.ok) { ... }
+ * const dd = r.value;
+ * dd.line(a, b, [1, 0, 0, 1]);
+ * dd.flush(encoder, swapChainView, cameraViewProj);
+ * ```
+ *
+ * @example With less-equal depth testing
+ * ```ts
+ * const dd = await createDebugDraw({
+ *   device, queue,
+ *   format: 'bgra8unorm',
+ *   depthFormat: 'depth24plus',
+ *   depthMode: 'less-equal',
+ * });
+ * ```
+ */
 export async function createDebugDraw(
   opts: DebugDrawOptions,
 ): Promise<Result<DebugDraw, DebugDrawError>> {

@@ -92,7 +92,11 @@ describe('ShadowCasterClassifier', () => {
 
   it('starts the first population static and promotes later casters after one window', () => {
     const fake = fakeScene();
-    const slots = [rigid(0), rigid(1), { slot: 2, snapshot: { skin: {} } }];
+    const slots = [
+      rigid(0),
+      rigid(1),
+      { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
+    ];
     const classifier = new ShadowCasterClassifier();
     const first = classify(classifier, slots, fake.scene);
     expect([...first.staticSlots]).toEqual([0, 1]);
@@ -159,7 +163,11 @@ describe('ShadowCasterClassifier', () => {
   it('treats every caster as changed when the change history cannot prove otherwise', () => {
     const fake = fakeScene();
     const classifier = new ShadowCasterClassifier();
-    const slots = [rigid(0), rigid(1), { slot: 2, snapshot: { skin: {} } }];
+    const slots = [
+      rigid(0),
+      rigid(1),
+      { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
+    ];
     framesUntilStatic(classifier, slots, fake.scene, 1);
     rest(classifier, slots, fake.scene);
     // A history gap or resync: a moved caster must never stay in the static layer.
@@ -208,7 +216,10 @@ describe('ShadowCasterClassifier', () => {
   it('places Mobility static casters in the static layer from their first update', () => {
     const fake = fakeScene();
     const declared = (slot: number) => ({ slot, snapshot: { mobility: 'static' as const } });
-    const skinned = { slot: 2, snapshot: { skin: {}, mobility: 'static' as const } };
+    const skinned = {
+      slot: 2,
+      snapshot: { skinBinding: { skeleton: 1, joints: [2] }, mobility: 'static' as const },
+    };
     const slots = [declared(0), skinned];
     const classifier = new ShadowCasterClassifier();
     const first = classify(classifier, slots, fake.scene);
@@ -274,7 +285,11 @@ describe('ShadowCasterClassifier', () => {
 it('counts classification attempts, transitions and population without exposing mutable state', () => {
   const fake = fakeScene();
   const classifier = new ShadowCasterClassifier();
-  const slots = [rigid(0), rigid(1), { slot: 2, snapshot: { skin: {} } }];
+  const slots = [
+    rigid(0),
+    rigid(1),
+    { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
+  ];
   classify(classifier, slots, fake.scene);
   const first = classifier.inspect();
   expect(first).toMatchObject({
@@ -405,4 +420,28 @@ it('intersects fixed caster roots only in actual membership reads and observes r
   expect(before.staticSlots.has(999)).toBe(false);
   expect(after.staticSlots.has(0)).toBe(false);
   expect(after.staticSlots.has(999)).toBe(true);
+});
+
+it('derives the caster set as the static/dynamic union without a third tree', () => {
+  const of = (...slots: number[]) => slots.reduce((set, slot) => set.with(slot), new FrameSet());
+  const statics = of(0, 2, 4);
+  const dynamics = of(1, 5);
+  const casters = new ShadowSlotSelection([statics, dynamics]);
+  expect([...casters]).toEqual([0, 1, 2, 4, 5]);
+  expect(casters.size).toBe(5);
+  expect(casters.has(1) && casters.has(4) && !casters.has(3)).toBe(true);
+  // A caster flipping class keeps the union: equal, and no slot changes.
+  const flipped = new ShadowSlotSelection([statics.without(4), dynamics.with(4)]);
+  expect(flipped.same(casters)).toBe(true);
+  const visited: number[] = [];
+  expect(flipped.changesSince(casters, (slot) => visited.push(slot))).toBe(true);
+  expect(visited).toEqual([]);
+  // A created caster changes the union and is visited once.
+  const created = new ShadowSlotSelection([statics, dynamics.with(3)]);
+  expect(created.same(casters)).toBe(false);
+  expect(created.changesSince(casters, (slot) => visited.push(slot))).toBe(true);
+  expect(visited).toEqual([3]);
+  const restricted = new ShadowSlotSelection([statics, dynamics], of(1, 2, 3));
+  expect([...restricted]).toEqual([1, 2]);
+  expect(restricted.size).toBe(2);
 });

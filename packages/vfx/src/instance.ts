@@ -233,7 +233,7 @@ export class ParticleEffectInstance<Values extends VfxValueMap = VfxValueMap> {
         'vfx-channel-invalid',
         `channels.${input.channel || 'unknown'}`,
         'a named channel with a finite impact payload and non-negative integer sequence',
-        'repair the typed channel payload before the next FixedUpdate',
+        'repair the typed channel payload before the next update',
       );
     }
     const capacity = this.#channelCapacities.get(input.channel) ?? 32;
@@ -334,7 +334,7 @@ export class ParticleEffectInstance<Values extends VfxValueMap = VfxValueMap> {
         'vfx-instance-replay-mismatch',
         'replay.payload',
         'canonical payload bytes for replay.values',
-        'record and replay normalized values from the same fixed-tick input',
+        'record and replay normalized values from the same tick input',
       );
     }
     const packed = this.contract.pack(checked.value);

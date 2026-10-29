@@ -4,9 +4,10 @@ import type {
   GpuPassTimingOptions,
   MeshResidencyError,
   PublishedMeshPreparation,
-  RenderPublication,
+  RenderInspection,
   RenderPublicationError,
   RenderPublicationIdentity,
+  RenderPublicationMessage,
   RenderSceneBounds,
 } from '@forgeax/engine-render';
 import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-debug';
@@ -84,12 +85,18 @@ export type RenderWorkerInput =
       | 'build'
       | 'outputColorSpace'
       | 'pipelineLibrary'
+      | 'backgroundPipelineLibrary'
       | 'dynamicGeometryMeshBudgetBytes'
+      | 'assetBudgetBytes'
+      | 'loadProgressScope'
     > & {
       readonly kind: 'init';
       readonly identity: RenderPublicationIdentity;
+      /** Direct Host port for render-submitted / render-complete notices. */
+      readonly hostPort?: MessagePort;
       readonly worldIdentity: string;
       readonly rhiCapture?: boolean;
+      readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
       readonly gpuPassTiming?: GpuPassTimingOptions;
       /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
       readonly shadowWorkload?: boolean;
@@ -105,8 +112,12 @@ export type RenderWorkerInput =
       readonly frameId: number;
       readonly width: number;
       readonly height: number;
-      readonly publication: RenderPublication;
+      readonly publication: RenderPublicationMessage;
       readonly sourceFixedStep: number;
+      /** Engine Worker World update milliseconds for this published frame. */
+      readonly engineUpdateMs?: number;
+      /** Engine Worker milliseconds waiting for publication credit before this frame (0 = none). */
+      readonly engineCreditWaitMs?: number;
     }
   | {
       readonly kind: 'capture';
@@ -124,6 +135,14 @@ export type RenderWorkerInput =
   | {
       readonly kind: 'inspect';
       readonly pipelineLibrary?: boolean;
+      readonly pipelineLibraryCollection?: boolean;
+      readonly pipelineLibraryLimits?: NonNullable<
+        NonNullable<
+          Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
+        >['pipelineLibraryLimits']
+      >;
+      readonly runtimeRequests?: boolean;
+      readonly fields?: readonly (keyof RenderInspection)[];
       readonly requestId: number;
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
@@ -143,7 +162,7 @@ export type RenderWorkerOutput =
       readonly requestId: number;
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
-      readonly result: ExecutionRendererInspectionResult;
+      readonly result: ExecutionRendererInspectionResult<Partial<RenderInspection>>;
     }
   | {
       readonly kind: 'renderer-error';

@@ -31,7 +31,7 @@ function fixture() {
     expect(buffer).toBe(fallback.intensityBuffer);
     expect(offset).toBe(0);
     expect(data).toBeInstanceOf(Float32Array);
-    expect(data.byteLength).toBe(80);
+    expect(data.byteLength).toBe(96);
     writes.push(data.slice());
     return { ok: true, value: undefined };
   });
@@ -86,9 +86,9 @@ describe('material Skylight explicit-image availability', () => {
     const f = fixture();
     f.resolve({ ...f.image, ambientIrradiance: [0.5, 1, 2] });
     expect(f.payload()[0]).toBe(0);
-    expect(f.writes.at(-1)?.slice(16)).toEqual(new Float32Array([0.5, 1, 2, 0]));
+    expect(f.writes.at(-1)?.slice(16, 20)).toEqual(new Float32Array([0.5, 1, 2, 0]));
     f.resolve(undefined, 0);
-    expect(f.writes.at(-1)?.slice(16)).toEqual(new Float32Array(4));
+    expect(f.writes.at(-1)?.slice(16, 20)).toEqual(new Float32Array(4));
   });
 
   it('binds fallback views with zero intensity while an explicit image has no published IBL', () => {
@@ -99,6 +99,19 @@ describe('material Skylight explicit-image availability', () => {
     expect(result.skylightResources.prefilterView).toBe(f.fallback.prefilterView);
     expect(result.skylightResources.brdfLutView).toBe(f.fallback.brdfLutView);
     expect(f.payload()).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it('writes the hemisphere ground lane scaled by intensity, and zeros by default', () => {
+    const f = fixture();
+    f.resolve({ ...f.image, equirectHandle: 0 });
+    expect(f.writes.at(-1)?.slice(20)).toEqual(new Float32Array(4));
+    f.resolve({ ...f.image, equirectHandle: 0, groundColor: [0, 0, 0] });
+    expect(f.writes.at(-1)?.slice(20)).toEqual(new Float32Array(4));
+    f.resolve({ ...f.image, equirectHandle: 0, groundColor: [0.5, 0.25, 0.125] });
+    expect(f.writes.at(-1)?.slice(20)).toEqual(new Float32Array([1, 0.5, 0.25, 1]));
+    // A pending explicit image keeps the whole environment, ground included, at zero.
+    f.resolve({ ...f.image, groundColor: [0.5, 0.25, 0.125] });
+    expect(f.writes.at(-1)?.slice(20)).toEqual(new Float32Array(4));
   });
 
   it('retains positive solid-color ambient without an authored image', () => {

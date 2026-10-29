@@ -596,14 +596,18 @@ export function assemblePerformanceAdmissionEvidence(nativeSummary, cpuProducer,
   };
 }
 
-export function validatePerformanceAdmissionEvidence(evidence) {
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function admissionHeaderErrors(evidence) {
   const errors = [];
   if (evidence?.schemaVersion !== PERFORMANCE_ADMISSION_SCHEMA_VERSION) errors.push('schemaVersion');
   if (evidence?.lane !== 'performance-admission') errors.push('lane');
   if (evidence?.status !== 'pass') errors.push('status');
-  if (typeof evidence?.testedRevision !== 'string' || evidence.testedRevision.length === 0) errors.push('testedRevision');
-  if (typeof evidence?.sourceRevision !== 'string' || evidence.sourceRevision.length === 0) errors.push('sourceRevision');
-  if (typeof evidence?.buildDigest !== 'string' || evidence.buildDigest.length === 0) errors.push('buildDigest');
+  if (!nonEmptyString(evidence?.testedRevision)) errors.push('testedRevision');
+  if (!nonEmptyString(evidence?.sourceRevision)) errors.push('sourceRevision');
+  if (!nonEmptyString(evidence?.buildDigest)) errors.push('buildDigest');
   if (!validBuildArtifact(evidence?.buildArtifact)) errors.push('buildArtifact');
   const protocol = evidence?.protocol;
   if (
@@ -612,100 +616,145 @@ export function validatePerformanceAdmissionEvidence(evidence) {
     !Array.isArray(protocol?.order) ||
     JSON.stringify(protocol.order) !== JSON.stringify(['off', 'on'])
   ) errors.push('protocol');
-  const sampleCount = protocol?.sampleCount;
-  for (const name of ['native1080p', 'cpuWebgl2']) {
-    const lane = evidence?.[name];
-    if (
-      !validLabel(lane?.runnerClass) ||
-      !validLabel(lane.queue) ||
-      !validLabel(lane.execution) ||
-      !validLabel(lane.backend) ||
-      !validLabel(lane.adapter) ||
-      !validRunnerProvenance(lane) ||
-      !validCpuAffinity(lane?.cpuAffinity) ||
-      !validLaneProvenance(name, lane) ||
-      !Number.isInteger(lane?.warmupCount) ||
-      lane.warmupCount < 0 ||
-      lane.resolution?.width !== 1920 ||
-      lane.resolution?.height !== 1080 ||
-      lane.timing?.gpuTimestamp !== false
-    )
-      errors.push(`${name}.provenance`);
-    if (
-      lane?.testedRevision !== evidence.testedRevision ||
-      lane?.sourceRevision !== evidence.sourceRevision ||
-      lane?.buildDigest !== evidence.buildDigest
-    )
-      errors.push(`${name}.identity`);
-    if (!validSamplePair(lane?.rawSamplesMs?.off, sampleCount) || !validSamplePair(lane?.rawSamplesMs?.on, sampleCount))
-      errors.push(`${name}.rawSamplesMs`);
-    if (!validPassCounters(lane?.passCounters?.off, 0) || !validPassCounters(lane?.passCounters?.on, 1))
-      errors.push(`${name}.passCounters`);
-    const passStats = lane?.passStatsMs;
-    const hasRawPassTiming = lane?.rawPassSamplesMs !== undefined;
-    if (hasRawPassTiming && lane?.timing?.gpuTimestamp !== true) errors.push(`${name}.rawPassTiming`);
-    if (hasRawPassTiming && (
-      !validSamplePair(lane.rawPassSamplesMs.producer, sampleCount) ||
-      !validSamplePair(lane.rawPassSamplesMs.blur, sampleCount) ||
-      !Number.isFinite(passStats?.producer?.median) ||
-      !Number.isFinite(passStats?.producer?.p95) ||
-      !Number.isFinite(passStats?.blur?.median) ||
-      !Number.isFinite(passStats?.blur?.p95)
-    )) errors.push(`${name}.rawPassSamplesMs`);
-    if (
-      hasRawPassTiming &&
-      validSamplePair(lane?.rawPassSamplesMs?.producer, sampleCount) &&
-      validSamplePair(lane?.rawPassSamplesMs?.blur, sampleCount) &&
-      validSamplePair(lane?.rawSamplesMs?.on, sampleCount)
-    ) {
-      const expectedProducer = expectedStats(lane.rawPassSamplesMs.producer);
-      const expectedBlur = expectedStats(lane.rawPassSamplesMs.blur);
-      if (
-        !Number.isFinite(passStats?.producer?.median) ||
-        Math.abs(expectedProducer.median - passStats.producer.median) > 1e-9 ||
-        Math.abs(expectedProducer.p95 - passStats.producer.p95) > 1e-9 ||
-        Math.abs(expectedBlur.median - passStats.blur.median) > 1e-9 ||
-        Math.abs(expectedBlur.p95 - passStats.blur.p95) > 1e-9
-      ) errors.push(`${name}.passStatsMismatch`);
-      if (lane.rawPassSamplesMs.producer.some((value, index) => value + lane.rawPassSamplesMs.blur[index] > lane.rawSamplesMs.on[index]))
-        errors.push(`${name}.passStatsRelation`);
-    }
-    if (
-      validSamplePair(lane?.rawSamplesMs?.off, sampleCount) &&
-      validSamplePair(lane?.rawSamplesMs?.on, sampleCount) &&
-      pairDelta(lane.rawSamplesMs.off, lane.rawSamplesMs.on) === null
-    )
-      errors.push(`${name}.pairedSamples`);
+  return errors;
+}
+
+function validLaneLabels(lane) {
+  return (
+    validLabel(lane?.runnerClass) &&
+    validLabel(lane.queue) &&
+    validLabel(lane.execution) &&
+    validLabel(lane.backend) &&
+    validLabel(lane.adapter)
+  );
+}
+
+function validLaneMeasurementSetup(name, lane) {
+  return (
+    validRunnerProvenance(lane) &&
+    validCpuAffinity(lane?.cpuAffinity) &&
+    validLaneProvenance(name, lane) &&
+    Number.isInteger(lane?.warmupCount) &&
+    lane.warmupCount >= 0 &&
+    lane.resolution?.width === 1920 &&
+    lane.resolution?.height === 1080 &&
+    lane.timing?.gpuTimestamp === false
+  );
+}
+
+function laneSampleErrors(name, lane, evidence, sampleCount) {
+  const errors = [];
+  if (!validLaneLabels(lane) || !validLaneMeasurementSetup(name, lane)) errors.push(`${name}.provenance`);
+  if (
+    lane?.testedRevision !== evidence.testedRevision ||
+    lane?.sourceRevision !== evidence.sourceRevision ||
+    lane?.buildDigest !== evidence.buildDigest
+  )
+    errors.push(`${name}.identity`);
+  if (!validSamplePair(lane?.rawSamplesMs?.off, sampleCount) || !validSamplePair(lane?.rawSamplesMs?.on, sampleCount))
+    errors.push(`${name}.rawSamplesMs`);
+  if (!validPassCounters(lane?.passCounters?.off, 0) || !validPassCounters(lane?.passCounters?.on, 1))
+    errors.push(`${name}.passCounters`);
+  return errors;
+}
+
+function finitePassStats(passStats) {
+  return (
+    Number.isFinite(passStats?.producer?.median) &&
+    Number.isFinite(passStats?.producer?.p95) &&
+    Number.isFinite(passStats?.blur?.median) &&
+    Number.isFinite(passStats?.blur?.p95)
+  );
+}
+
+function passStatsMismatch(passStats, rawPassSamplesMs) {
+  const expectedProducer = expectedStats(rawPassSamplesMs.producer);
+  const expectedBlur = expectedStats(rawPassSamplesMs.blur);
+  return (
+    !Number.isFinite(passStats?.producer?.median) ||
+    Math.abs(expectedProducer.median - passStats.producer.median) > 1e-9 ||
+    Math.abs(expectedProducer.p95 - passStats.producer.p95) > 1e-9 ||
+    Math.abs(expectedBlur.median - passStats.blur.median) > 1e-9 ||
+    Math.abs(expectedBlur.p95 - passStats.blur.p95) > 1e-9
+  );
+}
+
+function lanePassTimingErrors(name, lane, sampleCount) {
+  const errors = [];
+  const passStats = lane?.passStatsMs;
+  if (lane?.rawPassSamplesMs === undefined) return errors;
+  if (lane?.timing?.gpuTimestamp !== true) errors.push(`${name}.rawPassTiming`);
+  const producerValid = validSamplePair(lane.rawPassSamplesMs.producer, sampleCount);
+  const blurValid = validSamplePair(lane.rawPassSamplesMs.blur, sampleCount);
+  if (!producerValid || !blurValid || !finitePassStats(passStats)) errors.push(`${name}.rawPassSamplesMs`);
+  if (producerValid && blurValid && validSamplePair(lane?.rawSamplesMs?.on, sampleCount)) {
+    if (passStatsMismatch(passStats, lane.rawPassSamplesMs)) errors.push(`${name}.passStatsMismatch`);
+    if (lane.rawPassSamplesMs.producer.some((value, index) => value + lane.rawPassSamplesMs.blur[index] > lane.rawSamplesMs.on[index]))
+      errors.push(`${name}.passStatsRelation`);
   }
-  const nativeLane = evidence?.native1080p;
-  const cpuLane = evidence?.cpuWebgl2;
+  return errors;
+}
+
+function lanePairingErrors(name, lane, sampleCount) {
+  if (
+    validSamplePair(lane?.rawSamplesMs?.off, sampleCount) &&
+    validSamplePair(lane?.rawSamplesMs?.on, sampleCount) &&
+    pairDelta(lane.rawSamplesMs.off, lane.rawSamplesMs.on) === null
+  )
+    return [`${name}.pairedSamples`];
+  return [];
+}
+
+function admissionLaneErrors(name, evidence, sampleCount) {
+  const lane = evidence?.[name];
+  return [
+    ...laneSampleErrors(name, lane, evidence, sampleCount),
+    ...lanePassTimingErrors(name, lane, sampleCount),
+    ...lanePairingErrors(name, lane, sampleCount),
+  ];
+}
+
+function nativeDeltaMismatch(nativeSamples, nativeDelta, sampleCount) {
+  if (!validSamplePair(nativeSamples?.off, sampleCount) || !validSamplePair(nativeSamples?.on, sampleCount)) return false;
+  const expected = pairDelta(nativeSamples.off, nativeSamples.on);
+  return (
+    expected === null ||
+    Math.abs(expected.median - nativeDelta.median) > 1e-9 ||
+    Math.abs(expected.p95 - nativeDelta.p95) > 1e-9
+  );
+}
+
+function cpuDeltaMismatch(cpuSamples, cpuDelta, sampleCount) {
+  if (!validSamplePair(cpuSamples?.off, sampleCount) || !validSamplePair(cpuSamples?.on, sampleCount)) return false;
+  const offMedian = quantile(cpuSamples.off, 0.5);
+  const onMedian = quantile(cpuSamples.on, 0.5);
+  const expected = offMedian > 0 ? (onMedian - offMedian) / offMedian : null;
+  return expected === null || Math.abs(expected - cpuDelta) > 1e-9;
+}
+
+function admissionDeltaErrors(evidence, sampleCount) {
+  const errors = [];
   const nativeDelta = evidence?.native1080p?.deltaMs;
   const cpuDelta = evidence?.cpuWebgl2?.relativeMedian;
   if (!Number.isFinite(nativeDelta?.median) || !Number.isFinite(nativeDelta?.p95)) errors.push('native1080p.deltaMs');
   if (!Number.isFinite(cpuDelta)) errors.push('cpuWebgl2.relativeMedian');
-  const nativeSamples = evidence?.native1080p?.rawSamplesMs;
-  if (validSamplePair(nativeSamples?.off, sampleCount) && validSamplePair(nativeSamples?.on, sampleCount)) {
-    const expected = pairDelta(nativeSamples.off, nativeSamples.on);
-    if (
-      expected === null ||
-      Math.abs(expected.median - nativeDelta.median) > 1e-9 ||
-      Math.abs(expected.p95 - nativeDelta.p95) > 1e-9
-    )
-      errors.push('native1080p.deltaMismatch');
-  }
-  const cpuSamples = evidence?.cpuWebgl2?.rawSamplesMs;
-  if (validSamplePair(cpuSamples?.off, sampleCount) && validSamplePair(cpuSamples?.on, sampleCount)) {
-    const offMedian = quantile(cpuSamples.off, 0.5);
-    const onMedian = quantile(cpuSamples.on, 0.5);
-    const expected = offMedian > 0 ? (onMedian - offMedian) / offMedian : null;
-    if (expected === null || Math.abs(expected - cpuDelta) > 1e-9) errors.push('cpuWebgl2.deltaMismatch');
-  }
+  if (nativeDeltaMismatch(evidence?.native1080p?.rawSamplesMs, nativeDelta, sampleCount)) errors.push('native1080p.deltaMismatch');
+  if (cpuDeltaMismatch(evidence?.cpuWebgl2?.rawSamplesMs, cpuDelta, sampleCount)) errors.push('cpuWebgl2.deltaMismatch');
+  return errors;
+}
+
+function admissionThresholdErrors(nativeDelta, cpuDelta) {
+  const errors = [];
   if (Number.isFinite(nativeDelta?.median) && nativeDelta.median > PERFORMANCE_ADMISSION_THRESHOLDS.native1080p.medianMs)
     errors.push('native1080p.medianThreshold');
   if (Number.isFinite(nativeDelta?.p95) && nativeDelta.p95 > PERFORMANCE_ADMISSION_THRESHOLDS.native1080p.p95Ms)
     errors.push('native1080p.p95Threshold');
   if (Number.isFinite(cpuDelta) && cpuDelta > PERFORMANCE_ADMISSION_THRESHOLDS.cpuWebgl2.relativeMedian)
     errors.push('cpuWebgl2.threshold');
+  return errors;
+}
+
+function computeAdmissionVerdict(nativeDelta, cpuDelta) {
   const computedVerdict = {
     native1080p:
       Number.isFinite(nativeDelta?.median) &&
@@ -717,9 +766,29 @@ export function validatePerformanceAdmissionEvidence(evidence) {
     cpuWebgl2: Number.isFinite(cpuDelta) && cpuDelta <= PERFORMANCE_ADMISSION_THRESHOLDS.cpuWebgl2.relativeMedian ? 'pass' : 'fail',
   };
   computedVerdict.overall = computedVerdict.native1080p === 'pass' && computedVerdict.cpuWebgl2 === 'pass' ? 'pass' : 'fail';
-  if (evidence?.verdict?.native1080p !== computedVerdict.native1080p) errors.push('verdict.native1080p');
-  if (evidence?.verdict?.cpuWebgl2 !== computedVerdict.cpuWebgl2) errors.push('verdict.cpuWebgl2');
-  if (evidence?.verdict?.overall !== computedVerdict.overall) errors.push('verdict.overall');
+  return computedVerdict;
+}
+
+function admissionVerdictErrors(verdict, computedVerdict) {
+  const errors = [];
+  if (verdict?.native1080p !== computedVerdict.native1080p) errors.push('verdict.native1080p');
+  if (verdict?.cpuWebgl2 !== computedVerdict.cpuWebgl2) errors.push('verdict.cpuWebgl2');
+  if (verdict?.overall !== computedVerdict.overall) errors.push('verdict.overall');
+  return errors;
+}
+
+export function validatePerformanceAdmissionEvidence(evidence) {
+  const sampleCount = evidence?.protocol?.sampleCount;
+  const nativeDelta = evidence?.native1080p?.deltaMs;
+  const cpuDelta = evidence?.cpuWebgl2?.relativeMedian;
+  const errors = [
+    ...admissionHeaderErrors(evidence),
+    ...admissionLaneErrors('native1080p', evidence, sampleCount),
+    ...admissionLaneErrors('cpuWebgl2', evidence, sampleCount),
+    ...admissionDeltaErrors(evidence, sampleCount),
+    ...admissionThresholdErrors(nativeDelta, cpuDelta),
+    ...admissionVerdictErrors(evidence?.verdict, computeAdmissionVerdict(nativeDelta, cpuDelta)),
+  ];
   return { ok: errors.length === 0, errors };
 }
 

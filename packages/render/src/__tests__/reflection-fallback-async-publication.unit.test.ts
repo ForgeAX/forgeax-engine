@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
 import type { RenderSystemInternals } from '../record/render-context';
+import * as fallbackProjection from '../reflection/projection';
 import { ReflectionProbeRecordOwner } from '../reflection/record-owner';
 import type { SkylightSnapshot } from '../render-system-extract';
 
@@ -49,6 +50,96 @@ function fixture(captureReadback = true) {
 }
 
 describe('fallback asynchronous publication', () => {
+  it('prepares one signature with each immutable ticket through submission and readback', async () => {
+    const signature = vi.spyOn(fallbackProjection, 'reflectionFallbackProjectionSignature');
+    try {
+      const { owner, stage, complete } = fixture();
+      const tickets = stage(1);
+      const pending = tickets.get('receiver');
+      expect(Object.isFrozen(pending?.projection)).toBe(true);
+      expect(Object.isFrozen(pending?.projection.linearHdr)).toBe(true);
+      expect(signature).toHaveBeenCalledTimes(1);
+      await complete(tickets, 1);
+      expect(owner.inspect().reflectionFallback.state).toBe('active');
+      expect(signature).toHaveBeenCalledTimes(1);
+    } finally {
+      signature.mockRestore();
+    }
+  });
+
+  it('derives current projection evidence while issuing independent frame tickets', async () => {
+    const { owner, stage, complete } = fixture();
+    const first = stage(1);
+    const second = stage(2);
+    const a = first.get('receiver');
+    const b = second.get('receiver');
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    expect(b).not.toBe(a);
+    expect(b?.ticket).not.toBe(a?.ticket);
+    expect(b?.projection).toEqual(a?.projection);
+    const changed = stage(3, 2).get('receiver');
+    expect(changed?.projection).not.toBe(a?.projection);
+    expect(changed?.projection.sourceKey).not.toBe(a?.projection.sourceKey);
+    await complete(first, 1);
+    expect(owner.inspect().reflectionFallback.state).not.toBe('active');
+  });
+
+  it('observes mutable sky values in detached projection evidence', () => {
+    const { owner } = fixture();
+    const color: [number, number, number] = [1, 1, 1];
+    const sky: SkylightSnapshot = {
+      entityHandle: 1,
+      equirectHandle: 1,
+      color,
+      intensity: 1,
+      rotation: [0, 0, 0, 1],
+    };
+    const stage = (frame: number) =>
+      // biome-ignore lint/complexity/useLiteralKeys: Exercise the private owner with one borrowed mutable sky.
+      owner['stageFallbackProjections'](
+        [],
+        new Map([['receiver', { kind: 'skylight' as const }]]),
+        new Map(),
+        frame,
+        sky,
+        undefined,
+      ).get('receiver');
+    const first = stage(1);
+    color[0] = 0.5;
+    const changed = stage(2);
+    expect(changed?.projection).not.toBe(first?.projection);
+    expect(stage(3)?.projection).toEqual(changed?.projection);
+    expect(first?.projection.sourceKey).not.toBe(changed?.projection.sourceKey);
+  });
+
+  it('keeps the zero-consumer neutral projection without resolving an unused sky', () => {
+    const { owner, getCubemapIbl } = fixture();
+    const stage = (frame: number) =>
+      // biome-ignore lint/complexity/useLiteralKeys: Exercise the real empty-consumer producer boundary.
+      owner['stageFallbackProjections'](
+        [],
+        new Map(),
+        new Map(),
+        frame,
+        {
+          entityHandle: 1,
+          equirectHandle: 1,
+          color: [1, 1, 1],
+          intensity: 1,
+          rotation: [0, 0, 0, 1],
+        },
+        undefined,
+      ).get('__frame__');
+    const first = stage(1);
+    const second = stage(2);
+    expect(getCubemapIbl).not.toHaveBeenCalled();
+    expect(second?.projection.source).toBe('neutral');
+    expect(second?.projection).toBe(first?.projection);
+    expect(second?.ticket).not.toBe(first?.ticket);
+    expect(second?.frameId).toBe(2);
+  });
+
   it('publishes a completed source-compatible frame while newer frames are being prepared', async () => {
     const { owner, stage, complete } = fixture();
     const first = stage(1);

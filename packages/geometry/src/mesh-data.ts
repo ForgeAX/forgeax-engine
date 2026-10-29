@@ -200,23 +200,61 @@ function validateMeshInterleaving(
   for (const attribute of projection.attributes) {
     const value = elementView(attributes[attribute.key], attribute.format);
     if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
-    const short = attribute.format === 'uint16x4';
-    const width = short ? 2 : 4;
-    const source = short
-      ? value
-      : new Uint32Array(value.buffer, value.byteOffset, value.byteLength / 4);
-    const target = short ? shorts : floats;
-    const components = attribute.byteLength / width;
-    const stride = projection.arrayStride / width;
-    let index = 0;
-    for (let base = attribute.offset / width; index < source.length; base += stride)
-      for (let component = 0; component < components; component++, index++) {
-        if (!short && !Number.isFinite(value[index]))
-          throw new TypeError(`non-finite ${attribute.key}`);
-        if (target[base + component] !== source[index])
-          throw new TypeError(`inconsistent ${attribute.key} interleaving`);
-      }
+    // Monomorphic integer loops: one array kind per loop keeps this linear pass
+    // on the fast path for large runtime meshes (it runs on every mesh create).
+    if (attribute.format === 'uint16x4') {
+      if (!(value instanceof Uint16Array)) throw new TypeError(`invalid ${attribute.key} storage`);
+      const stride = projection.arrayStride / 2;
+      if (!sameShortChannel(shorts, value, attribute.offset / 2, stride, attribute.byteLength / 2))
+        throw new TypeError(`inconsistent ${attribute.key} interleaving`);
+      continue;
+    }
+    const source = new Uint32Array(value.buffer, value.byteOffset, value.byteLength / 4);
+    const failure = floatChannelFailure(
+      floats,
+      source,
+      attribute.offset / 4,
+      projection.arrayStride / 4,
+      attribute.byteLength / 4,
+    );
+    if (failure === 1) throw new TypeError(`non-finite ${attribute.key}`);
+    if (failure === 2) throw new TypeError(`inconsistent ${attribute.key} interleaving`);
   }
+}
+
+/** 0 when every float32 bit pattern is finite and equals its interleaved copy; 1 non-finite; 2 mismatch. */
+function floatChannelFailure(
+  target: Uint32Array,
+  source: Uint32Array,
+  base: number,
+  stride: number,
+  components: number,
+): 0 | 1 | 2 {
+  const length = source.length;
+  let index = 0;
+  for (let row = base; index < length; row += stride)
+    for (let component = 0; component < components; component++, index++) {
+      const bits = source[index] as number;
+      // An all-ones exponent is Infinity or NaN; Number.isFinite rejects both.
+      if ((bits & 0x7f800000) === 0x7f800000) return 1;
+      if (target[row + component] !== bits) return 2;
+    }
+  return 0;
+}
+
+function sameShortChannel(
+  target: Uint16Array,
+  source: Uint16Array,
+  base: number,
+  stride: number,
+  components: number,
+): boolean {
+  const length = source.length;
+  let index = 0;
+  for (let row = base; index < length; row += stride)
+    for (let component = 0; component < components; component++, index++)
+      if (target[row + component] !== source[index]) return false;
+  return true;
 }
 
 /** Canonical mesh validation shared by file encoding and runtime preparation. */

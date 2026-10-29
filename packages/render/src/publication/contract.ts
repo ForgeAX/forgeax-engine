@@ -1,5 +1,9 @@
 import type { TimeResource } from '@forgeax/engine-ecs';
-import type { MaterialRuntimeArtifact, MaterialShaderEntry } from '@forgeax/engine-shader';
+import type {
+  MaterialRuntimeArtifact,
+  MaterialShaderByteEntry,
+  MaterialShaderEntry,
+} from '@forgeax/engine-shader';
 import type { Asset, AssetHandle, MeshAsset, Result } from '@forgeax/engine-types';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import type { FrameReceipt, RenderFrameInput } from '../render-contract';
@@ -67,9 +71,12 @@ export interface RenderPublicationTemplate {
   readonly dispatch: readonly Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>[];
 }
 
-/** Numeric storage and published mesh copies are owned; source buffers never transfer. */
+/**
+ * One publication as its source prepared it and its receiver decoded it. The
+ * Worker boundary carries its `RenderPublicationMessage` encoding (`./record`):
+ * the five columns share one record, and published mesh copies are owned.
+ */
 export interface RenderPublication extends RenderPublicationIdentity {
-  readonly protocol: 2;
   readonly materials: readonly {
     readonly id: number;
     readonly value: import('../render-system-extract').MaterialSnapshot;
@@ -98,14 +105,25 @@ export interface RenderPublication extends RenderPublicationIdentity {
     /** Sent once per accepted declaration; enable state remains per frame. */
     readonly fullscreen?: import('../features/fullscreen').FullscreenRenderFeatureDeclaration;
   }[];
-  readonly programs: readonly {
-    readonly key: string;
-    readonly shader: MaterialShaderEntry;
-    readonly artifact?: MaterialRuntimeArtifact;
-  }[];
+  readonly programs: readonly (
+    | {
+        readonly key: string;
+        readonly shader: MaterialShaderEntry;
+        readonly artifact?: MaterialRuntimeArtifact;
+      }
+    | {
+        readonly key: string;
+        readonly shader: { readonly sourceEncoding: 'utf8' } & Omit<
+          MaterialShaderByteEntry,
+          'bytes' | 'digest'
+        >;
+        readonly artifact: MaterialRuntimeArtifact;
+      }
+  )[];
   /** entity, template index pairs. A publication source owns one World. */
   readonly upserts: Uint32Array;
   readonly removed: Uint32Array;
+  readonly retiredJoints: Uint32Array;
   readonly transformEntities: Uint32Array;
   readonly transforms: Float32Array;
   readonly assets: readonly {
@@ -118,6 +136,22 @@ export interface RenderPublication extends RenderPublicationIdentity {
     readonly materialProjection?:
       | import('@forgeax/engine-assets-runtime').MaterialRenderProjection
       | null;
+    /**
+     * Instead of `materialProjection`: adopt the projection already accepted for
+     * this resident, non-retiring material handle.
+     */
+    readonly materialProjectionSource?: number;
+  }[];
+  /**
+   * Mesh asset rows whose exact payload the receiver already holds from a
+   * ready `mesh-prepare` residency for the same handle and revision. The
+   * receiver adopts that prepared payload, so the bytes cross once.
+   */
+  readonly preparedAssets?: readonly {
+    readonly handle: number;
+    readonly revision: number;
+    readonly guid?: string;
+    readonly sourceKey?: string;
   }[];
   /** Fixed versions used by queued work, independent of the current asset rows. */
   readonly assetVersions?: readonly {
@@ -131,7 +165,7 @@ export interface RenderPublication extends RenderPublicationIdentity {
 }
 
 export interface PublishedRenderFrameInput {
-  readonly publication: RenderPublication;
+  readonly publication: import('./record').RenderPublicationMessage;
   readonly geometryObservation?: true;
   /** Diagnostic identity of the World that produced this publication. The
    * transport's publication namespace is not an ECS World identity. */
@@ -139,35 +173,6 @@ export interface PublishedRenderFrameInput {
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Realm-local adapter invoked only after the feature's graph is submitted. */
   readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
-}
-
-export function renderPublicationTransfers(packet: RenderPublication): ArrayBuffer[] {
-  return [
-    packet.upserts.buffer,
-    packet.removed.buffer,
-    packet.transformEntities.buffer,
-    packet.transforms.buffer,
-  ] as ArrayBuffer[];
-}
-
-/** Mesh copies stay with the receiver; only the four frame columns are recycled. */
-export function renderPublicationAssetTransfers(packet: RenderPublication): ArrayBuffer[] {
-  const buffers = new Set<ArrayBuffer>();
-  const collect = (value: unknown): void => {
-    if (value instanceof ArrayBuffer) {
-      buffers.add(value);
-    } else if (ArrayBuffer.isView(value)) {
-      if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
-    } else if (value !== null && typeof value === 'object') {
-      for (const child of Object.values(value)) collect(child);
-    }
-  };
-  for (const row of packet.assets) collect(row.value);
-  for (const patch of packet.assetPatches) {
-    collect(patch.fields);
-    for (const range of patch.ranges) collect(range.bytes);
-  }
-  return [...buffers];
 }
 
 export type RenderPublicationFailure =

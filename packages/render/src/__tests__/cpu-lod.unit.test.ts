@@ -112,7 +112,9 @@ describe('CPU-lane LOD selection', () => {
     const far = cameraAt(40);
     expect(cpuLodLevel(source(), mesh(false), far)).toBe(0);
     expect(cpuLodLevel(source({ instances: {} as never }), mesh(), far)).toBe(0);
-    expect(cpuLodLevel(source({ skin: {} as never }), mesh(), far)).toBe(0);
+    expect(
+      cpuLodLevel(source({ skinBinding: { skeleton: 1, joints: [2] } as never }), mesh(), far),
+    ).toBe(0);
     expect(cpuLodLevel(source({ lods: [] }), mesh(), far)).toBe(0);
   });
 

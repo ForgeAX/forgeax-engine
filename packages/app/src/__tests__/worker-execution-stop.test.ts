@@ -247,9 +247,22 @@ describe('Worker ExecutionApp terminal stop', () => {
       cloneNode: vi.fn(() => replacement),
       replaceWith: vi.fn(),
     } as unknown as HTMLCanvasElement;
+    // The Host resupplies its startup-only pipeline library with every rebuild.
+    const pipelineLibrary = {
+      version: 1 as const,
+      backend: 'webgpu' as const,
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
     const result = await createWorkerExecutionApp({
       canvas,
-      appOptions: { execution: { bootstrap: 'https://example.test/game.js' } },
+      appOptions: {
+        execution: { bootstrap: 'https://example.test/game.js' },
+        ...(render ? { pipelineLibrary } : {}),
+      },
       capabilities,
       selection: workerSelection({ render, kernels: false }),
     });
@@ -281,7 +294,12 @@ describe('Worker ExecutionApp terminal stop', () => {
       expect(probes.platformDispose).toHaveBeenCalledTimes(1);
       expect(result.value.canvas).toBe(replacement);
       expect(probes.sessionPost).toHaveBeenCalledWith(
-        { kind: 'rebuild', worldIdentity: 'worker-world', canvas: offscreen },
+        {
+          kind: 'rebuild',
+          worldIdentity: 'worker-world',
+          canvas: offscreen,
+          ...(render ? { pipelineLibrary } : {}),
+        },
         [offscreen],
       );
       probes.sessionListeners[0]?.({
@@ -298,6 +316,59 @@ describe('Worker ExecutionApp terminal stop', () => {
       result.value.input?.clear?.();
       expect(currentClear).toHaveBeenCalledOnce();
       expect(oldClear).not.toHaveBeenCalled();
+    } finally {
+      await result.value.dispose();
+    }
+  });
+
+  it('resupplies both Host pipeline libraries when replacing a lost Render Worker', async () => {
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const offscreen = {} as OffscreenCanvas;
+    const replacement = {
+      transferControlToOffscreen: vi.fn(() => offscreen),
+    } as unknown as HTMLCanvasElement;
+    const canvas = {
+      cloneNode: vi.fn(() => replacement),
+      replaceWith: vi.fn(),
+    } as unknown as HTMLCanvasElement;
+    const pipelineLibrary = {
+      version: 1 as const,
+      backend: 'webgpu' as const,
+      shaders: [],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [],
+    };
+    const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: '// background' }] };
+    const result = await createWorkerExecutionApp({
+      canvas,
+      appOptions: {
+        execution: { bootstrap: 'https://example.test/game.js' },
+        pipelineLibrary,
+        backgroundPipelineLibrary,
+      },
+      capabilities,
+      selection: workerSelection({ render: true, kernels: false }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    try {
+      probes.sessionListeners[0]?.({
+        kind: 'render-lost',
+        epoch: 2,
+        detail: 'replacement fixture',
+      });
+      expect(probes.sessionPost).toHaveBeenCalledWith(
+        {
+          kind: 'render-replace',
+          epoch: 2,
+          canvas: offscreen,
+          pipelineLibrary,
+          backgroundPipelineLibrary,
+        },
+        [offscreen],
+      );
     } finally {
       await result.value.dispose();
     }
@@ -326,6 +397,9 @@ describe('Worker ExecutionApp terminal stop', () => {
     if (!result.ok) return;
     try {
       const before = result.value.execution.report();
+      canvas.forgeaxFrameProgress = {
+        submitted: { frameId: 7, deviceGeneration: 1 },
+      };
       probes.sessionListeners[0]?.({
         kind: 'surface-request',
         requestId: 1,
@@ -350,6 +424,7 @@ describe('Worker ExecutionApp terminal stop', () => {
       expect(canvas.replaceWith).toHaveBeenCalledExactlyOnceWith(replacement);
       expect(replacement.transferControlToOffscreen).toHaveBeenCalledTimes(1);
       expect(clear).toHaveBeenCalledTimes(1);
+      expect(canvas.forgeaxFrameProgress).toBeUndefined();
       expect(result.value.canvas).toBe(replacement);
       expect(result.value.execution.report()).toEqual(before);
       expect(probes.sessionPost).toHaveBeenLastCalledWith(
@@ -403,6 +478,37 @@ describe('Worker ExecutionApp terminal stop', () => {
       });
       expect(vi.mocked(attachBrowserInputBackend).mock.calls.at(-1)?.[0]).toBe(replacement);
       expect(probes.pointerAllowed).toHaveBeenCalledExactlyOnceWith(false);
+    } finally {
+      await result.value.dispose();
+    }
+  });
+
+  it('keeps a closed input gate on a replacement presentation surface', async () => {
+    const replacement = {
+      transferControlToOffscreen: vi.fn(() => ({}) as OffscreenCanvas),
+    } as unknown as HTMLCanvasElement;
+    const canvas = {
+      cloneNode: vi.fn(() => replacement),
+      replaceWith: vi.fn(),
+    } as unknown as HTMLCanvasElement;
+    const result = await createWorkerExecutionApp({
+      canvas,
+      appOptions: { execution: { bootstrap: 'https://example.test/game.js' } },
+      capabilities,
+      selection: workerSelection({ render: false, kernels: false }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    try {
+      result.value.input?.setInputAllowed?.(false);
+      probes.inputAllowed.mockClear();
+      probes.sessionListeners[0]?.({
+        kind: 'surface-request',
+        requestId: 1,
+        worldIdentity: 'worker-world',
+      });
+      expect(vi.mocked(attachBrowserInputBackend).mock.calls.at(-1)?.[0]).toBe(replacement);
+      expect(probes.inputAllowed).toHaveBeenCalledExactlyOnceWith(false);
     } finally {
       await result.value.dispose();
     }
@@ -528,7 +634,11 @@ describe('Worker ExecutionApp terminal stop', () => {
     expect(result.value.pause().ok).toBe(true);
     expect(cancelRaf).toHaveBeenCalledTimes(1);
 
+    result.value.canvas.forgeaxFrameProgress = {
+      submitted: { frameId: 7, deviceGeneration: 1 },
+    };
     expect(result.value.stop().ok).toBe(true);
+    expect(result.value.canvas.forgeaxFrameProgress).toBeUndefined();
     expect(probes.inputDetach).toHaveBeenCalledTimes(1);
     expect(probes.audioDispose).toHaveBeenCalledTimes(1);
     expect(probes.sessionDispose).toHaveBeenCalledTimes(1);
@@ -555,6 +665,9 @@ describe('Worker ExecutionApp terminal stop', () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    result.value.canvas.forgeaxFrameProgress = {
+      submitted: { frameId: 1, deviceGeneration: 1 },
+    };
     let observed: unknown;
     result.value.onError((error) => {
       observed = error;
@@ -579,5 +692,6 @@ describe('Worker ExecutionApp terminal stop', () => {
       code: 'app-system-update-failed',
       detail: { cause: { cause: 'worker boom' } },
     });
+    expect(result.value.canvas.forgeaxFrameProgress).toBeUndefined();
   });
 });

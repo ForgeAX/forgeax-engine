@@ -86,7 +86,7 @@ describe('ray world->screen->world round-trip (AC-02)', () => {
     const view = mat4.lookAt(mat4.create(), [0, 0, 0], [0, 0, -1], [0, 1, 0]);
     const proj = mat4.perspective(mat4.create(), FOV, ASPECT, NEAR, FAR);
     const r = ray.screenToRay(
-      ray.create(),
+      ray.create(new Float32Array(6)),
       px[0] as number,
       px[1] as number,
       CANVAS_W,

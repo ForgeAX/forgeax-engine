@@ -2,11 +2,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import {
-  createRenderFeatureHost,
-  getRenderFeaturePlanExecutionProjection,
-  runRenderFeatureFrame,
-} from '../features/host';
+import { createRenderFeatureHost, getRenderFeaturePlanExecutionProjection } from '../features/host';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
 
@@ -63,7 +59,7 @@ it('keeps explicit disabled graphics pending until the actual pipeline resolves,
   const host = createRenderFeatureHost([feature]).unwrap();
   let pending = true;
   const frame = () =>
-    runRenderFeatureFrame(host, [
+    host.runFrame([
       {
         worlds: [],
         owner: 0,

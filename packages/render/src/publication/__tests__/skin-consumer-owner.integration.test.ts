@@ -7,8 +7,8 @@ import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 function fixture() {
   const assets = new AssetRegistry({
@@ -63,11 +63,13 @@ function fixture() {
   const publish = () => {
     const candidate = prepare();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
     const saved = structuredClone(packet);
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
     return saved;
   };
   return {
@@ -84,49 +86,51 @@ function fixture() {
   };
 }
 
-it('retains current joint subscriptions through repeated poses, rebinding, Skin removal and entity replacement', () => {
-  const f = fixture();
-  const entities = () =>
-    Array.from(f.publish().upserts)
-      .filter((_, index) => index % 2 === 0)
-      .sort((a, b) => a - b);
-  const pair = [Number(f.first), Number(f.second)].sort((a, b) => a - b);
+const changedEntities = (packet: ReturnType<ReturnType<typeof fixture>['publish']>) =>
+  [...packet.upserts].filter((_, index) => index % 2 === 0).sort((a, b) => a - b);
+
+it('keeps static membership separate from repeated poses, rebinding, Skin removal and entity replacement', () => {
+  const f = fixture(),
+    pair = [Number(f.first), Number(f.second)].sort((a, b) => a - b);
   try {
-    expect(entities()).toEqual(pair);
-    for (let position = 1; position <= 3; position++) {
+    expect(changedEntities(f.publish())).toEqual(pair);
+    for (const position of [1, 2, 3]) {
       f.world.set(f.firstJoint, Transform, { pos: [position, 0, 0] }).unwrap();
-      expect(entities()).toEqual(pair);
-      expect(entities()).toEqual([]);
+      const packet = f.publish();
+      expect(changedEntities(packet)).toEqual([]);
+      expect([...packet.transformEntities]).toEqual([Number(f.firstJoint)]);
+      expect(packet.transforms[12]).toBe(position);
+      expect(f.publish().transformEntities).toHaveLength(0);
     }
     f.world.set(f.first, Skin, { joints: [f.secondJoint] }).unwrap();
-    expect(entities()).toEqual([Number(f.first)]);
-    f.world.set(f.firstJoint, Transform, { pos: [4, 0, 0] }).unwrap();
-    expect(entities()).toEqual([Number(f.second)]);
-    f.world.set(f.secondJoint, Transform, { pos: [5, 0, 0] }).unwrap();
-    expect(entities()).toEqual([Number(f.first)]);
+    expect(changedEntities(f.publish())).toEqual([Number(f.first)]);
+    for (const joint of [f.firstJoint, f.secondJoint]) {
+      f.world.set(joint, Transform, { pos: [5, 0, 0] }).unwrap();
+      const packet = f.publish();
+      expect(changedEntities(packet)).toEqual([]);
+      expect([...packet.transformEntities]).toEqual([Number(joint)]);
+    }
     f.world.removeComponent(f.first, Skin).unwrap();
-    const removedSkin = f.publish();
-    const binding = Array.from(removedSkin.upserts).findIndex(
-      (entity, index) => index % 2 === 0 && entity === f.first,
-    );
-    expect(binding).toBeGreaterThanOrEqual(0);
-    expect(
-      removedSkin.templates[removedSkin.upserts[binding + 1] ?? -1]?.snapshot.skinPose,
-    ).toBeUndefined();
+    f.world.set(f.first, MeshRenderer, { materials: [] }).unwrap();
+    const removed = f.publish();
+    expect(changedEntities(removed)).toEqual([Number(f.first)]);
+    expect([...removed.retiredJoints]).toEqual([Number(f.secondJoint)]);
     f.world.set(f.secondJoint, Transform, { pos: [6, 0, 0] }).unwrap();
-    expect(entities()).toEqual([]);
+    expect(f.publish().transformEntities).toHaveLength(0);
     f.world.despawn(f.second).unwrap();
     const replacement = f.spawn();
     expect(replacement).not.toBe(f.second);
-    expect(entities()).toEqual([Number(replacement)]);
+    expect(changedEntities(f.publish())).toEqual([Number(replacement)]);
     f.world.set(f.firstJoint, Transform, { pos: [7, 0, 0] }).unwrap();
-    expect(entities()).toEqual([Number(replacement)]);
+    const packet = f.publish();
+    expect(changedEntities(packet)).toEqual([]);
+    expect([...packet.transformEntities]).toEqual([Number(f.firstJoint)]);
   } finally {
     f.publisher.dispose();
   }
 });
 
-it('keeps accepted joint ownership after a discarded pose publication and admits the latest rebind', () => {
+it('keeps reference ownership after a discarded joint publication and admits the latest rebind', () => {
   const f = fixture();
   try {
     f.publish();
@@ -135,51 +139,51 @@ it('keeps accepted joint ownership after a discarded pose publication and admits
     f.world.set(f.first, Skin, { joints: [f.secondJoint] }).unwrap();
     f.world.set(f.firstJoint, Transform, { pos: [3, 0, 0] }).unwrap();
     const packet = f.publish();
-    // Entity identity is carried by upserts, rather than duplicated in each template.
-    const byEntity = new Map(
-      Array.from({ length: packet.upserts.length / 2 }, (_, index) => {
-        const entity = packet.upserts[index * 2],
-          template = packet.templates[packet.upserts[index * 2 + 1] ?? -1];
-        return [entity, template?.snapshot.skinPose] as const;
-      }),
-    );
-    expect(byEntity.get(f.first)?.jointWorlds[0]?.[12]).toBe(2);
-    expect(byEntity.get(f.second)?.jointWorlds[0]?.[12]).toBe(3);
+    expect(changedEntities(packet)).toEqual([Number(f.first)]);
+    const skin = packet.templates[packet.upserts[1] ?? -1]?.snapshot.skinBinding;
+    expect(skin?.joints).toEqual([Number(f.secondJoint)]);
+    const first = packet.transformEntities.indexOf(Number(f.firstJoint)),
+      second = packet.transformEntities.indexOf(Number(f.secondJoint));
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(second).toBeGreaterThanOrEqual(0);
+    expect(packet.transforms[first * 16 + 12]).toBe(3);
+    expect(packet.transforms[second * 16 + 12]).toBe(2);
     f.world.set(f.firstJoint, Transform, { pos: [4, 0, 0] }).unwrap();
-    expect(Array.from(f.publish().upserts).filter((_, index) => index % 2 === 0)).toEqual([
-      Number(f.second),
-    ]);
+    const next = f.publish();
+    expect(changedEntities(next)).toEqual([]);
+    expect([...next.transformEntities]).toEqual([Number(f.firstJoint)]);
   } finally {
     f.publisher.dispose();
   }
 });
 
-it('keeps accepted joint subscriptions private from a later packet metadata mutation', () => {
+it('keeps accepted reference ownership private from later packet metadata replacement', () => {
   const f = fixture();
   try {
     const baseline = f.prepare();
     baseline.accept();
-    const binding = Array.from(baseline.packet.upserts).findIndex(
-      (entity, index) => index % 2 === 0 && entity === f.first,
+    const index = [...baseline.packet.upserts].findIndex(
+      (entity, offset) => offset % 2 === 0 && entity === f.first,
     );
-    const template = baseline.packet.templates[baseline.packet.upserts[binding + 1] ?? -1];
-    const publishedJoints = template?.snapshot.skinJointEntities;
-    if (publishedJoints === undefined) throw new Error('missing fixture joint metadata');
-    // Exercise the runtime ownership boundary of the otherwise readonly packet.
-    (publishedJoints as number[])[0] = f.secondJoint;
+    const template = baseline.packet.templates[baseline.packet.upserts[index + 1] ?? -1];
+    if (template === undefined || template.snapshot.skinBinding === undefined)
+      throw new Error('Missing static Skin packet metadata');
+    const replacement = {
+      ...template.snapshot,
+      skinBinding: { ...template.snapshot.skinBinding, joints: [Number(f.secondJoint)] },
+    };
+    Object.assign(template, { snapshot: replacement });
     f.publisher
-      .recycle(baseline.packet.revision, renderPublicationTransfers(baseline.packet))
+      .recycle(baseline.packet.revision, renderPublicationTransfers(baseline.message))
       .unwrap();
     f.world.set(f.first, Skin, { joints: [f.secondJoint] }).unwrap();
     f.publish();
-    f.world.set(f.secondJoint, Transform, { pos: [3, 0, 0] }).unwrap();
-    expect(Array.from(f.publish().upserts).filter((_, index) => index % 2 === 0)).toEqual([
-      Number(f.first),
-    ]);
-    f.world.set(f.firstJoint, Transform, { pos: [4, 0, 0] }).unwrap();
-    expect(Array.from(f.publish().upserts).filter((_, index) => index % 2 === 0)).toEqual([
-      Number(f.second),
-    ]);
+    for (const joint of [f.secondJoint, f.firstJoint]) {
+      f.world.set(joint, Transform, { pos: [4, 0, 0] }).unwrap();
+      const packet = f.publish();
+      expect(changedEntities(packet)).toEqual([]);
+      expect([...packet.transformEntities]).toEqual([Number(joint)]);
+    }
   } finally {
     f.publisher.dispose();
   }

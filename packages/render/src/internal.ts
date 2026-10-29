@@ -1,5 +1,7 @@
 // Non-stable implementation seam for engine-owned consumers and tests.
 
+export { renderGraphCompileCount } from '@forgeax/engine-render-graph';
+
 export {
   createDynamicGeometrySourceHost,
   type DynamicGeometryResidencyPort,
@@ -36,6 +38,18 @@ export {
 } from './prepare/extended-lighting/state';
 export type { MeshPipelinePreparation } from './publication/contract';
 export { captureMeshPipelinePreparation } from './publication/mesh-pipeline-preparation';
+export {
+  isPackedRowsMesh,
+  meshAttributeChannels,
+  type PackedRowsMesh,
+  packedRowsEligible,
+} from './publication/packed-rows-mesh';
+export { RenderPublicationReceiver } from './publication/receiver';
+export {
+  decodeRenderPublication,
+  encodeRenderPublication,
+  renderPublicationTiming,
+} from './publication/record';
 export {
   buildRaySurfaceScene,
   type RaySurfaceInstance,
@@ -184,9 +198,9 @@ export {
 export {
   admitProbeContributors,
   blendLightProbes,
-  PROBE_MAX_CONTRIBUTORS,
   scaledProbeWeight,
 } from './scene/probe-blend';
+export { PROBE_BLEND_RECORD_CAPACITY } from './scene/probe-blend-record';
 export {
   createSsrHistoryOwner,
   SSR_HISTORY_FORMAT,

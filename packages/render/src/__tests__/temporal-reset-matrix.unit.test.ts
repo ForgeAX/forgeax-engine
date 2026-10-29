@@ -27,13 +27,20 @@ describe('TemporalView reset matrix', () => {
   ] as const)('resets on %s', (_label, changes, reason) => {
     const previous = base();
     const next = createTemporalView({ ...previous.input, ...changes });
-    expect(resolveTemporalReset(previous, next)).toBe(reason);
+    expect(resolveTemporalReset(previous.input, next.input)).toBe(reason);
+  });
+
+  it('shares one immutable jitter offset between its consumers', () => {
+    const input = { antialias: 'taa' as const, width: 64, height: 64 };
+    const view = createTemporalView(input);
+    expect(view.currentJitterUv).toBe(view.jitterCancellationUv);
+    expect(Object.isFrozen(view.currentJitterUv)).toBe(true);
   });
 
   it('does not reset a stable view', () => {
     const previous = base();
     const next = createTemporalView({ ...previous.input });
-    expect(resolveTemporalReset(previous, next)).toBeUndefined();
+    expect(resolveTemporalReset(previous.input, next.input)).toBeUndefined();
   });
 
   it('applies camera reset reasons to motion-blur-only off views', () => {
@@ -43,7 +50,7 @@ describe('TemporalView reset matrix', () => {
       antialias: 'none',
       viewIdentity: 'secondary',
     });
-    expect(resolveTemporalReset(previous, next)).toBe('view-switch');
+    expect(resolveTemporalReset(previous.input, next.input)).toBe('view-switch');
   });
 
   it('treats an explicit off commit as a first-frame boundary when TAA resumes', () => {
@@ -65,7 +72,7 @@ describe('TemporalView reset matrix', () => {
       historyValid: false,
       previousUnjitteredViewProjection: undefined,
     });
-    expect(resolveTemporalReset(off, resumed)).toBe('first-frame');
+    expect(resolveTemporalReset(off.input, resumed.input)).toBe('first-frame');
     expect(resumed.previousUnjitteredViewProjection).toBeUndefined();
   });
 
@@ -88,7 +95,7 @@ describe('TemporalView reset matrix', () => {
       frameIndex: 0,
       historyValid: false,
       previousUnjitteredViewProjection: undefined,
-      resetReason: resolveTemporalReset(off, lastTaa) ?? 'first-frame',
+      resetReason: resolveTemporalReset(off.input, lastTaa.input) ?? 'first-frame',
     });
     expect(firstAfterOff.temporalFrameIndex).toBe(0);
     expect(firstAfterOff.jitter).toEqual(HALTON_23_8[0]);

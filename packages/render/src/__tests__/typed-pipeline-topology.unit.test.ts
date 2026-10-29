@@ -203,10 +203,14 @@ function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
-      (frame) => frame.currentTexture,
+      (frame) => frame.outputTarget().texture,
     );
     if (!texture.ok) throw texture.error;
-    const view = graph.importView(texture.value, { label: `${label}.view` }, (frame) => frame.view);
+    const view = graph.importView(
+      texture.value,
+      { label: `${label}.view` },
+      (frame) => frame.outputTarget().view,
+    );
     if (!view.ok) throw view.error;
     return {
       texture: texture.value,
@@ -576,7 +580,7 @@ describe('typed built-in pipeline topology', () => {
     expect(source).toContain("fragmentEntryPoint: 'fs_tone_only'");
     expect(source).toContain("fragmentEntryPoint: 'fs_encode_only'");
     expect(source).toContain("domain: 'linear-ldr'");
-    expect(source).toContain('{ dither: false }');
+    expect(source).toMatch(/\{\s*dither: false,?\s*\}/);
   });
 
   it('declares stable JSON-safe output and observation inspection facts', () => {

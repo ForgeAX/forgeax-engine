@@ -79,6 +79,29 @@ def gpu_owner_interval(before, after):
                        for (pid, name), delta in sorted(totals.items(), key=lambda item: item[1], reverse=True)]}
 
 
+def read_console():
+    """Read only lock flags; discard account and other IORegistry properties."""
+    try:
+        result = subprocess.run(['ioreg', '-n', 'Root', '-d', '1', '-a'],
+                                capture_output=True, timeout=5, check=False)
+        if result.returncode:
+            return {'exitCode': result.returncode, 'status': 'unavailable'}
+        root = plistlib.loads(result.stdout)
+        if isinstance(root, list) and len(root) == 1:
+            root = root[0]
+        sessions = [row for row in root.get('IOConsoleUsers', [])
+                    if isinstance(row, dict) and row.get('kCGSSessionOnConsoleKey') is True]
+        console_locked = root.get('IOConsoleLocked')
+        screen_locked = sessions[0].get('CGSSessionScreenIsLocked') if len(sessions) == 1 else None
+        if type(console_locked) is not bool or type(screen_locked) is not bool:
+            return {'exitCode': 1, 'status': 'unavailable', 'error': 'console-lock-flags-unavailable'}
+        return {'exitCode': 0, 'status': 'available',
+                'consoleLocked': console_locked, 'screenLocked': screen_locked}
+    except (OSError, ValueError, AttributeError, plistlib.InvalidFileException,
+            subprocess.TimeoutExpired) as error:
+        return {'exitCode': 1, 'status': 'unavailable', 'error': type(error).__name__}
+
+
 def read_gpu(include_owners=False):
     failures = []
     for registry_class in ('AGXAccelerator', 'IOAccelerator'):
@@ -103,11 +126,20 @@ def read_gpu(include_owners=False):
 
 COLLECT = ('import datetime,json,plistlib,subprocess,threading,time\n'
            + inspect.getsource(gpu_statistics) + '\n' + inspect.getsource(gpu_owners)
-           + '\n' + inspect.getsource(gpu_owner_interval) + '\n' + inspect.getsource(read_gpu) + r'''
+           + '\n' + inspect.getsource(gpu_owner_interval) + '\n' + inspect.getsource(read_console)
+           + '\n' + inspect.getsource(read_gpu) + r'''
+def output_text(value):
+    if isinstance(value,bytes): return value.decode('utf-8','replace')
+    return value or ''
 def run(args):
-    p=subprocess.run(args,capture_output=True,text=True,timeout=OBSERVATION_SECONDS+20)
-    return {"exitCode":p.returncode,"stdout":p.stdout,"stderr":p.stderr}
+    try:
+        p=subprocess.run(args,capture_output=True,text=True,timeout=OBSERVATION_SECONDS+20)
+        return {"exitCode":p.returncode,"stdout":p.stdout,"stderr":p.stderr}
+    except subprocess.TimeoutExpired as e:
+        return {"exitCode":124,"stdout":output_text(e.stdout),"stderr":output_text(e.stderr),
+                "timedOut":True,"timeoutSeconds":OBSERVATION_SECONDS+20}
 report={"requestedSeconds":OBSERVATION_SECONDS,"startedAtUtc":datetime.datetime.now(datetime.timezone.utc).isoformat(),"hardware":run(["sysctl","hw.logicalcpu","hw.physicalcpu","hw.memsize"]),"vmBefore":run(["vm_stat"])}
+report["consoleBefore"]=read_console()
 gpu_samples=[]
 gpu_stop=threading.Event()
 def sample_gpu():
@@ -119,7 +151,7 @@ def sample_gpu():
 gpu_thread=threading.Thread(target=sample_gpu)
 gpu_thread.start()
 try:
-    report["intervalCpu"]=run(["top","-l",str(TOP_SAMPLES),"-s","5","-n","0"])
+    report["intervalCpu"]=run(["top","-l",str(TOP_SAMPLES),"-s","5","-n","25","-o","cpu"])
 finally:
     gpu_stop.set()
     gpu_thread.join()
@@ -135,6 +167,7 @@ report["swap"]=run(["sysctl","vm.swapusage"])
 report["thermal"]=run(["pmset","-g","therm"])
 report["vmAfter"]=run(["vm_stat"])
 report["processes"]=run(["ps","-axo","pid=,ppid=,etime=,%cpu=,rss=,comm="])
+report["consoleAfter"]=read_console()
 report["endedAtUtc"]=datetime.datetime.now(datetime.timezone.utc).isoformat()
 print(json.dumps(report,indent=2))
 ''')

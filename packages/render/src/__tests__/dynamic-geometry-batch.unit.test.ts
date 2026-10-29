@@ -196,6 +196,51 @@ describe('dynamic geometry batch admission', () => {
     f.store.destroyAll();
   });
 
+  it('admits a union of declared sub-batches as one ECS swap, or none of it', async () => {
+    const f = await fixture({ entityCount: 5 });
+    const old = f.handles();
+    const inputs = f.entities.map((entity) => ({
+      world: f.world,
+      entity,
+      meshHandle: runtimeAssetRegistry(f.world.assets).create(mesh()).unwrap(),
+      revision: 1,
+    }));
+    const ordering = { world: f.world, fixedStep: 0 };
+    const first = f.host.prepareDynamicGeometryCandidates(inputs.slice(0, 2)).unwrap();
+    const second = f.host.prepareDynamicGeometryCandidates(inputs.slice(2, 3)).unwrap();
+    const third = f.host.prepareDynamicGeometryCandidates(inputs.slice(3)).unwrap();
+    // A partial sub-batch refuses the whole union without touching any binding.
+    expect(
+      f.host.acceptDynamicGeometryCandidates([...first, ...second, ...third.slice(1)], ordering).ok,
+    ).toBe(false);
+    expect(f.handles()).toEqual(old);
+    f.host.acceptDynamicGeometryCandidates([...third, ...first, ...second], ordering).unwrap();
+    expect(f.handles()).toEqual(inputs.map((input) => input.meshHandle));
+    expect(f.topologyChanged).toHaveBeenCalledTimes(1);
+    f.host.invalidateDynamicGeometryWorld(f.world);
+    await vi.waitFor(() => expect(f.lifecycle.inspect().meshBytes).toBe(0));
+    f.store.destroyAll();
+  });
+
+  it('refuses a union whose sub-batch went stale, keeping every previous binding', async () => {
+    const f = await fixture({ entityCount: 3 });
+    const old = f.handles();
+    const inputs = f.entities.map((entity) => ({
+      world: f.world,
+      entity,
+      meshHandle: runtimeAssetRegistry(f.world.assets).create(mesh()).unwrap(),
+      revision: 1,
+    }));
+    const ordering = { world: f.world, fixedStep: 0 };
+    const first = f.host.prepareDynamicGeometryCandidates(inputs.slice(0, 2)).unwrap();
+    f.setGeneration(2);
+    const second = f.host.prepareDynamicGeometryCandidates(inputs.slice(2)).unwrap();
+    expect(f.host.acceptDynamicGeometryCandidates([...first, ...second], ordering).ok).toBe(false);
+    expect(f.handles()).toEqual(old);
+    f.host.invalidateDynamicGeometryWorld(f.world);
+    f.store.destroyAll();
+  });
+
   it('admits both meshes in one ordering and publishes both receipts', async () => {
     const f = await fixture();
     const prepared = f.prepare(1);

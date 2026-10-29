@@ -92,6 +92,11 @@ const buildArgsSchema: ToolSchema<BuildOptions> = {
         error: 'webgpu-storage materialProfile requires a desktop WebGPU target',
       };
 
+    if (
+      options.htmlHead !== undefined &&
+      (typeof options.htmlHead !== 'string' || options.htmlHead.trim().length === 0)
+    )
+      return { ok: false, error: 'htmlHead must be a non-empty project-relative file path' };
     if ('sourcemap' in value && value.sourcemap !== undefined && value.sourcemap !== 'hidden')
       return { ok: false, error: 'sourcemap must be hidden when provided' };
     return { ok: true, value: value as BuildOptions };
@@ -110,6 +115,11 @@ const buildArgsSchema: ToolSchema<BuildOptions> = {
         enum: ['webgpu-storage'],
         description:
           'Validation-only storage-capable WebGPU raster build; omits portable fallback and ray programs.',
+      },
+      htmlHead: {
+        type: 'string',
+        description:
+          'Project-relative HTML head fragment applied before dist is sealed. Use inline content or absolute platform URLs.',
       },
       sourcemap: {
         type: 'string',
@@ -160,6 +170,64 @@ const pluginRootArgsSchema: ToolSchema<PluginRootOptions> = {
   }),
 };
 
+const packAuthoringInputSchema = {
+  type: 'object',
+  required: ['requestId'],
+  properties: {
+    requestId: {
+      type: 'string',
+      minLength: 1,
+    },
+    expectedRevision: {
+      type: 'string',
+    },
+    subject: {
+      type: 'string',
+    },
+    sourcePath: {
+      type: 'string',
+    },
+    sourceRoot: {
+      type: 'string',
+    },
+    targetPath: {
+      type: 'string',
+    },
+    packageId: {
+      type: 'string',
+      format: 'uuid',
+    },
+    parentPackageId: {
+      type: 'string',
+      format: 'uuid',
+    },
+    parent: {
+      type: 'string',
+      format: 'uuid',
+    },
+    sourceKey: {
+      type: 'string',
+      pattern: '^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$',
+    },
+    format: {
+      enum: ['pack.ts', 'pack.json'],
+    },
+    require: {
+      enum: ['identity', 'present', 'ready'],
+    },
+    values: {
+      type: 'object',
+    },
+    initialAssets: {
+      type: 'object',
+    },
+    parameters: {
+      type: 'array',
+      minItems: 1,
+    },
+  },
+};
+
 const packAuthoringArgsSchema: ToolSchema<PackAuthoringOperation> = {
   parse(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -171,9 +239,42 @@ const packAuthoringArgsSchema: ToolSchema<PackAuthoringOperation> = {
     }
     return { ok: true, value: value as PackAuthoringOperation };
   },
-  describe:
-    '{"type":"object","required":["requestId"],"properties":{"requestId":{"type":"string","minLength":1},"expectedRevision":{"type":"string"},"subject":{"type":"string"},"sourcePath":{"type":"string"},"sourceRoot":{"type":"string"},"targetPath":{"type":"string"},"packageId":{"type":"string","format":"uuid"},"parentPackageId":{"type":"string","format":"uuid"},"parent":{"type":"string","format":"uuid"},"sourceKey":{"type":"string","pattern":"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$"},"format":{"enum":["pack.ts","pack.json"]},"require":{"enum":["identity","present","ready"]},"values":{"type":"object"},"initialAssets":{"type":"object"},"parameters":{"type":"array","minItems":1}}}',
+  describe: JSON.stringify(packAuthoringInputSchema),
 };
+
+function packOperationArgsSchema(
+  operation: (typeof PACK_AUTHORING_OPERATION_DESCRIPTORS)[number],
+): ToolSchema<PackAuthoringOperation> {
+  const required = [
+    'requestId',
+    ...(operation.requiresRevision ? ['expectedRevision'] : []),
+    ...('requiredFields' in operation ? operation.requiredFields : []),
+  ];
+  const schema = {
+    ...packAuthoringInputSchema,
+    required,
+    properties: {
+      ...packAuthoringInputSchema.properties,
+      draft: {
+        type: 'object',
+        description: 'Pack-owned draft request with its action and draft identity.',
+      },
+    },
+  };
+  return {
+    describe: JSON.stringify(schema),
+    parse(value) {
+      const parsed = packAuthoringArgsSchema.parse(value);
+      if (!parsed.ok) return parsed;
+      const args = value as Record<string, unknown>;
+      for (const field of required) {
+        if (args[field] === undefined || args[field] === null || args[field] === '')
+          return { ok: false, error: `${field} is required for ${operation.id}` };
+      }
+      return parsed;
+    },
+  };
+}
 
 const packAuthoringResultSchema: ToolSchema<PackAuthoringOperationResult> = {
   parse(value) {
@@ -268,6 +369,7 @@ const operationTitles: Readonly<Record<string, string>> = {
   'asset.source.values.apply': 'Apply Pack instance values',
   'asset.source.rebuild': 'Rebuild Pack source',
   'asset.source.cold-cook': 'Cold-cook Pack source',
+  'asset.source.draft': 'Edit Pack source draft',
 };
 
 /** The Pack domain owns these descriptors; DevKit only projects them. */
@@ -278,7 +380,9 @@ export const packAuthoringToolDescriptors: readonly ToolDescriptor[] =
     title: operationTitles[operation.id] ?? operation.id,
     summary: operation.readOnly
       ? 'Reads Pack identity, topology, inheritance, or current readiness without building or writing.'
-      : 'Runs the Pack authoring gateway with requestId and revision CAS semantics.',
+      : operation.requiresRevision
+        ? 'Runs Pack source mutation with requestId and expectedRevision CAS; inspect the source revision first.'
+        : 'Runs Pack source authoring with requestId and operation-owned write and identity semantics.',
     realm: 'build' as const,
     argsSchema:
       operation.id === 'asset.list'
@@ -289,7 +393,7 @@ export const packAuthoringToolDescriptors: readonly ToolDescriptor[] =
             ? packReadArgsSchemaFor(assetResolveInputSchema)
             : operation.id === 'asset.verify'
               ? packReadArgsSchemaFor(assetVerifyInputSchema)
-              : packAuthoringArgsSchema,
+              : packOperationArgsSchema(operation),
     resultSchema: packAuthoringResultSchema,
     evidence: [],
   }));

@@ -7,6 +7,7 @@ import { decodeTape } from '../../../rhi-debug/src/protocol/codec';
 import { readbackTexturePixels } from '../../../rhi-debug/src/readback';
 import { attachRecorder } from '../../../rhi-debug/src/recorder/session';
 import { openReplay } from '../../../rhi-debug/src/replay/session';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 
 function value<T>(result: Result<T, { readonly code: string; readonly hint: string }>): T {
   if (!result.ok) throw new Error(`${result.error.code}: ${result.error.hint}`);
@@ -162,10 +163,7 @@ export async function runRenderBundleFixture(warmupFrames = 60) {
       }),
     );
     try {
-      for (let index = 0; index < model.works.length; index++) {
-        const inspection = value(
-          await replay.inspectWork(index, ['pipeline', 'bindings', 'pixels']),
-        );
+      for (const inspection of await inspectReplayWorks(replay, model.works)) {
         expect(inspection.pipeline).toBeDefined();
         expect(inspection.bindings?.length).toBe(1);
         expect(inspection.attachment?.bytes).toEqual(green);

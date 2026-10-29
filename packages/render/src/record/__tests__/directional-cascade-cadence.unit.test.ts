@@ -3,11 +3,11 @@ import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { describe, expect, it } from 'vitest';
 import { MeshChanges, ShadowMeshReads } from '../../device/mesh-changes';
 import { worldRenderResources } from '../../publication/resource-scope';
-import type { ExtractedLights } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { MeshFrame } from '../../scene/mesh-frame';
 import type { PersistentShadowCasterProjection } from '../../scene/render-scene';
 import { RenderScene } from '../../scene/render-scene';
+import type { ViewLights } from '../../world/render-lights';
 import {
   type DirectionalCascadeCadenceState,
   directionalCascadeDue,
@@ -24,9 +24,8 @@ const matrices = () =>
     matrix[0] = index + 1;
     return matrix;
   });
-const lights = (enabled = true) => ({
-  lightViewProj: matrices(),
-  cascadeCount: 3,
+const lights = (enabled = true, cascadeCount = 3) => ({
+  cascades: { lightViewProj: matrices(), cascadeCount },
   directionalCsmConfig: { staggerCascades: enabled },
 });
 
@@ -56,10 +55,12 @@ describe('authored CPU directional cascade cadence', () => {
       maxPenumbraTexels: 0,
     };
     let input = {
-      ...lights(false),
+      cascades: {
+        ...lights(false).cascades,
+        directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+      },
       directionalCsmConfig: config,
-      directionalShadowQuality: { kind: 'pcf', kernel: 3 },
-    } as unknown as ExtractedLights;
+    } as unknown as ViewLights;
     const owner = {};
     const changes = new MeshChanges();
     const reads = new ShadowMeshReads(changes);
@@ -75,10 +76,9 @@ describe('authored CPU directional cascade cadence', () => {
           subsurface: { source: 0, authorVisible: 0, admitted: 0 },
         },
         meshDraws: new RenderScene(),
-        prepareDrawDispatch: () => [],
         renderables: [],
         dispatch: [],
-        worldBoundsOf: () => undefined,
+        worldBoundsOf: () => false,
       }) satisfies PersistentShadowCasterProjection;
     const decide = (dispatchRevision: number, proven = true) =>
       prepareDirectionalShadowCache(
@@ -114,8 +114,8 @@ describe('authored CPU directional cascade cadence', () => {
   it('keeps default/absent/single cascade and unproven lease-less cache policy', () => {
     for (const input of [
       lights(false),
-      { lightViewProj: matrices(), cascadeCount: 3 },
-      { ...lights(), cascadeCount: 1 },
+      { cascades: { lightViewProj: matrices(), cascadeCount: 3 } },
+      lights(true, 1),
     ]) {
       expect(prepareDirectionalCascadeCadence(input, undefined, 'content-changed')).toEqual({
         cascadeMiss: undefined,
@@ -153,7 +153,7 @@ describe('authored CPU directional cascade cadence', () => {
     const input = lights();
     const first = prepareDirectionalCascadeCadence(input, undefined, 'first-publication');
     if (first.next === null) throw new Error('expected submitted projection candidate');
-    const movedMatrix = input.lightViewProj[2];
+    const movedMatrix = input.cascades.lightViewProj[2];
     if (movedMatrix === undefined) throw new Error('expected cascade projection');
     movedMatrix[12] = 1;
     const moved = prepareDirectionalCascadeCadence(input, first.next, 'view-changed');

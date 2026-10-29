@@ -11,15 +11,15 @@ import { describe, expectTypeOf, it } from 'vitest';
 import { orthographic, perspective } from '../../../../render/src/components/camera';
 
 describe('perspective factory type-level', () => {
-  it('perspective({ fov: 60, aspect: 4/3 }) type-checks OK', () => {
+  it('perspective({ fov: Math.PI / 3, aspect: 4/3 }) type-checks OK', () => {
     // Positive: fov + aspect present => compile OK.
-    const pod = perspective({ fov: 60, aspect: 4 / 3 });
+    const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
     expectTypeOf(pod.fov).toBeNumber();
   });
 
-  it('perspective({ fov: 60 }) should be a TS error (aspect required)', () => {
+  it('perspective({ fov: Math.PI / 3 }) should be a TS error (aspect required)', () => {
     // @ts-expect-error aspect is required
-    const _pod = perspective({ fov: 60 });
+    const _pod = perspective({ fov: Math.PI / 3 });
     // If this line is reached without TS error, the assertion fails.
     expectTypeOf(_pod).toBeObject();
   });
@@ -32,7 +32,7 @@ describe('perspective factory type-level', () => {
 
   it('perspective return value is assignable to world.spawn data slot', () => {
     // The factory returns a plain object matching Camera column shape.
-    const pod = perspective({ fov: 60, aspect: 4 / 3 });
+    const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
     // All 12 Camera fields present with correct types.
     expectTypeOf(pod.fov).toBeNumber();
     expectTypeOf(pod.aspect).toBeNumber();

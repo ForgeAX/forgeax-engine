@@ -25,7 +25,7 @@ import {
 } from './probe-origin-support';
 import { createProbeRayRecorder, PROBE_RAYS_WGSL } from './probe-rays';
 import { type ProbeCardCapture, prepareProbeCards } from './renderer-probe-cards';
-import { projectSceneFields, type SceneFieldSource } from './scene-field-projection';
+import { SceneFieldRows, type SceneFieldSource } from './scene-field-projection';
 import { SDF_INSTANCE_STRIDE, type SdfMeshInstance } from './sdf-query';
 
 export interface ProbeGlobalSource {
@@ -35,6 +35,8 @@ export interface ProbeGlobalSource {
 }
 export interface ProbeGlobalRegion {
   readonly retained: NonNullable<PersistentGpuDrivenState['retained']>;
+  /** {@link SceneFieldRows.revision} of the roster this region composes. */
+  readonly fieldRevision: number;
   readonly sources: readonly SceneFieldSource[];
   /** The projected instance rows behind `input`, indexed by Global instance id. */
   readonly instances: readonly SdfMeshInstance[];
@@ -113,12 +115,16 @@ export interface PreparedProbeGlobal extends ProbeGlobalBuffers {
   readonly support: ProbeGlobalRegion['support'];
 }
 
-/** The retained scene already folds consumed asset changes into its fixed revision. */
-export function probeGlobalSourceReferences(source: ProbeGlobalSource): readonly unknown[] {
+/** Region identity: the composition and its field roster revision. Scene edits
+ * that change no field input (unrelated rows, poses of non-field rows) keep it. */
+export function probeGlobalSourceReferences(
+  source: ProbeGlobalSource,
+  fieldRevision: number,
+): readonly unknown[] {
   const retained = source.scene.retained;
   if (retained === undefined)
     throw new Error('Global probe queries require retained source identity');
-  return [retained.identity, retained.revision];
+  return [retained.identity, fieldRevision];
 }
 
 /** Relevant immutable source comparison. Time/camera packet revisions do not
@@ -126,12 +132,13 @@ export function probeGlobalSourceReferences(source: ProbeGlobalSource): readonly
 export function probeGlobalRegionCurrent(
   region: ProbeGlobalRegion,
   source: ProbeGlobalSource,
+  fieldRevision: number,
 ): boolean {
   const retained = source.scene.retained;
   return (
     retained !== undefined &&
     retained.identity === region.retained.identity &&
-    retained.revision === region.retained.revision &&
+    fieldRevision === region.fieldRevision &&
     retained.isCurrent() &&
     source.worlds.length === retained.worlds.length &&
     source.worlds.every((world, i) => world === retained.worlds[i]) &&
@@ -184,6 +191,8 @@ export async function prepareProbeGlobalRegion(
   editable = false,
   /** View focus that ranks the initially resident Cards of an editable region. */
   focus?: readonly [number, number, number],
+  /** A consumer's persistent field roster; a one-shot region projects cold. */
+  fields = new SceneFieldRows(),
 ): Promise<ProbeGlobalRegion> {
   const retained = source.scene.retained;
   if (
@@ -193,13 +202,8 @@ export async function prepareProbeGlobalRegion(
     source.worlds.some((world, i) => world !== retained.worlds[i])
   )
     throw new Error('probe Global source requires the complete current retained composition');
-  const projected = projectSceneFields(
-    retained.slots,
-    source.worlds,
-    profile,
-    runtime.assets,
-    retained,
-  ).unwrap();
+  const projected = fields.update(retained, source.worlds, profile, runtime.assets).unwrap();
+  const fieldRevision = fields.revision;
   if (!retained.isSourceCurrent())
     throw new Error('probe Global source changed during synchronous resource admission');
   const packed = packGlobalSdfComposition(projected.instances, profile.grid).unwrap();
@@ -294,6 +298,7 @@ export async function prepareProbeGlobalRegion(
     ]);
     return {
       retained,
+      fieldRevision,
       ...(cards === undefined ? {} : { cards }),
       sources: projected.sources,
       instances: projected.instances,

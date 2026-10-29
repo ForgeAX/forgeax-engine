@@ -542,3 +542,31 @@ export function toHex(c: ColorLike): string {
   const a = toHexByte(aValue, false);
   return `#${r}${g}${b}${a}`;
 }
+
+const LINEAR_RGB_SCRATCH = new Float32Array(4) as Color;
+
+/**
+ * Linear `[r, g, b]` for a component colour field, from an sRGB source, matching
+ * `THREE.Color` under ColorManagement: a `0xRRGGBB` number is `setHex`, a string is
+ * `setStyle` (`#rgb`, `#rrggbb`, `rgb()`, `hsl()`, CSS names). Use it for every
+ * `array<f32, 3>` colour (Fog, Skylight, lights, emissive) where Three code
+ * passes a hex: `Fog.color = color.linearRgb(0xff9a6b)`.
+ * Malformed input returns `[0, 0, 0]`. Already-linear tuples need no conversion.
+ *
+ * @example
+ * ```ts
+ * color.linearRgb(0xff8000); // → [1, ~0.216, 0]
+ * color.linearRgb('#f80');   // → [1, ~0.246, 0]
+ * ```
+ */
+export function linearRgb(source: string | number): [number, number, number] {
+  const out = LINEAR_RGB_SCRATCH;
+  if (typeof source === 'number') {
+    if (!Number.isFinite(source)) return [0, 0, 0];
+    const n = Math.trunc(source) & 0xffffff;
+    fromHex(out, `#${n.toString(16).padStart(6, '0')}`);
+  } else {
+    fromCss(out, source);
+  }
+  return [out[0] as number, out[1] as number, out[2] as number];
+}

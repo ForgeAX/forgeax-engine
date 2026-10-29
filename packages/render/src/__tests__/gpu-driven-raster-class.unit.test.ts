@@ -26,13 +26,10 @@ import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type {
-  ExtractedLights,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../render-system-extract';
+import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
+import type { ViewLights } from '../world/render-lights';
 import {
   admitGpuFixture,
   preparedPbrSnapshot as preparedPbrFixture,
@@ -343,7 +340,12 @@ it.each([
   const apply = (changed: boolean) => {
     const delta = projection.apply([
       updateSnapshot(row(changed, firstMaterial)),
-      updateSnapshot({ ...row(true, secondMaterial), entityKey: 2 }),
+      // A different binding source keeps the second row out of the edited row's batch.
+      updateSnapshot({
+        ...row(true, secondMaterial),
+        entityKey: 2,
+        materialBindingSources: ['mesh-default'],
+      }),
     ]);
     availability.scene.sync(delta).unwrap();
     topology.apply(delta);
@@ -377,7 +379,7 @@ it.each([
     return current;
   };
   let current = prepare();
-  const firstSignature = current.topologySignature;
+  const firstSignature = current.topologySignature();
   const firstResourceGeneration = current.standardPbrFrameResources.resourceGeneration;
   const bound = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setBindGroup');
   const pipelines = vi.spyOn(device, 'createRenderPipeline');
@@ -411,6 +413,7 @@ it.each([
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
@@ -426,10 +429,11 @@ it.each([
     colorAttachmentFormat: 'rgba8unorm',
   } as unknown as PipelineState;
   const lights = {
-    cascadeCount: undefined,
+    cascades: undefined,
     pointShadow: [],
     spot: [],
-  } as unknown as ExtractedLights;
+    shadowViews: [],
+  } as unknown as ViewLights;
   const compile = () =>
     ensureCompiledFrameGraph(
       internals,
@@ -466,7 +470,7 @@ it.each([
     apply(true);
     current = prepare();
     expect(topology.query(topology.sourcePlan(), undefined).batches.length).toBe(2);
-    expect(current.topologySignature).toBe(firstSignature);
+    expect(current.topologySignature()).toBe(firstSignature);
     encode(first).unwrap();
     expect(bound.mock.calls.some(([index, value]) => index === 1 && value === materialGroupB)).toBe(
       true,
@@ -772,6 +776,7 @@ it.each([
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
@@ -787,7 +792,7 @@ it.each([
       state,
       { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
       makeZeroCameraFallbackSnapshot(),
-      { cascadeCount: undefined, pointShadow: [], spot: [] } as unknown as ExtractedLights,
+      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
       1,
       1,
       undefined,
@@ -933,7 +938,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     return prepared;
   };
   let current = prepare(first);
-  const beforeSignature = current.topologySignature;
+  const beforeSignature = current.topologySignature();
   const viewGroup = device.createBindGroup({ layout: viewLayout, entries: [] }).unwrap();
   const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const materialGroup = device.createBindGroup({ layout: materialLayout, entries: [] }).unwrap();
@@ -967,6 +972,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
@@ -983,7 +989,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
       state,
       { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as unknown as PipelineState,
       makeZeroCameraFallbackSnapshot(),
-      { cascadeCount: undefined, pointShadow: [], spot: [] } as unknown as ExtractedLights,
+      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
       1,
       1,
       undefined,
@@ -1030,15 +1036,16 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     oldInputs.release();
     // Stable material allocation can make an ordinary replacement fit. Force
     // actual arena growth instead of relying on that former allocation order.
-    for (let i = 0; i <= oldCapacity / 8; i++) availability.scene.inputs.allocateDescriptor(2);
+    for (let i = 0; i <= oldCapacity / 8; i++)
+      availability.scene.inputs.arena.allocateDescriptor(2);
     current = prepare(replacement);
-    // Arena capacity replacement is a real graph dependency even when the
-    // independently retained vertex/index allocation is unchanged.
-    expect(production.inspect().resourceGeneration).toBeGreaterThan(resourceGeneration ?? 0);
-    expect(current.topologySignature).not.toBe(beforeSignature);
+    // Graph passes resolve the current member-input arena when they execute,
+    // so its capacity replacement alone keeps the compiled graph.
+    expect(production.inspect().resourceGeneration).toBe(resourceGeneration);
+    expect(current.topologySignature()).toBe(beforeSignature);
     const replacementGraph = compile();
     if (replacementGraph === null) throw Error('missing replacement graph');
-    expect(replacementGraph).not.toBe(graph);
+    expect(replacementGraph).toBe(graph);
     store.invalidateMesh(first.handle, worldRenderResources(world));
     const released = lease.release(false);
     expect(store.getMeshGpuHandles(first.handle, worldRenderResources(world))).toBeUndefined();
@@ -1046,7 +1053,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     expect(replacement.mesh.indexBuffer?.isDestroyed).toBe(false);
     encode(replacementGraph);
     store.trackMeshSubmission(newCompleted);
-    expect(state.compiledFrameGraphGeneration).toBe(2);
+    expect(state.compiledFrameGraphGeneration).toBe(1);
     expect(replacementGraph.inspect().passes.map((pass) => pass.name)).toEqual(
       beforeInfo.passes.map((pass) => pass.name),
     );

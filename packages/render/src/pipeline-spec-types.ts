@@ -12,8 +12,10 @@ export interface PipelineSpec {
     readonly variantSet: string | undefined;
     readonly vertexEntry?: string;
     readonly fragmentEntry?: string;
-    /** Pipeline-time fragment overrides; not runtime WGSL feature defines. */
+    /** Common pipeline-time overrides; not runtime WGSL feature defines. */
     readonly constants?: Readonly<Record<string, number>> | undefined;
+    /** Explicit vertex-stage values; omitted uses the common overrides. */
+    readonly vertexConstants?: Readonly<Record<string, number>> | undefined;
   };
   readonly attachments: {
     readonly colorFormats: readonly GPUTextureFormat[];

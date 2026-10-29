@@ -123,25 +123,39 @@ export async function captureWhiteBalance() {
     const inputs: number[][] = [];
     const candidates: number[] = [];
     try {
-      for (const work of model.works) {
+      const plans = model.works.map((work) => {
         const output = workOutputs(work).find((entry) => entry.name === 'color0');
         assert(output);
-        const pixels = (
-          await replay.readResourceAtWork(output.request.resourceId, work.workIndex)
-        ).unwrap();
-        replayed.push(decode(pixels.bytes));
         const source = work.bindings.find(
           (binding) => binding.groupIndex === 0 && binding.binding === 0,
         )?.resourceId;
         assert(source);
-        inputs.push(
-          decode((await replay.readResourceAtWork(source, work.workIndex)).unwrap().bytes),
-        );
         const candidate = work.bindings.find(
           (binding) => binding.groupIndex === 1 && binding.binding === 0,
         )?.resourceId;
-        if (candidate) {
-          const data = (await replay.readResourceAtWork(candidate, work.workIndex)).unwrap().bytes;
+        return {
+          work,
+          ids: [output.request.resourceId, source, ...(candidate ? [candidate] : [])],
+        };
+      });
+      const reads = (
+        await replay.readAtWorks(
+          plans.flatMap(({ work, ids }) =>
+            ids.map((resourceId) => ({ resourceId, workIndex: work.workIndex })),
+          ),
+        )
+      ).unwrap();
+      let cursor = 0;
+      const next = () => {
+        const read = reads[cursor++];
+        assert(read);
+        return read.unwrap().bytes;
+      };
+      for (const plan of plans) {
+        replayed.push(decode(next()));
+        inputs.push(decode(next()));
+        if (plan.ids.length === 3) {
+          const data = next();
           candidates.push(
             new DataView(data.buffer, data.byteOffset, data.byteLength).getFloat32(0, true),
           );

@@ -112,5 +112,10 @@ async function importIes(ctx: ImportContext): Promise<ImportResult> {
 
 export const iesImporter: Importer = {
   key: 'ies',
+  capabilities: {
+    sourceFormats: [
+      { extensions: ['.ies'], kind: 'ies-profile', sourceKey: 'ies:profile', importSettings: {} },
+    ],
+  },
   import: importIes,
 };

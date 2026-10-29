@@ -13,7 +13,7 @@ export type ViewBackendOptions = ViewBackendProductConfig & {
   workspaceOptions?: Omit<DevKitWorkspacePluginOptions, 'hostBinding' | 'provider'>;
   onActivationReport?: BackendHostOptions['onActivationReport'];
   workspaceServer?: boolean; workspaceHost?: string; workspacePort?: number;
-  workspacePath?: string; staticRoot?: string | URL;
+  workspacePath?: string; staticRoot?: string | URL; workspaceFrontendSourceId?: string;
 };
 import { randomUUID } from 'node:crypto';
 import { startNativePlugin } from '@forgeax/engine-plugin';
@@ -23,6 +23,7 @@ import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE } from '@
 import { listPackSources } from '@forgeax/engine-pack/build';
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '@forgeax/view-viewer/catalog/backend';
 import { startViewHostServer } from '@forgeax/view-workspace-core/resident';
+import { installedEngineRoot } from '../engine-root.ts';
 
 export function createViewPlatformBinding(platform: ViewPlatform) {
   if (!platform || typeof platform.createPage !== 'function') {
@@ -50,7 +51,7 @@ export function createViewHostBinding({ backendHost, frontendAssembly }: { backe
 }
 
 /** The embedding helper owns View Fibers; a supplied BackendHost remains borrowed. */
-export async function createViewBackend({ platform, capabilities, frontendConfig, disabledPages, workspaceEngine, workspaceAccessToken, workspaceAuthorize, engineHost, workspacePlugin, workspaceOptions, onActivationReport, workspaceServer = true, workspaceHost = '127.0.0.1', workspacePort = 0, workspacePath, staticRoot }: ViewBackendOptions = {}) {
+export async function createViewBackend({ platform, capabilities, frontendConfig, disabledPages, workspaceEngine, workspaceAccessToken, workspaceAuthorize, engineHost, workspacePlugin, workspaceOptions, onActivationReport, workspaceServer = true, workspaceHost = '127.0.0.1', workspacePort = 0, workspacePath, staticRoot, workspaceFrontendSourceId }: ViewBackendOptions = {}) {
   const platformBinding = platform ? createViewPlatformBinding(platform) : undefined;
   let platformStarted = false;
   let backendHost: BackendHost | undefined;
@@ -135,13 +136,14 @@ export async function createViewBackend({ platform, capabilities, frontendConfig
         accessToken: backendHost.context.get('viewWorkspaceAccessToken'),
         host: workspaceHost,
         port: workspacePort,
+        ...(workspaceFrontendSourceId === undefined ? {} : { frontendSourceId: workspaceFrontendSourceId }),
         onClientConnect: (caller) => {
           if (engineHost) engineHost.bindProjection(caller, { assembly: frontendAssembly });
           workspaceCore.attachPageSession(caller, backendHost!.transport);
         },
         onClientDisconnect: (caller) => workspaceCore.revokeConnection(caller.connectionId),
         ...(workspacePath === undefined ? {} : { path: workspacePath }),
-        ...(staticRoot === undefined ? {} : { staticRoot }),
+        ...(staticRoot === undefined ? {} : { staticRoot, engineRoot: installedEngineRoot() }),
         ...(config.layout === undefined ? {} : { frontendConfig: { layout: config.layout } }),
       });
     }

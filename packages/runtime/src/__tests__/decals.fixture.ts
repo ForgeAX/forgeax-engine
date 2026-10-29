@@ -25,10 +25,12 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ChildOf, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
-import { expect } from 'vitest';
+import { assert, expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { compactTape } from './compact-tape.fixture';
 import { verifyMeshDecalReplay } from './decals-mesh-replay.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 const json = (data: unknown) => new TextEncoder().encode(JSON.stringify(data, null, 2));
@@ -176,7 +178,7 @@ export async function verifyDecals(
     (await recorder.frameBoundary()).unwrap();
     const on = await observe('gpu-red');
     (await recorder.frameBoundary()).unwrap();
-    await save('gpu-red.rhitape', (await initialCapture).unwrap().bytes);
+    await save('gpu-red.rhitape', compactTape((await initialCapture).unwrap()).bytes);
     expect(patch(on, 64, 64)[0]).toBeGreaterThan(patch(on, 64, 64)[1] * 2);
     expect(delta(patch(on, 24, 64), patch(off, 24, 64))).toBeLessThan(0.002);
     expect(renderer.inspect().perFramePassNames).toContain('decal-project');
@@ -260,7 +262,7 @@ export async function verifyDecals(
     const live = await observe('captured');
     (await recorder.frameBoundary()).unwrap();
     const capture = (await capturePending).unwrap();
-    await save('decals.rhitape', capture.bytes);
+    await save('decals.rhitape', compactTape(capture).bytes);
     const tape = decodeTape(capture.bytes).unwrap();
     const model = buildFrameModel(tape);
     await save('frame-model.json', json(model));
@@ -282,19 +284,18 @@ export async function verifyDecals(
       await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
     ).unwrap();
     try {
-      for (const work of [projectWork, applyWork]) {
-        const inspected = (
-          await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
-        ).unwrap();
-        expect(inspected.attachment).toBeDefined();
-        await save(`work-${work.workIndex}.json`, json(inspected));
-      }
       // Last HDR writer before tone/output conversion owns the live linear observation.
       const hdrWork =
         lighting ??
         model.works.find((w) => w.pipeline.shaders.some((s) => s.source?.includes('fs_deferred')));
       if (!hdrWork) throw new Error('missing deferred lighting work');
-      const result = (await replay.inspectWork(hdrWork.workIndex, ['pixels'])).unwrap();
+      const inspections = await inspectReplayWorks(replay, [projectWork, applyWork, hdrWork]);
+      for (const inspected of inspections.slice(0, 2)) {
+        expect(inspected.attachment).toBeDefined();
+        await save(`work-${inspected.workIndex}.json`, json(inspected));
+      }
+      const result = inspections[2];
+      assert(result, 'missing deferred lighting inspection');
       if (!result.attachment || result.attachment.format !== 'rgba16float')
         throw new Error('missing HDR replay pixels');
       const a = result.attachment;
@@ -313,14 +314,17 @@ export async function verifyDecals(
         maxLiveReplayError: maximum,
         unseededResources: model.unseededResources,
       });
-      const changed = encodeTape({
-        ...tape,
-        events: tape.events.map((event, index) =>
-          index === projectWork.eventIndex && event.kind === 'draw'
-            ? { ...event, vertexCount: 0 }
-            : event,
-        ),
-      }).unwrap();
+      const changed = encodeTape(
+        {
+          ...tape,
+          events: tape.events.map((event, index) =>
+            index === projectWork.eventIndex && event.kind === 'draw'
+              ? { ...event, vertexCount: 0 }
+              : event,
+          ),
+        },
+        { compression: 'gzip' },
+      ).unwrap();
       const falsifier = (
         await openReplay(decodeTape(changed).unwrap(), {
           device,
@@ -396,7 +400,7 @@ export async function verifyDecals(
     const meshPixels = await observe('mesh-texture');
     (await recorder.frameBoundary()).unwrap();
     const meshTape = (await meshCapture).unwrap();
-    await save('mesh.rhitape', meshTape.bytes);
+    await save('mesh.rhitape', compactTape(meshTape).bytes);
     await verifyMeshDecalReplay(meshTape.bytes, meshPixels, save);
     expect(patch(meshPixels, 50, 50)[0]).toBeGreaterThan(patch(meshPixels, 50, 50)[2] * 2);
     expect(patch(meshPixels, 50, 77)[2]).toBeGreaterThan(patch(meshPixels, 50, 77)[0] * 2);
@@ -418,7 +422,7 @@ export async function verifyDecals(
     (await recorder.frameBoundary()).unwrap();
     const noBias = await observe('mesh-wrong-bias');
     (await recorder.frameBoundary()).unwrap();
-    await save('mesh-wrong-bias.rhitape', (await wrongBiasCapture).unwrap().bytes);
+    await save('mesh-wrong-bias.rhitape', compactTape((await wrongBiasCapture).unwrap()).bytes);
     const reds = (pixels: number[]) => pixels.filter((v, i) => i % 4 === 0 && v > 0.7).length;
     expect(reds(noBias)).toBeLessThan(reds(meshPixels) / 2);
     world.set(meshEntity, MeshRenderer, { materials: [meshMaterial] }).unwrap();

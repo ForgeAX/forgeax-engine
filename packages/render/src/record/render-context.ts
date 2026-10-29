@@ -82,7 +82,7 @@ import type {
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { SsrAdmissionIdentity } from '../ssr/identity';
-import type { GpuPassTimingReason } from './gpu-pass-timing/errors';
+import type { GpuPassTimingError } from './gpu-pass-timing/errors';
 import type {
   GpuPassTimingCapture,
   GpuPassTimingFrameIdentity,
@@ -152,7 +152,6 @@ import type {
   SkyboxSnapshot,
   SkylightSnapshot,
 } from '../render-system-extract';
-import type { SkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import type { RenderTarget } from '../targets/contracts';
 import type { RenderTargetPhysical } from '../targets/physical';
 import type {
@@ -165,6 +164,20 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  readonly demandCapsuleShadow?:
+    | ((
+        source: import('../render-system-extract').RenderableSnapshot,
+      ) => import('../capsule-shadow/world-capsules').CapsuleShadowSnapshot | undefined)
+    | undefined;
+  /** Actual CPU draw demand; unavailable current poses produce no draw. */
+  readonly demandSkinTask?:
+    | ((
+        source: Pick<
+          import('../render-system-extract').RenderableSnapshot,
+          'worldId' | 'entityKey'
+        >,
+      ) => import('./skin-tasks').SkinTaskBinding | undefined)
+    | undefined;
   readonly growMeshSsbo?: MeshSsboGrowController['growMeshSsbo'] | undefined;
   readonly meshSsboState?: Readonly<MeshSsboCapacity> | undefined;
   /** The accepted program registry used by material layout and binding preparation. */
@@ -366,12 +379,6 @@ export interface PerPassResources {
   shadowMapSize: number;
   shadowCascadeCount: number;
   shadowSampler: Sampler | null;
-  shadowLightSpaceMatrix: Float32Array | null;
-  shadowCsmLightViewProj: Float32Array | null;
-  shadowCsmSelection: {
-    readonly viewMatrix: Float32Array;
-    readonly splitPlanes: Float32Array;
-  } | null;
 }
 
 /** Renderer-private Bloom bundle selected for one record transaction. */
@@ -446,7 +453,6 @@ export interface PipelineState {
   readonly hdrpSkinPipelineLayout: PipelineLayout | null;
   readonly hdrpSkinProbePipelineLayout?: PipelineLayout | null;
   readonly hdrpSkinMeshBindGroupLayout: BindGroupLayout | null;
-  readonly skinPaletteAllocator: SkinPaletteAllocator | null;
   readonly defaultWhiteTextureView: TextureView;
   readonly defaultNormalTextureView: TextureView;
   /** White volume for `texture_3d` material params before their source promotes. */
@@ -482,6 +488,10 @@ export interface PipelineState {
 }
 
 export interface RenderSystemInternals extends RenderSystemRuntime {
+  /** The Renderer's one Render World; its entities are the composed camera views. */
+  readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
+  /** Renderer-shared instance projections of published rows, prepared once at acceptance. */
+  readonly instanceCollections?: import('../instances').InstanceProjectionStore | undefined;
   /** Renderer-owned screen UI is encoded after all views, before the one submit. */
   encodePresentation?: (encoder: RhiCommandEncoder) => void;
   /** Optional final display target; private camera selection remains with viewOutput. */
@@ -498,6 +508,16 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
         readonly width: number;
         readonly height: number;
         readonly eye?: import('../components/stereo-camera').StereoEye;
+      }
+    | undefined;
+  /**
+   * A capture view's recording: its auxiliary Camera and the live target
+   * write its capture graph imports. Absent for display recordings.
+   */
+  readonly captureView?:
+    | {
+        readonly camera: number;
+        readonly state: import('./target-capture-graph').CubeCaptureGraphState;
       }
     | undefined;
   /** Build identity injected by the host's build-tool adapter. */
@@ -535,6 +555,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
       ) => RhiRenderPipeline | null)
     | undefined;
   rendererFrameNumber?: number | undefined;
+  /** The Renderer's one scene composition, shared by every system and CameraView. */
+  sceneComposition?: import('../scene/scene-composition').SceneComposition | undefined;
   /** Renderer-owned diffuse GI budget split shared by every CameraView's field. */
   giBudget?: import('../raytracing/diffuse-gi-budget').DiffuseGiBudget | undefined;
   rendererCaptureOwner?: import('../capture/renderer-captures').RendererCaptureOwner | undefined;
@@ -543,7 +565,7 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   gpuPassTimingViewId?: number | undefined;
   gpuPassTimingSubmittedWork?: Promise<void> | undefined;
   gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
-  gpuPassTimingBeginReason?: GpuPassTimingReason | undefined;
+  gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
   readonly getRenderTargetPhysical?: (target: RenderTarget) => RenderTargetPhysical | undefined;
   readonly markRenderTargetSubmitted?: (
     target: RenderTarget,
@@ -569,9 +591,6 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
 }
 
 export interface _StandardForwardSceneView {
-  readonly cameraVisible?: (
-    source: import('../render-system-extract').RenderableSnapshot,
-  ) => boolean;
   readonly capturedAtmosphere?: import('../environment/storage').AtmosphereStorage | undefined;
   readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
   readonly environmentIbl?: { readonly irradiance: TextureView; readonly prefilter: TextureView };
@@ -640,13 +659,15 @@ export interface _StandardForwardSceneView {
   readonly materialSlotIndices: readonly (readonly number[])[];
   readonly materialSlots: readonly MaterialSnapshot[];
   readonly materialBindings: readonly import('./fold-buckets').MaterialBinding[];
+  /** Absent for a direct helper caller that has not prepared a native table. */
+  readonly materialBindingSlots?: import('./fold-buckets').MaterialBindingSlots;
   readonly materialSlotCount: number;
   /** Filled by main-pass material producers before the GPU-driven raster tail. */
   readonly gpuDrivenStandardPbrFrameResources?: GpuDrivenStandardPbrFrameResources;
   /** Scene table retained by the renderer even when no draw is GPU-admitted. */
   readonly gpuDrivenSceneMaterialBuffer?: Buffer;
   /** Accepted main-pass ownership shared with the post-submit draw receipts. */
-  readonly gpuDrivenSelection?: import('../gpu-driven/draw-selection').GpuDrawSelection;
+  readonly gpuDrivenSelection?: import('../gpu-driven/draw-selection').GpuDrawSelection | undefined;
   readonly gpuDrivenShadowViews?: ShadowViewStatePool;
   readonly shadowDirectRequired?: boolean;
   readonly gpuDrivenShadowBatchProjections?: ReadonlyMap<

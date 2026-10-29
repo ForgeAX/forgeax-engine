@@ -1,4 +1,5 @@
 import { isStripTopology } from '@forgeax/engine-types';
+import { pipelineVertexConstants } from './material-stage-constants';
 // pipeline-builder.ts -- runtime-internal helper for building per-MaterialShader
 // render pipelines (feat-20260523-shader-template-instance-split M9-T01).
 //
@@ -46,6 +47,7 @@ import {
   err,
   ok,
   type PipelineLayout,
+  PipelineRecipeState,
   type RenderPipeline,
   type RenderPipelineDescriptor,
   type Result,
@@ -53,10 +55,15 @@ import {
   RhiError,
   type ShaderModule,
 } from '@forgeax/engine-rhi';
-import type { MaterialShaderEntry } from '@forgeax/engine-shader';
+import type {
+  MaterialShaderEntry,
+  MaterialShaderProgram,
+  RegisteredMaterialShaderEntry,
+} from '@forgeax/engine-shader';
 import type { MaterialRenderState, PassKind, PrimitiveTopology } from '@forgeax/engine-types';
 import { materialColorTarget, materialDepthStencil } from './material-render-state';
-import { colorFormatsForPassKind, type PipelineSpec } from './pipeline-spec';
+import { colorFormatsForPassKind } from './pipeline-spec';
+import { validateVertexInputLayout } from './vertex-input-guard';
 
 /**
  * feat-20260604-mesh-topology-debug-draw M3 / w8: per-mesh geometry facts that
@@ -107,6 +114,12 @@ export interface PipelineBuilderContext {
   readonly device: RhiDevice;
   /** Generation-owned async requests expose a synchronous pending/ready Result here. */
   readonly createRenderPipeline?: RhiDevice['createRenderPipeline'] | undefined;
+  readonly createRenderPipelineRecipeState?: (
+    state: PipelineRecipeState,
+    dependencies: { layout: PipelineLayout; vertex: ShaderModule; fragment?: ShaderModule },
+    materialize: () => RenderPipelineDescriptor,
+  ) => Result<RenderPipeline, RhiError>;
+
   /**
    * Sync shader-module factory (see {@link PipelineBuilderShaderModuleFactory}).
    * In production the engine wires the same `makeShaderDeviceAdapter` it
@@ -128,7 +141,10 @@ export interface PipelineBuilderContext {
   readonly colorFormat: GPUTextureFormat;
   /** Additional color targets for an MRT pass; the first target is colorFormat. */
   readonly colorFormats?: readonly GPUTextureFormat[] | undefined;
+  /** Common pipeline-time overrides, including vertex displacement texture selection. */
   readonly constants?: Readonly<Record<string, number>> | undefined;
+  /** Explicit vertex-stage values; omitted uses the common overrides. */
+  readonly vertexConstants?: Readonly<Record<string, number>> | undefined;
   /** Depth attachment format, or `undefined` for a color-only pass. */
   readonly depthFormat: GPUTextureFormat | undefined;
   /**
@@ -180,13 +196,17 @@ export interface PipelineBuilderContext {
  * structured shader failure before a handle is cached.
  */
 export function validateTemporalPipelineContract(
-  source: string,
+  source: string | MaterialShaderProgram,
   ctx: Pick<
     PipelineBuilderContext,
     'colorFormat' | 'depthFormat' | 'capabilities' | 'coverageOnly'
   >,
 ): Result<void, RhiError> {
-  if (!source.includes('fn vs_temporal') || !source.includes('fn fs_temporal')) {
+  if (
+    !(typeof source === 'string'
+      ? source.includes('fn vs_temporal') && source.includes('fn fs_temporal')
+      : source.hasTemporalEntries)
+  ) {
     return err(
       new RhiError({
         code: 'shader-compile-failed',
@@ -219,7 +239,10 @@ export function validateTemporalPipelineContract(
   }
   const capabilities = ctx.capabilities;
   if (capabilities !== undefined) {
-    const sourceUsesStorageBuffer = /var\s*<\s*storage(?:\s*,|\s*>)/u.test(source);
+    const sourceUsesStorageBuffer =
+      typeof source === 'string'
+        ? /var\s*<\s*storage(?:\s*,|\s*>)/u.test(source)
+        : source.usesStorageBuffer;
     if (sourceUsesStorageBuffer !== capabilities.storageBuffer) {
       return err(
         new RhiError({
@@ -240,6 +263,21 @@ export function validateTemporalPipelineContract(
     }
   }
   return ok(undefined);
+}
+
+/** Reject a mesh layout that lacks a vertex input before compiling or creating anything. */
+function createVertexCompatibleModule(
+  id: string,
+  source: string | MaterialShaderProgram,
+  vertexEntry: string,
+  ctx: PipelineBuilderContext,
+): Result<ShaderModule, RhiError> {
+  const vertexLayout = validateVertexInputLayout(id, source, vertexEntry, ctx.vertexBuffers);
+  if (!vertexLayout.ok) return vertexLayout;
+  const label = ctx.moduleLabel ?? `shader-${id}`;
+  return ctx.shaderModuleFactory.createShaderModule(
+    typeof source === 'string' ? { code: source, label } : source.sourceReference.descriptor(label),
+  );
 }
 
 function pipelineCreationHint(error: RhiError): string {
@@ -300,7 +338,8 @@ export function buildPipelineForMaterialShader(
           ? 'fs_shadow'
           : 'fs_main');
 
-  let source = entry.source;
+  let source: string | MaterialShaderProgram =
+    (entry as Partial<RegisteredMaterialShaderEntry>).program ?? entry.source;
   if (defines !== undefined && Object.keys(defines).length > 0) {
     const defineKeyRe = /^[A-Z_][A-Z0-9_]*$/;
     for (const key of Object.keys(defines)) {
@@ -317,13 +356,10 @@ export function buildPipelineForMaterialShader(
     const prefix = `${Object.entries(defines)
       .map(([k, v]) => `#define ${k} ${v}`)
       .join('\n')}\n`;
-    source = prefix + source;
+    source = prefix + (typeof source === 'string' ? source : source.source);
   }
 
-  const moduleResult = ctx.shaderModuleFactory.createShaderModule({
-    code: source,
-    label: ctx.moduleLabel ?? `shader-${id}`,
-  });
+  const moduleResult = createVertexCompatibleModule(id, source, vsEntry, ctx);
   if (!moduleResult.ok) {
     return moduleResult;
   }
@@ -334,140 +370,104 @@ export function buildPipelineForMaterialShader(
     if (!temporalContract.ok) return temporalContract;
   }
 
-  // feat-20260609 M4 / R3-fixup: shadow-caster branch.
-  // The shadow render pass beginRenderPass desc is `{ colorAttachments: [],
-  // depthStencilAttachment: { format: 'depth32float', ... } }` (see
-  // recordShadowPass / pipelineState.shadowTexture allocation). The PSO's
-  // attachment state must match exactly — no color targets, depth32float
-  // depth — otherwise WebGPU emits "Attachment state of [pipeline] is not
-  // compatible with [RenderPassEncoder]". Ground truth descriptor was the
-  // hardcoded shadowCasterPipeline removed in T-009 (commit 6416e9de~);
-  // this branch reconstructs that exact shape via the lazy cache path.
-  // The ordinary shadow variant reads only position from the canonical 12F
-  // layout. The skinned variant additionally reads JOINTS_0 / WEIGHTS_0;
-  // both layouts come from the same geometry projection used by the main
-  // pass, so shadow rendering cannot silently reinterpret an 18F stream.
   const attachmentFormats = ctx.colorFormats ?? colorFormatsForPassKind(passKind, ctx.colorFormat);
-  if (attachmentFormats.length === 0) {
-    // Depth-only passes still run fragment coverage: alpha masks and public
-    // clipping must discard the same fragments as the visible surface.
-    const hasFragmentStage = fragmentEntry !== null && source.includes('@fragment');
-    const shadowPipelineResult = (
-      ctx.createRenderPipeline ?? ctx.device.createRenderPipeline.bind(ctx.device)
-    )({
-      label,
-      layout: ctx.pipelineLayout,
-      vertex: {
-        module: shaderModule,
+  const hasFragmentStage =
+    attachmentFormats.length > 0 ||
+    (fragmentEntry !== null &&
+      (typeof source === 'string' ? source.includes('@fragment') : source.hasFragmentStage));
+  const dependencies = {
+    layout: ctx.pipelineLayout,
+    vertex: shaderModule,
+    ...(hasFragmentStage ? { fragment: shaderModule } : {}),
+  };
+  // One projection defines both equality against warmup state and cold admission.
+  // A hit visits one field at a time, without building the complete dictionary.
+  const vertexConstants = pipelineVertexConstants(ctx);
+  const fields = function* (): Iterable<readonly [string, unknown]> {
+    yield [
+      'vertex',
+      {
         entryPoint: vsEntry,
-        ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
-        // Surface-backed Standard shadow entries evaluate the same material
-        // surface as Forward/Deferred, so their vertex stage consumes normal,
-        // UV, and tangent inputs in addition to position. Keep the complete
-        // derived mesh layout here; extra attributes remain legal for legacy
-        // position-only custom casters, while trimming to position would make
-        // the built-in Surface shadow shader fail WebGPU validation.
-        buffers: [...ctx.vertexBuffers],
+        ...(vertexConstants === undefined ? {} : { constants: vertexConstants }),
+        buffers: ctx.vertexBuffers,
       },
-      // Vertex-only depth pass writes `fragment: undefined` (GPU derives
-      // depth from gl_Position.z). A custom ShadowCaster shader with a
-      // fragment stage (cutout discard) gets the empty-target fragment
-      // stage so its `discard` / `@builtin(frag_depth)` actually run.
-      fragment: hasFragmentStage
-        ? {
-            module: shaderModule,
-            entryPoint: fsEntry,
-            ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
-            targets: [],
-          }
-        : undefined,
-      primitive: {
+    ];
+    if (hasFragmentStage)
+      yield [
+        'fragment',
+        {
+          entryPoint: fsEntry,
+          ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
+          targets: attachmentFormats.map((format, index) =>
+            materialColorTarget(format, renderState, index),
+          ),
+        },
+      ];
+    yield [
+      'primitive',
+      {
         topology: geometry?.topology ?? 'triangle-list',
         cullMode: renderState?.cullMode ?? 'back',
         frontFace: renderState?.frontFace ?? 'ccw',
+        ...(attachmentFormats.length > 0 &&
+        geometry?.topology !== undefined &&
+        isStripTopology(geometry.topology)
+          ? { stripIndexFormat: geometry.stripIndexFormat }
+          : {}),
       },
-      depthStencil: materialDepthStencil(ctx.depthFormat ?? 'depth32float', renderState),
-      multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
-    });
-    if (!shadowPipelineResult.ok) {
-      if (
-        shadowPipelineResult.error.code === 'shader-compile-failed' ||
-        shadowPipelineResult.error.code === 'rhi-not-available'
-      ) {
-        return shadowPipelineResult;
-      }
-      return err(
-        new RhiError({
-          code: 'shader-compile-failed',
-          expected: `shadow-caster pipeline for material shader '${id}' builds successfully`,
-          hint: pipelineCreationHint(shadowPipelineResult.error),
-        }),
-      );
-    }
-    return shadowPipelineResult;
-  }
-
-  // feat-20260615-pipeline-spec-ssot M2-T3: delegate PSO descriptor assembly
-  // to buildPipelineDescriptor(spec, modules). The spec is derived from the
-  // forward-branch parameters; multisample is derived from sampleCount (1 → absent,
-  // 4 → {count:4}). This replaces the inline literal formerly at :290-344.
-  const forwardSpec: PipelineSpec = {
-    shader: { id, passKind, variantSet: undefined },
-    attachments: {
-      colorFormats: attachmentFormats,
-      depthFormat: ctx.depthFormat,
-      sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
-    },
-    geometry: {
-      topology: geometry?.topology ?? 'triangle-list',
-      ...(geometry?.topology !== undefined && isStripTopology(geometry.topology)
-        ? { stripIndexFormat: geometry.stripIndexFormat }
-        : {}),
-      vertexLayout: {}, // vertexLayout not used at this layer; caller provides vertexBuffers
-    },
-    renderState,
+    ];
+    const depthFormat =
+      attachmentFormats.length === 0 ? (ctx.depthFormat ?? 'depth32float') : ctx.depthFormat;
+    if (depthFormat !== undefined)
+      yield ['depthStencil', materialDepthStencil(depthFormat, renderState)];
+    if (sampleCount > 1)
+      yield [
+        'multisample',
+        {
+          count: sampleCount,
+          ...(attachmentFormats.length > 0 && renderState?.alphaToCoverageEnabled === true
+            ? { alphaToCoverageEnabled: true }
+            : {}),
+        },
+      ];
   };
-  const descriptor: RenderPipelineDescriptor = {
-    label,
-    layout: ctx.pipelineLayout,
-    vertex: {
-      module: shaderModule,
-      entryPoint: vsEntry,
-      ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
-      buffers: [...ctx.vertexBuffers],
-    },
-    fragment: {
-      module: shaderModule,
-      entryPoint: fsEntry,
-      ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
-      targets: forwardSpec.attachments.colorFormats.map((format, index) =>
-        materialColorTarget(format, renderState, index),
-      ),
-    },
-    primitive: {
-      topology: forwardSpec.geometry.topology,
-      cullMode: renderState?.cullMode ?? 'back',
-      frontFace: renderState?.frontFace ?? 'ccw',
-      ...(forwardSpec.geometry.stripIndexFormat === undefined
-        ? {}
-        : { stripIndexFormat: forwardSpec.geometry.stripIndexFormat }),
-    },
-  };
-  if (forwardSpec.attachments.depthFormat !== undefined) {
-    descriptor.depthStencil = materialDepthStencil(
-      forwardSpec.attachments.depthFormat,
-      renderState,
-    );
+  const derive = (): PipelineRecipeState =>
+    ctx.device.pipelineLibrary?.findRenderState?.(dependencies, (state) =>
+      state.matches(fields()),
+    ) ?? new PipelineRecipeState('render', Object.fromEntries(fields()));
+  const state = derive();
+  const materialize = (): RenderPipelineDescriptor =>
+    ({
+      ...state.value,
+      label,
+      layout: ctx.pipelineLayout,
+      vertex: { ...(state.value.vertex as object), module: shaderModule },
+      fragment: hasFragmentStage
+        ? ({
+            ...(state.value.fragment as object),
+            module: shaderModule,
+          } as RenderPipelineDescriptor['fragment'])
+        : undefined,
+    }) as RenderPipelineDescriptor;
+  let pipelineResult: Result<RenderPipeline, RhiError>;
+  if (ctx.createRenderPipelineRecipeState !== undefined)
+    pipelineResult = ctx.createRenderPipelineRecipeState(state, dependencies, materialize);
+  else if (ctx.createRenderPipeline !== undefined)
+    pipelineResult = ctx.createRenderPipeline(materialize());
+  else {
+    const selected = ctx.device.pipelineLibrary?.selectRender?.(state, dependencies, false);
+    // A synchronous lookup cannot join an outstanding asynchronous request.
+    if (
+      selected !== undefined &&
+      'ok' in selected &&
+      (!selected.ok || selected.value !== undefined)
+    )
+      pipelineResult = selected as Result<RenderPipeline, RhiError>;
+    else
+      pipelineResult = (
+        ctx.createRenderPipeline ?? ctx.device.createRenderPipeline.bind(ctx.device)
+      )(materialize());
   }
-  if (sampleCount > 1) {
-    descriptor.multisample = {
-      count: sampleCount,
-      ...(renderState?.alphaToCoverageEnabled === true ? { alphaToCoverageEnabled: true } : {}),
-    };
-  }
-  const pipelineResult = (
-    ctx.createRenderPipeline ?? ctx.device.createRenderPipeline.bind(ctx.device)
-  )(descriptor);
 
   if (!pipelineResult.ok) {
     // Wrap the underlying RhiError with a `shader-compile-failed` envelope

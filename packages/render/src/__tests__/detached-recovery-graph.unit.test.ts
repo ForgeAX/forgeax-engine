@@ -10,16 +10,15 @@ import {
   discardCompiledFrameGraphs,
   ensureCompiledFrameGraph,
   executeCompiledFrameGraph,
+  getRenderFeatureGraphInspection,
   inspectRenderGraphGenerationAllocation,
   type RenderFeatureGraphCandidate,
-  retire as retireCompiledGraph,
   settleCompiledFrameGraphCandidate,
-  shareRenderGraphGenerationAllocationOwner,
 } from '../record/typed-frame-graph';
 import type { RenderPipeline } from '../render-pipeline';
-import type { ExtractedLights } from '../render-system-extract';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
+import type { DirectionalCascades, ViewLights } from '../world/render-lights';
 
 function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSystemInternals) {
   let failBuild = false;
@@ -59,6 +58,7 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
   };
   const frameState = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     graphGeneration: 0,
     compiledFrameGraphGeneration: 0,
@@ -91,10 +91,11 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
     colorAttachmentFormat: 'rgba8unorm',
   } as unknown as PipelineState;
   let lights = {
-    cascadeCount: undefined,
+    cascades: undefined,
     pointShadow: [],
     spot: [],
-  } as unknown as ExtractedLights;
+    shadowViews: [],
+  } as unknown as ViewLights;
   return {
     activePipeline,
     frameState,
@@ -104,14 +105,14 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
       return lights;
     },
     setCascadeCount(cascadeCount: 1 | 2 | 3 | 4) {
-      lights = { ...lights, cascadeCount };
+      lights = { ...lights, cascades: { cascadeCount } as DirectionalCascades };
     },
     setStaticShadowCache(enabled: boolean) {
       lights = {
         ...lights,
         directionalCsmConfig: enabled
           ? undefined
-          : ({ staticShadowCache: false } as ExtractedLights['directionalCsmConfig']),
+          : ({ staticShadowCache: false } as ViewLights['directionalCsmConfig']),
       };
     },
     setDevice(nextDevice: RhiDevice) {
@@ -136,7 +137,7 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
         lights,
         width,
         1,
-        lights.cascadeCount === undefined ? undefined : shadowMapSize,
+        lights.cascades === undefined ? undefined : shadowMapSize,
       ];
       args[23] = terrainReceivers;
       args[9] = featureCandidate;
@@ -570,49 +571,6 @@ describe('detached recovery graph execution boundary', () => {
     expect(allocation.failedRetirementCount).toBe(1);
     expect(allocation.failedRetirementBytes).toBe(16);
   });
-
-  it('keeps a detached recovery candidate failure in the shared owner', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const harness = createRecoveryGraphHarness();
-    harness.setDevice(device);
-    const active = harness.compile();
-    expect(active).not.toBeNull();
-    if (active === null) return;
-    harness.accept();
-
-    const candidateFrameState = {
-      ...harness.frameState,
-      compiledFrameGraph: null,
-      retiredCompiledFrameGraphs: new Set(),
-    } as unknown as RenderFrameState;
-    shareRenderGraphGenerationAllocationOwner(harness.frameState, candidateFrameState);
-    const candidate = ensureCompiledFrameGraph(
-      harness.internals,
-      candidateFrameState,
-      harness.pipelineState,
-      makeZeroCameraFallbackSnapshot(),
-      harness.lights,
-      1,
-      1,
-      undefined,
-    );
-    expect(candidate).not.toBeNull();
-    if (candidate === null) return;
-
-    (device as unknown as { destroyBuffer: RhiDevice['destroyBuffer'] }).destroyBuffer = () =>
-      ({ ok: false, error: { code: 'webgpu-runtime-error' } }) as never;
-    retireCompiledGraph(candidateFrameState, candidate);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    const allocation = inspectRenderGraphGenerationAllocation(harness.frameState);
-    const failed = allocation.entries.find(
-      (entry) => entry.generation === candidate.inspect().generation,
-    );
-    expect(failed?.retirement).toBe('failed');
-    expect(failed?.roles).toEqual(expect.arrayContaining(['retiring']));
-    expect(allocation.failedRetirementCount).toBe(1);
-    expect(allocation.failedRetirementBytes).toBe(16);
-  });
 });
 
 it('restores the complete graph projection and retires a failed resize candidate exactly once', async () => {
@@ -646,6 +604,41 @@ it('restores the complete graph projection and retires a failed resize candidate
   harness.accept();
   expect(retireAccepted).toHaveBeenCalledTimes(1);
   await retried?.retire();
+});
+
+it('installs a changed topology once while its frames wait for pipeline preparation', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const harness = createRecoveryGraphHarness();
+  harness.setDevice(device);
+  const accepted = harness.compile();
+  if (accepted === null) throw new Error('initial graph missing');
+  harness.accept();
+  const compiles = () => getRenderFeatureGraphInspection(harness.internals).compileAttempts;
+  const before = compiles();
+  const changed = harness.compile(2);
+  if (changed === null) throw new Error('changed graph missing');
+  const retireChanged = vi.spyOn(changed, 'retire');
+  // Three frames that did not submit (for example, pending pipelines).
+  for (let frame = 0; frame < 3; frame++) {
+    settleCompiledFrameGraphCandidate(harness.frameState, false, true);
+    expect(harness.compile(2)).toBe(changed);
+  }
+  harness.accept();
+  expect(compiles() - before).toBe(1);
+  expect(harness.frameState.compiledFrameGraph?.graph).toBe(changed);
+  expect(harness.frameState.unsubmittedCompiledFrameGraph).toBeUndefined();
+  // A different unsubmitted topology is retired once another graph is accepted.
+  const abandoned = harness.compile(3);
+  if (abandoned === null) throw new Error('abandoned graph missing');
+  const retireAbandoned = vi.spyOn(abandoned, 'retire');
+  settleCompiledFrameGraphCandidate(harness.frameState, false, true);
+  expect(harness.compile(2)).toBe(changed);
+  expect(retireAbandoned).not.toHaveBeenCalled();
+  const replacement = harness.compile(4);
+  expect(retireAbandoned).toHaveBeenCalledTimes(1);
+  harness.accept();
+  expect(retireChanged).toHaveBeenCalledTimes(1);
+  await replacement?.retire();
 });
 
 it('keeps the accepted graph when an unsubmitted candidate is replaced again and the frame fails', async () => {

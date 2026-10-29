@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import type { ShaderCatalog } from '@forgeax/engine-shader';
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
-import { derive } from '@forgeax/engine-types';
+import { derive, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareMaterialShaders } from '../../../render/src/assembly/material-shader-policy';
 import { appendInjection } from '../../../render/src/pbr-pipeline';
@@ -101,6 +101,7 @@ describe('shadow_caster shared Surface schema', () => {
       'forgeax::default-shadow-caster',
       {
         source: '',
+        sourceReference: expect.any(ShaderSource),
         paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
       },
     );

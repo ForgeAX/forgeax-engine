@@ -3,8 +3,9 @@ import type { PointsLinesAdmission } from '../admission';
 
 declare const admitted: PointsLinesAdmission;
 if (admitted.component === 'Points') {
-  expectTypeOf(admitted.shape).toEqualTypeOf<'square' | 'circle'>();
-  expectTypeOf(admitted.sizePx).toEqualTypeOf<number>();
+  expectTypeOf(admitted.shape).toEqualTypeOf<'square' | 'circle' | 'soft'>();
+  expectTypeOf(admitted.sizeUnits).toEqualTypeOf<'pixels' | 'world'>();
+  expectTypeOf(admitted.size).toEqualTypeOf<number>();
   // @ts-expect-error Line width is not a point admission fact.
   admitted.width;
 } else {

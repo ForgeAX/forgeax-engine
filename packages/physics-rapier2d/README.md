@@ -1,7 +1,22 @@
 # @forgeax/engine-physics-rapier2d
 
+```ts
+import physics2d from '@forgeax/engine/physics-rapier2d';
+
+const app = await createApp(canvas, { plugins: [physics2d] });
+```
+
+In a root plugin, use `await ctx.plugin(physics2d, { solverIterations: 2 })`
+to choose global solver precision at activation. The default is 4; valid values
+are integers [1,32]. Lower values trade contact/joint convergence for CPU time.
+See [solver precision](../physics/README.md#solver-precision) for effects and the
+independent per-body additional iterations.
+
+The default plugin owns only Rapier2D. Its module dependency is static;
+WASM initializes lazily during activation. The shared physics contract imports no backend.
+
 Rapier 0.20 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
-Install `physicsPlugin('rapier-2d')`; fixed systems project Scene/RigidBody/Collider
+Install `physics2d`; fixed systems project Scene/RigidBody/Collider
 state, perform one solver step per fixed iteration, and write dynamic poses back
 to Scene. Two-dimensional writeback preserves the authored Transform z coordinate.
 World owns scheduling and time; the backend owns native bodies and their cleanup.

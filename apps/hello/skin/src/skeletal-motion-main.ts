@@ -15,7 +15,7 @@ import {
 } from '@forgeax/engine/animation/skeletal-motion';
 import { createApp } from '@forgeax/engine/app';
 import { type EntityHandle, FixedTime, FixedUpdate, World } from '@forgeax/engine/ecs';
-import { physicsPlugin } from '@forgeax/engine/physics';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { renderComponentsPlugin } from '@forgeax/engine/render';
 import { err, RhiError } from '@forgeax/engine/rhi';
 import { attachRecorder, decodeImage, toRgba8 } from '@forgeax/engine/rhi-debug';
@@ -89,7 +89,7 @@ async function start(target: HTMLCanvasElement) {
         renderComponentsPlugin(),
         skinningPlugin(),
         animationPlugin({ cadence: 'fixed' }),
-        physicsPlugin('rapier-3d'),
+        physics3d,
         skeletalMotionPlugin({ physics: true }),
       ],
     })

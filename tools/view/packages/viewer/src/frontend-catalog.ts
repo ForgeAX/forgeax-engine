@@ -31,6 +31,7 @@ import * as historyIdentity from '@forgeax/view-plugin-history/identity';
 import * as htmlIdentity from '@forgeax/view-plugin-html/identity';
 import assetReferencesPlugin from '@forgeax/view-plugin-asset-references/frontend';
 import * as assetReferencesIdentity from '@forgeax/view-plugin-asset-references/identity';
+import parametersPlugin, { PARAMETERS_FRONTEND_MODULE } from '@forgeax/view-plugin-parameters/frontend';
 
 import {
   VIEW_PLUGIN_VERSION,
@@ -39,6 +40,7 @@ import {
 } from './catalog-shared.ts';
 
 const implementations = new Map<string, Plugin.Object<ViewFrontendConfig>>([
+  [PARAMETERS_FRONTEND_MODULE, parametersPlugin],
   [assetReferencesIdentity.FRONTEND_MODULE, assetReferencesPlugin],
   [VIEW_WORKSPACE_CORE.FRONTEND_MODULE, workspaceCorePlugin],
   [sceneIdentity.FRONTEND_MODULE, scenePagePlugin],
@@ -85,6 +87,12 @@ export const VIEW_PRODUCT_FRONTEND_CATALOG = new Map<string, { realm: 'engine'; 
     },
   ]),
 );
+
+VIEW_PRODUCT_FRONTEND_CATALOG.set(PARAMETERS_FRONTEND_MODULE, {
+  realm: 'engine',
+  version: VIEW_PLUGIN_VERSION,
+  load: async () => ({ default: parametersPlugin }),
+});
 
 for (const [name, plugin] of [[SHELL_MODULE, shellPlugin], [PRESENTATION_MODULE, presentationPlugin]] as const) {
   VIEW_PRODUCT_FRONTEND_CATALOG.set(name, {

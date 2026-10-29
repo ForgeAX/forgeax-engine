@@ -3,8 +3,18 @@ import { buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import OriginalRenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import { DirectionalLight, PointLight, RenderTarget, SpotLight } from 'three/src/Three.Core.js';
 import { expect, it } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  browserRendererFixture,
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  SIZE,
+  verifyReplay,
+} from './render.fixture';
+
+const rendererFor = browserRendererFixture();
 
 it.each([
   { kind: 'directional', variance: false },
@@ -34,19 +44,19 @@ it.each([
     const sun = new constructors[kind](0xffffff, kind === 'directional' ? 3 : 200);
     sun.position.set(-3, 6, 4);
     sun.castShadow = true;
+    sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize);
     sun.shadow.bias = -0.001;
     scene.add(ground, cube, sun);
     return { scene, camera, material, cube, sun };
   };
   const native = make(false),
     reference = make(true);
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
-  document.body.append(canvas);
-  const renderer = new THREE.WebGPURenderer({ canvas });
+  const renderer = rendererFor();
   const original = new OriginalRenderer();
   renderer.shadowMap.enabled = original.shadowMap.enabled = true;
-  if (variance) renderer.shadowMap.type = original.shadowMap.type = THREE.VSMShadowMap;
+  renderer.shadowMap.type = original.shadowMap.type = variance
+    ? THREE.VSMShadowMap
+    : THREE.PCFShadowMap;
   original.setSize(SIZE, SIZE);
   const target = new RenderTarget(SIZE, SIZE);
   original.setOutputRenderTarget(target);
@@ -96,11 +106,13 @@ it.each([
       f.sun.position.x = 1;
     }
     await frame('frozen-light');
-    for (const f of [native, reference]) f.sun.shadow.mapSize.set(256, 128);
+    for (const f of [native, reference])
+      f.sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize / 2);
     await frame('frozen-resize');
     // r184 retains stale GPU views after a live allocation resize. Restore
     // the admitted extent here; fresh rectangular maps are covered separately.
-    for (const f of [native, reference]) f.sun.shadow.mapSize.set(512, 512);
+    for (const f of [native, reference])
+      f.sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize);
     for (const f of [native, reference]) f.sun.shadow.needsUpdate = true;
     const updated = await frame('requested');
     expect(native.sun.shadow.needsUpdate).toBe(false);
@@ -112,11 +124,9 @@ it.each([
     for (const f of [native, reference]) f.sun.shadow.autoUpdate = true;
     await frame('automatic');
   } finally {
-    await renderer.dispose();
     original.dispose();
     target.dispose();
     native.material.dispose();
     reference.material.dispose();
-    canvas.remove();
   }
 });

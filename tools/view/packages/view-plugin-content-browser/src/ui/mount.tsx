@@ -16,6 +16,8 @@ export async function mountContentBrowserPanel(props: ComponentProps<typeof Cont
         client={props.client}
         pageHost={props.pageHost}
         revealPanel={props.revealPanel}
+        dismissUnpinnedEdge={props.dismissUnpinnedEdge}
+        detailTabs={props.detailTabs}
         addConversationReference={props.addConversationReference}
         registerAssetReveal={props.registerAssetReveal}
       />

@@ -42,9 +42,9 @@ vi.spyOn(viewUbo, 'writeViewUbo').mockImplementation((...args) => {
   return realWriteViewUbo(...args);
 });
 const realComputeViewMatrix = helpers.computeViewMatrix;
-vi.spyOn(helpers, 'computeViewMatrix').mockImplementation((camera) => {
+vi.spyOn(helpers, 'computeViewMatrix').mockImplementation((camera, out) => {
   cameraInputs.push([...camera.position]);
-  return realComputeViewMatrix(camera);
+  return realComputeViewMatrix(camera, out);
 });
 const realNullWriteBuffer = RhiNullQueue.prototype.writeBuffer;
 vi.spyOn(RhiNullQueue.prototype, 'writeBuffer').mockImplementation(function (

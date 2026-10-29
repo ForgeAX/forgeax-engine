@@ -580,8 +580,7 @@ it('rejects masked-out contact partners before resolving their ECS owners', asyn
   try {
     for (let step = 0; step < 60; step++) physics.step(1 / 60);
     expect(physics.getCurrentContacts(2).unwrap().manifolds.length).toBeGreaterThan(0);
-    const resolve = vi.fn((collider: ReturnType<typeof body.collider>) => {
-      const parent = collider.parent();
+    const resolve = vi.fn((_collider: number, parent: typeof body | null) => {
       return parent && typeof parent.userData === 'number'
         ? { entity: parent.userData, body: parent }
         : undefined;

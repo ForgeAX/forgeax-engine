@@ -15,7 +15,7 @@ const viewObjectInspectorFrontendPlugin = {
     const workspaceClient = ctx.get('viewOperationClient');
     const disposePanel = await panelHost.mountPanel({
       id: SLOT,
-      pageType: PAGE_TYPE,
+      home: { kind: 'page', pageType: PAGE_TYPE },
       titleKey: TITLE_I18N_KEY,
       activity: { labelKey: TITLE_I18N_KEY, icon: 'detail' },
       layout: PANEL_LAYOUT,

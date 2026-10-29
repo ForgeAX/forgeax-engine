@@ -167,7 +167,10 @@ describe('native root Host assembly', () => {
 });
 
 describe('Host cancellation ownership', () => {
-  it('passes an explicit unbounded startup policy into a custom activator', async () => {
+  it.each([
+    undefined,
+    null,
+  ] as const)('passes an unbounded startup policy into a custom activator when configured as %s', async (startupTimeoutMs) => {
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => {
       release = resolve;
@@ -176,7 +179,7 @@ describe('Host cancellation ownership', () => {
     const host = await createFrontendHost({
       assembly: assembly(),
       autoActivate: false,
-      startupTimeoutMs: null,
+      ...(startupTimeoutMs === undefined ? {} : { startupTimeoutMs }),
       async activateRoot(ctx, _root, _signal, timeoutMs) {
         receivedTimeout = timeoutMs;
         const fiber = ctx.plugin({ apply() {} }).ctx.fiber;

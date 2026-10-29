@@ -11,6 +11,7 @@ import { mountAssetPropertiesPanel } from '@forgeax/view-plugin-asset/ui';
 import { mountPluginsPanel } from '@forgeax/view-plugin-plugins/ui';
 import { mountSceneTreePanel } from '@forgeax/view-plugin-scene-tree/ui';
 import { mountHtmlUiPreviewPanel, mountHtmlUiInspectorPanel } from '@forgeax/view-plugin-html/ui';
+import { mountParametersPanel } from '@forgeax/view-plugin-parameters/ui';
 
 export {
   mountContentBrowserPanel,
@@ -28,5 +29,6 @@ export {
   mountSceneTreePanel,
   mountHtmlUiPreviewPanel,
   mountHtmlUiInspectorPanel,
+  mountParametersPanel,
 };
 import '@forgeax/view-plugin-history/ui';

@@ -1556,7 +1556,9 @@ export type {
   PipelineLibrary,
   PipelineLibraryCompute,
   PipelineLibraryInspection,
+  PipelineLibraryLimits,
   PipelineLibraryManifest,
+  PipelineLibraryPrepareOptions,
   PipelineLibraryRender,
   PipelineLibraryStage,
 } from './pipeline-library';
@@ -1917,6 +1919,20 @@ export interface RhiQueue {
   // never rejects (research §5.1 normative); failure surfaces via
   // `RhiDevice.lost` instead.
   onSubmittedWorkDone(): Promise<undefined>;
+  /**
+   * Optional delivery hold for `onSubmittedWorkDone`. While at least one hold
+   * is open, promises from `onSubmittedWorkDone` that complete stay pending;
+   * they settle, in their original order, once the last hold is released.
+   * A cooperative frame takes a hold before it yields mid-preparation, so a
+   * completion-driven release cannot destroy a resource that frame captured.
+   * Returns an idempotent release.
+   */
+  holdCompletions?(): () => void;
+  /**
+   * Optional `onSubmittedWorkDone` that ignores `holdCompletions`. Reserved for
+   * frame-credit feedback that never releases resources.
+   */
+  onSubmittedWorkDoneUnheld?(): Promise<undefined>;
 }
 
 /** GPU command encoder - records render / compute passes + resource copies.
@@ -2510,4 +2526,13 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
+export { PIPELINE_LIBRARY_LIMITS } from './pipeline-library';
+export {
+  checkPipelineLibraryAllocation,
+  pipelineLibraryLimit,
+  pipelineLibraryLimits,
+} from './pipeline-library-limits';
+export { ownPipelineLibrary } from './pipeline-library-source';
+export { PipelineRecipeState, pipelineDescriptorState } from './pipeline-recipe-state';
+export { createQueueCompletionHold, type QueueCompletionHold } from './queue-completion-hold';
 export { textureCopyOrigin, textureReadbackLayout } from './texture-copy-layout';

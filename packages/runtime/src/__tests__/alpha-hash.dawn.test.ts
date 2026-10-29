@@ -5,17 +5,76 @@ import {
   buildFrameModel,
   decodeTape,
   openReplay,
+  type ReplayReadbackResult,
   summarizeFrame,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
-import { expect, it } from 'vitest';
+import { afterAll, expect, it } from 'vitest';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { ALPHA_HASH_SIZE, verifyAlphaHash } from './alpha-hash.fixture';
+import { observeNativeDeviceRequests } from './native-device-work.fixture';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+// Coverage and oblique-depth statistics retain thousands of shadow samples;
+// the color lattice and every temporal frame keep their original dimensions.
+const SHADOW_MAP_SIZE = 128;
+
+function alphaShadowEvidence(shadowAttachment: ReplayReadbackResult, reverse: boolean) {
+  const shadowWidth = shadowAttachment.width ?? 0;
+  const shadowHeight = shadowAttachment.height ?? 0;
+  const shadowData = new DataView(
+    shadowAttachment.bytes.buffer,
+    shadowAttachment.bytes.byteOffset,
+    shadowAttachment.bytes.byteLength,
+  );
+
+  let minX = shadowWidth,
+    minY = shadowHeight,
+    maxX = 0,
+    maxY = 0,
+    covered = 0,
+    minDepth = 1,
+    maxDepth = 0,
+    invalidShadowPixels = 0;
+  for (let y = 0; y < shadowHeight; y++)
+    for (let x = 0; x < shadowWidth; x++) {
+      const value = shadowData.getFloat32((y * shadowWidth + x) * 4, true);
+      if (!Number.isFinite(value)) invalidShadowPixels++;
+      if (reverse ? value > 0 : value < 1) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        covered++;
+        minDepth = Math.min(minDepth, value);
+        maxDepth = Math.max(maxDepth, value);
+      }
+    }
+  expect(invalidShadowPixels, 'every shadow texel is finite').toBe(0);
+  expect(maxDepth - minDepth, 'oblique light projects a depth slope').toBeGreaterThan(0.01);
+  const shadowCoverage = covered / ((maxX - minX + 1) * (maxY - minY + 1));
+  expect(Math.abs(shadowCoverage - 0.5), `shadow coverage=${shadowCoverage}`).toBeLessThan(0.08);
+  return {
+    coverage: shadowCoverage,
+    depthRange: [minDepth, maxDepth],
+    bounds: [minX, minY, maxX, maxY],
+  };
+}
+
+const nativeDevices = observeNativeDeviceRequests();
+afterAll(() => {
+  try {
+    nativeDevices.assertMaximum(12);
+  } finally {
+    nativeDevices.restore();
+  }
+});
 
 it.each([
   { kind: 'standard', taaRenderPath: 'forward' },
@@ -58,6 +117,7 @@ it.each([
     const evidence = await verifyAlphaHash(host.renderer, host.assets, {
       kind,
       taaRenderPath,
+      shadowMapSize: SHADOW_MAP_SIZE,
       recorder,
       image(name, bytes, metadata) {
         writeFileSync(`${directory}/${name}.bin`, bytes);
@@ -69,6 +129,10 @@ it.each([
       async capture(encoded, live) {
         const tape = decodeTape(encoded.bytes).unwrap();
         const model = buildFrameModel(tape);
+        expect(host.renderer.inspect().directionalShadow).toMatchObject({
+          mapSize: SHADOW_MAP_SIZE,
+          cascadeCount: 1,
+        });
         if (
           model.works.some((work) =>
             work.pipeline.shaders.some((shader) => shader.source?.includes('fn blendTaaHistory')),
@@ -128,6 +192,7 @@ it.each([
             expect(maximumReactive).toBe(0);
           } finally {
             (await replay.dispose()).unwrap();
+            device.nativeDevice().unwrap().destroy();
           }
           return;
         }
@@ -163,13 +228,41 @@ it.each([
         const replay = (
           await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
         ).unwrap();
+        const submissions = observeReplaySubmissions(device);
         try {
-          const inspected = (
-            await replay.inspectWork(color.workIndex, ['pipeline', 'bindings', 'pixels'])
+          const output = workOutputs(color).find((row) => row.role === 'color');
+          const depthId = color.attachments?.depthStencilViewHandleId;
+          const shadowDepth = shadow?.attachments?.depthStencilViewHandleId;
+          if (
+            output === undefined ||
+            depthId === undefined ||
+            shadow === undefined ||
+            shadowDepth === undefined
+          )
+            throw new Error('Missing recorded color/depth/shadow outputs');
+          const reads = (
+            await replay.readAtWorks([
+              { ...output.request, workIndex: color.workIndex },
+              {
+                resourceId: depthId,
+                workIndex: color.workIndex,
+                subresource: { mipLevel: 0, arrayLayer: 0, aspect: 'depth-only' },
+              },
+              {
+                resourceId: shadowDepth,
+                workIndex: shadow.workIndex,
+                subresource: { mipLevel: 0, arrayLayer: 0, aspect: 'depth-only' },
+              },
+            ])
           ).unwrap();
-          const attachment = inspected.attachment;
+          const attachment = reads[0]?.unwrap();
+          const depth = reads[1];
+          const shadowPixels = reads[2];
           expect(attachment?.format).toBe('rgba16float');
           if (attachment === undefined) throw new Error('missing replay color');
+          expect(attachment.provenance.selectedWorkIndex).toBe(color.workIndex);
+          const inspected = describeReplayWork(color, attachment);
+          submissions.assertMaximum(14);
           writeFileSync(`${directory}/replay-color.rgba16f`, attachment.bytes);
           const data = new DataView(
             attachment.bytes.buffer,
@@ -187,23 +280,6 @@ it.each([
                 coverageMismatches++;
             }
           expect(coverageMismatches, 'every replay pixel preserves alpha-hash coverage').toBe(0);
-          const depthId = color.attachments?.depthStencilViewHandleId;
-          const depth = depthId
-            ? await replay.readResourceAtWork(depthId, color.workIndex, {
-                mipLevel: 0,
-                arrayLayer: 0,
-                aspect: 'depth-only',
-              })
-            : undefined;
-          const shadowDepth = shadow?.attachments?.depthStencilViewHandleId;
-          const shadowPixels =
-            shadow && shadowDepth
-              ? await replay.readResourceAtWork(shadowDepth, shadow.workIndex, {
-                  mipLevel: 0,
-                  arrayLayer: 0,
-                  aspect: 'depth-only',
-                })
-              : undefined;
           writeFileSync(
             `${directory}/inspection.json`,
             JSON.stringify(
@@ -232,48 +308,27 @@ it.each([
             depth.value.bytes.byteLength,
           );
           const reverse = JSON.stringify(color.pipeline.descriptor).includes('greater');
+          expect(depth.value.provenance.selectedWorkIndex).toBe(color.workIndex);
+          expect(shadowPixels.value.provenance.selectedWorkIndex).toBe(shadow.workIndex);
+          let invalidDepthPixels = 0,
+            depthCoverageMismatches = 0;
           index = 0;
           for (let y = 16; y < ALPHA_HASH_SIZE - 16; y++)
             for (let x = 16; x < ALPHA_HASH_SIZE - 16; x++) {
               const value = depthValues.getFloat32((y * ALPHA_HASH_SIZE + x) * 4, true);
-              expect(Number.isFinite(value)).toBe(true);
-              expect(reverse ? value > 0 : value < 1).toBe((live[index++] ?? 0) > 0);
+              if (!Number.isFinite(value)) invalidDepthPixels++;
+              if ((reverse ? value > 0 : value < 1) !== (live[index++] ?? 0) > 0)
+                depthCoverageMismatches++;
             }
+          expect(invalidDepthPixels, 'every color-depth texel is finite').toBe(0);
+          expect(depthCoverageMismatches, 'every color-depth texel preserves coverage').toBe(0);
           const shadowAttachment = shadowPixels.value;
+          expect(shadowAttachment.width).toBe(SHADOW_MAP_SIZE);
+          expect(shadowAttachment.height).toBe(SHADOW_MAP_SIZE);
           if (shadowAttachment === undefined) throw new Error('Missing replay shadow attachment');
-          const shadowWidth = shadowAttachment.width ?? 0;
-          const shadowHeight = shadowAttachment.height ?? 0;
-          const shadowData = new DataView(
-            shadowAttachment.bytes.buffer,
-            shadowAttachment.bytes.byteOffset,
-            shadowAttachment.bytes.byteLength,
-          );
-          const shadowReverse = JSON.stringify(shadow?.pipeline.descriptor).includes('greater');
-          let minX = shadowWidth,
-            minY = shadowHeight,
-            maxX = 0,
-            maxY = 0,
-            covered = 0,
-            minDepth = 1,
-            maxDepth = 0;
-          for (let y = 0; y < shadowHeight; y++)
-            for (let x = 0; x < shadowWidth; x++) {
-              const value = shadowData.getFloat32((y * shadowWidth + x) * 4, true);
-              expect(Number.isFinite(value)).toBe(true);
-              if (shadowReverse ? value > 0 : value < 1) {
-                minX = Math.min(minX, x);
-                maxX = Math.max(maxX, x);
-                minY = Math.min(minY, y);
-                maxY = Math.max(maxY, y);
-                covered++;
-                minDepth = Math.min(minDepth, value);
-                maxDepth = Math.max(maxDepth, value);
-              }
-            }
-          expect(maxDepth - minDepth, 'oblique light projects a depth slope').toBeGreaterThan(0.01);
-          const shadowCoverage = covered / ((maxX - minX + 1) * (maxY - minY + 1));
-          expect(Math.abs(shadowCoverage - 0.5), `shadow coverage=${shadowCoverage}`).toBeLessThan(
-            0.08,
+          const shadowEvidence = alphaShadowEvidence(
+            shadowAttachment,
+            JSON.stringify(shadow.pipeline.descriptor).includes('greater'),
           );
           writeFileSync(
             `${directory}/coverage-consistency.json`,
@@ -283,23 +338,24 @@ it.each([
                 colorWork: color.workIndex,
                 shadowWork: shadow?.workIndex,
                 comparedColorDepthPixels: live.length,
-                shadowCoverage,
-                shadowDepthRange: [minDepth, maxDepth],
-                shadowBounds: [minX, minY, maxX, maxY],
+                shadowCoverage: shadowEvidence.coverage,
+                shadowDepthRange: shadowEvidence.depthRange,
+                shadowBounds: shadowEvidence.bounds,
               },
               null,
               2,
             ),
           );
         } finally {
+          submissions.restore();
           (await replay.dispose()).unwrap();
-          // The Dawn setup owns native device teardown; Replay owns its resources.
+          device.nativeDevice().unwrap().destroy();
         }
       },
     });
     writeFileSync(`${directory}/metrics.json`, JSON.stringify(evidence, null, 2));
   } finally {
-    host.renderer.dispose();
+    (await host.renderer.dispose()).unwrap();
     (await recorder.dispose()).unwrap();
     texture?.destroy();
   }

@@ -2,6 +2,7 @@ import type { Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { ShaderCatalog } from '@forgeax/engine-shader';
 import { atmosphereAvailable } from '../environment/capability';
+import type { SeedShaderModule } from './material-shader-policy';
 
 import {
   invokeDeviceCreateShaderModule,
@@ -31,7 +32,7 @@ export async function prewarmRequiredMaterialShaders({
   readonly registry: ShaderCatalog;
   readonly asyncCreateShaderModule: AsyncCreateShaderModule | undefined;
   readonly requiredMaterialShaders: readonly string[];
-  readonly seedShaderModule: (label: string, module: ShaderModule) => void;
+  readonly seedShaderModule: SeedShaderModule;
 }): Promise<void> {
   for (const materialShaderId of requiredMaterialShaders) {
     const lookup = registry.findMaterialArtifact(materialShaderId);
@@ -59,7 +60,7 @@ export async function prewarmRequiredMaterialShaders({
       `inspect the composed WGSL for '${materialShaderId}' and check device.features`,
     );
     if (!shaderResult.ok) throw shaderResult.error;
-    seedShaderModule(label, shaderResult.value);
+    seedShaderModule(label, shaderResult.value, entry.source);
 
     const prewarmedSources = new Map<string, ShaderModule>([[entry.source, shaderResult.value]]);
     const manifestEntry = [...registry.materialShaderManifestEntries()].find(
@@ -105,7 +106,7 @@ export async function prewarmRequiredMaterialShaders({
         variantModule = variantResult.value;
         prewarmedSources.set(variantSource, variantModule);
       }
-      seedShaderModule(variantLabel, variantModule);
+      seedShaderModule(variantLabel, variantModule, variantSource);
     }
   }
 }

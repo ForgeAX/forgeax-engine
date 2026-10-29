@@ -1,7 +1,7 @@
 # forgeax-engine -- Hello Audio
 
 Spacebar one-shot SFX + movable 3D listener + collision-triggered cleanup --
-`createApp({ plugins: [audioPlugin(), physicsPlugin('rapier-3d')] })` declarative ECS example
+`createApp({ plugins: [audioPlugin(), physics3d] })` declarative ECS example
 (input is in the canvas-form default plugin set).
 
 ## Quickstart
@@ -28,7 +28,7 @@ It saves before/after PNG evidence under `apps/hello/audio/.forgeax-audio/browse
 
 | Surface | Details |
 |:--|:--|
-| **One-shot takeoff** | `createApp(canvas, { plugins: [audioPlugin(), physicsPlugin('rapier-3d')] })` -- both capabilities are assembled through the app plugin seam. |
+| **One-shot takeoff** | `createApp(canvas, { plugins: [audioPlugin(), physics3d] })` -- both capabilities are assembled through the app plugin seam. |
 | **Declarative ECS audio** | `AudioSource({ clip, playing })` drives `audioTickSystem` edge detection -- no imperative `backend.play()` bypass (AC-07). |
 | **Pack-index asset loading** | SFX GUID flows through `assets.load(guid, 'audio')`; the injected audio loader resolves and decodes the Vite catalog publication, returning the managed handle bound directly to `AudioSource.clip`. |
 | **Spatial panning** | `AudioSource.spatialBlend=1.0` creates a PannerNode; `syncListenerFromWorldMatrix(l, worldMatrix)` syncs the listener position/orientation each frame from the listener entity's `GlobalTransform.world` mat4. |

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,9 +19,15 @@ const [{ parseImage }, { AssetGuid }, { definePackageId }, { runUnifiedCli }] = 
   import(engineEntry('image/parse-image')), import(engineEntry('pack/guid')),
   import(engineEntry('pack/source')), import(engineEntry('devkit')),
 ]);
-const root = await mkdtemp(join(tmpdir(), 'forgeax-independent-run-'));
+const root = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-independent-run-')));
 process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = '/missing-contributor-cache-must-not-affect-run';
-process.env.FORGEAX_RUNS_DIR = await mkdtemp(join(tmpdir(), 'forgeax-run-state-'));
+process.env.FORGEAX_RUNS_DIR = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-run-state-')));
+// The full SDK version footer wraps at the lightweight width. Reserve room
+// below both authored UI panels so it cannot cover their exact color oracles.
+if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
+  const requestedHeight = Number.parseInt(process.env.FORGEAX_BROWSER_CI_VIEWPORT_HEIGHT ?? '0', 10);
+  process.env.FORGEAX_BROWSER_CI_VIEWPORT_HEIGHT = String(Math.max(240, Number.isFinite(requestedHeight) ? requestedHeight : 0));
+}
 const call = async (operation, args = []) => {
   const result = await sdkStage(`independentRun.${operation}`, () =>
     runUnifiedCli(['engine', 'run', ...operation.split('.'), '--root', root, '--json', ...args]),
@@ -65,6 +71,12 @@ try {
   `]);
   console.error('Evaluation', JSON.stringify(evaluated));
   const capture = await call('capture', ['--revision', revision, '--require-ui', 'true']);
+  const evidenceRoot = process.env.FORGEAX_INDEPENDENT_EVIDENCE_ROOT;
+  if (evidenceRoot) {
+    await mkdir(evidenceRoot, { recursive: true });
+    await cp(capture.screenshot.uri, join(evidenceRoot, 'capture.png'));
+    await writeFile(join(evidenceRoot, 'capture.json'), JSON.stringify({ pixels: capture.pixels, errors: capture.errors, screenshot: capture.screenshot }, null, 2));
+  }
   assert.equal(capture.pixels.rendered, true);
   assert.deepEqual(capture.errors, { console: 0, page: 0 });
   const decoded = parseImage(await readFile(capture.screenshot.uri), 'image/png', { mipmap: false });
@@ -72,6 +84,11 @@ try {
   const pixel = (x, y) => Array.from(decoded.value.bytes.slice((y * decoded.value.width + x) * 4, (y * decoded.value.width + x) * 4 + 3));
   assert.deepEqual(pixel(40, 50), [255, 0, 255], 'final PNG includes HTML UI');
   assert.deepEqual(pixel(40, 150), [0, 255, 255], 'final PNG includes Shadow DOM UI');
+  for (let y = 148; y <= 152; y += 1) {
+    for (let x = 38; x <= 42; x += 1) {
+      assert.deepEqual(pixel(x, y), [0, 255, 255], `Shadow DOM background patch at ${x},${y}`);
+    }
+  }
   const before = await call('status');
   const observations = await Promise.all(Array.from({ length: 8 }, () => call('observe')));
   for (const observation of observations) {

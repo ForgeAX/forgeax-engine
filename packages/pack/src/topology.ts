@@ -141,7 +141,3 @@ export function diffTopology(
 
   return { preserved, added, removed, changedKind, ambiguous };
 }
-
-export const calculateTopologyDiff = diffTopology;
-
-/** Alias named after the producer-facing contract wording. */

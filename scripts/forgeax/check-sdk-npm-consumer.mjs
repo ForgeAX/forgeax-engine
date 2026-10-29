@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { fetchWithRetry, streamFile, verifySdkViewRuntime } from './sdk-lib.mjs';
 import { SDK_NPM_PARTITIONS } from './sdk-pr-preflight.mjs';
+import { verifySdkSource } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
+import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
 /*
  * Cheap release preflight: install the freshly-built user-facing Engine
@@ -19,6 +21,32 @@ import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
  * It catches workspace:/file: leakage and carrier/umbrella metadata errors
  * before browser verification or npm publish spends the long release budget.
  */
+
+/**
+ * forge.json `assetLibraries: ["@forgeax/engine/content"]` resolves through the
+ * installed Engine closure, so the tarball must carry the library's Pack sources
+ * and the GUID module they import.
+ */
+async function installedContentAssets(engineRoot) {
+  for (let cursor = engineRoot; ; cursor = dirname(cursor)) {
+    const root = resolve(cursor, 'node_modules', '@forgeax', 'engine-content');
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+    } catch {
+      if (dirname(cursor) === cursor) throw new Error('npm-installed-content-missing');
+      continue;
+    }
+    const assetRoot = manifest.forgeax?.library?.assetRoot;
+    if (typeof assetRoot !== 'string') throw new Error('npm-installed-content-asset-root-missing');
+    const packs = (await readdir(resolve(root, assetRoot))).filter((name) =>
+      name.endsWith('.pack.ts'),
+    );
+    if (packs.length === 0) throw new Error('npm-installed-content-packs-missing');
+    await readFile(resolve(root, 'src', 'ids.ts'), 'utf8');
+    return packs.sort();
+  }
+}
 
 const execute = promisify(execFile);
 const execFileAsync = (file, args, options) =>
@@ -66,7 +94,7 @@ if ([...names].some((name) => name.startsWith('@forgeax/engine-')))
   throw new Error('release-focused-package-forbidden');
 const umbrella = packageArchives.find(({ manifest }) => manifest.name === '@forgeax/engine');
 if (umbrella === undefined) throw new Error('npm-umbrella-package-missing');
-if (!names.has('@forgeax/view')) throw new Error('npm-view-tool-package-missing');
+if (names.size !== 1) throw new Error('npm-publication-roster-invalid');
 if (carrier.manifest.name !== '@forgeax/engine-sdk') throw new Error('npm-sdk-carrier-name');
 
 for (const item of all) {
@@ -81,13 +109,12 @@ for (const item of all) {
   ]) {
     for (const [name, range] of Object.entries(item.manifest[section] ?? {})) {
       if (typeof range !== 'string') continue;
+      if (name === '@forgeax/view') throw new Error('npm-standalone-view-dependency-forbidden');
       if (/^(workspace|file|link):/.test(range)) {
         throw new Error(`npm-workspace-specifier: ${item.manifest.name} -> ${name}@${range}`);
       }
       if (
-        (name === '@forgeax/engine' ||
-          name.startsWith('@forgeax/engine-') ||
-          name === '@forgeax/view') &&
+        (name === '@forgeax/engine' || name.startsWith('@forgeax/engine-')) &&
         range !== version
       ) {
         throw new Error(
@@ -97,13 +124,6 @@ for (const item of all) {
     }
   }
 }
-const umbrellaDependencies = new Set(Object.keys(umbrella.manifest.dependencies ?? {}));
-for (const name of names) {
-  if (name !== '@forgeax/engine' && name !== '@forgeax/view' && !umbrellaDependencies.has(name)) {
-    throw new Error(`npm-umbrella-dependency-missing: ${name}`);
-  }
-}
-
 function metadata(item, registry) {
   const address = registry.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
@@ -168,7 +188,10 @@ const registry = createServer(async (request, response) => {
         .end(JSON.stringify(metadata(item, registry)));
       return;
     }
-    if (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk') {
+    if (
+      name === '@forgeax/view' ||
+      (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk')
+    ) {
       recordRegistryRequest(request, 404, 'forbidden-focused-package');
       response.writeHead(404).end();
       return;
@@ -249,11 +272,12 @@ async function verifyInstalledNpmOwners(installedSdk, consumerEnv, output, parti
     await sdkGpuStage('verifyInstalledNpmDiagnostics', () =>
       execFileAsync(
         process.execPath,
-        [resolve(root, 'tools/view-plugins/integration/verify-diagnostic-pages.mjs')],
+        [resolve(root, 'tools/view/scripts/verify-diagnostic-pages-integration.mjs')],
         {
           cwd: installedSdk,
           env: {
             ...consumerEnv,
+            FORGEAX_VIEW_ENGINE_SOURCE_ROOT: root,
             FORGEAX_VIEW_TOOL_PACKAGE: resolve(
               installedSdk,
               '.forgeax/cli-runtime/node_modules/@forgeax/view',
@@ -343,6 +367,9 @@ try {
   if (engineManifest.version !== version) {
     throw new Error('npm-installed-version-mismatch: @forgeax/engine');
   }
+  const contentAssets = await installedContentAssets(
+    await realpath(resolve(temporaryRoot, 'node_modules', '@forgeax', 'engine')),
+  );
   const installedSdk = resolve(temporaryRoot, 'installed-sdk');
   await execFileAsync(
     'node',
@@ -367,6 +394,28 @@ try {
   if (installedSdkManifest.sdkVersion !== version) {
     throw new Error('npm-installed-sdk-version-mismatch');
   }
+  const sourceSnapshot = await sdkStage('verify installed editable Engine source', () =>
+    verifySdkSource(installedSdk, installedSdkManifest),
+  );
+  let sourceEdit;
+  if (partition !== 'diagnostics') {
+    const sourceRoot = resolve(installedSdk, installedSdkManifest.source.root);
+    const { packageManager } = JSON.parse(
+      await readFile(resolve(sourceRoot, 'package.json'), 'utf8'),
+    );
+    await execFileAsync(
+      'corepack',
+      [packageManager, 'install', '--frozen-lockfile', '--ignore-scripts'],
+      { cwd: sourceRoot, env: consumerEnv, maxBuffer: 64 * 1024 * 1024 },
+    );
+    sourceEdit = await sdkStage('verify npm source iteration', () =>
+      verifySdkSourceEdit({
+        sdkRoot: installedSdk,
+        output: resolve(output, 'npm-source-edit'),
+        env: consumerEnv,
+      }),
+    );
+  }
   await readFile(resolve(installedSdk, 'bin', 'forgeax.mjs'), 'utf8');
   await execFileAsync(
     process.execPath,
@@ -390,7 +439,10 @@ try {
     packageCount: packageArchives.length,
     carrier: carrier.manifest.name,
     sdkInstall: { version: installedSdkManifest.sdkVersion, source: carrier.manifest.name },
+    sourceSnapshot,
+    ...(sourceEdit === undefined ? {} : { sourceEdit }),
     installed: { '@forgeax/engine': engineManifest.version },
+    contentAssets,
     toolchain: { node: process.version, npm: npmVersion },
     registry: 'ephemeral-local-with-npm-upstream-fallback',
   };

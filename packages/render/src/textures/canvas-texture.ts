@@ -1,4 +1,5 @@
 import type { RenderTextureSourceToken } from '@forgeax/engine-types';
+import { uuidv7 } from 'uuidv7';
 import type { RenderTargetTextureSource } from '../targets/contracts';
 import type { ExternalTextureSource } from './external-texture';
 import { isRenderTextureSourceToken, renderTextureSourceKey } from './source-token';
@@ -35,7 +36,7 @@ export class CanvasTexture {
     this.source = Object.freeze({
       kind: 'render-texture-source',
       source: 'canvas',
-      owner: crypto.randomUUID(),
+      owner: uuidv7(),
       id: 1,
     });
     sources.set(renderTextureSourceKey(this.source), this.state);

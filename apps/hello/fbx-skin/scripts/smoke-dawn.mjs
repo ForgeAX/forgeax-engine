@@ -40,17 +40,14 @@ import { useImportedAssetSource } from '../../../shared/scripts/source-publicati
 //      that regression.
 //   2. Multi-frame animation proof (AC-19 / E9): drive the AnimationPlayer over
 //      the run via world.update(1 / 60).unwrap() (ticks advanceAnimationPlayer, which writes
-//      the joint Transforms the SkinPaletteAllocator uploads each frame) and
-//      hash each per-frame skin-palette writeBuffer payload. Assert the joint
-//      palette takes on >=3 distinct values across the run: the pose is genuinely
-//      moving frame to frame, not a frozen T-pose. The palette upload IS the
-//      skinned-draw path (the render-system builds + writes it per skinned draw),
-//      so its distinctness proves both that the skinned mesh is drawn AND that it
-//      animates.
+//      the joint Transforms) and hash each shared Skin input writeBuffer payload
+//      of completed frames. Renderers upload changed joint matrices only for
+//      submitted frames, so >=3 distinct payloads prove the skinned mesh is
+//      submitted AND that its pose moves frame to frame, not a frozen T-pose.
 //   3. Falsification (plan-strategy §5.4): FALSIFY=static pauses the
-//      AnimationPlayer so world.update(1 / 60).unwrap() cannot advance time. The joint palette
-//      is uploaded with the same t=0 pose every frame -> distinct-hash count
-//      collapses to 1, and the "pose animates" assertion trips -> non-zero exit.
+//      AnimationPlayer so world.update(1 / 60).unwrap() cannot advance time. Unchanged joints
+//      upload nothing -> the write/distinct-hash count collapses and the
+//      "pose animates" assertion trips -> non-zero exit.
 //      This proves the gate is sensitive to the animated pose (not vacuously
 //      true against any rendered humanoid). FALSIFY is a local discrimination
 //      tool only; CI runs with no env.
@@ -58,7 +55,7 @@ import { useImportedAssetSource } from '../../../shared/scripts/source-publicati
 // Why not a pixel-colour diff: the dawn-node offscreen readback returns a
 // UNIFORM frame regardless of rendered geometry (verified: apps/hello/skin's
 // glTF Fox smoke reads back 30000/30000 identical pixels too). The
-// skin-palette write hash is the same deterministic dawn signal apps/hello/skin
+// shared Skin input write hash is the same deterministic dawn signal apps/hello/skin
 // uses; the actual on-screen pixel proof lives in the browser smoke path.
 
 import { fileURLToPath } from 'node:url';
@@ -72,8 +69,8 @@ import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs'
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
 const HEIGHT = 150;
-// Minimum distinct skin-palette write hashes across the run. The running clip
-// re-poses the joints every world.update(1 / 60).unwrap(), so the uploaded palette differs
+// Minimum distinct Skin input write hashes across the run. The running clip
+// re-poses the joints every world.update(1 / 60).unwrap(), so the uploaded joints differ
 // frame to frame; a frozen pose (FALSIFY=static) repeats one hash. >=3 parallels
 // the apps/hello/skin smoke's 3-sample lower bound.
 const PALETTE_MIN_DISTINCT = 3;
@@ -132,8 +129,8 @@ gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
 // Capture the raw GPUDevice createRenderer ends up using so the readback runs on
 // the same device (mirror of fbx-cube smoke). Also intercept device.queue.
-// writeBuffer for the SkinPaletteAllocator's `skin-palette` GPUBuffer and hash
-// each payload: the palette IS the per-frame joint-matrix upload, so a moving
+// writeBuffer for the shared Skin inputs (`gpu-scene-shared-inputs` joint rows
+// or CPU-recorded `skin-task-data`) and hash each payload: a moving
 // pose produces distinct hashes and a frozen pose repeats one hash. This is the
 // DETERMINISTIC animation-motion signal (mirror of apps/hello/skin smoke-dawn
 // m4-4). A whole-frame pixel diff is NOT usable as the motion gate here: the
@@ -165,7 +162,8 @@ globalThis.navigator.gpu.requestAdapter = async (opts) => {
       const paletteBuffers = new WeakSet();
       dev.createBuffer = (cdesc) => {
         const buf = origCreateBuffer(cdesc);
-        if ((cdesc.label ?? '') === 'skin-palette') paletteBuffers.add(buf);
+        if (cdesc.label === 'gpu-scene-shared-inputs' || cdesc.label === 'skin-task-data')
+          paletteBuffers.add(buf);
         return buf;
       };
       const origWriteBuffer = dev.queue.writeBuffer.bind(dev.queue);
@@ -371,19 +369,30 @@ renderer.subscribe((event) => {
 const device = sharedDevice;
 if (!device) { throw new Error('[smoke] FAIL - no shared device captured'); }
 
-// --- 6. Render loop: drive the animation, collect per-frame palette hashes ---
+// --- 6. Render loop: drive the animation, collect per-frame Skin input hashes ---
 // Each world.update(1 / 60).unwrap() ticks advanceAnimationPlayer (moves joints), then
-// renderer.draw builds + uploads the joint palette (hashed by the writeBuffer
-// hook) as part of the skinned-draw path.
-for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
+// renderer.draw uploads the changed joints (hashed by the writeBuffer hook).
+// Only completed, presented frames count; cold pipeline preparation retries.
+const preparationDeadline = performance.now() + 60_000;
+while (framesObserved < SMOKE_MIN_FRAMES) {
   world.update(1 / 60).unwrap();
   const r = renderer.draw({
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) errors.push(r.error?.code ?? 'unknown');
-  framesObserved++;
+  if (!r.ok) {
+    errors.push(r.error?.code ?? 'unknown');
+    framesObserved++;
+    continue;
+  }
+  const completed = await r.value.completed;
+  if (!completed.ok) errors.push(completed.error?.code ?? 'unknown');
+  if (r.value.presentation !== 'pending') framesObserved++;
+  else if (performance.now() > preparationDeadline) {
+    errors.push('preparation-timeout');
+    break;
+  }
 }
 await device.queue.onSubmittedWorkDone();
 if (!renderTarget) { throw new Error('[smoke] FAIL - renderTarget never allocated'); }
@@ -391,7 +400,7 @@ if (!renderTarget) { throw new Error('[smoke] FAIL - renderTarget never allocate
 distinctPaletteHashes = new Set(skinPaletteWrites).size;
 console.log(`[smoke] frames=${framesObserved} errors=${errors.length}`);
 console.log(
-  `[smoke] skin-palette writes=${skinPaletteWrites.length} distinctHashes=${distinctPaletteHashes} (min ${PALETTE_MIN_DISTINCT}, falsify=${FALSIFY || 'none'})`,
+  `[smoke] skin-input writes=${skinPaletteWrites.length} distinctHashes=${distinctPaletteHashes} (min ${PALETTE_MIN_DISTINCT}, falsify=${FALSIFY || 'none'})`,
 );
 
 // --- 7. Verdict ---
@@ -399,15 +408,15 @@ const failures = [];
 if (!sharedDevice) failures.push('(a) Dawn device was not created by the host-owned Standard pipeline');
 if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserved} < ${SMOKE_MIN_FRAMES}`);
 if (errors.length > 0) failures.push(`(c) errors=${errors.join(',')}`);
-// (d) the skinned-draw path must run: >=1 skin-palette upload means the pbr-skin
-// mesh was drawn (defect-B: with skin attrs missing this draw was skipped with
-// material-skin-attr-missing, so the allocator never engaged).
+// (d) the skinned-draw path must run: Skin input uploads mean the pbr-skin
+// mesh was submitted (defect-B: with skin attrs missing this draw was skipped
+// with material-skin-attr-missing, so no joints were uploaded).
 if (skinPaletteWrites.length < PALETTE_MIN_DISTINCT) {
-  failures.push(`(d) skin-palette write count=${skinPaletteWrites.length} < ${PALETTE_MIN_DISTINCT} (skinned draw path not exercised; skin attrs dropped?)`);
+  failures.push(`(d) skin-input write count=${skinPaletteWrites.length} < ${PALETTE_MIN_DISTINCT} (skinned draw path not exercised; skin attrs dropped?)`);
 } else if (distinctPaletteHashes < PALETTE_MIN_DISTINCT) {
-  // (e) AC-19: the joint palette must take on >=3 distinct values -- the pose
-  // animates. FALSIFY=static freezes the palette, collapsing distinctHashes to 1.
-  failures.push(`(e) pose did not animate: distinct palette hashes=${distinctPaletteHashes} < ${PALETTE_MIN_DISTINCT} (joints frozen at one pose)`);
+  // (e) AC-19: the joint inputs must take on >=3 distinct values -- the pose
+  // animates. FALSIFY=static freezes the joints and uploads nothing.
+  failures.push(`(e) pose did not animate: distinct Skin input hashes=${distinctPaletteHashes} < ${PALETTE_MIN_DISTINCT} (joints frozen at one pose)`);
 }
 
 if (failures.length > 0) {
@@ -435,5 +444,5 @@ if (failures.length > 0) {
   }
 }
 
-console.log(`[smoke] PASS - backend=webgpu, frames=${framesObserved}, errors=0, distinctPaletteHashes=${distinctPaletteHashes}`);
+console.log(`[smoke] PASS - backend=webgpu, frames=${framesObserved}, errors=0, distinctSkinInputHashes=${distinctPaletteHashes}`);
 emitSmokeReceipt('hello-fbx-skin/smoke', framesObserved);

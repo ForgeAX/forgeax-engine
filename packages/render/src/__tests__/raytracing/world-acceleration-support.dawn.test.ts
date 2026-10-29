@@ -449,7 +449,12 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
         );
       }
       const encoder = device.createCommandEncoder({}).unwrap();
-      expect(world.update(encoder, geometries, instances).unwrap().pending).toBe(0);
+      for (const instance of instances) {
+        const geometry = geometries[instance.geometryId];
+        if (geometry === undefined) throw new Error('missing coincident geometry');
+        world.set(instance, geometry).unwrap();
+      }
+      expect(world.update(encoder).unwrap().pending).toBe(0);
       const pass = encoder.beginComputePass({});
       for (const [variant, pipeline] of pipelines.entries()) {
         const group = device

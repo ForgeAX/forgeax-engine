@@ -1,8 +1,9 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, posix, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PACK_PROGRAM_WORKER_SOURCE } from '@forgeax/engine-pack/runtime-browser';
+import { moduleResolve } from 'import-meta-resolve';
 import MagicString from 'magic-string';
 import ts from 'typescript';
 import { normalizePath, type Plugin, type Rollup, searchForWorkspaceRoot } from 'vite';
@@ -14,30 +15,53 @@ async function canonicalModuleId(id: string): Promise<string> {
   const file = id.split('?')[0] ?? id;
   return isAbsolute(file) ? normalizePath(await realpath(file)) + id.slice(file.length) : id;
 }
+function moduleIdentity(id: string): string {
+  const file = id.split('?')[0] ?? id;
+  if (!isAbsolute(file)) return id;
+  // Compare identity without cache versions; preserve them on the actual Vite load URL.
+  const query = id
+    .slice(file.length + 1)
+    .split('&')
+    .filter((part) => !/^v(?:=|$)/.test(part))
+    .join('&');
+  return file + (query ? `?${query}` : '');
+}
+
 export const engineCapabilityMeta = 'forgeax.engineCapability';
 export interface EngineCapabilityMeta {
   readonly specifier: string;
   readonly reference?: string;
 }
 
-async function runtimeDependencyEntries(
+/** Browser entrypoints of the Engine closure; Node-only exports never enter Vite's scan. */
+export async function runtimeDependencyEntries(
   manifest: string,
-  entries = new Set<string>(),
+  entries = new Map<string, string | undefined>(),
 ): Promise<string[]> {
-  const entry = normalizePath(require.resolve(dirname(manifest)));
-  if (entries.has(entry)) return [...entries];
-  entries.add(entry);
-  const { dependencies = {} } = JSON.parse(await readFile(manifest, 'utf8')) as {
+  if (entries.has(manifest)) return [...entries.values()].filter((entry) => entry !== undefined);
+  entries.set(manifest, undefined);
+  const { name, dependencies = {} } = JSON.parse(await readFile(manifest, 'utf8')) as {
+    readonly name: string;
     readonly dependencies?: Readonly<Record<string, string>>;
   };
-  for (const name of Object.keys(dependencies)) {
-    if (!name.startsWith('@forgeax/engine-')) continue;
+  try {
+    const entry = moduleResolve(
+      name,
+      pathToFileURL(manifest),
+      new Set(['browser', 'import', 'default']),
+    );
+    entries.set(manifest, normalizePath(fileURLToPath(entry)));
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause;
+  }
+  for (const dependency of Object.keys(dependencies)) {
+    if (!dependency.startsWith('@forgeax/engine-')) continue;
     await runtimeDependencyEntries(
-      require.resolve(`${name}/package.json`, { paths: [dirname(manifest)] }),
+      require.resolve(`${dependency}/package.json`, { paths: [dirname(manifest)] }),
       entries,
     );
   }
-  return [...entries];
+  return [...entries.values()].filter((entry) => entry !== undefined);
 }
 
 /** Keep runtime entries and URL-loaded project plugins in one module graph. */
@@ -47,6 +71,7 @@ export function executionWorkerEntries(
 ): Plugin {
   let building = false;
   let base = '/';
+  let root = '';
   let allowedFiles: string[] | undefined;
   const virtual = 'virtual:forgeax/pack-program-imports';
   const importTableMarker = '__forgeax_delivered_program_imports__';
@@ -70,6 +95,17 @@ export function executionWorkerEntries(
     if (allowedFiles && file && isAbsolute(file) && !allowedFiles.includes(normalizePath(file))) {
       allowedFiles.push(normalizePath(file));
     }
+  };
+  const developmentModule = (specifier: string, id: string): string => {
+    const key = externalPrefix + encodeURIComponent(specifier);
+    const previous = imports.get(key);
+    if (previous && moduleIdentity(previous) !== moduleIdentity(id))
+      throw new Error(`Engine capability resolves to multiple modules in one player: ${specifier}`);
+    // Pin one actual URL, including its first transport version, for this player.
+    const selected = previous ?? id;
+    imports.set(key, selected);
+    admitDevelopmentModule(selected);
+    return selected;
   };
   const linkedEdges = new Map<string, { imports: string[]; dynamicImports: string[] }>();
   const owners = new Map<string, Promise<boolean>>();
@@ -96,6 +132,7 @@ export function executionWorkerEntries(
     enforce: 'pre',
     configResolved(config) {
       base = config.base;
+      root = normalizePath(config.root);
       allowedFiles = config.command === 'serve' ? config.server.fs.allow : undefined;
     },
     async resolveId(id, importer, options) {
@@ -108,13 +145,9 @@ export function executionWorkerEntries(
       const resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
       if (!resolved || resolved.external) this.error(`Engine capability unavailable: ${id}`);
       resolved.id = await canonicalModuleId(resolved.id);
+      const identity = moduleIdentity(resolved.id);
       if (!building) {
-        const key = externalPrefix + encodeURIComponent(id);
-        const previous = imports.get(key);
-        if (previous && previous !== resolved.id)
-          this.error(`Engine capability resolves to multiple modules in one player: ${id}`);
-        imports.set(key, resolved.id);
-        admitDevelopmentModule(resolved.id);
+        resolved.id = developmentModule(id, resolved.id);
         return {
           ...resolved,
           meta: {
@@ -123,10 +156,10 @@ export function executionWorkerEntries(
           },
         };
       }
-      let reference = facades.get(resolved.id);
+      let reference = facades.get(identity);
       if (!reference) {
         reference = this.emitFile({ type: 'chunk', id: resolved.id, preserveSignature: 'strict' });
-        facades.set(resolved.id, reference);
+        facades.set(identity, reference);
       }
       const external = externalPrefix + encodeURIComponent(id);
       const previous = imports.get(external);
@@ -157,14 +190,15 @@ export function executionWorkerEntries(
         if (!resolved || resolved.external)
           this.error(`Runtime program import unavailable: ${specifier}`);
         resolved.id = await canonicalModuleId(resolved.id);
-        let reference = facades.get(resolved.id);
+        const identity = moduleIdentity(resolved.id);
+        let reference = facades.get(identity);
         if (building && !reference) {
           reference = this.emitFile({
             type: 'chunk',
             id: resolved.id,
             preserveSignature: 'strict',
           });
-          facades.set(resolved.id, reference);
+          facades.set(identity, reference);
         }
         if (building && reference) {
           const external = externalPrefix + encodeURIComponent(specifier);
@@ -175,16 +209,7 @@ export function executionWorkerEntries(
             );
           imports.set(external, reference);
         }
-        if (!building) {
-          const key = externalPrefix + encodeURIComponent(specifier);
-          const previous = imports.get(key);
-          if (previous && previous !== resolved.id)
-            this.error(
-              `Engine capability resolves to multiple modules in one player: ${specifier}`,
-            );
-          imports.set(key, resolved.id);
-          admitDevelopmentModule(resolved.id);
-        }
+        if (!building) resolved.id = developmentModule(specifier, resolved.id);
       }
       const table = building
         ? `export default Object.freeze(${JSON.stringify(importTableMarker)});`
@@ -193,7 +218,11 @@ export function executionWorkerEntries(
             .map(([key, id]) => {
               const file = id.split('?')[0] ?? id;
               const query = id.slice(file.length);
-              return `${JSON.stringify(decodeURIComponent(key.slice(externalPrefix.length)))}: { identity: ${JSON.stringify(identity)}, url: new URL(${JSON.stringify(`${base}@fs${pathToFileURL(file).pathname}${query}`)}, globalThis.location.origin).href }`;
+              const pathname = pathToFileURL(file).pathname;
+              const url = file.startsWith(`${root}/`)
+                ? `${base}${pathname.slice(pathToFileURL(`${root}/`).pathname.length)}`
+                : `${base}@fs${pathname}`;
+              return `${JSON.stringify(decodeURIComponent(key.slice(externalPrefix.length)))}: { identity: ${JSON.stringify(identity)}, url: new URL(${JSON.stringify(`${url}${query}`)}, globalThis.location.origin).href }`;
             })
             .join(',')} };`;
       // Literal imports stay in the same native module graph as the game.
@@ -251,11 +280,31 @@ export function loadImport(specifier) {
     async configureServer(server) {
       if (runtimeImports.length > 0) {
         try {
+          const environment = server.environments.client;
+          if (!environment)
+            throw new TypeError('Runtime program imports require a client environment');
           await prepareIdentity(
-            (await server.environments.client?.pluginContainer.resolveId(
-              '@forgeax/engine/package.json',
-            )) ?? null,
+            (await environment.pluginContainer.resolveId('@forgeax/engine/package.json')) ?? null,
           );
+          if (environment.depsOptimizer) {
+            // Runtime capabilities can expose subpaths absent from App's main
+            // entry graph. Discover their dependencies before freezing programs.
+            const runtimeEntries: string[] = [];
+            for (const specifier of runtimeImports) {
+              const resolved = await environment.pluginContainer.resolveId(specifier);
+              if (!resolved || resolved.external)
+                throw new TypeError(`Runtime program import unavailable: ${specifier}`);
+              const file = resolved.id.split('?')[0];
+              if (file && isAbsolute(file)) runtimeEntries.push(normalizePath(file));
+            }
+            const entries = environment.config.optimizeDeps.entries;
+            environment.config.optimizeDeps.entries = [
+              ...new Set([
+                ...(typeof entries === 'string' ? [entries] : (entries ?? ['**/*.html'])),
+                ...runtimeEntries,
+              ]),
+            ];
+          }
         } catch (cause) {
           await server.close();
           throw cause;

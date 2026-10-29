@@ -121,9 +121,10 @@ bootstrap(canvas).catch((err: unknown) => {
 });
 
 async function bootstrap(target: HTMLCanvasElement): Promise<void> {
-  const bundler = import.meta.env.DEV
-    ? { ...forgeaxBundlerAdapter(), importTransport: createRuntimeAssetImportTransport(runtimeBinding) }
-    : forgeaxBundlerAdapter();
+  const bundler = {
+    ...forgeaxBundlerAdapter(),
+    importTransport: createRuntimeAssetImportTransport(runtimeBinding),
+  };
   const explicitRhi = await visualRhi();
   const appOptions =
     gpuPassTimingVisualMode === 'off'
@@ -133,7 +134,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           gpuPassTiming: GPU_PASS_TIMING_OPTIONS,
           ...(explicitRhi === undefined ? {} : { rhi: explicitRhi }),
         };
-  const appRes = await createApp(target, { ...appOptions, ...(import.meta.env.DEV && runtimeBinding !== undefined ? { assetRuntimeBinding: runtimeBinding } : {}) }, bundler);
+  const appRes = await createApp(target, { ...appOptions, ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }) }, bundler);
   if (!appRes.ok) {
     console.error('[skin] createApp failed:', appRes.error);
     return;

@@ -15,9 +15,9 @@ import { optionalAssetPack } from '../shared/src/optional-asset-pack.js';
 // collectathon vite config: 3D third-person collectathon showcase.
 //
 // pluginPack roots: M2 adds the humanoid.fbx fixture directory (the player
-// skinned mesh, reused from apps/hello/fbx-skin per D-3). M5 adds the sky.hdr
-// directory (IBL, demo-assets/template-game-default) + the collectathon-audio
-// directory (footstep/pickup/guardian/BGM cues). monorepoRoot is 2 levels up
+// skinned mesh, reused from apps/hello/fbx-skin per D-3). The generated Preview
+// environment provides IBL; collectathon-audio supplies footstep/pickup/guardian/BGM
+// cues. monorepoRoot is 2 levels up
 // (apps/collectathon -> monorepo root), same depth as apps/tetris, NOT the
 // 3-level hello path.
 
@@ -25,7 +25,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..');
 const assetRoots = [
   resolve(monorepoRoot, 'forgeax-engine-assets/vendor/fbx-test'),
-  resolve(monorepoRoot, 'forgeax-engine-assets/demo-assets/template-game-default'),
+  resolve(monorepoRoot, 'packages/preview/assets/canonical-kit'),
   resolve(monorepoRoot, 'forgeax-engine-assets/collectathon-audio'),
   resolve(monorepoRoot, 'forgeax-engine-assets/dejavu-fonts'),
 ];

@@ -71,11 +71,11 @@ export function selectColorTheme(id: string | null) {
   publish({ ...state, selectedThemeId: id });
 }
 
-export function createColorTheme(): string | null {
+export function createColorTheme(baseName = 'New Theme'): string | null {
   const state = getColorPickerPalettes();
   if (state.themes.length >= 24) return null;
   const id = crypto.randomUUID();
-  const theme = { id, name: uniqueName('New Theme', state.themes), colors: [] };
+  const theme = { id, name: uniqueName(baseName, state.themes), colors: [] };
   publish({ ...state, themes: [...state.themes, theme], selectedThemeId: id });
   return id;
 }
@@ -87,11 +87,11 @@ export function renameColorTheme(id: string, name: string) {
   publish({ ...state, themes: state.themes.map(theme => theme.id === id ? { ...theme, name: trimmed } : theme) });
 }
 
-export function duplicateColorTheme(id: string): string | null {
+export function duplicateColorTheme(id: string, suffix = ' Copy'): string | null {
   const state = getColorPickerPalettes();
   const original = state.themes.find(theme => theme.id === id);
   if (!original || state.themes.length >= 24) return null;
-  const copy = { ...original, id: crypto.randomUUID(), name: uniqueName(`${original.name} Copy`, state.themes), colors: [...original.colors] };
+  const copy = { ...original, id: crypto.randomUUID(), name: uniqueName(`${original.name}${suffix}`, state.themes), colors: [...original.colors] };
   publish({ ...state, themes: [...state.themes, copy], selectedThemeId: copy.id });
   return copy.id;
 }

@@ -2,9 +2,11 @@ import type {
   BindGroup,
   Buffer,
   ComputePipeline,
+  PipelineLayout,
   RhiCommandEncoder,
   RhiDevice,
   RhiError,
+  Sampler,
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
@@ -31,6 +33,17 @@ export const GI_PIXEL_STRIDE = 80;
 export const GI_SURFACE_STRIDE = 64;
 export const GI_PROBE_SAMPLE_STRIDE = 32;
 export const GiStatus = { background: 0, complete: 1, incomplete: 2, invalidMaterial: 3 } as const;
+type GiBufferName =
+  | 'instances'
+  | 'fields'
+  | 'cards'
+  | 'lights'
+  | 'surfaceA'
+  | 'surfaceB'
+  | 'probes'
+  | 'field'
+  | 'reference'
+  | 'settings';
 export interface DiffuseGiSettings {
   readonly view: SurfaceViewProjection;
   readonly resolution: number;
@@ -79,68 +92,9 @@ export async function createDiffuseGi(
   },
 ): Promise<Result<DiffuseGi, Failure>> {
   const s = request.settings;
-  const usesLut = request.sources.some((source) =>
-    source.sections.some((section) =>
-      materialUsesDirectDfgLut(section.material.program.paramSchema),
-    ),
-  );
-  const kernel = usesLut ? request.kernelLut : request.kernel;
-  if (kernel === undefined)
-    return rayReferenceFailure(
-      'LUT material requires the cooked DIRECT_DFG_LUT_AVAILABLE GI kernel',
-    );
-  if (
-    !Number.isInteger(s.resolution) ||
-    s.resolution < 8 ||
-    s.resolution > 512 ||
-    !Number.isInteger(s.cardResolution) ||
-    s.cardResolution < 8 ||
-    s.cardResolution > 32 ||
-    !Number.isInteger(s.samples) ||
-    s.samples < 16 ||
-    s.samples > 256 ||
-    s.samples % 2 !== 0 ||
-    !Number.isInteger(s.iterations) ||
-    s.iterations < 0 ||
-    s.iterations > 2 ||
-    s.probeCounts.some((v) => !Number.isInteger(v) || v < 2 || v > 4) ||
-    ![...s.probeOrigin, s.probeSpacing, ...s.environment].every((v) =>
-      Number.isFinite(Math.fround(v)),
-    ) ||
-    s.probeSpacing <= 0 ||
-    s.environment.some((v) => v < 0) ||
-    request.lights.length > 4
-  )
-    return rayReferenceFailure(
-      'GI requires 8..512 view, 8..32 cards, 16..256 even samples, 0..2 iterations, 2..4 probes per axis, positive spacing, finite nonnegative environment and at most 4 lights',
-      true,
-    );
-  const projection = captureViewProjection(s.view);
-  if (!projection.ok) return projection;
-  if (
-    request.scene.some(
-      (m) => !('missing' in m.field) && m.field.policy.kind === 'sampled-visibility',
-    )
-  )
-    return rayReferenceFailure(
-      'sampled visibility is not admitted by the geometric diffuse diagnostic',
-      true,
-    );
-  const scene = packSdfScene(request.scene);
-  if (!scene.ok) return scene;
-  for (const source of request.sources) {
-    const instance = request.scene.find((v) => v.instanceId === source.instance.instanceId);
-    if (
-      !instance ||
-      rayGeometryKey(
-        instance,
-        'missing' in instance.field ? 'missing' : instance.field.meshDigest,
-      ) !== rayGeometryKey(source.instance, source.layout.meshDigest)
-    )
-      return rayReferenceFailure('GI capture and tracing snapshots disagree');
-  }
-  const lightData = packLights(request.lights);
-  if (!lightData.ok) return lightData;
+  const admitted = admitGiRequest(request);
+  if (!admitted.ok) return admitted;
+  const { kernel, usesLut, projection, scene, lightData } = admitted.value;
   const owned: Buffer[] = [],
     captures: SurfaceCapture[] = [];
   let bytes = 0;
@@ -193,28 +147,10 @@ export async function createDiffuseGi(
   const cards = capture.value,
     texels = cards.width * cards.height,
     pixels = s.resolution * s.resolution;
-  const projections = new Uint8Array(
-      Math.max(
-        1,
-        cards.entries.reduce((n, e) => n + e.projections.length, 0),
-      ) * 80,
-    ),
-    pv = new DataView(projections.buffer);
-  let index = 0;
-  for (const entry of cards.entries)
-    for (const projection of entry.projections) {
-      projections.set(packCardProjection(projection), index * 80);
-      pv.setUint32(index * 80 + 64, entry.instanceId, true);
-      pv.setUint32(index * 80 + 68, 1, true);
-      index++;
-    }
+  const { projections, count: index } = packGiCardProjections(cards);
   const probeCount = s.probeCounts.reduce((a, b) => a * b, 1);
-  const bounds = giBounds(request.scene, s, projection.value);
-  if (
-    !Number.isFinite(bounds.distance) ||
-    bounds.distance > 100000 ||
-    bounds.bias >= s.probeSpacing * 0.5
-  )
+  const bounds = giBounds(request.scene, s, projection);
+  if (exceedsGiDomain(bounds, s.probeSpacing))
     return fail(
       rayReferenceFailure('GI domain is too large or SDF uncertainty exceeds half a probe cell'),
     );
@@ -227,13 +163,13 @@ export async function createDiffuseGi(
   u.set([request.scene.length, index, s.cardResolution, request.lights.length], 12);
   u.set([s.resolution, probeCount, s.iterations, 0], 16);
   f.set([bounds.bias, 0, 0, 0], 20);
-  f.set(projection.value.inverse, 24);
-  f.set(projection.value.eye, 40);
-  const data = {
-    instances: scene.value.instances,
-    fields: scene.value.fields,
+  f.set(projection.inverse, 24);
+  f.set(projection.eye, 40);
+  const data: Record<GiBufferName, Uint8Array> = {
+    instances: scene.instances,
+    fields: scene.fields,
     cards: projections,
-    lights: lightData.value,
+    lights: lightData,
     surfaceA: new Uint8Array(texels * GI_SURFACE_STRIDE),
     surfaceB: new Uint8Array(texels * GI_SURFACE_STRIDE),
     probes: new Uint8Array(probeCount * s.samples * GI_PROBE_SAMPLE_STRIDE),
@@ -241,130 +177,27 @@ export async function createDiffuseGi(
     reference: new Uint8Array(pixels * GI_PIXEL_STRIDE),
     settings,
   };
-  const buffers = {} as Record<keyof typeof data, Buffer>;
-  for (const key of Object.keys(data) as (keyof typeof data)[]) {
+  const buffers = {} as Record<GiBufferName, Buffer>;
+  for (const key of Object.keys(data) as GiBufferName[]) {
     const b = make(key, data[key], key === 'settings');
     if (!b.ok) return fail(b);
     buffers[key] = b.value;
   }
-  // Eight storage bindings fit the portable compute floor. Both cache generations are explicit.
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      ...Array.from({ length: 19 }, (_, binding) => ({
-        binding,
-        visibility: 4,
-        ...(binding >= 9
-          ? {
-              texture: {
-                sampleType: binding >= 17 ? ('depth' as const) : ('unfilterable-float' as const),
-              },
-            }
-          : {
-              buffer: {
-                type:
-                  binding === 8
-                    ? ('uniform' as const)
-                    : binding >= 5
-                      ? ('storage' as const)
-                      : ('read-only-storage' as const),
-              },
-            }),
-      })),
-      ...(directDfgLut === undefined
-        ? []
-        : [
-            {
-              binding: 19,
-              visibility: 4,
-              texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-            },
-            { binding: 20, visibility: 4, sampler: { type: 'filtering' as const } },
-          ]),
-    ],
-  });
-  if (!bgl.ok) return fail(bgl);
-  const views: TextureView[] = [];
-  for (const c of [cards, view.value])
-    for (const plane of CARD_PLANES) {
-      const v = device.createTextureView(c.textures[plane], {});
-      if (!v.ok) return fail(v);
-      views.push(v.value);
-    }
-  for (const c of [cards, view.value]) {
-    const v = device.createTextureView(c.textures.depth, {});
-    if (!v.ok) return fail(v);
-    views.push(v.value);
-  }
-  const group = (read: Buffer, write: Buffer, output: Buffer) =>
-    device.createBindGroup({
-      layout: bgl.value,
-      entries: [
-        ...[
-          buffers.instances,
-          buffers.fields,
-          buffers.cards,
-          buffers.lights,
-          read,
-          write,
-          buffers.probes,
-          output,
-          buffers.settings,
-        ].map((buffer, binding) => ({
-          binding,
-          resource: { kind: 'buffer' as const, value: { buffer } },
-        })),
-        ...views.map((value, i) => ({
-          binding: i + 9,
-          resource: { kind: 'textureView' as const, value },
-        })),
-        ...(directDfgLut === undefined
-          ? []
-          : [
-              { binding: 19, resource: { kind: 'textureView' as const, value: directDfgLut.view } },
-              { binding: 20, resource: { kind: 'sampler' as const, value: directDfgLut.sampler } },
-            ]),
-      ],
-    });
-  const groups: BindGroup[] = [];
-  for (const [read, write] of [
-    [buffers.surfaceA, buffers.surfaceB],
-    [buffers.surfaceB, buffers.surfaceA],
-  ] as const) {
-    const g = group(read, write, buffers.field);
-    if (!g.ok) return fail(g);
-    groups.push(g.value);
-  }
-  // Seed writes B; each feedback swap changes the source generation. Consumers bind the final one.
-  const finalRead = s.iterations % 2 === 0 ? buffers.surfaceB : buffers.surfaceA;
-  const other = s.iterations % 2 === 0 ? buffers.surfaceA : buffers.surfaceB;
-  const fieldGroup = group(finalRead, other, buffers.field),
-    referenceGroup = group(finalRead, other, buffers.reference);
-  if (!fieldGroup.ok) return fail(fieldGroup);
-  if (!referenceGroup.ok) return fail(referenceGroup);
-  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl.value] });
+  const bindings = createGiBindings(device, buffers, cards, view.value, directDfgLut, s.iterations);
+  if (!bindings.ok) return fail(bindings);
+  const { bgl, forward, backward, fieldGroup, referenceGroup, finalRead } = bindings.value;
+  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
   if (!layout.ok) return fail(layout);
   const shader = await compile(device, { code: kernel, label: 'gi.transport' });
   if (!shader.ok) return fail(shader);
-  const names = ['seed', 'feedback', 'traceProbes', 'gatherField', 'gatherReference'] as const;
-  const pipelines = {} as Record<(typeof names)[number], ComputePipeline>;
-  for (const name of names) {
-    const p = device.createComputePipeline({
-      label: `gi.${name}`,
-      layout: layout.value,
-      compute: { module: shader.value, entryPoint: name },
-    });
-    if (!p.ok) return fail(p);
-    pipelines[name] = p.value;
-  }
+  const pipelines = createGiPipelines(device, layout.value, shader.value);
+  if (!pipelines.ok) return fail(pipelines);
   // Logical owned buffer/texture bytes; borrowed material textures and driver overhead are excluded.
   for (const c of captures) bytes += c.bytes;
   const keys = request.sources.map(surfaceCardKey),
     sceneKeys = request.scene.map(sdfInstanceKey),
     lightingKey = JSON.stringify(request.lights),
     settingsKey = JSON.stringify(s);
-  const forward = groups[0],
-    backward = groups[1];
-  if (!forward || !backward) return fail(rayReferenceFailure('missing GI generation bindings'));
   let disposed = false;
   return ok({
     buffers: {
@@ -399,7 +232,7 @@ export async function createDiffuseGi(
       if (!b.ok) return b;
       const dispatch = (
         pipeline: ComputePipeline,
-        bindings: typeof fieldGroup.value,
+        bindings: BindGroup,
         count: number,
         label: string,
       ) => {
@@ -409,17 +242,17 @@ export async function createDiffuseGi(
         p.dispatchWorkgroups(Math.ceil(count / 64));
         p.end();
       };
-      dispatch(pipelines.seed, forward, texels, 'gi.seed');
+      dispatch(pipelines.value.seed, forward, texels, 'gi.seed');
       for (let i = 0; i < s.iterations; i++)
         dispatch(
-          pipelines.feedback,
+          pipelines.value.feedback,
           i % 2 === 0 ? backward : forward,
           texels,
           `gi.feedback-${i + 1}`,
         );
-      dispatch(pipelines.traceProbes, fieldGroup.value, probeCount * s.samples, 'gi.trace-probes');
-      dispatch(pipelines.gatherField, fieldGroup.value, pixels, 'gi.gather-field');
-      dispatch(pipelines.gatherReference, referenceGroup.value, pixels, 'gi.gather-reference');
+      dispatch(pipelines.value.traceProbes, fieldGroup, probeCount * s.samples, 'gi.trace-probes');
+      dispatch(pipelines.value.gatherField, fieldGroup, pixels, 'gi.gather-field');
+      dispatch(pipelines.value.gatherReference, referenceGroup, pixels, 'gi.gather-reference');
       return ok(undefined);
     },
     dispose() {
@@ -430,6 +263,270 @@ export async function createDiffuseGi(
     },
   });
 }
+/** Validate every CPU input before any GPU resource exists. */
+function admitGiRequest(request: Parameters<typeof createDiffuseGi>[2]) {
+  const s = request.settings;
+  const usesLut = request.sources.some((source) =>
+    source.sections.some((section) =>
+      materialUsesDirectDfgLut(section.material.program.paramSchema),
+    ),
+  );
+  const kernel = usesLut ? request.kernelLut : request.kernel;
+  if (kernel === undefined)
+    return rayReferenceFailure(
+      'LUT material requires the cooked DIRECT_DFG_LUT_AVAILABLE GI kernel',
+    );
+  if (!validGiSettings(s, request.lights.length))
+    return rayReferenceFailure(
+      'GI requires 8..512 view, 8..32 cards, 16..256 even samples, 0..2 iterations, 2..4 probes per axis, positive spacing, finite nonnegative environment and at most 4 lights',
+      true,
+    );
+  const projection = captureViewProjection(s.view);
+  if (!projection.ok) return projection;
+  if (
+    request.scene.some(
+      (m) => !('missing' in m.field) && m.field.policy.kind === 'sampled-visibility',
+    )
+  )
+    return rayReferenceFailure(
+      'sampled visibility is not admitted by the geometric diffuse diagnostic',
+      true,
+    );
+  const scene = packSdfScene(request.scene);
+  if (!scene.ok) return scene;
+  if (!capturesMatchTracing(request.sources, request.scene))
+    return rayReferenceFailure('GI capture and tracing snapshots disagree');
+  const lightData = packLights(request.lights);
+  if (!lightData.ok) return lightData;
+  return ok({
+    kernel,
+    usesLut,
+    projection: projection.value,
+    scene: scene.value,
+    lightData: lightData.value,
+  });
+}
+
+/** Kernel layout plus both feedback generations and the final field/reference bindings. */
+function createGiBindings(
+  device: RhiDevice,
+  buffers: Readonly<Record<GiBufferName, Buffer>>,
+  cards: SurfaceCapture,
+  view: SurfaceCapture,
+  directDfgLut: { readonly view: TextureView; readonly sampler: Sampler } | undefined,
+  iterations: number,
+) {
+  // Eight storage bindings fit the portable compute floor. Both cache generations are explicit.
+  const bgl = device.createBindGroupLayout({
+    entries: [
+      ...Array.from({ length: 19 }, (_, binding) => giKernelLayoutEntry(binding)),
+      ...(directDfgLut === undefined
+        ? []
+        : [
+            {
+              binding: 19,
+              visibility: 4,
+              texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+            },
+            { binding: 20, visibility: 4, sampler: { type: 'filtering' as const } },
+          ]),
+    ],
+  });
+  if (!bgl.ok) return bgl;
+  const views = createGiCaptureViews(device, cards, view);
+  if (!views.ok) return views;
+  const group = (read: Buffer, write: Buffer, output: Buffer) =>
+    device.createBindGroup({
+      layout: bgl.value,
+      entries: [
+        ...[
+          buffers.instances,
+          buffers.fields,
+          buffers.cards,
+          buffers.lights,
+          read,
+          write,
+          buffers.probes,
+          output,
+          buffers.settings,
+        ].map((buffer, binding) => ({
+          binding,
+          resource: { kind: 'buffer' as const, value: { buffer } },
+        })),
+        ...views.value.map((value, i) => ({
+          binding: i + 9,
+          resource: { kind: 'textureView' as const, value },
+        })),
+        ...(directDfgLut === undefined
+          ? []
+          : [
+              { binding: 19, resource: { kind: 'textureView' as const, value: directDfgLut.view } },
+              { binding: 20, resource: { kind: 'sampler' as const, value: directDfgLut.sampler } },
+            ]),
+      ],
+    });
+  const forward = group(buffers.surfaceA, buffers.surfaceB, buffers.field);
+  if (!forward.ok) return forward;
+  const backward = group(buffers.surfaceB, buffers.surfaceA, buffers.field);
+  if (!backward.ok) return backward;
+  // Seed writes B; each feedback swap changes the source generation. Consumers bind the final one.
+  const finalRead = iterations % 2 === 0 ? buffers.surfaceB : buffers.surfaceA;
+  const other = iterations % 2 === 0 ? buffers.surfaceA : buffers.surfaceB;
+  const fieldGroup = group(finalRead, other, buffers.field),
+    referenceGroup = group(finalRead, other, buffers.reference);
+  if (!fieldGroup.ok) return fieldGroup;
+  if (!referenceGroup.ok) return referenceGroup;
+  return ok({
+    bgl: bgl.value,
+    forward: forward.value,
+    backward: backward.value,
+    fieldGroup: fieldGroup.value,
+    referenceGroup: referenceGroup.value,
+    finalRead,
+  });
+}
+
+function exceedsGiDomain(
+  bounds: { distance: number; bias: number },
+  probeSpacing: number,
+): boolean {
+  return (
+    !Number.isFinite(bounds.distance) ||
+    bounds.distance > 100000 ||
+    bounds.bias >= probeSpacing * 0.5
+  );
+}
+
+/** View, card, sample, iteration, probe-grid, environment and light bounds of the experiment. */
+function validGiSettings(s: DiffuseGiSettings, lightCount: number): boolean {
+  return (
+    validGiSampling(s) &&
+    s.probeCounts.every((v) => Number.isInteger(v) && v >= 2 && v <= 4) &&
+    [...s.probeOrigin, s.probeSpacing, ...s.environment].every((v) =>
+      Number.isFinite(Math.fround(v)),
+    ) &&
+    s.probeSpacing > 0 &&
+    s.environment.every((v) => v >= 0) &&
+    lightCount <= 4
+  );
+}
+
+function validGiSampling(s: DiffuseGiSettings): boolean {
+  return (
+    isIntegerIn(s.resolution, 8, 512) &&
+    isIntegerIn(s.cardResolution, 8, 32) &&
+    isIntegerIn(s.samples, 16, 256) &&
+    s.samples % 2 === 0 &&
+    isIntegerIn(s.iterations, 0, 2)
+  );
+}
+
+function isIntegerIn(value: number, min: number, max: number): boolean {
+  return Number.isInteger(value) && value >= min && value <= max;
+}
+
+/** Does every captured source name the same geometry the tracing snapshot traverses? */
+function capturesMatchTracing(
+  sources: readonly SurfaceCardSource[],
+  scene: readonly SdfMeshInstance[],
+): boolean {
+  return sources.every((source) => {
+    const instance = scene.find((v) => v.instanceId === source.instance.instanceId);
+    return (
+      instance !== undefined &&
+      rayGeometryKey(
+        instance,
+        'missing' in instance.field ? 'missing' : instance.field.meshDigest,
+      ) === rayGeometryKey(source.instance, source.layout.meshDigest)
+    );
+  });
+}
+
+/** Card projections tagged with their instance, at least one zero row. */
+function packGiCardProjections(cards: SurfaceCapture): { projections: Uint8Array; count: number } {
+  const projections = new Uint8Array(
+      Math.max(
+        1,
+        cards.entries.reduce((n, e) => n + e.projections.length, 0),
+      ) * 80,
+    ),
+    pv = new DataView(projections.buffer);
+  let count = 0;
+  for (const entry of cards.entries)
+    for (const projection of entry.projections) {
+      projections.set(packCardProjection(projection), count * 80);
+      pv.setUint32(count * 80 + 64, entry.instanceId, true);
+      pv.setUint32(count * 80 + 68, 1, true);
+      count++;
+    }
+  return { projections, count };
+}
+
+// Eight storage bindings fit the portable compute floor; bindings 9.. are capture planes.
+function giKernelLayoutEntry(binding: number) {
+  if (binding >= 9)
+    return {
+      binding,
+      visibility: 4,
+      texture: {
+        sampleType: binding >= 17 ? ('depth' as const) : ('unfilterable-float' as const),
+      },
+    };
+  return {
+    binding,
+    visibility: 4,
+    buffer: {
+      type:
+        binding === 8
+          ? ('uniform' as const)
+          : binding >= 5
+            ? ('storage' as const)
+            : ('read-only-storage' as const),
+    },
+  };
+}
+
+/** Card planes for both captures, then both depth planes, in kernel binding order. */
+function createGiCaptureViews(
+  device: RhiDevice,
+  cards: SurfaceCapture,
+  view: SurfaceCapture,
+): Result<TextureView[], RhiError> {
+  const views: TextureView[] = [];
+  for (const c of [cards, view])
+    for (const plane of CARD_PLANES) {
+      const v = device.createTextureView(c.textures[plane], {});
+      if (!v.ok) return v;
+      views.push(v.value);
+    }
+  for (const c of [cards, view]) {
+    const v = device.createTextureView(c.textures.depth, {});
+    if (!v.ok) return v;
+    views.push(v.value);
+  }
+  return ok(views);
+}
+
+const GI_KERNELS = ['seed', 'feedback', 'traceProbes', 'gatherField', 'gatherReference'] as const;
+
+function createGiPipelines(
+  device: RhiDevice,
+  layout: PipelineLayout,
+  module: ShaderModule,
+): Result<Record<(typeof GI_KERNELS)[number], ComputePipeline>, RhiError> {
+  const pipelines = {} as Record<(typeof GI_KERNELS)[number], ComputePipeline>;
+  for (const name of GI_KERNELS) {
+    const p = device.createComputePipeline({
+      label: `gi.${name}`,
+      layout,
+      compute: { module, entryPoint: name },
+    });
+    if (!p.ok) return p;
+    pipelines[name] = p.value;
+  }
+  return ok(pipelines);
+}
+
 function giBounds(
   scene: readonly SdfMeshInstance[],
   s: DiffuseGiSettings,

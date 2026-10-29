@@ -1,7 +1,6 @@
 # @forgeax/feature-lab
 
 One page per row of the SDK feature catalog
-(`skills/forgeax-engine-sdk/references/feature-catalog.md`). Testers use it as the
 executable half of the feature checklist; the prose half is the tester manual in
 `<area>/<slug>` path as the feature id).
 
@@ -40,6 +39,15 @@ in additional catalog rows.
 | Current contact queries | `?f=physics/contact-queries` | Real completed-step contacts, unique neighbors, sensors, filters and stale-evidence refusal. |
 | Texture preview | `packages/three/example/textures.html` is a rendering comparison, not the Preview viewer; open a Texture/Equirect through the workspace Preview host | Owner `packages/preview/src/__tests__/texture-view.test.ts`, `texture-oracle.test.ts` validate options and evidence contracts; the manual names the live workspace viewer journey and its rendering boundary. |
 
+The SDK 0.4.19 capability additions use these examples and owner gates:
+
+| Catalog row | Entry | Evidence boundary |
+|:--|:--|:--|
+| Engine Content library | `packages/content/src/__tests__/content.test.ts`, `packages/devkit/src/__tests__/asset-libraries.integration.test.ts` | Real library sources, stable GUIDs, project mount and read-only authoring; registered in `GATE_PROVED_ROWS`. |
+| Load progress and timeline | `?f=app-execution/load-progress-and-timeline` | One headless example covers public work/byte progress and local timestamp marks. Cross-realm collection and page isolation stay with `packages/types/src/__tests__/load-progress.unit.test.ts` and `load-timeline.unit.test.ts`; generated startup and actual Engine producers retain their integration gates. |
+| Scripted gameplay verification | `packages/devkit/src/__tests__/project-play.e2e.test.ts`, `play.unit.test.ts`, `play-layout.e2e.test.ts` | A nested project/browser journey belongs to the DevKit gates, registered in `GATE_PROVED_ROWS`; unit summaries alone do not prove input, rendering or final runtime health. |
+| WebGPU CPU diagnostics | `src/node-features/rhi-backends/webgpu-cpu-diagnostics.ts` | An isolated Node Worker installs the stub before using the ordinary WebGPU RHI, submits commands and reads zero-filled bytes. App realm propagation remains an integration boundary; no Lab GPU is replaced and no pixels or GPU performance are claimed. |
+
 ## Feature kinds
 
 | Kind | Where | Proof |
@@ -63,6 +71,19 @@ They remain part of the complete `pnpm test:browser` roster.
 | Quantized layered music | `packages/audio-webaudio/src/__tests__/music-transport.browser.test.ts` | Native sample alignment, cancellation, late boundaries and Context lifetime. |
 | Managed scene SDF collision | `packages/render/src/__tests__/scene-sdf.browser.test.ts`, `scene-sdf.dawn.test.ts` | Fresh-device field sharing, swept collision work bounds and captured-contact replay. |
 | Cached asset thumbnails | `packages/devkit/__tests__/workspace-thumbnails.test.ts` | Ordinary Preview leases, real PNG alpha/color, progressive queue and persistent DDC reuse without a browser. |
+| Player Asset Bundles | `packages/devkit/src/__tests__/player-dist.test.ts`, `packages/assets-runtime/src/__tests__/asset-bundle-window.unit.test.ts` | Shared build/Player packaging, retained build diagnostics, idempotent encoded Bundle reuse, shared-entry deduplication, streaming exclusions, compression, offline inspection, verified resident windows and Range rereads; a codec-only page would not prove this delivery feature. |
+
+Runtime asset editing has an independent visual page:
+`?f=import-loading/runtime-asset-editing`. Two quads share one mutable material;
+a third uses an independent copy. Its checks retain a fixed snapshot and verify
+that rejected writes preserve current content.
+
+`src/node-features/cli-preview/pack-live-parameters-and-drafts.ts` runs real
+filesystem draft edit/undo/redo/Save/reopen and conflict refresh without executing
+the author's module. The actual preview and Worker generation boundaries remain
+covered by `packages/devkit/src/__tests__/workspace-pack-authoring.integration.test.ts`,
+`host-authoring-publication.integration.test.ts` and
+`packages/pack/src/__tests__/pack-live-worker.integration.test.ts`.
 
 - Area directories are fixed in `src/lab/areas.ts` and mirror catalog subsections. The
   file name is the slug; the registry discovers files through `import.meta.glob`, so

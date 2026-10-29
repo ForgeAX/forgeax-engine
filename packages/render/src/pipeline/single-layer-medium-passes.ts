@@ -30,7 +30,7 @@ export const SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID =
 export const SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID =
   'forgeax.single-layer-medium-msaa-raw-depth' as const;
 
-interface SingleLayerMediumMsaaPair {
+export interface SingleLayerMediumMsaaPair {
   readonly color: RenderPipelineTarget;
   readonly depth: RenderPipelineTarget;
 }
@@ -155,7 +155,7 @@ export function addSingleLayerMediumMsaaPairProducer(input: {
 }
 
 /** Inputs shared by the two graph passes owned by the Surface model. */
-interface SingleLayerMediumNearestTargets {
+export interface SingleLayerMediumNearestTargets {
   readonly nearestLayer: RenderPipelineTarget;
   readonly nearestDepth: RenderPipelineTarget;
 }

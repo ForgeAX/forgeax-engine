@@ -166,10 +166,11 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
       },
     });
     if (rayQuery) {
-      // The re-added emitter reuses its mesh's BLAS; each roster change rebuilds the TLAS only.
+      // The re-added emitter reuses its mesh's BLAS and each roster change rebuilds
+      // the TLAS only; the emitter's final removal releases its BLAS.
       assert(addedAcceleration);
       expect(fieldInspection(h).acceleration).toMatchObject({
-        geometries: addedAcceleration.geometries,
+        geometries: addedAcceleration.geometries - 1,
         blasBuilt: addedAcceleration.blasBuilt,
         settled: true,
       });

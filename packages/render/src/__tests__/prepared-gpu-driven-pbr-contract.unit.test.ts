@@ -6,11 +6,11 @@ import {
 import { expect, it } from 'vitest';
 import { type PrepareGpuDrivenDrawInput, prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
 
-function input(): PrepareGpuDrivenDrawInput {
-  const receipt = createStandardPbrArtifactReceipt();
+function input(skinned = false): PrepareGpuDrivenDrawInput {
+  const receipt = createStandardPbrArtifactReceipt(skinned);
   return {
     material: { baseColor: vec3.create(1, 1, 1), metallic: 0, roughness: 0.5, passes: [] },
-    deformation: 'rigid',
+    deformation: skinned ? 'skin' : 'rigid',
     artifact: {
       material: 'forgeax::default-standard-pbr',
       pass: 'forward',
@@ -110,4 +110,17 @@ it.each([
       break;
   }
   expect(prepareGpuDrivenDraw(value)).toMatchObject({ ok: false, error: { code } });
+});
+
+it('derives Skin admission from the actual paired vertex contract', () => {
+  const valid = prepareGpuDrivenDraw(input(true));
+  expect(valid.ok).toBe(true);
+  if (!valid.ok) throw valid.error;
+  expect(valid.value.identity.deformation).toBe('skin');
+  expect(valid.value.vertexInputs.some((input) => input.semantic === 'skinIndex')).toBe(true);
+  expect(valid.value.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(true);
+  expect(prepareGpuDrivenDraw({ ...input(), deformation: 'skin' })).toMatchObject({
+    ok: false,
+    error: { code: 'skin-receipt-mismatch' },
+  });
 });

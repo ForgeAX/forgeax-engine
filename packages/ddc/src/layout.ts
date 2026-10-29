@@ -2,11 +2,8 @@ import { isAbsolute, normalize } from 'node:path';
 
 export const DDC_LAYOUT_VERSION = 'v2' as const;
 
-export interface DdcBuildOptions {
+export interface DdcServeOptions {
   readonly buildCacheRoot: string;
-}
-
-export interface DdcServeOptions extends DdcBuildOptions {
   readonly projectDdcRoot?: string;
 }
 
@@ -30,11 +27,6 @@ export interface DdcLayout {
   readonly projectDdcRoot: string;
   readonly build: DdcBuildLayout;
   readonly project: DdcProjectLayout;
-}
-
-export interface DdcBuildLayoutResult {
-  readonly ok: true;
-  readonly value: DdcBuildLayout;
 }
 
 export interface DdcLayoutError {
@@ -84,15 +76,6 @@ function projectLayout(root: string): DdcProjectLayout {
     leases: `${root}/leases`,
     staging: `${root}/staging`,
   };
-}
-
-export function resolveBuildDdcLayout(
-  options: DdcBuildOptions,
-): DdcBuildLayoutResult | DdcLayoutFailure {
-  const root = rootOrError(options.buildCacheRoot, 'buildCacheRoot');
-  return typeof root === 'string'
-    ? { ok: true, value: buildLayout(root) }
-    : { ok: false, error: root };
 }
 
 export function resolveDdcLayout(options: DdcServeOptions): ClosedLayoutResult {

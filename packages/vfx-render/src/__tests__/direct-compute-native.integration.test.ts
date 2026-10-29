@@ -12,7 +12,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../../../render/src/features/host';
+import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
 import type { RenderFeatureWork } from '../../../render/src/features/types';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
@@ -180,8 +180,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
   let sequence = 0;
   const frame = (generation = 0) => {
     const frameNumber = ++sequence;
-    const batch = runRenderFeatureFrame(
-      host,
+    const batch = host.runFrame(
       ['main', 'side'].map((identity) => ({
         identity,
         render: true,
@@ -230,7 +229,9 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
 it('keeps native direct packets frame-private through abort, queued ticks, views, and recovery', async () => {
   const f = await fixture();
   try {
-    f.world.update(1 / 30).unwrap();
+    // Two updates before one render queue two ticks per player.
+    f.world.update(1 / 60).unwrap();
+    f.world.update(1 / 60).unwrap();
     expect(f.runtime.snapshot()).toHaveLength(4);
     const aborted = f.frame();
     expect(aborted.work.flatMap((w) => w.resources).some((r) => r.name.endsWith('.table'))).toBe(

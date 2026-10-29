@@ -271,3 +271,221 @@ describe('TransparentSortCache mode formulas', () => {
     expect(order(TRANSPARENT_SORT_MODE_LAYER_YZ, tilted, [], 0.5)).toEqual([1, 0]);
   });
 });
+
+describe('TransparentSortCache retained phase', () => {
+  /** mulberry32 */
+  function rng(seed: number): () => number {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
+    };
+  }
+
+  interface Row {
+    entityKey: number;
+    pose: Float32Array;
+    layer: number;
+    materials: number[];
+    queue: number;
+  }
+
+  function pose(x: number, y: number, z: number, scaleY = 1): Float32Array {
+    const world = new Float32Array(16);
+    world[0] = world[10] = world[15] = 1;
+    world[5] = scaleY;
+    world[12] = x;
+    world[13] = y;
+    world[14] = z;
+    return world;
+  }
+
+  /** One frame's dispatch: each row emits one entry per material, rows in roster order. */
+  function frame(rows: readonly Row[]) {
+    const renderables: TransparentSortSource[] = rows.map((row) => ({
+      transform: { world: row.pose },
+      material: { paramSnapshot: { pivotAndSize: [0.5, 0.25, 1, 1] } } as never,
+      worldId: 0,
+      entityKey: row.entityKey,
+    }));
+    const dispatch: DispatchEntry[] = [];
+    rows.forEach((row, index) => {
+      for (const material of row.materials) {
+        dispatch.push({ ...entry(index, row.queue, row.layer, material) });
+      }
+    });
+    return { renderables, dispatch };
+  }
+
+  /** Independent reference: the engine's stable sort over the selected slots. */
+  function stableReference(
+    dispatch: readonly DispatchEntry[],
+    renderables: readonly TransparentSortSource[],
+    mode: number,
+    eye: CameraSnapshot,
+    sortAll: boolean,
+  ): DispatchEntry[] {
+    const slots = dispatch.flatMap((e, i) =>
+      sortAll || e.queue === RenderQueue.Transparent ? [i] : [],
+    );
+    if (slots.length <= 1) return dispatch.slice();
+    const value = (e: DispatchEntry) => {
+      const w = renderables[e.renderableIndex]?.transform.world as Float32Array;
+      if (mode === TRANSPARENT_SORT_MODE_LAYER_Z) return w[14] as number;
+      if (mode === TRANSPARENT_SORT_MODE_LAYER_Y || mode === TRANSPARENT_SORT_MODE_LAYER_YZ) {
+        const foot = (w[13] as number) - 0.25 * Math.abs(w[5] as number);
+        return mode === TRANSPARENT_SORT_MODE_LAYER_Y ? -foot : foot + 0.5 * (w[14] as number);
+      }
+      const d = [0, 1, 2].map((k) => (w[12 + k] as number) - (eye.position[k] as number));
+      return -d.reduce((sum, n) => sum + n * n, 0);
+    };
+    const sorted = slots
+      .map((slot) => dispatch[slot] as DispatchEntry)
+      .sort((a, b) => {
+        const va = value(a);
+        const vb = value(b);
+        if (mode === TRANSPARENT_SORT_MODE_DISTANCE) return va < vb ? -1 : va > vb ? 1 : 0;
+        if (a.layer !== b.layer) return a.layer - b.layer;
+        if (va !== vb) return va < vb ? -1 : 1;
+        return a.materialHandle - b.materialHandle;
+      });
+    const result = dispatch.slice();
+    slots.forEach((slot, k) => {
+      result[slot] = sorted[k] as DispatchEntry;
+    });
+    return result;
+  }
+
+  it('equals a fresh stable sort over random edit sequences in every mode', () => {
+    const modes = [
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      TRANSPARENT_SORT_MODE_LAYER_Y,
+      TRANSPARENT_SORT_MODE_LAYER_YZ,
+      TRANSPARENT_SORT_MODE_DISTANCE,
+    ];
+    for (const mode of modes) {
+      for (const sortAll of [false, true]) {
+        for (let trial = 0; trial < 6; trial++) {
+          const random = rng(0x1000 * mode + trial * 31 + (sortAll ? 7 : 0));
+          // Mutable sources keep their arrays; only re-evaluation can see an edit.
+          const immutableSources = trial % 2 === 0;
+          const cache = new TransparentSortCache();
+          let nextEntity = 1;
+          // Integer coordinates create exact value ties carried by dispatch order.
+          const coordinate = () => Math.floor(random() * 5);
+          const spawn = (): Row => ({
+            entityKey: nextEntity++,
+            pose: pose(coordinate(), coordinate(), coordinate(), random() < 0.5 ? 1 : -2),
+            layer: Math.floor(random() * 3) - 1,
+            materials: random() < 0.2 ? [3, 1] : [Math.floor(random() * 3)],
+            queue: random() < 0.25 ? RenderQueue.Geometry : RenderQueue.Transparent,
+          });
+          let rows = Array.from({ length: 24 }, spawn);
+          let eye = camera(10, 4, 10);
+          for (let step = 0; step < 150; step++) {
+            const roll = random();
+            if (roll < 0.15) rows.splice(Math.floor(random() * (rows.length + 1)), 0, spawn());
+            else if (roll < 0.28 && rows.length > 0)
+              rows.splice(Math.floor(random() * rows.length), 1);
+            else if (roll < 0.33 && rows.length > 2) {
+              // A survivor reorders upstream: every dispatch tie is reassigned.
+              const [moved] = rows.splice(Math.floor(random() * rows.length), 1);
+              rows.splice(Math.floor(random() * rows.length), 0, moved as Row);
+            } else if (roll < 0.36) rows = [];
+            else if (roll < 0.45) eye = camera(random() * 20, random() * 8, random() * 20);
+            for (let edit = Math.floor(random() * 4); edit > 0 && rows.length > 0; edit--) {
+              const row = rows[Math.floor(random() * rows.length)] as Row;
+              const kind = random();
+              if (kind < 0.6 && immutableSources)
+                row.pose = pose(coordinate(), coordinate(), coordinate());
+              else if (kind < 0.6) row.pose.set([coordinate(), coordinate(), coordinate()], 12);
+              else if (kind < 0.8) row.layer = Math.floor(random() * 3) - 1;
+              else row.materials = [Math.floor(random() * 3)];
+            }
+            if (rows.length > 0 && random() < 0.03)
+              (rows[0] as Row).pose = pose(Number.NaN, Number.NaN, Number.NaN);
+            const { renderables, dispatch } = frame(rows);
+            const sorted = cache.sort(dispatch, scope(mode, 0.5), [eye], renderables, {
+              sortAll,
+              immutableSources,
+            });
+            const expected = stableReference(dispatch, renderables, mode, eye, sortAll);
+            const nan = renderables.some((r) => Number.isNaN(r.transform.world[12]));
+            // NaN slots take the engine sort; only finite frames have one reference order.
+            if (!nan)
+              expect(sorted, `mode=${mode} sortAll=${sortAll} trial=${trial} step=${step}`).toEqual(
+                expected,
+              );
+            if (nan) (rows[0] as Row).pose = pose(0, 0, 0);
+          }
+        }
+      }
+    }
+  });
+
+  /** Static camera, D changed rows per frame, one population T. */
+  function steady(t: number, d: number, moving: boolean) {
+    const random = rng(0xfeed + t);
+    // Constant density: a camera step causes the same inversions per row at every scale.
+    const side = 10 * Math.cbrt(t);
+    const rows: Row[] = Array.from({ length: t }, (_, i) => ({
+      entityKey: i + 1,
+      pose: pose(random() * side, random() * side, random() * side),
+      layer: 0,
+      materials: [1],
+      queue: RenderQueue.Transparent,
+    }));
+    const cache = new TransparentSortCache();
+    const sort = (eye: CameraSnapshot) => {
+      const { renderables, dispatch } = frame(rows);
+      return cache.sort(dispatch, scope(TRANSPARENT_SORT_MODE_DISTANCE), [eye], renderables, {
+        immutableSources: true,
+      });
+    };
+    sort(camera(side / 2, side / 2, -2 * side));
+    const before = cache.work();
+    const frames = 16;
+    for (let f = 0; f < frames; f++) {
+      for (let edit = 0; edit < d; edit++) {
+        const row = rows[Math.floor(random() * t)] as Row;
+        const w = row.pose;
+        row.pose = pose((w[12] as number) + random() - 0.5, w[13] as number, w[14] as number);
+      }
+      sort(camera(side / 2 + (moving ? (f + 1) * 0.25 : 0), side / 2, -2 * side));
+    }
+    const after = cache.work();
+    const per = (key: keyof typeof after) => (after[key] - before[key]) / frames;
+    return {
+      visited: per('visited'),
+      evaluated: per('evaluated'),
+      compared: per('compared'),
+      moved: per('moved'),
+      sorts: after.sorts - before.sorts,
+    };
+  }
+
+  it('static camera: sort work is O(changes) at two scales', () => {
+    const small = steady(1_000, 8, false);
+    const large = steady(32_000, 8, false);
+    // The upstream dispatch is a full list, so every slot is visited.
+    expect(large.visited).toBe(32_000);
+    // Only the changed rows evaluate a sort key or reach the phase.
+    expect(large.evaluated).toBe(8);
+    expect(small.evaluated).toBe(8);
+    expect(large.compared).toBeLessThan(8 * 2 * 16);
+    // 32x population: comparisons grow only with the binary-search depth.
+    expect(large.compared / small.compared).toBeLessThan(3);
+    expect(large.sorts).toBe(0);
+  });
+
+  it('moving camera: every key changes and the near-sorted repair is O(T + inversions)', () => {
+    for (const t of [1_000, 32_000]) {
+      const moving = steady(t, 8, true);
+      expect(moving.evaluated).toBe(t);
+      expect(moving.sorts).toBe(0);
+      // One verification comparison per row plus one per inversion repaired.
+      expect(moving.compared).toBeLessThanOrEqual(2 * (t + moving.moved) + 256);
+    }
+  });
+});

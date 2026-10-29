@@ -92,6 +92,12 @@ const ERR_PROTO = {
   },
 };
 
+// `ok(undefined)` is the success of most mutations; one frozen instance keeps
+// those hot paths allocation-free. Results are immutable values either way.
+const OK_UNDEFINED: ResultOk<undefined> = Object.freeze(
+  Object.assign(Object.create(OK_PROTO) as object, { ok: true as const, value: undefined }),
+) as ResultOk<undefined>;
+
 // ────────────────────────────────────────────────────────────────────────────
 // Factory functions
 // ────────────────────────────────────────────────────────────────────────────
@@ -104,6 +110,7 @@ const ERR_PROTO = {
  * `Result<T, E>` for any `E` by structural assignment).
  */
 export function ok<T>(value: T): ResultOk<T> {
+  if (value === undefined) return OK_UNDEFINED as ResultOk<T>;
   const r = Object.create(OK_PROTO) as { ok: true; value: T };
   r.ok = true;
   r.value = value;

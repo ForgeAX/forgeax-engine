@@ -5,7 +5,6 @@ import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue } from '@forgeax/eng
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer, orthographic, perspective } from '../components';
-import type { GpuDrivenBatch } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { Materials } from '../materials';
 import type { ExtractedFrame } from '../render-system-extract';
@@ -59,7 +58,7 @@ describe('CameraSnapshot frustum consumers', () => {
     world.update(0).unwrap();
 
     const direct = extractFrames([world], 0, assets);
-    const uncull = extractFrames([world], 0, assets, undefined, undefined, {
+    const uncull = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -99,7 +98,7 @@ describe('CameraSnapshot frustum consumers', () => {
     // stands behind it and the CPU cull must still reject it off screen.
     const outsideResidual = spawnCube(world, -100);
     world.update(0).unwrap();
-    const uncull = extractFrames([world], 0, assets, undefined, undefined, {
+    const uncull = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -166,28 +165,27 @@ describe('CameraSnapshot frustum consumers', () => {
       const candidates = scene
         .compositionSlots()
         .map((slot) => meshDrawSnapshot(slot.snapshot, fixed.content.meshes));
+      // The raster selection executes the scene's own source batches.
+      const state = scene.compositionGpuDrivenState();
+      const residualSlot = state?.slotForEntity?.(0, outsideResidual)?.slot;
       const selection = new GpuDrawSelection(
-        candidates
-          .filter((row) => row.entityKey !== outsideResidual)
-          .map((row) => ({
-            visibleCapacity: 1,
-            binding: {
-              material: row.material,
-              worldId: row.worldId,
-              assetHandle: row.assetHandle,
-              drawItemIndex: 0,
-              geometry: row.gpuDrivenDraws?.[0]?.geometry,
-            },
-          })) as GpuDrivenBatch[],
+        [...(state?.plan.batches ?? [])].filter(
+          (batch) => !batch.candidates.some((row) => row.primitiveIndex === residualSlot),
+        ),
       );
       expect(scene.inspect().gpu.status).toBe('resident');
       const selected = candidates.find((row) => row.entityKey === outside);
       expect(selected?.localAabb).toBeDefined();
-      expect(selected && selection.ownsAll(selected)).toBe(true);
       scene.setGpuDrivenRasterLane({ selection });
       const gpuOwned = extract();
-      expect(renderableKeys(gpuOwned)).toEqual([inside, outside]);
-      expect(gpuOwned.frustumStats).toEqual({ culled: 2, total: 3 });
+      // GPU-lane frames stay uncompacted; camera admission is a keyed predicate.
+      expect(renderableKeys(gpuOwned)).toEqual([inside, outside, outsideResidual]);
+      const residual = gpuOwned.gpuOwned?.residual(selection) ?? [];
+      expect(residual.map((row) => row.entityKey)).toEqual([outsideResidual]);
+      expect(residual.map((row) => gpuOwned.cameraVisible?.(row))).toEqual([false]);
+      const visible = gpuOwned.renderables.filter((row) => gpuOwned.cameraVisible?.(row) !== false);
+      expect(visible.map((row) => row.entityKey)).toEqual([inside]);
+      expect({ ...gpuOwned.frustumStats }).toEqual({ culled: 2, total: 3 });
       scene.setGpuDrivenRasterLane(undefined);
       expect(renderableKeys(extract())).toEqual([inside]);
     } finally {
@@ -206,7 +204,7 @@ describe('CameraSnapshot frustum consumers', () => {
     const outside = spawnCube(world, 4);
     world.update(0).unwrap();
 
-    const uncull = extractFrames([world], 0, assets, undefined, undefined, {
+    const uncull = extractFrames([world], 0, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });

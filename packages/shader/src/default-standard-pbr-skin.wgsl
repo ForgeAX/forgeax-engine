@@ -16,7 +16,7 @@
 #import forgeax_view::fog::{translucent_fog}
 #endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, sceneInstances}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneInstances}
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
@@ -344,13 +344,7 @@ fn materialTextureFilteringWitness() {
 @group(3) @binding(2) var<storage, read> visibleItems : array<vec4<u32>>;
 #endif
 
-#if STORAGE_BUFFER_AVAILABLE == true
-@group(2) @binding(1) var<storage, read> palette : array<mat4x4<f32>>;
-@group(2) @binding(2) var<storage, read> previousPalette : array<mat4x4<f32>>;
-#else
-@group(2) @binding(1) var<uniform> palette : array<mat4x4<f32>, 255>;
-@group(2) @binding(2) var<uniform> previousPalette : array<mat4x4<f32>, 255>;
-#endif
+#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate, skinTaskHistoryValid}
 
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -470,22 +464,11 @@ fn vs_main_impl(in : VsIn, paletteBase : u32, materialAddress : vec3<u32>, tempo
 #endif
 #endif
   let localPosition = standardVertexPosition(in);
+  let descriptor = skinTaskDescriptor(paletteBase);
 
-  // 4-bone weighted skinning (plan-strategy D-3 / D-3a).
-  // The host pre-computes each joint matrix as worldFromJoint * inverseBindMatrix
-  // (CPU-side pre-multiplication, per D-4) and writes them into the palette
-  // storage buffer. The BindGroup dynamic offset selects the per-entity slice
-  // so palette[0] is the first joint of this draw.
-
-  // Accumulate the weighted 4-joint skinning matrix: sum(w_i * M_i).
-  // Each palette entry is a mat4x4<f32> (world * IBM per joint).
-  // Direct draws use a dynamic offset so palette[0] is the first joint of
-  // the draw. Scene-index indirect draws bind the frame-global storage arena
-  // with zero offsets and carry the producer-owned slice in paletteBase.
-  let skinMatrix = palette[paletteBase + in.skinIndex.x] * in.skinWeight.x +
-    palette[paletteBase + in.skinIndex.y] * in.skinWeight.y +
-    palette[paletteBase + in.skinIndex.z] * in.skinWeight.z +
-    palette[paletteBase + in.skinIndex.w] * in.skinWeight.w;
+  // The actual task resolved world-joint times inverse-bind once. Both
+  // current and previous reads use this candidate's transient descriptor.
+  let skinMatrix = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
 
   // glTF 2.0 sec.Skins Implementation Note: when a mesh node has a skin
   // property, the joint matrices already encode the global transform of each
@@ -515,10 +498,7 @@ fn vs_main_impl(in : VsIn, paletteBase : u32, materialAddress : vec3<u32>, tempo
   // palette = jointWorld * IBM is already full world-space.
   var out : VsOut;
   out.clip = view.worldViewProj * skinnedLocal;
-  let previousSkin = previousPalette[paletteBase + in.skinIndex.x] * in.skinWeight.x +
-    previousPalette[paletteBase + in.skinIndex.y] * in.skinWeight.y +
-    previousPalette[paletteBase + in.skinIndex.z] * in.skinWeight.z +
-    previousPalette[paletteBase + in.skinIndex.w] * in.skinWeight.w;
+  let previousSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, true);
   let previousWorld = previousSkin * vec4<f32>(localPosition, 1.0);
   let currentClip = view.temporalCurrentViewProj * skinnedLocal;
   let previousClip = view.temporalPreviousViewProj * previousWorld;
@@ -527,7 +507,7 @@ fn vs_main_impl(in : VsIn, paletteBase : u32, materialAddress : vec3<u32>, tempo
   out.clipDelta = currentClip - previousClip;
   let reactiveLane = packSceneTemporalV1WithValidity(
     currentClip, previousClip,
-    view.temporalProjection, temporal.x, temporal.y >= 0.5).w;
+    view.temporalProjection, temporal.x, temporal.y >= 0.5 && skinTaskHistoryValid(descriptor)).w;
   out.surfaceData = vec3<u32>(0u, bitcast<u32>(reactiveLane), 0xffffffffu);
 #ifdef STANDARD_OBJECT_POSITION_UNUSED
   out.viewZ = sceneViewZ(out.clip, view.temporalProjection);
@@ -578,17 +558,20 @@ fn standardViewZ(in : VsOut) -> f32 {
 }
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-fn sceneIndexVertex(in : VsIn, idx : u32) -> VsOut {
+fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
   // visible = (scene instance row, material row, candidate row, LOD fade).
   // The palette already carries world space; the scene rows only name the
   // probe identity and keep the shared scene bindings referenced.
   let visible = visibleItems[idx];
   let draw = sceneIndexDraw(visible.x);
+  // Morph precedes skinning, as in the per-entity morphed stream.
+  var in = source;
+  in.pos = sceneIndexMorphPosition(visible.x, vertex, in.pos);
   _ = draw.world;
   // Scene material rows never reach bit 31; it carries the receive opt-out.
   var out = vs_main_impl(
     in,
-    sceneInstances[visible.x].customDataStart,
+    visible.z,
     vec3<u32>(visible.y | select(STANDARD_NO_RECEIVE_BIT, 0u, draw.receivesShadows), draw.probe),
     draw.temporal,
   );
@@ -612,11 +595,11 @@ fn standardReceivesShadows(in : VsOut) -> bool {
 }
 
 @vertex
-fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
+fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   // This variant binds only the GPU Scene tables; every entry reads the
   // visible stream.
-  return sceneIndexVertex(in, idx);
+  return sceneIndexVertex(in, idx, vertex);
 #else
   // Keep meshes[0] and instances bindings referenced so naga_oil does not
   // dead-code-eliminate the @group(2)@binding(0) and @group(3)@binding(0)
@@ -631,7 +614,7 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
 #else
   let temporal = vec2<f32>(1.0, 1.0);
 #endif
-  var out = vs_main_impl(in, 0u, vec3<u32>(0xffffffffu, 0u, 0u), temporal);
+  var out = vs_main_impl(in, skinTaskDirectCandidate(), vec3<u32>(0xffffffffu, 0u, 0u), temporal);
   out.surfaceData.z = meshes[0u].surface.z;
   return out;
 #endif
@@ -639,8 +622,8 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 @vertex
-fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  return sceneIndexVertex(in, idx);
+fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return sceneIndexVertex(in, idx, vertex);
 }
 #endif
 
@@ -1566,8 +1549,8 @@ struct TemporalVsOut {
   @location(10) positionOS : vec3<f32>,
 #endif
   @location(11) clippingPositionWS : vec3<f32>,
-#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   @location(12) @interpolate(flat) temporal : vec2<f32>,
+#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   @location(13) @interpolate(flat) materialIndex : u32,
 #endif
   @builtin(position) @invariant clip : vec4<f32>,
@@ -1606,31 +1589,32 @@ struct TemporalVsOut {
 fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
   let localPosition = standardVertexPosition(in);
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
-  // Scene-index draws bind the frame-global palette arena. The captured
-  // Instance row owns the same current/previous slice as vs_scene_index.
+  // Scene-index draws address the view's transient Skin task by the actual
+  // candidate in visible.z, exactly as vs_scene_index does.
   let visible = visibleItems[idx];
-  let paletteBase = sceneInstances[visible.x].customDataStart;
+  let paletteBase = visible.z;
   let materialIndex = visible.y;
   let temporalFlags = sceneIndexDraw(visible.x).temporal;
 #else
-  // Direct temporal draws use the per-entity dynamic offsets, so their slice
-  // base is zero just like the direct forward entry point.
-  let paletteBase = 0u;
+  // Direct temporal draws select their task through per-draw dynamic offsets,
+  // just like the direct forward entry point.
+  let paletteBase = skinTaskDirectCandidate();
 #endif
-  let currentSkin = palette[paletteBase + in.skinIndex.x] * in.skinWeight.x +
-    palette[paletteBase + in.skinIndex.y] * in.skinWeight.y +
-    palette[paletteBase + in.skinIndex.z] * in.skinWeight.z +
-    palette[paletteBase + in.skinIndex.w] * in.skinWeight.w;
-  let previousSkin = previousPalette[paletteBase + in.skinIndex.x] * in.skinWeight.x +
-    previousPalette[paletteBase + in.skinIndex.y] * in.skinWeight.y +
-    previousPalette[paletteBase + in.skinIndex.z] * in.skinWeight.z +
-    previousPalette[paletteBase + in.skinIndex.w] * in.skinWeight.w;
+  let descriptor = skinTaskDescriptor(paletteBase);
+  let currentSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
+  let previousSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, true);
   let currentWorld = currentSkin * vec4<f32>(localPosition, 1.0);
   let previousWorld = previousSkin * vec4<f32>(localPosition, 1.0);
   var out : TemporalVsOut;
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
-  out.temporal = temporalFlags;
+  out.temporal = vec2<f32>(temporalFlags.x, select(0.0, temporalFlags.y, skinTaskHistoryValid(descriptor)));
   out.materialIndex = materialIndex;
+#else
+#if STORAGE_BUFFER_AVAILABLE == true
+  out.temporal = vec2<f32>(meshes[0].temporal.x, select(0.0, 1.0, meshMotionValid(meshes[0].temporal.y) && skinTaskHistoryValid(descriptor)));
+#else
+  out.temporal = vec2<f32>(1.0, select(0.0, 1.0, skinTaskHistoryValid(descriptor)));
+#endif
 #endif
 #ifndef ALPHA_HASH_DISABLED
   out.positionOS = localPosition;
@@ -1682,19 +1666,8 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   applyLocalClipping(in.clippingPositionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
 #endif
 
-#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   let reactive = in.temporal.x;
   let motionValid = in.temporal.y >= 0.5;
-#else
-#if STORAGE_BUFFER_AVAILABLE == true
-  // Direct draws bind this entity's row through the group(2) dynamic offset.
-  let reactive = meshes[0].temporal.x;
-  let motionValid = meshMotionValid(meshes[0].temporal.y);
-#else
-  let reactive = 1.0;
-  let motionValid = true;
-#endif
-#endif
   let temporal = projectPbrSceneTemporal(
     material.baseColor.a * temporalVertexAlpha(in),
 #ifdef ALPHA_CLIPPING_AVAILABLE

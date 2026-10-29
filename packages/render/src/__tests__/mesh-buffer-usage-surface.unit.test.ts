@@ -57,7 +57,7 @@ const featureBufferSources = [
     names: ['GPU_BUFFER_USAGE_STORAGE', 'GPU_BUFFER_USAGE_UNIFORM', 'GPU_BUFFER_USAGE_COPY_DST'],
   },
   {
-    source: readFileSync(new URL('../systems/skin-palette-allocator.ts', import.meta.url), 'utf8'),
+    source: readFileSync(new URL('../record/skin-tasks.ts', import.meta.url), 'utf8'),
     names: ['GPU_BUFFER_USAGE_STORAGE', 'GPU_BUFFER_USAGE_UNIFORM', 'GPU_BUFFER_USAGE_COPY_DST'],
   },
   {

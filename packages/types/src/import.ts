@@ -1,11 +1,8 @@
-import type { AssetStageErrorBase } from './asset-errors.js';
 import type { SourceOverrideErrorCode, SourceOverrideMap } from './asset-producer.js';
 import type { AssetEnvelope } from './asset-reference.js';
 import type { PackIndexEntry } from './catalog.js';
 import type { Asset, AssetCodec, AssetRef, ImageError, TextureAsset } from './index.js';
 import { isFiniteBounds3 } from './mesh-contracts.js';
-
-export type ImportStageContractError = AssetStageErrorBase<'import', 'import-failed'>;
 
 // === Import contract SSOT (feat-20260603-asset-import-loader-injection M2 / w12) ===
 //
@@ -263,25 +260,11 @@ export interface ImportSubAsset {
 }
 
 /**
- * Six finite values describing producer-authored animated local bounds:
- * `[minX, minY, minZ, maxX, maxY, maxZ]`.
- *
- * The source producer (or its external-asset sidecar) owns these facts. A
- * missing or malformed row is deliberately rejected by the reader so a
- * renderer can keep the skin on its CPU deformation lane; it must never
- * synthesize bounds from a bind-pose mesh AABB.
- */
-export type ConservativeAnimatedBounds = readonly [number, number, number, number, number, number];
-
-/** Accepted `*.meta.json#importSettings` producer contract for animated skin bounds. */
-export interface AnimatedSkinImportSettings {
-  readonly conservativeAnimatedBounds?: readonly (readonly number[])[];
-}
-
-/**
- * Validate one producer-authored bounds row and copy it into the runtime POD.
- * The copy prevents an importer from retaining a mutable JSON array and keeps
- * malformed author facts out of the GPU culling contract.
+ * Validate one producer-authored `[minX, minY, minZ, maxX, maxY, maxZ]` bounds
+ * row and copy it into the runtime POD. A malformed row is rejected so the
+ * renderer keeps the skin on its CPU deformation lane instead of synthesizing
+ * bounds from a bind-pose AABB; the copy keeps a mutable JSON array out of the
+ * GPU culling contract.
  */
 export function parseConservativeAnimatedBounds(value: unknown): Float32Array | undefined {
   if (!Array.isArray(value) || value.length !== 6) return undefined;
@@ -413,6 +396,13 @@ export type ImportProductFinalizeResult =
 
 /** Optional producer capability exposed to the generic import runner. */
 export interface ImporterCapabilities {
+  /** Producer-owned single-output source formats admitted by asset add. */
+  readonly sourceFormats?: readonly {
+    readonly extensions: readonly string[];
+    readonly kind: ImportSubAsset['kind'];
+    readonly sourceKey: string;
+    readonly importSettings: Readonly<Record<string, unknown>>;
+  }[];
   readonly decodeImage?: ImportContext['decodeImage'];
   /** Producer-owned Catalog visibility for declarations before materialization. */
   readonly catalog?: {

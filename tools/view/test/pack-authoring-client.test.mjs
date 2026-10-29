@@ -87,6 +87,105 @@ test('retiring a panel never forwards its queued writes or Save to another sourc
   assert.deepEqual(calls.map(call => call.action), ['open', 'edit']);
 });
 
+test('generation without an open preview cannot reuse a retired owner binding', async () => {
+  const { author, calls } = fixture();
+  await author.open();
+  await assert.rejects(author.act('generate'), /Open a Pack output preview/);
+  assert.deepEqual(calls.map(call => call.action), ['open']);
+  author.dispose();
+});
+
+test('generation adopts the Pack output into every open same-source preview', async () => {
+  const calls = [];
+  let sequence = 0;
+  const client = {
+    transport: { subscribe() { return () => {}; } },
+    async call(_operation, { request, previewTargetId }) {
+      calls.push([request.action, previewTargetId]);
+      return { id: 'draft', sequence: ++sequence, sourcePath: 'assets/shared.pack.ts', fields: [], values: {}, unsaved: false };
+    },
+  };
+  const author = createPackAuthoringClient(client, { projectId: 'project', sessionId: 'session', targetId: 'target',
+    sourcePath: 'assets/shared.pack.ts', previewTargetId: () => 'scene', previewTargetIds: () => ['material', 'scene', 'mesh'] });
+  try {
+    await author.open();
+    await author.act('generate');
+    assert.deepEqual(calls, [
+      ['open', 'scene'], ['generate', 'scene'], ['generate', 'material'], ['generate', 'mesh'],
+    ]);
+  } finally { author.dispose(); }
+});
+
+test('runtime edits replay the shared draft to every open Pack preview', async () => {
+  let sequence = 0;
+  let values = { bodyColor: [1, 1, 1] };
+  const previews = new Map();
+  const targets = ['material', 'scene'];
+  const calls = [];
+  const snapshot = () => ({ id: 'draft', sequence: ++sequence, sourcePath: 'assets/shared.pack.ts',
+    fields: [{ name: 'bodyColor', default: [1, 1, 1], apply: { asset: 'material/body', path: ['values', 'baseColor'] } }], values, unsaved: true });
+  const client = {
+    transport: { subscribe() { return () => {}; } },
+    async call(_operation, { request, previewTargetId }) {
+      calls.push([request.action, previewTargetId]);
+      if (previewTargetId && request.action === 'get') previews.set(previewTargetId, [...values.bodyColor]);
+      if (request.action === 'edit') {
+        values = { bodyColor: request.value };
+        if (previewTargetId) previews.set(previewTargetId, [...values.bodyColor]);
+      }
+      return request.action === 'edit'
+        ? { ...snapshot(), changed: { field: request.field, value: request.value } }
+        : snapshot();
+    },
+  };
+  const author = createPackAuthoringClient(client, { projectId: 'project', sessionId: 'session', targetId: 'target',
+    sourcePath: 'assets/shared.pack.ts', previewTargetId: () => 'material', previewTargetIds: () => targets });
+  try {
+    await author.open();
+    author.edit('bodyColor', [0.2, 0.4, 0.8]);
+    await author.flush();
+    assert.deepEqual(previews.get('material'), [0.2, 0.4, 0.8]);
+    assert.deepEqual(previews.get('scene'), [0.2, 0.4, 0.8]);
+    assert.deepEqual(calls.map(([action, target]) => [action, target]), [
+      ['open', 'material'], ['get', 'material'], ['edit', 'material'], ['get', 'material'], ['get', 'scene'],
+    ]);
+    targets.push('mesh');
+    await author.syncPreviews();
+    assert.deepEqual(previews.get('mesh'), [0.2, 0.4, 0.8]);
+  } finally { author.dispose(); }
+});
+
+test('editing another asset domain targets its preview, or edits only the draft when unopened', async () => {
+  const calls = [];
+  let sequence = 0;
+  const fields = [
+    { name: 'sun', apply: { asset: 'scene/main' } },
+    { name: 'meshSize', apply: { asset: 'mesh/closed' } },
+  ];
+  const client = {
+    transport: { subscribe() { return () => {}; } },
+    async call(_operation, { request, previewTargetId }) {
+      calls.push([request.action, previewTargetId]);
+      return { id: 'draft', sequence: ++sequence, sourcePath: 'assets/shared.pack.ts', fields,
+        values: { sun: 1, meshSize: 1 }, unsaved: request.action === 'edit' };
+    },
+  };
+  const author = createPackAuthoringClient(client, { projectId: 'project', sessionId: 'session', targetId: 'target',
+    sourcePath: 'assets/shared.pack.ts', previewTargetId: () => 'material',
+    previewTargetIdForAsset: asset => asset === 'scene/main' ? 'scene' : undefined,
+    previewTargetIds: () => ['material', 'scene'] });
+  try {
+    await author.open();
+    author.edit('sun', 2);
+    await author.flush();
+    assert.deepEqual(calls.slice(1, 3), [['get', 'scene'], ['edit', 'scene']]);
+    calls.length = 0;
+    author.edit('meshSize', 2);
+    await author.flush();
+    assert.deepEqual(calls[0], ['edit', undefined]);
+  } finally { author.dispose(); }
+});
+
 test('100 author edits never publish or traverse the workspace asset inventory', async () => {
   const { createToolApi, defineTool, toolJsonSchema } = await import('@forgeax/engine-tool-runtime');
   const { ViewWorkspaceBroker } = await import('../packages/view-workspace-core/src/broker.ts');

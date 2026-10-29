@@ -112,8 +112,8 @@ test('real generated-game coverage drains compiler children before starting the 
   });
   assert.equal(
     browserRuns,
-    3,
-    'both native Renderer files and the Vite process owner remain isolated',
+    4,
+    'both native Renderer files, the Vite process owner and project play remain isolated',
   );
   assert.equal(active.size, 0);
 });
@@ -123,6 +123,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     [
       '@forgeax/engine-devkit',
       '@forgeax/engine-vite-plugin-shader',
+      '@forgeax/engine-vite-plugin-pack',
       '@forgeax/engine-pack',
       '@forgeax/engine-render',
       'unit',
@@ -131,11 +132,14 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
   );
   for (const file of [
     'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
+    'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
     'packages/vite-plugin-shader/src/__tests__/vite-plugin-shader.unit.test.ts',
     'packages/vite-plugin-shader/src/__tests__/public-surface.unit.test.ts',
     'packages/devkit/src/__tests__/live-dev-process.integration.test.ts',
+    'packages/devkit/src/__tests__/project-play.e2e.test.ts',
     'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
     'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
+    'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
   ]) {
     assert.equal(groups.filter((group) => group.files.includes(file)).length, 1);
     assert.ok(
@@ -163,7 +167,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 7);
+  assert.equal(exclusiveRuns, 10);
 });
 
 test('cold large-scene contracts execute once without competing coverage children', () => {
@@ -181,6 +185,76 @@ test('cold large-scene contracts execute once without competing coverage childre
         .every((group) => group.excludes.includes(file) || group.files.length > 0),
     );
   }
+});
+
+test('large-source pipeline identity has one exclusive owner with unchanged coverage and complete shard membership', async () => {
+  const file = 'packages/rhi-webgpu/src/__tests__/pipeline-library.unit.test.ts';
+  const projects = [
+    '@forgeax/engine-render-graph',
+    '@forgeax/engine-rhi',
+    '@forgeax/engine-rhi-debug',
+    '@forgeax/engine-rhi-null',
+    '@forgeax/engine-rhi-webgpu',
+  ];
+  const groups = coverageGroups(projects, 8);
+  const owners = groups.filter((group) => group.files.includes(file));
+  assert.equal(owners.length, 1);
+  const owner = owners[0];
+  assert.deepEqual(owner.files, [file]);
+  assert.equal(isExclusiveCoverageGroup(owner), true);
+  const ordinary = groups.filter((group) => !group.files.includes(file));
+  assert.ok(ordinary.every((group) => group.excludes.includes(file)));
+  const argsFor = (group) =>
+    buildGroupArgs({
+      cliPath: 'vitest.mjs',
+      group,
+      maxWorkers: 1,
+      coverage: true,
+      coverageDir: 'coverage-owner',
+      reportPath: 'vitest-owner.json',
+    });
+  const ownerArgs = argsFor(owner);
+  assert.ok(ownerArgs.includes(file));
+  assert.ok(ownerArgs.includes('--coverage'));
+  assert.ok(ownerArgs.includes('--coverage.reporter=json'));
+  assert.ok(ordinary.every((group) => argsFor(group).includes(`--exclude=${file}`)));
+  assert.ok(!ownerArgs.some((arg) => /testTimeout|hookTimeout|testNamePattern/.test(arg)));
+  const active = new Set();
+  const results = await runGroups({
+    groups,
+    concurrency: 3,
+    order: scheduledGroupOrder(groups, { coverage: true, localGpuLease: false }),
+    isExclusive: isExclusiveCoverageGroup,
+    runGroupImpl: async (group) => {
+      if (group === owner) assert.equal(active.size, 0);
+      else assert.equal(active.has(owner), false);
+      active.add(group);
+      await new Promise(setImmediate);
+      if (group === owner) assert.equal(active.size, 1);
+      active.delete(group);
+      return group.label;
+    },
+  });
+  assert.equal(results.filter((label) => label === owner.label).length, 1);
+  const labels = groups.map((group) => group.label);
+  const assignment = assignCoverageShards(groups, 3, { typecheck: false });
+  const shards = Array.from({ length: 3 }, (_, shardIndex) => ({
+    shardIndex,
+    shardCount: 3,
+    expectedGroups: labels,
+    groups: labels.filter((_, index) => assignment[index] === shardIndex),
+  }));
+  validateShardManifests(shards, labels);
+  const missing = shards.map((shard) => ({
+    ...shard,
+    groups: shard.groups.filter((label) => label !== owner.label),
+  }));
+  assert.throws(() => validateShardManifests(missing, labels), /ran 0 times/);
+  const duplicated = shards.map((shard, index) => ({
+    ...shard,
+    groups: index === 0 ? [...shard.groups, owner.label] : shard.groups,
+  }));
+  assert.throws(() => validateShardManifests(duplicated, labels), /ran 2 times/);
 });
 
 test('allows CI coverage to reuse the repository-wide typecheck gate', () => {
@@ -307,8 +381,9 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
   ];
   const liveProcessFile = 'packages/devkit/src/__tests__/live-dev-process.integration.test.ts';
+  const playFile = 'packages/devkit/src/__tests__/project-play.e2e.test.ts';
   const sceneFile = 'packages/scene/src/__tests__/flat-propagation.contract.test.ts';
-  const allFiles = [sceneFile, ...nativeFiles, liveProcessFile];
+  const allFiles = [sceneFile, ...nativeFiles, liveProcessFile, playFile];
   const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-devkit'], 8);
   assert.deepEqual(
     groups.map(({ projects, files, excludes, gpuLease }) => ({
@@ -336,6 +411,12 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       {
         projects: ['@forgeax/engine-devkit'],
         files: [liveProcessFile],
+        excludes: [],
+        gpuLease: false,
+      },
+      {
+        projects: ['@forgeax/engine-devkit'],
+        files: [playFile],
         excludes: [],
         gpuLease: false,
       },
@@ -629,18 +710,54 @@ test('repository scan files have one exclusive coverage owner and remain in the 
   assert.equal(scanRuns, 2);
 });
 
-test('cold Standard raster and ray compilation has one exclusive instrumented owner', () => {
-  const file =
-    'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts';
+test('cold Standard compilation and worker parity each have one exclusive instrumented owner', () => {
+  const cases = [
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-vite-plugin-pack',
+      'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
+    ],
+  ];
   const groups = coverageGroups(
-    ['@forgeax/engine-shader-compiler', '@forgeax/engine-naga', 'unit'],
+    [
+      '@forgeax/engine-shader-compiler',
+      '@forgeax/engine-vite-plugin-pack',
+      '@forgeax/engine-naga',
+      'unit',
+    ],
     8,
   );
-  const owners = groups.filter((group) => group.files.includes(file));
-  assert.equal(owners.length, 1);
-  assert.ok(isExclusiveCoverageGroup(owners[0]));
-  assert.deepEqual(owners[0].projects, ['@forgeax/engine-shader-compiler']);
-  assert.ok(
-    groups.filter((group) => group !== owners[0]).every((group) => group.excludes.includes(file)),
-  );
+  for (const [project, file] of cases) {
+    const owners = groups.filter((group) => group.files.includes(file));
+    assert.equal(owners.length, 1, file);
+    assert.ok(isExclusiveCoverageGroup(owners[0]));
+    assert.deepEqual(owners[0].projects, [project]);
+    assert.ok(
+      groups
+        .filter((group) => group !== owners[0])
+        .every((group) => group.files.length > 0 || group.excludes.includes(file)),
+    );
+  }
+});
+
+test('isolates every timed-out real shader and material owner exactly once without dropping coverage', () => {
+  const files = [
+    'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
+    'packages/shader/src/__tests__/material-program.test.ts',
+    'packages/render/src/__tests__/gpu-driven-production.integration.test.ts',
+    'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
+  ];
+  const groups = coverageGroups(['@forgeax/engine-shader', '@forgeax/engine-render'], 8);
+  for (const file of files) {
+    const owning = groups.filter((group) => group.files?.includes(file));
+    assert.equal(owning.length, 1, file);
+    assert.equal(isExclusiveCoverageGroup(owning[0]), true, file);
+  }
 });

@@ -68,7 +68,15 @@ async function cli(command, args = {}) {
     },
   );
   if (command === 'backend start') backendStarts.push({ probePid: execution.child.pid, startedAt });
-  const { stdout } = await execution;
+  let stdout;
+  try {
+    ({ stdout } = await execution);
+  } catch (error) {
+    records.push({ cli: command, ms: Date.now() - startedAt, failed: true,
+      code: error.code, signal: error.signal, killed: error.killed,
+      stderr: String(error.stderr ?? '').replace(/([?&](?:token|frontendTicket|forgeaxWorkspaceToken)=)[^&\s"'<>]+/g, '$1[redacted]').slice(-8000) });
+    throw error;
+  }
   records.push({ cli: command, ms: Date.now() - startedAt });
   const result = JSON.parse(stdout);
   assert.equal(result.ok, true, JSON.stringify(result.error));
@@ -173,6 +181,9 @@ try {
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.setDefaultTimeout(30000);
+  // Each Play opens its own game session (Vite server, Pack production); on
+  // Lavapipe runners that alone can exceed the 30 s UI default.
+  const playSessionTimeout = { timeout: 120000 };
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('framedetached', frame => records.push({ frameDetached: frame.url().split('?')[0], at: Date.now() }));
   page.on('console', (message) => {
@@ -219,7 +230,7 @@ try {
     await view.getByRole('button', { name: 'Play', exact: true }).click();
     const play = view.locator('iframe[data-forgeax-scene-play]');
     // Presentation stays transparent until native readiness; observe startup while attached.
-    await play.waitFor({ state: 'attached' });
+    await play.waitFor({ state: 'attached', ...playSessionTimeout });
     const playDocument = await (await play.elementHandle()).contentFrame();
     assert.ok(playDocument, 'Play must expose its actual document');
     if (cycle === 0 && process.env.FORGEAX_MCP_PROFILE === '1') {
@@ -245,9 +256,11 @@ try {
     // Keep the exact admitted frame. Re-resolving the nested iframe every poll
     // makes Playwright preview its multi-megabyte srcdoc on the browser thread.
     const playFrame = playDocument;
-    const playHtml = playFrame.locator('html');
+    const playCanvas = playFrame.locator('canvas#app');
+    const readCompletedFrame = () => playCanvas.evaluate(canvas =>
+      canvas.forgeaxFrameProgress?.completed?.frameId ?? 0);
     const deadline = performance.now() + 180000;
-    while (Number(await playHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
+    while (Number(await readCompletedFrame()) < 60) {
       await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
       assert.ok(performance.now() < deadline, 'The real Play Renderer must complete 60 frames');
       await page.waitForTimeout(50);
@@ -270,14 +283,14 @@ try {
     assert.ok(placement.width > 0 && placement.height > 0);
     await page.screenshot({ path: join(evidence, `play-${cycle}.png`) });
     await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
-    const completedFrames = Number(await playHtml.getAttribute('data-forgeax-frame-completed'));
+    const completedFrames = Number(await readCompletedFrame());
     assert.ok(completedFrames >= 60, 'The current Play document must retain 60 completed frames after capture');
     records.push({ playCycle: cycle, frameId: completedFrames,
       readyMs, placement });
     const stopStarted = performance.now();
     await view.getByRole('button', { name: 'Stop', exact: true }).click();
     await play.waitFor({ state: 'detached' });
-    await view.getByRole('button', { name: 'Play', exact: true }).waitFor();
+    await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
     records.push({ stopCycle: cycle, ms: Math.round(performance.now() - stopStarted) });
   };
   // The first retained cycle covers Play before any scene is opened.
@@ -309,10 +322,10 @@ try {
   assert.ok(targetId);
   const completeFrames = async (frameDeadline = performance.now() + 180000) => {
     const preview = view.frameLocator('iframe[data-forgeax-mcp-preview]');
-    const previewHtml = preview.locator('html');
+    const previewCanvas = preview.locator('canvas#app');
     // Match the maintained game-3d gate: observe completed frames without adding
     // GPU readbacks and multi-megabyte transport to every progress sample.
-    while (Number(await previewHtml.getAttribute('data-forgeax-frame-completed')) < 60) {
+    while (Number(await previewCanvas.evaluate(canvas => canvas.forgeaxFrameProgress?.completed?.frameId ?? 0)) < 60) {
       await assertNoRuntimeFailure(preview, 'Preview', errors, consoleErrors);
       assert.ok(performance.now() < frameDeadline, 'The real Renderer must complete at least 60 frames');
       await page.waitForTimeout(50);
@@ -355,7 +368,7 @@ try {
   await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
   await view.getByRole('button', { name: 'Play', exact: true }).click();
   const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
-  await preparingPlay.waitFor();
+  await preparingPlay.waitFor({ state: 'attached', ...playSessionTimeout });
   assert.equal(await preparingPlay.getAttribute('srcdoc'), null, 'The adopted Stop probe holds document delivery');
   // The published target is adopted: its owner retains presentation through
   // initial readiness before native cleanup, within the existing workspace bound.
@@ -364,9 +377,9 @@ try {
   await view.getByRole('button', { name: 'Game', exact: true }).waitFor();
   assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').evaluate(element => element.hidden), true,
     'Preview rendering must stay paused while adopted Play startup is draining');
-  await preparingPlay.waitFor({ state: 'detached', timeout: 120000 });
+  await preparingPlay.waitFor({ state: 'detached', ...playSessionTimeout });
   records.push({ adoptedStopMs: Math.round(performance.now() - preparingStopStarted) });
-  await view.getByRole('button', { name: 'Play', exact: true }).waitFor();
+  await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
   await page.getByRole('button', { name: 'Reopen View', exact: true }).click();
   await page.locator('#opened').filter({ hasText: 'http' }).waitFor();
   assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview'), targetId,
@@ -378,7 +391,9 @@ try {
   // Backend retirement deliberately produces connection failures. Observe the
   // replacement independently once its native Host has connected.
   replacingBackend = true;
+  const restartResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/restart', { timeout: 60000 });
   await page.getByRole('button', { name: 'Restart backend', exact: true }).click();
+  assert.equal((await restartResponse).status(), 200, 'Backend restart request must succeed; inspect failed CLI records');
   await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
   await view.locator(`iframe[data-forgeax-mcp-preview]:not([data-forgeax-mcp-preview="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
   await view.getByRole('status', { name: /ForgeaX Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });

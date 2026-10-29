@@ -139,7 +139,6 @@ it('omits whole page contributions without disabling backend services or unrelat
     .map(item => item.id).sort(), [
     'forgeax.view.page.scene.frontend',
     'forgeax.view.panel.scene-viewport.frontend',
-    'forgeax.view.panel.asset-browser.frontend',
     'forgeax.view.panel.object-inspector.frontend',
     'forgeax.view.panel.scene-hierarchy.frontend',
     'forgeax.view.page.plugin-browser.frontend',

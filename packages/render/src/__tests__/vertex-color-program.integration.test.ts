@@ -83,7 +83,7 @@ it.each([
           if (typeof request === 'object')
             for (const entities of request.entitiesByWorld)
               extractedEntities += entities?.size ?? 0;
-          return extractFrames([world], 0, assets, undefined, caches, {
+          return extractFrames([world], 0, assets, caches, {
             materialContext: DEFAULT_MATERIAL_VARIANT_CONTEXT,
             cull: 'none',
             retainHidden: true,

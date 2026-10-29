@@ -4,11 +4,13 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import {
   assertPhoneBundleSyntax,
   buildNativeGameplayBenchmark,
   instrumentCompletionDriver,
+  instrumentGameplayHost,
   instrumentPhoneDiagnostic,
 } from '../build_gameplay_benchmark.mjs';
 
@@ -17,6 +19,44 @@ const require = createRequire(
   await realpath(join(process.cwd(), 'node_modules/tsup/dist/index.js')),
 );
 const { parse } = require('acorn');
+
+test('minified async App names retain the resolved App, platform and original callbacks', async () => {
+  for (const appName of ['u', 'c', 'currentApp']) {
+    const events = [];
+    const platform = {};
+    const app = {
+      onError() {},
+      start() {
+        events.push('start');
+        return { unwrap() {} };
+      },
+    };
+    const source = `async function boot(){const ${appName}=(await makeApp({platform:actualPlatform,world:{},renderer:{},onFrameSubmitted(){record('submitted')},onFrameCompleted(){record('completed')}})).unwrap();${appName}.start().unwrap()}boot();`;
+    const observed = instrumentGameplayHost(source, parse, []);
+    await runInNewContext(observed, {
+      actualPlatform: platform,
+      record: (event) => events.push(event),
+      async makeApp(options) {
+        options.onFrameSubmitted();
+        options.onFrameCompleted();
+        return { unwrap: () => app };
+      },
+      __gameplayBenchmark: {
+        observeOptions(options, host) {
+          assert.equal(host, platform);
+          return options;
+        },
+        bindApp(value) {
+          assert.equal(value, app);
+          assert.equal(typeof value.onError, 'function');
+          events.push('bound');
+          return value;
+        },
+      },
+    });
+    assert.deepEqual(events, ['submitted', 'completed', 'bound', 'start']);
+  }
+});
 
 test('official phone gate rejects optional-chain/nullish output before publication', () => {
   assert.throws(
@@ -54,7 +94,7 @@ for (const mode of ['timed', 'cpu', 'gpu', 'qualification', 'transport-probe', '
       out = join(temporary, 'phone');
     const path = 'payload/assets/wechat-main-contract.js';
     const original =
-      'function main(e){const v={},M={};const host=provider.o(wx,`payload/wasm/wgpu.wasm.br`,[canvas]).unwrap();const d=make(canvas,{rhi:backend,features:[],ui:{},dynamicGeometryMeshBudgetBytes:undefined});const u=createApp({platform:v,world:M,renderer:d.renderer,onFrameSubmitted(){},onFrameCompleted(){}});u.start().unwrap()}';
+      'async function main(e){const v={},M={};const host=provider.o(wx,`payload/wasm/wgpu.wasm.br`,[canvas]).unwrap();const d=make(canvas,{rhi:backend,features:[],ui:{},dynamicGeometryMeshBudgetBytes:undefined});const u=(await createApp({platform:v,world:M,renderer:d.renderer,onFrameSubmitted(){},onFrameCompleted(){}})).unwrap();u.start().unwrap()}';
     await mkdir(dirname(join(publication, path)), { recursive: true });
     await writeFile(join(publication, path), original);
     const driverPath = 'payload/assets/queue-contract.js';

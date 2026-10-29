@@ -1,3 +1,4 @@
+import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
@@ -324,4 +325,48 @@ describe('registry-owned material programs', () => {
     `).materialBindings,
     ).toBeUndefined();
   });
+});
+
+it('keeps source identity available beyond historical cumulative source quotas', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const common = `//${'x'.repeat(16 * 1024 * 1024)}\n`;
+  const sources = Array.from({ length: 9 }, (_, index) =>
+    registry.shaderSource(`${common}// ${index}`),
+  );
+  expect(registry.sourceInspection().logicalBytes).toBeGreaterThan(256 * 1024 * 1024);
+  const fork = registry.forkForDevice({ createShaderModule: vi.fn() });
+  for (const source of sources) expect(fork.shaderSource(source)).toBe(source);
+}, 60000);
+
+it('captures material source once before source-reference verification', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  let reads = 0;
+  const first = 'fn sourceA() {}';
+  const second = 'fn sourceB() {}';
+  registry.installMaterialArtifact('game::accessor-source', {
+    get source() {
+      return ++reads === 1 ? first : second;
+    },
+    paramSchema: [],
+  });
+  expect(reads).toBe(1);
+  expect(registry.findMaterialArtifact('game::accessor-source').unwrap().program.source).toBe(
+    first,
+  );
+  expect(registry.materialProgram(second).source).toBe(second);
+});
+
+it('hashes a newly admitted raw source only once', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const text = 'fn singleHashSource() {}';
+  const expected = new ShaderSource([text]).identity;
+  const reads = vi.spyOn(ShaderSource.prototype, 'read');
+  try {
+    const source = registry.shaderSource(text);
+    expect(source.identity).toBe(expected);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(registry.shaderSource(source)).toBe(source);
+  } finally {
+    reads.mockRestore();
+  }
 });

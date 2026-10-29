@@ -3,7 +3,7 @@ import type { RhiCaps } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { RenderFeatureStageFailedError } from '../../../render/src/errors/render';
-import { createRenderFeatureHost, runRenderFeatureFrame } from '../../../render/src/features/host';
+import { createRenderFeatureHost } from '../../../render/src/features/host';
 
 const caps = (compute: boolean): Readonly<RhiCaps> => ({ compute }) as unknown as RhiCaps;
 
@@ -27,7 +27,7 @@ describe('render feature recovery lifecycle', () => {
     const calls: string[] = [];
     const host = createRenderFeatureHost([recoverableFeature(calls)], caps(true)).unwrap();
 
-    const first = runRenderFeatureFrame(host, [
+    const first = host.runFrame([
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 1, caps: caps(true) },
     ]).frame;
     expect(first.stageEvents.map((event) => event.stage)).toEqual(['extract', 'plan']);
@@ -37,14 +37,14 @@ describe('render feature recovery lifecycle', () => {
       'failed',
       new RenderFeatureStageFailedError('synthetic.recoverable', 0, 'prepare', 'next-frame'),
     );
-    const retry = runRenderFeatureFrame(host, [
+    const retry = host.runFrame([
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 2, caps: caps(true) },
     ]).frame;
     expect(retry.errors).toEqual([]);
     expect(calls.slice(-2)).toEqual(['extract:2', 'plan:2']);
 
     host.setStatus('synthetic.recoverable', 'disabled');
-    const skipped = runRenderFeatureFrame(host, [
+    const skipped = host.runFrame([
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 3, caps: caps(true) },
     ]).frame;
     expect(skipped.stageEvents).toEqual([]);
@@ -53,7 +53,7 @@ describe('render feature recovery lifecycle', () => {
     expect(recovered).toEqual(ok(undefined));
     expect(calls.at(-1)).toBe('plan:2');
 
-    const resumed = runRenderFeatureFrame(host, [
+    const resumed = host.runFrame([
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 4, caps: caps(true) },
     ]).frame;
     expect(resumed.errors).toEqual([]);
@@ -78,7 +78,7 @@ describe('render feature recovery lifecycle', () => {
       expect(afterDispose.error.detail.stage).toBe('recover');
     }
     expect(
-      runRenderFeatureFrame(host, [
+      host.runFrame([
         { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 2, caps: caps(true) },
       ]).frame.stageEvents,
     ).toEqual([]);

@@ -13,12 +13,51 @@ export interface ComponentPolicy {
   readonly requires: readonly Component[];
 }
 
+/**
+ * Storage dispatch derived once from a field's type keyword, so write, read
+ * and release paths never re-parse schema strings per row.
+ */
+export type FieldKind =
+  | 'number'
+  | 'bool'
+  | 'entity'
+  | 'string'
+  | 'unique'
+  | 'shared'
+  | 'asset'
+  | 'buffer'
+  | 'fixed-buffer'
+  | 'array'
+  | 'fixed-array';
+
+export interface FieldPlan {
+  readonly kind: FieldKind;
+  /** NaN is rejected for numeric scalars and numeric array elements. */
+  readonly numeric: boolean;
+  /** Overwrite/removal releases an owned slot or reference. */
+  readonly releases: boolean;
+}
+
+/** Component-level answers derived from its field plans. */
+export interface ComponentPlan {
+  readonly fields: Readonly<Record<string, FieldPlan>>;
+  /** Fields whose row value must be released before removal or overwrite. */
+  readonly releaseFields: readonly string[];
+  readonly hasAssetField: boolean;
+  readonly hasArrayField: boolean;
+  readonly hasSharedField: boolean;
+  readonly hasLabeledEnum: boolean;
+  /** Every field is a numeric, bool or entity scalar column. */
+  readonly scalarOnly: boolean;
+}
+
 /** Immutable schema reflection plus non-token policy projection. */
 export interface ComponentDefinition {
   readonly fieldNames: readonly string[];
   readonly fields: Readonly<Record<string, FieldReflection>>;
   readonly defaults: Readonly<Record<string, unknown>> | undefined;
   readonly policy: ComponentPolicy;
+  readonly plan: ComponentPlan;
 }
 
 // Component tokens can cross independently bundled ECS entry points. Share
@@ -47,15 +86,30 @@ export const componentRelationshipRoles = definitions.relationships;
 
 export function registerComponentDefinition(
   component: Component,
-  definition: Omit<ComponentDefinition, 'fieldNames'>,
+  definition: Omit<ComponentDefinition, 'fieldNames' | 'plan'>,
+  fieldPlans: Readonly<Record<string, FieldPlan>>,
 ): void {
-  definitions.definitions.set(
-    component,
-    Object.freeze({
-      ...definition,
-      fieldNames: Object.freeze(Object.keys(definition.fields)),
-    }),
-  );
+  const fieldNames = Object.freeze(Object.keys(definition.fields));
+  const fields = definition.fields;
+  const plans = Object.values(fieldPlans);
+  const plan: ComponentPlan = Object.freeze({
+    fields: Object.freeze({ ...fieldPlans }),
+    releaseFields: Object.freeze(fieldNames.filter((name) => fieldPlans[name]?.releases === true)),
+    hasAssetField: Object.values(fields).some((field) =>
+      (field.arrayMeta?.elementType ?? field.type).startsWith('asset<'),
+    ),
+    hasArrayField: Object.values(fields).some((field) => field.arrayMeta !== undefined),
+    hasSharedField: Object.values(fields).some((field) =>
+      (field.arrayMeta?.elementType ?? field.type).startsWith('shared<'),
+    ),
+    hasLabeledEnum: Object.values(fields).some(
+      (field) => field.type === 'enum' && field.labels !== undefined,
+    ),
+    scalarOnly: plans.every(
+      (field) => field.kind === 'number' || field.kind === 'bool' || field.kind === 'entity',
+    ),
+  });
+  definitions.definitions.set(component, Object.freeze({ ...definition, fieldNames, plan }));
 }
 
 /** Read the definition-time schema/policy projection for a component token. */

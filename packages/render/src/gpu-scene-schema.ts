@@ -136,7 +136,10 @@ export const GPU_SCENE_SCHEMAS = Object.freeze({
     name: 'GpuSceneTransform',
     fields: [
       { name: 'currentWorld', type: 'mat4x4<f32>' },
-      { name: 'previousWorld', type: 'mat4x4<f32>' },
+      // Row whose currentWorld holds this row's pose at the last submitted
+      // frame; read only while `stamp` equals the frame stamp in row 0.
+      { name: 'previousIndex', type: 'u32' },
+      { name: 'stamp', type: 'u32' },
     ],
   },
   material: {

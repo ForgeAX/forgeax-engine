@@ -51,7 +51,7 @@ export class EnvironmentSelectionParameterError extends Error {
   readonly detail: EnvironmentSelectionParameterDetail;
 
   constructor(field: string, value: number, expected: string) {
-    super(`environment selection field ${field} is invalid`);
+    super(`environment selection field ${field} is invalid: expected ${expected}, got ${value}`);
     this.name = 'EnvironmentSelectionParameterError';
     this.expected = expected;
     this.hint = `set ${field} to a finite value satisfying ${expected}`;
@@ -99,6 +99,31 @@ function freezeFog(candidate: FogCandidate): FogFrame {
   });
 }
 
+type FogSelectionError = FogCardinalityError | EnvironmentSelectionParameterError;
+
+/** Admit the original candidate once; full selection still controls when values are copied. */
+function selectFogCandidate(
+  fogs: readonly FogCandidate[],
+): Result<FogCandidate | undefined, FogSelectionError> {
+  if (fogs.length > 1) return err(new FogCardinalityError(fogs.length));
+  const candidate = fogs[0];
+  if (candidate !== undefined) {
+    const issue = validateFogParameters(candidate);
+    if (issue !== undefined)
+      return err(new EnvironmentSelectionParameterError(issue.field, issue.value, issue.expected));
+  }
+  return ok(candidate);
+}
+
+/** Select an independent immutable Fog fact without constructing unused environment facts. */
+export function selectFog(
+  fogs: readonly FogCandidate[],
+): Result<FogFrame | undefined, FogSelectionError> {
+  const selected = selectFogCandidate(fogs);
+  if (!selected.ok) return selected;
+  return ok(selected.value === undefined ? undefined : freezeFog(selected.value));
+}
+
 /** Select one immutable frame fact set for every Standard lighting path. */
 export function selectEnvironment(
   input: EnvironmentSelectionInput,
@@ -112,14 +137,9 @@ export function selectEnvironment(
       ),
     );
   }
-  if (input.fogs.length > 1) return err(new FogCardinalityError(input.fogs.length));
-  const selectedFog = input.fogs[0];
-  if (selectedFog !== undefined) {
-    const issue = validateFogParameters(selectedFog);
-    if (issue !== undefined) {
-      return err(new EnvironmentSelectionParameterError(issue.field, issue.value, issue.expected));
-    }
-  }
+  const fogSelection = selectFogCandidate(input.fogs);
+  if (!fogSelection.ok) return fogSelection;
+  const selectedFog = fogSelection.value;
   const selected = input.environments[0];
   if (selected?.kind === 'atmosphere') {
     const invalid = validateAtmosphereParameters(selected.atmosphere);

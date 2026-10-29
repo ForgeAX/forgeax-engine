@@ -419,7 +419,7 @@ it('discovers nested native Engine dependencies before a cold browser target act
       root,
       configFile: false,
       logLevel: 'silent',
-      plugins: [executionWorkerEntries()],
+      plugins: [executionWorkerEntries(['@forgeax/engine'])],
       build: { outDir: 'output' },
       server: { host: '127.0.0.1', port: 0 },
     });

@@ -204,23 +204,8 @@ export function handleAccess(event: RhiCallEvent): HandleAccess {
       return reads(...(event.build === undefined ? [] : blasBuildInputs(event.build)));
     case 'createTlas':
       return reads(...(event.build?.instances.map((instance) => instance.blasHandleId) ?? []));
-    case 'buildAccelerationStructures': {
-      const written = [
-        ...event.blas.map((entry) => entry.blasHandleId),
-        ...event.tlas.map((entry) => entry.tlasHandleId),
-      ];
-      return {
-        read: [
-          event.cmdHandleId,
-          ...event.blas.flatMap(blasBuildInputs),
-          ...event.tlas.flatMap((entry) =>
-            entry.instances.map((instance) => instance.blasHandleId),
-          ),
-          ...written,
-        ],
-        written,
-      };
-    }
+    case 'buildAccelerationStructures':
+      return accelerationStructureBuildAccess(event);
     case 'createTextureView':
       return reads(event.sourceHandleId);
     case 'getBindGroupLayout':
@@ -301,6 +286,24 @@ export function handleAccess(event: RhiCallEvent): HandleAccess {
     case 'endComputePass':
       return reads(event.passHandleId);
   }
+}
+
+function accelerationStructureBuildAccess(
+  event: Extract<RhiCallEvent, { kind: 'buildAccelerationStructures' }>,
+): HandleAccess {
+  const written = [
+    ...event.blas.map((entry) => entry.blasHandleId),
+    ...event.tlas.map((entry) => entry.tlasHandleId),
+  ];
+  return {
+    read: [
+      event.cmdHandleId,
+      ...event.blas.flatMap(blasBuildInputs),
+      ...event.tlas.flatMap((entry) => entry.instances.map((instance) => instance.blasHandleId)),
+      ...written,
+    ],
+    written,
+  };
 }
 
 function blasBuildInputs(build: Pick<RecordedBlasBuild, 'geometries'>): readonly string[] {

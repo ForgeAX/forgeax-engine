@@ -288,20 +288,20 @@ export async function executeVfxPreview(args: ResourcePreviewArgs, input: Resour
     typeof observation[field] === 'string' ? (observation[field] as string) : '';
   const authoredBounds = observation.authoredBounds;
   const seed = observation.seed;
-  const fixedDelta = observation.fixedDelta;
+  const delta = observation.delta;
   const timelineFrames = observation.timelineFrames;
   if (
     !Array.isArray(authoredBounds) ||
     authoredBounds.length !== 6 ||
     authoredBounds.some((value) => typeof value !== 'number' || !Number.isFinite(value)) ||
     typeof seed !== 'number' ||
-    typeof fixedDelta !== 'number' ||
+    typeof delta !== 'number' ||
     typeof timelineFrames !== 'number' ||
     !Number.isInteger(timelineFrames) ||
     timelineFrames <= 0 ||
     !Number.isFinite(seed) ||
-    !Number.isFinite(fixedDelta) ||
-    fixedDelta <= 0
+    !Number.isFinite(delta) ||
+    delta <= 0
   ) {
     return subjectFailure(
       'resource-preview-oracle-failed',
@@ -330,7 +330,7 @@ export async function executeVfxPreview(args: ResourcePreviewArgs, input: Resour
       number,
     ],
     seed,
-    fixedDelta,
+    delta,
     timelineFrames,
     rendererHealthy: renderer.rendererReady && renderer.worldReady,
     dispatches: runtime.dispatches,
@@ -355,7 +355,7 @@ export async function executeVfxPreview(args: ResourcePreviewArgs, input: Resour
       authoredBounds: inspected.value.authoredBounds,
       timeline: {
         seed,
-        fixedDelta,
+        delta,
         frames: timelineFrames,
       },
       oracle,

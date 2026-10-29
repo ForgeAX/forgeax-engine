@@ -26,7 +26,6 @@ export {
   type TerrainMaterialChannels,
   terrainMaterialChannels,
 } from './layer-plan.js';
-export { terrainLayerWeights } from './layers.js';
 export { terrainLod, terrainVertexCoordinates } from './lod.js';
 export { terrainHeight, terrainHeightfield, terrainSampleHeight } from './query.js';
 export {

@@ -71,7 +71,10 @@ function pipelineError(stage: string): RhiError {
     hint: 'construct the renderer through a backend pack with shader module support',
   });
 }
-function shaderSource(frame: RenderPipelineFrame, stage: keyof VolumetricFogShaderSources): string {
+function shaderSource(
+  frame: RenderPipelineFrame,
+  stage: keyof VolumetricFogShaderSources,
+): string | import('@forgeax/engine-types').ShaderSource {
   const source = frame.volumetricFogShaders?.[stage];
   if (source === undefined) throw pipelineError(`${stage} shader source`);
   return source;

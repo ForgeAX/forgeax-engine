@@ -12,6 +12,14 @@ export interface FixedTimeResource {
   readonly tick: number;
   /** Seconds accumulated toward the next fixed update. */
   readonly overstep: number;
+  /** How a frame that owes several fixed steps catches up (see {@link TimePolicy.fixedCatchUp}). */
+  readonly catchUp: FixedCatchUp;
+  /**
+   * Simulated seconds of the most recent FixedUpdate run. Equals `delta`
+   * except after a merged catch-up, where one run advanced several steps.
+   * Presentation interpolation spans this interval.
+   */
+  readonly stepDelta: number;
   readonly droppedSeconds: number;
   readonly droppedUpdates: number;
 }
@@ -38,10 +46,18 @@ interface ResourceToken<T> {
   readonly __resourceType?: T;
 }
 
+/**
+ * `substeps` runs FixedUpdate once per owed step. `merged` runs it once with
+ * `FixedTime.delta` set to the owed steps' total (still capped by
+ * maxStepsPerUpdate), trading integration precision for one schedule pass.
+ */
+export type FixedCatchUp = 'substeps' | 'merged';
+
 export interface TimePolicy {
   readonly fixedDeltaSeconds?: number;
   readonly maxStepsPerUpdate?: number;
   readonly maxDeltaSeconds?: number;
+  readonly fixedCatchUp?: FixedCatchUp;
 }
 
 export interface WorldOptions {
@@ -64,6 +80,7 @@ export const DEFAULT_TIME_POLICY: Required<TimePolicy> = {
   fixedDeltaSeconds: 1 / 60,
   maxStepsPerUpdate: 4,
   maxDeltaSeconds: 0.1,
+  fixedCatchUp: 'substeps',
 };
 
 function createTimeResource(policy: Required<TimePolicy>): TimeResource {
@@ -76,6 +93,8 @@ function createFixedTimeResource(policy: Required<TimePolicy>): FixedTimeResourc
     maxStepsPerUpdate: policy.maxStepsPerUpdate,
     tick: 0,
     overstep: 0,
+    catchUp: policy.fixedCatchUp === 'merged' ? 'merged' : 'substeps',
+    stepDelta: policy.fixedDeltaSeconds,
     droppedSeconds: 0,
     droppedUpdates: 0,
   };
@@ -107,6 +126,12 @@ export function createWorldClock(policy: Required<TimePolicy>): WorldClock {
     },
     get overstep() {
       return fixed.overstep;
+    },
+    get catchUp() {
+      return fixed.catchUp;
+    },
+    get stepDelta() {
+      return fixed.stepDelta;
     },
     get droppedSeconds() {
       return fixed.droppedSeconds;

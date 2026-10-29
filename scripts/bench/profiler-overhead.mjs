@@ -252,7 +252,7 @@ async function createWorkload() {
   registerPropagateTransforms(world);
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: Camera, data: { fov: 60, near: 0.1, far: 1000, tonemap: 4 } },
+    { component: Camera, data: { fov: Math.PI / 3, near: 0.1, far: 1000, tonemap: 4 } },
   );
   const appResult = await createApp({
     platform: createSmokePlatform({ width: 1, height: 1 }),

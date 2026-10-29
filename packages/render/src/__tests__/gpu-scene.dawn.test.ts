@@ -194,14 +194,25 @@ describe('GpuScene Dawn residency', () => {
           element * 4,
         true,
       );
+    // A row stamped with row 0's frame stamp reads its previous pose from `previousIndex`.
+    const transformWord = (row: number, field: string) =>
+      views.transform.getUint32(
+        row * GPU_SCENE_LAYOUTS.transform.stride +
+          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, field),
+        true,
+      );
+    const previousRow = (row: number) =>
+      transformWord(row, 'stamp') === transformWord(0, 'stamp')
+        ? transformWord(row, 'previousIndex')
+        : row;
     expect(transform(0, 'currentWorld')).toBe(1);
-    expect(transform(0, 'previousWorld')).toBe(1);
+    expect(transform(previousRow(0), 'currentWorld')).toBe(1);
     const firstTransform = primitive(firstPrimitive, 'transformIndex');
     const secondTransform = primitive(secondPrimitive, 'transformIndex');
     expect(firstTransform).toBe(1);
     expect(secondTransform).toBe(2);
     expect(transform(firstTransform, 'currentWorld', 12)).toBe(3);
-    expect(transform(secondTransform, 'previousWorld', 12)).toBe(9);
+    expect(transform(previousRow(secondTransform), 'currentWorld', 12)).toBe(9);
     const materialPayload = (descriptor: number) =>
       views.input.getUint32((descriptor + GPU_MATERIAL_DESCRIPTOR.payload) * 4, true) * 16;
     const materialOffset = materialPayload(firstMaterial);

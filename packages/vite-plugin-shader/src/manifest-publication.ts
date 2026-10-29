@@ -170,21 +170,38 @@ export function mergeShaderManifestPublications(
     ...project(row, owner),
     variants: row.variants.map((variant) => project(variant, owner)),
   });
+  const entries = [
+    ...engine.entries
+      .filter((row) => engineEntryHashes.has(String((row as { hash?: unknown }).hash)))
+      .map((row) =>
+        // Metadata only fills absent fields; keeping the row's own field order
+        // publishes the bytes a source compile of the same entry would.
+        project(
+          {
+            ...row,
+            ...Object.fromEntries(
+              Object.entries(engineEntryMetadata).filter(([key]) => !Object.hasOwn(row, key)),
+            ),
+            glsl: '',
+          },
+          engine,
+        ),
+      ),
+    ...authored.entries.map((row) => project(row, authored)),
+  ];
+  const materialShaders = [
+    ...engine.materialShaders.map((row) => material(row, engine)),
+    ...authored.materialShaders.map((row) => material(row, authored)),
+  ];
+  // Same field order as publishShaderManifest: a build that merges packaged
+  // engine inputs publishes the bytes a full source compile would.
   return {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
-    fragments,
-    sources,
     receipts: receipts.values,
     entryPoints: entryPoints.values,
-    entries: [
-      ...engine.entries
-        .filter((row) => engineEntryHashes.has(String((row as { hash?: unknown }).hash)))
-        .map((row) => project({ ...engineEntryMetadata, ...row, glsl: '' }, engine)),
-      ...authored.entries.map((row) => project(row, authored)),
-    ],
-    materialShaders: [
-      ...engine.materialShaders.map((row) => material(row, engine)),
-      ...authored.materialShaders.map((row) => material(row, authored)),
-    ],
+    fragments,
+    sources,
+    entries,
+    materialShaders,
   };
 }

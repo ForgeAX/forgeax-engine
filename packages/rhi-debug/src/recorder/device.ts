@@ -13,6 +13,7 @@ import type {
   ComputePipeline,
   ComputePipelineDescriptor,
   PipelineLayoutDescriptor,
+  PipelineLibrary,
   QuerySet,
   QuerySetDescriptor,
   RenderPipeline,
@@ -57,6 +58,10 @@ const UNKNOWN_EXTERNAL = 'externalTexture:unknown' as HandleId;
 export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): RhiDevice {
   const proxiedQueue = createQueueProxy(s, realDevice.queue);
   const pipelineLibrary = realDevice.pipelineLibrary;
+  const findRenderState = pipelineLibrary?.findRenderState?.bind(pipelineLibrary);
+  const collect = pipelineLibrary?.collect?.bind(pipelineLibrary);
+  const selectRender = pipelineLibrary?.selectRender?.bind(pipelineLibrary);
+  const selectCompute = pipelineLibrary?.selectCompute?.bind(pipelineLibrary);
 
   const captureRenderPipeline = (
     desc: RenderPipelineDescriptor,
@@ -153,6 +158,90 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
     return makeOk(wrapPipeline(s, pipeline, pipelineId));
   };
 
+  // Debug records the recipe selected by the fast path as well as native misses.
+  // Materializing diagnostic events is confined to this opt-in recorder.
+  const recordedLibrary: PipelineLibrary | undefined =
+    pipelineLibrary === undefined
+      ? undefined
+      : selectRender === undefined && selectCompute === undefined
+        ? pipelineLibrary
+        : {
+            ...(findRenderState === undefined
+              ? {}
+              : {
+                  findRenderState: (dependencies, matches) =>
+                    findRenderState(dependencies, matches),
+                }),
+            ...(collect === undefined ? {} : { collect: () => collect() }),
+            inspect: (options) => pipelineLibrary.inspect(options),
+            export: (limits) => pipelineLibrary.export(limits),
+            prepare: (manifest, options) => pipelineLibrary.prepare(manifest, options),
+            ...(selectRender === undefined
+              ? {}
+              : {
+                  selectRender: (state, dependencies, completed) => {
+                    const result = selectRender(state, dependencies, completed);
+                    const record = (value: Result<RenderPipeline | undefined, RhiError>) => {
+                      if (
+                        !value.ok ||
+                        value.value === undefined ||
+                        s.handleMap.has(value.value as object)
+                      )
+                        return value;
+                      return recordRenderPipeline(
+                        value.value,
+                        captureRenderPipeline({
+                          ...state.value,
+                          layout: dependencies.layout,
+                          vertex: {
+                            ...(state.value.vertex as object),
+                            module: dependencies.vertex,
+                          },
+                          ...(dependencies.fragment === undefined
+                            ? {}
+                            : {
+                                fragment: {
+                                  ...(state.value.fragment as object),
+                                  module: dependencies.fragment,
+                                },
+                              }),
+                        } as RenderPipelineDescriptor),
+                      );
+                    };
+                    // forgeax-async-whitelist: dom-native - preserve selected native completion through capture.
+                    return 'ok' in result ? record(result) : result.then(record);
+                  },
+                }),
+            ...(selectCompute === undefined
+              ? {}
+              : {
+                  selectCompute: (state, dependencies, completed) => {
+                    const result = selectCompute(state, dependencies, completed);
+                    const record = (value: Result<ComputePipeline | undefined, RhiError>) => {
+                      if (
+                        !value.ok ||
+                        value.value === undefined ||
+                        s.handleMap.has(value.value as object)
+                      )
+                        return value;
+                      return recordComputePipeline(
+                        value.value,
+                        captureComputePipeline({
+                          ...state.value,
+                          layout: dependencies.layout,
+                          compute: {
+                            ...(state.value.compute as object),
+                            module: dependencies.compute,
+                          },
+                        } as ComputePipelineDescriptor),
+                      );
+                    };
+                    // forgeax-async-whitelist: dom-native - preserve selected native completion through capture.
+                    return 'ok' in result ? record(result) : result.then(record);
+                  },
+                }),
+          };
+
   // Expose the real RhiDevice for standalone createShaderModule calls.
   // engine-rhi-webgpu's createShaderModule uses RAW_DEVICE_MAP (WeakMap)
   // to reverse-lookup the GPUDevice. The proxy is a different JS object
@@ -160,7 +249,7 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
   // returns undefined and createShaderModule returns shader-compile-failed.
   // The _realDevice property lets callers pass the real RhiDevice directly.
   const d: RecorderDevice = {
-    ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
+    ...(recordedLibrary === undefined ? {} : { pipelineLibrary: recordedLibrary }),
     _realDevice: realDevice,
 
     get caps() {

@@ -56,12 +56,14 @@
   "devDependencies": {
     "@forgeax/engine-animation": "workspace:*",
     "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@types/node": "^25.8.0",
     "@webgpu/types": "^0.1.74",
     "playwright": "1.56.1",
-    "vite": "8.0.16",
+    "vite": "8.3.5",
     "@forgeax/engine-dawn-node": "workspace:*"
   }
 }

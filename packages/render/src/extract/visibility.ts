@@ -1,5 +1,8 @@
-import type { EntityHandle, Query, World } from '@forgeax/engine-ecs';
+import { ENTITY_NULL_RAW, Entity, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
+  ChildOf,
   projectHierarchy,
   type SceneHierarchyDiagnostic,
   type SceneHierarchySnapshot,
@@ -10,6 +13,12 @@ import {
   VisibilityStateValue,
   visibilityStateFromU32,
 } from '../components/visibility';
+import { type IdentityMap, IdentityMapEditor } from '../scene/identity-map';
+
+const intentOf = (intents: IdentityMap, entity: EntityHandle): VisibilityState | undefined => {
+  const raw = intents.get(0, entity);
+  return raw === undefined ? undefined : visibilityStateFromU32(raw);
+};
 
 export type VisibilitySource = 'default' | 'self' | 'parent';
 
@@ -38,15 +47,29 @@ interface ResolutionState {
 }
 
 interface CapturedVisibility {
-  readonly intents: ReadonlyMap<EntityHandle, VisibilityState>;
+  /** Valid author intents by entity handle; an immutable root per capture. */
+  readonly intents: IdentityMap;
+  /** Entities carrying Visibility, including corrupted states. */
   readonly intentCount: number;
   readonly hasAnyHiddenIntent: boolean;
 }
 
+const ABSENT = -1;
+
+/**
+ * Author intents kept current from the World's own Visibility write and
+ * structural evidence: a frame visits the entities whose intent changed, never
+ * the Visibility population. Each capture seals an immutable intent root, so
+ * earlier snapshots stay valid.
+ */
 interface VisibilityProjection {
-  readonly rows: Query;
-  readonly changes: Query;
-  structure: number;
+  readonly source: StateProjection;
+  readonly intents: IdentityMapEditor;
+  /** Raw stored state (or ABSENT) and entity handle of each tracked entity index. */
+  readonly states: number[];
+  readonly handles: (EntityHandle | undefined)[];
+  count: number;
+  hidden: number;
   captured: CapturedVisibility | undefined;
 }
 
@@ -56,80 +79,108 @@ function captureVisibility(world: World): CapturedVisibility {
   let projection = projections.get(world);
   if (projection === undefined) {
     projection = {
-      rows: world.query({ read: [Visibility] }).unwrap(),
-      changes: world.query({ changed: [Visibility] }).unwrap(),
-      structure: -1,
+      source: createStateProjection(world, [Visibility]),
+      intents: new IdentityMapEditor(),
+      states: [],
+      handles: [],
+      count: 0,
+      hidden: 0,
       captured: undefined,
     };
     projections.set(world, projection);
   }
-  let changed = false;
-  for (const span of projection.changes.spans().unwrap()) changed ||= span.length > 0;
-  const structure = world.getStructureEpoch();
-  const previous = projection.captured;
-  if (previous !== undefined && !changed && projection.structure === structure) return previous;
-  const spans = projection.rows.spans().unwrap();
-  let count = 0;
-  let validCount = 0;
-  let same = previous !== undefined;
-  for (const span of spans) {
-    const states = span.get(Visibility).state;
-    count += span.length;
-    for (let index = 0; index < span.length; index++) {
-      const entity = span.entities[index] as EntityHandle;
-      const intent = visibilityStateFromU32(states[index] ?? 0);
-      if (intent !== undefined) validCount++;
-      if (previous?.intents.get(entity) !== intent) same = false;
+  const batch = projection.source.read();
+  if (batch.indices.length === 0 && projection.captured !== undefined) {
+    batch.accept();
+    return projection.captured;
+  }
+  const read = world[worldRead];
+  const { intents, states, handles } = projection;
+  for (const index of batch.indices) {
+    const entity = projection.source.entity(index);
+    const raw =
+      entity !== undefined && world.hasComponent(entity, Visibility)
+        ? ((read.getFieldValue(entity, Visibility, 'state') as number | undefined) ?? 0)
+        : ABSENT;
+    const before = states[index] ?? ABSENT;
+    const previousHandle = handles[index];
+    if (before !== ABSENT) {
+      projection.count--;
+      if (before === VisibilityStateValue.hidden) projection.hidden--;
     }
-  }
-  // FX structural migrations do not usually change visibility. Verify the
-  // current scalar facts before retaining the detached intent publication.
-  if (
-    same &&
-    previous !== undefined &&
-    count === previous.intentCount &&
-    validCount === previous.intents.size
-  ) {
-    projection.structure = structure;
-    return previous;
-  }
-  const intents = new Map<EntityHandle, VisibilityState>();
-  let hasAnyHiddenIntent = false;
-  for (const span of spans) {
-    const states = span.get(Visibility).state;
-    for (let index = 0; index < span.length; index++) {
-      const rawState = states[index] ?? 0;
-      const intent = visibilityStateFromU32(rawState);
-      if (intent !== undefined) intents.set(span.entities[index] as EntityHandle, intent);
-      hasAnyHiddenIntent ||= rawState === VisibilityStateValue.hidden;
+    if (previousHandle !== undefined && (raw === ABSENT || previousHandle !== entity))
+      intents.delete(0, previousHandle);
+    if (raw === ABSENT || entity === undefined) {
+      states[index] = ABSENT;
+      handles[index] = undefined;
+      continue;
     }
+    projection.count++;
+    if (raw === VisibilityStateValue.hidden) projection.hidden++;
+    states[index] = raw;
+    handles[index] = entity;
+    if (visibilityStateFromU32(raw) === undefined) intents.delete(0, entity);
+    else intents.set(0, entity, raw);
   }
-  projection.structure = structure;
-  projection.captured = { intents, intentCount: count, hasAnyHiddenIntent };
+  batch.accept();
+  projection.captured = {
+    intents: intents.capture(),
+    intentCount: projection.count,
+    hasAnyHiddenIntent: projection.hidden > 0,
+  };
   return projection.captured;
 }
 
 /**
  * Resolve author intent against the scene-owned valid parent projection.
  * Diagnostics are preserved for callers to repair hierarchy input before retry.
+ *
+ * Without an explicit hierarchy, parents are read on demand for the entities
+ * actually queried, so a frame pays for its changed renderables instead of
+ * projecting every ChildOf edge of the World. The whole-World projection is
+ * still used for diagnostics, for a detected cycle (cycle members have no
+ * valid parent), and once the ChildOf relationship changed after capture.
  */
 export function resolveVisibility(
   world: World,
-  hierarchy: SceneHierarchySnapshot = projectHierarchy(world),
+  hierarchy?: SceneHierarchySnapshot,
 ): VisibilitySnapshot {
   const captured = captureVisibility(world);
   const { intentCount, hasAnyHiddenIntent, intents } = captured;
+  const read = world[worldRead];
+  const relationshipEpoch = read.getRelationshipEpoch(ChildOf);
+  let projected = hierarchy;
+  const project = (): SceneHierarchySnapshot => {
+    projected ??= projectHierarchy(world);
+    return projected;
+  };
+  const parentOf = (entity: EntityHandle): EntityHandle | undefined => {
+    if (projected === undefined && read.getRelationshipEpoch(ChildOf) !== relationshipEpoch)
+      project();
+    if (projected !== undefined) return projected.getParent(entity);
+    const parent = read.getFieldValue(entity, ChildOf, 'parent');
+    if (parent === undefined || parent === ENTITY_NULL_RAW) return undefined;
+    // A stale edge is a broken-parent diagnostic, never a parent.
+    return world.hasComponent(parent as EntityHandle, Entity)
+      ? (parent as EntityHandle)
+      : undefined;
+  };
   let resolveEntity: ((entity: EntityHandle) => ResolutionState | undefined) | undefined;
   const ensureResolver = (): void => {
     if (resolveEntity !== undefined) return;
-    const resolved = new Map<EntityHandle, ResolutionState>();
+    let resolved = new Map<EntityHandle, ResolutionState>();
     const resolving = new Set<EntityHandle>();
-    resolveEntity = (entity: EntityHandle): ResolutionState | undefined => {
+    const resolveOnce = (entity: EntityHandle): ResolutionState | undefined => {
       const existing = resolved.get(entity);
       if (existing !== undefined) return existing;
-      if (resolving.has(entity)) return undefined;
+      if (resolving.has(entity)) {
+        // Cycle members have no parent in the scene projection. Switch to it
+        // and let the outer call resolve again from a clean cache.
+        if (projected === undefined) throw CYCLE;
+        return undefined;
+      }
 
-      const intent = intents.get(entity) ?? 'inherited';
+      const intent = intentOf(intents, entity) ?? 'inherited';
       resolving.add(entity);
 
       let result: ResolutionState;
@@ -138,8 +189,8 @@ export function resolveVisibility(
       } else if (intent === 'visible') {
         result = { intent, effective: 'visible', source: 'self' };
       } else {
-        const parent = hierarchy.getParent(entity);
-        const parentResult = parent === undefined ? undefined : resolveEntity?.(parent);
+        const parent = parentOf(entity);
+        const parentResult = parent === undefined ? undefined : resolveOnce(parent);
         result =
           parentResult === undefined
             ? { intent, effective: 'visible', source: 'default' }
@@ -150,20 +201,37 @@ export function resolveVisibility(
       resolved.set(entity, result);
       return result;
     };
+    resolveEntity = (entity: EntityHandle): ResolutionState | undefined => {
+      try {
+        return resolveOnce(entity);
+      } catch (cause) {
+        if (cause !== CYCLE) throw cause;
+        resolving.clear();
+        resolved = new Map();
+        project();
+        return resolveOnce(entity);
+      }
+    };
   };
 
   const snapshot: VisibilitySnapshot = {
-    diagnostics: hierarchy.diagnostics,
+    get diagnostics(): readonly SceneHierarchyDiagnostic[] {
+      return project().diagnostics;
+    },
     hasAnyIntent: intentCount > 0,
     hasAnyHiddenIntent,
     get(entity: EntityHandle): VisibilityResolution | undefined {
       ensureResolver();
-      return intents.has(entity) ? resolveEntity?.(entity) : undefined;
+      return intents.has(0, entity) ? resolveEntity?.(entity) : undefined;
     },
     effective(entity: EntityHandle): 'hidden' | 'visible' {
+      // Inheritance can only hide below an explicitly hidden entity.
+      if (!hasAnyHiddenIntent) return 'visible';
       ensureResolver();
       return resolveEntity?.(entity)?.effective ?? 'visible';
     },
   };
   return snapshot;
 }
+
+const CYCLE: unique symbol = Symbol('visibility-hierarchy-cycle');

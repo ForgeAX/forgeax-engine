@@ -17,11 +17,13 @@ describe('points-lines triangle expansion shader contract', () => {
     expect(source).toMatch(/@group\(0\)\s*@binding\(10\)\s+var<uniform>\s+pointsLinesView/);
   });
 
-  it('expands square and circle points from clip-space pixel deltas', () => {
+  it('expands square, circle and soft points from clip-space pixel deltas', () => {
     expect(source).toContain('fn expandPoint');
-    expect(source).toContain('sizePx');
+    expect(source).toContain('fn rasterPixels');
     expect(source).toContain('square');
-    expect(source).toContain('circleCoverage');
+    expect(source).toContain('soft');
+    expect(source).toContain('radiusSquared');
+    expect(source).toContain('input.tint');
     expect(source).toContain('sampleCenter');
     expect(source).toContain('physicalViewport');
   });

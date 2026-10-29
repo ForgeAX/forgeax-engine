@@ -74,6 +74,7 @@ function loadEngineImports(): Record<string, string> {
     // feat-20260612-point-light-shadows-urp-hdrp M2 / T-M2-1:
     // lighting-directional.wgsl now imports forgeax_pbr::shadow_pcf (shared PCF core).
     'forgeax_pbr::shadow_pcf': read('shadow-pcf.wgsl'),
+    'forgeax_skin::task': read('skin-task.wgsl'),
     'forgeax_pbr::clearcoat': read('material/physical/clearcoat.wgsl'),
     'forgeax_pbr::anisotropy': read('material/physical/anisotropy.wgsl'),
     'forgeax_pbr::sheen': read('material/physical/sheen.wgsl'),
@@ -120,13 +121,14 @@ describe('T-32 — default-standard-pbr-skin.wgsl compose test', () => {
     expect(composedWgsl.length).toBeGreaterThan(0);
   });
 
-  it('composed output contains palette binding declaration', () => {
-    // The composed WGSL should contain the palette storage binding at @group(2) @binding(1).
-    // naga_oil may reorder or prefix member names; check for the palette
-    // variable declaration and the binding annotations.
-    expect(composedWgsl).toMatch(/palette/);
+  it('composed output contains the Skin task binding declaration', () => {
+    // The storage variant reads transient Skin task output at @group(2)
+    // @binding(1) and its per-draw task address at @binding(2). naga_oil may
+    // prefix member names; check the declarations and binding annotations.
+    expect(composedWgsl).toMatch(/skinTaskOutput/);
     expect(composedWgsl).toMatch(/binding\(1\)/);
-    expect(composedWgsl).toMatch(/array<mat4x4<f32>>/);
+    expect(composedWgsl).toMatch(/array<vec4<u32>>/);
+    expect(composedWgsl).toMatch(/skinTaskAddress/);
   });
 
   it('composed output contains skinIndex vertex input @location(4)', () => {

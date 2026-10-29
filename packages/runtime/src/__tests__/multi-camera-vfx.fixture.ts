@@ -16,6 +16,7 @@ import {
   decodeTape,
   openReplay,
   replayDeviceRequest,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -30,6 +31,7 @@ import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect } from 'vitest';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import type { CookMeshLightingFixture } from './vfx-mesh-lighting.fixture';
@@ -216,8 +218,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     const packet =
       candidate === undefined
         ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
+        : structuredClone(candidate.message, {
+            transfer: renderPublicationTransfers(candidate.message),
           });
     candidate?.accept();
     try {
@@ -276,7 +278,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       await draw(false);
       (await recorder.frameBoundary()).unwrap();
       const failure = (await pendingFailure).unwrap();
-      await options.save('vfx-readiness-failure.rhitape', failure.bytes);
+      await options.save('vfx-readiness-failure.rhitape', compactTape(failure).bytes);
       await options.save(
         'vfx-readiness-failure.json',
         new TextEncoder().encode(
@@ -407,7 +409,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     const receipt = await draw();
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
-    await options.save('vfx.rhitape', capture.bytes);
+    await options.save('vfx.rhitape', compactTape(capture).bytes);
     if (publisher !== undefined) expect(acknowledgements - beforeCapture).toBe(1);
     const tape = decodeTape(capture.bytes).unwrap();
     expect(tape.events.filter((event) => event.kind === 'submit')).toHaveLength(1);
@@ -478,26 +480,33 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     ).unwrap();
     try {
       const bases = [];
-      for (const [index, work] of projections.entries()) {
-        const data = (
-          await replay.readResourceAtWork(required(bindings(1)[index]), work.workIndex)
-        ).unwrap();
+      const final = required(composites.at(-1));
+      const output = required(workOutputs(final).find((row) => row.role === 'color'));
+      const projectionReads = (
+        await replay.readAtWorks([
+          ...projections.map((work, index) => ({
+            resourceId: required(bindings(1)[index]),
+            workIndex: work.workIndex,
+          })),
+          { ...output.request, workIndex: final.workIndex },
+        ])
+      ).unwrap();
+      for (const result of projectionReads.slice(0, projections.length)) {
+        const data = result.unwrap();
         bases.push(
           Array.from(new Float32Array(data.bytes.buffer, data.bytes.byteOffset + 24 * 4, 3)),
         );
       }
       expect(required(bases[0])[0]).toBeCloseTo(1, 4);
       expect(Math.abs(required(required(bases[1])[1]))).toBeCloseTo(1, 4);
-      const rendered = (
-        await replay.inspectWork(required(composites.at(-1)).workIndex, ['pixels'])
-      ).unwrap();
-      const pixels = required(rendered.attachment).bytes;
+      const rendered = required(projectionReads[projections.length]).unwrap();
+      const pixels = rendered.bytes;
       expect(pixels.length).toBe(live.length);
       let delta = 0;
       for (let index = 0; index < live.length; index++)
         delta = Math.max(delta, Math.abs(required(live[index]) - required(pixels[index])));
       expect(delta).toBeLessThanOrEqual(1);
-      const format = required(required(rendered.attachment).format);
+      const format = required(rendered.format);
       const redChannel = format.startsWith('bgra') ? 2 : 0;
       const blueChannel = 2 - redChannel;
       for (const x of [32, 96]) {

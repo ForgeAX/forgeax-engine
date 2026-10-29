@@ -7,9 +7,6 @@ import {
   type ProbeBlendRecordSentinel,
 } from './probe-blend-record';
 
-export const PROBE_R_MIN = R_MIN;
-export const PROBE_MAX_CONTRIBUTORS = PROBE_BLEND_RECORD_CAPACITY;
-
 export interface ProbeBlendContributor {
   readonly identity: string;
   readonly admitted: boolean;
@@ -188,7 +185,7 @@ function emptyReceipt(radiusMinimum: number): ProbeAdmissionReceipt {
     admittedIdentities: [],
     rejectedIdentities: [],
     stableOrder: [],
-    capacity: PROBE_MAX_CONTRIBUTORS,
+    capacity: PROBE_BLEND_RECORD_CAPACITY,
     scaleRadius: radiusMinimum,
     finite: true,
   };
@@ -197,18 +194,18 @@ function emptyReceipt(radiusMinimum: number): ProbeAdmissionReceipt {
 /** Admission is the only owner allowed to order and bound probe candidates. */
 export function admitProbeContributors(
   candidates: readonly ProbeBlendContributor[],
-  radiusMinimum = PROBE_R_MIN,
+  radiusMinimum = R_MIN,
 ): ProbeAdmissionResult {
   const active = candidates.filter((candidate) => contributorIsActive(candidate, radiusMinimum));
-  const overflowed = active.length > PROBE_MAX_CONTRIBUTORS;
+  const overflowed = active.length > PROBE_BLEND_RECORD_CAPACITY;
   // Admission is a deterministic stable prefix, not an all-or-nothing gate.
   // Sort the complete active set by identity before clipping so query order
   // cannot change the selected contributors.
   const stableActive = active
     .slice()
     .sort((left, right) => left.identity.localeCompare(right.identity));
-  const admitted = stableActive.slice(0, PROBE_MAX_CONTRIBUTORS);
-  const rejected = stableActive.slice(PROBE_MAX_CONTRIBUTORS);
+  const admitted = stableActive.slice(0, PROBE_BLEND_RECORD_CAPACITY);
+  const rejected = stableActive.slice(PROBE_BLEND_RECORD_CAPACITY);
   const scaleRadius = active.reduce(
     (minimum, candidate) => Math.min(minimum, candidate.radius),
     active[0]?.radius ?? radiusMinimum,
@@ -218,7 +215,7 @@ export function admitProbeContributors(
     admittedIdentities: admitted.map((candidate) => candidate.identity),
     rejectedIdentities: rejected.map((candidate) => candidate.identity),
     stableOrder: admitted.map((candidate) => candidate.identity),
-    capacity: PROBE_MAX_CONTRIBUTORS,
+    capacity: PROBE_BLEND_RECORD_CAPACITY,
     ...(overflowed ? { overflowReason: 'active-count-exceeds-capacity' as const } : {}),
     scaleRadius,
     finite: stableActive.every((candidate) => Number.isFinite(candidate.radius)),
@@ -233,7 +230,7 @@ export function admitProbeContributors(
           error: {
             code: 'capacity-exceeded' as const,
             activeCount: active.length,
-            capacity: PROBE_MAX_CONTRIBUTORS,
+            capacity: PROBE_BLEND_RECORD_CAPACITY,
             receipt,
           },
         }
@@ -258,7 +255,7 @@ function invalidInputResult(
     finite: false,
     receipt,
     scaledQLogOffset: 0,
-    error: { code, activeCount: 0, capacity: PROBE_MAX_CONTRIBUTORS, receipt },
+    error: { code, activeCount: 0, capacity: PROBE_BLEND_RECORD_CAPACITY, receipt },
   };
 }
 
@@ -283,7 +280,7 @@ export function roundProbeToF32(value: number): number | undefined {
 export function scaledProbeWeight(
   distance: number,
   radius: number,
-  radiusMinimum = PROBE_R_MIN,
+  radiusMinimum = R_MIN,
 ): { readonly coverage: number; readonly q: number } {
   if (
     !Number.isFinite(distance) ||
@@ -340,7 +337,7 @@ function blendProbeCoefficients(
   radiusMinimum: number,
 ): ProbeBlendCoefficients | undefined {
   if (
-    contributors.length > PROBE_MAX_CONTRIBUTORS ||
+    contributors.length > PROBE_BLEND_RECORD_CAPACITY ||
     contributors.some((contributor) => !contributorIsActive(contributor, radiusMinimum))
   ) {
     return undefined;
@@ -395,7 +392,7 @@ function blendProbeCoefficients(
     admittedIdentities: contributors.map((contributor) => contributor.identity),
     rejectedIdentities: [],
     stableOrder: contributors.map((contributor) => contributor.identity),
-    capacity: PROBE_MAX_CONTRIBUTORS,
+    capacity: PROBE_BLEND_RECORD_CAPACITY,
     scaleRadius: rStar,
     finite,
   };
@@ -417,7 +414,7 @@ function blendProbeCoefficients(
  * input and never becomes a contributor or a q/Q term.
  */
 export function blendLightProbes(input: ProbeBlendInput): ProbeBlendResult {
-  const radiusMinimum = input.radiusMinimum ?? PROBE_R_MIN;
+  const radiusMinimum = input.radiusMinimum ?? R_MIN;
   const normal = input.normal;
   const sky = input.skyIrradiance;
   if (!finiteVector(normal, 3) || !finiteVector(sky, 3)) {
@@ -550,7 +547,7 @@ export class ProbeBlendSceneProjection {
   private previous?: ProbeSceneProjectionInput;
   private records = new Map<number, ProbeBlendRecord>();
   private lastError: ProbeAdmissionError | undefined;
-  private lastReceipt = emptyReceipt(PROBE_R_MIN);
+  private lastReceipt = emptyReceipt(R_MIN);
   private lastActiveContributorCount = 0;
   private lastAdmittedProbeCount = 0;
   private lastCoverage = 0;
@@ -632,7 +629,7 @@ export class ProbeBlendSceneProjection {
             alpha: term.alpha,
           })),
           qHatSum: facts?.qHatSum ?? 0,
-          rStar: facts?.rStar ?? PROBE_R_MIN,
+          rStar: facts?.rStar ?? R_MIN,
           fallbackReason: facts?.fallbackReason,
         };
       }),
@@ -746,7 +743,7 @@ export class ProbeBlendSceneProjection {
       }
     }
     let firstTerms: readonly ProbeBlendTerm[] = [];
-    let firstReceipt = emptyReceipt(PROBE_R_MIN);
+    let firstReceipt = emptyReceipt(R_MIN);
     let firstError: ProbeAdmissionError | undefined;
     let firstActiveCount = 0;
     let firstAdmittedCount = 0;
@@ -794,16 +791,16 @@ export class ProbeBlendSceneProjection {
         this.recordFacts.set(object.objectKey, {
           contributors: [],
           qHatSum: 0,
-          rStar: PROBE_R_MIN,
+          rStar: R_MIN,
           fallbackReason: admission.error?.code ?? sentinel,
         });
       } else {
-        const blend = blendProbeCoefficients(admission.admitted, PROBE_R_MIN);
+        const blend = blendProbeCoefficients(admission.admitted, R_MIN);
         if (blend === undefined) {
           firstError ??= {
             code: 'invalid-admitted-prefix',
             activeCount: admission.active.length,
-            capacity: PROBE_MAX_CONTRIBUTORS,
+            capacity: PROBE_BLEND_RECORD_CAPACITY,
             receipt: admission.receipt,
           };
           firstReceipt = admission.receipt;

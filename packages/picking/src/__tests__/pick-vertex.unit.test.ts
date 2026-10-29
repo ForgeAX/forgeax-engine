@@ -705,7 +705,7 @@ describe('pickVertexOnEntity', () => {
       mat4.invert(view, camWorld as unknown as mat4.Mat4Like);
       const proj = mat4.create();
       mat4.perspective(proj, Math.PI / 4, 1, 0.1, 100);
-      const r = ray.create();
+      const r = ray.create(new Float32Array(6));
       ray.screenToRay(
         r,
         VP / 2,

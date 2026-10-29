@@ -438,6 +438,13 @@ it('keeps native number controls and editors isolated across host visibility cha
   field.disabled = false;
   tap(0);
   expect(keyboard.source.showKeyboard).toHaveBeenCalledTimes(1);
+  // Native Android keyboard opening/resizing must not cancel the editor it just opened.
+  for (const listener of lifecycle)
+    listener({ kind: 'display', display: platform.display().unwrap() });
+  expect(ui.input.focusedText()?.value).toBe('0.6');
+  expect(keyboard.source.hideKeyboard).not.toHaveBeenCalled();
+  expect(keyboard.callbacks.size).toBe(3);
+  expect(backend.sample()).toMatchObject({ focusReset: true, pointers: [], pointerEvents: [] });
   keyboard.callbacks.get('input')?.({ value: '0.65' });
   keyboard.callbacks.get('complete')?.({ value: '0.65' });
   expect(field.value).toBe('0.65');

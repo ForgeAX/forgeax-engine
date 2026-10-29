@@ -2,7 +2,7 @@ import { createPrograms } from 'virtual:forgeax/plugin-programs/engine';
 import { skeletalMotionPlugin } from '@forgeax/engine/animation/skeletal-motion';
 import type { ExecutionBootstrapEntry } from '@forgeax/engine/app';
 import { FixedUpdate, Update } from '@forgeax/engine/ecs';
-import { physicsPlugin } from '@forgeax/engine/physics';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { skinningPlugin } from '@forgeax/engine/skinning';
 import { loadSkeletalMotionScene } from './skeletal-motion-scene';
 
@@ -74,7 +74,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
     },
     plugins: [
       skinningPlugin(),
-      physicsPlugin('rapier-3d'),
+      physics3d,
       skeletalMotionPlugin({ physics: true }),
       {
         name: 'skeletal-motion-worker-scene',

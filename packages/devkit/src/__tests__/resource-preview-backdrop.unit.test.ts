@@ -50,6 +50,7 @@ async function assemble(
       distance: 3,
     }),
     createWorkspaceMeshDisplay: async () => (closeDisplay ? { close: closeDisplay } : undefined),
+    createWorkspaceMaterialPreview: async () => ({ material: {}, close: async () => {} }),
     previewCameraEntities: new WeakMap(),
     previewCameraTargets: new WeakMap(),
     materialSampledTextureBudget: () => undefined,

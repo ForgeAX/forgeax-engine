@@ -3,13 +3,6 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, sep } from 'node:path';
 
-/** Records which engine WGSL sources produced a packaged shader profile. */
-export const PACKAGED_SOURCE_RECORD = 'source.json';
-
-export interface PackagedSourceRecord {
-  readonly shaderSourceDigest: string;
-}
-
 function collectWgsl(directory: string, files: string[]): void {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);

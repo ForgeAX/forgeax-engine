@@ -128,15 +128,16 @@ export async function verifyTextureGenerations() {
       await openReplay(tape, { device: fresh, createShaderModule: gpu.createShaderModule })
     ).unwrap();
     try {
-      for (const [index, work] of model.works.entries()) {
+      const requests = model.works.map((work) => {
         const resource = work.bindings.find(
           (binding) => binding.groupIndex === 0 && binding.binding === 2,
         )?.resourceId;
         assert(resource);
-        expect((await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes).toEqual(
-          results[index],
-        );
-      }
+        return { resourceId: resource, workIndex: work.workIndex };
+      });
+      const reads = (await replay.readAtWorks(requests)).unwrap();
+      for (const [index, read] of reads.entries())
+        expect(read.unwrap().bytes).toEqual(results[index]);
     } finally {
       (await replay.dispose()).unwrap();
       freshRaw.destroy();

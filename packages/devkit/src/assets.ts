@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { runCliFbx } from '@forgeax/engine-fbx/cli-fbx';
 import { bakeFont } from '@forgeax/engine-font/cli-font';
 import { runCliGltf } from '@forgeax/engine-gltf/cli-gltf';
@@ -12,8 +13,10 @@ import {
 } from '@forgeax/engine-pack/build';
 import { createAssetVerificationReport, scanEntries } from '@forgeax/engine-pack/cli-asset';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { validateMeta } from '@forgeax/engine-pack/schema';
 import { isValidAssetGuidString, readCatalogRows } from '@forgeax/engine-types';
 import { verifyDist } from './dist.js';
+import { DEFAULT_IMPORTERS } from './importers.js';
 import { commandError, readProjectFacts } from './project.js';
 import type {
   AssetAddOptions,
@@ -25,7 +28,18 @@ import type {
   ProjectCommandOptions,
 } from './types.js';
 
-const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.hdr']);
+const sourceFormats = DEFAULT_IMPORTERS.flatMap((importer) =>
+  (importer.capabilities?.sourceFormats ?? []).map((format) => ({
+    ...format,
+    importer: importer.key,
+  })),
+);
+function sourceFormat(path: string) {
+  const lower = path.toLowerCase();
+  return sourceFormats.find((format) =>
+    format.extensions.some((extension) => lower.endsWith(extension)),
+  );
+}
 const meshExtensions = new Set(['.obj', '.stl', '.svg']);
 const gltfExtensions = new Set(['.gltf', '.glb']);
 const fbxExtensions = new Set(['.fbx']);
@@ -58,7 +72,11 @@ async function sourcesAt(path: string): Promise<string[]> {
   return output;
 }
 
-async function addImage(sourcePath: string, dryRun: boolean): Promise<CommandResult<unknown>> {
+async function addSource(
+  sourcePath: string,
+  dryRun: boolean,
+  format: NonNullable<ReturnType<typeof sourceFormat>>,
+): Promise<CommandResult<unknown>> {
   const metaPath = `${sourcePath}.meta.json`;
   const source = basename(sourcePath);
   let existing: unknown;
@@ -75,22 +93,31 @@ async function addImage(sourcePath: string, dryRun: boolean): Promise<CommandRes
     }
   }
   if (existing !== undefined) {
+    if (!validateMeta(existing))
+      return failure({
+        code: 'asset-meta-conflict',
+        expected: 'the existing sidecar to satisfy the Meta schema',
+        hint: 'Repair the reported sidecar fields without replacing authored identity.',
+        detail: { source: sourcePath, metaPath, diagnostics: validateMeta.errors ?? [] },
+      });
     const value = existing as {
       importer?: unknown;
       source?: unknown;
-      subAssets?: readonly { guid?: unknown; kind?: unknown }[];
+      subAssets?: readonly { guid?: unknown; kind?: unknown; sourceIndex?: unknown }[];
     };
     const row = value.subAssets?.[0];
     if (
-      value.importer !== 'image' ||
+      value.importer !== format.importer ||
       value.source !== source ||
       value.subAssets?.length !== 1 ||
       typeof row?.guid !== 'string' ||
-      row.kind !== 'texture'
+      !isValidAssetGuidString(row.guid) ||
+      row.sourceIndex !== 0 ||
+      row.kind !== format.kind
     ) {
       return failure({
         code: 'asset-meta-conflict',
-        expected: 'the existing sidecar to describe this image source and one texture identity',
+        expected: `the existing sidecar to describe this ${format.importer} source and one ${format.kind} identity`,
         hint: 'Resolve the sidecar conflict explicitly; DevKit will not replace authored identity.',
         detail: { source: sourcePath, metaPath },
       });
@@ -98,19 +125,13 @@ async function addImage(sourcePath: string, dryRun: boolean): Promise<CommandRes
     return { ok: true, value: { source: sourcePath, metaPath, guid: row.guid, reused: true } };
   }
   const guid = AssetGuid.format(AssetGuid.random());
-  const linear = extname(sourcePath).toLowerCase() === '.hdr';
   const meta = {
     schemaVersion: '1.0.0',
     kind: 'external-asset-package',
-    importer: 'image',
+    importer: format.importer,
     source,
-    importSettings: {
-      colorSpace: linear ? 'linear' : 'srgb',
-      mipmap: true,
-      addressMode: 'repeat',
-      filterMode: 'linear',
-    },
-    subAssets: [{ guid, sourceIndex: 0, kind: 'texture', sourceKey: 'texture' }],
+    importSettings: format.importSettings,
+    subAssets: [{ guid, sourceIndex: 0, kind: format.kind, sourceKey: format.sourceKey }],
   } as const;
   if (!dryRun) await writeFile(metaPath, `${JSON.stringify(meta, null, 2)}\n`, { flag: 'wx' });
   return { ok: true, value: { source: sourcePath, metaPath, guid, reused: false, dryRun } };
@@ -212,7 +233,7 @@ export async function assetAddCommand(options: AssetAddOptions): Promise<Command
       const extension = extname(source).toLowerCase();
       return (
         meshExtensions.has(extension) ||
-        imageExtensions.has(extension) ||
+        sourceFormat(source) !== undefined ||
         gltfExtensions.has(extension) ||
         fbxExtensions.has(extension) ||
         fontExtensions.has(extension)
@@ -221,18 +242,18 @@ export async function assetAddCommand(options: AssetAddOptions): Promise<Command
     if (supported.length === 0) {
       return failure({
         code: 'source-package-importer-missing',
-        expected:
-          'a .png, .jpg, .jpeg, .hdr, .gltf, .glb, .fbx, .obj, .stl, .svg, .ttf, or .otf source',
+        expected: `a supported source: ${[...sourceFormats.flatMap((format) => format.extensions), ...meshExtensions, ...gltfExtensions, ...fbxExtensions, ...fontExtensions].join(', ')}`,
         hint: 'Use a supported built-in importer or add an explicit producer before adding this source.',
         detail: { target },
       });
     }
     const assets: unknown[] = [];
     for (const source of supported) {
+      const format = sourceFormat(source);
       const result = meshExtensions.has(extname(source).toLowerCase())
         ? await importMeshFile(source, options.dryRun === true)
-        : imageExtensions.has(extname(source).toLowerCase())
-          ? await addImage(source, options.dryRun === true)
+        : format !== undefined
+          ? await addSource(source, options.dryRun === true, format)
           : gltfExtensions.has(extname(source).toLowerCase())
             ? await addModel(source, options.dryRun === true, 'glTF')
             : fbxExtensions.has(extname(source).toLowerCase())
@@ -322,13 +343,18 @@ function packIndexFailure(
   });
 }
 
+async function decodeCatalogDocument(bytes: Uint8Array) {
+  const text = await decodeDocumentText(bytes);
+  return text.ok ? decodeCatalogWire(JSON.parse(text.value)) : text;
+}
+
 async function readPackIndexMaterialized(
   root: string,
 ): Promise<CommandResult<PackIndexProjection>> {
   const indexPath = resolve(root, 'dist', 'pack-index.json');
-  let raw: string;
+  let raw: Uint8Array;
   try {
-    raw = await readFile(indexPath, 'utf8');
+    raw = await readFile(indexPath);
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
       return { ok: true, value: { materialized: [], knownGuids: [] } };
@@ -340,7 +366,7 @@ async function readPackIndexMaterialized(
   }
   let parsed: unknown;
   try {
-    const decoded = decodeCatalogWire(JSON.parse(raw));
+    const decoded = await decodeCatalogDocument(raw);
     if (!decoded.ok) {
       return packIndexFailure(root, 'asset-index-invalid', {
         indexPath,

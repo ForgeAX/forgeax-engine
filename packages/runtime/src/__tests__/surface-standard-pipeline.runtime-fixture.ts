@@ -823,22 +823,106 @@ interface SurfaceAppLifecycleCameraDiagnostics {
   };
 }
 
-/**
- * Run the public App-owned water lifecycle. The World Update system is the
- * single time snapshot owner for both Surface event timestamps and VFX play
- * edges; tests only enqueue domain events and operate App lifecycle methods.
- */
-export async function runSurfaceAppLifecycle(input: {
+type SurfaceAppLifecycleInput = {
   readonly renderer: Renderer;
   readonly assets: AssetRegistry;
   readonly vfxHost: VfxRuntimeHost;
   readonly hostLossSignals: readonly SurfaceHostLossSignal[];
   readonly pauseWaitMilliseconds?: number;
-  /** Exercise replacement-device recovery while a fixed-tick continuation is pending. */
+  /** Exercise replacement-device recovery while a VFX tick continuation is pending. */
   readonly queueVfxContinuationDuringLoss?: boolean;
   /** Node/Dawn has no live host rAF; Browser must leave this omitted. */
   readonly hostFrameScheduler?: 'timer';
-}): Promise<SurfaceAppLifecycleEvidence> {
+};
+
+type SurfaceAppLifecycleSplashIntents = SurfaceAppLifecycleEvidence['splashIntents'];
+type SurfaceAppLifecycleDeviceRecovery = SurfaceAppLifecycleEvidence['deviceRecovery'];
+type SurfaceAppLifecycleDynamicInput = Omit<
+  ReturnType<typeof createSurfaceDynamicInput>,
+  'projectionRevision'
+> & { readonly projectionRevision: number };
+
+const SURFACE_APP_IMPACT_POSITIONS = [
+  [2.05, 0.08, 0],
+  [2.3, -0.08, 0],
+] as const;
+
+function isExpectedDeviceLossError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'device-operation-failed' &&
+    'detail' in error &&
+    typeof error.detail === 'object' &&
+    error.detail !== null &&
+    'cause' in error.detail &&
+    typeof error.detail.cause === 'object' &&
+    error.detail.cause !== null &&
+    'code' in error.detail.cause &&
+    error.detail.cause.code === 'device-lost'
+  );
+}
+
+function surfaceAppErrorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : 'unknown';
+}
+
+/**
+ * Node/Dawn has no live host rAF. The timer scheduler replaces the global
+ * frame callbacks for one run and restores the originals afterwards.
+ */
+class SurfaceTimerFrameScheduler {
+  readonly originalRaf = globalThis.requestAnimationFrame;
+  readonly originalCaf = globalThis.cancelAnimationFrame;
+  readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
+  nextRafId = 1;
+
+  install(): void {
+    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback): number => {
+      const id = this.nextRafId++;
+      const timer = setTimeout(() => {
+        this.timers.delete(id);
+        callback(performance.now());
+      }, 16);
+      this.timers.set(id, timer);
+      return id;
+    }) as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = ((id: number): void => {
+      const timer = this.timers.get(id);
+      if (timer !== undefined) clearTimeout(timer);
+      this.timers.delete(id);
+    }) as typeof cancelAnimationFrame;
+  }
+
+  restore(): void {
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    if (this.originalRaf === undefined)
+      delete (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame;
+    else globalThis.requestAnimationFrame = this.originalRaf;
+    if (this.originalCaf === undefined)
+      delete (globalThis as { cancelAnimationFrame?: unknown }).cancelAnimationFrame;
+    else globalThis.cancelAnimationFrame = this.originalCaf;
+  }
+}
+
+/** The water scene, its splash players and the fixed ROIs every capture reads. */
+interface SurfaceAppLifecycleScene {
+  readonly assets: AssetRegistry;
+  readonly world: World;
+  readonly mediumMembers: ReturnType<typeof populateSurfaceWorld>['mediumMembers'];
+  readonly dynamicInput: SurfaceAppLifecycleDynamicInput;
+  readonly splashRendererKinds: readonly string[];
+  readonly splashPlayers: readonly EntityHandle[];
+  readonly camera: EntityHandle;
+}
+
+async function prepareSurfaceAppLifecycleScene(
+  input: SurfaceAppLifecycleInput,
+): Promise<SurfaceAppLifecycleScene> {
   const { renderer } = input;
   const assets = surfaceAssets(input.assets);
   const materials = await Promise.all(
@@ -851,7 +935,7 @@ export async function runSurfaceAppLifecycle(input: {
     time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 120, maxDeltaSeconds: 3 },
   });
   const { mediumMembers } = populateSurfaceWorld(world, materials);
-  let dynamicInput = createSurfaceDynamicInput(
+  const dynamicInput = createSurfaceDynamicInput(
     materials,
     mediumMembers,
     renderer.inspect().frame.deviceGeneration,
@@ -876,11 +960,7 @@ export async function runSurfaceAppLifecycle(input: {
     throw new Error('surface-app-lifecycle: cooked splash effect has no renderer');
   }
   const effect = loadedSplash.value;
-  const impactPositions = [
-    [2.05, 0.08, 0],
-    [2.3, -0.08, 0],
-  ] as const;
-  const splashPlayers = impactPositions.map((position, index) =>
+  const splashPlayers = SURFACE_APP_IMPACT_POSITIONS.map((position, index) =>
     world
       .spawn(
         { component: Transform, data: { pos: position } },
@@ -897,168 +977,56 @@ export async function runSurfaceAppLifecycle(input: {
     [Symbol.iterator]()
     .next().value?.entity;
   if (camera === undefined) throw new Error('surface-app-lifecycle: camera unavailable');
-
-  const pendingImpacts: Array<{
-    readonly eventId: number;
-    readonly position: readonly [number, number, number];
-  }> = [];
-  const acceptedImpactIds = new Set<number>();
-  let eventTime: number | undefined;
-  let duplicateImpactCount = 0;
-  let projectionRevision = 1;
-  let splashesRetired = false;
-  let cameraCoverageTransitions = 0;
-  let cameraMoved = false;
-  let cameraRestored = false;
-  world
-    .addSystem(Update, {
-      name: 'surface-water-public-event-lifecycle',
-      queries: [],
-      fn: () => {
-        const time = world.getResource(Time).elapsed;
-        if (eventTime === undefined && pendingImpacts.length > 0) {
-          eventTime = time;
-          for (const impact of pendingImpacts) {
-            if (acceptedImpactIds.has(impact.eventId)) {
-              duplicateImpactCount += 1;
-              continue;
-            }
-            if (acceptedImpactIds.size >= 2) continue;
-            const recordIndex = acceptedImpactIds.size;
-            acceptedImpactIds.add(impact.eventId);
-            dynamicInput.page
-              .writeRecord(recordIndex, {
-                position: impact.position,
-                time,
-                eventId: impact.eventId,
-              })
-              .unwrap();
-            const player = splashPlayers[recordIndex];
-            if (player === undefined) {
-              throw new Error('surface-app-lifecycle: splash player unavailable');
-            }
-            world.set(player, ParticleEffectPlayer, { playing: true }).unwrap();
-          }
-          projectionRevision += 1;
-          pendingImpacts.length = 0;
-        }
-        const age = eventTime === undefined ? -1 : time - eventTime;
-        if (!cameraMoved && age >= 0.15) {
-          world.set(camera, Transform, { pos: [0.9, 0, 6] }).unwrap();
-          cameraMoved = true;
-          cameraCoverageTransitions += 1;
-        }
-        if (!cameraRestored && age >= 0.25) {
-          world.set(camera, Transform, { pos: [0, 0, 6] }).unwrap();
-          cameraRestored = true;
-          cameraCoverageTransitions += 1;
-        }
-        if (!splashesRetired && age >= SURFACE_APP_EVENT_LIFETIME_SECONDS) {
-          for (const player of splashPlayers) {
-            world.despawn(player).unwrap();
-          }
-          for (let index = 0; index < 2; index += 1) {
-            dynamicInput.page
-              .writeRecord(index, { position: [0, 0, 0], time: -1_000, eventId: 0 })
-              .unwrap();
-          }
-          projectionRevision += 1;
-          splashesRetired = true;
-        }
-        renderer.setSurfaceDynamicInput({
-          ...dynamicInput,
-          projectionRevision,
-          frameTime: time,
-        });
-      },
-    })
-    .unwrap();
-
-  const originalRaf = globalThis.requestAnimationFrame;
-  const originalCaf = globalThis.cancelAnimationFrame;
-  let nextRafId = 1;
-  const timers = new Map<number, ReturnType<typeof setTimeout>>();
-  if (input.hostFrameScheduler === 'timer') {
-    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback): number => {
-      const id = nextRafId++;
-      const timer = setTimeout(() => {
-        timers.delete(id);
-        callback(performance.now());
-      }, 16);
-      timers.set(id, timer);
-      return id;
-    }) as typeof requestAnimationFrame;
-    globalThis.cancelAnimationFrame = ((id: number): void => {
-      const timer = timers.get(id);
-      if (timer !== undefined) clearTimeout(timer);
-      timers.delete(id);
-    }) as typeof cancelAnimationFrame;
-  }
-
-  const receipts: FrameReceipt[] = [];
-  const errors: unknown[] = [];
-  let acceptingRecoveryErrors = false;
-  let acceptingQueuedFrameError = false;
-  let pauseAfterReceiptCount: number | undefined;
-  const unsubscribeFrames = renderer.subscribe((event) => {
-    if (event.kind === 'frame-submitted') {
-      receipts.push(event.receipt);
-      if (receipts.length === pauseAfterReceiptCount) {
-        pauseAfterReceiptCount = undefined;
-        app?.pause().unwrap();
-      }
-    }
-  });
-  let app: App | undefined;
-  const waitForReceiptCount = async (count: number): Promise<void> => {
-    const deadline = Date.now() + 30_000;
-    while (receipts.length < count && Date.now() < deadline) {
-      if (errors.length > 0) {
-        throw new Error(
-          `surface-app-lifecycle: App failed before receipt ${count}: ${JSON.stringify(errors)}`,
-        );
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    }
-    if (receipts.length < count) {
-      throw new Error(
-        `surface-app-lifecycle: expected ${count} receipts, observed ${receipts.length}`,
-      );
-    }
+  return {
+    assets,
+    world,
+    mediumMembers,
+    dynamicInput,
+    splashRendererKinds,
+    splashPlayers,
+    camera,
   };
-  const waitForReceipts = async (count: number): Promise<void> => {
-    await waitForReceiptCount(count);
-    const receipt = receipts[count - 1];
-    if (receipt === undefined) throw new Error('surface-app-lifecycle: receipt unavailable');
-    const completion = await receipt.completed;
-    if (!completion.ok) throw completion.error;
-  };
-  const waitForRendererState = async (expected: 'alive' | 'device-lost'): Promise<void> => {
-    const deadline = Date.now() + 30_000;
-    while (renderer.state() !== expected && Date.now() < deadline) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    }
-    if (renderer.state() !== expected) {
-      throw new Error(
-        `surface-app-lifecycle: expected renderer state ${expected}, observed ${renderer.state()}`,
-      );
-    }
-  };
-  const lifecycleCamera = world.get(camera, Camera).unwrap();
-  const lifecycleCameraTransform = world.get(camera, Transform).unwrap();
-  const lifecycleCameraX = lifecycleCameraTransform.pos[0];
-  const lifecycleCameraY = lifecycleCameraTransform.pos[1];
-  const lifecycleCameraZ = lifecycleCameraTransform.pos[2];
+}
+
+interface SurfaceAppLifecycleMasks {
+  readonly coverageGeometry: ReturnType<typeof createSurfaceAppLifecycleCoverageMask>;
+  readonly waterA: ReturnType<typeof createSurfaceAppLifecycleMask>;
+  readonly waterB: ReturnType<typeof createSurfaceAppLifecycleMask>;
+  readonly coverage: ReturnType<typeof createSurfaceAppLifecycleCoverageMask>['mask'];
+  readonly splash: ReturnType<typeof createSurfaceAppLifecycleMask>;
+}
+
+function lifecycleCameraPosition(
+  world: World,
+  camera: EntityHandle,
+): readonly [number, number, number] {
+  const transform = world.get(camera, Transform).unwrap();
+  const x = transform.pos[0];
+  const y = transform.pos[1];
+  const z = transform.pos[2];
   if (
-    typeof lifecycleCameraX !== 'number' ||
-    !Number.isFinite(lifecycleCameraX) ||
-    typeof lifecycleCameraY !== 'number' ||
-    !Number.isFinite(lifecycleCameraY) ||
-    typeof lifecycleCameraZ !== 'number' ||
-    !Number.isFinite(lifecycleCameraZ)
+    typeof x !== 'number' ||
+    !Number.isFinite(x) ||
+    typeof y !== 'number' ||
+    !Number.isFinite(y) ||
+    typeof z !== 'number' ||
+    !Number.isFinite(z)
   ) {
     throw new Error('surface-app-lifecycle: camera transform position must be finite');
   }
+  return [x, y, z];
+}
+
+/** Fixed-ROI masks derived from the authored geometry before any pixel is read. */
+function createSurfaceAppLifecycleMasks(
+  world: World,
+  camera: EntityHandle,
+): SurfaceAppLifecycleMasks {
+  const lifecycleCamera = world.get(camera, Camera).unwrap();
+  const [lifecycleCameraX, lifecycleCameraY, lifecycleCameraZ] = lifecycleCameraPosition(
+    world,
+    camera,
+  );
   const waterACenterX =
     (SURFACE_CASES.length - 2 - (SURFACE_CASES.length - 1) / 2) * SURFACE_CELL_SPACING;
   const waterBCenterX =
@@ -1119,7 +1087,6 @@ export async function runSurfaceAppLifecycle(input: {
     cellCount: SURFACE_CASES.length,
     radius: (8 * SURFACE_WIDTH) / 960,
   });
-  const coverageRoiMask = coverageMask.mask;
   const waterBMask = createSurfaceAppLifecycleMask({
     width: SURFACE_WIDTH,
     height: SURFACE_HEIGHT,
@@ -1138,17 +1105,353 @@ export async function runSurfaceAppLifecycle(input: {
     radius: (8 * SURFACE_WIDTH) / 960,
     offsetY: (-86 * SURFACE_HEIGHT) / 540,
   });
-  const armLifecycleObservation = (): void => {
-    const armed = renderer.requestObservation?.(['linear-hdr']);
+  return {
+    coverageGeometry: coverageMask,
+    waterA: waterAMask,
+    waterB: waterBMask,
+    coverage: coverageMask.mask,
+    splash: splashMask,
+  };
+}
+
+type SurfaceVfxRecoveryState = {
+  readonly hostGeneration: number;
+  readonly renderGeneration: number;
+  readonly queueSequences: readonly number[];
+  readonly queuedContinuations: readonly {
+    readonly player: number;
+    readonly sequence: number;
+    readonly phaseTick: number;
+    readonly playCycle: number;
+    readonly reset: boolean;
+  }[];
+  readonly players: readonly SurfaceVfxRecoveryPlayerEvidence[];
+};
+
+function surfaceVfxPlayerEvidence(
+  player: NonNullable<ReturnType<VfxRuntimeHost['inspect']>>['players'][number],
+): SurfaceVfxRecoveryPlayerEvidence {
+  return {
+    player: Number(player.player),
+    assetGuid: player.assetGuid,
+    programFingerprint: player.programFingerprint,
+    seed: player.seed,
+    playing: player.playing,
+    valueGeneration: player.values.generation,
+    queuedIntents: player.queuedIntents,
+    queuedTicks: player.queuedTicks,
+    lastCommitted:
+      player.lastCommitted === null
+        ? null
+        : {
+            sequence: player.lastCommitted.sequence,
+            tick: player.lastCommitted.tick,
+            phaseTick: player.lastCommitted.phaseTick,
+            playCycle: player.lastCommitted.playCycle,
+            spawnCount: player.lastCommitted.spawnCount,
+            reset: player.lastCommitted.reset,
+          },
+    sessions: player.emitters.map((emitter) => ({
+      id: emitter.id,
+      sessionEnabled: emitter.sessionEnabled,
+      phaseTick: emitter.phaseTick,
+      tick: emitter.tick,
+      playCycle: emitter.playCycle,
+    })),
+  };
+}
+
+/** Device-loss facts recorded before recovery. */
+interface SurfaceAppLifecycleLoss {
+  readonly oldGeneration: number;
+  readonly oldReceipt: FrameReceipt;
+  readonly lateObservation: ReturnType<Renderer['observe']>;
+  readonly observationResourcesBeforeLoss: number;
+  readonly vfxBeforeLoss: SurfaceVfxRecoveryState;
+  readonly worldTimeBeforeLoss: number;
+  readonly eventTimeAtLoss: number;
+  readonly eventAgeBeforeLoss: number;
+}
+
+/** Recovery facts observed before the first recovered frame. */
+interface SurfaceAppLifecycleRecovery {
+  readonly newGeneration: number;
+  readonly worldTimeAfterRecovery: number;
+  readonly eventAgeAfterRecovery: number;
+  readonly lateObservationError: unknown;
+  readonly staleObservationError: unknown;
+  readonly observationResourcesAfterRecovery: number;
+}
+
+interface SurfaceAppLifecyclePause {
+  readonly active: SurfaceAppLifecycleFrameCapture;
+  readonly pausedSpawnIntents: SurfaceAppLifecycleSplashIntents;
+  readonly pausedWorldTime: number;
+  readonly pausedReceiptCount: number;
+  readonly activeVfxPlayerCount: number;
+  readonly pausedWaitMilliseconds: number;
+}
+
+interface SurfaceAppLifecycleExpiry {
+  readonly coverageClipped: SurfaceAppLifecycleFrameCapture;
+  readonly expired: SurfaceAppLifecycleFrameCapture;
+  readonly expiredWorldTime: number;
+  readonly expiredVfxPlayerCount: number;
+}
+
+interface SurfaceAppLifecycleCaptures {
+  readonly baseline: SurfaceAppLifecycleFrameCapture;
+  readonly active: SurfaceAppLifecycleFrameCapture;
+  readonly resumed: SurfaceAppLifecycleFrameCapture;
+  readonly preLoss: SurfaceAppLifecycleFrameCapture;
+  readonly recovered: SurfaceAppLifecycleFrameCapture;
+  readonly coverageClipped: SurfaceAppLifecycleFrameCapture;
+  readonly expired: SurfaceAppLifecycleFrameCapture;
+}
+
+function compareSurfaceAppLifecycleCaptures(
+  captures: SurfaceAppLifecycleCaptures,
+): SurfaceAppLifecycleEvidence['comparisons'] {
+  const { baseline, active, resumed, preLoss, recovered, coverageClipped, expired } = captures;
+  return {
+    activeWaterA: compareSurfaceAppLifecycleRois(baseline.waterA, active.waterA),
+    activeWaterB: compareSurfaceAppLifecycleRois(baseline.waterB, active.waterB),
+    activeSplash: compareSurfaceAppLifecycleRois(baseline.splash, active.splash),
+    preLossSplash: compareSurfaceAppLifecycleRois(baseline.splash, preLoss.splash),
+    recoveredSplash: compareSurfaceAppLifecycleRois(baseline.splash, recovered.splash),
+    recoverySplashParity: compareSurfaceAppLifecycleRois(preLoss.splash, recovered.splash),
+    resumedWaterA: compareSurfaceAppLifecycleRois(baseline.waterA, resumed.waterA),
+    resumedWaterB: compareSurfaceAppLifecycleRois(baseline.waterB, resumed.waterB),
+    recoveredWaterA: compareSurfaceAppLifecycleRois(baseline.waterA, recovered.waterA),
+    recoveredWaterB: compareSurfaceAppLifecycleRois(baseline.waterB, recovered.waterB),
+    coverageWaterA: compareSurfaceAppLifecycleRois(active.waterA, coverageClipped.waterA),
+    coverageMask: compareSurfaceAppLifecycleRois(active.coverage, coverageClipped.coverage),
+    expiredWaterA: compareSurfaceAppLifecycleRois(baseline.waterA, expired.waterA),
+    expiredWaterB: compareSurfaceAppLifecycleRois(baseline.waterB, expired.waterB),
+    expiredSplash: compareSurfaceAppLifecycleRois(baseline.splash, expired.splash),
+  };
+}
+
+function expectSurfaceAppLifecyclePixels(
+  comparisons: SurfaceAppLifecycleEvidence['comparisons'],
+  queueVfxContinuationDuringLoss: boolean | undefined,
+): void {
+  const { activeWaterA, activeWaterB, activeSplash, preLossSplash, recoveredSplash } = comparisons;
+  const { recoverySplashParity, resumedWaterA, resumedWaterB, recoveredWaterA } = comparisons;
+  const { recoveredWaterB } = comparisons;
+  if (activeWaterA.failedPixelCount === 0) {
+    throw new Error('surface-app-lifecycle: active water impacts did not change the water A ROI');
+  }
+  if (
+    activeWaterB.failedPixelCount !== 0 ||
+    resumedWaterB.failedPixelCount !== 0 ||
+    recoveredWaterB.failedPixelCount !== 0
+  ) {
+    throw new Error('surface-app-lifecycle: water A impacts leaked into water B domain');
+  }
+  if (activeSplash.failedPixelCount === 0) {
+    throw new Error('surface-app-lifecycle: cooked splash produced no fixed-ROI pixels');
+  }
+  if (preLossSplash.failedPixelCount === 0 || recoveredSplash.failedPixelCount === 0) {
+    throw new Error(
+      `surface-app-lifecycle: splash was not visible across device recovery ${JSON.stringify({ preLossSplash, recoveredSplash, recoverySplashParity })}`,
+    );
+  }
+  if (
+    queueVfxContinuationDuringLoss !== true &&
+    (recoverySplashParity.failedPixelCount !== 0 || recoverySplashParity.maxError > 0.05)
+  ) {
+    throw new Error(
+      `surface-app-lifecycle: recovered splash changed fixed-ROI pixels ${JSON.stringify(recoverySplashParity)}`,
+    );
+  }
+  if (resumedWaterA.failedPixelCount === 0) {
+    throw new Error('surface-app-lifecycle: resumed event disappeared before its lifetime');
+  }
+  if (recoveredWaterA.failedPixelCount === 0) {
+    throw new Error('surface-app-lifecycle: valid water event did not survive device recovery');
+  }
+}
+
+function expectExpiredSurfacePixels(comparisons: SurfaceAppLifecycleEvidence['comparisons']): void {
+  if (
+    comparisons.expiredWaterA.failedPixelCount !== 0 ||
+    comparisons.expiredWaterB.failedPixelCount !== 0
+  ) {
+    throw new Error('surface-app-lifecycle: expired water events did not return to baseline');
+  }
+  if (comparisons.expiredSplash.failedPixelCount !== 0) {
+    throw new Error('surface-app-lifecycle: expired splash pixels did not retire');
+  }
+}
+
+type SurfaceRenderSubmission = ReturnType<Renderer['inspect']>['renderScene']['submission'];
+
+function expectRecoveredSurfaceSubmission(
+  recoveredSubmission: SurfaceRenderSubmission,
+  recoveredReceipt: FrameReceipt,
+  newGeneration: number,
+): NonNullable<SurfaceRenderSubmission> {
+  const recoveredPassNames = recoveredSubmission?.passes.map((pass) => pass.pass) ?? [];
+  if (
+    recoveredSubmission === undefined ||
+    recoveredSubmission.status !== 'completed' ||
+    recoveredSubmission.frameId !== recoveredReceipt.frameId ||
+    recoveredSubmission.deviceGeneration !== newGeneration ||
+    recoveredSubmission.actualLane !== 'gpu-driven' ||
+    recoveredPassNames.length !== 2 ||
+    new Set(recoveredPassNames).size !== 2 ||
+    !recoveredPassNames.includes('nearest-layer') ||
+    !recoveredPassNames.includes('color') ||
+    recoveredSubmission.passes.some((pass) => pass.memberEvidence !== 'indirect-visible-readback')
+  ) {
+    throw new Error(
+      `surface-app-lifecycle: recovered Surface GPU submission evidence missing ${JSON.stringify({
+        actualLane: recoveredSubmission?.actualLane,
+        passes: recoveredSubmission?.passes.map((pass) => ({
+          pass: pass.pass,
+          memberEvidence: pass.memberEvidence,
+        })),
+      })}`,
+    );
+  }
+  return recoveredSubmission;
+}
+
+/** One public App-owned water lifecycle run and the World-time event state it drives. */
+class SurfaceAppLifecycleRun {
+  readonly input: SurfaceAppLifecycleInput;
+  readonly renderer: Renderer;
+  readonly scene: SurfaceAppLifecycleScene;
+  readonly world: World;
+  readonly camera: EntityHandle;
+  dynamicInput: SurfaceAppLifecycleDynamicInput;
+  readonly pendingImpacts: Array<{
+    readonly eventId: number;
+    readonly position: readonly [number, number, number];
+  }> = [];
+  readonly acceptedImpactIds = new Set<number>();
+  eventTime: number | undefined;
+  duplicateImpactCount = 0;
+  projectionRevision = 1;
+  splashesRetired = false;
+  cameraCoverageTransitions = 0;
+  cameraMoved = false;
+  cameraRestored = false;
+  readonly receipts: FrameReceipt[] = [];
+  readonly errors: unknown[] = [];
+  acceptingRecoveryErrors = false;
+  acceptingQueuedFrameError = false;
+  pauseAfterReceiptCount: number | undefined;
+  app: App | undefined;
+  readonly masks: SurfaceAppLifecycleMasks;
+
+  constructor(
+    input: SurfaceAppLifecycleInput,
+    scene: SurfaceAppLifecycleScene,
+    masks: SurfaceAppLifecycleMasks,
+  ) {
+    this.input = input;
+    this.masks = masks;
+    this.renderer = input.renderer;
+    this.scene = scene;
+    this.world = scene.world;
+    this.camera = scene.camera;
+    this.dynamicInput = scene.dynamicInput;
+  }
+
+  /** The World Update system: the single time snapshot owner for events and play edges. */
+  installEventSystem(): void {
+    this.world
+      .addSystem(Update, {
+        name: 'surface-water-public-event-lifecycle',
+        queries: [],
+        fn: () => this.updateWaterEvents(),
+      })
+      .unwrap();
+  }
+
+  subscribeFrames(): () => void {
+    return this.renderer.subscribe((event) => {
+      if (event.kind === 'frame-submitted') {
+        this.receipts.push(event.receipt);
+        if (this.receipts.length === this.pauseAfterReceiptCount) {
+          this.pauseAfterReceiptCount = undefined;
+          this.app?.pause().unwrap();
+        }
+      }
+    });
+  }
+
+  onAppError(error: unknown): void {
+    const expectedDeviceLoss = isExpectedDeviceLossError(error);
+    if (!this.acceptingQueuedFrameError && (!this.acceptingRecoveryErrors || !expectedDeviceLoss)) {
+      this.errors.push(error);
+    }
+  }
+
+  async waitForReceiptCount(count: number): Promise<void> {
+    const receipts = this.receipts;
+    const deadline = Date.now() + 30_000;
+    while (receipts.length < count && Date.now() < deadline) {
+      if (this.errors.length > 0) {
+        throw new Error(
+          `surface-app-lifecycle: App failed before receipt ${count}: ${JSON.stringify(this.errors)}`,
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    if (receipts.length < count) {
+      throw new Error(
+        `surface-app-lifecycle: expected ${count} receipts, observed ${receipts.length}`,
+      );
+    }
+  }
+
+  async waitForReceipts(count: number): Promise<void> {
+    await this.waitForReceiptCount(count);
+    const receipt = this.receipts[count - 1];
+    if (receipt === undefined) throw new Error('surface-app-lifecycle: receipt unavailable');
+    const completion = await receipt.completed;
+    if (!completion.ok) throw completion.error;
+  }
+
+  async waitForRendererState(expected: 'alive' | 'device-lost'): Promise<void> {
+    const renderer = this.renderer;
+    const deadline = Date.now() + 30_000;
+    while (renderer.state() !== expected && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    if (renderer.state() !== expected) {
+      throw new Error(
+        `surface-app-lifecycle: expected renderer state ${expected}, observed ${renderer.state()}`,
+      );
+    }
+  }
+
+  armLifecycleObservation(): void {
+    const armed = this.renderer.requestObservation?.(['linear-hdr']);
     if (armed === undefined || !armed.ok) {
       throw new Error('surface-app-lifecycle: linear-hdr observation could not be armed');
     }
-  };
-  const captureReceipt = async (
+  }
+
+  /** Step one App frame of `delta` seconds and wait for its completed receipt. */
+  async stepAndComplete(app: App, delta: number, missing: string): Promise<FrameReceipt> {
+    const index = this.receipts.length;
+    app.stepFrame(delta).unwrap();
+    await this.waitForReceipts(index + 1);
+    const receipt = this.receipts[index];
+    if (receipt === undefined) throw new Error(`surface-app-lifecycle: ${missing}`);
+    return receipt;
+  }
+
+  async captureReceipt(
     label: SurfaceAppLifecycleFrameEvidence['label'],
     receipt: FrameReceipt,
-  ): Promise<SurfaceAppLifecycleFrameCapture> => {
-    const observed = await renderer.observe(receipt, { include: ['linear-hdr'] });
+  ): Promise<SurfaceAppLifecycleFrameCapture> {
+    const masks = this.masks;
+    const observed = await this.renderer.observe(receipt, { include: ['linear-hdr'] });
     if (!observed.ok) throw observed.error;
     const observation = observed.value.observations?.find(
       (candidate) => candidate.domain === 'linear-hdr',
@@ -1173,78 +1476,20 @@ export async function runSurfaceAppLifecycle(input: {
       bytesPerRow: metadata.bytesPerRow,
       format: metadata.format,
     };
-    const waterA = readSurfaceAppLifecycleRoi(readback, waterAMask);
-    const waterB = readSurfaceAppLifecycleRoi(readback, waterBMask);
-    const coverage = readSurfaceAppLifecycleRoi(readback, coverageRoiMask);
-    const splash = readSurfaceAppLifecycleRoi(readback, splashMask);
-    const cameraValues = world.get(camera, Camera).unwrap();
-    const transformValues = world.get(camera, Transform).unwrap();
-    const globalTransformValues = world.get(camera, GlobalTransform).unwrap();
-    const extractedCamera = extractCameraSnapshots(world).find(
-      (candidate) => candidate.entityKey === (camera as number),
-    );
-    const extractedWorld = extractedCamera?.world ?? globalTransformValues.world;
-    const extractedView = mat4.invert(mat4.create(), extractedWorld);
-    const committedSubmission = renderer.inspect().renderScene.submission;
-    const submission =
-      committedSubmission === undefined
-        ? undefined
-        : {
-            sequence: committedSubmission.sequence,
-            frameId: committedSubmission.frameId,
-            requestedLane: committedSubmission.requestedLane,
-            actualLane: committedSubmission.actualLane,
-            actualLaneReason: committedSubmission.actualLaneReason,
-            deviceGeneration: committedSubmission.deviceGeneration,
-            graphGeneration: committedSubmission.graphGeneration,
-            viewIdentity: committedSubmission.viewIdentity,
-            resourceGeneration: committedSubmission.resourceGeneration,
-            status: committedSubmission.status,
-            passes: committedSubmission.passes.map((pass) => ({
-              pass: pass.pass,
-              memberEvidence: pass.memberEvidence,
-              memberIds: pass.memberIds,
-              commandKinds: pass.commands.map((command) => command.kind),
-            })),
-          };
+    const waterA = readSurfaceAppLifecycleRoi(readback, masks.waterA);
+    const waterB = readSurfaceAppLifecycleRoi(readback, masks.waterB);
+    const coverage = readSurfaceAppLifecycleRoi(readback, masks.coverage);
+    const splash = readSurfaceAppLifecycleRoi(readback, masks.splash);
     return {
       waterA,
       waterB,
       coverage,
       splash,
-      diagnostics: {
-        worldTime: world.getResource(Time).elapsed,
-        receipt: {
-          frameId: receipt.frameId,
-          deviceGeneration: receipt.deviceGeneration,
-          graphGeneration: receipt.graphGeneration,
-        },
-        submission,
-        submissionMatchesReceipt: submission?.frameId === receipt.frameId,
-        camera: {
-          position: Array.from(transformValues.pos),
-          quat: Array.from(transformValues.quat),
-          scale: Array.from(transformValues.scale),
-          globalTransformWorld: Array.from(globalTransformValues.world),
-          extractedView: {
-            cameraEntityKey: extractedCamera?.entityKey ?? (camera as number),
-            source: extractedCamera === undefined ? 'global-transform-fallback' : 'extract-camera',
-            viewMatrix: Array.from(extractedView),
-            viewIdentity: submission?.viewIdentity ?? 'main:0',
-            frameId: submission?.frameId ?? -1,
-            matchesReceipt: submission?.frameId === receipt.frameId,
-          },
-          projection: cameraValues.projection,
-          fov: cameraValues.fov,
-          aspect: cameraValues.aspect,
-          near: cameraValues.near,
-          far: cameraValues.far,
-          left: cameraValues.left,
-          right: cameraValues.right,
-          bottom: cameraValues.bottom,
-          top: cameraValues.top,
-        },
-      },
+      diagnostics: this.cameraDiagnostics({
+        frameId: receipt.frameId,
+        deviceGeneration: receipt.deviceGeneration,
+        graphGeneration: receipt.graphGeneration,
+      }),
       evidence: {
         label,
         frameId: receipt.frameId,
@@ -1262,10 +1507,11 @@ export async function runSurfaceAppLifecycle(input: {
         splash: splash.average,
       },
     };
-  };
-  const inspectCommittedSplashes = (): SurfaceAppLifecycleEvidence['splashIntents'] =>
-    Object.freeze(
-      input.vfxHost.inspect(world)?.players.flatMap((player) => {
+  }
+
+  inspectCommittedSplashes(): SurfaceAppLifecycleSplashIntents {
+    return Object.freeze(
+      this.input.vfxHost.inspect(this.world)?.players.flatMap((player) => {
         const committed = player.lastCommitted;
         return committed !== null && committed.spawnCount > 0 && committed.reset
           ? [
@@ -1280,12 +1526,14 @@ export async function runSurfaceAppLifecycle(input: {
           : [];
       }) ?? [],
     );
-  const inspectVfxRecoveryState = () => {
-    const snapshot = input.vfxHost.inspect(world);
+  }
+
+  inspectVfxRecoveryState(): SurfaceVfxRecoveryState {
+    const snapshot = this.input.vfxHost.inspect(this.world);
     if (snapshot === undefined) {
       throw new Error('surface-app-lifecycle: VFX recovery snapshot unavailable');
     }
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = this.world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
     return {
       hostGeneration: snapshot.generation,
       renderGeneration: snapshot.renderGeneration,
@@ -1299,686 +1547,869 @@ export async function runSurfaceAppLifecycle(input: {
           reset: intent.reset,
         })),
       ),
-      players: Object.freeze(
-        snapshot.players.map(
-          (player): SurfaceVfxRecoveryPlayerEvidence => ({
-            player: Number(player.player),
-            assetGuid: player.assetGuid,
-            programFingerprint: player.programFingerprint,
-            seed: player.seed,
-            playing: player.playing,
-            valueGeneration: player.values.generation,
-            queuedIntents: player.queuedIntents,
-            queuedTicks: player.queuedTicks,
-            lastCommitted:
-              player.lastCommitted === null
-                ? null
-                : {
-                    sequence: player.lastCommitted.sequence,
-                    tick: player.lastCommitted.tick,
-                    phaseTick: player.lastCommitted.phaseTick,
-                    playCycle: player.lastCommitted.playCycle,
-                    spawnCount: player.lastCommitted.spawnCount,
-                    reset: player.lastCommitted.reset,
-                  },
-            sessions: player.emitters.map((emitter) => ({
-              id: emitter.id,
-              sessionEnabled: emitter.sessionEnabled,
-              phaseTick: emitter.phaseTick,
-              tick: emitter.tick,
-              playCycle: emitter.playCycle,
-            })),
-          }),
-        ),
-      ),
+      players: Object.freeze(snapshot.players.map(surfaceVfxPlayerEvidence)),
     };
+  }
+
+  private updateWaterEvents(): void {
+    const time = this.world.getResource(Time).elapsed;
+    if (this.eventTime === undefined && this.pendingImpacts.length > 0) this.acceptImpacts(time);
+    const age = this.eventTime === undefined ? -1 : time - this.eventTime;
+    if (!this.cameraMoved && age >= 0.15) {
+      this.world.set(this.camera, Transform, { pos: [0.9, 0, 6] }).unwrap();
+      this.cameraMoved = true;
+      this.cameraCoverageTransitions += 1;
+    }
+    if (!this.cameraRestored && age >= 0.25) {
+      this.world.set(this.camera, Transform, { pos: [0, 0, 6] }).unwrap();
+      this.cameraRestored = true;
+      this.cameraCoverageTransitions += 1;
+    }
+    if (!this.splashesRetired && age >= SURFACE_APP_EVENT_LIFETIME_SECONDS) this.retireSplashes();
+    this.renderer.setSurfaceDynamicInput({
+      ...this.dynamicInput,
+      projectionRevision: this.projectionRevision,
+      frameTime: time,
+    });
+  }
+
+  private acceptImpacts(time: number): void {
+    this.eventTime = time;
+    for (const impact of this.pendingImpacts) {
+      if (this.acceptedImpactIds.has(impact.eventId)) {
+        this.duplicateImpactCount += 1;
+        continue;
+      }
+      if (this.acceptedImpactIds.size >= 2) continue;
+      const recordIndex = this.acceptedImpactIds.size;
+      this.acceptedImpactIds.add(impact.eventId);
+      this.dynamicInput.page
+        .writeRecord(recordIndex, {
+          position: impact.position,
+          time,
+          eventId: impact.eventId,
+        })
+        .unwrap();
+      const player = this.scene.splashPlayers[recordIndex];
+      if (player === undefined) {
+        throw new Error('surface-app-lifecycle: splash player unavailable');
+      }
+      this.world.set(player, ParticleEffectPlayer, { playing: true }).unwrap();
+    }
+    this.projectionRevision += 1;
+    this.pendingImpacts.length = 0;
+  }
+
+  private retireSplashes(): void {
+    for (const player of this.scene.splashPlayers) {
+      this.world.despawn(player).unwrap();
+    }
+    for (let index = 0; index < 2; index += 1) {
+      this.dynamicInput.page
+        .writeRecord(index, { position: [0, 0, 0], time: -1_000, eventId: 0 })
+        .unwrap();
+    }
+    this.projectionRevision += 1;
+    this.splashesRetired = true;
+  }
+
+  private cameraDiagnostics(
+    receipt: SurfaceAppLifecycleCameraDiagnostics['receipt'],
+  ): SurfaceAppLifecycleCameraDiagnostics {
+    const { world, camera } = this;
+    const cameraValues = world.get(camera, Camera).unwrap();
+    const transformValues = world.get(camera, Transform).unwrap();
+    const globalTransformValues = world.get(camera, GlobalTransform).unwrap();
+    const extractedCamera = extractCameraSnapshots(world).find(
+      (candidate) => candidate.entityKey === (camera as number),
+    );
+    const extractedWorld = extractedCamera?.world ?? globalTransformValues.world;
+    const extractedView = mat4.invert(mat4.create(), extractedWorld);
+    const submission = surfaceSubmissionDiagnostics(this.renderer.inspect().renderScene.submission);
+    return {
+      worldTime: world.getResource(Time).elapsed,
+      receipt,
+      submission,
+      submissionMatchesReceipt: submission?.frameId === receipt.frameId,
+      camera: {
+        position: Array.from(transformValues.pos),
+        quat: Array.from(transformValues.quat),
+        scale: Array.from(transformValues.scale),
+        globalTransformWorld: Array.from(globalTransformValues.world),
+        extractedView: {
+          cameraEntityKey: extractedCamera?.entityKey ?? (camera as number),
+          source: extractedCamera === undefined ? 'global-transform-fallback' : 'extract-camera',
+          viewMatrix: Array.from(extractedView),
+          viewIdentity: submission?.viewIdentity ?? 'main:0',
+          frameId: submission?.frameId ?? -1,
+          matchesReceipt: submission?.frameId === receipt.frameId,
+        },
+        projection: cameraValues.projection,
+        fov: cameraValues.fov,
+        aspect: cameraValues.aspect,
+        near: cameraValues.near,
+        far: cameraValues.far,
+        left: cameraValues.left,
+        right: cameraValues.right,
+        bottom: cameraValues.bottom,
+        top: cameraValues.top,
+      },
+    };
+  }
+}
+
+function surfaceSubmissionDiagnostics(
+  committedSubmission: SurfaceRenderSubmission,
+): SurfaceAppLifecycleCameraDiagnostics['submission'] {
+  if (committedSubmission === undefined) return undefined;
+  return {
+    sequence: committedSubmission.sequence,
+    frameId: committedSubmission.frameId,
+    requestedLane: committedSubmission.requestedLane,
+    actualLane: committedSubmission.actualLane,
+    actualLaneReason: committedSubmission.actualLaneReason,
+    deviceGeneration: committedSubmission.deviceGeneration,
+    graphGeneration: committedSubmission.graphGeneration,
+    viewIdentity: committedSubmission.viewIdentity,
+    resourceGeneration: committedSubmission.resourceGeneration,
+    status: committedSubmission.status,
+    passes: committedSubmission.passes.map((pass) => ({
+      pass: pass.pass,
+      memberEvidence: pass.memberEvidence,
+      memberIds: pass.memberIds,
+      commandKinds: pass.commands.map((command) => command.kind),
+    })),
   };
+}
+
+/** Phase methods of the lifecycle drive, in their execution order. */
+class SurfaceAppLifecycleDrive {
+  readonly run: SurfaceAppLifecycleRun;
+  readonly app: App;
+
+  constructor(run: SurfaceAppLifecycleRun, app: App) {
+    this.run = run;
+    this.app = app;
+  }
+
+  // Freeze the baseline at submission, before later RAF ticks can use the
+  // remaining receipt credit while this frame's GPU completion is pending.
+  async captureBaseline(): Promise<SurfaceAppLifecycleFrameCapture> {
+    const { run, app } = this;
+    run.armLifecycleObservation();
+    run.pauseAfterReceiptCount = 1;
+    app.start().unwrap();
+    await run.waitForReceipts(1);
+    app.pause().unwrap();
+    const baselineReceipt = run.receipts[0];
+    if (baselineReceipt === undefined) {
+      throw new Error('surface-app-lifecycle: baseline receipt unavailable');
+    }
+    return run.captureReceipt('baseline', baselineReceipt);
+  }
+
+  /** Publish the impacts, then capture the first frame showing water and splash together. */
+  async captureActiveImpacts(): Promise<{
+    readonly active: SurfaceAppLifecycleFrameCapture;
+    readonly eventSpawnIntents: SurfaceAppLifecycleSplashIntents;
+  }> {
+    const { run, app } = this;
+    run.pendingImpacts.push(
+      { eventId: 701, position: SURFACE_APP_IMPACT_POSITIONS[0] },
+      { eventId: 702, position: SURFACE_APP_IMPACT_POSITIONS[1] },
+      { eventId: 701, position: SURFACE_APP_IMPACT_POSITIONS[0] },
+    );
+    // Update accepts the impact and publishes the ParticleEffectPlayer play
+    // edge; its order against this frame's VFX update is unspecified. A second
+    // App-owned frame is therefore the first frame where the formal VFX intent
+    // and GPU splash are guaranteed to be observed together.
+    const eventReceiptIndex = run.receipts.length;
+    app.stepFrame(1 / 60).unwrap();
+    await run.waitForReceipts(eventReceiptIndex + 1);
+    const eventSpawnIntents = run.inspectCommittedSplashes();
+    run.armLifecycleObservation();
+    const activeReceipt = await run.stepAndComplete(app, 1 / 60, 'active receipt unavailable');
+    return { active: await run.captureReceipt('active', activeReceipt), eventSpawnIntents };
+  }
+
+  /** A paused App advances neither World time, frames nor VFX intent state. */
+  async verifyPause(
+    active: SurfaceAppLifecycleFrameCapture,
+    eventSpawnIntents: SurfaceAppLifecycleSplashIntents,
+  ): Promise<SurfaceAppLifecyclePause> {
+    const { run } = this;
+    const { world, input } = run;
+    const pausedWorldTime = world.getResource(Time).elapsed;
+    const pausedReceiptCount = run.receipts.length;
+    const activeVfxSnapshot = input.vfxHost.inspect(world);
+    const activeVfxPlayerCount = activeVfxSnapshot?.players.length ?? 0;
+    if (activeVfxPlayerCount !== 2) {
+      throw new Error('surface-app-lifecycle: production VFX host did not retain two players');
+    }
+    const pausedSpawnIntents =
+      eventSpawnIntents.length === 0 ? run.inspectCommittedSplashes() : eventSpawnIntents;
+    const pausedVfxSnapshot = activeVfxSnapshot?.players.map(pausedVfxPlayerState);
+    const pausedWaitMilliseconds = input.pauseWaitMilliseconds ?? 250;
+    await new Promise<void>((resolve) => setTimeout(resolve, pausedWaitMilliseconds));
+    if (
+      world.getResource(Time).elapsed !== pausedWorldTime ||
+      run.receipts.length !== pausedReceiptCount
+    ) {
+      throw new Error('surface-app-lifecycle: paused App advanced World time or submitted a frame');
+    }
+    const pausedVfxAfterWait = input.vfxHost.inspect(world)?.players.map(pausedVfxPlayerState);
+    if (JSON.stringify(pausedVfxAfterWait) !== JSON.stringify(pausedVfxSnapshot)) {
+      throw new Error('surface-app-lifecycle: paused VFX intent state changed without a frame');
+    }
+    return {
+      active,
+      pausedSpawnIntents,
+      pausedWorldTime,
+      pausedReceiptCount,
+      activeVfxPlayerCount,
+      pausedWaitMilliseconds,
+    };
+  }
+
+  async captureResumed(pause: SurfaceAppLifecyclePause): Promise<{
+    readonly resumed: SurfaceAppLifecycleFrameCapture;
+    readonly resumedWorldTime: number;
+  }> {
+    const { run, app } = this;
+    const { world, input } = run;
+    run.armLifecycleObservation();
+    // Stop at the selected submission: GPU completion can outlive later RAF
+    // ticks, whose World clock must not replace this resumed frame's clock.
+    run.pauseAfterReceiptCount = pause.pausedReceiptCount + 1;
+    app.resume().unwrap();
+    await run.waitForReceipts(pause.pausedReceiptCount + 1);
+    app.pause().unwrap();
+    const resumedWorldTime = world.getResource(Time).elapsed;
+    if (world.getResource(Time).delta >= pause.pausedWaitMilliseconds / 1_000) {
+      throw new Error('surface-app-lifecycle: resume accumulated paused host time');
+    }
+    const resumedReceipt = run.receipts[pause.pausedReceiptCount];
+    if (resumedReceipt === undefined) {
+      throw new Error('surface-app-lifecycle: resumed receipt unavailable');
+    }
+    const resumed = await run.captureReceipt('resumed', resumedReceipt);
+    const pausedResetIdentities = new Set(
+      pause.pausedSpawnIntents.map((intent) => `${intent.player}:${intent.sequence}`),
+    );
+    const resumedUnexpectedResets =
+      input.vfxHost
+        .inspect(world)
+        ?.players.filter(
+          (player) =>
+            player.lastCommitted !== null &&
+            player.lastCommitted.spawnCount > 0 &&
+            player.lastCommitted.reset &&
+            !pausedResetIdentities.has(`${Number(player.player)}:${player.lastCommitted.sequence}`),
+        ) ?? [];
+    if (resumedUnexpectedResets.length > 0) {
+      throw new Error('surface-app-lifecycle: resume re-emitted a one-shot splash');
+    }
+    return { resumed, resumedWorldTime };
+  }
+
+  async capturePreLoss(): Promise<{
+    readonly preLoss: SurfaceAppLifecycleFrameCapture;
+    readonly preLossReceipt: FrameReceipt;
+    readonly splashIntentsBeforeLoss: SurfaceAppLifecycleSplashIntents;
+  }> {
+    const { run, app } = this;
+    run.armLifecycleObservation();
+    const preLossReceipt = await run.stepAndComplete(
+      app,
+      0,
+      'completed pre-loss receipt unavailable',
+    );
+    const preLoss = await run.captureReceipt('pre-loss', preLossReceipt);
+    const settledVfxBeforeLoss = run.inspectVfxRecoveryState();
+    const splashIntentsBeforeLoss = run.inspectCommittedSplashes();
+    if (
+      settledVfxBeforeLoss.players.length !== 2 ||
+      settledVfxBeforeLoss.queueSequences.length !== 0 ||
+      settledVfxBeforeLoss.players.some(
+        (player) =>
+          player.queuedIntents !== 0 ||
+          player.queuedTicks !== 0 ||
+          player.lastCommitted === null ||
+          player.sessions.some((session) => !session.sessionEnabled),
+      )
+    ) {
+      throw new Error('surface-app-lifecycle: pre-loss VFX player/session state is not settled');
+    }
+    return { preLoss, preLossReceipt, splashIntentsBeforeLoss };
+  }
+
+  // The public App advances the World and records the real VFX plan.
+  // The backend-owned submit seam then resolves the real host-loss
+  // promise and rejects this one submission before it can acknowledge
+  // the continuation.
+  abortQueuedContinuationFrame(hostLossSignal: SurfaceHostLossSignal): void {
+    const { run, app } = this;
+    const submittedBeforeQueuedFrame = run.receipts.length;
+    let queuedFrameResult: ReturnType<App['stepFrame']>;
+    run.acceptingRecoveryErrors = true;
+    run.acceptingQueuedFrameError = true;
+    hostLossSignal.triggerOnNextSubmit();
+    try {
+      queuedFrameResult = app.stepFrame(1 / 60);
+    } finally {
+      run.acceptingQueuedFrameError = false;
+    }
+    if (queuedFrameResult.ok || run.receipts.length !== submittedBeforeQueuedFrame) {
+      throw new Error('surface-app-lifecycle: queued continuation frame did not abort');
+    }
+  }
+
+  async submitInFlightFrame(): Promise<FrameReceipt> {
+    const { run, app } = this;
+    run.armLifecycleObservation();
+    const oldReceiptIndex = run.receipts.length;
+    app.stepFrame(0).unwrap();
+    await run.waitForReceiptCount(oldReceiptIndex + 1);
+    const inFlightReceipt = run.receipts[oldReceiptIndex];
+    if (inFlightReceipt === undefined) {
+      throw new Error('surface-app-lifecycle: in-flight pre-loss receipt unavailable');
+    }
+    return inFlightReceipt;
+  }
+
+  /** Lose the device with either a queued VFX continuation or an in-flight observed frame. */
+  async loseDevice(preLossReceipt: FrameReceipt): Promise<SurfaceAppLifecycleLoss> {
+    const { run } = this;
+    const { renderer, input, world } = run;
+    const queued = input.queueVfxContinuationDuringLoss === true;
+    const oldGeneration = renderer.inspect().frame.deviceGeneration;
+    const hostLossSignal = input.hostLossSignals.find(
+      (signal) => signal.generation === oldGeneration,
+    );
+    if (hostLossSignal === undefined) {
+      throw new Error('surface-app-lifecycle: host loss signal unavailable');
+    }
+    let oldReceipt = preLossReceipt;
+    if (queued) this.abortQueuedContinuationFrame(hostLossSignal);
+    else oldReceipt = await this.submitInFlightFrame();
+    const observationResourceStatsBeforeLoss = renderer.inspect().observation.resourceStats;
+    if (observationResourceStatsBeforeLoss === undefined) {
+      throw new Error('surface-app-lifecycle: observation resource stats unavailable before loss');
+    }
+    const observationResourcesBeforeLoss = observationResourceStatsBeforeLoss.liveCount;
+    if (!queued && observationResourcesBeforeLoss < 1) {
+      throw new Error('surface-app-lifecycle: in-flight observation resource was not retained');
+    }
+    if (!queued) {
+      run.acceptingRecoveryErrors = true;
+      hostLossSignal.trigger();
+    }
+    const rendererLost = run.waitForRendererState('device-lost');
+    // A rejected queued submission owns no observation capture. Wait for
+    // its loss transition before asserting the stale receipt, instead of
+    // racing the backend's loss notification against an unarmed read.
+    // The other branch still starts a real in-flight read before loss settles.
+    if (queued) await rendererLost;
+    const lateObservation = renderer.observe(oldReceipt, { include: ['linear-hdr'] });
+    await rendererLost;
+    const vfxBeforeLoss = run.inspectVfxRecoveryState();
+    if (
+      queued
+        ? vfxBeforeLoss.queuedContinuations.length !== 2 ||
+          vfxBeforeLoss.queuedContinuations.some((intent) => intent.reset)
+        : vfxBeforeLoss.queuedContinuations.length !== 0
+    ) {
+      throw new Error(
+        `surface-app-lifecycle: queued recovery precondition missing ${JSON.stringify(vfxBeforeLoss.queuedContinuations)}`,
+      );
+    }
+    const worldTimeBeforeLoss = world.getResource(Time).elapsed;
+    const eventTimeAtLoss = run.eventTime;
+    if (eventTimeAtLoss === undefined) {
+      throw new Error('surface-app-lifecycle: event timestamp unavailable before loss');
+    }
+    const eventAgeBeforeLoss = worldTimeBeforeLoss - eventTimeAtLoss;
+    if (eventAgeBeforeLoss < 0 || eventAgeBeforeLoss >= SURFACE_SPLASH_AUTHORED_LIFETIME_SECONDS) {
+      throw new Error('surface-app-lifecycle: device loss missed the authored splash lifetime');
+    }
+    return {
+      oldGeneration,
+      oldReceipt,
+      lateObservation,
+      observationResourcesBeforeLoss,
+      vfxBeforeLoss,
+      worldTimeBeforeLoss,
+      eventTimeAtLoss,
+      eventAgeBeforeLoss,
+    };
+  }
+
+  /** Recover onto a new device generation without advancing the World clock. */
+  async recoverDevice(loss: SurfaceAppLifecycleLoss): Promise<SurfaceAppLifecycleRecovery> {
+    const { run } = this;
+    const { renderer, world } = run;
+    const recoveredResult = await renderer.recover();
+    if (!recoveredResult.ok) {
+      throw new Error(
+        `surface-app-lifecycle: recovery failed ${JSON.stringify(recoveredResult.error)}`,
+      );
+    }
+    await run.waitForRendererState('alive');
+    const newGeneration = renderer.inspect().frame.deviceGeneration;
+    if (newGeneration <= loss.oldGeneration) {
+      throw new Error('surface-app-lifecycle: recovery did not publish a new device generation');
+    }
+    this.reconfigureDynamicInput(newGeneration, loss.worldTimeBeforeLoss);
+    const worldTimeAfterRecovery = world.getResource(Time).elapsed;
+    const eventAgeAfterRecovery = worldTimeAfterRecovery - loss.eventTimeAtLoss;
+    if (
+      worldTimeAfterRecovery !== loss.worldTimeBeforeLoss ||
+      eventAgeAfterRecovery !== loss.eventAgeBeforeLoss
+    ) {
+      throw new Error('surface-app-lifecycle: device recovery advanced the World clock');
+    }
+    const lateObservationResult = await loss.lateObservation;
+    if (lateObservationResult.ok) {
+      throw new Error('surface-app-lifecycle: late old-generation readback was published');
+    }
+    const staleObservationResult = await renderer.observe(loss.oldReceipt, {
+      include: ['linear-hdr'],
+    });
+    if (staleObservationResult.ok) {
+      throw new Error('surface-app-lifecycle: stale old-generation receipt was accepted');
+    }
+    const observationResourceStatsAfterRecovery = renderer.inspect().observation.resourceStats;
+    if (observationResourceStatsAfterRecovery === undefined) {
+      throw new Error(
+        'surface-app-lifecycle: observation resource stats unavailable after recovery',
+      );
+    }
+    const observationResourcesAfterRecovery = observationResourceStatsAfterRecovery.liveCount;
+    if (observationResourcesAfterRecovery !== 0) {
+      throw new Error('surface-app-lifecycle: old observation resources survived recovery');
+    }
+    return {
+      newGeneration,
+      worldTimeAfterRecovery,
+      eventAgeAfterRecovery,
+      lateObservationError: lateObservationResult.error,
+      staleObservationError: staleObservationResult.error,
+      observationResourcesAfterRecovery,
+    };
+  }
+
+  private reconfigureDynamicInput(newGeneration: number, frameTime: number): void {
+    const { run } = this;
+    const reconfigured = run.dynamicInput.page.reconfigureDevice(newGeneration);
+    if (!reconfigured.ok) throw reconfigured.error;
+    run.projectionRevision += 1;
+    run.dynamicInput = {
+      page: run.dynamicInput.page,
+      ranges: reserveSurfaceDynamicInputRanges(run.dynamicInput.page, run.scene.mediumMembers),
+      projectionRevision: run.projectionRevision,
+    };
+    run.renderer.setSurfaceDynamicInput({
+      ...run.dynamicInput,
+      projectionRevision: run.projectionRevision,
+      frameTime,
+    });
+  }
+
+  /** Step zero-time frames until pipeline preparation presents the recovered scene. */
+  async awaitRecoveredReadyReceipt(worldTimeBeforeLoss: number): Promise<FrameReceipt> {
+    const { run, app } = this;
+    run.armLifecycleObservation();
+    let recoveredReceipt = await run.stepAndComplete(app, 0, 'recovered receipt unavailable');
+    const preparationDeadline = Date.now() + 30_000;
+    while (recoveredReceipt.presentation !== 'ready' && Date.now() < preparationDeadline) {
+      run.armLifecycleObservation();
+      recoveredReceipt = await run.stepAndComplete(app, 0, 'preparation receipt unavailable');
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    if (recoveredReceipt.presentation !== 'ready')
+      throw new Error('surface-app-lifecycle: recovered scene did not become ready');
+    if (run.world.getResource(Time).elapsed !== worldTimeBeforeLoss)
+      throw new Error('surface-app-lifecycle: pipeline preparation advanced World time');
+    return recoveredReceipt;
+  }
+
+  /** Recovery neither replays nor resets a VFX player or session. */
+  verifyRecoveredVfx(
+    loss: SurfaceAppLifecycleLoss,
+    vfxAfterRecovery: SurfaceVfxRecoveryState,
+    splashIntentsBeforeLoss: SurfaceAppLifecycleSplashIntents,
+  ): void {
+    const { run } = this;
+    const { vfxBeforeLoss } = loss;
+    const queued = run.input.queueVfxContinuationDuringLoss === true;
+    const splashIntentsAfterRecovery = run.inspectCommittedSplashes();
+    const semanticPlayers = (players: readonly SurfaceVfxRecoveryPlayerEvidence[]) =>
+      players.map(({ valueGeneration: _valueGeneration, ...player }) => player);
+    const queuedRecoveryAccepted =
+      queued &&
+      vfxAfterRecovery.queueSequences.length === 0 &&
+      vfxBeforeLoss.queuedContinuations.every((continuation) => {
+        const player = vfxAfterRecovery.players.find(
+          (candidate) => candidate.player === continuation.player,
+        );
+        return (
+          player?.lastCommitted?.sequence === continuation.sequence &&
+          player.lastCommitted.phaseTick === continuation.phaseTick &&
+          player.lastCommitted.playCycle === continuation.playCycle &&
+          player.lastCommitted.reset === false
+        );
+      });
+    const emptyRecoveryPreserved =
+      !queued &&
+      JSON.stringify(semanticPlayers(vfxAfterRecovery.players)) ===
+        JSON.stringify(semanticPlayers(vfxBeforeLoss.players)) &&
+      JSON.stringify(vfxAfterRecovery.queueSequences) ===
+        JSON.stringify(vfxBeforeLoss.queueSequences);
+    if (
+      (!queuedRecoveryAccepted && !emptyRecoveryPreserved) ||
+      JSON.stringify(splashIntentsAfterRecovery) !== JSON.stringify(splashIntentsBeforeLoss)
+    ) {
+      throw new Error('surface-app-lifecycle: recovery replayed or reset a VFX player/session');
+    }
+  }
+
+  async captureRecovered(
+    loss: SurfaceAppLifecycleLoss,
+    recovery: SurfaceAppLifecycleRecovery,
+    splashIntentsBeforeLoss: SurfaceAppLifecycleSplashIntents,
+  ): Promise<{
+    readonly recovered: SurfaceAppLifecycleFrameCapture;
+    readonly deviceRecovery: SurfaceAppLifecycleDeviceRecovery;
+  }> {
+    const { run } = this;
+    const recoveredReceipt = await this.awaitRecoveredReadyReceipt(loss.worldTimeBeforeLoss);
+    const recovered = await run.captureReceipt('recovered', recoveredReceipt);
+    const vfxAfterRecovery = run.inspectVfxRecoveryState();
+    this.verifyRecoveredVfx(loss, vfxAfterRecovery, splashIntentsBeforeLoss);
+    const recoveredSubmission = expectRecoveredSurfaceSubmission(
+      run.renderer.inspect().renderScene.submission,
+      recoveredReceipt,
+      recovery.newGeneration,
+    );
+    const { vfxBeforeLoss } = loss;
+    const deviceRecovery: SurfaceAppLifecycleDeviceRecovery = {
+      oldGeneration: loss.oldGeneration,
+      newGeneration: recovery.newGeneration,
+      oldFrameId: loss.oldReceipt.frameId,
+      recoveredFrameId: recoveredReceipt.frameId,
+      lateObservationErrorCode: surfaceAppErrorCode(recovery.lateObservationError),
+      staleObservationErrorCode: surfaceAppErrorCode(recovery.staleObservationError),
+      worldTimeBeforeLoss: loss.worldTimeBeforeLoss,
+      worldTimeAfterRecovery: recovery.worldTimeAfterRecovery,
+      eventAgeBeforeLoss: loss.eventAgeBeforeLoss,
+      eventAgeAfterRecovery: recovery.eventAgeAfterRecovery,
+      observationResourcesBeforeLoss: loss.observationResourcesBeforeLoss,
+      observationResourcesAfterRecovery: recovery.observationResourcesAfterRecovery,
+      vfxHostGenerationBeforeLoss: vfxBeforeLoss.hostGeneration,
+      vfxHostGenerationAfterRecovery: vfxAfterRecovery.hostGeneration,
+      vfxRenderGenerationBeforeLoss: vfxBeforeLoss.renderGeneration,
+      vfxRenderGenerationAfterRecovery: vfxAfterRecovery.renderGeneration,
+      vfxQueueSequencesBeforeLoss: vfxBeforeLoss.queueSequences,
+      vfxQueueSequencesAfterRecovery: vfxAfterRecovery.queueSequences,
+      queuedContinuationsBeforeLoss: vfxBeforeLoss.queuedContinuations,
+      vfxPlayersBeforeLoss: vfxBeforeLoss.players,
+      vfxPlayersAfterRecovery: vfxAfterRecovery.players,
+      recoveredSubmission: {
+        status: recoveredSubmission.status,
+        actualLane: recoveredSubmission.actualLane,
+        frameId: recoveredSubmission.frameId,
+        deviceGeneration: recoveredSubmission.deviceGeneration,
+        graphGeneration: recoveredSubmission.graphGeneration,
+        resourceGeneration: recoveredSubmission.resourceGeneration,
+        passes: recoveredSubmission.passes.map((pass) => ({
+          pass: pass.pass,
+          commandKinds: pass.commands.map((command) => command.kind),
+        })),
+      },
+    };
+    run.acceptingRecoveryErrors = false;
+    return { recovered, deviceRecovery };
+  }
+
+  /** Drive deterministic 50 ms frames through the camera clip window and event expiry. */
+  async captureExpiry(): Promise<SurfaceAppLifecycleExpiryFrames> {
+    const { run, app } = this;
+    const { world } = run;
+    let coverageClipped: SurfaceAppLifecycleFrameCapture | undefined;
+    let expired: SurfaceAppLifecycleFrameCapture | undefined;
+    for (let step = 0; step < 12; step += 1) {
+      const label = surfaceExpiryLabel(
+        world.getResource(Time).elapsed - (run.eventTime ?? 0) + 0.05,
+      );
+      run.armLifecycleObservation();
+      const lifecycleReceipt = await run.stepAndComplete(
+        app,
+        0.05,
+        'deterministic receipt unavailable',
+      );
+      const capture = await run.captureReceipt(label, lifecycleReceipt);
+      if (coverageClipped === undefined && run.cameraMoved && !run.cameraRestored) {
+        coverageClipped = capture;
+      }
+      expired = capture;
+    }
+    const expiredWorldTime = world.getResource(Time).elapsed;
+    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const expiredVfxPlayerCount = run.input.vfxHost.inspect(world)?.players.length ?? 0;
+    if (
+      runtime.inspectPlayers().length !== 0 ||
+      runtime.snapshot().length !== 0 ||
+      expiredVfxPlayerCount !== 0
+    ) {
+      throw new Error('surface-app-lifecycle: expired VFX players or intents were not reclaimed');
+    }
+    return { coverageClipped, expired, expiredWorldTime, expiredVfxPlayerCount };
+  }
+}
+
+interface SurfaceAppLifecycleExpiryFrames {
+  readonly coverageClipped: SurfaceAppLifecycleFrameCapture | undefined;
+  readonly expired: SurfaceAppLifecycleFrameCapture | undefined;
+  readonly expiredWorldTime: number;
+  readonly expiredVfxPlayerCount: number;
+}
+
+function surfaceExpiryLabel(nextAge: number): SurfaceAppLifecycleFrameEvidence['label'] {
+  if (nextAge >= SURFACE_APP_EVENT_LIFETIME_SECONDS) return 'expired';
+  return nextAge >= 0.15 && nextAge < 0.25 ? 'coverage-clipped' : 'resumed';
+}
+
+function pausedVfxPlayerState(
+  player: NonNullable<ReturnType<VfxRuntimeHost['inspect']>>['players'][number],
+) {
+  return {
+    player: Number(player.player),
+    playing: player.playing,
+    queuedIntents: player.queuedIntents,
+    queuedTicks: player.queuedTicks,
+    lastCommitted: player.lastCommitted,
+  };
+}
+
+/** Exactly two impacts and two one-shot splashes, with every required capture present. */
+function requireExpiredLifecycle(
+  run: SurfaceAppLifecycleRun,
+  pausedSpawnIntents: SurfaceAppLifecycleSplashIntents,
+  frames: SurfaceAppLifecycleExpiryFrames,
+): SurfaceAppLifecycleExpiry & { readonly eventTime: number } {
+  const eventTime = run.eventTime;
+  if (
+    eventTime === undefined ||
+    run.acceptedImpactIds.size !== 2 ||
+    run.duplicateImpactCount !== 1
+  ) {
+    throw new Error('surface-app-lifecycle: event dedupe did not accept exactly two impacts');
+  }
+  if (pausedSpawnIntents.length !== 2) {
+    throw new Error(
+      `surface-app-lifecycle: expected two one-shot splash intents, observed ${pausedSpawnIntents.length}`,
+    );
+  }
+  const { coverageClipped, expired } = frames;
+  if (coverageClipped === undefined || expired === undefined) {
+    throw new Error('surface-app-lifecycle: required completed lifecycle capture is missing');
+  }
+  return {
+    coverageClipped,
+    expired,
+    expiredWorldTime: frames.expiredWorldTime,
+    expiredVfxPlayerCount: frames.expiredVfxPlayerCount,
+    eventTime,
+  };
+}
+
+function expectCameraCoverageClip(
+  run: SurfaceAppLifecycleRun,
+  captures: SurfaceAppLifecycleCaptures,
+  comparisons: SurfaceAppLifecycleEvidence['comparisons'],
+): void {
+  if (comparisons.coverageMask.failedPixelCount !== 0) return;
+  const { active, coverageClipped } = captures;
+  console.error(
+    JSON.stringify({
+      kind: 'surface-app-lifecycle-camera-coverage-diagnostics',
+      active: {
+        evidence: active.evidence,
+        diagnostics: active.diagnostics,
+        waterA: active.waterA.average,
+      },
+      coverageClipped: {
+        evidence: coverageClipped.evidence,
+        diagnostics: coverageClipped.diagnostics,
+        waterA: coverageClipped.waterA.average,
+        coverage: coverageClipped.coverage.average,
+      },
+      comparison: comparisons.coverageMask,
+      waterAComparison: comparisons.coverageWaterA,
+      geometry: run.masks.coverageGeometry,
+      transitions: {
+        cameraMoved: run.cameraMoved,
+        cameraRestored: run.cameraRestored,
+        cameraCoverageTransitions: run.cameraCoverageTransitions,
+      },
+    }),
+  );
+  throw new Error('surface-app-lifecycle: camera move did not clip the geometry-owned ROI');
+}
+
+function expectEventAgesWithinLifetime(
+  pausedWorldTime: number,
+  resumedWorldTime: number,
+  expiredWorldTime: number,
+  eventTime: number,
+): void {
+  const resumedEventAge = resumedWorldTime - eventTime;
+  const expiredEventAge = expiredWorldTime - eventTime;
+  if (
+    resumedWorldTime < pausedWorldTime ||
+    resumedEventAge < 0 ||
+    resumedEventAge >= SURFACE_APP_EVENT_LIFETIME_SECONDS ||
+    expiredEventAge < SURFACE_APP_EVENT_LIFETIME_SECONDS
+  ) {
+    throw new Error('surface-app-lifecycle: resumed or expired event age is outside its lifetime');
+  }
+}
+
+async function stopSurfaceApp(run: SurfaceAppLifecycleRun, app: App): Promise<void> {
+  app.stop().unwrap();
+  const stoppedReceiptCount = run.receipts.length;
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  if (run.receipts.length !== stoppedReceiptCount) {
+    throw new Error('surface-app-lifecycle: stopped App submitted another frame');
+  }
+  if (run.errors.length > 0) {
+    throw new Error(`surface-app-lifecycle: App errors ${JSON.stringify(run.errors)}`);
+  }
+}
+
+/** Every lifecycle phase on one started App, ending with a stopped App and its evidence. */
+async function driveSurfaceAppLifecycle(
+  run: SurfaceAppLifecycleRun,
+  app: App,
+): Promise<SurfaceAppLifecycleEvidence> {
+  const drive = new SurfaceAppLifecycleDrive(run, app);
+  const baseline = await drive.captureBaseline();
+  const { active, eventSpawnIntents } = await drive.captureActiveImpacts();
+  const pause = await drive.verifyPause(active, eventSpawnIntents);
+  const { resumed, resumedWorldTime } = await drive.captureResumed(pause);
+  const { preLoss, preLossReceipt, splashIntentsBeforeLoss } = await drive.capturePreLoss();
+  const loss = await drive.loseDevice(preLossReceipt);
+  const recovery = await drive.recoverDevice(loss);
+  const { recovered, deviceRecovery } = await drive.captureRecovered(
+    loss,
+    recovery,
+    splashIntentsBeforeLoss,
+  );
+  const expiry = requireExpiredLifecycle(
+    run,
+    pause.pausedSpawnIntents,
+    await drive.captureExpiry(),
+  );
+  const { coverageClipped, expired, expiredWorldTime, eventTime } = expiry;
+  const captures = { baseline, active, resumed, preLoss, recovered, coverageClipped, expired };
+  const comparisons = compareSurfaceAppLifecycleCaptures(captures);
+  expectSurfaceAppLifecyclePixels(comparisons, run.input.queueVfxContinuationDuringLoss);
+  expectCameraCoverageClip(run, captures, comparisons);
+  expectExpiredSurfacePixels(comparisons);
+  if (run.cameraCoverageTransitions !== 2) {
+    throw new Error('surface-app-lifecycle: camera coverage transitions were not completed');
+  }
+  expectEventAgesWithinLifetime(
+    pause.pausedWorldTime,
+    resumedWorldTime,
+    expiredWorldTime,
+    eventTime,
+  );
+  await stopSurfaceApp(run, app);
+  return {
+    worldIdentity: run.world.identity,
+    eventTime,
+    impactIds: [701, 702],
+    emittedSplashCount: pause.pausedSpawnIntents.length,
+    splashEffectGuid: SURFACE_SPLASH_EFFECT_GUID,
+    splashRendererKinds: run.scene.splashRendererKinds,
+    activeVfxPlayerCount: pause.activeVfxPlayerCount,
+    expiredVfxPlayerCount: expiry.expiredVfxPlayerCount,
+    splashIntents: pause.pausedSpawnIntents.map((intent) => ({
+      sequence: intent.sequence,
+      tick: intent.tick,
+      player: intent.player,
+      spawnCount: intent.spawnCount,
+      reset: intent.reset,
+    })),
+    duplicateImpactCount: run.duplicateImpactCount,
+    pausedWaitMilliseconds: pause.pausedWaitMilliseconds,
+    pausedWorldTime: pause.pausedWorldTime,
+    resumedWorldTime,
+    expiredWorldTime,
+    resumedEventAge: resumedWorldTime - eventTime,
+    expiredEventAge: expiredWorldTime - eventTime,
+    submittedFrames: run.receipts.length,
+    completedFrames: app.execution.report().frame.completed,
+    cameraCoverageTransitions: run.cameraCoverageTransitions,
+    deviceRecovery,
+    baseline: baseline.evidence,
+    active: active.evidence,
+    paused: active.evidence,
+    resumed: resumed.evidence,
+    preLoss: preLoss.evidence,
+    recovered: recovered.evidence,
+    coverageClipped: coverageClipped.evidence,
+    expired: expired.evidence,
+    comparisons,
+  };
+}
+
+/**
+ * Run the public App-owned water lifecycle. The World Update system is the
+ * single time snapshot owner for both Surface event timestamps and VFX play
+ * edges; tests only enqueue domain events and operate App lifecycle methods.
+ */
+export async function runSurfaceAppLifecycle(
+  input: SurfaceAppLifecycleInput,
+): Promise<SurfaceAppLifecycleEvidence> {
+  const scene = await prepareSurfaceAppLifecycleScene(input);
+  const run = new SurfaceAppLifecycleRun(
+    input,
+    scene,
+    createSurfaceAppLifecycleMasks(scene.world, scene.camera),
+  );
+  run.installEventSystem();
+  const scheduler =
+    input.hostFrameScheduler === 'timer' ? new SurfaceTimerFrameScheduler() : undefined;
+  scheduler?.install();
+  const unsubscribeFrames = run.subscribeFrames();
   try {
     const created = await createApp({
       platform: testPlatform(),
-      renderer,
-      world,
+      renderer: input.renderer,
+      world: scene.world,
       silenceUnhandledErrors: true,
     });
     if (!created.ok) throw created.error;
-    app = created.value;
-    const unsubscribeErrors = app.onError((error) => {
-      const expectedDeviceLoss =
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        error.code === 'device-operation-failed' &&
-        'detail' in error &&
-        typeof error.detail === 'object' &&
-        error.detail !== null &&
-        'cause' in error.detail &&
-        typeof error.detail.cause === 'object' &&
-        error.detail.cause !== null &&
-        'code' in error.detail.cause &&
-        error.detail.cause.code === 'device-lost';
-      if (!acceptingQueuedFrameError && (!acceptingRecoveryErrors || !expectedDeviceLoss)) {
-        errors.push(error);
-      }
-    });
+    const app = created.value;
+    run.app = app;
+    const unsubscribeErrors = app.onError((error) => run.onAppError(error));
     try {
-      armLifecycleObservation();
-      // Freeze the baseline at submission, before later RAF ticks can use the
-      // remaining receipt credit while this frame's GPU completion is pending.
-      pauseAfterReceiptCount = 1;
-      app.start().unwrap();
-      await waitForReceipts(1);
-      app.pause().unwrap();
-      const baselineReceipt = receipts[0];
-      if (baselineReceipt === undefined) {
-        throw new Error('surface-app-lifecycle: baseline receipt unavailable');
-      }
-      const baseline = await captureReceipt('baseline', baselineReceipt);
-
-      pendingImpacts.push(
-        { eventId: 701, position: impactPositions[0] },
-        { eventId: 702, position: impactPositions[1] },
-        { eventId: 701, position: impactPositions[0] },
-      );
-      // Update accepts the impact and publishes the ParticleEffectPlayer play
-      // edge after this frame's FixedUpdate phase. A second App-owned frame is
-      // therefore the first frame where the formal VFX intent and GPU splash
-      // can be observed together.
-      const eventReceiptIndex = receipts.length;
-      app.stepFrame(1 / 60).unwrap();
-      await waitForReceipts(eventReceiptIndex + 1);
-      let pausedSpawnIntents = inspectCommittedSplashes();
-      armLifecycleObservation();
-      const activeReceiptIndex = receipts.length;
-      app.stepFrame(1 / 60).unwrap();
-      await waitForReceipts(activeReceiptIndex + 1);
-      const activeReceipt = receipts[activeReceiptIndex];
-      if (activeReceipt === undefined) {
-        throw new Error('surface-app-lifecycle: active receipt unavailable');
-      }
-      const active = await captureReceipt('active', activeReceipt);
-      const pausedWorldTime = world.getResource(Time).elapsed;
-      const pausedReceiptCount = receipts.length;
-      const paused = active;
-      const activeVfxSnapshot = input.vfxHost.inspect(world);
-      const activeVfxPlayerCount = activeVfxSnapshot?.players.length ?? 0;
-      if (activeVfxPlayerCount !== 2) {
-        throw new Error('surface-app-lifecycle: production VFX host did not retain two players');
-      }
-      if (pausedSpawnIntents.length === 0) pausedSpawnIntents = inspectCommittedSplashes();
-      const pausedVfxSnapshot = activeVfxSnapshot?.players.map((player) => ({
-        player: Number(player.player),
-        playing: player.playing,
-        queuedIntents: player.queuedIntents,
-        queuedTicks: player.queuedTicks,
-        lastCommitted: player.lastCommitted,
-      }));
-      const pausedWaitMilliseconds = input.pauseWaitMilliseconds ?? 250;
-      await new Promise<void>((resolve) => setTimeout(resolve, pausedWaitMilliseconds));
-      if (
-        world.getResource(Time).elapsed !== pausedWorldTime ||
-        receipts.length !== pausedReceiptCount
-      ) {
-        throw new Error(
-          'surface-app-lifecycle: paused App advanced World time or submitted a frame',
-        );
-      }
-      const pausedVfxAfterWait = input.vfxHost.inspect(world)?.players.map((player) => ({
-        player: Number(player.player),
-        playing: player.playing,
-        queuedIntents: player.queuedIntents,
-        queuedTicks: player.queuedTicks,
-        lastCommitted: player.lastCommitted,
-      }));
-      if (JSON.stringify(pausedVfxAfterWait) !== JSON.stringify(pausedVfxSnapshot)) {
-        throw new Error('surface-app-lifecycle: paused VFX intent state changed without a frame');
-      }
-
-      armLifecycleObservation();
-      // Stop at the selected submission: GPU completion can outlive later RAF
-      // ticks, whose World clock must not replace this resumed frame's clock.
-      pauseAfterReceiptCount = pausedReceiptCount + 1;
-      app.resume().unwrap();
-      await waitForReceipts(pausedReceiptCount + 1);
-      app.pause().unwrap();
-      const resumedWorldTime = world.getResource(Time).elapsed;
-      if (world.getResource(Time).delta >= pausedWaitMilliseconds / 1_000) {
-        throw new Error('surface-app-lifecycle: resume accumulated paused host time');
-      }
-      const resumedReceipt = receipts[pausedReceiptCount];
-      if (resumedReceipt === undefined) {
-        throw new Error('surface-app-lifecycle: resumed receipt unavailable');
-      }
-      const resumed = await captureReceipt('resumed', resumedReceipt);
-      const pausedResetIdentities = new Set(
-        pausedSpawnIntents.map((intent) => `${intent.player}:${intent.sequence}`),
-      );
-      const resumedUnexpectedResets =
-        input.vfxHost
-          .inspect(world)
-          ?.players.filter(
-            (player) =>
-              player.lastCommitted !== null &&
-              player.lastCommitted.spawnCount > 0 &&
-              player.lastCommitted.reset &&
-              !pausedResetIdentities.has(
-                `${Number(player.player)}:${player.lastCommitted.sequence}`,
-              ),
-          ) ?? [];
-      if (resumedUnexpectedResets.length > 0) {
-        throw new Error('surface-app-lifecycle: resume re-emitted a one-shot splash');
-      }
-
-      armLifecycleObservation();
-      const preLossReceiptIndex = receipts.length;
-      app.stepFrame(0).unwrap();
-      await waitForReceipts(preLossReceiptIndex + 1);
-      const preLossReceipt = receipts[preLossReceiptIndex];
-      if (preLossReceipt === undefined) {
-        throw new Error('surface-app-lifecycle: completed pre-loss receipt unavailable');
-      }
-      const preLoss = await captureReceipt('pre-loss', preLossReceipt);
-      const settledVfxBeforeLoss = inspectVfxRecoveryState();
-      const splashIntentsBeforeLoss = inspectCommittedSplashes();
-      if (
-        settledVfxBeforeLoss.players.length !== 2 ||
-        settledVfxBeforeLoss.queueSequences.length !== 0 ||
-        settledVfxBeforeLoss.players.some(
-          (player) =>
-            player.queuedIntents !== 0 ||
-            player.queuedTicks !== 0 ||
-            player.lastCommitted === null ||
-            player.sessions.some((session) => !session.sessionEnabled),
-        )
-      ) {
-        throw new Error('surface-app-lifecycle: pre-loss VFX player/session state is not settled');
-      }
-
-      const oldGeneration = renderer.inspect().frame.deviceGeneration;
-      const hostLossSignal = input.hostLossSignals.find(
-        (signal) => signal.generation === oldGeneration,
-      );
-      if (hostLossSignal === undefined) {
-        throw new Error('surface-app-lifecycle: host loss signal unavailable');
-      }
-      let oldReceipt = preLossReceipt;
-      if (input.queueVfxContinuationDuringLoss === true) {
-        const submittedBeforeQueuedFrame = receipts.length;
-        let queuedFrameResult: ReturnType<App['stepFrame']>;
-        acceptingRecoveryErrors = true;
-        acceptingQueuedFrameError = true;
-        hostLossSignal.triggerOnNextSubmit();
-        try {
-          // The public App advances the World and records the real VFX plan.
-          // The backend-owned submit seam then resolves the real host-loss
-          // promise and rejects this one submission before it can acknowledge
-          // the continuation.
-          queuedFrameResult = app.stepFrame(1 / 60);
-        } finally {
-          acceptingQueuedFrameError = false;
-        }
-        if (queuedFrameResult.ok || receipts.length !== submittedBeforeQueuedFrame) {
-          throw new Error('surface-app-lifecycle: queued continuation frame did not abort');
-        }
-      } else {
-        armLifecycleObservation();
-        const oldReceiptIndex = receipts.length;
-        app.stepFrame(0).unwrap();
-        await waitForReceiptCount(oldReceiptIndex + 1);
-        const inFlightReceipt = receipts[oldReceiptIndex];
-        if (inFlightReceipt === undefined) {
-          throw new Error('surface-app-lifecycle: in-flight pre-loss receipt unavailable');
-        }
-        oldReceipt = inFlightReceipt;
-      }
-      const observationResourceStatsBeforeLoss = renderer.inspect().observation.resourceStats;
-      if (observationResourceStatsBeforeLoss === undefined) {
-        throw new Error(
-          'surface-app-lifecycle: observation resource stats unavailable before loss',
-        );
-      }
-      const observationResourcesBeforeLoss = observationResourceStatsBeforeLoss.liveCount;
-      if (input.queueVfxContinuationDuringLoss !== true && observationResourcesBeforeLoss < 1) {
-        throw new Error('surface-app-lifecycle: in-flight observation resource was not retained');
-      }
-      if (input.queueVfxContinuationDuringLoss !== true) {
-        acceptingRecoveryErrors = true;
-        hostLossSignal.trigger();
-      }
-      const rendererLost = waitForRendererState('device-lost');
-      // A rejected queued submission owns no observation capture. Wait for
-      // its loss transition before asserting the stale receipt, instead of
-      // racing the backend's loss notification against an unarmed read.
-      // The other branch still starts a real in-flight read before loss settles.
-      if (input.queueVfxContinuationDuringLoss === true) await rendererLost;
-      const lateObservation = renderer.observe(oldReceipt, { include: ['linear-hdr'] });
-      await rendererLost;
-      const vfxBeforeLoss = inspectVfxRecoveryState();
-      if (
-        input.queueVfxContinuationDuringLoss === true
-          ? vfxBeforeLoss.queuedContinuations.length !== 2 ||
-            vfxBeforeLoss.queuedContinuations.some((intent) => intent.reset)
-          : vfxBeforeLoss.queuedContinuations.length !== 0
-      ) {
-        throw new Error(
-          `surface-app-lifecycle: queued recovery precondition missing ${JSON.stringify(vfxBeforeLoss.queuedContinuations)}`,
-        );
-      }
-      const worldTimeBeforeLoss = world.getResource(Time).elapsed;
-      const eventTimeAtLoss = eventTime;
-      if (eventTimeAtLoss === undefined) {
-        throw new Error('surface-app-lifecycle: event timestamp unavailable before loss');
-      }
-      const eventAgeBeforeLoss = worldTimeBeforeLoss - eventTimeAtLoss;
-      if (
-        eventAgeBeforeLoss < 0 ||
-        eventAgeBeforeLoss >= SURFACE_SPLASH_AUTHORED_LIFETIME_SECONDS
-      ) {
-        throw new Error('surface-app-lifecycle: device loss missed the authored splash lifetime');
-      }
-      const recoveredResult = await renderer.recover();
-      if (!recoveredResult.ok) {
-        throw new Error(
-          `surface-app-lifecycle: recovery failed ${JSON.stringify(recoveredResult.error)}`,
-        );
-      }
-      await waitForRendererState('alive');
-      const newGeneration = renderer.inspect().frame.deviceGeneration;
-      if (newGeneration <= oldGeneration) {
-        throw new Error('surface-app-lifecycle: recovery did not publish a new device generation');
-      }
-      const reconfigured = dynamicInput.page.reconfigureDevice(newGeneration);
-      if (!reconfigured.ok) throw reconfigured.error;
-      projectionRevision += 1;
-      dynamicInput = {
-        page: dynamicInput.page,
-        ranges: reserveSurfaceDynamicInputRanges(dynamicInput.page, mediumMembers),
-        projectionRevision,
-      };
-      renderer.setSurfaceDynamicInput({
-        ...dynamicInput,
-        projectionRevision,
-        frameTime: worldTimeBeforeLoss,
-      });
-      const worldTimeAfterRecovery = world.getResource(Time).elapsed;
-      const eventAgeAfterRecovery = worldTimeAfterRecovery - eventTimeAtLoss;
-      if (
-        worldTimeAfterRecovery !== worldTimeBeforeLoss ||
-        eventAgeAfterRecovery !== eventAgeBeforeLoss
-      ) {
-        throw new Error('surface-app-lifecycle: device recovery advanced the World clock');
-      }
-      const lateObservationResult = await lateObservation;
-      if (lateObservationResult.ok) {
-        throw new Error('surface-app-lifecycle: late old-generation readback was published');
-      }
-      const staleObservationResult = await renderer.observe(oldReceipt, {
-        include: ['linear-hdr'],
-      });
-      if (staleObservationResult.ok) {
-        throw new Error('surface-app-lifecycle: stale old-generation receipt was accepted');
-      }
-      const observationResourceStatsAfterRecovery = renderer.inspect().observation.resourceStats;
-      if (observationResourceStatsAfterRecovery === undefined) {
-        throw new Error(
-          'surface-app-lifecycle: observation resource stats unavailable after recovery',
-        );
-      }
-      const observationResourcesAfterRecovery = observationResourceStatsAfterRecovery.liveCount;
-      if (observationResourcesAfterRecovery !== 0) {
-        throw new Error('surface-app-lifecycle: old observation resources survived recovery');
-      }
-      armLifecycleObservation();
-      const recoveredReceiptIndex = receipts.length;
-      app.stepFrame(0).unwrap();
-      await waitForReceipts(recoveredReceiptIndex + 1);
-      let recoveredReceipt = receipts[recoveredReceiptIndex];
-      if (recoveredReceipt === undefined) {
-        throw new Error('surface-app-lifecycle: recovered receipt unavailable');
-      }
-      const preparationDeadline = Date.now() + 30_000;
-      while (recoveredReceipt.presentation !== 'ready' && Date.now() < preparationDeadline) {
-        armLifecycleObservation();
-        const index = receipts.length;
-        app.stepFrame(0).unwrap();
-        await waitForReceipts(index + 1);
-        recoveredReceipt = receipts[index];
-        if (recoveredReceipt === undefined)
-          throw new Error('surface-app-lifecycle: preparation receipt unavailable');
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      }
-      if (recoveredReceipt.presentation !== 'ready')
-        throw new Error('surface-app-lifecycle: recovered scene did not become ready');
-      if (world.getResource(Time).elapsed !== worldTimeBeforeLoss)
-        throw new Error('surface-app-lifecycle: pipeline preparation advanced World time');
-      const recovered = await captureReceipt('recovered', recoveredReceipt);
-      const vfxAfterRecovery = inspectVfxRecoveryState();
-      const splashIntentsAfterRecovery = inspectCommittedSplashes();
-      const semanticPlayers = (players: readonly SurfaceVfxRecoveryPlayerEvidence[]) =>
-        players.map(({ valueGeneration: _valueGeneration, ...player }) => player);
-      const queuedRecoveryAccepted =
-        input.queueVfxContinuationDuringLoss === true &&
-        vfxAfterRecovery.queueSequences.length === 0 &&
-        vfxBeforeLoss.queuedContinuations.every((queued) => {
-          const player = vfxAfterRecovery.players.find(
-            (candidate) => candidate.player === queued.player,
-          );
-          return (
-            player?.lastCommitted?.sequence === queued.sequence &&
-            player.lastCommitted.phaseTick === queued.phaseTick &&
-            player.lastCommitted.playCycle === queued.playCycle &&
-            player.lastCommitted.reset === false
-          );
-        });
-      const emptyRecoveryPreserved =
-        input.queueVfxContinuationDuringLoss !== true &&
-        JSON.stringify(semanticPlayers(vfxAfterRecovery.players)) ===
-          JSON.stringify(semanticPlayers(vfxBeforeLoss.players)) &&
-        JSON.stringify(vfxAfterRecovery.queueSequences) ===
-          JSON.stringify(vfxBeforeLoss.queueSequences);
-      if (
-        (!queuedRecoveryAccepted && !emptyRecoveryPreserved) ||
-        JSON.stringify(splashIntentsAfterRecovery) !== JSON.stringify(splashIntentsBeforeLoss)
-      ) {
-        throw new Error('surface-app-lifecycle: recovery replayed or reset a VFX player/session');
-      }
-      const recoveredSubmission = renderer.inspect().renderScene.submission;
-      const recoveredPassNames = recoveredSubmission?.passes.map((pass) => pass.pass) ?? [];
-      if (
-        recoveredSubmission === undefined ||
-        recoveredSubmission.status !== 'completed' ||
-        recoveredSubmission.frameId !== recoveredReceipt.frameId ||
-        recoveredSubmission.deviceGeneration !== newGeneration ||
-        recoveredSubmission.actualLane !== 'gpu-driven' ||
-        recoveredPassNames.length !== 2 ||
-        new Set(recoveredPassNames).size !== 2 ||
-        !recoveredPassNames.includes('nearest-layer') ||
-        !recoveredPassNames.includes('color') ||
-        recoveredSubmission.passes.some(
-          (pass) => pass.memberEvidence !== 'indirect-visible-readback',
-        )
-      ) {
-        throw new Error(
-          `surface-app-lifecycle: recovered Surface GPU submission evidence missing ${JSON.stringify(
-            {
-              actualLane: recoveredSubmission?.actualLane,
-              passes: recoveredSubmission?.passes.map((pass) => ({
-                pass: pass.pass,
-                memberEvidence: pass.memberEvidence,
-              })),
-            },
-          )}`,
-        );
-      }
-      const errorCode = (error: unknown): string =>
-        typeof error === 'object' && error !== null && 'code' in error
-          ? String((error as { code: unknown }).code)
-          : 'unknown';
-      const deviceRecovery: SurfaceAppLifecycleEvidence['deviceRecovery'] = {
-        oldGeneration,
-        newGeneration,
-        oldFrameId: oldReceipt.frameId,
-        recoveredFrameId: recoveredReceipt.frameId,
-        lateObservationErrorCode: errorCode(lateObservationResult.error),
-        staleObservationErrorCode: errorCode(staleObservationResult.error),
-        worldTimeBeforeLoss,
-        worldTimeAfterRecovery,
-        eventAgeBeforeLoss,
-        eventAgeAfterRecovery,
-        observationResourcesBeforeLoss,
-        observationResourcesAfterRecovery,
-        vfxHostGenerationBeforeLoss: vfxBeforeLoss.hostGeneration,
-        vfxHostGenerationAfterRecovery: vfxAfterRecovery.hostGeneration,
-        vfxRenderGenerationBeforeLoss: vfxBeforeLoss.renderGeneration,
-        vfxRenderGenerationAfterRecovery: vfxAfterRecovery.renderGeneration,
-        vfxQueueSequencesBeforeLoss: vfxBeforeLoss.queueSequences,
-        vfxQueueSequencesAfterRecovery: vfxAfterRecovery.queueSequences,
-        queuedContinuationsBeforeLoss: vfxBeforeLoss.queuedContinuations,
-        vfxPlayersBeforeLoss: vfxBeforeLoss.players,
-        vfxPlayersAfterRecovery: vfxAfterRecovery.players,
-        recoveredSubmission: {
-          status: recoveredSubmission.status,
-          actualLane: recoveredSubmission.actualLane,
-          frameId: recoveredSubmission.frameId,
-          deviceGeneration: recoveredSubmission.deviceGeneration,
-          graphGeneration: recoveredSubmission.graphGeneration,
-          resourceGeneration: recoveredSubmission.resourceGeneration,
-          passes: recoveredSubmission.passes.map((pass) => ({
-            pass: pass.pass,
-            commandKinds: pass.commands.map((command) => command.kind),
-          })),
-        },
-      };
-      acceptingRecoveryErrors = false;
-
-      let coverageClipped: SurfaceAppLifecycleFrameCapture | undefined;
-      let expired: SurfaceAppLifecycleFrameCapture | undefined;
-      for (let step = 0; step < 12; step += 1) {
-        const nextAge = world.getResource(Time).elapsed - (eventTime ?? 0) + 0.05;
-        const label =
-          nextAge >= SURFACE_APP_EVENT_LIFETIME_SECONDS
-            ? 'expired'
-            : nextAge >= 0.15 && nextAge < 0.25
-              ? 'coverage-clipped'
-              : 'resumed';
-        armLifecycleObservation();
-        const captureReceiptIndex = receipts.length;
-        app.stepFrame(0.05).unwrap();
-        await waitForReceipts(captureReceiptIndex + 1);
-        const lifecycleReceipt = receipts[captureReceiptIndex];
-        if (lifecycleReceipt === undefined) {
-          throw new Error('surface-app-lifecycle: deterministic receipt unavailable');
-        }
-        const capture = await captureReceipt(label, lifecycleReceipt);
-        if (coverageClipped === undefined && cameraMoved && !cameraRestored) {
-          coverageClipped = capture;
-        }
-        expired = capture;
-      }
-      const expiredWorldTime = world.getResource(Time).elapsed;
-      const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
-      const expiredVfxPlayerCount = input.vfxHost.inspect(world)?.players.length ?? 0;
-      if (
-        runtime.inspectPlayers().length !== 0 ||
-        runtime.snapshot().length !== 0 ||
-        expiredVfxPlayerCount !== 0
-      ) {
-        throw new Error('surface-app-lifecycle: expired VFX players or intents were not reclaimed');
-      }
-      if (eventTime === undefined || acceptedImpactIds.size !== 2 || duplicateImpactCount !== 1) {
-        throw new Error('surface-app-lifecycle: event dedupe did not accept exactly two impacts');
-      }
-      if (pausedSpawnIntents.length !== 2) {
-        throw new Error(
-          `surface-app-lifecycle: expected two one-shot splash intents, observed ${pausedSpawnIntents.length}`,
-        );
-      }
-      if (coverageClipped === undefined || expired === undefined) {
-        throw new Error('surface-app-lifecycle: required completed lifecycle capture is missing');
-      }
-      const activeWaterA = compareSurfaceAppLifecycleRois(baseline.waterA, active.waterA);
-      const activeWaterB = compareSurfaceAppLifecycleRois(baseline.waterB, active.waterB);
-      const activeSplash = compareSurfaceAppLifecycleRois(baseline.splash, active.splash);
-      const preLossSplash = compareSurfaceAppLifecycleRois(baseline.splash, preLoss.splash);
-      const recoveredSplash = compareSurfaceAppLifecycleRois(baseline.splash, recovered.splash);
-      const recoverySplashParity = compareSurfaceAppLifecycleRois(preLoss.splash, recovered.splash);
-      const resumedWaterA = compareSurfaceAppLifecycleRois(baseline.waterA, resumed.waterA);
-      const resumedWaterB = compareSurfaceAppLifecycleRois(baseline.waterB, resumed.waterB);
-      const recoveredWaterA = compareSurfaceAppLifecycleRois(baseline.waterA, recovered.waterA);
-      const recoveredWaterB = compareSurfaceAppLifecycleRois(baseline.waterB, recovered.waterB);
-      const coverageWaterA = compareSurfaceAppLifecycleRois(active.waterA, coverageClipped.waterA);
-      const coverageMaskComparison = compareSurfaceAppLifecycleRois(
-        active.coverage,
-        coverageClipped.coverage,
-      );
-      const expiredWaterA = compareSurfaceAppLifecycleRois(baseline.waterA, expired.waterA);
-      const expiredWaterB = compareSurfaceAppLifecycleRois(baseline.waterB, expired.waterB);
-      const expiredSplash = compareSurfaceAppLifecycleRois(baseline.splash, expired.splash);
-      if (activeWaterA.failedPixelCount === 0) {
-        throw new Error(
-          'surface-app-lifecycle: active water impacts did not change the water A ROI',
-        );
-      }
-      if (
-        activeWaterB.failedPixelCount !== 0 ||
-        resumedWaterB.failedPixelCount !== 0 ||
-        recoveredWaterB.failedPixelCount !== 0
-      ) {
-        throw new Error('surface-app-lifecycle: water A impacts leaked into water B domain');
-      }
-      if (activeSplash.failedPixelCount === 0) {
-        throw new Error('surface-app-lifecycle: cooked splash produced no fixed-ROI pixels');
-      }
-      if (preLossSplash.failedPixelCount === 0 || recoveredSplash.failedPixelCount === 0) {
-        throw new Error(
-          `surface-app-lifecycle: splash was not visible across device recovery ${JSON.stringify({ preLossSplash, recoveredSplash, recoverySplashParity })}`,
-        );
-      }
-      if (
-        input.queueVfxContinuationDuringLoss !== true &&
-        (recoverySplashParity.failedPixelCount !== 0 || recoverySplashParity.maxError > 0.05)
-      ) {
-        throw new Error(
-          `surface-app-lifecycle: recovered splash changed fixed-ROI pixels ${JSON.stringify(recoverySplashParity)}`,
-        );
-      }
-      if (resumedWaterA.failedPixelCount === 0) {
-        throw new Error('surface-app-lifecycle: resumed event disappeared before its lifetime');
-      }
-      if (recoveredWaterA.failedPixelCount === 0) {
-        throw new Error('surface-app-lifecycle: valid water event did not survive device recovery');
-      }
-      if (coverageMaskComparison.failedPixelCount === 0) {
-        console.error(
-          JSON.stringify({
-            kind: 'surface-app-lifecycle-camera-coverage-diagnostics',
-            active: {
-              evidence: active.evidence,
-              diagnostics: active.diagnostics,
-              waterA: active.waterA.average,
-            },
-            coverageClipped: {
-              evidence: coverageClipped.evidence,
-              diagnostics: coverageClipped.diagnostics,
-              waterA: coverageClipped.waterA.average,
-              coverage: coverageClipped.coverage.average,
-            },
-            comparison: coverageMaskComparison,
-            waterAComparison: coverageWaterA,
-            geometry: coverageMask,
-            transitions: {
-              cameraMoved,
-              cameraRestored,
-              cameraCoverageTransitions,
-            },
-          }),
-        );
-        throw new Error('surface-app-lifecycle: camera move did not clip the geometry-owned ROI');
-      }
-      if (expiredWaterA.failedPixelCount !== 0 || expiredWaterB.failedPixelCount !== 0) {
-        throw new Error('surface-app-lifecycle: expired water events did not return to baseline');
-      }
-      if (expiredSplash.failedPixelCount !== 0) {
-        throw new Error('surface-app-lifecycle: expired splash pixels did not retire');
-      }
-      if (cameraCoverageTransitions !== 2) {
-        throw new Error('surface-app-lifecycle: camera coverage transitions were not completed');
-      }
-      const resumedEventAge = resumedWorldTime - eventTime;
-      const expiredEventAge = expiredWorldTime - eventTime;
-      if (
-        resumedWorldTime < pausedWorldTime ||
-        resumedEventAge < 0 ||
-        resumedEventAge >= SURFACE_APP_EVENT_LIFETIME_SECONDS ||
-        expiredEventAge < SURFACE_APP_EVENT_LIFETIME_SECONDS
-      ) {
-        throw new Error(
-          'surface-app-lifecycle: resumed or expired event age is outside its lifetime',
-        );
-      }
-      app.stop().unwrap();
-      const stoppedReceiptCount = receipts.length;
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
-      if (receipts.length !== stoppedReceiptCount) {
-        throw new Error('surface-app-lifecycle: stopped App submitted another frame');
-      }
-      if (errors.length > 0) {
-        throw new Error(`surface-app-lifecycle: App errors ${JSON.stringify(errors)}`);
-      }
-      return {
-        worldIdentity: world.identity,
-        eventTime,
-        impactIds: [701, 702],
-        emittedSplashCount: pausedSpawnIntents.length,
-        splashEffectGuid: SURFACE_SPLASH_EFFECT_GUID,
-        splashRendererKinds,
-        activeVfxPlayerCount,
-        expiredVfxPlayerCount,
-        splashIntents: pausedSpawnIntents.map((intent) => ({
-          sequence: intent.sequence,
-          tick: intent.tick,
-          player: intent.player,
-          spawnCount: intent.spawnCount,
-          reset: intent.reset,
-        })),
-        duplicateImpactCount,
-        pausedWaitMilliseconds,
-        pausedWorldTime,
-        resumedWorldTime,
-        expiredWorldTime,
-        resumedEventAge,
-        expiredEventAge,
-        submittedFrames: receipts.length,
-        completedFrames: app.execution.report().frame.completed,
-        cameraCoverageTransitions,
-        deviceRecovery,
-        baseline: baseline.evidence,
-        active: active.evidence,
-        paused: paused.evidence,
-        resumed: resumed.evidence,
-        preLoss: preLoss.evidence,
-        recovered: recovered.evidence,
-        coverageClipped: coverageClipped.evidence,
-        expired: expired.evidence,
-        comparisons: {
-          activeWaterA,
-          activeWaterB,
-          activeSplash,
-          preLossSplash,
-          recoveredSplash,
-          recoverySplashParity,
-          resumedWaterA,
-          resumedWaterB,
-          recoveredWaterA,
-          recoveredWaterB,
-          coverageWaterA,
-          coverageMask: coverageMaskComparison,
-          expiredWaterA,
-          expiredWaterB,
-          expiredSplash,
-        },
-      };
+      return await driveSurfaceAppLifecycle(run, app);
     } finally {
       unsubscribeErrors();
     }
   } finally {
-    if (app !== undefined) await app.dispose();
-    const detachedVfx = await input.vfxHost.detachWorld({ world });
+    if (run.app !== undefined) await run.app.dispose();
+    const detachedVfx = await input.vfxHost.detachWorld({ world: scene.world });
     // biome-ignore lint/correctness/noUnsafeFinally: a failed production host detach invalidates the lifecycle proof.
     if (!detachedVfx.ok) throw detachedVfx.error;
     unsubscribeFrames();
-    dynamicInput.page.release().unwrap();
-    renderer.setSurfaceDynamicInput(undefined);
-    assets.dispose();
-    if (input.hostFrameScheduler === 'timer') {
-      for (const timer of timers.values()) clearTimeout(timer);
-      timers.clear();
-      if (originalRaf === undefined)
-        delete (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame;
-      else globalThis.requestAnimationFrame = originalRaf;
-      if (originalCaf === undefined)
-        delete (globalThis as { cancelAnimationFrame?: unknown }).cancelAnimationFrame;
-      else globalThis.cancelAnimationFrame = originalCaf;
-    }
+    run.dynamicInput.page.release().unwrap();
+    input.renderer.setSurfaceDynamicInput(undefined);
+    scene.assets.dispose();
+    scheduler?.restore();
   }
 }
 

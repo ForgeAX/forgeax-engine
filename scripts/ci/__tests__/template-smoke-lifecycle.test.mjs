@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { serializeBrowserConsoleValue } from '../../../apps/preview/scripts/serialize-browser-console-value.mjs';
+import { waitForRuntimeVaseRender } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
 
 const source = readFileSync(
   new URL('../../../apps/preview/scripts/smoke-templates.mjs', import.meta.url),
@@ -32,12 +33,15 @@ test('template console admission rejects camera-free errors and admits only expl
 test('template readiness bounds startup and GPU completion independently and rejects stalls', async () => {
   for (const outcome of ['completed', 'startup-stalled', 'gpu-stalled']) {
     const waits = [];
-    const dataset = { forgeaxFrameSubmitted: '2' };
+    const canvas = {
+      width: 320,
+      height: 180,
+      forgeaxFrameProgress: { submitted: { frameId: 2 } },
+    };
     const scope = {
       TEMPLATE_SETTLE_FRAMES: 1,
       document: {
-        querySelector: () => ({ width: 320, height: 180 }),
-        documentElement: { dataset },
+        querySelector: () => canvas,
       },
       __forgeaxPreviewInspection:
         outcome === 'startup-stalled'
@@ -50,7 +54,10 @@ test('template readiness bounds startup and GPU completion independently and rej
         waitForFunction: async (predicate, argument, options) => {
           waits.push({ argument, options });
           if (argument.requireCompletedFrame && outcome === 'completed')
-            dataset.forgeaxFrameCompleted = '1';
+            canvas.forgeaxFrameProgress = {
+              ...canvas.forgeaxFrameProgress,
+              completed: { frameId: 1 },
+            };
           if (!predicate(argument)) throw new Error('bounded readiness timeout');
         },
         evaluate: async (operation, argument) => operation(argument),
@@ -363,15 +370,15 @@ test('successful Preview browser cleanup leaves no deadline timers keeping Node 
       close: async () => { if (!disposed) throw new Error('must dispose before destroying page'); console.log('page'); },
     };
     let context = { close: async () => console.log('context') };
-    let browser = { close: async () => console.log('browser') };
-    let browserServer = { close: async () => console.log('browser') };
+    let browser = { close: async () => console.log('browser-client') };
+    let browserServer = { close: async () => console.log('browser-server') };
     ${functionSource('async function closeSmokeBrowser()', 'async function waitForSubmittedRendererFrame')}
     await closeSmokeBrowser();
   `,
     ],
     { timeout: 5000, encoding: 'utf8' },
   );
-  assert.equal(output.trim(), 'dispose\npage\ncontext\nbrowser');
+  assert.equal(output.trim(), 'dispose\npage\ncontext\nbrowser-client\nbrowser-server');
 });
 
 test('failed Preview browser shutdown retires its owned process and preserves the failure', () => {
@@ -656,7 +663,10 @@ test('Preview readiness waits for its Catalog and preserves terminal producer er
     ],
     { timeout: 5000, encoding: 'utf8' },
   );
-  assert.equal(output.trim(), 'catalog readiness and failure passed');
+  assert.match(
+    output.trim(),
+    /^\[templates\] catalog-ready-ms=\d+\ncatalog readiness and failure passed$/,
+  );
 });
 
 test('Preview waits for a slow Catalog freshness barrier without restarting requests', () => {
@@ -698,7 +708,7 @@ test('Preview waits for a slow Catalog freshness barrier without restarting requ
     ],
     { timeout: 8000, encoding: 'utf8' },
   );
-  assert.equal(output.trim(), 'slow catalog passed');
+  assert.match(output.trim(), /^\[templates\] catalog-ready-ms=\d+\nslow catalog passed$/);
 });
 
 test('Preview reports success only after browser and owned server cleanup', () => {
@@ -806,14 +816,11 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
       },
       isClosed: () => false,
       evaluate: async (fn) => {
-        if (fn.toString().includes('frameProgress')) {
+        if (fn.toString().includes('forgeaxFrameProgress')) {
           return {
             frame: {
               submitted: 7,
               completed: failed ? 6 : 7,
-              inFlight: failed ? 1 : 0,
-              highWater: 2,
-              throttledTicks: 0,
             },
             renderer: { reason: 'alive' },
           };
@@ -846,10 +853,14 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
           events.push('context');
         },
       },
-      browser: {},
+      browser: {
+        close: async () => {
+          events.push('browser-client');
+        },
+      },
       browserServer: {
         close: async () => {
-          events.push('browser');
+          events.push('browser-server');
         },
       },
       sleep: async (ms) => {
@@ -875,7 +886,7 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
         return true;
       });
     } else await close();
-    assert.deepEqual(events, ['dispose', 'page', 'context', 'browser']);
+    assert.deepEqual(events, ['dispose', 'page', 'context', 'browser-client', 'browser-server']);
     assert.deepEqual(evidence.pageErrors, []);
     assert.deepEqual(evidence.consoleErrors, []);
     assert.equal(evidence.shutdown.events.length, 32);
@@ -893,9 +904,6 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
       frame: {
         submitted: 7,
         completed: failed ? 6 : 7,
-        inFlight: failed ? 1 : 0,
-        highWater: 2,
-        throttledTicks: 0,
       },
       renderer: { reason: 'alive' },
     });
@@ -908,4 +916,42 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
     assert.equal(scope.page, undefined);
     assert.equal(scope.browserServer, undefined);
   }
+});
+
+test('Runtime Vase render readiness rejects submitted-only, pending and earlier completed frames', async () => {
+  const canvas = {
+    forgeaxFrameProgress: {
+      submitted: { frameId: 10 },
+      completed: { frameId: 8, presentation: 'ready' },
+    },
+  };
+  const context = { document: { querySelector: () => canvas } };
+  const evaluate = (fn, argument) =>
+    runInNewContext(`(${fn.toString()})(argument)`, { ...context, argument });
+  let waits = 0;
+  await waitForRuntimeVaseRender({
+    evaluate: async (fn) => evaluate(fn),
+    waitForFunction: async (fn, origin, options) => {
+      waits++;
+      assert.equal(origin, 10);
+      assert.equal(options.timeout, 60_000);
+      canvas.forgeaxFrameProgress.submitted.frameId = 100;
+      assert.equal(
+        evaluate(fn, origin),
+        false,
+        'submission alone cannot admit the generated picture',
+      );
+      canvas.forgeaxFrameProgress.completed = { frameId: 12, presentation: 'pending' };
+      assert.equal(
+        evaluate(fn, origin),
+        false,
+        'a completed preparation barrier is not a ready picture',
+      );
+      canvas.forgeaxFrameProgress.completed = { frameId: 11, presentation: 'ready' };
+      assert.equal(evaluate(fn, origin), false, 'the original two-frame prefix remains required');
+      canvas.forgeaxFrameProgress.completed = { frameId: 12, presentation: 'ready' };
+      assert.equal(evaluate(fn, origin), true);
+    },
+  });
+  assert.equal(waits, 1);
 });

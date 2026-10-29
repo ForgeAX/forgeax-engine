@@ -26,15 +26,15 @@ export function assertPhoneBundleSyntax(source, parse) {
     );
   });
 }
-function walk(node, callback) {
+function walk(node, callback, parent) {
   if (!node || typeof node !== 'object') return;
-  if (typeof node.type === 'string') callback(node);
+  if (typeof node.type === 'string') callback(node, parent);
   for (const value of Object.values(node))
     if (Array.isArray(value))
       value.forEach((child) => {
-        walk(child, callback);
+        walk(child, callback, node);
       });
-    else if (value && typeof value === 'object') walk(value, callback);
+    else if (value && typeof value === 'object') walk(value, callback, node);
 }
 
 export function browserPlatformSeam(host, parse) {
@@ -120,8 +120,9 @@ export function replaceGameWasmHost(game, parse, path, changes) {
 
 export function instrumentGameplayHost(host, parse, changes) {
   const edit = (text, from, to, reason) => replaceOnce(text, from, to, changes, reason);
+  const ast = parse(host, { ecmaVersion: 'latest', sourceType: 'script' });
   const candidates = [];
-  walk(parse(host, { ecmaVersion: 'latest', sourceType: 'script' }), (node) => {
+  walk(ast, (node, parent) => {
     if (node.type !== 'ObjectExpression') return;
     const keys = node.properties.map((property) => property.key?.name);
     if (
@@ -129,22 +130,40 @@ export function instrumentGameplayHost(host, parse, changes) {
         keys.includes(key),
       )
     )
-      candidates.push(node);
+      candidates.push({ options: node, call: parent });
   });
   assert.equal(candidates.length, 1, 'Exactly one ordinary App assembly');
-  const options = candidates[0],
-    original = host.slice(options.start, options.end);
+  const { options, call } = candidates[0];
+  assert.equal(call?.type, 'CallExpression', 'App options must be a direct constructor argument');
+  assert.ok(call.arguments.includes(options), 'Actual App call owns the observed options');
+  const platform = options.properties.find((property) => property.key?.name === 'platform')?.value;
+  assert.equal(platform?.type, 'Identifier', 'Actual native Platform must be a retained binding');
+  const resolved = [];
+  walk(ast, (node) => {
+    if (
+      node.type === 'CallExpression' &&
+      node.callee.type === 'MemberExpression' &&
+      !node.callee.computed &&
+      node.callee.property.name === 'unwrap' &&
+      node.callee.object.type === 'AwaitExpression' &&
+      node.callee.object.argument === call
+    )
+      resolved.push(node);
+  });
+  assert.equal(resolved.length, 1, 'Exactly one awaited App Result unwrap');
+  const app = resolved[0];
+  const original = host.slice(options.start, options.end),
+    appCall = host.slice(app.start, app.end),
+    observed = `__gameplayBenchmark.observeOptions(${original},${platform.name})`,
+    observedCall =
+      appCall.slice(0, options.start - app.start) +
+      observed +
+      appCall.slice(options.end - app.start);
   host = edit(
     host,
-    original,
-    `__gameplayBenchmark.observeOptions(${original},e)`,
-    'Compose existing App callbacks without replacing original behavior',
-  );
-  host = edit(
-    host,
-    'u.start().unwrap()',
-    '__gameplayBenchmark.bindApp(u),u.start().unwrap()',
-    'Borrow actual App for post-window pause and drain',
+    appCall,
+    `__gameplayBenchmark.bindApp(${observedCall})`,
+    'Compose existing callbacks and bind the resolved App after its original await and unwrap',
   );
   return host;
 }

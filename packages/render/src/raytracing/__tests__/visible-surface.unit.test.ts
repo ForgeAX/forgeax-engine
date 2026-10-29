@@ -2,8 +2,14 @@ import { assert, expect, it } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { MaterialResource } from '../../material-resource';
 import type { GpuDrivenDrawSnapshot, RenderableSnapshot } from '../../render-system-extract';
+import { MaterialFrame } from '../../scene/material-dispatch';
+import { MeshFrame } from '../../scene/mesh-frame';
 import { RenderScene } from '../../scene/render-scene';
-import { projectVisibleSurfaces, resolveVisibleSurface } from '../visible-surface';
+import {
+  projectVisibleSurfaces,
+  resolveVisibleSurface,
+  VisibleSurfaceRows,
+} from '../visible-surface';
 
 const materials = [
   new MaterialResource({ ...receiptRow().source.material.snapshot, materialHandle: 7 }),
@@ -149,10 +155,90 @@ it('resolves non-indexed triangle starts and rejects malformed source ranges', (
 
 it('publishes no rows for deformed or LOD draws so their pixels read as uncovered', () => {
   const scene = new RenderScene();
-  const skinned = { ...snapshot(19), skin: {} } as RenderableSnapshot;
+  const skinned = {
+    ...snapshot(19),
+    skinBinding: { skeleton: 7, joints: [19] },
+  } as RenderableSnapshot;
   scene.apply([update(snapshot(17)), update(skinned)]);
   const frame = projectVisibleSurfaces(scene.slotsSnapshot(), 3).unwrap();
   expect(frame.entityBases.has(19)).toBe(false);
   expect(frame.records.length).toBe(3 * 16);
   expect(resolveVisibleSurface(frame, 1, 0).unwrap()?.entityKey).toBe(17);
+});
+
+it('rewrites only changed rows at stable addresses and recovers the identical projection', () => {
+  const scene = new RenderScene();
+  const N = 3000;
+  scene.apply(Array.from({ length: N }, (_, entity) => update(snapshot(entity))));
+  const rows = () => ({
+    identity: scene,
+    slots: scene.slotsSnapshot(),
+    materials: new MaterialFrame(undefined),
+    meshes: new MeshFrame(),
+  });
+  const surfaces = new VisibleSurfaceRows();
+  const cold = surfaces.update(rows(), 4 * N).unwrap();
+  expect(surfaces.visits).toBe(N);
+  const layout = cold.layout;
+  const base = cold.entityBases.get(77);
+
+  const D = 8;
+  scene.apply(
+    Array.from({ length: D }, (_, index) =>
+      update({ ...snapshot(index * 300), transform: { world: new Float32Array(16).fill(index) } }),
+    ),
+  );
+  const steady = surfaces.update(rows(), 4 * N).unwrap();
+  expect(surfaces.visits - N).toBe(D);
+  expect(steady.layout).toBe(layout);
+  expect(steady.entityBases.get(77)).toBe(base);
+
+  // A row whose surface count changes moves only its own address range.
+  scene.apply([update(snapshot(77, [501, 902]))]);
+  const resized = surfaces.update(rows(), 4 * N).unwrap();
+  expect(resized.layout).not.toBe(layout);
+  expect(
+    resolveVisibleSurface(resized, (resized.entityBases.get(77) ?? 0) + 1, 0).unwrap(),
+  ).toMatchObject({ entityKey: 77, instanceOrdinal: 1, instanceGeneration: 902 });
+
+  const records = resized.records.slice();
+  const bases = new Map(resized.slotBases);
+  surfaces.reset();
+  const recovered = surfaces.update(rows(), 4 * N).unwrap();
+  expect(surfaces.visits).toBe(2 * N + D + 1);
+  expect(new Map(recovered.slotBases).size).toBe(bases.size);
+  for (const [slot, rowBase] of bases) {
+    const start = (rowBase - 1) * 16,
+      next = (recovered.slotBases.get(slot) ?? 0) - 1;
+    expect(recovered.records.slice(next * 16, next * 16 + 32)).toEqual(
+      records.slice(start, start + 32),
+    );
+  }
+});
+
+it('publishes no released tail records while live rows keep their stable addresses', () => {
+  const scene = new RenderScene();
+  scene.apply([update(snapshot(1, [3, 4])), update(snapshot(2))]);
+  const rows = () => ({
+    identity: scene,
+    slots: scene.slotsSnapshot(),
+    materials: new MaterialFrame(undefined),
+    meshes: new MeshFrame(),
+  });
+  const surfaces = new VisibleSurfaceRows();
+  // Three source draw items per instance: entity 1 owns six rows, entity 2 three.
+  const cold = surfaces.update(rows(), 64).unwrap();
+  expect(cold.records.length).toBe(9 * 16);
+  const second = cold.entityBases.get(2);
+  // Shrinking the head range leaves an interior hole; the tail row never moves.
+  scene.apply([update(snapshot(1, [3]))]);
+  const reduced = surfaces.update(rows(), 64).unwrap();
+  expect(reduced.entityBases.get(2)).toBe(second);
+  expect(reduced.records.length).toBe(9 * 16);
+  // The trailing entity leaves; records end with the last live row.
+  scene.apply([{ kind: 'remove', worldId: 0, entityKey: 2 }]);
+  const trimmed = surfaces.update(rows(), 64).unwrap();
+  const first = (trimmed.entityBases.get(1) ?? 0) - 1;
+  expect(trimmed.records.length).toBe((first + 3) * 16);
+  expect(trimmed.records.length).toBeLessThan(9 * 16);
 });

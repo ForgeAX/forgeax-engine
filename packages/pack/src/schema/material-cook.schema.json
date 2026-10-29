@@ -371,6 +371,7 @@
                     "generation"
                   ],
                   "properties": {
+                    "positionBounds": { "const": "standard-input" },
                     "entryPoints": {
                       "type": "array",
                       "items": {
@@ -458,16 +459,6 @@
                       "properties": {
                         "cutoff": { "type": "string" },
                         "source": { "type": "string" }
-                      },
-                      "additionalProperties": false
-                    },
-                    "skinPaletteAddress": {
-                      "type": "object",
-                      "required": ["group", "binding", "stride"],
-                      "properties": {
-                        "group": { "type": "integer", "minimum": 0 },
-                        "binding": { "type": "integer", "minimum": 0 },
-                        "stride": { "type": "integer", "minimum": 1 }
                       },
                       "additionalProperties": false
                     },

@@ -546,6 +546,7 @@ if (m35Mode) {
     })}`,
   );
 } else {
+  const presentationDeadline = performance.now() + 120_000;
   for (let frame = 0; frame < frameLimit; frame += 1) {
     const frameStart = performance.now();
     currentFrame = frame;
@@ -559,7 +560,13 @@ if (m35Mode) {
       });
       eventSubmitted = true;
     }
-    const drawn = recordDraw([mainLease]);
+    let drawn = recordDraw([mainLease]);
+    // A pending receipt waited on pipeline preparation and presented nothing;
+    // redraw the same simulated frame (render-only) until it is presented.
+    while (drawn.ok && drawn.value.presentation !== 'ready' && performance.now() < presentationDeadline) {
+      await new Promise(resolve => setImmediate(resolve));
+      drawn = recordDraw([mainLease]);
+    }
     if (!drawn.ok) throw new Error(`Boss Lightning draw failed at frame ${frame}`);
     if (!benchmarkMode && !m11Mode) {
       const presentation = recordDraw([mainLease]);

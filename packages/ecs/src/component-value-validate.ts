@@ -66,11 +66,13 @@ export function validateManagedArrayValues<S extends ComponentSchema>(
   raw: Partial<Record<string, unknown>> | undefined,
 ): ManagedArrayInvalidValueError | null {
   if (raw === undefined) return null;
-  const fields = componentDefinition(token).fields as Readonly<
+  const definition = componentDefinition(token);
+  if (!definition.plan.hasArrayField) return null;
+  const fields = definition.fields as Readonly<
     Record<string, { readonly type: string; readonly arrayMeta?: unknown }>
   >;
   const rawObj = raw as Record<string, unknown>;
-  for (const fieldName of Object.keys(rawObj)) {
+  for (const fieldName in rawObj) {
     const reflection = fields[fieldName];
     if (reflection?.arrayMeta === undefined) continue;
     const value = rawObj[fieldName];
@@ -108,7 +110,7 @@ export function validateSharedFieldValues<S extends ComponentSchema>(
   token: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
 ): SharedFieldInvalidValueError | null {
-  if (raw === undefined) return null;
+  if (raw === undefined || !componentDefinition(token).plan.hasSharedField) return null;
   const schema = componentSchema(token) as Record<string, string>;
   const rawObj = raw as Record<string, unknown>;
   for (const fieldName of Object.keys(rawObj)) {

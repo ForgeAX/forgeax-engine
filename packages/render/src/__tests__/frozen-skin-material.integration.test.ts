@@ -75,7 +75,7 @@ function fixture(material = source()) {
       (request) => {
         if (typeof request !== 'string' && request.kind === 'partial')
           for (const entities of request.entitiesByWorld) requestedEntities += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
@@ -118,7 +118,7 @@ it('adopts a shared skin material without extracting its entities or mutating an
     f.world.set(f.joint, Transform, { pos: [2, 0, 0] }).unwrap();
     const moved = f.extract().renderables;
     expect(moved.at(0)?.material).toBe(resource);
-    expect(moved.at(0)?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
+    expect(moved.at(0)?.skinBinding).toBe(initial.at(0)?.skinBinding);
     const requested = f.requested();
     f.assets.update(f.handle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
     const green = f.extract().renderables;

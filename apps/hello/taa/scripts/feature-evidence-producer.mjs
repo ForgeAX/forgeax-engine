@@ -145,21 +145,41 @@ function validateResourceGrowth(input, workload) {
   return errors;
 }
 
-function collectErrors(input, workload, { requirePhysicalBrowser = true, executionMode = 'physical' } = {}) {
+const isSha256 = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const isNonEmptyString = (value) => typeof value === 'string' && value.length > 0;
+
+function isPathDigestIdentity(value) {
+  return value !== null && typeof value === 'object' && isNonEmptyString(value.path) && isSha256(value.sha256);
+}
+
+function validateAutoWorkload(workload) {
+  const errors = [];
+  if (workload.exposureMode !== 'auto') errors.push(error('auto-mode-missing', 'workload.exposureMode', 'auto exposure must be active'));
+  if (!Number.isInteger(workload.generation) || workload.generation <= 0) errors.push(error('exposure-generation-missing', 'workload.generation', 'renderer inspection must report a non-zero target generation'));
+  if (workload.receipt?.committed !== true) errors.push(error('exposure-receipt-missing', 'workload.receipt.committed', 'a committed renderer receipt is required'));
+  return errors;
+}
+
+function validatePositiveLutWorkload(workload) {
+  const errors = [];
+  if (!(workload.strength > 0)) errors.push(error('lut-strength-missing', 'workload.strength', 'positive LUT strength must be greater than zero'));
+  if (!isNonEmptyString(workload.sourceKey)) errors.push(error('lut-source-missing', 'workload.sourceKey', 'the producer must observe a source key'));
+  if (!Number.isInteger(workload.generation) || workload.generation <= 0) errors.push(error('lut-generation-missing', 'workload.generation', 'the LUT receipt must have a non-zero generation'));
+  if (workload.receipt?.committed !== true) errors.push(error('lut-receipt-missing', 'workload.receipt.committed', 'a committed renderer LUT receipt is required'));
+  return errors;
+}
+
+function validateWorkload(workload) {
   const errors = [];
   if (!WORKLOAD_KINDS.includes(workload.kind)) errors.push(error('workload-kind-invalid', 'workload.kind', 'manual, auto, or positive-lut is required'));
   if (workload.executed !== true) errors.push(error('workload-not-executed', 'workload.executed', 'the Browser must report an executed workload'));
-  if (workload.kind === 'auto') {
-    if (workload.exposureMode !== 'auto') errors.push(error('auto-mode-missing', 'workload.exposureMode', 'auto exposure must be active'));
-    if (!Number.isInteger(workload.generation) || workload.generation <= 0) errors.push(error('exposure-generation-missing', 'workload.generation', 'renderer inspection must report a non-zero target generation'));
-    if (workload.receipt?.committed !== true) errors.push(error('exposure-receipt-missing', 'workload.receipt.committed', 'a committed renderer receipt is required'));
-  }
-  if (workload.kind === 'positive-lut') {
-    if (!(workload.strength > 0)) errors.push(error('lut-strength-missing', 'workload.strength', 'positive LUT strength must be greater than zero'));
-    if (typeof workload.sourceKey !== 'string' || workload.sourceKey.length === 0) errors.push(error('lut-source-missing', 'workload.sourceKey', 'the producer must observe a source key'));
-    if (!Number.isInteger(workload.generation) || workload.generation <= 0) errors.push(error('lut-generation-missing', 'workload.generation', 'the LUT receipt must have a non-zero generation'));
-    if (workload.receipt?.committed !== true) errors.push(error('lut-receipt-missing', 'workload.receipt.committed', 'a committed renderer LUT receipt is required'));
-  }
+  if (workload.kind === 'auto') errors.push(...validateAutoWorkload(workload));
+  if (workload.kind === 'positive-lut') errors.push(...validatePositiveLutWorkload(workload));
+  return errors;
+}
+
+function validateFrameWindow(input) {
+  const errors = [];
   if (input.frames < 60) errors.push(error('frame-window-short', 'frames', 'a stable 60-frame window is required'));
   const frameIdentity = input.frameIdentity;
   if (
@@ -167,105 +187,93 @@ function collectErrors(input, workload, { requirePhysicalBrowser = true, executi
     frameIdentity.count !== input.frames ||
     !Number.isSafeInteger(frameIdentity.first) ||
     !Number.isSafeInteger(frameIdentity.last) ||
-    typeof frameIdentity.sequenceSha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(frameIdentity.sequenceSha256) ||
+    !isSha256(frameIdentity.sequenceSha256) ||
     frameIdentity.sequenceSha256 === EMPTY_SEQUENCE_SHA256 ||
     frameIdentity.last - frameIdentity.first + 1 !== frameIdentity.count ||
     frameIdentity.contiguous !== true
   ) {
     errors.push(error('frame-identity-invalid', 'frameIdentity', 'first, last, count, and contiguous receipt IDs must identify the capture window'));
   }
-  const fixtureParts = ['asset', 'camera', 'light', 'input'];
-  if (!input.fixtureIdentity) {
-    errors.push(error('fixture-identity-missing', 'fixtureIdentity', 'asset, camera, light, and input identities are required'));
-  } else {
-    for (const part of fixtureParts) {
-      const identity = input.fixtureIdentity[part];
-      if (
-        identity === null ||
-        typeof identity !== 'object' ||
-        typeof identity.id !== 'string' ||
-        identity.id.length === 0 ||
-        typeof identity.sha256 !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(identity.sha256)
-      ) {
-        errors.push(error('fixture-identity-invalid', `fixtureIdentity.${part}`, 'each fixture participant needs a stable id and SHA-256 digest'));
-      }
+  return errors;
+}
+
+function validateFixtureIdentity(fixtureIdentity) {
+  if (!fixtureIdentity) {
+    return [error('fixture-identity-missing', 'fixtureIdentity', 'asset, camera, light, and input identities are required')];
+  }
+  const errors = [];
+  for (const part of ['asset', 'camera', 'light', 'input']) {
+    const identity = fixtureIdentity[part];
+    if (identity === null || typeof identity !== 'object' || !isNonEmptyString(identity.id) || !isSha256(identity.sha256)) {
+      errors.push(error('fixture-identity-invalid', `fixtureIdentity.${part}`, 'each fixture participant needs a stable id and SHA-256 digest'));
     }
   }
+  return errors;
+}
+
+function isRunnerIdentity(runner) {
+  return runner !== null && typeof runner === 'object' && isNonEmptyString(runner.kind) && isNonEmptyString(runner.id);
+}
+
+function isProvenanceFrameOfWindow(frame, frameIdentity) {
+  return (
+    frame !== null &&
+    typeof frame === 'object' &&
+    frame.first === frameIdentity?.first &&
+    frame.last === frameIdentity?.last &&
+    frame.count === frameIdentity?.count &&
+    frame.contiguous === true &&
+    frame.sequenceSha256 === frameIdentity?.sequenceSha256
+  );
+}
+
+function validateProvenanceIdentity(provenance, frameIdentity) {
+  const errors = [];
+  for (const [name, value] of [['source', provenance.source], ['build', provenance.build]]) {
+    if (!isPathDigestIdentity(value)) {
+      errors.push(error('provenance-identity-invalid', `provenance.${name}`, 'source and build provenance require a path and SHA-256 digest'));
+    }
+  }
+  if (!isNonEmptyString(provenance.fixture)) {
+    errors.push(error('provenance-identity-invalid', 'provenance.fixture', 'the fixture source path is required'));
+  }
+  if (!isNonEmptyString(provenance.backend)) {
+    errors.push(error('provenance-identity-invalid', 'provenance.backend', 'backend identity is required'));
+  }
+  if (provenance.adapter === null || typeof provenance.adapter !== 'object') {
+    errors.push(error('provenance-identity-invalid', 'provenance.adapter', 'adapter capabilities are required'));
+  }
+  if (!isRunnerIdentity(provenance.runner)) {
+    errors.push(error('provenance-identity-invalid', 'provenance.runner', 'runner kind and id are required'));
+  }
+  if (!isProvenanceFrameOfWindow(provenance.frame, frameIdentity)) {
+    errors.push(error('provenance-identity-invalid', 'provenance.frame', 'provenance frame identity must equal the receipt window'));
+  }
+  return errors;
+}
+
+function validateProvenance(input, workload, requirePhysicalBrowser, executionMode) {
   const provenance = input.provenance;
   if (provenance === null || typeof provenance !== 'object') {
-    errors.push(error('provenance-missing', 'provenance', 'source/build/backend/adapter/runner provenance is required'));
-  } else {
-    for (const [name, value] of [['source', provenance.source], ['build', provenance.build]]) {
-      if (
-        value === null ||
-        typeof value !== 'object' ||
-        typeof value.path !== 'string' ||
-        value.path.length === 0 ||
-        typeof value.sha256 !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(value.sha256)
-      ) {
-        errors.push(error('provenance-identity-invalid', `provenance.${name}`, 'source and build provenance require a path and SHA-256 digest'));
-      }
-    }
-    if (typeof provenance.fixture !== 'string' || provenance.fixture.length === 0) {
-      errors.push(error('provenance-identity-invalid', 'provenance.fixture', 'the fixture source path is required'));
-    }
-    if (typeof provenance.backend !== 'string' || provenance.backend.length === 0) {
-      errors.push(error('provenance-identity-invalid', 'provenance.backend', 'backend identity is required'));
-    }
-    if (provenance.adapter === null || typeof provenance.adapter !== 'object') {
-      errors.push(error('provenance-identity-invalid', 'provenance.adapter', 'adapter capabilities are required'));
-    }
-    if (
-      provenance.runner === null ||
-      typeof provenance.runner !== 'object' ||
-      typeof provenance.runner.kind !== 'string' ||
-      provenance.runner.kind.length === 0 ||
-      typeof provenance.runner.id !== 'string' ||
-      provenance.runner.id.length === 0
-    ) {
-      errors.push(error('provenance-identity-invalid', 'provenance.runner', 'runner kind and id are required'));
-    }
-    if (
-      provenance.frame === null ||
-      typeof provenance.frame !== 'object' ||
-      provenance.frame.first !== input.frameIdentity?.first ||
-      provenance.frame.last !== input.frameIdentity?.last ||
-      provenance.frame.count !== input.frameIdentity?.count ||
-      provenance.frame.contiguous !== true ||
-      provenance.frame.sequenceSha256 !== input.frameIdentity?.sequenceSha256
-    ) {
-      errors.push(error('provenance-identity-invalid', 'provenance.frame', 'provenance frame identity must equal the receipt window'));
-    }
-    if (workload.kind !== 'manual' && requirePhysicalBrowser) {
-      errors.push(
-        ...(executionMode === 'simulated'
-          ? validateSimulatedBrowserProvenance(provenance)
-          : validatePhysicalBrowserProvenance(provenance)),
-      );
-    }
+    return [error('provenance-missing', 'provenance', 'source/build/backend/adapter/runner provenance is required')];
   }
-  errors.push(...validateResourceGrowth(input, workload));
-  if (
-    input.source === null ||
-    typeof input.source !== 'object' ||
-    typeof input.source.path !== 'string' ||
-    input.source.path.length === 0 ||
-    typeof input.source.sha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(input.source.sha256)
-  ) {
+  const errors = validateProvenanceIdentity(provenance, input.frameIdentity);
+  if (workload.kind !== 'manual' && requirePhysicalBrowser) {
+    errors.push(
+      ...(executionMode === 'simulated'
+        ? validateSimulatedBrowserProvenance(provenance)
+        : validatePhysicalBrowserProvenance(provenance)),
+    );
+  }
+  return errors;
+}
+
+function validateOutputIdentity(input) {
+  const errors = [];
+  if (!isPathDigestIdentity(input.source)) {
     errors.push(error('source-identity-invalid', 'source', 'source path and SHA-256 digest are required'));
   }
-  if (
-    input.build === null ||
-    typeof input.build !== 'object' ||
-    typeof input.build.path !== 'string' ||
-    input.build.path.length === 0 ||
-    typeof input.build.sha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(input.build.sha256)
-  ) {
+  if (!isPathDigestIdentity(input.build)) {
     errors.push(error('build-identity-invalid', 'build', 'build path and SHA-256 digest are required'));
   }
   if (
@@ -278,51 +286,85 @@ function collectErrors(input, workload, { requirePhysicalBrowser = true, executi
   ) {
     errors.push(error('resolution-invalid', 'resolution', 'positive output dimensions are required'));
   }
-  const stages = Array.isArray(input.stages) ? input.stages : [];
-  if (workload.kind !== 'manual') {
-    if (stages.length !== DOMAINS.length) errors.push(error('domain-readback-missing', 'stages', 'three independent raw GPU readbacks are required'));
-    const domains = stages.map((stage) => stage?.domain);
-    if (DOMAINS.some((domain) => !domains.includes(domain)) || new Set(domains).size !== DOMAINS.length) {
-      errors.push(error('domain-set-invalid', 'stages.*.domain', 'the exact linear-HDR, linear-LDR, and final-sRGB domain set is required'));
+  return errors;
+}
+
+function validateDomainSet(stages) {
+  const errors = [];
+  if (stages.length !== DOMAINS.length) errors.push(error('domain-readback-missing', 'stages', 'three independent raw GPU readbacks are required'));
+  const domains = stages.map((stage) => stage?.domain);
+  if (DOMAINS.some((domain) => !domains.includes(domain)) || new Set(domains).size !== DOMAINS.length) {
+    errors.push(error('domain-set-invalid', 'stages.*.domain', 'the exact linear-HDR, linear-LDR, and final-sRGB domain set is required'));
+  }
+  const expectedIds = ['linear-hdr', 'linear-ldr', 'final-display'];
+  for (const [index, stage] of stages.entries()) {
+    if (stage?.id !== expectedIds[index] || stage?.domain !== DOMAINS[index]) {
+      errors.push(error('domain-pairing-invalid', `stages[${index}]`, 'stage id and domain must be the canonical one-to-one pair'));
     }
-    const expectedIds = ['linear-hdr', 'linear-ldr', 'final-display'];
-    for (const [index, stage] of stages.entries()) {
-      if (stage?.id !== expectedIds[index] || stage?.domain !== DOMAINS[index]) {
-        errors.push(error('domain-pairing-invalid', `stages[${index}]`, 'stage id and domain must be the canonical one-to-one pair'));
+  }
+  const hashes = stages.map((stage) => stage?.readback?.rawHash);
+  if (hashes.some((hash) => !isSha256(hash))) errors.push(error('domain-readback-invalid', 'stages.*.readback.rawHash', 'raw stage hashes must be 64-character digests'));
+  if (new Set(hashes).size !== hashes.length) errors.push(error('domain-readback-not-distinct', 'stages.*.readback.rawHash', 'linear HDR, linear LDR, and final sRGB must be distinct captures'));
+  return errors;
+}
+
+function validateDomainMetadataFields(stages) {
+  const errors = [];
+  const metadataFields = ['frameId', 'deviceGeneration', 'graphGeneration', 'textureIdentity', 'readbackIdentity', 'width', 'height', 'bytesPerRow'];
+  for (const [index, stage] of stages.entries()) {
+    for (const field of metadataFields) {
+      if (!Number.isSafeInteger(stage?.metadata?.[field]) || stage.metadata[field] < 0) {
+        errors.push(error('domain-metadata-missing', `stages[${index}].metadata.${field}`, 'each raw capture must retain renderer frame, graph, resource, and readback identity'));
       }
-    }
-    const hashes = stages.map((stage) => stage?.readback?.rawHash);
-    if (hashes.some((hash) => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash))) errors.push(error('domain-readback-invalid', 'stages.*.readback.rawHash', 'raw stage hashes must be 64-character digests'));
-    if (new Set(hashes).size !== hashes.length) errors.push(error('domain-readback-not-distinct', 'stages.*.readback.rawHash', 'linear HDR, linear LDR, and final sRGB must be distinct captures'));
-    const metadataFields = ['frameId', 'deviceGeneration', 'graphGeneration', 'textureIdentity', 'readbackIdentity', 'width', 'height', 'bytesPerRow'];
-    for (const [index, stage] of stages.entries()) {
-      for (const field of metadataFields) {
-        if (!Number.isSafeInteger(stage?.metadata?.[field]) || stage.metadata[field] < 0) {
-          errors.push(error('domain-metadata-missing', `stages[${index}].metadata.${field}`, 'each raw capture must retain renderer frame, graph, resource, and readback identity'));
-        }
-      }
-    }
-    // Bytes-per-row belongs to each capture's format and may legitimately
-    // differ between the rgba16float linear targets and the rgba8 final
-    // sRGB target. Frame/device/graph/extent identity is the cross-domain
-    // invariant; validate each row's stride above without conflating it with
-    // shared resource identity.
-    const sharedFields = ['deviceGeneration', 'graphGeneration', 'width', 'height'];
-    const sharedMetadata = stages[0]?.metadata;
-    for (const field of sharedFields) {
-      if (stages.some((stage) => stage?.metadata?.[field] !== sharedMetadata?.[field])) {
-        errors.push(error('domain-metadata-mismatch', `stages.*.metadata.${field}`, 'all domain captures must share one frame device, graph, and extent identity'));
-      }
-    }
-    const textureIdentities = stages.map((stage) => stage?.metadata?.textureIdentity);
-    const readbackIdentities = stages.map((stage) => stage?.metadata?.readbackIdentity);
-    if (new Set(textureIdentities).size !== textureIdentities.length) errors.push(error('texture-identity-reused', 'stages.*.metadata.textureIdentity', 'domain captures must not reuse the source texture identity'));
-    if (new Set(readbackIdentities).size !== readbackIdentities.length) errors.push(error('readback-identity-reused', 'stages.*.metadata.readbackIdentity', 'domain captures must not reuse the readback identity'));
-    if (frameIdentity && stages.some((stage) => stage?.metadata?.frameId !== frameIdentity.last)) {
-      errors.push(error('domain-frame-mismatch', 'stages.*.metadata.frameId', 'all domain captures must bind the final receipt frame of the window'));
     }
   }
   return errors;
+}
+
+function validateDomainMetadataSharing(stages, frameIdentity) {
+  const errors = [];
+  // Bytes-per-row belongs to each capture's format and may legitimately
+  // differ between the rgba16float linear targets and the rgba8 final
+  // sRGB target. Frame/device/graph/extent identity is the cross-domain
+  // invariant; validate each row's stride above without conflating it with
+  // shared resource identity.
+  const sharedFields = ['deviceGeneration', 'graphGeneration', 'width', 'height'];
+  const sharedMetadata = stages[0]?.metadata;
+  for (const field of sharedFields) {
+    if (stages.some((stage) => stage?.metadata?.[field] !== sharedMetadata?.[field])) {
+      errors.push(error('domain-metadata-mismatch', `stages.*.metadata.${field}`, 'all domain captures must share one frame device, graph, and extent identity'));
+    }
+  }
+  const textureIdentities = stages.map((stage) => stage?.metadata?.textureIdentity);
+  const readbackIdentities = stages.map((stage) => stage?.metadata?.readbackIdentity);
+  if (new Set(textureIdentities).size !== textureIdentities.length) errors.push(error('texture-identity-reused', 'stages.*.metadata.textureIdentity', 'domain captures must not reuse the source texture identity'));
+  if (new Set(readbackIdentities).size !== readbackIdentities.length) errors.push(error('readback-identity-reused', 'stages.*.metadata.readbackIdentity', 'domain captures must not reuse the readback identity'));
+  if (frameIdentity && stages.some((stage) => stage?.metadata?.frameId !== frameIdentity.last)) {
+    errors.push(error('domain-frame-mismatch', 'stages.*.metadata.frameId', 'all domain captures must bind the final receipt frame of the window'));
+  }
+  return errors;
+}
+
+function validateDomainStages(input, workload) {
+  if (workload.kind === 'manual') return [];
+  const stages = Array.isArray(input.stages) ? input.stages : [];
+  return [
+    ...validateDomainSet(stages),
+    ...validateDomainMetadataFields(stages),
+    ...validateDomainMetadataSharing(stages, input.frameIdentity),
+  ];
+}
+
+function collectErrors(input, workload, { requirePhysicalBrowser = true, executionMode = 'physical' } = {}) {
+  return [
+    ...validateWorkload(workload),
+    ...validateFrameWindow(input),
+    ...validateFixtureIdentity(input.fixtureIdentity),
+    ...validateProvenance(input, workload, requirePhysicalBrowser, executionMode),
+    ...validateResourceGrowth(input, workload),
+    ...validateOutputIdentity(input),
+    ...validateDomainStages(input, workload),
+  ];
 }
 
 /**

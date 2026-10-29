@@ -145,14 +145,6 @@ export function validateVfxForceFields(
   return ok(value as readonly VfxForceField[]);
 }
 
-/** Ordinary textures retain their existing identity, codec and catalogue route. */
-export function validateVfxVectorFieldTexture(
-  texture: TextureAsset,
-  guid: string,
-): Result<TextureAsset, VfxForceFieldError> {
-  return validateVfxVectorFieldRanges(texture, guid);
-}
-
 /** Engine-only: ranges require proven unchanged bytes from a validated fixed predecessor. */
 export function validateVfxVectorFieldRanges(
   texture: TextureAsset,

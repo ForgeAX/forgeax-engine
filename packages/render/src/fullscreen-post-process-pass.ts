@@ -26,6 +26,8 @@ import type {
 import { GPU_SHADER_STAGE_FRAGMENT } from './gpu-stage';
 import type { BglKind } from './pipeline-spec';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from './pipeline-spec';
+import { bindGroupChainLeaf } from './record/mesh-ssbo';
+import { GenerationalWeakMap } from './scene/generational-weak-map';
 
 // Default fullscreen-post spec stub. The dispatcher's 'fullscreen-post' arm
 // reads spec.attachments.depthFormat / colorFormats[0] to derive the texture
@@ -136,10 +138,98 @@ export function postProcessShaderModuleLabel(source: string): string {
   return `post-process-module-${postProcessSourceDigest(source)}`;
 }
 
-const postProcessSources = new WeakMap<
+/**
+ * Signature inputs captured when the signature string was last derived. The
+ * declaration fields stay live (callers may mutate params bytes or reads in
+ * place), so every lookup compares them against this capture without
+ * allocating, and re-derives the string only when one actually changed.
+ */
+interface PostProcessSignatureCapture {
+  readonly source: string;
+  readonly sourceDigest: string;
+  readonly signature: string;
+  readonly stage: PostProcessShaderEntry['stage'];
+  readonly fragmentEntryPoint: string | undefined;
+  readonly params: PostProcessParamsSchema | undefined;
+  readonly byteSize: number | undefined;
+  readonly defaultValue: Uint8Array | undefined;
+  readonly reads: PostProcessShaderEntry['reads'];
+  readonly readKeys: readonly (string | undefined)[] | undefined;
+  readonly readSampleTypes: readonly (PostProcessReadSampleType | undefined)[] | undefined;
+  readonly readStrings: readonly boolean[] | undefined;
+  readonly usesView: boolean | undefined;
+  readonly storageBindings: readonly number[] | undefined;
+  readonly storageBindingValues: readonly number[] | undefined;
+}
+
+const postProcessSignatures = new GenerationalWeakMap<
   PostProcessShaderEntry,
-  { readonly source: string; readonly digest: string }
+  PostProcessSignatureCapture
 >();
+
+function sameSignatureInputs(
+  entry: PostProcessShaderEntry,
+  captured: PostProcessSignatureCapture,
+): boolean {
+  return (
+    entry.source === captured.source &&
+    entry.stage === captured.stage &&
+    entry.fragmentEntryPoint === captured.fragmentEntryPoint &&
+    entry.usesView === captured.usesView &&
+    entry.params === captured.params &&
+    entry.reads === captured.reads &&
+    entry.storageBindings === captured.storageBindings &&
+    sameParamsBytes(entry.params, captured) &&
+    sameReads(entry.reads, captured) &&
+    sameNumbers(entry.storageBindings, captured.storageBindingValues)
+  );
+}
+
+function sameParamsBytes(
+  params: PostProcessParamsSchema | undefined,
+  captured: PostProcessSignatureCapture,
+): boolean {
+  if (params === undefined) return true;
+  if (params.byteSize !== captured.byteSize) return false;
+  return sameNumbers(params.defaultValue, captured.defaultValue);
+}
+
+function sameNumbers(
+  values: ArrayLike<number> | undefined,
+  before: ArrayLike<number> | undefined,
+): boolean {
+  if (values === undefined || before === undefined) return values === before;
+  if (values.length !== before.length) return false;
+  for (let index = 0; index < values.length; index++)
+    if (values[index] !== before[index]) return false;
+  return true;
+}
+
+function sameReads(
+  reads: PostProcessShaderEntry['reads'],
+  captured: PostProcessSignatureCapture,
+): boolean {
+  if (reads === undefined) return true;
+  const keys = captured.readKeys as readonly (string | undefined)[];
+  if (reads.length !== keys.length) return false;
+  for (let index = 0; index < reads.length; index++)
+    if (!sameRead(reads[index], index, captured)) return false;
+  return true;
+}
+
+function sameRead(
+  read: string | PostProcessReadEntry | undefined,
+  index: number,
+  captured: PostProcessSignatureCapture,
+): boolean {
+  const key = captured.readKeys?.[index];
+  if (typeof read === 'string') return captured.readStrings?.[index] === true && read === key;
+  return (
+    captured.readStrings?.[index] === false &&
+    read?.key === key &&
+    read?.sampleType === captured.readSampleTypes?.[index]
+  );
+}
 
 /**
  * Stable declaration identity used by graph admission and the renderer's
@@ -148,16 +238,19 @@ const postProcessSources = new WeakMap<
  */
 export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): string {
   // Source-sized JSON used to be regenerated for every pipeline lookup and
-  // embedded again in the frame topology. Retain the content digest beside
-  // the declaration; changing even same-length WGSL invalidates it. Keep the
-  // small mutable params/read projection live, including typed-array bytes.
-  let cached = postProcessSources.get(entry);
-  if (cached?.source !== entry.source) {
-    cached = { source: entry.source, digest: postProcessSourceDigest(entry.source) };
-    postProcessSources.set(entry, cached);
-  }
-  return JSON.stringify({
-    source: cached.digest,
+  // embedded again in the frame topology. Retain the content digest and the
+  // derived string beside the declaration; changing even same-length WGSL,
+  // one params byte or one read invalidates them. The small mutable
+  // params/read projection stays live and is compared on every call.
+  const captured = postProcessSignatures.get(entry);
+  if (captured !== undefined && sameSignatureInputs(entry, captured)) return captured.signature;
+  const sourceDigest =
+    captured?.source === entry.source
+      ? captured.sourceDigest
+      : postProcessSourceDigest(entry.source);
+  const reads = entry.reads;
+  const signature = JSON.stringify({
+    source: sourceDigest,
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
     params:
@@ -167,10 +260,28 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
             byteSize: entry.params.byteSize,
             defaultValue: Array.from(entry.params.defaultValue),
           },
-    reads: entry.reads,
+    reads,
     usesView: entry.usesView,
     storageBindings: entry.storageBindings,
   });
+  postProcessSignatures.set(entry, {
+    source: entry.source,
+    signature,
+    sourceDigest,
+    stage: entry.stage,
+    fragmentEntryPoint: entry.fragmentEntryPoint,
+    params: entry.params,
+    byteSize: entry.params?.byteSize,
+    defaultValue: entry.params === undefined ? undefined : entry.params.defaultValue.slice(),
+    reads,
+    readKeys: reads?.map((read) => (typeof read === 'string' ? read : read.key)),
+    readSampleTypes: reads?.map((read) => (typeof read === 'string' ? undefined : read.sampleType)),
+    readStrings: reads?.map((read) => typeof read === 'string'),
+    usesView: entry.usesView,
+    storageBindings: entry.storageBindings,
+    storageBindingValues: entry.storageBindings?.slice(),
+  });
+  return signature;
 }
 
 /** Whether a feature binding opts into the temporal multi-read contract. */
@@ -336,18 +447,61 @@ export function buildFullscreenPostProcessPass(
   ctx: FullscreenPostProcessDeviceContext,
   entry: PostProcessShaderEntry,
   depthMultisampled = false,
-): {
-  bindGroupLayout: BindGroupLayout;
-  sampler: Sampler | null;
-  depthSampler: Sampler | null;
-  extraColorBindings: readonly number[];
-  extraStorageBindings: readonly number[];
-  createHandle: (
+): BuiltFullscreenPostProcessPass | null {
+  // Dispatch rebuilds this every frame for every fullscreen pass. The result
+  // depends only on the device and the entry's signature inputs, so retain it
+  // per device generation and declaration; any signature change rebuilds.
+  let byEntry = builtFullscreenPasses.get(ctx.device);
+  if (byEntry === undefined) {
+    byEntry = new WeakMap();
+    builtFullscreenPasses.set(ctx.device, byEntry);
+  }
+  const signature = postProcessShaderEntrySignature(entry);
+  const retained = byEntry.get(entry);
+  const slot = depthMultisampled ? 1 : 0;
+  const cached = retained?.[slot];
+  if (cached !== undefined && cached.signature === signature) return cached.value;
+  const value = createFullscreenPostProcessPass(ctx, entry, depthMultisampled);
+  // Failed sampler creation stays retryable on the next dispatch.
+  if (
+    value !== null &&
+    value.sampler !== null &&
+    (value.depthSampler !== null || !entryHasDepthRead(entry))
+  ) {
+    const records = retained ?? [undefined, undefined];
+    records[slot] = { signature, value };
+    if (retained === undefined) byEntry.set(entry, records);
+  }
+  return value;
+}
+
+/** BGL, samplers and handle factory shared by every dispatch of one declaration. */
+export interface BuiltFullscreenPostProcessPass {
+  readonly bindGroupLayout: BindGroupLayout;
+  readonly sampler: Sampler | null;
+  readonly depthSampler: Sampler | null;
+  readonly extraColorBindings: readonly number[];
+  readonly extraStorageBindings: readonly number[];
+  readonly createHandle: (
     name: string,
     pipeline: unknown,
     paramsBuffer: Buffer | null,
   ) => FullscreenPostProcessPassHandle;
-} | null {
+}
+
+const builtFullscreenPasses = new WeakMap<
+  RhiDevice,
+  WeakMap<
+    PostProcessShaderEntry,
+    ({ readonly signature: string; readonly value: BuiltFullscreenPostProcessPass } | undefined)[]
+  >
+>();
+
+function createFullscreenPostProcessPass(
+  ctx: FullscreenPostProcessDeviceContext,
+  entry: PostProcessShaderEntry,
+  depthMultisampled: boolean,
+): BuiltFullscreenPostProcessPass | null {
   const { device } = ctx;
 
   // Step 1: BGL (input texture + sampler [+ params buffer] [+ depth]).
@@ -444,6 +598,13 @@ export function buildFullscreenPostProcessPass(
  * `'fullscreen-post-with-scene-depth'` BGL. Both must be supplied together
  * (or both omitted for existing color-only consumers — AC-03 zero-regression).
  */
+// Fullscreen bind groups are immutable in their resources: one per exact
+// layout/resource chain, instead of a native bind group per pass per frame.
+const fullscreenBindGroups = new WeakMap<object, unknown>();
+const fullscreenChainKeys: object[] = [];
+const ABSENT_BINDING: object = {};
+const BUFFER_BINDINGS: object = {};
+
 export function createFullscreenBindGroup(
   device: RhiDevice,
   bgl: BindGroupLayout,
@@ -455,6 +616,25 @@ export function createFullscreenBindGroup(
   additionalViews: readonly { readonly binding: number; readonly view: TextureView }[] = [],
   additionalBuffers: readonly { readonly binding: number; readonly buffer: Buffer }[] = [],
 ): BindGroup | null {
+  const depthBound = depthTexView && depthSampler;
+  const keys = fullscreenChainKeys;
+  keys.length = 0;
+  keys.push(
+    bgl,
+    inputView,
+    sampler ?? ABSENT_BINDING,
+    paramsBuffer ?? ABSENT_BINDING,
+    depthBound ? depthTexView : ABSENT_BINDING,
+    depthBound ? depthSampler : ABSENT_BINDING,
+  );
+  for (let index = 0; index < additionalViews.length; index++)
+    keys.push((additionalViews[index] as { readonly view: TextureView }).view);
+  keys.push(BUFFER_BINDINGS);
+  for (let index = 0; index < additionalBuffers.length; index++)
+    keys.push((additionalBuffers[index] as { readonly buffer: Buffer }).buffer);
+  const leaf = bindGroupChainLeaf(fullscreenBindGroups, keys);
+  const cached = leaf.get('fullscreen');
+  if (cached !== undefined) return cached;
   const entries: { binding: number; resource: { kind: string; value: unknown } }[] = [
     { binding: 0, resource: { kind: 'textureView', value: inputView } },
   ];
@@ -491,5 +671,6 @@ export function createFullscreenBindGroup(
     entries: entries as never,
   });
   if (!res.ok) return null;
+  leaf.set('fullscreen', res.value);
   return res.value;
 }

@@ -9,6 +9,7 @@ export {
   type CompileOptions,
   type CompileResult,
   compileShader,
+  reachableShaderImportIds,
 } from './compile.js';
 export { getShaderCompilerFingerprint } from './compiler-fingerprint.js';
 export { projectShaderConditionals } from './conditionals.js';
@@ -78,8 +79,8 @@ export {
   collectMaterialSources,
   createMaterialPackCooker,
   listMaterialSourcePaths,
+  materialShaderSourceRoots,
 } from './material/pack-cooker.js';
-export { parseMaterialParticleInputs } from './material/particle-inputs.js';
 export {
   characterizeMaterialWgslProfile,
   MATERIAL_WGSL_PROFILE,
@@ -124,22 +125,12 @@ export {
   SURFACE_SLOT,
   type SurfaceContract,
   type SurfaceContractRequest,
-  validateSingleLayerMediumSurfaceSource,
   validateSurfaceSource,
 } from './material/surface-contract.js';
 export { terrainProgramSource } from './material/terrain-program.js';
 export {
-  createMaterialVariantContext,
   lowerMaterialVariantContext,
-  type MaterialBackend,
-  type MaterialCapability,
-  type MaterialGeometry,
-  type MaterialInstrumentation,
-  type MaterialPass,
-  type MaterialPipeline,
   type MaterialVariantContext,
-  type MaterialVariantContextError,
-  type MaterialVariantContextInput,
 } from './material/variant-context.js';
 export { createShaderProgramCompiler } from './program-compiler.js';
 export {

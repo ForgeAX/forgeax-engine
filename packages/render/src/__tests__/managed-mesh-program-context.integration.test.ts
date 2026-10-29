@@ -17,9 +17,9 @@ import {
 } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { MeshFilter, MeshRenderer } from '../components';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import { PersistentRenderScene } from '../scene/render-scene';
@@ -34,9 +34,17 @@ async function material(assets: AssetRegistry, id: number) {
     [false, true].map((color) => {
       const bytes = new TextEncoder().encode(`program ${id} ${geometry} ${color}`);
       const digest = createMaterialArtifactDigest(bytes);
-      const inputs: MaterialProgramAbi['vertexInputs'] = color
-        ? [{ semantic: 'color', location: 13, format: 'float32x4' }]
-        : [];
+      const inputs: MaterialProgramAbi['vertexInputs'] = [
+        ...(color
+          ? [{ semantic: 'color' as const, location: 13, format: 'float32x4' as const }]
+          : []),
+        ...(geometry === 'skinned'
+          ? [
+              { semantic: 'skinIndex' as const, location: 4, format: 'uint32x4' as const },
+              { semantic: 'skinWeight' as const, location: 5, format: 'float32x4' as const },
+            ]
+          : []),
+      ];
       const abi: MaterialProgramAbi = {
         directEntry: 'vs_main',
         sceneIndexEntry: 'vs_scene_index',
@@ -48,9 +56,6 @@ async function material(assets: AssetRegistry, id: number) {
         reflection: { layoutIdentity: 'layout', resourceSlots: [], vertexInputs: inputs },
         receiptIdentity: `${geometry}:${color}`,
         generation: 1,
-        ...(geometry === 'skinned'
-          ? { skinPaletteAddress: { group: 2, binding: 0, stride: 64 } }
-          : {}),
       };
       return {
         specializationKey: `program/${digest}`,
@@ -147,7 +152,7 @@ it.each([
         const program = projection.passes[0]?.programs[0];
         if (program === undefined) throw new Error('Missing projection program');
         Object.assign(program, { specializationKey: 'missing-program' });
-        expect(receiver.accept(malformed, assets).ok).toBe(false);
+        expect(receiver.accept(encodeRenderPublication(malformed), assets).ok).toBe(false);
       }
       candidate.accept();
       extracted += packet.upserts.length;
@@ -155,14 +160,16 @@ it.each([
       publishedProjections = packet.assets.filter(
         (row) => row.materialProjection !== undefined,
       ).length;
-      const accepted = receiver.accept(packet, assets).unwrap();
+      const accepted = receiver.accept(encodeRenderPublication(packet), assets).unwrap();
       for (const patch of packet.assetPatches) {
         const payload = accepted.resources.resolveAsset<MaterialAsset>(patch.handle).unwrap();
         if (payload.kind === 'material')
           expect(assets.getMaterialProjectionForPayload(payload)).toBeDefined();
       }
       const result = scene.consumePublication(accepted);
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return result;
     }
     return scene.extractComposition(
@@ -173,7 +180,7 @@ it.each([
         if (request === 'full') extracted += 128;
         else if (typeof request === 'object')
           for (const entities of request.entitiesByWorld) extracted += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, undefined, caches, {
+        return extractFrames([world], 0, assets, caches, {
           materialContext: MATERIAL_CONTEXT,
           cull: 'none',
           renderables: request,
@@ -184,7 +191,7 @@ it.each([
   };
   const facts = (frame: ReturnType<typeof draw>) =>
     frame.renderables.map((row) => ({
-      skin: row.skinPose !== undefined || row.skin !== undefined,
+      skin: row.skinBinding !== undefined,
       override: row.materialOverrides?.[0] !== undefined,
       program: row.material.snapshot.materialPublication?.programs[0],
     }));
@@ -292,7 +299,7 @@ it.each([
       { cameraOwner: 0, resourceOwner: 0 },
       assets,
       (request) =>
-        extractFrames([world], 0, assets, undefined, caches, {
+        extractFrames([world], 0, assets, caches, {
           materialContext: MATERIAL_CONTEXT,
           cull: 'none',
           renderables: request,
@@ -300,7 +307,7 @@ it.each([
       [lease],
     );
   };
-  const native = scene as unknown as {
+  const native = scene.shared as unknown as {
     prepareMeshMaterial: (
       scope: import('../publication/resource-scope').RenderResourceScope | undefined,
       handle: number,
@@ -309,7 +316,7 @@ it.each([
       assets?: AssetRegistry,
     ) => import('../material-resource').MaterialResource;
   };
-  const original = native.prepareMeshMaterial.bind(scene);
+  const original = native.prepareMeshMaterial.bind(scene.shared);
   try {
     draw();
     const before = scene.shadowCasterProjection();

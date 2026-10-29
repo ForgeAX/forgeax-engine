@@ -143,7 +143,14 @@ export async function scene(
   world
     .spawn({
       component: DirectionalLight,
-      data: { castShadow: true, direction: [0, 0, -1], intensity: 2 },
+      // Shared performance and 4K owners retain their established shadow workload.
+      data: {
+        castShadow: true,
+        direction: [0, 0, -1],
+        intensity: 2,
+        mapSize: 2048,
+        cascadeCount: 3,
+      },
     })
     .unwrap();
   let frame = 0;

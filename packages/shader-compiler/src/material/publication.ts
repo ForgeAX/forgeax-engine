@@ -15,7 +15,7 @@ import type { MaterialCookedPass } from './cook.js';
 import { lowerMaterialVariantContext } from './variant-context.js';
 
 const MATERIAL_COOK_PROFILE = 'webgpu/v1';
-const MATERIAL_COOK_COMPILER_VERSION = 'forgeax-material-cooker/1';
+const MATERIAL_COOK_COMPILER_VERSION = 'forgeax-material-cooker/2';
 interface MaterialPublicationInput {
   readonly guid: string;
   readonly source: MaterialAsset;

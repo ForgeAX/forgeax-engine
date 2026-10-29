@@ -1,12 +1,106 @@
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 
 from diagnose_phone_startup import clone_diagnostic, digest, validate_report_url
 
 
 class PhoneDiagnosticCloneTests(unittest.TestCase):
+    def test_package_entry_control_cli_preserves_every_other_payload_and_cannot_be_implicit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = self.publication(base)
+            with self.assertRaisesRegex(ValueError, 'requires --observe-startup'):
+                clone_diagnostic(source, base / 'invalid', package_control='entry')
+            with self.assertRaisesRegex(ValueError, 'requires the published'):
+                clone_diagnostic(source, base / 'invalid', observe_startup=True, package_control='entry')
+            (source / 'payload').mkdir()
+            entry = source / 'payload/game.js'
+            entry.write_text("require('./engine.js');")
+            (source / 'payload/engine.js').write_text("throw Error('Engine must not execute in this control');")
+            (source / 'payload/a.bin.br').write_bytes(b'first payload')
+            (source / 'payload/b.bin.br').write_bytes(b'second payload')
+            manifest = json.loads((source / 'forgeax-dist.json').read_text())
+            manifest['artifacts'].extend({'path': p.relative_to(source).as_posix(), 'bytes': p.stat().st_size,
+                                          'sha256': digest(p.read_bytes())} for p in (source / 'payload').iterdir())
+            (source / 'forgeax-dist.json').write_text(json.dumps(manifest))
+            result = subprocess.run([sys.executable, str(Path(__file__).with_name('diagnose_phone_startup.py')),
+                                     '--source', str(source), '--out', str(base / 'control'),
+                                     '--observe-startup', '--package-control', 'entry'], check=True, capture_output=True)
+            report = json.loads(result.stdout)
+            self.assertEqual(sorted(report['changedFiles']), ['game.js', 'payload/game.js'])
+            self.assertTrue(report['startupObservation']['packageControl'])
+            self.assertEqual(report['packageControl']['originalSha256'], digest(entry.read_bytes()))
+            self.assertEqual(report['packageControl']['diagnosticSha256'], digest((base / 'control/payload/game.js').read_bytes()))
+            self.assertIn('package-entry-control', (base / 'control/payload/game.js').read_text())
+            self.assertEqual((base / 'control/payload/engine.js').read_bytes(), (source / 'payload/engine.js').read_bytes())
+            self.assertEqual((base / 'control/forgeax-dist.json').read_bytes(), (source / 'forgeax-dist.json').read_bytes())
+            self.assertEqual(entry.read_text(), "require('./engine.js');")
+            data = clone_diagnostic(source, base / 'data-control', observe_startup=True, package_control='data')
+            self.assertEqual(data['packageControl']['removedFiles'], ['payload/engine.js'])
+            self.assertEqual((base / 'data-control/payload.bin').read_bytes(), (source / 'payload.bin').read_bytes())
+            selected = clone_diagnostic(source, base / 'selected-control', observe_startup=True,
+                                        package_control='data', package_retain=['payload/a.bin.br'])
+            self.assertEqual(selected['packageControl']['selectedFiles'], ['payload/a.bin.br'])
+            self.assertEqual((base / 'selected-control/payload/a.bin.br').read_bytes(), b'first payload')
+            self.assertFalse((base / 'selected-control/payload/b.bin.br').exists())
+            for paths in [['payload/missing'], ['game.js'], ['payload/engine.js'], ['payload/a.bin.br'] * 2]:
+                with self.subTest(paths=paths), self.assertRaisesRegex(ValueError, 'package-retain'):
+                    clone_diagnostic(source, base / 'invalid-subset', observe_startup=True,
+                                     package_control='data', package_retain=paths)
+            with self.assertRaisesRegex(ValueError, 'requires --package-control data'):
+                clone_diagnostic(source, base / 'invalid-subset', observe_startup=True,
+                                 package_retain=['payload/a.bin.br'])
+            empty = clone_diagnostic(source, base / 'empty', observe_startup=True, package_control='empty')
+            self.assertEqual(empty['packageControl']['mode'], 'empty')
+            self.assertCountEqual(empty['packageControl']['removedFiles'], ['payload/engine.js', 'payload/a.bin.br', 'payload/b.bin.br'])
+            self.assertEqual([p.name for p in (base / 'empty/payload').iterdir()], ['game.js'])
+            self.assertTrue((source / 'payload/engine.js').is_file())
+            self.assertEqual((base / 'empty/forgeax-dist.json').read_bytes(), (source / 'forgeax-dist.json').read_bytes())
+            with self.assertRaisesRegex(ValueError, 'must be entry, data or empty'):
+                clone_diagnostic(source, base / 'invalid-mode', observe_startup=True, package_control='other')
+
+    def test_static_module_closure_rejects_missing_files_and_records_dynamic_limits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = self.publication(base)
+            (source / 'game.js').write_text("// require('./ignored.js')\nrequire('./nested/helper'); require(variable);\nif (false) import('optional-native-host');")
+            def manifest():
+                (source / 'forgeax-dist.json').write_text(json.dumps({'target': 'wechat', 'artifacts': [
+                    {'path': path.relative_to(source).as_posix(), 'bytes': path.stat().st_size,
+                     'sha256': digest(path.read_bytes())}
+                    for path in source.rglob('*') if path.is_file() and path.name != 'forgeax-dist.json']}))
+            manifest()
+            with self.assertRaisesRegex(ValueError, 'unresolved static modules'):
+                clone_diagnostic(source, base / 'invalid')
+            self.assertFalse((base / 'invalid').exists())
+            (source / 'nested').mkdir()
+            (source / 'nested/helper.js').write_text("export {v} from './value.js';")
+            (source / 'nested/value.js').write_text('export const v = 1;')
+            manifest()
+            report = clone_diagnostic(source, base / 'valid')
+            closure = report['moduleClosure']
+            self.assertEqual(closure['qualification'], 'static-files-only')
+            self.assertEqual(closure['jsFiles'], 3)
+            self.assertEqual(len(closure['references']), 3)
+            self.assertEqual(closure['unresolved'], [])
+            self.assertEqual(closure['deferred'], [{'from': 'game.js', 'request': 'optional-native-host', 'resolved': False}])
+            self.assertEqual(closure['dynamic']['count'], 1)
+
+    def test_repeated_source_gets_distinct_diagnostic_run_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = self.publication(base)
+            first = clone_diagnostic(source, base / 'first')
+            second = clone_diagnostic(source, base / 'second')
+            self.assertRegex(first['runId'], r'^[a-f0-9]{32}$')
+            self.assertNotEqual(first['runId'], second['runId'])
+            self.assertEqual(first['originalEntrySha256'], second['originalEntrySha256'])
+            self.assertIn(first['runId'].encode(), (base / 'first/game.js').read_bytes())
+
     def publication(self, directory):
         source = directory / 'source'
         source.mkdir()
@@ -55,6 +149,25 @@ class PhoneDiagnosticCloneTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not match its manifest'):
                 clone_diagnostic(source, base / 'invalid')
             self.assertFalse((base / 'invalid').exists())
+
+    def test_startup_result_dialog_is_admitted_and_recorded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = self.publication(base)
+            report = clone_diagnostic(source, base / 'diagnostic',
+                                      observe_startup=True, show_frame_result=True)
+            self.assertTrue(report['startupObservation']['showFrameResult'])
+            self.assertEqual((base / 'diagnostic/payload.bin').read_bytes(), b'unchanged payload')
+
+    def test_native_phase_ui_requires_startup_and_is_explicit_in_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source = self.publication(base)
+            with self.assertRaisesRegex(ValueError, 'requires --observe-startup'):
+                clone_diagnostic(source, base / 'invalid', show_startup_progress=True)
+            report = clone_diagnostic(source, base / 'diagnostic', observe_startup=True,
+                                      show_startup_progress=True)
+            self.assertTrue(report['startupObservation']['showStartupProgress'])
 
     def test_gl_link_mode_only_prepends_observation_and_retains_published_bytes(self):
         with tempfile.TemporaryDirectory() as temp:

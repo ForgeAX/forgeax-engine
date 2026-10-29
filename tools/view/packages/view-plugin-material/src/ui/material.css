@@ -17,6 +17,10 @@
   position: relative;
 }
 
+.fx-material-preview-toolbar { flex: 0 0 auto; flex-wrap: wrap; }
+.fx-material-mesh-controls { display: flex; flex: 0 0 auto; gap: var(--fx-ref-space-4); padding-left: var(--fx-ref-space-8); border-left: 1px solid var(--fx-color-border-subtle); }
+.fx-material-mesh-controls .fx-button { flex: 0 0 auto; }
+
 .fx-material-restore-error {
   flex: 0 0 auto;
   min-width: 0;
@@ -254,3 +258,9 @@
 .fx-material-pass-stats { flex: 0 0 auto; border-top: 1px solid var(--fx-color-border-default); padding: 8px 0; }
 .fx-material-pass-stats h3 { margin: 0 12px 8px; font-size: 12px; overflow-wrap: anywhere; }
 .fx-material-compiler-status { margin: 8px 12px; color: var(--fx-color-text-secondary); font-size: 12px; }
+.material-properties-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.material-properties-body { flex: 1; min-height: 0; overflow: auto; }
+.material-properties-body > .fx-inspector-form { overflow: visible; height: auto; }
+.material-texture-references__group > .fx-collapsible > .fx-collapsible__heading > .fx-collapsible__trigger { border-left-color: var(--fx-color-status-info-fg); }
+.material-texture-references__items { padding-inline: var(--fx-ref-space-8); }
+.material-texture-reference { min-width: 0; padding-block: var(--fx-ref-space-4); }

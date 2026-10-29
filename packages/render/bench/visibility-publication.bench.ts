@@ -31,7 +31,7 @@ describe('2000 descendant draws / unchanged parent Visibility', () => {
   const worlds = [world];
   const owners = { cameraOwner: 0, resourceOwner: 0 };
   const build = (request: PersistentRenderCandidateRequest) => extractFrames(
-    worlds, owners, assets, undefined, persistent.materialSnapshotCacheStore(), { cull: 'none', renderables: request },
+    worlds, owners, assets, persistent.materialSnapshotCacheStore(), { cull: 'none', renderables: request },
   );
   const draw = () => persistent.extractComposition(worlds, owners, assets, build, [lease]);
   draw();

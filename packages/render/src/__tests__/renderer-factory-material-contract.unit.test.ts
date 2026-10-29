@@ -10,7 +10,7 @@ import {
   ShaderRegistry,
   type ShaderRegistryDevice,
 } from '@forgeax/engine-shader';
-import { ParamSchemaProjectionOwner } from '@forgeax/engine-types';
+import { ParamSchemaProjectionOwner, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { deviceOptionsForAdapter } from '../assembly/device-feature-admission';
 import {
@@ -135,6 +135,7 @@ fn cloud_direct_solar_factorX() -> f32 {
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('forgeax::default-standard-pbr', {
       source: 'coverage-off',
+      sourceReference: expect.any(ShaderSource),
       paramSchema: [],
     });
   });
@@ -183,6 +184,7 @@ fn cloud_direct_solar_factorX() -> f32 {
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('hello-multi-uv::multi-uv-demo', {
       source: 'multi-uv=true storage=false',
+      sourceReference: expect.any(ShaderSource),
       paramSchema: [],
     });
     expect(resolveMaterialShaderVariantSet(undefined, entry.variants, 'wgpu-webgl2', false)).toBe(
@@ -734,6 +736,10 @@ describe('temporal material PSO creation contract', () => {
       return vec4<f32>(1.0);
     }
   `;
+  // The pipeline builder rejects a vertex stage whose inputs no buffer supplies.
+  const positionBuffers = [
+    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+  ] as const;
   const capabilities = { storageBuffer: false, rgba16floatRenderable: true };
   const context = {
     colorFormat: 'rgba16float' as GPUTextureFormat,
@@ -756,7 +762,7 @@ describe('temporal material PSO creation contract', () => {
           createShaderModule: () => ({ ok: true, value: {} }),
         },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
         label: 'pbr-pipeline-default-unlit-temporal',
       } as unknown as PipelineBuilderContext,
       { depthWriteEnabled: false, depthCompare: 'less-equal' },
@@ -802,7 +808,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       { depthWriteEnabled: true, depthCompare: 'less-equal' },
       undefined,
@@ -839,7 +845,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       renderState,
       undefined,
@@ -875,7 +881,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       undefined,
       undefined,
@@ -906,7 +912,7 @@ describe('temporal material PSO creation contract', () => {
         device: { createRenderPipeline },
         shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
         pipelineLayout: {},
-        vertexBuffers: [],
+        vertexBuffers: positionBuffers,
       } as unknown as PipelineBuilderContext,
       undefined,
       undefined,
@@ -1094,7 +1100,7 @@ describe('material shader color-domain contract', () => {
   it('routes HDR sprite targets to fs_main_hdr while unorm targets use fs_main', () => {
     const source = [
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-renderer.ts'), 'utf8'),
-      readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready.ts'), 'utf8'),
+      readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready-passes.ts'), 'utf8'),
     ]
       .join('\n')
       .replaceAll('\r\n', '\n');
@@ -1111,7 +1117,7 @@ describe('material shader color-domain contract', () => {
       resolve(import.meta.dirname, '../assembly/material/layout-cache.ts'),
       'utf8',
     );
-    expect(source).toContain('isCanonicalStandardPbrMaterialShader(materialShaderId)');
+    expect(source).toContain('isStandardPbrMaterialShader(materialShaderId)');
     expect(source).toContain('requiresStandardMapLayout');
   });
 

@@ -32,7 +32,7 @@ import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   admitGpuFixture,
   snapshot as gpuSnapshot,
@@ -220,8 +220,8 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
     let compiled: ReturnType<RenderGraphBuilder<RenderPipelineFrame>['compile']> | undefined;
     try {
       let current = f.prepare();
-      const firstSignature = current.topologySignature;
-      const recordingSignature = current._recordingTopologySignature;
+      const firstSignature = current.topologySignature();
+      const recordingSignature = current._recordingTopologySignature?.();
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const gpu = current
         .project(graph, 'rgba8unorm', 1, undefined, undefined, false, true)
@@ -279,8 +279,8 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       expect(old.vertexBuffer.isDestroyed).toBe(false);
       f.bySlot.set(0, replacement);
       current = f.prepare();
-      expect(current.topologySignature).not.toBe(firstSignature);
-      expect(current._recordingTopologySignature).toBe(recordingSignature);
+      expect(current.topologySignature()).not.toBe(firstSignature);
+      expect(current._recordingTopologySignature?.()).toBe(recordingSignature);
       vertices.mockClear();
       encode();
       expect(
@@ -309,7 +309,13 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
           )
           .unwrap(),
       );
-      expect(changedProgram._recordingTopologySignature).not.toBe(recordingSignature);
+      // A program change is a new stock class: the compiled graph projects it
+      // from the live frame instead of recompiling.
+      expect(changedProgram._recordingTopologySignature?.()).toBe(recordingSignature);
+      const late = f.production.lateRasterClasses.projected;
+      current = changedProgram;
+      encode();
+      expect(f.production.lateRasterClasses.projected).toBe(late + 1);
       changedProgram._commitResourceReplacement();
     } finally {
       completeOld();
@@ -375,7 +381,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
             .unwrap(),
         );
         frame._commitResourceReplacement();
-        expect(frame.topologySignature).toBe(first.topologySignature);
+        expect(frame.topologySignature()).toBe(first.topologySignature());
         expect(retained.cached.batchRows).toBe(rows);
         expect(retained.cached.value).toBe(plan);
         expect(f.production.inspect().preparedBatchBuilds).toBe(0);
@@ -664,7 +670,18 @@ describe('GPU preparation pass dependencies before partitioning', () => {
       const key = artifactKey(defined(f.input.scene.plan.batches.at(0)));
       const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>([[key, shadow]]);
       const identity = { kind: 'directional', index: 0, layer: 'static' } as const;
-      const views = [{ identity, planes: new Float32Array(24), candidatePrimitiveIndices: [0, 1] }];
+      let staticLayerReads = 0;
+      const views = Object.freeze([
+        Object.freeze({
+          identity,
+          planes: new Float32Array(24),
+          candidatePrimitiveIndices: [0, 1],
+          get staticLayer() {
+            staticLayerReads++;
+            return false as const;
+          },
+        }),
+      ]);
       const prepare = () =>
         defined(
           f.production
@@ -673,8 +690,9 @@ describe('GPU preparation pass dependencies before partitioning', () => {
         );
       const first = prepare();
       first.updateShadowViews?.(views).unwrap();
-      const signature = first.topologySignature;
-      const original = [...defined(first.shadowBatchProjections).values()][0];
+      expect(staticLayerReads).toBe(1);
+      const signature = first.topologySignature();
+      const original = [...defined(first.shadowBatchProjections?.()).values()][0];
       first._commitResourceReplacement();
       const stable = prepare();
       stable.updateShadowViews?.(views).unwrap();
@@ -684,9 +702,9 @@ describe('GPU preparation pass dependencies before partitioning', () => {
       const next = prepare();
       next.updateShadowViews?.(views).unwrap();
       expect(next.shadowViewPool?.invalidationReason(identity)).toBe('artifact-changed');
-      expect(next.topologySignature).toBe(signature);
+      expect(next.topologySignature()).toBe(signature);
       for (const [batch, projection] of defined(
-        [...defined(next.shadowBatchProjections).values()][0],
+        [...defined(next.shadowBatchProjections?.()).values()][0],
       )) {
         expect(projection).not.toBe(original?.get(batch));
         expect(projection.shadowArtifact.program).toBe(shadow.program);
@@ -704,14 +722,17 @@ describe('GPU preparation pass dependencies before partitioning', () => {
       const retry = prepare();
       retry.updateShadowViews?.(views).unwrap();
       expect(retry.shadowViewPool?.cacheState(identity)).toBe('hit');
-      expect(retry.topologySignature).toBe(signature);
+      expect(retry.topologySignature()).toBe(signature);
       retry._commitResourceReplacement();
     } finally {
       f.close();
     }
   });
 
-  it('projects a directional view once when its light disables the static shadow cache', async () => {
+  it.each([
+    false,
+    true,
+  ])('projects a directional view once when its light disables the static shadow cache (owned %s)', async (ownedRequests) => {
     const f = await fixture();
     try {
       const main = defined(f.input.materialArtifact);
@@ -742,7 +763,9 @@ describe('GPU preparation pass dependencies before partitioning', () => {
             .prepare(admitGpuFixture({ ...f.input, shadowMaterialArtifacts, shadowViews: true }))
             .unwrap(),
         );
-        frame.updateShadowViews?.(view(staticShadowCache)).unwrap();
+        frame
+          .updateShadowViews?.(view(staticShadowCache), ownedRequests ? true : undefined)
+          .unwrap();
         return frame;
       };
 
@@ -817,7 +840,7 @@ describe('GPU preparation pass dependencies before partitioning', () => {
       main.fragmentEntry = 'fs-b';
       const changed = prepare();
       expect(changed.selection.has(defined(f.input.scene.slots.at(0)).snapshot, 0)).toBe(true);
-      expect(changed.topologySignature).not.toBe(first.topologySignature);
+      expect(changed.topologySignature()).not.toBe(first.topologySignature());
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 2,
         filteredPlanBuilds: 1,
@@ -880,7 +903,7 @@ describe('selected GPU material graph dependencies', () => {
         return frame;
       };
       const first = prepare(),
-        signature = first.topologySignature,
+        signature = first.topologySignature(),
         facts = projectFacts(first);
       const unused = {
         ...artifact,
@@ -891,7 +914,7 @@ describe('selected GPU material graph dependencies', () => {
       materialArtifacts.set('unused', unused);
       shadowMaterialArtifacts.set('unused', unused);
       const second = prepare();
-      expect(second.topologySignature).toBe(signature);
+      expect(second.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(second));
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 0,
@@ -900,7 +923,7 @@ describe('selected GPU material graph dependencies', () => {
       });
       materialArtifacts.delete('unused');
       shadowMaterialArtifacts.delete('unused');
-      expect(prepare().topologySignature).toBe(signature);
+      expect(prepare().topologySignature()).toBe(signature);
     } finally {
       f.close();
     }
@@ -986,7 +1009,7 @@ describe('selected GPU material graph dependencies', () => {
         return { frame, selected };
       };
       const first = prepare(),
-        signature = first.frame.topologySignature,
+        signature = first.frame.topologySignature(),
         facts = projectFacts(first.frame);
       const roster = f.input.scene.plan.batches.map((batch) => ({
         id: batch.batchId,
@@ -1011,7 +1034,7 @@ describe('selected GPU material graph dependencies', () => {
           key: batch.key,
         })),
       ).toEqual(roster);
-      expect(next.frame.topologySignature).toBe(signature);
+      expect(next.frame.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(next.frame));
       expect(f.production.inspect()).toMatchObject({
         candidateCapacity: before.candidateCapacity,
@@ -1033,7 +1056,7 @@ describe('selected GPU material graph dependencies', () => {
       const prepare = () =>
         defined(f.production.prepare(admitGpuFixture({ ...f.input, materialArtifacts })).unwrap());
       const first = prepare(),
-        signature = first.topologySignature,
+        signature = first.topologySignature(),
         facts = projectFacts(first);
       first._commitResourceReplacement();
       const layout = deriveMaterialDynamicInputLayout({
@@ -1069,7 +1092,7 @@ describe('selected GPU material graph dependencies', () => {
       const next = prepare();
       expect(next.surfaceSubmission).toBeUndefined();
       expect(f.production.inspect().surfaceArtifact).toBeUndefined();
-      expect(next.topologySignature).toBe(signature);
+      expect(next.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(next));
     } finally {
       f.close();
@@ -1078,18 +1101,17 @@ describe('selected GPU material graph dependencies', () => {
 
   it('builds the skin adapter from its selected receipt instead of an unused fallback', async () => {
     const f = await fixture();
-    const allocator = createSkinPaletteAllocator(f.device, 1 << 20);
+    const skinInputs = new SkinSceneInputs(f.input.scene.scene.inputs.arena, () => ({
+      kind: 'skeleton',
+      jointCount: 1,
+      inverseBindMatrices: mat4.identity(mat4.create()),
+    }));
+    const skinFrames = new SkinFrames(skinInputs);
     try {
       const main = defined(f.input.materialArtifact);
       const receipt = createStandardPbrArtifactReceipt(true);
       const skinArtifact = { ...main, material: 'forgeax::pbr-skin', receipt };
       const source = defined(f.input.scene.slots.at(1)).snapshot;
-      const skin = allocator.allocatePersistentSlice({
-        identity: 'fixture-skin',
-        generation: 1,
-        jointCount: 1,
-        bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-      });
       const material = new MaterialResource({
         ...source.material.snapshot,
         materialShaderId: skinArtifact.material,
@@ -1099,7 +1121,7 @@ describe('selected GPU material graph dependencies', () => {
         ...source,
         material,
         materials: [material],
-        skin,
+        skinBinding: { skeleton: 7, joints: [19] },
         gpuDrivenDraws: defined(source.gpuDrivenDraws).map((draw) => ({
           ...draw,
           geometry: {
@@ -1111,13 +1133,15 @@ describe('selected GPU material graph dependencies', () => {
             ...defined(draw.prepared),
             identity: { ...defined(draw.prepared).identity, deformation: 'skin' },
             vertexInputs: receipt.vertexInputs,
-            skinPaletteAddress: receipt.skinPaletteAddress,
           },
         })),
       };
       const delta = f.projection.apply([
         { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot },
       ]);
+      skinInputs.apply(delta);
+      skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+      Object.assign(f.input.scene, { skin: skinFrames.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
       f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
@@ -1132,14 +1156,18 @@ describe('selected GPU material graph dependencies', () => {
       const skinLayout = f.device
         .createBindGroupLayout({
           entries: [
-            { binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } },
+            {
+              binding: 0,
+              visibility: 1,
+              buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+            },
             { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+            { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
           ],
         })
         .unwrap();
       const materialPipelineState = {
         ...state,
-        skinPaletteAllocator: allocator,
         gpuDrivenPbrPrograms: new Map([
           ...defined(state.gpuDrivenPbrPrograms),
           [
@@ -1168,15 +1196,15 @@ describe('selected GPU material graph dependencies', () => {
         );
       const first = prepare({ ...skinArtifact, layoutIdentity: 'unused-invalid-layout' });
       expect(f.production.inspect().resourceAllocationOwners?.skinRaster).toBeDefined();
-      const signature = first.topologySignature,
+      const signature = first.topologySignature(),
         facts = projectFacts(first);
       first._commitResourceReplacement();
       const next = prepare({ ...skinArtifact, fragmentEntry: 'unused-skin-entry' });
-      expect(next.topologySignature).toBe(signature);
+      expect(next.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(next));
     } finally {
+      skinInputs.dispose();
       f.close();
-      allocator.dispose();
     }
   });
 
@@ -1212,7 +1240,7 @@ describe('selected GPU material graph dependencies', () => {
             },
           ])
           .unwrap();
-        const projections = [...defined(frame.shadowBatchProjections).values()].flatMap(
+        const projections = [...defined(frame.shadowBatchProjections?.()).values()].flatMap(
           (byBatch) => [...byBatch.values()],
         );
         expect(projections.length).toBeGreaterThan(0);
@@ -1222,29 +1250,29 @@ describe('selected GPU material graph dependencies', () => {
         return frame;
       };
       const first = prepare(a),
-        firstSignature = first.topologySignature;
+        firstSignature = first.topologySignature();
       first._commitResourceReplacement();
       const second = prepare(b);
-      expect(second.topologySignature).toBe(firstSignature);
+      expect(second.topologySignature()).toBe(firstSignature);
       expect(second.shadowViewPool?.cacheState({ kind: 'directional', index: 0 })).toBe(
         'invalidated',
       );
       expect(f.production.inspect().filteredBatchBuilds).toBe(2);
       second._abortResourceReplacement?.();
       const restored = prepare(a);
-      expect(restored.topologySignature).toBe(second.topologySignature);
+      expect(restored.topologySignature()).toBe(second.topologySignature());
       expect(restored.shadowViewPool?.cacheState({ kind: 'directional', index: 0 })).toBe(
         'invalidated',
       );
       restored._abortResourceReplacement?.();
       const retry = prepare(b);
-      expect(retry.topologySignature).toBe(restored.topologySignature);
+      expect(retry.topologySignature()).toBe(restored.topologySignature());
       expect(retry.shadowViewPool?.cacheState({ kind: 'directional', index: 0 })).toBe(
         'invalidated',
       );
       retry._commitResourceReplacement();
       const stable = prepare(b);
-      expect(stable.topologySignature).toBe(retry.topologySignature);
+      expect(stable.topologySignature()).toBe(retry.topologySignature());
       expect(stable.shadowViewPool?.cacheState({ kind: 'directional', index: 0 })).toBe('hit');
     } finally {
       f.close();
@@ -1268,12 +1296,12 @@ describe('selected GPU material graph dependencies', () => {
       const prepare = () =>
         defined(f.production.prepare(admitGpuFixture({ ...f.input, materialArtifacts })).unwrap());
       const first = prepare(),
-        signature = first.topologySignature;
+        signature = first.topologySignature();
       projectFacts(first);
       first._commitResourceReplacement();
       artifact[entry] = entry === 'vertexEntry' ? 'vs-after' : 'fs-after';
       const next = prepare();
-      expect(next.topologySignature).not.toBe(signature);
+      expect(next.topologySignature()).not.toBe(signature);
       const pipelines = vi.spyOn(f.device, 'createRenderPipeline');
       projectFacts(next);
       expect(
@@ -1284,7 +1312,7 @@ describe('selected GPU material graph dependencies', () => {
         ),
       ).toBe(true);
       next._commitResourceReplacement();
-      expect(prepare().topologySignature).toBe(next.topologySignature);
+      expect(prepare().topologySignature()).toBe(next.topologySignature());
     } finally {
       f.close();
     }

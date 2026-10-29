@@ -1,4 +1,4 @@
-import { frustum, mat4 } from '@forgeax/engine-math';
+import { type box3, frustum, mat4 } from '@forgeax/engine-math';
 import { describe, expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import * as derivedBounds from '../../instances-derived-bounds';
@@ -29,9 +29,9 @@ function publish(scene: RenderScene, source: RenderableSnapshot) {
   ]);
 }
 function resolver(scene: RenderScene) {
-  return (source: RenderableSnapshot) => {
+  return (source: RenderableSnapshot, out: box3.Box3) => {
     const slot = scene.slot(source.worldId, source.entityKey);
-    return slot === undefined ? undefined : scene.cullingWorldBoundsAt(slot);
+    return slot !== undefined && scene.writeCullingWorldBoundsAt(slot, out);
   };
 }
 const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
@@ -124,7 +124,7 @@ describe('shadow world bounds ownership', () => {
     invalid.instances.transforms[0] = Number.NaN;
     publish(scene, invalid);
     expect(shadowViewContains(invalid, planes, resolver(scene))).toBe(true);
-    expect(shadowViewContains(snapshot(100), planes, () => undefined)).toBe(true);
+    expect(shadowViewContains(snapshot(100), planes, () => false)).toBe(true);
     expect(shadowViewContains(snapshot(100), planes, undefined)).toBe(true);
     const empty = {
       ...snapshot(100),
@@ -133,7 +133,11 @@ describe('shadow world bounds ownership', () => {
     expect(shadowViewContains(empty, planes, resolver(scene))).toBe(false);
     expect(shadowViewContains(empty, undefined, resolver(scene))).toBe(true);
     expect(
-      shadowViewContains({ ...snapshot(100), skin: {} as never }, planes, resolver(scene)),
+      shadowViewContains(
+        { ...snapshot(100), skinBinding: { skeleton: 1, joints: [2] } },
+        planes,
+        resolver(scene),
+      ),
     ).toBe(true);
     expect(
       shadowViewContains(

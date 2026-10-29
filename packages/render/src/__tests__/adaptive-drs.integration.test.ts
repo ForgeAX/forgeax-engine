@@ -6,7 +6,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createRenderer } from '../assembly/factory';
-import { ANTIALIAS_TAA, Camera } from '../components/camera';
+import { ANTIALIAS_TAA, Camera, perspective } from '../components/camera';
 import { DynamicResolution } from '../components/dynamic-resolution';
 import { GpuTimingCapture } from '../record/gpu-timing';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
@@ -40,7 +40,10 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
   const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 4] } },
-      { component: Camera, data: { antialias: ANTIALIAS_TAA } },
+      {
+        component: Camera,
+        data: { ...perspective({ fov: Math.PI / 3, aspect: 1 }), antialias: ANTIALIAS_TAA },
+      },
       { component: DynamicResolution, data: { minScale: 0.5, maxScale: 0.75 } },
     )
     .unwrap();

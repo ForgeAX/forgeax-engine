@@ -139,6 +139,128 @@ describe('shared Pack reader lifecycle', () => {
   });
 });
 
+describe('PackReader document retention', () => {
+  const read = (reader: PackReader) => reader.read('/pack', tuple, new AbortController().signal);
+
+  it('holds a verified document for sibling reads, then keeps only a weak reference', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(async () => Response.json(pack));
+      const reader = new PackReader({ fetcher });
+      const first = await read(reader);
+      expect((await read(reader)).unwrap()).toBe(first.unwrap());
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      // A live consumer reference still resolves through the weak entry.
+      expect((await read(reader)).unwrap()).toBe(first.unwrap());
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      reader.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps sibling reads strong until the last-read idle window expires', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'WeakRef',
+      class {
+        deref(): undefined {
+          return undefined;
+        }
+      },
+    );
+    const fetcher = vi.fn(async () => Response.json(pack));
+    const reader = new PackReader({ fetcher });
+    try {
+      const first = (await read(reader)).unwrap();
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect((await read(reader)).unwrap()).toBe(first);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(500);
+      expect((await read(reader)).unwrap()).not.toBe(first);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally {
+      reader.dispose();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shares a re-read, rejects changed publication bytes, and retries after verification fails', async () => {
+    vi.stubGlobal(
+      'WeakRef',
+      class {
+        deref(): undefined {
+          return undefined;
+        }
+      },
+    );
+    const changed = deferred<Response>();
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(pack))
+      .mockImplementationOnce(() => changed.promise)
+      .mockResolvedValueOnce(Response.json(pack));
+    const reader = new PackReader({ fetcher });
+    try {
+      expect((await read(reader)).ok).toBe(true);
+      reader.trim();
+      const requests = [read(reader), read(reader)];
+      changed.resolve(Response.json({ ...pack, digest: 'different' }));
+      for (const result of await Promise.all(requests))
+        expect(result).toMatchObject({ ok: false, error: { code: 'asset-package-invalid' } });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect((await read(reader)).ok).toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    } finally {
+      reader.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps the existing strong cache when WeakRef is unavailable', async () => {
+    vi.stubGlobal('WeakRef', undefined);
+    const fetcher = vi.fn(async () => Response.json(pack));
+    const reader = new PackReader({ fetcher });
+    try {
+      const first = (await read(reader)).unwrap();
+      reader.trim();
+      expect((await read(reader)).unwrap()).toBe(first);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      reader.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('re-reads and re-verifies the same tuple after a released document is collected', async () => {
+    vi.stubGlobal(
+      'WeakRef',
+      class {
+        deref(): undefined {
+          return undefined;
+        }
+      },
+    );
+    try {
+      const fetcher = vi.fn(async () => Response.json(pack));
+      const reader = new PackReader({ fetcher });
+      const first = await read(reader);
+      reader.trim();
+      const second = await read(reader);
+      expect(second.ok).toBe(true);
+      expect(second.unwrap()).not.toBe(first.unwrap());
+      expect(second.unwrap()).toEqual(first.unwrap());
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      reader.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('ArtifactCache invalidation', () => {
   it('isolates concurrent readers and retires least recently read bytes within its limits', async () => {
     const cache = new ArtifactCache(4, 2);

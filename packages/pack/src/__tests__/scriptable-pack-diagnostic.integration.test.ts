@@ -63,3 +63,34 @@ it('refuses an undeclared externalAssets table from the isolated worker', async 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('keeps a structured build throw structured across the isolated worker', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pack-worker-structured-throw-'));
+  const source = join(root, 'derive.pack.ts');
+  try {
+    // Mirrors AssetGuid.derive: a TypeError carrying code/expected/hint/detail.
+    await writeFile(
+      source,
+      `export default { schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(6), build() { throw Object.assign(new TypeError('AssetGuid.derive received invalid sourceKey'), { code: 'pack-source-key-invalid', expected: 'lower-case key', hint: 'use kebab-case', detail: { sourceKey: 'material/rockLight', suggestedSourceKey: 'material/rock-light' } }); } };`,
+    );
+    const loaded = await loadScriptablePack(source);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    await expect(
+      loaded.value.build({
+        packageId: loaded.value.packageId,
+        readByGuid: async () => {
+          throw new Error('unexpected read');
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'TypeError',
+      code: 'pack-source-key-invalid',
+      expected: 'lower-case key',
+      hint: 'use kebab-case',
+      detail: { sourceKey: 'material/rockLight', suggestedSourceKey: 'material/rock-light' },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

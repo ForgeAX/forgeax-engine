@@ -20,7 +20,15 @@ struct SkylightUniforms {
   diffuseScale : vec4<f32>,
   diffuseRotation : vec4<f32>,
   ambientIrradiance : vec4<f32>,
+  // xyz: downward diffuse scale (groundColor * intensity); w > 0.5 enables the hemisphere.
+  ground : vec4<f32>,
 };
+
+// Hemisphere ambient (Three.js HemisphereLight): lerp the downward ground scale
+// to the sky scale by world normal.y. Disabled, the sky scale is uniform.
+fn skylightHemisphereScale(sky : SkylightUniforms, skyScale : vec3<f32>, normal : vec3<f32>) -> vec3<f32> {
+  return select(skyScale, mix(sky.ground.xyz, skyScale, normal.y * 0.5 + 0.5), sky.ground.w > 0.5);
+}
 
 struct StandardEnvironment {
   diffuse : vec3<f32>,
@@ -54,7 +62,8 @@ fn evaluateStandardEnvironment(
     specular = sampleIblRadiance(normal, direction, roughness, sky.rotation, prefilterMap, prefilterSampler);
   }
   let tint = vec3<f32>(sky.colorR, sky.colorG, sky.colorB);
-  let diffuseScale = select(tint * sky.intensity, sky.diffuseScale.xyz, sky.intensity < 0.0);
+  let skyScale = select(tint * sky.intensity, sky.diffuseScale.xyz, sky.intensity < 0.0);
+  let diffuseScale = skylightHemisphereScale(sky, skyScale, normal);
   let fresnel = fresnelSchlickRoughness(max(dot(normal, direction), 0.0), f0, roughness);
   let ab = textureSampleLevel(brdfLut, irradianceSampler, vec2<f32>(max(dot(normal, direction), 0.001), roughness), 0.0).rg;
   // Fdez-Aguera is nonlinear in F0. Evaluate each material constituent before
@@ -85,11 +94,12 @@ fn evaluateStandardEnvironment(
     let rotation = select(sky.rotation, sky.diffuseRotation, sky.intensity < 0.0);
     let backIrradiance = sampleIblDiffuse(-normal, rotation, irradianceMap, irradianceSampler);
     let backFresnel = vec3<f32>(1.0) - fresnel;
+    let backScale = skylightHemisphereScale(sky, skyScale, -normal);
     if (localBlend > 0.0) {
-      diffuse += evaluateProbeDiffuse(sh, localBlend, -normal, backIrradiance * diffuseScale,
+      diffuse += evaluateProbeDiffuse(sh, localBlend, -normal, backIrradiance * backScale,
         backFresnel, transmission, 0.0);
     } else {
-      diffuse += backFresnel * backIrradiance * transmission * diffuseScale;
+      diffuse += backFresnel * backIrradiance * transmission * backScale;
     }
   }
   return StandardEnvironment(diffuse, specular * single * decodeSpecularEnvironmentScale(tint, sky.intensity),

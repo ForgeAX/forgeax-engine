@@ -31,3 +31,7 @@ path = "../parry/crates/parry3d/tests/coalesced_voxel_ccd.rs"
 [[test]]
 name = "rotating_voxel_sweep"
 path = "../parry/crates/parry3d/tests/rotating_voxel_sweep.rs"
+
+[[test]]
+name = "collider_mass_cache"
+path = "../rapier/crates/rapier3d/tests/collider_mass_cache.rs"

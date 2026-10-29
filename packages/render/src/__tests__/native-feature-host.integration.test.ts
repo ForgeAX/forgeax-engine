@@ -11,7 +11,6 @@ import {
   getRenderFeaturePlanExecutionProjection,
   hasNativeRenderFeatureExecutionSignature,
   type RenderFeatureFrameInput,
-  runRenderFeatureFrame,
 } from '../features/host';
 import type { RenderFeatureNativePlanToken } from '../features/prepared-gpu-work';
 import {
@@ -122,7 +121,7 @@ describe('native primary work through the actual Feature Host', () => {
   it('keeps real work facts, current counts and scopes while sharing native topology', async () => {
     const f = await fixture();
     try {
-      const first = runRenderFeatureFrame(f.host, [f.input(1)]);
+      const first = f.host.runFrame([f.input(1)]);
       expect(first.frame.errors).toEqual([]);
       expect(required(first.frame.plans[0]).plan.resources).toHaveLength(4);
       expect(first.views.get('main') ?? first.views.get('view:main')).toBeDefined();
@@ -135,7 +134,7 @@ describe('native primary work through the actual Feature Host', () => {
       first.onSubmitted();
       expect(f.counts()).toEqual({ submitted: 1, aborted: 0, sourceFeedback: 1 });
       f.setGroups(2);
-      const next = runRenderFeatureFrame(f.host, [f.input(2)]);
+      const next = f.host.runFrame([f.input(2)]);
       expect(next.frame.errors).toEqual([]);
       expect(required(next.frame.plans[0]).signature).toBe(signature);
       const current = required(
@@ -165,19 +164,19 @@ describe('native primary work through the actual Feature Host', () => {
   it('keeps abort separate from ACK and rejects same-count replacement and device reuse', async () => {
     const f = await fixture();
     try {
-      const first = runRenderFeatureFrame(f.host, [f.input(1)]);
+      const first = f.host.runFrame([f.input(1)]);
       first.frame.onSubmitted();
       required([...first.views.values()][0]).onSubmitted();
       first.onSubmitted();
       const before = required(first.frame.plans[0]).signature;
       f.setSize(32);
-      const failed = runRenderFeatureFrame(f.host, [f.input(2)]);
+      const failed = f.host.runFrame([f.input(2)]);
       expect(failed.frame.errors).toEqual([]);
       expect(required(failed.frame.plans[0]).signature).not.toBe(before);
       failed.onAborted();
       expect(f.counts()).toEqual({ submitted: 1, aborted: 1, sourceFeedback: 1 });
       f.setSize(16);
-      const recovery = runRenderFeatureFrame(f.host, [f.input(3, 1)]);
+      const recovery = f.host.runFrame([f.input(3, 1)]);
       expect(recovery.frame.errors).toEqual([]);
       expect(required(recovery.frame.plans[0]).generation).toBe(1);
       expect(required(recovery.frame.plans[0]).signature).not.toBe(before);
@@ -191,7 +190,7 @@ describe('native primary work through the actual Feature Host', () => {
     const f = await fixture();
     f.setReverseWork();
     try {
-      const batch = runRenderFeatureFrame(f.host, [f.input(1)]);
+      const batch = f.host.runFrame([f.input(1)]);
       expect(batch.frame.errors).toEqual([]);
       expect(batch.frame.plans).toHaveLength(1);
       expect(required([...batch.views.values()][0]).plans).toHaveLength(1);
@@ -229,17 +228,17 @@ describe('native primary work through the actual Feature Host', () => {
       caps: {} as never,
     });
     try {
-      const first = runRenderFeatureFrame(host, [input(1)]);
+      const first = host.runFrame([input(1)]);
       first.frame.onSubmitted();
       first.onSubmitted();
-      const next = runRenderFeatureFrame(host, [input(2)]);
+      const next = host.runFrame([input(2)]);
       expect(next.frame.errors).toHaveLength(1);
       expect(next.frame.preparationPending).toBe(true);
       expect(next.frame.plans).toHaveLength(0);
       expect(aborted).toBe(1);
       next.onAborted();
       saved = undefined;
-      const fresh = runRenderFeatureFrame(host, [input(3)]);
+      const fresh = host.runFrame([input(3)]);
       expect(fresh.frame.errors).toEqual([]);
       expect(fresh.frame.plans).toHaveLength(1);
       expect(required(required(host.inspection?.()).signatures[0]).nativeCalls).toBe(2);
@@ -264,7 +263,7 @@ describe('native primary work through the actual Feature Host', () => {
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     try {
-      const batch = runRenderFeatureFrame(host, [
+      const batch = host.runFrame([
         {
           identity: 'main',
           render: true,

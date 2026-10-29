@@ -23,11 +23,13 @@ import {
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -262,8 +264,8 @@ function buildSnapshotScene(
     const packet =
       candidate === undefined
         ? undefined
-        : structuredClone(candidate.packet, {
-            transfer: renderPublicationTransfers(candidate.packet),
+        : structuredClone(candidate.message, {
+            transfer: renderPublicationTransfers(candidate.message),
           });
     candidate?.accept();
     try {
@@ -430,7 +432,7 @@ export async function verifyFramebufferSnapshot(input: {
     expect(sourceColor[0]).toBeGreaterThan(0.5);
     expect(sourceColor[2]).toBeLessThan(0.2);
     await save('source-frame.rgba', finalN, SNAPSHOT_CANVAS);
-    await save('snapshot-frame.rhitape', captured.bytes);
+    await save('snapshot-frame.rhitape', compactTape(captured).bytes);
 
     recolorSource(scene, BLUE);
     const liveBytes = await readTarget(renderer, scene, targets.correct);
@@ -498,9 +500,14 @@ export async function verifyFramebufferSnapshot(input: {
     let replayTargetMismatchBytes: number;
     let replayFinalMaxDelta = 0;
     try {
-      const replayed = (
-        await replay.readResourceAtWork(copy.destination.textureHandleId, workAfterCopy.workIndex)
+      const output = required(workOutputs(lastWork).find((entry) => entry.role === 'color'));
+      const reads = (
+        await replay.readAtWorks([
+          { resourceId: copy.destination.textureHandleId, workIndex: workAfterCopy.workIndex },
+          { ...output.request, workIndex: lastWork.workIndex },
+        ])
       ).unwrap();
+      const replayed = required(reads[0]).unwrap();
       const replayBytes = tightRows(
         replayed.bytes,
         SNAPSHOT,
@@ -509,9 +516,7 @@ export async function verifyFramebufferSnapshot(input: {
       );
       replayTargetMismatchBytes = mismatches(replayBytes, expectedTarget);
       expect(replayTargetMismatchBytes).toBe(0);
-      const final = required(
-        (await replay.inspectWork(lastWork.workIndex, ['pixels'])).unwrap().attachment,
-      );
+      const final = required(reads[1]).unwrap();
       const bgra = required(final.format).startsWith('bgra');
       const replayRgba = new Uint8Array(final.bytes.length);
       for (let i = 0; i < final.bytes.length; i += 4) {

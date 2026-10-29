@@ -15,13 +15,15 @@ export const VIEW_TOOL_FILES = Object.freeze([
   'scripts/preview-rhi-evidence.mjs',
 ]);
 
-/** Publish the bundled tool without its contributor-only workspace packages. */
+/** Embed the built View tool in the SDK without contributor workspace dependencies. */
 export async function stageViewToolPackage(viewRoot, packageRoot, version) {
   await mkdir(packageRoot, { recursive: true });
   const files = VIEW_TOOL_FILES;
   for (const file of files)
     await cp(resolve(viewRoot, file), resolve(packageRoot, file), { recursive: true });
   const manifest = JSON.parse(await readFile(resolve(viewRoot, 'package.json'), 'utf8'));
+  manifest.private = true;
+  manifest.version = version;
   for (const field of ['devDependencies', 'forgeax', 'bin', 'scripts']) delete manifest[field];
   delete manifest.exports['./build'];
   manifest.files = files;

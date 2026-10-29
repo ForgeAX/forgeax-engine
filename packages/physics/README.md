@@ -25,17 +25,58 @@ world.spawn(
 );
 ```
 
-Enable physics by passing `physicsPlugin` to `createApp`:
+Enable physics by passing the selected backend plugin to `createApp`:
 
 ```ts
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 
-const app = await createApp(canvas, { plugins: [physicsPlugin('rapier-3d')] });
+const app = await createApp(canvas, { plugins: [physics3d] });
 ```
+
+The selected backend module is the build-time authority. Use the default export from
+`@forgeax/engine/physics-rapier2d` for 2D, or omit both for a game without simulation.
+WASM initialization remains asynchronous and completes during native plugin activation.
+`physicsComponentsPlugin()` registers vocabulary for previews without importing either solver.
+
+```mermaid
+flowchart LR
+    Game["Game plugin Pack"] --> Backend["Selected Rapier backend default plugin"]
+    Backend --> Contract["Physics components and shared lifecycle"]
+    Backend --> Wasm["Selected backend WASM"]
+```
+
+Backend implementers use `definePhysicsPlugin({ name, load, create, registerSystems })`
+to share readiness, structured load failures, resource publication and Cordis cleanup.
+Its callbacks carry the implementation; the helper never discovers or imports backends.
+
+## Solver precision
+
+Configure either selected backend through native plugin configuration in your root plugin:
+
+```ts
+import physics3d from '@forgeax/engine/physics-rapier3d';
+
+// Inside the root plugin's apply(ctx):
+await ctx.plugin(physics3d, { solverIterations: 2 });
+```
+
+| Setting | Default | Contract |
+|:--|--:|:--|
+| `PhysicsOptions.solverIterations` | `4` | Integer [1,32], selected once at backend activation; shared by 2D and 3D. |
+| `RigidBody.additionalSolverIterations` | `0` | Adds iterations for the body's connected contact/joint island; does not lower the global setting. |
+
+Fewer iterations reduce contact/joint solve work but can increase penetration,
+soften stacks and joints, cause jitter, and delay sleep. More iterations improve
+constraint convergence at additional CPU cost. The fixed timestep, CCD, rendering
+and floating-point representation are unchanged. Invalid values reject activation
+with `PhysicsError` (`invalid-body-config`, detail field `solverIterations`).
+Changing startup configuration requires a fresh plugin activation. Manual backend
+constructors and `createRapier2DPhysicsWorld` / `createRapier3DPhysicsWorld` accept
+the same optional `PhysicsOptions` argument. Omission retains four iterations.
 
 ## Three-Phase Tick Pipeline
 
-Three ECS systems run in order every frame (registered by `physicsPlugin` during `createApp`):
+Three ECS systems run in order every frame (registered by The selected backend plugin during `createApp`):
 
 | Phase | System Name | Runs After | What It Does |
 |:--|:--|:--|:--|
@@ -43,7 +84,7 @@ Three ECS systems run in order every frame (registered by `physicsPlugin` during
 | 2. Step | `physicsStepSimulation` | `physicsSyncBackend` | Reads the constant `FixedTime.delta`; calls `PhysicsWorld.step()` once per bounded fixed iteration |
 | 3. Writeback | `physicsWriteback` | `physicsStepSimulation` | Calls `writebackDynamicBodies()`, which visits only awake dynamic bodies (plus newly registered or ECS-overwritten ones); writes the pose to ECS `Transform` only when it differs, so sleeping and resting bodies stay out of `changed: [Transform]`. Kinematic and static bodies are never written back |
 
-All three systems early-return safely when the `PhysicsWorld` resource is not yet available (WASM fire-and-forget load).
+Native plugin activation awaits WASM readiness and installs the resource before simulation starts.
 
 The ECS `World` owns host-frame recovery. It clamps `Time.delta` to the configured
 `maxDeltaSeconds`, advances at most `FixedTime.maxStepsPerUpdate` fixed steps,
@@ -289,7 +330,7 @@ from the new position, including against geometry at the destination.
 ```ts
 if (pw.hasBody(character)) {
   pw.teleport(character, authoritativePosition);
-  pw.moveAndSlide(character, unconfirmedInputDelta);
+  pw.moveAndSlide(character, unconfirmedInputDelta); // unconfirmedInputDelta: Vec3 from vec3.create()
 }
 ```
 
@@ -307,6 +348,7 @@ contact impulses to solid dynamic bodies while excluding sensors. Game code
 must not duplicate ordinary pushing with an additional contact impulse.
 
 ```ts
+import { vec3 } from '@forgeax/engine-math';
 import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 
 const character = world.spawn(
@@ -318,7 +360,8 @@ const character = world.spawn(
 
 // Once per FixedUpdate, after physicsSyncBackend and before physicsStepSimulation:
 const pw = world.getResource('PhysicsWorld'); // PhysicsWorld | PhysicsWorld2D
-const actual = pw.moveAndSlide(character, [dx, dy, dz]); // Transform + grounded written back
+// desiredDelta is a Vec3 (branded Float32Array); a plain [dx, dy, dz] array does not typecheck.
+const actual = pw.moveAndSlide(character, vec3.create(dx, dy, dz)); // Vec3; Transform + grounded written back
 ```
 
 Requirements: the entity must carry a kinematic `RigidBody`, a `Collider`, and a
@@ -343,7 +386,7 @@ Character entities are routed exclusively through `moveAndSlide`: the
 `CharacterController` so it does not double-write the body the primitive owns.
 
 **Readiness contract**: the Rapier body is built asynchronously by the first
-`physicsSyncBackend` tick after `app.start()` (WASM fire-and-forget load). Before
+`physicsSyncBackend` tick after `app.start()` (the first fixed synchronization after plugin readiness). Before
 that tick, `PhysicsWorld.hasBody(entity)` returns `false`. Fixed-step drivers must
 guard with `if (!pw.hasBody(entity)) return;` before calling `moveAndSlide` --
 do not rely on catching `body-not-found` as control flow.
@@ -363,7 +406,7 @@ simulation authority. Physics never derives one from the other: a static body's
 authored `Transform` can move its collider, and a kinematic body can be
 teleported or moved with `moveAndSlide`.
 
-`physicsPlugin` installs one Update check. An entity with
+The selected backend plugin installs one Update check. An entity with
 `Mobility { kind: MobilityKindValue.static }` and a `RigidBody` of type
 `dynamic` or `kinematic` reports `mobility-physics-conflict` once through the
 scene Mobility diagnostic channel (`subscribeMobilityDiagnostics`), with
@@ -377,9 +420,9 @@ only checks them. The union SSOT is `MobilityDiagnosticCode` in
 ## Architecture Notes
 
 - **Not a backend**: this package defines interfaces and schemas only. Runtime simulation requires a backend (`@forgeax/engine-physics-rapier3d` or `@forgeax/engine-physics-rapier2d`).
-- **Backend selection**: the Rapier backends are optional peer dependencies because the preset is loaded dynamically; install the backend selected by `physicsPlugin('rapier-3d')` or `physicsPlugin('rapier-2d')` (the umbrella Engine package already carries both).
+- **Backend selection**: import the default plugin from the selected backend module. This package has no runtime dependency on either backend. The umbrella installation carries both, while a game bundles only the modules its selected plugins reference.
 - **ECS bridge**: backend packages call `registerPhysicsSystems(world, Transform)` to wire the three-phase tick pipeline into the ECS schedule.
-- **Fire-and-forget**: WASM backends load asynchronously; entities spawned before load are picked up once the `PhysicsWorld` resource appears.
+- **Readiness**: plugin activation awaits WASM initialization and publishes the ready PhysicsWorld before App startup completes.
 - **Component schemas SSOT**: `packages/physics/src/components.ts` is the authoritative definition for all physics component fields, defaults, and types.
 
 ## Simulation participant boundary
@@ -682,7 +725,7 @@ reflects the source bytes successfully adopted at fixed sync. Author updates ret
 the handle cannot advance this fact until the backend applies them.
 ## Navigation character composition
 
-`physicsPlugin` installs Scene before binding physics systems, so moveAndSlide
+The selected backend plugin installs Scene before binding physics systems, so moveAndSlide
 always has the real Transform/CharacterController writeback context in a fresh
 World. World-space KCC displacement is converted through the current parent's
 GlobalTransform inverse before writing local Transform.

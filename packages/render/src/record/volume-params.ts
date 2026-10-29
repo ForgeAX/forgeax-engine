@@ -3,8 +3,9 @@ import { type Buffer, RhiError } from '@forgeax/engine-rhi';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { SpotLightProjectorFrameContext, VolumetricFogFrameContext } from '../render-contract';
-import type { ExtractedLights, ExtractedVolumetricFog } from '../render-system-extract';
+import type { ExtractedVolumetricFog } from '../render-system-extract';
 import { VOLUMETRIC_FOG_PARAMS_BYTES } from '../volume/resources';
+import type { ViewLights } from '../world/render-lights';
 import type { RenderFrameState, VolumetricFogParamsState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
@@ -68,7 +69,7 @@ function prepareVolumetricFogMember(
   world: RenderResourceScope,
   worlds: readonly RenderResourceScope[],
   fog: ExtractedVolumetricFog | undefined,
-  lights: ExtractedLights,
+  lights: ViewLights,
   volumeCapability: boolean,
   projector: SpotLightProjectorFrameContext | undefined,
 ):
@@ -161,10 +162,7 @@ function prepareVolumetricFogMember(
   // The temporal shader reads this lane after the record stage resolves the
   // accepted graph/slot. It is overwritten on the next queue-visible frame;
   // the first candidate deliberately starts with history disabled.
-  params[31] =
-    frameState.temporalFrame !== undefined && frameState.temporalFrame.resetReason === 'none'
-      ? 1
-      : 0;
+  params[31] = frameState.temporalFrameTransaction.accepted()?.resetReason === 'none' ? 1 : 0;
   // RenderResourceScope elapsed time is the sole authored-medium clock.
   params[32] = fog.worldTimeSeconds ?? 0;
   return {
@@ -191,7 +189,7 @@ export function prepareVolumetricFogFrame(
   world: RenderResourceScope,
   worlds: readonly RenderResourceScope[],
   fog: ExtractedVolumetricFog | undefined,
-  lights: ExtractedLights,
+  lights: ViewLights,
   volumeCapability: boolean,
   projector: SpotLightProjectorFrameContext | undefined,
 ): VolumetricFogFrameContext | undefined {

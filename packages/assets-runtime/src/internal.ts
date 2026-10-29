@@ -1,5 +1,5 @@
 export { AssetClosure } from './internal/asset-closure';
-export { assetDataBytes } from './internal/asset-data';
+export { assetDataBytes, copyAssetData } from './internal/asset-data';
 export type {
   AssetChange,
   AssetRange,
@@ -19,4 +19,5 @@ export {
   runtimeAssets,
 } from './internal/runtime-assets.js';
 
+export { shareVerifiedArtifactBytes } from './internal/shared-immutable.js';
 export { createMaterialLoader } from './material/loader.js';

@@ -5,11 +5,10 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { ImportSubAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from './errors.js';
 import { deriveGltfSourceKeys, type GltfSourceKeyError } from './source-key.js';
-import { type GltfDocItemLike, subAssetKey } from './sub-asset-key.js';
+import { type GltfDocItem, subAssetKey } from './sub-asset-key.js';
 
-export type { SubAssetKey } from './sub-asset-key.js';
+export type { GltfDocItem, SubAssetKey } from './sub-asset-key.js';
 export { subAssetKey };
-export type GltfDocItem = GltfDocItemLike;
 
 export interface GltfMetaJson {
   readonly schemaVersion: 1;

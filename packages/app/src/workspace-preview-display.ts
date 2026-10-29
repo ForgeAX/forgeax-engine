@@ -1,11 +1,18 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { createWireframeGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import {
+  createWireframeGeometry,
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
+  packInterleavedVertexAttributes,
+  unpackInterleavedVertexAttributes,
+} from '@forgeax/engine-geometry';
 import { disposePluginFiber, type Plugin } from '@forgeax/engine-plugin';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
+import { type AssetHandle, type MeshAsset, UV_ATTRIBUTE_KEYS } from '@forgeax/engine-types';
 import type { App } from './types';
 import {
+  captureEngineWorkspaceAssetBinding,
   EngineWorkspaceError,
   type EngineWorkspacePreview,
   type EngineWorkspacePreviewDisplay,
@@ -14,6 +21,7 @@ import { workspaceMeshTriangles } from './workspace-asset-facts';
 
 type Display = NonNullable<EngineWorkspacePreview['display']>;
 type Options = { readonly mesh: MeshAsset; readonly entity: EntityHandle };
+const MAX_UV_RESPONSE_BYTES = 8 * 1024 * 1024;
 declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {
     engineWorkspacePreviewDisplay?: Display;
@@ -85,6 +93,10 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
     const assets = ctx.assets;
     if (!assets) throw new TypeError('Preview display requires the runtime asset owner');
     const originalFilter = { ...world.get(entity, MeshFilter).unwrap() };
+    const assetBinding = captureEngineWorkspaceAssetBinding(assets, originalFilter.assetHandle);
+    const uvChannels = UV_ATTRIBUTE_KEYS.flatMap((key, channel) =>
+      mesh.attributes[key] === undefined ? [] : [channel],
+    );
     const originalRenderer = {
       ...world.get(entity, MeshRenderer).unwrap(),
       materials: Array.from(world.get(entity, MeshRenderer).unwrap().materials),
@@ -106,6 +118,7 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
       mode: 'material',
       collision: false,
       bounds: false,
+      uv: { channels: uvChannels },
       capabilities: {
         wireframe:
           (mesh.attributes.position instanceof Float32Array ||
@@ -180,7 +193,61 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
       get(options) {
         options?.signal?.throwIfAborted();
         assertAvailable();
-        return structuredClone(state);
+        const channel = options?.uvChannel;
+        if (channel === undefined) return structuredClone(state);
+        if (!Number.isInteger(channel) || !uvChannels.includes(channel))
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'An existing UV channel on this preview',
+          );
+        const key = UV_ATTRIBUTE_KEYS[channel];
+        const projection = deriveVertexLayoutProjection(mesh.attributes);
+        const vertexCount = deriveVertexCount(mesh.vertices, projection);
+        if (vertexCount === undefined || key === undefined)
+          throw new TypeError('UV inspection requires a valid mesh vertex layout');
+        const overBudget = () => {
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'A UV response within the 8 MiB JSON limit',
+          );
+        };
+        // Even single-digit numbers need two JSON bytes per array element.
+        if (vertexCount * 4 > MAX_UV_RESPONSE_BYTES) overBudget();
+        // Preserve Geometry's stride/offsets while decoding only the requested column.
+        const attribute = unpackInterleavedVertexAttributes(mesh.vertices, {
+          ...projection,
+          attributes: projection.attributes.filter((entry) => entry.key === key),
+        })?.[key];
+        if (
+          !(attribute instanceof Float32Array) ||
+          attribute.length !== vertexCount * 2 ||
+          !attribute.every(Number.isFinite)
+        )
+          throw new TypeError('UV inspection requires finite float32x2 coordinates');
+        const coordinates = Array.from(attribute);
+        const triangleIndices: number[] = [];
+        workspaceMeshTriangles(mesh, (a, b, c) => {
+          options?.signal?.throwIfAborted();
+          if (
+            ![a, b, c].every(
+              (index) => Number.isInteger(index) && index >= 0 && index < vertexCount,
+            )
+          )
+            throw new TypeError('UV inspection requires valid triangle indices');
+          if ((coordinates.length + triangleIndices.length + 3) * 2 > MAX_UV_RESPONSE_BYTES)
+            overBudget();
+          triangleIndices.push(a, b, c);
+        });
+        const result: EngineWorkspacePreviewDisplay = {
+          ...state,
+          uv: {
+            channels: uvChannels,
+            layout: { channel, lod: 0, coordinates, triangleIndices, assetBinding },
+          },
+        };
+        if (new TextEncoder().encode(JSON.stringify(result)).byteLength > MAX_UV_RESPONSE_BYTES)
+          overBudget();
+        return structuredClone(result);
       },
       set(input, options) {
         options?.signal?.throwIfAborted();
@@ -256,7 +323,7 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
           .unwrap();
         overlay('collision', next.collision, collision);
         overlay('bounds', next.bounds, bounds);
-        state = { ...next, capabilities: state.capabilities };
+        state = { ...next, capabilities: state.capabilities, uv: { channels: uvChannels } };
         return structuredClone(state);
       },
     });

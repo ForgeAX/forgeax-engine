@@ -207,15 +207,11 @@ export class WebGpuAccelerationStructures {
               },
       })),
     }));
-    const rawTlas: RawTlasBuildEntry[] = tlasEntries.map((entry) => ({
-      tlas: entry.tlas as unknown as RawAccelerationStructure,
-      instances: entry.instances.map((instance) => ({
-        blas: instance.blas as unknown as RawAccelerationStructure,
-        transform: instance.transform,
-        customIndex: instance.customIndex,
-        mask: instance.mask,
-      })),
-    }));
+    // Acceleration handles already are the raw extension objects. TLAS entries
+    // contain no Buffer handles to unwrap, so their complete shape is native.
+    // Borrow through this synchronous call instead of allocating N identical
+    // instance wrappers; validation and the native backend still visit all N.
+    const rawTlas = tlasEntries as unknown as readonly RawTlasBuildEntry[];
     (rawEncoder as unknown as RawRayQueryEncoder).buildAccelerationStructures(rawBlas, rawTlas);
     for (const entry of blasEntries) {
       const state = this.blasStates.get(entry.blas);

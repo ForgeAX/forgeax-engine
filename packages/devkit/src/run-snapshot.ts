@@ -139,6 +139,15 @@ class SnapshotChangedError extends Error {}
 
 const SNAPSHOT_ATTEMPTS = 3;
 
+/**
+ * A package's published payload. npm-packlist also lists dependencies that
+ * declared bundles reach outside the package (pnpm siblings, as `../`); those
+ * are separate installed packages that the dependency traversal copies itself.
+ */
+async function packageFiles(root: string): Promise<string[]> {
+  return (await packlist(root)).filter((file) => !file.startsWith('../')).sort();
+}
+
 function stamp(info: BigIntStats): { stamp: string; mode: number; size: number } {
   return {
     stamp: [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs, info.mode].join(':'),
@@ -870,9 +879,11 @@ async function packageFileMatches(source: string, installed: string): Promise<bo
 }
 
 async function packagePayloadMatches(source: string, installed: string): Promise<boolean> {
-  const [sourceFiles, installedFiles] = await Promise.all([packlist(source), packlist(installed)]);
-  const files = [...sourceFiles].sort();
-  if (JSON.stringify(files) !== JSON.stringify([...installedFiles].sort())) return false;
+  const [files, installedFiles] = await Promise.all([
+    packageFiles(source),
+    packageFiles(installed),
+  ]);
+  if (JSON.stringify(files) !== JSON.stringify(installedFiles)) return false;
   for (const file of files)
     if (!(await packageFileMatches(join(source, file), join(installed, file)))) return false;
   return true;
@@ -1428,7 +1439,7 @@ async function planSnapshot(
       if (dependencyTarget !== destination) links.push({ target: dependencyTarget, destination });
       if (!existing) {
         // The package's published payload owns dependency inputs, not its checkout.
-        for (const file of (await packlist(installed)).sort()) {
+        for (const file of await packageFiles(installed)) {
           if (file.split('/').some((part) => part !== 'node_modules' && omitted.has(part)))
             continue;
           // packlist includes declared npm bundles. Keep their physical layout:
@@ -1455,7 +1466,9 @@ async function planSnapshot(
       }
     }
   }
-  await tree(projectRoot, 'project');
+  // Doctor validates installed dependencies, not the mutable consumer tree.
+  // Real run snapshots still capture and compare every project runtime input.
+  if (!options.verifyLocalDependencies) await tree(projectRoot, 'project');
   await dependencies(projectRoot, 'project', true);
   const proofsByPath = new Map<string, SnapshotProof>();
   for (const context of contexts.values()) {
@@ -1487,14 +1500,29 @@ export async function inspectRunDependencyClosure(
   };
   const first = await planSnapshot(resolve(projectRoot), undefined, options);
   const second = await planSnapshot(resolve(projectRoot), undefined, options);
-  if (JSON.stringify(first) !== JSON.stringify(second))
+  if (JSON.stringify(first) !== JSON.stringify(second)) {
+    const inputs = (plan: SnapshotPlan) =>
+      new Map([
+        ...plan.files.map((file) => [file.source, file.stamp] as const),
+        ...plan.proofs.map((proof) => [proof.path, JSON.stringify(proof)] as const),
+        ...plan.links.map((link) => [resolve(projectRoot, link.target), link.destination] as const),
+        [resolve(projectRoot, '.forgeax/engine-binding.json'), plan.binding] as const,
+      ]);
+    const before = inputs(first),
+      after = inputs(second);
+    const changedPaths = [...new Set([...before.keys(), ...after.keys()])]
+      .filter((path) => before.get(path) !== after.get(path))
+      .sort();
     throw dependencyClosureError(
       'project-dependency-source-changed',
-      'Project files or installed dependency links changed during doctor inspection.',
+      'Installed dependency inputs or links changed during doctor inspection.',
       {
         root: resolve(projectRoot),
+        changedPaths: changedPaths.slice(0, 64),
+        omittedPathCount: Math.max(0, changedPaths.length - 64),
       },
     );
+  }
   await verifySnapshotProofs(second.proofs);
 }
 

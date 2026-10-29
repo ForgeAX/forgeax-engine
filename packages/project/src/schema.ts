@@ -8,6 +8,17 @@ export const GuidString = z
     'expected a canonical UUID string',
   );
 
+/**
+ * A read-only asset library: an Engine facade `@forgeax/engine/<package-directory>`
+ * or a bare npm package name whose manifest declares `forgeax.library.assetRoot`.
+ */
+export const AssetLibrarySpecifier = z
+  .string()
+  .regex(
+    /^(?:@forgeax\/engine\/[a-z0-9][a-z0-9-]*|(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)$/,
+    'expected @forgeax/engine/<package-directory> or a bare npm package name',
+  );
+
 export const PluginRealmSchema = z.enum(['host', 'engine', 'build', 'frontend']);
 export const GameProjectRootsSchema = z
   .object({
@@ -39,6 +50,10 @@ export const GameProjectSchema = z
           ),
       )
       .default(['assets']),
+    assetLibraries: z
+      .array(AssetLibrarySpecifier)
+      .refine((items) => new Set(items).size === items.length, 'expected unique asset libraries')
+      .default([]),
   })
   .strict();
 

@@ -29,12 +29,13 @@ import type {
 } from '../../../render/src/light-buffer-layout';
 import type {
   DirectionalLightSnapshot,
-  ExtractedLights,
+  LightRoster,
   LightSnapshot,
   PointLightSnapshot,
   RectAreaDirectLightSnapshot,
   SpotLightSnapshot,
 } from '../../../render/src/render-system-extract';
+import type { DirectionalCascades } from '../../../render/src/world/render-lights';
 
 function assertNever(_x: never): never {
   throw new Error('exhaustive');
@@ -83,14 +84,12 @@ test('SpotLightSnapshot field shape', () => {
   expectTypeOf<SpotLightSnapshot['invRangeSquared']>().toEqualTypeOf<number>();
 });
 
-test('ExtractedLights three-bucket shape', () => {
-  expectTypeOf<ExtractedLights['directional']>().toEqualTypeOf<
-    DirectionalLightSnapshot | undefined
-  >();
-  expectTypeOf<ExtractedLights['directionalCount']>().toEqualTypeOf<number>();
-  expectTypeOf<ExtractedLights['point']>().toEqualTypeOf<readonly PointLightSnapshot[]>();
-  expectTypeOf<ExtractedLights['spot']>().toEqualTypeOf<readonly SpotLightSnapshot[]>();
-  expectTypeOf<ExtractedLights['rect']>().toEqualTypeOf<readonly RectAreaDirectLightSnapshot[]>();
+test('LightRoster three-bucket shape', () => {
+  expectTypeOf<LightRoster['directional']>().toEqualTypeOf<DirectionalLightSnapshot | undefined>();
+  expectTypeOf<LightRoster['directionalCount']>().toEqualTypeOf<number>();
+  expectTypeOf<LightRoster['point']>().toEqualTypeOf<readonly PointLightSnapshot[]>();
+  expectTypeOf<LightRoster['spot']>().toEqualTypeOf<readonly SpotLightSnapshot[]>();
+  expectTypeOf<LightRoster['rect']>().toEqualTypeOf<readonly RectAreaDirectLightSnapshot[]>();
 });
 
 function consumeDirectLight(snapshot: DirectLightSnapshot): number {
@@ -109,10 +108,10 @@ function consumeDirectLight(snapshot: DirectLightSnapshot): number {
 test('DirectLightSlot kind is closed and includes only finite direct lights', () => {
   expectTypeOf<DirectLightSlotKind>().toEqualTypeOf<'point' | 'spot' | 'rect-area'>();
   void consumeDirectLight;
-  expectTypeOf<ExtractedLights['directionalShadowQuality']>().toEqualTypeOf<
+  expectTypeOf<DirectionalCascades['directionalShadowQuality']>().toEqualTypeOf<
     DirectionalShadowQuality | undefined
   >();
-  expectTypeOf<ExtractedLights['directionalShadowError']>().toEqualTypeOf<
+  expectTypeOf<LightRoster['directionalShadowError']>().toEqualTypeOf<
     LightValidationError | undefined
   >();
 });

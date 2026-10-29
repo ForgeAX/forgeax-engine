@@ -19,6 +19,7 @@ import {
   type AssetLoadError,
   type AssetReferenceOwner,
   type BuiltinAssetKind,
+  beginLoadWork,
   type CatalogEntry,
   type EngineMetrics,
   type ImageError,
@@ -50,9 +51,10 @@ import {
 } from './internal/asset-source';
 import { DecoderRegistry } from './internal/decoder-registry';
 import { installRuntimeAssets } from './internal/runtime-assets';
-import { assetLoadCancelled } from './internal/wait-for-asset';
+import { assetLoadCancelled, waitForAsset } from './internal/wait-for-asset';
 import { pluginAssetDecoder } from './loaders/plugin';
 import { runtimeMaterialProgramProjection } from './material/runtime-program';
+import type { MeshGeometry } from './mesh-geometry.js';
 import { copyPreparedAsset } from './prepare-payload.js';
 import { linkRuntimeMaterial, prepareRuntimeAsset } from './runtime-asset-prepare';
 import { linkRuntimeFont } from './runtime-font';
@@ -105,7 +107,12 @@ import {
 import type { ScenePublicationFence } from './registry/scene-publication-fence.js';
 import { materialShaderTextureFieldNames as materialShaderTextureFieldNamesImpl } from './registry/validate-material.js';
 import { prepareRuntimeAnimationGraph } from './runtime-animation-graph';
-import { type MeshRange, prepareRuntimeMeshPatch, prepareRuntimeMeshRange } from './runtime-mesh';
+import {
+  type MeshRange,
+  prepareRuntimeMeshPatch,
+  prepareRuntimeMeshRange,
+  prepareRuntimeMeshRanges,
+} from './runtime-mesh';
 import { prepareRuntimeScene } from './runtime-scene';
 
 export { type TilesetValidateOptions, validateTilesetPayload } from './payload-validate.js';
@@ -928,13 +935,19 @@ export class AssetRegistry implements AssetReferenceOwner {
     return committed;
   }
 
-  /** Update a complete attribute range without copying or validating untouched vertices. */
-  writeRange(handle: AssetHandle<'mesh'>, range: MeshRange): Result<void, AssetError>;
+  /**
+   * Update a complete attribute range without copying or validating untouched vertices.
+   * A mesh range list (vertices, indices and attributes) commits at one revision.
+   */
+  writeRange(
+    handle: AssetHandle<'mesh'>,
+    range: MeshRange | readonly MeshRange[],
+  ): Result<void, AssetError>;
   writeRange(handle: AssetHandle<'texture'>, range: TextureRegion): Result<void, AssetError>;
   writeRange(handle: AssetHandle<'terrain'>, range: TerrainHeightRange): Result<void, AssetError>;
   writeRange(
     handle: AssetHandle<'mesh'> | AssetHandle<'texture'> | AssetHandle<'terrain'>,
-    range: MeshRange | TextureRegion | TerrainHeightRange,
+    range: MeshRange | readonly MeshRange[] | TextureRegion | TerrainHeightRange,
   ): Result<void, AssetError> {
     const current = this.#runtime.borrow<Asset>(handle);
     if (!current.ok) return current;
@@ -947,8 +960,10 @@ export class AssetRegistry implements AssetReferenceOwner {
         (value, captured, limits) =>
           prepareTerrainHeightRange(value, captured, this.#runtime, handle, limits),
       );
-    return current.value.kind === 'texture'
-      ? this.#runtime.writeRange(handle, range as TextureRegion, prepareRuntimeTextureRange)
+    if (current.value.kind === 'texture')
+      return this.#runtime.writeRange(handle, range as TextureRegion, prepareRuntimeTextureRange);
+    return Array.isArray(range)
+      ? this.#runtime.writeRange(handle, range as readonly MeshRange[], prepareRuntimeMeshRanges)
       : this.#runtime.writeRange(handle, range as MeshRange, prepareRuntimeMeshRange);
   }
 
@@ -1123,6 +1138,22 @@ export class AssetRegistry implements AssetReferenceOwner {
       );
     const source = this.#source;
     if (source === undefined) return catalogSourceUnconfigured();
+    // One unit of `assets` load work per new GUID load, settled on every outcome.
+    const finishLoadWork = beginLoadWork('assets', expectedKind);
+    try {
+      return await this.loadSource(source, key, kind, expectedKind, options);
+    } finally {
+      finishLoadWork();
+    }
+  }
+
+  private async loadSource(
+    source: AssetSource,
+    key: string,
+    kind: BuiltinAssetKind | AssetKind<unknown, string>,
+    expectedKind: string,
+    options: AssetLoadOptions,
+  ): Promise<Result<AssetHandle, RuntimeAssetError>> {
     const loaded =
       typeof kind === 'string'
         ? await source.load(key, kind, options)
@@ -1145,6 +1176,44 @@ export class AssetRegistry implements AssetReferenceOwner {
     this.rememberSources(staged);
     this.#runtime.retain(adopted.value, expectedKind).unwrap();
     return adopted;
+  }
+
+  /** Read independently owned published CPU geometry without render admission.
+   * Material/LOD readiness and runtime-edited content still require load/read. */
+  async readMeshGeometry(
+    guid: AssetGuid | string,
+    options: AssetLoadOptions = {},
+  ): Promise<Result<MeshGeometry, RuntimeAssetError>> {
+    if (this.#disposed)
+      return err(
+        new AssetError({
+          code: 'asset-owner-closed',
+          expected: 'a live asset owner',
+          hint: ASSET_ERROR_HINTS['asset-owner-closed'],
+        }),
+      );
+    const source = this.#source;
+    if (source === undefined) return catalogSourceUnconfigured();
+    const key =
+      typeof guid === 'string' ? guid.toLowerCase() : AssetGuid.format(guid).toLowerCase();
+    const finish = beginLoadWork('assets', 'mesh-geometry');
+    try {
+      const request = source.readMeshGeometry(key, options);
+      const read = await (options.signal === undefined
+        ? request
+        : waitForAsset(request, options.signal, key));
+      if (this.#disposed || this.#source !== source)
+        return err(
+          new AssetError({
+            code: this.#disposed ? 'asset-owner-closed' : 'asset-write-conflict',
+            expected: 'the same live source until geometry read completes',
+            hint: 'retry from the current asset owner',
+          }),
+        );
+      return read;
+    } finally {
+      finish();
+    }
   }
 
   /** Explicitly adopt the current source closure without changing any existing identity. */

@@ -2,7 +2,7 @@
   "name": "@forgeax/template-game-3d",
   "version": "0.0.0",
   "private": true,
-  "packageManager": "pnpm@12.10.1",
+  "packageManager": "pnpm@12.15.0",
   "type": "module",
   "description": "Minimal ForgeaX third-person 3D reference with physics, skinning, animation, and UI.",
   "license": "Apache-2.0",
@@ -40,6 +40,6 @@
   "devDependencies": {
     "@types/node": "^20.19.40",
     "typescript": "6.0.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }

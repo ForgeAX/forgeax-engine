@@ -47,10 +47,16 @@ describe('M5 active-documentation token-first gate', () => {
       'apps/learn-render/1.getting-started/5.transformations/README.md',
       'apps/learn-render/1.getting-started/7.camera/README.md',
       'apps/learn-render/2.lighting/3.materials/README.md',
-      'packages/ecs/CHANGELOG.md',
     ]) {
       expect(existsSync(resolve(repoRoot, path)), path).toBe(true);
     }
+  });
+
+  it('routes migrated ECS history through the owning README instead of requiring a source copy', () => {
+    expect(existsSync(resolve(repoRoot, 'packages/ecs/CHANGELOG.md'))).toBe(false);
+    expect(readFileSync(resolve(repoRoot, 'packages/ecs/README.md'), 'utf8')).toContain(
+      'https://github.com/ForgeaX-Games/forgeax-engine-harness/blob/main/docs/engine/packages/ecs/CHANGELOG.md',
+    );
   });
 
   it('accepts only token-first registration and explicit-delta update examples', () => {

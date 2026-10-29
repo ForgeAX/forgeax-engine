@@ -65,7 +65,9 @@ test('Rapier declaration packaging stays within its exact inputs in a junction-m
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const artifact = readFileSync(join(staged, 'rapier.d.mts'), 'utf8');
     assert.match(artifact, /sinkHeight: number/);
-    assert.match(artifact, /export.*Probe.*probe/s);
+    // tsup 9 splits value and type re-exports; require each public name, not an order.
+    assert.match(artifact, /export (?:type )?\{[^}]*\bProbe\b[^}]*\}/);
+    assert.match(artifact, /export \{[^}]*\bprobe\b[^}]*\}/);
   } finally {
     assert.equal(dirname(resolve(root)), resolve(tmpdir()));
     rmSync(root, { recursive: true, force: true });

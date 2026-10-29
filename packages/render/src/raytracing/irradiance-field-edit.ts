@@ -68,7 +68,7 @@ export function writeFieldEdit(
       )
       .unwrap();
   const writeProjections = (instanceId: number, run: { first: number; count: number }) => {
-    const entry = cards.capture.entries.find((e) => e.instanceId === instanceId);
+    const entry = cards.capture.entry(instanceId);
     if (entry === undefined || entry.projections.length !== run.count)
       throw new Error('field edit lost its Card entry');
     const bytes = new Uint8Array(run.count * CARD_PROJECTION_BYTES);

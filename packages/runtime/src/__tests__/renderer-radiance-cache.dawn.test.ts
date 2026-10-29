@@ -7,11 +7,13 @@ import {
   decodeTape,
   openReplay,
   replayDeviceRequest,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
 import {
   createIrradianceFieldHarness,
   type FieldImage,
@@ -288,6 +290,7 @@ it('serves Lite reflections from the directional radiance cache under field gath
       ).unwrap();
       return {
         replay,
+        submissions: observeReplaySubmissions(device),
         dispose: async () => {
           (await replay.dispose()).unwrap();
           webgpu._internal_getRawDevice(device)?.destroy();
@@ -296,20 +299,24 @@ it('serves Lite reflections from the directional radiance cache under field gath
     };
     const exactReplay = await replayOf(tape);
     try {
-      const inspected = (
-        await exactReplay.replay.inspectWork(composite.workIndex, ['pixels'])
-      ).unwrap();
-      assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(captured.bytes);
+      const output = workOutputs(composite).find((row) => row.role === 'color');
+      assert(output);
       const reads = (
         await exactReplay.replay.readAtWorks([
           { resourceId: sceneHandle, workIndex: diffuseComposite.workIndex },
           { resourceId: fallbackHandle, workIndex: composite.workIndex },
+          { ...output.request, workIndex: composite.workIndex },
         ])
       ).unwrap();
+      const composed = reads[2]?.unwrap();
+      assert(composed);
+      expect(composed.provenance.selectedWorkIndex).toBe(composite.workIndex);
+      expect(composed.bytes).toEqual(captured.bytes);
       const broad = reads[0]?.unwrap();
       const directional = reads[1]?.unwrap();
       assert(broad && directional);
+      expect(broad.provenance.selectedWorkIndex).toBe(diffuseComposite.workIndex);
+      expect(directional.provenance.selectedWorkIndex).toBe(composite.workIndex);
       const channel = (bytes: Uint8Array, i: number) =>
         halfFloat.f16ToF32(
           new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(i * 8, true),
@@ -323,9 +330,11 @@ it('serves Lite reflections from the directional radiance cache under field gath
           ),
         ).toBeLessThan(0.002);
       }
+      exactReplay.submissions.assertMaximum(12);
       expect(multiMean).toBeGreaterThan(0.01);
       result.multipleScattering = { mean: multiMean, ssrFallbackContainsOnlyDirectional: true };
     } finally {
+      exactReplay.submissions.restore();
       await exactReplay.dispose();
     }
     const omitted = {
@@ -345,6 +354,7 @@ it('serves Lite reflections from the directional radiance cache under field gath
       expect(without.bytes).toEqual(unreflected.bytes);
       expect(without.bytes).not.toEqual(captured.bytes);
     } finally {
+      falsifier.submissions.restore();
       await falsifier.dispose();
     }
     result.replay = { digest: encoded.digest, works: model.works.length, exact: true };

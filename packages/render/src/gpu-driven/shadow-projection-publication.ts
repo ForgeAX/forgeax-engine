@@ -2,24 +2,52 @@ import type { SubmissionPlan } from './batch-topology';
 
 /** Publish a uniquely owned map without exposing its mutation capability or copying entries. */
 export function publishReadonlyMap<K, V>(owned: Map<K, V>): ReadonlyMap<K, V> {
-  const publication: ReadonlyMap<K, V> = Object.freeze({
-    get size() {
-      return owned.size;
-    },
-    get: (key: K) => owned.get(key),
-    has: (key: K) => owned.has(key),
-    entries: () => owned.entries(),
-    keys: () => owned.keys(),
-    values: () => owned.values(),
-    [Symbol.iterator]: () => owned[Symbol.iterator](),
-    forEach: (callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown) => {
-      owned.forEach((value, key) => {
-        callback.call(thisArg, value, key, publication);
-      });
-    },
-  });
-  return publication;
+  return Object.freeze(new ReadonlyMapPublication(owned));
 }
+
+/** Shared methods follow Map receiver semantics; the mutable capability stays private. */
+class ReadonlyMapPublication<K, V> implements ReadonlyMap<K, V> {
+  readonly #owned: Map<K, V>;
+
+  constructor(owned: Map<K, V>) {
+    this.#owned = owned;
+  }
+
+  get size(): number {
+    return this.#owned.size;
+  }
+
+  get(key: K): V | undefined {
+    return this.#owned.get(key);
+  }
+
+  has(key: K): boolean {
+    return this.#owned.has(key);
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this.#owned.entries();
+  }
+
+  keys(): MapIterator<K> {
+    return this.#owned.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this.#owned.values();
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.#owned[Symbol.iterator]();
+  }
+
+  forEach(callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
+    this.#owned.forEach((value, key) => {
+      callback.call(thisArg, value, key, this);
+    });
+  }
+}
+Object.freeze(ReadonlyMapPublication.prototype);
 
 /** Plan revision and wrapper identity do not change an otherwise identical shadow draw layout. */
 export function sameShadowProjectionLayout(left: SubmissionPlan, right: SubmissionPlan): boolean {

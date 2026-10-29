@@ -34,7 +34,10 @@ async function generatedStartup(): Promise<string> {
 describe('generated startup input admission', () => {
   it('keeps the game running when the browser refuses a pointer lock', async () => {
     const generated = await generatedStartup();
-    const callback = generated.match(/app\.onError\(((\(error\) => \{[\s\S]*?\n\s*\}))\);/)?.[1];
+    // The renderer-error tracker registers its own onError listener; pick the startup one.
+    const callback = [...generated.matchAll(/app\.onError\(((\(error\) => \{[\s\S]*?\n\s*\}))\);/g)]
+      .map((match) => match[1])
+      .find((source) => source?.includes('app-pointer-lock-failed'));
     expect(callback).toBeDefined();
     if (callback === undefined) return;
     const fail = vi.fn();

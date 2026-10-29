@@ -1,6 +1,4 @@
-import { ok } from '@forgeax/engine-types';
 import type { RenderFeatureFullscreenProgramDeclaration } from '../plan';
-import type { RenderFeature } from '../types';
 
 const vertex = /* wgsl */ `
 struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -67,7 +65,7 @@ const composite = /* wgsl */ `${vertex}
   return color;
 }`;
 const depthRead = { key: 'scene-depth', sampleType: 'depth' } as const;
-const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
+export const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
   {
     kind: 'fullscreen-program' as const,
     name: 'forgeax.outline.depth',
@@ -99,22 +97,6 @@ const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
     reads: ['scene-color', 'outline-mask', 'outline-expanded'],
   },
 ].map((program) => ({ ...program, params: { byteSize: 32, defaultValue: new Uint8Array(32) } }));
-
-/** Ordinary shader registration; Standard owns topology and all GPU lifetimes. */
-export function createOutlineRenderFeature(): RenderFeature<boolean> {
-  return {
-    identity: 'forgeax.outline',
-    requiredCapabilities: ['rgba16floatRenderable'],
-    requiredFullscreenPostProcesses: OUTLINE_PROGRAMS.map((program) => ({
-      identity: program.name,
-      source: program.source,
-    })),
-    extract: (context) =>
-      ok(context.views.some((view) => view.render && view.selectedCamera?.outline !== undefined)),
-    plan: (active) =>
-      ok({ work: active ? [{ scope: 'frame', resources: OUTLINE_PROGRAMS, passes: [] }] : [] }),
-  };
-}
 
 /** Outline programs are graph-local producers, never encoded-output tail effects. */
 export function isOutlinePostProcess(identity: string): boolean {

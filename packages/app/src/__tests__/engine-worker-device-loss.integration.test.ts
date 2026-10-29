@@ -2,6 +2,7 @@ import { type Renderer, RendererOperationError, type RendererState } from '@forg
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executionBootstrapHostPlugin } from '../execution/bootstrap-entry';
+import { workerEngineProfile } from '../internal/worker-engine-profile';
 import { workerSelection } from './execution-fixtures';
 
 type RendererEventListener = Parameters<Renderer['subscribe']>[0];
@@ -160,6 +161,7 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
     frameId = 1,
     size = { width: 1, height: 1 },
     targetWorld = worldIdentity,
+    render?: false,
   ): void {
     receive({
       data: {
@@ -167,6 +169,7 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
         worldIdentity: targetWorld,
         frameId,
         deltaSeconds: 1 / 60,
+        ...(render === undefined ? {} : { render }),
         inputSample: {
           downKeys: new Set(),
           upKeys: new Set(),
@@ -552,6 +555,42 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
     receive({ data: { kind: 'inspect', requestId, worldIdentity, code } } as MessageEvent<unknown>);
   }
 
+  it('exposes Host audio feedback in the Worker instead of placeholder state', async () => {
+    mocks.renderer.state.mockReturnValue('alive');
+    receive({
+      data: {
+        kind: 'frame',
+        worldIdentity,
+        frameId: 7,
+        deltaSeconds: 1 / 60,
+        inputSample: {
+          keyboard: [],
+          pointerButtons: [],
+          pointerPosition: [0, 0],
+          pointerDelta: [0, 0],
+          wheelDelta: [0, 0],
+          gamepads: [],
+          pointerLocked: false,
+        },
+        canvasWidth: 640,
+        canvasHeight: 480,
+        audioState: {
+          owner: 'host',
+          contextState: 'running',
+          activeSourceCount: 3,
+          lastError: null,
+        },
+      },
+    } as MessageEvent<unknown>);
+    await vi.waitFor(() =>
+      expect(globalThis.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'frame-complete', frameId: 7 }),
+      ),
+    );
+    const backend = vi.mocked(workerEngineProfile).mock.calls.at(-1)?.[0].audio;
+    expect(backend?.getState()).toMatchObject({ contextState: 'running', activeSourceCount: 3 });
+  });
+
   it('reads the actual local Renderer through the public execution script root without a draw', async () => {
     mocks.renderer.state.mockReturnValue('alive');
     inspect(150, 'return await execution.inspectRenderer();');
@@ -762,6 +801,31 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
     await vi.waitFor(() => expect(observed).toHaveLength(2));
     expect(observed[1]).toEqual({ width: 1280, height: 720 });
     expect(host.drawingBufferSize()).toEqual({ width: 1280, height: 720 });
+  });
+
+  it('updates an update-only frame without a draw and settles it as simulation-complete', async () => {
+    const { World } = await import('@forgeax/engine-ecs');
+    const update = vi.spyOn(World.prototype, 'update');
+    mocks.renderer.state.mockReturnValue('alive');
+    sendFrame(200, undefined, undefined, false);
+    await vi.waitFor(() =>
+      expect(globalThis.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'simulation-complete', frameId: 200 }),
+      ),
+    );
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(mocks.renderer.draw).not.toHaveBeenCalled();
+    // The settled update-only frame is retired: a replay is stale, the next frame draws.
+    sendFrame(200);
+    sendFrame(201);
+    await vi.waitFor(() =>
+      expect(globalThis.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'frame-complete', frameId: 201 }),
+      ),
+    );
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(mocks.renderer.draw).toHaveBeenCalledTimes(1);
+    update.mockRestore();
   });
 
   it('does not execute a script if disposal happens during evaluator import', async () => {

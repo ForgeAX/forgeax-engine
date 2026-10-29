@@ -1,6 +1,6 @@
-import { requireFact } from './lib.mjs';
+import { loadJson, requireFact } from './lib.mjs';
 
-export function heapNodes(profile) {
+export function heapNodes(profile, { allowOrphanSamples = false } = {}) {
   requireFact(
     profile?.head && Array.isArray(profile.samples),
     'Require SamplingHeapProfile head and samples',
@@ -35,7 +35,8 @@ export function heapNodes(profile) {
   }
   for (const sample of profile.samples)
     requireFact(
-      ids.has(sample.nodeId) && Number.isFinite(sample.size) && sample.size >= 0,
+      Number.isSafeInteger(sample?.nodeId) &&
+        (allowOrphanSamples || ids.has(sample.nodeId)) && Number.isFinite(sample.size) && sample.size >= 0,
       'Invalid heap sample',
     );
   return nodes;
@@ -54,4 +55,26 @@ export function selectedHeap(value) {
         }
       : null,
   };
+}
+
+/**
+ * Read a `symbolize_heap_profile.mjs` output and refuse symbols produced for another
+ * input file or profile pointer. Without a path, returns an empty symbol map.
+ */
+export async function loadHeapSymbols(input, path, profilePointer) {
+  const symbols = new Map();
+  if (!path) return { symbols, symbolInput: undefined };
+  const symbolInput = await loadJson(path);
+  requireFact(
+    symbolInput.value.kind === 'heap-source-symbols' &&
+      symbolInput.value.inputSha256 === input.sha256 &&
+      symbolInput.value.profilePointer === profilePointer &&
+      Array.isArray(symbolInput.value.symbols),
+    'Symbols belong to another input/profile',
+  );
+  for (const row of symbolInput.value.symbols) {
+    requireFact(!symbols.has(row.nodeId), 'Duplicate source symbol');
+    symbols.set(row.nodeId, row.source);
+  }
+  return { symbols, symbolInput };
 }

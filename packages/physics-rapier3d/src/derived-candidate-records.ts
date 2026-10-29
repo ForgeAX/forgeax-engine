@@ -7,6 +7,7 @@ import type {
   PhysicsConstraintInput,
   PhysicsMassProperties,
 } from '@forgeax/engine-physics';
+import { DERIVED_PHYSICS_LIMITS } from '@forgeax/engine-physics';
 import type { Result, RigidBodyType } from '@forgeax/engine-types';
 
 export interface DerivedShapeRecord {
@@ -68,4 +69,38 @@ export interface DerivedAdmissionProjection {
 
 export function derivedShapeHandles(shape: DerivedShapeRecord): readonly number[] {
   return shape.colliderHandles ?? [shape.colliderHandle];
+}
+
+/** Every prepared group in the roster is complete; none is a subset. */
+function completeGroups(records: readonly DerivedCandidateRecord[]): boolean {
+  const admitted = new Set(records);
+  const groups = new Set<DerivedAdmissionBatch | undefined>(records.map((record) => record.batch));
+  for (const group of groups)
+    if (group === undefined || group.records.some((record) => !admitted.has(record))) return false;
+  return true;
+}
+
+/**
+ * Why a resolved roster is not one admissible replacement. One admission is
+ * one complete declared group or a bounded set of individual candidates; the
+ * group-union mode accepts only complete declared groups.
+ */
+export function derivedRosterRefusal(
+  records: readonly DerivedCandidateRecord[],
+  unionOfGroups: boolean,
+): string | undefined {
+  if (unionOfGroups)
+    return completeGroups(records)
+      ? undefined
+      : 'submit only complete declared preparation groups without subsets or individual members';
+  const prepared = records[0]?.batch;
+  const single = records.every((record) => record.batch === prepared);
+  const valid =
+    single &&
+    (prepared === undefined
+      ? records.length <= DERIVED_PHYSICS_LIMITS.maxCandidates
+      : prepared.records.length === records.length && completeGroups(records));
+  return valid
+    ? undefined
+    : 'submit exactly one complete preparation group without subsets or mixed members';
 }

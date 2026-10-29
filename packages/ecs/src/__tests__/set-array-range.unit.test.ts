@@ -98,6 +98,26 @@ describe('World.setArrayRange', () => {
     ]);
   });
 
+  it('keeps no history for whole-field writes such as per-frame poses', () => {
+    const world = new World();
+    const entities = Array.from({ length: 64 }, () => spawnRows(world, 4));
+    const since = readMutationEpoch(world);
+    for (let frame = 0; frame < 32; frame += 1)
+      for (const entity of entities)
+        world.setArrayRange(entity, Rows, 'fixed', 0, [frame, 1, 2, 3]).unwrap();
+    const log = (world as unknown as { arrayRangeLog: { byEntity: Map<number, unknown> } })
+      .arrayRangeLog;
+    expect(log.byEntity.size).toBe(0);
+    const entity = entities[0] as (typeof entities)[number];
+    expect(readArrayRangesChangedSince(world, entity, Rows, 'fixed', since)).toBe('whole');
+    expect(Array.from(world.get(entity, Rows).unwrap().fixed)).toEqual([31, 1, 2, 3]);
+    const afterWhole = readMutationEpoch(world);
+    world.setArrayRange(entity, Rows, 'fixed', 1, [7]).unwrap();
+    expect(readArrayRangesChangedSince(world, entity, Rows, 'fixed', afterWhole)).toEqual([
+      { start: 1, end: 2 },
+    ]);
+  });
+
   it('forgets the history of despawned entities', () => {
     const world = new World();
     const entity = spawnRows(world, 8);

@@ -30,7 +30,7 @@ async function bytes(
 }
 
 it.each([
-  2, 4,
+  2, 3,
 ])('preserves held native member bytes and restores task headers after write %i fails', async (failureAt) => {
   const { device, native } = await nativeDeviceFixture();
   const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();

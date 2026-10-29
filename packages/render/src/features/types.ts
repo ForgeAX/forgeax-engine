@@ -127,6 +127,12 @@ export interface RenderFeatureExtractContext {
   readonly worlds: readonly World[];
   readonly owner: number;
   readonly frameNumber: number;
+  /**
+   * Identity of the receiving render session for a cross-worker publication. It
+   * changes when a new receiver (publication epoch) starts with empty caches, so a
+   * producer that sends state once must send it again.
+   */
+  readonly receiverSession?: string;
   readonly views: readonly RenderFeatureExtractView[];
   readonly caps?: Readonly<RhiCaps>;
   /** Exact receiving renderer domain, when extraction runs after device admission. */
@@ -228,6 +234,11 @@ export interface RenderFeature<FrameData> {
    * intent producers must identify already-submitted work instead of replaying it.
    */
   onSourceFrameSubmitted?(data: FrameData, feedback: unknown): void;
+  /**
+   * The source publication that carried this extracted frame was discarded before
+   * it was sent; producers that publish state once can mark it unsent again.
+   */
+  onSourceFrameDiscarded?(data: FrameData): void;
   /**
    * Discard frame-owned producer state when graph admission or submission is
    * rejected.  This is the symmetric recovery path for onFrameSubmitted.

@@ -4,12 +4,12 @@ import { createRenderFeatureHost } from '../features/host';
 import {
   cloneRenderFeaturePlanSignatureSnapshot,
   deriveRenderFeaturePassAccess,
-  freezeRenderFeaturePlan,
   type RenderFeatureWorkPlan,
   rememberRenderFeaturePlanSignature,
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureEvidenceMatches,
   renderFeaturePlanSignatureSnapshotEquals,
+  validateRenderFeaturePlan,
 } from '../features/plan';
 import type { RenderFeature } from '../features/types';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
@@ -129,7 +129,7 @@ describe('RenderFeature plan authority', () => {
     });
     for (const counts of [[0], [0, 1, 1], [1, 0, 1], [1, 1, 0], [0xffff_ffff, undefined, 1]]) {
       const current = withCounts(counts);
-      expect(freezeRenderFeaturePlan('counts', current).ok).toBe(true);
+      expect(validateRenderFeaturePlan('counts', current).ok).toBe(true);
       expect(deriveRenderFeaturePassAccess(current, current.passes[0] as never)).toEqual(
         deriveRenderFeaturePassAccess(source, simulate),
       );
@@ -138,11 +138,13 @@ describe('RenderFeature plan authority', () => {
       for (let axis = 0; axis < 3; axis += 1) {
         const counts = [0, 0, 0];
         counts[axis] = invalid;
-        expect(freezeRenderFeaturePlan('counts', withCounts(counts)).ok).toBe(false);
+        expect(validateRenderFeaturePlan('counts', withCounts(counts)).ok).toBe(false);
       }
     for (const counts of [[], [undefined], [0, 0, 0, 0]])
-      expect(freezeRenderFeaturePlan('counts', withCounts(counts)).ok).toBe(false);
-    expect(freezeRenderFeaturePlan('counts', { ...withCounts([0]), resources: [] }).ok).toBe(false);
+      expect(validateRenderFeaturePlan('counts', withCounts(counts)).ok).toBe(false);
+    expect(validateRenderFeaturePlan('counts', { ...withCounts([0]), resources: [] }).ok).toBe(
+      false,
+    );
   });
   it('validates shadow draws without author-owned light targets and derives their buffer reads', () => {
     const source = plan();
@@ -159,7 +161,7 @@ describe('RenderFeature plan authority', () => {
       ),
       passes: [{ kind: 'shadow-caster', name: 'shadow', draws: raster.draws }],
     };
-    expect(freezeRenderFeaturePlan('shadow', shadow).ok).toBe(true);
+    expect(validateRenderFeaturePlan('shadow', shadow).ok).toBe(true);
     const shadowPass = shadow.passes[0];
     if (shadowPass === undefined) throw new Error('Missing shadow fixture');
     expect(deriveRenderFeaturePassAccess(shadow, shadowPass)).toEqual([
@@ -167,7 +169,7 @@ describe('RenderFeature plan authority', () => {
       { resource: 'indirect', usage: 'indirect-read' },
     ]);
     expect(
-      freezeRenderFeaturePlan('invalid-shadow', { ...shadow, resources: source.resources }).ok,
+      validateRenderFeaturePlan('invalid-shadow', { ...shadow, resources: source.resources }).ok,
     ).toBe(false);
     expect(renderFeaturePlanSignature(shadow)).not.toBe(renderFeaturePlanSignature(source));
   });
@@ -516,7 +518,7 @@ describe('RenderFeature plan authority', () => {
         },
       ],
     };
-    expect(freezeRenderFeaturePlan('synthetic.invalid', invalid).ok).toBe(false);
+    expect(validateRenderFeaturePlan('synthetic.invalid', invalid).ok).toBe(false);
   });
 
   it('never invokes legacy producer callbacks', () => {

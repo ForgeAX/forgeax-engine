@@ -2,7 +2,7 @@ import type { LifecycleResourceSpec } from '../device/device-scope';
 import type { EnvironmentGeneration } from '../environment/generation';
 import type { EnvironmentLifecycle } from '../environment/lifecycle';
 import type { RenderFrameState } from '../record/frame-snapshot';
-import type { RecoveryRootBundle, RecoveryRootRuntime } from '../render-system';
+import type { RecoveryRootBundle, RecoveryRootRuntime } from './types';
 
 /**
  * Assemble replacement-device roots without letting candidate construction
@@ -42,49 +42,6 @@ export function prepareRenderSystemRecoveryRoots(
       },
     });
   }
-  const graphCandidate = runtime.graphCandidate;
-  if (graphCandidate !== undefined) {
-    const releaseGraphCandidate = (): void => graphCandidate.release();
-    const compiledGraph = graphCandidate.frameState.compiledFrameGraph?.graph ?? null;
-    if (compiledGraph !== null) {
-      roots.push({
-        kind: 'pipeline',
-        create: () => {
-          if (!runtime.scope.isAlive())
-            throw new Error('Recovery graph candidate scope is not active.');
-          if (graphCandidate.frameState.compiledFrameGraph?.graph !== compiledGraph) {
-            throw new Error('Recovery graph candidate was changed before aggregate assembly.');
-          }
-          return compiledGraph;
-        },
-        cleanup: releaseGraphCandidate,
-      });
-    }
-    if (graphCandidate.featureHost !== undefined) {
-      const featureRoot = graphCandidate.featureHost.createRecoveryRoot(runtime.scope);
-      roots.push({ ...featureRoot, cleanup: releaseGraphCandidate });
-    }
-    if (graphCandidate.featureGpuWork !== undefined) {
-      const featureWorkRoot = graphCandidate.featureGpuWork.createRecoveryRoot(runtime.scope);
-      roots.push({ ...featureWorkRoot, cleanup: releaseGraphCandidate });
-    }
-    if (graphCandidate.gpuDrivenProduction !== undefined) {
-      const productionRoot = graphCandidate.gpuDrivenProduction.createRecoveryRoot(runtime.scope);
-      roots.push({ ...productionRoot, cleanup: releaseGraphCandidate });
-    }
-    if (graphCandidate.gpuDrivenScene?.state !== undefined) {
-      const sceneRoot = graphCandidate.gpuDrivenScene.createRecoveryRoot(runtime.scope);
-      roots.push({ ...sceneRoot, cleanup: releaseGraphCandidate });
-    }
-    if (graphCandidate.pointsLines !== undefined) {
-      const pointsLinesRoot = graphCandidate.pointsLines.createRecoveryRoot(runtime.scope);
-      roots.push({ ...pointsLinesRoot, cleanup: releaseGraphCandidate });
-    }
-    if (runtime.gpuStore.recoveryResourceCount() > 0) {
-      const gpuStoreRoot = runtime.gpuStore.createRecoveryRoot(runtime.scope);
-      roots.push({ ...gpuStoreRoot, cleanup: releaseGraphCandidate });
-    }
-  }
   let discarded = false;
   return {
     roots: Object.freeze(roots),
@@ -106,7 +63,6 @@ export function prepareRenderSystemRecoveryRoots(
         candidateEnvironmentGeneration = undefined;
       }
       candidateEnvironmentLifecycle.discardRecoveryCandidates();
-      graphCandidate?.release();
       runtime.scope.abandon();
     },
   };

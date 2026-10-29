@@ -21,6 +21,7 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -419,7 +420,7 @@ it('zero-copies a live HTMLVideoElement and per-frame VideoFrames, rejecting an 
     await h.draw(1);
     (await h.recorder.frameBoundary()).unwrap();
     const captured = (await liveCapture).unwrap();
-    await save('video-frame.rhitape', captured.bytes);
+    await save('video-frame.rhitape', compactTape(captured).bytes);
     const livePixels = await h.expectHalves('video-frame-captured', BLUE, RED);
 
     frame.close();

@@ -1,4 +1,5 @@
 import { isStripTopology } from '@forgeax/engine-types';
+import { pipelineVertexConstants } from './material-stage-constants';
 // PipelineSpec 4-axis SSOT — single-file type + derive-fn + entrypoint + error model.
 //
 // feat-20260615-pipeline-spec-ssot M1: Establish PipelineSpec 4-axis type SSOT.
@@ -198,6 +199,15 @@ export function renderStateHash(renderState: MaterialRenderState | undefined): s
 // 6 pure derive functions (M1-T2)
 // ══════════════════════════════════════════════════════════════════════════════
 
+function constantsKey(
+  stage: 'constants' | 'vertex-constants',
+  values: Readonly<Record<string, number>> | undefined,
+): string {
+  return values === undefined
+    ? ''
+    : `:${stage}:${JSON.stringify(Object.entries(values).sort(([left], [right]) => left.localeCompare(right)))}`;
+}
+
 /**
  * Compute a deterministic cache key from a PipelineSpec.
  *
@@ -269,11 +279,8 @@ export function cacheKeyOf(spec: PipelineSpec): string {
     ].join(':') +
     vertexBuffersSegment +
     uvSetCountSegment +
-    (shader.constants === undefined
-      ? ''
-      : `:constants:${JSON.stringify(
-          Object.entries(shader.constants).sort(([left], [right]) => left.localeCompare(right)),
-        )}`) +
+    constantsKey('constants', shader.constants) +
+    constantsKey('vertex-constants', shader.vertexConstants) +
     (shader.vertexEntry === undefined && shader.fragmentEntry === undefined
       ? ''
       : `:entries:${JSON.stringify([shader.vertexEntry ?? null, shader.fragmentEntry ?? null])}`)
@@ -426,12 +433,13 @@ export function buildPipelineDescriptor(
             : {}),
         }));
 
+  const vertexConstants = pipelineVertexConstants(spec.shader);
   const descriptor: Record<string, unknown> = {
     vertex: {
       module: modules.vertex,
       entryPoint: spec.shader.vertexEntry ?? modules.vertexEntryPoint ?? 'vs_main',
       buffers: vertexBuffers,
-      ...(spec.shader.constants === undefined ? {} : { constants: spec.shader.constants }),
+      ...(vertexConstants === undefined ? {} : { constants: vertexConstants }),
     },
   };
 

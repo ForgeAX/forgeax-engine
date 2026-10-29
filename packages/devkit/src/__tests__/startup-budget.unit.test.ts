@@ -42,7 +42,7 @@ it.each([
     const evaluate = (source: string) =>
       runInNewContext(`(${source.replaceAll('import.meta.env.DEV', String(development))})`);
     expect(evaluate(activation).timeoutMs).toBe(evaluate(execution));
-    if (startupTimeoutMs !== undefined) expect(evaluate(execution)).toBe(startupTimeoutMs);
+    expect(evaluate(execution)).toBe(startupTimeoutMs ?? null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

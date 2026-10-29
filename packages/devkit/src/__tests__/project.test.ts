@@ -77,6 +77,18 @@ describe('readProjectFacts', () => {
       ).toMatchObject({ ok: false, error: { code: 'package-manifest-invalid' } });
     }
   });
+  it('reads the point-shadow shader opt-in and rejects non-boolean values', async () => {
+    expect(
+      await readProjectFacts(await project({}, { forgeax: { pointShadows: true } })),
+    ).toMatchObject({ ok: true, value: { pointShadows: true } });
+    for (const forgeax of [{}, { pointShadows: false }]) {
+      const facts = await readProjectFacts(await project({}, { forgeax }));
+      expect(facts.ok && 'pointShadows' in facts.value).toBe(false);
+    }
+    expect(
+      await readProjectFacts(await project({}, { forgeax: { pointShadows: 'yes' } })),
+    ).toMatchObject({ ok: false, error: { code: 'package-manifest-invalid' } });
+  });
   it('reads backend startup policy from a package root without forge.json', async () => {
     const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-workspace-')));
     temporary.push(root);

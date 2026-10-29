@@ -1,5 +1,5 @@
 import type { ShaderModule } from '@forgeax/engine-rhi';
-import type { ManifestEntry } from '@forgeax/engine-types';
+import { type ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ATMOSPHERE_SHADER_STAGES,
@@ -18,11 +18,30 @@ const pyramidEntries = ['depth_pyramid_seed', 'depth_pyramid_reduce'].map(
 );
 const prewarmSsr = (
   entries: readonly ManifestEntry[],
-  compile: (label: string, source: string) => Promise<ShaderModule>,
+  compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
   seed: (label: string, module: ShaderModule) => void,
 ) => prewarmUtilityShaders('SSR', SSR_SHADER_STAGES, entries, compile, seed);
 
 describe('utility shader bundle preparation', () => {
+  it('selects reflected utility entries without reading unselected source bodies', async () => {
+    const unread: ManifestEntry = {
+      hash: 'unselected-utility-fixture',
+      glsl: undefined,
+      bindings: '[]',
+      entryPoints: [{ name: 'unrelated', stage: 'compute', bindings: [] }],
+      get wgsl(): string {
+        throw new Error('Unselected source expanded');
+      },
+    };
+    const selected = SSR_SHADER_STAGES.map(([, , name], index) => ({
+      ...ssrEntries[index],
+      entryPoints: [{ name, stage: 'compute' as const, bindings: [] }],
+    })) as ManifestEntry[];
+    const compile = vi.fn(async () => ({}) as ShaderModule);
+    expect(await prewarmSsr([unread, ...selected], compile, vi.fn())).toBeDefined();
+    expect(compile).toHaveBeenCalledTimes(3);
+  });
+
   it('does no compile or publication for an absent optional bundle', async () => {
     const compile = vi.fn(),
       seed = vi.fn();
@@ -58,7 +77,13 @@ describe('utility shader bundle preparation', () => {
       expect(seed).not.toHaveBeenCalled();
       return {} as ShaderModule;
     });
-    expect(await prewarmSsr([...pyramidEntries, ...ssrEntries], compile, seed)).toEqual({
+    const prepared = await prewarmSsr([...pyramidEntries, ...ssrEntries], compile, seed);
+    expect(Object.values(prepared ?? {}).every(ShaderSource.is)).toBe(true);
+    expect(
+      Object.fromEntries(
+        Object.entries(prepared ?? {}).map(([key, source]) => [key, source.read()]),
+      ),
+    ).toEqual({
       trace: 'fn ssr_trace() {}',
       temporal: 'fn ssr_temporal() {}',
       compose: 'fn vs_ssr_compose() {}',
@@ -75,7 +100,11 @@ describe('utility shader bundle preparation', () => {
       async () => ({}) as ShaderModule,
       seed,
     );
-    expect(sources).toEqual({
+    expect(
+      Object.fromEntries(
+        Object.entries(sources ?? {}).map(([key, source]) => [key, source.read()]),
+      ),
+    ).toEqual({
       seed: 'fn depth_pyramid_seed() {}',
       reduce: 'fn depth_pyramid_reduce() {}',
     });
@@ -96,8 +125,8 @@ describe('utility shader bundle preparation', () => {
       compile,
       vi.fn(),
     );
-    expect(both?.pyramid.seed).toBe('fn depth_pyramid_seed() {}');
-    expect(both?.ssr.trace).toBe('fn ssr_trace() {}');
+    expect((both?.pyramid.seed as ShaderSource).read()).toBe('fn depth_pyramid_seed() {}');
+    expect((both?.ssr.trace as ShaderSource).read()).toBe('fn ssr_trace() {}');
   });
 });
 
@@ -113,7 +142,7 @@ describe.each([
   }));
   const prewarm = (
     inputs: readonly ManifestEntry[],
-    compile: (label: string, source: string) => Promise<ShaderModule>,
+    compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
     seed: (label: string, module: ShaderModule) => void,
   ) => prewarmUtilityShaders<string>(bundle, stages, inputs, compile, seed);
 
@@ -158,6 +187,8 @@ describe.each([
     );
     expect(Object.keys(sources ?? {})).toEqual(stages.map(([key]) => key));
     expect(seed.mock.calls.map(([label]) => label)).toEqual(stages.map(([, label]) => label));
-    expect(Object.values(sources ?? {})).toEqual(entries.map((entry) => entry.wgsl));
+    expect(Object.values(sources ?? {}).map((source) => source.read())).toEqual(
+      entries.map((entry) => entry.wgsl),
+    );
   });
 });

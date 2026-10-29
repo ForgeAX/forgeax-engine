@@ -8,6 +8,7 @@ import { loadMaterialFixture } from '../../../../assets-runtime/src/__tests__/fi
 import { MaterialResource } from '../../material-resource';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { projectRayScene } from '../../raytracing/scene-projection';
+import { projectVisibleSurfaces } from '../../raytracing/visible-surface';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
 import { preparedPbrSnapshot } from '../gpu-driven-production-fixture';
@@ -98,7 +99,12 @@ export function retainedTransportPlane(
     world,
     retained,
     update,
-    project: () => projectRayScene(retained.slotsSnapshot(), [world].map(worldRenderResources), 16),
+    project: () =>
+      projectRayScene(
+        retained.slotsSnapshot(),
+        [world].map(worldRenderResources),
+        projectVisibleSurfaces(retained.slotsSnapshot(), 16).unwrap(),
+      ),
   };
 }
 

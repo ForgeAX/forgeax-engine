@@ -7,15 +7,28 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 export async function drawPublished(
   renderer: Renderer,
   world: World,
+  observation?: readonly ('linear-ldr' | 'linear-hdr')[],
 ): Promise<Result<FrameReceipt, RenderError>> {
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   world.update(1 / 60).unwrap();
   return ok(
-    await drawReadyFrame(renderer, {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    }),
+    await drawReadyFrame(
+      renderer,
+      {
+        leases: [attached.value],
+        camera: { lease: attached.value },
+        environment: { lease: attached.value },
+      },
+      observation,
+    ),
   );
+}
+
+/** Submit one ready scene picture for an already updated World. */
+export async function drawReady(
+  renderer: Renderer,
+  request: Parameters<Renderer['draw']>[0],
+): Promise<Result<FrameReceipt, RenderError>> {
+  return ok(await drawReadyFrame(renderer, request));
 }

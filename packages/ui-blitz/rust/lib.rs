@@ -552,12 +552,12 @@ impl UiDocument {
         self.resolve();
         let node = self.node(id)?;
         if !node.has_boxes() {
-            return Ok(vec![0.0; 6]);
+            return Ok(vec![0.0; 8]);
         }
         let offset = if id == self.document_element() {
             self.document.viewport_scroll()
         } else {
-            *node.scroll_offset()
+            node.scroll_position()
         };
         Ok(vec![
             offset.x,
@@ -566,6 +566,8 @@ impl UiDocument {
             f64::from(node.scroll_height()),
             f64::from(node.client_width()),
             f64::from(node.client_height()),
+            f64::from(node.client_left()),
+            f64::from(node.client_top()),
         ])
     }
     pub fn scroll_to(&mut self, id: u64, x: f64, y: f64) -> Result<(), String> {
@@ -1020,6 +1022,46 @@ mod tests {
     }
     fn find(doc: &UiDocument, selector: &str) -> u64 {
         doc.query(doc.root(), selector).unwrap()[0]
+    }
+
+    #[test]
+    fn input_inline_client_metrics_exclude_padding_without_resizing_controls() {
+        let mut doc = doc("<style>input,textarea,div{box-sizing:content-box;width:76px;height:20px;padding:5px;border:1px solid}div{overflow:auto}</style><input type=number value=2.4><textarea></textarea><div></div>");
+        let input = find(&doc, "input");
+        let metrics = doc.scroll_metrics(input).unwrap();
+        assert_eq!(metrics[4], 76.0);
+        assert_eq!(metrics[2], 76.0);
+        assert_eq!(metrics[5], 30.0);
+        assert_eq!(metrics[6], 6.0);
+        assert_eq!(metrics[7], 1.0);
+        assert_eq!(doc.rect(input).unwrap()[2], 88.0);
+        for selector in ["textarea", "div"] {
+            let element = find(&doc, selector);
+            let metrics = doc.scroll_metrics(element).unwrap();
+            assert_eq!(metrics[4], 86.0);
+            assert_eq!(metrics[2], 86.0);
+        }
+    }
+
+    #[test]
+    fn input_programmatic_scroll_moves_the_existing_editor_and_clamps_after_shrink() {
+        let mut doc = UiDocument::new(
+            "<style>input{box-sizing:content-box;width:80px;height:20px;padding:7px 11px;border:2px solid}</style><input>",
+            240, 100, 1.0,
+            include_bytes!("../../../third_party/blitz/packages/blitz-dom/tests/fonts/dejavu-sans-ascii.ttf").to_vec(),
+        ).unwrap();
+        let input = find(&doc, "input");
+        doc.set_input_value(input, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").unwrap();
+        let before = doc.scroll_metrics(input).unwrap();
+        assert!(before[2] > before[4] + 80.0);
+        doc.scroll_to(input, 10000.0, 10000.0).unwrap();
+        let end = doc.scroll_metrics(input).unwrap();
+        assert!((end[0] - (end[2] - end[4])).abs() < 0.01);
+        assert_eq!(end[1], 0.0);
+        assert_eq!(f64::from(doc.node(input).unwrap().element_data().unwrap().text_input_data().unwrap().scroll_offset), end[0]);
+        assert_eq!(doc.node(input).unwrap().scroll_offset().x, 0.0);
+        doc.set_input_value(input, "short").unwrap();
+        assert_eq!(doc.scroll_metrics(input).unwrap()[0], 0.0);
     }
 
     #[test]
@@ -1858,7 +1900,7 @@ mod tests {
         assert!(before[2] > 0.0);
         doc.set_style(host, "display", "none", "").unwrap();
         assert_eq!(doc.rect(child).unwrap(), vec![0.0; 4]);
-        assert_eq!(doc.scroll_metrics(child).unwrap(), vec![0.0; 6]);
+        assert_eq!(doc.scroll_metrics(child).unwrap(), vec![0.0; 8]);
         let id = NodeId::from_u64(child);
         assert!(doc.document.node_client_rects(id).is_empty());
         let offset = doc.document.offset_rect(id).unwrap();

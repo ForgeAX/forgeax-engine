@@ -204,6 +204,12 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly platform?: Platform;
   /** Opt into realm-local engine execution. Omission preserves the existing local assembly path. */
   readonly execution?: ExecutionOptions;
+  /**
+   * Replace WebGPU with the no-op `installWebGpuStub` in the main realm and every
+   * execution Worker realm. The Engine keeps its WebGPU path and the profile's
+   * caps without GPU work, validation or readback contents; CPU diagnostics only.
+   */
+  readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
   /** One realm-owned Registry; omitted reuses the Registry created by createRenderer. */
   readonly assets?: AssetRegistry;
   /** Explicit catalog projection for this Registry. */
@@ -227,8 +233,20 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly outputColorSpace?: OutputColorSpace;
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /**
+   * Captured recipes compiled after first renderer readiness without blocking it, in a
+   * bounded window. Observe `renderer.inspect().pipelineLibrary.backgroundWarmup`;
+   * a failure never fails the App and affected pipelines compile on first use.
+   */
+  readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  /**
+   * Content byte budget of each Engine-created AssetRegistry serving the App World
+   * (meshes, textures and other runtime records). Positive safe integer; default 4 GiB.
+   * It guards against runaway growth; raise it for scenes with more resident content.
+   */
+  readonly assetBudgetBytes?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
   /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
@@ -327,8 +345,8 @@ export interface App {
   /** AudioBackend handle when audio attach is enabled; undefined otherwise. */
   readonly audio?: AudioBackend;
   /**
-   * PhysicsWorld handle when physicsPlugin is loaded; undefined
-   * otherwise. physicsPlugin.build awaits the WASM import -- createApp
+   * PhysicsWorld handle when a physics backend plugin is active; undefined
+   * otherwise. Plugin activation awaits WASM initialization -- createApp
    * resolves ONLY after the WASM module is loaded, so this field is
    * populated immediately when createApp returns (AC-06: no timing gap).
    */
@@ -373,8 +391,9 @@ export interface App {
   /**
    * Advance one complete update/draw frame through the App-owned frame authority.
    * The App must be paused; deterministic tools supply the explicit delta.
+   * `{ render: false }` runs only the World update (see {@link AppStepFrameOptions}).
    */
-  stepFrame(deltaSeconds: number): Result<void, AppDispatchError>;
+  stepFrame(deltaSeconds: number, options?: AppStepFrameOptions): Result<void, AppDispatchError>;
   /**
    * Subscribe to structured errors fan-out from the rAF loop. Returns an
    * unsubscribe handle. The callback signature deliberately excludes raw
@@ -412,6 +431,18 @@ export interface App {
   readonly remote?: import('@forgeax/engine-types').RemoteHandle | undefined;
 }
 
+/** Options for a paused {@link App.stepFrame}. */
+export interface AppStepFrameOptions {
+  /**
+   * Default true. False runs the same World update (input, Time, Update and
+   * FixedUpdate) but submits no picture and needs no frame receipt credit; the
+   * next rendered frame draws the advanced World with a temporal reset. Queries
+   * of the submitted picture (GPU picking, submitted terrain height) keep
+   * answering for the last rendered frame until then.
+   */
+  readonly render?: boolean;
+}
+
 /** Host control returned by the unified execution path. Engine-owned objects remain realm-local. */
 export type ExecutionApp = Pick<
   App,
@@ -422,6 +453,7 @@ export type ExecutionApp = Pick<
   | 'stop'
   | 'pause'
   | 'resume'
+  | 'stepFrame'
   | 'onError'
   | 'lastError'
   | 'dispose'

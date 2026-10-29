@@ -1,5 +1,7 @@
 # `@forgeax/engine-ui`
 
+`createUiImporter().capabilities.sourceFormats` declares `.ui.html` registration and one UI output. Registration preserves identity; import still requires the matching `.ui.css` companion and validates the complete UI source.
+
 UI is an asset plus a small behavior island. The asset package owns the stable HTML/CSS payload; game code supplies dynamic text, template clones, input and lifecycle.
 
 > [!IMPORTANT]
@@ -117,6 +119,11 @@ focus, including on touch Hosts. The browser mount corrects UA spin-button
 opacity when that pseudo-element is supported; native painting uses the same
 visible default. Disabled and read-only controls retain their opt-outs, and author CSS keeps precedence over the mount's base style.
 
+The mounted host fills its positioned root. Its internal content container has
+the same definite height, so an authored `height: 100%` HUD resolves against the
+viewport in both browser DOM and Blitz. Put scrolling and clipping on the authored
+element that owns them; consumers do not need to select or size internal wrappers.
+
 ## Producer authoring descriptor
 
 Every `kind: 'ui'` catalog row publishes the versioned `AssetAuthoringCapability.ui` descriptor from
@@ -134,7 +141,7 @@ owned by the game bootstrap, while the Gateway and Content Browser project the c
 
 ### Profile and diagnostics
 
-Run `forgeax project check --json` from a game project to read the complete
+Run `forgeax project check --detail --json` from a game project to read the complete
 current profile at `value.uiAuthoringProfile`, including
 `css.nativeProperties`, supported selectors, media features, HTML elements and
 custom-property prefixes. This report comes directly from the validator's table.

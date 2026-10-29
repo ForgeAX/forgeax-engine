@@ -18,6 +18,7 @@ export {
   materialProgramContextForPass,
   materialProgramContextKey,
   projectCookedMaterialRecord,
+  rebindMaterialPublicationGeneration,
   serializeCookedMaterialRecord,
   serializeMaterialCookReceipt,
   validateCookedMaterialRecord,

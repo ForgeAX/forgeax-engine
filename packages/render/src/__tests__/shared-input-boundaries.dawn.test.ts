@@ -168,11 +168,11 @@ it('reads the exact held Mesh descriptor after replacement, aborted preparation 
 it('culls old and current shared Mesh bounds with actual descriptor and map upload costs', async () => {
   const result = await runSharedGeometryCullEvidence();
   expect(result.frames.map((frame) => frame.visible)).toEqual([0, 1024, 0, 1024, 0]);
-  expect(result.geometryUpload).toBe(4 * 1024 + 28);
+  expect(result.geometryUpload).toBe(4 * 1024 + 32);
   expect(result.frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([
-    4 * 1024 + 28,
+    4 * 1024 + 32,
     0,
-    4 * 1024 + 8,
+    4 * 1024 + 12,
     0,
   ]);
 }, 30_000);

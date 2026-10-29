@@ -90,7 +90,7 @@ export async function shadowPublicationFixture(instances = 16) {
       .unwrap();
     const views = identities.map((identity) => {
       const submission = frame.shadowViewPool?.submission(identity);
-      const bindings = frame.shadowBatchProjections?.get(shadowViewIdentityKey(identity));
+      const bindings = frame.shadowBatchProjections?.()?.get(shadowViewIdentityKey(identity));
       if (submission === undefined || bindings === undefined)
         throw Error('Missing shadow publication');
       return { submission, bindings };

@@ -6,56 +6,40 @@ import { fileURLToPath } from 'node:url';
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptRoot, '..');
-const engineRoot = resolve(packageRoot, '../..');
-const privateSource = resolve(
-  engineRoot,
-  'forgeax-engine-assets/demo-assets/template-game-default/sky.hdr',
-);
 const packageKitRoot = resolve(packageRoot, 'assets/canonical-kit');
 const configuredOutput = process.env.FORGEAX_CANONICAL_KIT_OUTPUT;
 const defaultOutput =
   configuredOutput === undefined ? packageKitRoot : resolve(configuredOutput);
-const publicSource = resolve(packageKitRoot, 'sky.hdr');
 const defaultMeta = resolve(packageKitRoot, 'sky.hdr.meta.json');
 const generatedSource = 'forgeax-generated://canonical-kit/sky.hdr';
-const sdkSourceKey = 'forgeax-sdk://resources/preview-canonical-kit/sky.hdr';
-const publicDistributionMarker = resolve(engineRoot, '.forgeax-public-distribution');
-const defaultSource =
-  !existsSync(publicDistributionMarker) && existsSync(privateSource)
-    ? privateSource
-    : existsSync(publicSource)
-      ? publicSource
-      : generatedSource;
 
 const digest = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const stableJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
 function generatedHdr() {
+  const width = 64;
+  const height = 32;
   const header = Buffer.from(
-    '#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 8\n',
+    `#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y ${height} +X ${width}\n`,
     'ascii',
   );
-  // The engine HDR decoder intentionally accepts Radiance's new-RLE form only
-  // and requires the scanline width to be at least eight pixels. Emit one
-  // neutral 8-pixel scanline using one run per channel instead of the old
-  // one-pixel placeholder (which was never a valid new-RLE scanline).
-  return Buffer.concat([
-    header,
-    Buffer.from([
-      0x02,
-      0x02,
-      0x00,
-      0x08,
-      0x88,
-      0x80,
-      0x88,
-      0x80,
-      0x88,
-      0x80,
-      0x88,
-      0x80,
-    ]),
-  ]);
+  const scanlines = [];
+  const horizon = [1, 1.02, 1.08];
+  const zenith = [0.35, 0.45, 0.65];
+  const ground = [0.12, 0.1, 0.08];
+  for (let y = 0; y < height; y++) {
+    const elevation = Math.cos(Math.PI * (y + 0.5) / height);
+    const weight = Math.abs(elevation) ** 0.6;
+    const pole = elevation >= 0 ? zenith : ground;
+    const rgb = horizon.map((value, channel) => value + (pole[channel] - value) * weight);
+    const exponent = Math.floor(Math.log2(Math.max(...rgb))) + 1;
+    const scale = 256 / 2 ** exponent;
+    const rgbe = [...rgb.map((value) => Math.floor(value * scale)), exponent + 128];
+    // Each latitude is constant around the horizon. Radiance new-RLE stores
+    // one width-pixel run for each channel without a bitmap dependency.
+    scanlines.push(Buffer.from([2, 2, 0, width, ...rgbe.flatMap((value) => [128 + width, value])]));
+  }
+  return Buffer.concat([header, ...scanlines]);
 }
 
 async function readSource(sourcePath) {
@@ -63,13 +47,13 @@ async function readSource(sourcePath) {
 }
 
 function sourceKey(sourcePath) {
-  if (sourcePath === generatedSource) return generatedSource;
-  if (sourcePath === publicSource || process.env.FORGEAX_SDK_BUILD === '1') return sdkSourceKey;
-  return 'forgeax-engine-assets/demo-assets/template-game-default/sky.hdr';
+  return sourcePath === generatedSource
+    ? generatedSource
+    : 'forgeax-authored://canonical-kit/sky.hdr';
 }
 
 export async function buildCanonicalKit({
-  sourcePath = defaultSource,
+  sourcePath = generatedSource,
   metaPath = defaultMeta,
   outputRoot = defaultOutput,
 } = {}) {

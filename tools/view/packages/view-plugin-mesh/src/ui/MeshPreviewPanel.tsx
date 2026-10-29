@@ -8,6 +8,7 @@ import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspecti
 import {
   cameraPoseWithPivot,
   commitPreviewCameraPivot,
+  createViewportInputApi,
   meshAabbCenter,
   previewShouldCapture,
   rememberInitialPreviewCamera,
@@ -151,10 +152,11 @@ function LivePreview({
     };
     const attachInput = () => {
       if (cancelled || signal.aborted || !ready || removeInput || !pageActive()) return;
+      if (presentation?.surfacePlacement === 'owner') return;
       const factory = inputControllerFactory?.();
       if (typeof factory !== 'function') return;
       const controller = factory({
-        api: client,
+        api: createViewportInputApi(client, presentation, { targetId: String(target.targetId) }),
         targetId: String(target.targetId),
         targetGeneration: target.generation,
         tabId: VIEW_WORKSPACE_TAB_ID,
@@ -243,6 +245,10 @@ function LivePreview({
     setRestoring(true);
     setRestoreError('');
     void Promise.resolve(controllerRef.current?.abort?.('camera-restore'))
+      .then(() => presentation?.finishPreviewCamera?.({
+        targetId: String(target.targetId),
+        ...(target.generation === undefined ? {} : { generation: target.generation }),
+      }))
       .then(() => restorePreviewCamera(
         client,
         target,

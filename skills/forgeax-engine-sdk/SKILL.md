@@ -8,12 +8,56 @@ description: >-
 
 # ForgeaX Engine SDK
 
+## Start here for game work
+
+The game-root `AGENTS.md` already gives the hard rules, default commands and routing.
+Reach a first correct edit with this short path, not by reading large skills up front:
+
+1. Signatures and import paths: the API index before
+   searching `node_modules` READMEs or `.d.ts` files.
+2. Effect recipes for an `empty` project: the effects cookbook (~2 KB index: water -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
+   `runtime-light-emissive`, rain/snow/fire/sparks -> `particles-*`). Open ONLY the file you need.
+3. Commands: the **Quick contract** at the top of
+   [`forgeax-engine-cli`](../forgeax-engine-cli/SKILL.md); camera, lights and post
+   effects: the Quick contract of
+   [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md).
+4. Deeper needs: pick one row in the capability table below and read only that skill's
+   relevant section. Project layout, assets and setup live in the
+   game project guide; acceptance, release and
+   blocked checks in the game delivery guide.
+5. A Three.js effect: look up its native equivalent and gaps in
+   `references/three-equivalents.md` before simplifying it.
+
+Large skills (`forgeax-engine-cli`, `forgeax-engine-render-pipeline`,
+`forgeax-engine-debug`, `forgeax-engine-material`, `forgeax-engine-app`) are references:
+search them for the needed heading instead of reading them whole, and do not re-read a
+file already in context.
+
+## Visual self-review
+
+For look-dev use `forgeax dev look --hide-ui true --json` after each lighting, material,
+fog or camera edit (seconds against a running `dev start --headless true`; it waits for
+your edit and reports luma, saturation, contrast, clipping and subject separation with
+findings); use `project play` only for gameplay acceptance. After the first look, and
+again before delivery, open the PNG and answer each question in one sentence; fix every
+"no", then look again:
+
+1. Brightness: does the frame read as the brief's time of day (daylight bright, night dark
+   with lit pools), with no blown-out white or crushed black areas?
+2. Saturation: are colours as vivid as the brief implies? A pale or grey frame usually
+   means fog over the subject, a cool `Skylight` fill or AgX.
+3. Contrast: does the subject stand out from its background? A flat slab or empty void
+   behind it needs a `SkyboxBackground` with an authored sky asset or set dressing.
+4. Mood: do palette and lighting match the brief's words (warm, eerie, neon, cosy)?
+5. Framing: does the subject fill about half the frame, with nothing clipping the near
+   plane or blocking the camera, and the HUD off the subject?
+
 ## First five minutes: understand before authoring
 
 SDK `init` and project `new` return the local `AGENTS.md` and this skill in
 `onboarding.read`. Read those entries, select the requested delivery scope in the
 game's guide, and load only the focused skills/package contracts needed now.
-Use [the capability catalog](references/feature-catalog.md) on demand for discovery;
+Use the capability catalog on demand for discovery;
 its historical audit snapshot is neither current-HEAD proof nor an enablement list.
 
 For a new or resumed game task, read the game's local `AGENTS.md` before editing.
@@ -40,7 +84,7 @@ Defer: <available capabilities not needed now>
 | Scene, imported files, code-first packs, GUID loading | `forgeax-engine-assets`; discover operations through `forgeax-engine-cli` | `asset verify`, build catalog, runtime load by GUID |
 | PBR, textures, custom WGSL | `forgeax-engine-material`, then `forgeax-engine-shader` | Shader check, material readiness, browser pixels |
 | Lighting, shadows, sky, fog, AA, post effects, custom passes | `forgeax-engine-render-pipeline` | Requested pipeline active and real GPU/browser evidence |
-| GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Cooked effect, runtime playback, browser pixels |
+| Particles: rain, snow, sparks, dust, fire (`Points`, effects/particles-core.md); GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Path choice; cooked effect, runtime playback, browser pixels |
 | Bodies, colliders, character motion | `forgeax-engine-physics` | Fixed-step/collision test plus playable behavior |
 | BGM, SFX, spatial audio | `forgeax-engine-audio` | Host playback, intent/cleanup evidence, user gesture handling |
 | Black frame, wrong binding, GPU divergence | `forgeax-engine-rhi-debug`; use `forgeax-engine-debug` for symptom routing | One capture artifact, inspect/replay or paired differential |
@@ -56,9 +100,9 @@ Create a game only after selecting its template: `forgeax project new <dir> --te
 > read the generated project's `README.md` and keep, adjust, replace, or remove starter content by
 > game goal; update scene, runtime, and pack references together when removing it.
 
-Use [the full capability catalog](references/feature-catalog.md) for less common areas such as animation/skinning, UI/font/video, picking, networking, intelligence, profiler, Remote, custom RenderGraph/RHI work, and source-mode Engine development. Then read only the focused skill and owning package README. The catalog is a discovery index, not a substitute for those precise contracts.
+Use the full capability catalog for less common areas such as animation/skinning, UI/font/video, picking, networking, intelligence, profiler, Remote, custom RenderGraph/RHI work, and source-mode Engine development. Then read only the focused skill and owning package README. The catalog is a discovery index, not a substitute for those precise contracts.
 
-For browser-compositor screenshots, software/hardware backend selection, Engine frame readiness, repeated play-test checkpoints, and local Engine binding, use [the browser capture and local-Engine guide](references/browser-capture-and-local-engine.md).
+For browser-compositor screenshots, software/hardware backend selection, Engine frame readiness, repeated play-test checkpoints, and local Engine binding, use the browser capture and local-Engine guide.
 
 The default game-consumer route is:
 
@@ -80,12 +124,23 @@ Successful `new` also performs a two-second, best-effort check of the configured
 
 ## SDK production and publication
 
+Both SDK transports include editable `source/engine/` with the same release's
+prebuilt package outputs. For a focused Engine change, install source dependencies,
+rebuild the changed owner and bind through `project engine use-local`; unchanged
+owners reuse their delivered builds. Follow the local-Engine guide
+for binding and the SDK README for the partial rebuild commands.
+
+If a source consumer with precompiled Rapier unexpectedly requests Rust, compare
+its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the
+3D SIMD glue and declarations. Follow [native artifact admission](../../scripts/ci/README.md#native-rapier-artifact-admission);
+repair missing exported files without bypassing source, inventory or digest checks.
+
 For an explicitly requested Engine/SDK change, SDK archive verification or SDK
-publication, read [SDK production](references/sdk-production.md). Its exact-ZIP
+publication, read SDK production. Its exact-ZIP
 subject is the SDK distribution. Game ZIP packaging belongs to the game's release
 route; ordinary game creation does not enter Candidate, Promotion or SDK consumers.
 For channel/source and publication ordering, read the
-[release contract](../../packages/engine/RELEASING.md): `main` publishes `next`,
+release contract: `main` publishes `next`,
 the weekly `rc` test line publishes `rc`, and `stable` publishes `latest`. GitHub
 and npm publish independently after source qualification of mirrored channels;
 the source mirror retains its formal GitHub Release identity check and advances
@@ -94,7 +149,7 @@ stage.
 
 > [!IMPORTANT]
 > Every SDK publication starts with
-> [Select the release flow first](references/sdk-production.md#select-the-release-flow-first):
+> Select the release flow first:
 > name the flow (development, rc cut/fix, rc promotion or stable hotfix), version,
 > source SHA and npm tag before pushing a release branch or dispatching a workflow.
 > If the user's request leaves any of them open, ask the user; never guess a

@@ -1,4 +1,3 @@
-import type { MaterialResource } from './material-resource';
 // @forgeax/engine-render - typed render-pipeline topology contract.
 //
 // `RenderPipeline` is the typed topology contribution used by the Standard host.
@@ -35,7 +34,9 @@ import type {
   RhiCaps,
   RhiError,
   RhiRenderPassEncoder,
+  Texture,
   TextureFormat,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { Tonemap } from './components/camera';
@@ -362,6 +363,8 @@ export interface RenderPipelineTopology {
   readonly transmissionDemand?: TransmissionDemand | undefined;
   /** Whether the extracted frame contains a single-layer medium Surface. */
   readonly singleLayerMedium?: boolean | undefined;
+  /** An opaque material sets `renderState.fog: false`; the forward lane draws it after fog. */
+  readonly unfoggedOpaque?: true | undefined;
   /**
    * Resolved weighted blended OIT shape. Present only when the view resolves
    * to `weighted-blended` and at least one transparent draw is eligible;
@@ -437,7 +440,7 @@ export function importRenderPipelineSurface(
             : [topology.surface.viewFormat])),
       ],
     },
-    (frame) => frame.currentTexture,
+    (frame) => frame.outputTarget().texture,
   );
   if (!texture.ok) return texture;
   const display =
@@ -446,18 +449,24 @@ export function importRenderPipelineSurface(
       : graph.importView(
           texture.value,
           { label: 'surface.display', format: topology.surface.viewFormat },
-          (frame) => frame.view,
+          (frame) => frame.outputTarget().view,
         );
   if (display !== undefined && !display.ok) return display;
+  let storageView: { readonly texture: Texture; readonly view: TextureView } | undefined;
   const storage = graph.importView(
     texture.value,
     { label: 'surface.storage', format: topology.surface.storageFormat },
     (frame) => {
-      if (topology.surface.storageFormat === topology.surface.viewFormat) return frame.view;
-      const resolved = frame.runtime.device.createTextureView(frame.currentTexture, {
+      if (topology.surface.storageFormat === topology.surface.viewFormat)
+        return frame.outputTarget().view;
+      // Re-create only when the surface hands back a different texture.
+      const target = frame.outputTarget().texture;
+      if (storageView?.texture === target) return storageView.view;
+      const resolved = frame.runtime.device.createTextureView(target, {
         format: topology.surface.storageFormat,
       });
       if (!resolved.ok) throw resolved.error;
+      storageView = { texture: target, view: resolved.value };
       return resolved.value;
     },
   );
@@ -562,8 +571,6 @@ export interface RenderPipelineSurfaceMediumPair {
 }
 /** Producer-owned Standard PBR resources resolved during graph execution. */
 export interface GpuDrivenStandardPbrFrameResources {
-  /** Current display-camera rejection for a batch containing exactly one candidate. */
-  cameraVisible?: (source: import('./render-system-extract').RenderableSnapshot) => boolean;
   /** Resource generation of the actual scene-index/indirect producer. */
   readonly resourceGeneration?: number;
   /** Called only for a batch actually being recorded; prepares its exact physical binding. */
@@ -571,7 +578,7 @@ export interface GpuDrivenStandardPbrFrameResources {
     slot: number,
   ): { readonly group: BindGroup; readonly byteOffset: number } | undefined;
   /** Frame-global material slots keyed by shared binding and its physical resource class. */
-  readonly materialSlotIndicesByBinding: Map<MaterialResource, Map<string, number>>;
+  materialSlotIndicesByBinding: import('./record/fold-buckets').MaterialBindingSlots;
   /** The current pass selects material membership and attachment formats. */
   selectedMaterialSlots?: ReadonlySet<number>;
   colorFormats?: readonly TextureFormat[];
@@ -624,8 +631,7 @@ export interface GpuDrivenStandardPbrFrameResources {
     | ((
         meshBuffer: Buffer,
         meshBindingBytes: number,
-        paletteBuffer: Buffer,
-        paletteBindingWindowBytes: number,
+        task: import('./record/skin-tasks').SkinTaskBinding,
       ) => BindGroup | undefined)
     | undefined;
 }

@@ -21,6 +21,38 @@ backend-owned.
 
 > AI users: read [AGENTS.md §RHI / WebGPU](../../AGENTS.md) first; the铁律 (spec-alignment / capability-gated / opaque handle / math-free) is the SSOT and supersedes any divergence in this README.
 
+## Pipeline source and action ownership
+
+`pipelineLibrary` remains optional. `PipelineLibraryLimits` limits one export or
+input action, with finite defaults in `PIPELINE_LIBRARY_LIMITS`; it does not limit
+live GPU resources. `prepare` accepts an independent `inputLimits` policy and an
+optional existing roster `owner` for generation-scoped retention. `ownPipelineLibrary`
+keeps received WGSL strings behind the same version-1 manifest descriptors without
+runtime fragmentation, string copying or eager source hashing. Equal complete strings
+share an owner; source identity is computed once on actual demand. Serialization
+borrows WGSL without changing the wire schema. Metadata and sources form one sealed
+snapshot. Diagnostic `collect()` retains the current and subsequent graph until its
+returned scope is disposed; ordinary runtime use has no history retainer. See the
+[backend contract](../rhi-webgpu/README.md#device-pipeline-library) for the failure,
+readback and dependency-lifetime rules.
+
+## Pipeline compilation inspection
+
+`RhiDevice.pipelineLibrary?.inspect().pending` is optional backend-owned data.
+When present, it lists all recorded scheduled/native requests with their complete
+recipes, shader digests, label-independent semantic identities, origin, stage
+and request elapsed time. `preload` names exact startup/background membership,
+explicit absence, or unresolved library indexing. A runtime-origin request can
+still belong to a background library. `unidentified` counts live requests that cannot be
+recorded. Absence means unsupported inspection, not zero outstanding work.
+This is neither driver-internal compiler timing nor a complete CPU preparation
+roster. See the [WebGPU implementation contract](../rhi-webgpu/README.md#device-pipeline-library).
+`inspect({runtimeRequests:true})` requests optional bounded runtime
+demand history, including requests completed before the read. Ordinary inspection
+leaves that payload absent. History mode omits the hashing full `pending` list,
+retaining compilation counters and cached nullable recipe digests. Missing history
+means unsupported, not no compilation.
+
 ## Query capability matrix
 
 The query surface is split by the fact that can actually gate it: occlusion

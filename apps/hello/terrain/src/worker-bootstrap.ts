@@ -5,7 +5,7 @@ import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { validateCatalogDelta } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
 import type { ExecutionBootstrapEntry } from '@forgeax/engine-app';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import { Terrain } from '@forgeax/engine-terrain';
 import { installTerrainWalker } from './walker.ts';
 import { terrainReloadPolicy } from './reload-policy.ts';
@@ -58,7 +58,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
       };
     },
     plugins: [
-      physicsPlugin('rapier-3d'),
+      physics3d,
       {
         name: 'terrain-worker-proof',
         inject: ['world', 'assets', 'executionBootstrapHost'],

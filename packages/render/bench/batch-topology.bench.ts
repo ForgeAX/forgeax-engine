@@ -22,7 +22,7 @@ const prepared: PreparedGpuDrivenDraw = {
   uvSets: receipt.uvSets,
   vertexInputs: receipt.vertexInputs,
   alphaMask: receipt.alphaMask,
-  skinPaletteAddress: receipt.skinPaletteAddress,
+
   topology: 'triangle-list',
   indexed: true,
   first: 0,
@@ -94,8 +94,8 @@ describe('BatchTopology 2000 published rigid draws', () => {
   projection.reset(initial);
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  if (topology.query(topology.sourcePlan(), undefined).candidateCount !== 2000 || topology.query(topology.sourcePlan(), undefined).batches.length !== 32)
-    throw new Error('Benchmark requires 2000 draws sharing 32 material resources');
+  if (topology.query(topology.sourcePlan(), undefined).candidateCount !== 2000 || topology.query(topology.sourcePlan(), undefined).batches.length !== 1)
+    throw new Error('Benchmark requires 2000 draws over 32 material resources in one row-material batch');
   const deltas = [publication(), publication()].map((rows) =>
     projection.apply(rows.map((row) => ({ kind: 'update' as const, worldId: 0, entityKey: row.entityKey, snapshot: row }))),
   );

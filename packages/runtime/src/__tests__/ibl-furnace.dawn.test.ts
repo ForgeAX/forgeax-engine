@@ -1,10 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import type { Renderer, RendererOptions } from '@forgeax/engine-render';
+import type { Renderer } from '@forgeax/engine-render';
 import type { RhiInstance } from '@forgeax/engine-rhi';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
-import { expect, it } from 'vitest';
+import { afterAll, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
 import {
@@ -16,6 +16,7 @@ import {
   replayFurnace,
   singleScatterManifest,
 } from './ibl-furnace.fixture';
+import { observeNativeDeviceRequests } from './native-device-work.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { unwrap } from './specular-aa.fixture';
 
@@ -29,20 +30,44 @@ const singleScatterUrl = shaderManifestUrl(single.manifest);
 const directory = 'artifacts/ibl-furnace/dawn';
 const PATHS: readonly RenderPath[] = ['forward', 'deferred'];
 
+const nativeDevices = observeNativeDeviceRequests();
+// Positive and single-scatter programs retain separate live hosts. The recorded
+// shader falsifier still opens its own host and both independent replay devices.
+const liveHosts = new Map<string, ReturnType<typeof createFurnaceHost>>();
+async function createFurnaceHost(manifestUrl: string, rhi: RhiInstance) {
+  const target = offscreenCanvas(FURNACE_SIZE);
+  const host = unwrap(
+    await constructRuntimeRendererHost(target.canvas, { rhi }, { shaderManifestUrl: manifestUrl }),
+  );
+  return { target, host };
+}
+afterAll(async () => {
+  try {
+    for (const pending of liveHosts.values()) {
+      const { target, host } = await pending;
+      unwrap(await host.renderer.dispose());
+      target.destroy();
+    }
+    nativeDevices.assertMaximum(5);
+  } finally {
+    liveHosts.clear();
+    nativeDevices.restore();
+  }
+});
 async function withRenderer<T>(
   manifestUrl: string,
-  options: Omit<RendererOptions, 'rhi'>,
   body: (renderer: Renderer) => Promise<T>,
   rhi: RhiInstance = webgpu.rhi,
 ) {
-  const target = offscreenCanvas(FURNACE_SIZE);
-  const host = unwrap(
-    await constructRuntimeRendererHost(
-      target.canvas,
-      { rhi, ...options },
-      { shaderManifestUrl: manifestUrl },
-    ),
-  );
+  if (rhi === webgpu.rhi) {
+    let pending = liveHosts.get(manifestUrl);
+    if (pending === undefined) {
+      pending = createFurnaceHost(manifestUrl, rhi);
+      liveHosts.set(manifestUrl, pending);
+    }
+    return body((await pending).host.renderer);
+  }
+  const { target, host } = await createFurnaceHost(manifestUrl, rhi);
   try {
     return await body(host.renderer);
   } finally {
@@ -88,8 +113,8 @@ it('white-furnace: rough white metal vanishes into a uniform environment on both
   mkdirSync(directory, { recursive: true });
   const report: Record<string, unknown> = {};
   for (const renderPath of PATHS) {
-    const on = await withRenderer(compensatedUrl, {}, (r) => renderFurnace(r, renderPath));
-    const off = await withRenderer(singleScatterUrl, {}, (r) => renderFurnace(r, renderPath));
+    const on = await withRenderer(compensatedUrl, (r) => renderFurnace(r, renderPath));
+    const off = await withRenderer(singleScatterUrl, (r) => renderFurnace(r, renderPath));
     writeFileSync(`${directory}/${renderPath}-compensated.png`, luminancePng(on, FURNACE_SIZE, 1));
     writeFileSync(
       `${directory}/${renderPath}-single-scatter.png`,
@@ -111,7 +136,6 @@ it('rhi-debug replay: the captured shading draw conserves energy; the same tape 
   try {
     const evidence = await withRenderer(
       compensatedUrl,
-      {},
       (renderer) =>
         replayFurnace(renderer, recorder, (name, bytes) =>
           writeFileSync(`${directory}/${name}`, bytes),

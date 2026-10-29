@@ -125,7 +125,7 @@ describe('Standard Cluster upload ownership', () => {
       directional: undefined,
       local: [],
       view: mat4.identity(mat4.create()),
-      projection: computeProjectionMatrix(sampledCamera),
+      projection: computeProjectionMatrix(sampledCamera, mat4.create()),
       near: 0.1,
       far: 100,
       grid: { x: 2, y: 2, z: 2 },
@@ -162,7 +162,7 @@ describe('Standard Cluster upload ownership', () => {
     const upload = writes.mock.calls.find(([buffer]) => buffer === ssao.uniformBuffer);
     expect(upload).toBeDefined();
     const payload = upload?.[2] as Float32Array;
-    const projection = computeProjectionMatrix(sampledCamera);
+    const projection = computeProjectionMatrix(sampledCamera, mat4.create());
     const jitter = sampledCamera.temporal?.currentJitterUv;
     if (jitter === undefined) throw new Error('Expected sampled camera jitter');
     // Clip translation shifts x/w and y/w independently of lens or capture kind.
@@ -449,8 +449,7 @@ describe('Standard Cluster upload ownership', () => {
     const ledger = first.value as unknown as {
       readonly bookkeeper: { isDestroyed(handle: unknown): boolean };
     };
-    await Promise.resolve();
-    expect(ledger.bookkeeper.isDestroyed(old.lightDataBuffer)).toBe(true);
+    await vi.waitFor(() => expect(ledger.bookkeeper.isDestroyed(old.lightDataBuffer)).toBe(true));
     expect(errors).toEqual([]);
   });
 

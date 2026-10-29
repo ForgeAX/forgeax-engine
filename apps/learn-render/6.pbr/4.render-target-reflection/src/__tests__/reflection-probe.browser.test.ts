@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   REFLECTION_PROBE_IBL_STAGES,
-  ReflectionProbeProjection,
   selectReflectionProbe,
 } from '@forgeax/engine-render';
 
@@ -23,9 +22,5 @@ describe('ReflectionProbe Browser paired evidence contract', () => {
     };
     expect(selectReflectionProbe([fact], [0, 0, 0]).kind).toBe('probe');
     expect(selectReflectionProbe([fact], [2, 0, 0]).kind).toBe('skylight');
-
-    const projection = new ReflectionProbeProjection();
-    const snapshot = projection.update([fact], [{ worldId: 0, entityKey: 9, center: [0, 0, 0] }]);
-    expect(snapshot.selected.get('0:9')?.kind).toBe('probe');
   });
 });

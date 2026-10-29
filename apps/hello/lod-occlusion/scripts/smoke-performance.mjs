@@ -339,7 +339,7 @@ function validateCpuObservations(evidence) {
   );
 }
 
-export function validatePerformanceEvidence(evidence) {
+function validateEvidenceIdentity(evidence) {
   if (evidence.schema !== GPU_FRAME_SAMPLES_SCHEMA) throw new Error('performance evidence schema mismatch');
   if (evidence.warmupSubmits !== WARMUP_SUBMITS || evidence.retainedSamples !== RETAINED_SAMPLES) {
     throw new Error(
@@ -365,26 +365,19 @@ export function validatePerformanceEvidence(evidence) {
       throw new Error(`performance evidence fixture ${name} must be a finite 3D scale`);
     }
   }
-  if (evidence.metrics?.timestampAvailable !== true) return { ...evidence, verdict: 'unavailable' };
-  if (!Array.isArray(evidence.samples) || evidence.samples.length !== RETAINED_SAMPLES) {
-    throw new Error(`performance evidence requires exactly ${RETAINED_SAMPLES} raw samples`);
+}
+
+function validateRawGpuSample(sample) {
+  if (!Number.isFinite(sample.gpuFrameUs)) throw new Error('GPU timestamp sample is not finite');
+  if (!['baseline-treatment', 'treatment-baseline'].includes(sample.order)) {
+    throw new Error('GPU timestamp sample has an invalid A/B order');
   }
-  const orders = new Map();
-  const conditions = new Map();
-  const identity = JSON.stringify(evidence.identity);
-  for (const sample of evidence.samples) {
-    if (JSON.stringify(sample.identity) !== identity) return { ...evidence, verdict: 'identity-mismatch' };
-    if (!Number.isFinite(sample.gpuFrameUs)) throw new Error('GPU timestamp sample is not finite');
-    if (!['baseline-treatment', 'treatment-baseline'].includes(sample.order)) {
-      throw new Error('GPU timestamp sample has an invalid A/B order');
-    }
-    if (!['baseline', 'treatment'].includes(sample.condition)) {
-      throw new Error('GPU timestamp sample has an invalid condition');
-    }
-    orders.set(sample.order, (orders.get(sample.order) ?? 0) + 1);
-    const key = `${sample.order}:${sample.condition}`;
-    conditions.set(key, (conditions.get(key) ?? 0) + 1);
+  if (!['baseline', 'treatment'].includes(sample.condition)) {
+    throw new Error('GPU timestamp sample has an invalid condition');
   }
+}
+
+function validateRawGpuBalance(orders, conditions) {
   if (orders.get('baseline-treatment') !== RETAINED_SAMPLES_PER_ORDER || orders.get('treatment-baseline') !== RETAINED_SAMPLES_PER_ORDER) {
     throw new Error(
       `GPU timestamp evidence requires ${RETAINED_SAMPLES_PER_ORDER} samples in each A/B order`,
@@ -397,7 +390,28 @@ export function validatePerformanceEvidence(evidence) {
       }
     }
   }
-  const cpuSummaries = validateCpuObservations(evidence);
+}
+
+/** Returns false when a raw sample names a different identity than the evidence. */
+function validateRawGpuSamples(evidence) {
+  if (!Array.isArray(evidence.samples) || evidence.samples.length !== RETAINED_SAMPLES) {
+    throw new Error(`performance evidence requires exactly ${RETAINED_SAMPLES} raw samples`);
+  }
+  const orders = new Map();
+  const conditions = new Map();
+  const identity = JSON.stringify(evidence.identity);
+  for (const sample of evidence.samples) {
+    if (JSON.stringify(sample.identity) !== identity) return false;
+    validateRawGpuSample(sample);
+    orders.set(sample.order, (orders.get(sample.order) ?? 0) + 1);
+    const key = `${sample.order}:${sample.condition}`;
+    conditions.set(key, (conditions.get(key) ?? 0) + 1);
+  }
+  validateRawGpuBalance(orders, conditions);
+  return true;
+}
+
+function validateFalsificationProtocols(evidence) {
   const falsification = evidence.falsification;
   if (!Array.isArray(falsification) || falsification.length !== FALSIFICATION_CASES.length) {
     throw new Error('performance evidence requires every mandatory falsification case');
@@ -419,82 +433,100 @@ export function validatePerformanceEvidence(evidence) {
       throw new Error(`falsification ${entry.case} must declare its isolated intervention and held facts`);
     }
   }
+  return falsification;
+}
+
+function isValidSubmit(submit) {
+  return (
+    submit !== null &&
+    typeof submit === 'object' &&
+    Number.isSafeInteger(submit.frameId) &&
+    submit.frameId >= 0 &&
+    typeof submit.build === 'string' &&
+    submit.build.length > 0 &&
+    Number.isSafeInteger(submit.deviceGeneration) &&
+    submit.deviceGeneration >= 0
+  );
+}
+
+function validateWorldReorderSubmits(attributionEvidence) {
+  if (
+    attributionEvidence?.status !== 'same-submit' ||
+    !isValidSubmit(attributionEvidence.forwardSubmit) ||
+    !isValidSubmit(attributionEvidence.reverseSubmit) ||
+    attributionEvidence.forwardSubmit.deviceGeneration !==
+      attributionEvidence.reverseSubmit.deviceGeneration
+  ) {
+    throw new Error('world-reorder pass requires renderer-owned same-submit attribution');
+  }
+}
+
+function validateWorldReorderIdentity(reorderEvidence, attributionEvidence, build) {
+  const forward = reorderEvidence?.forward;
+  const reverse = reorderEvidence?.reverse;
+  const worldIdentities = reorderEvidence?.worlds;
+  const sameViewIdentity =
+    reorderEvidence?.sameViewIdentity === true &&
+    forward?.view !== undefined &&
+    forward.view === reverse?.view;
+  const samePrimitiveIdentity = reorderEvidence?.samePrimitiveIdentity === true;
+  if (
+    reorderEvidence?.worldAttribution === undefined ||
+    worldIdentities === undefined ||
+    typeof worldIdentities.treatment !== 'string' ||
+    typeof worldIdentities.baseline !== 'string' ||
+    attributionEvidence.forwardSubmit.build !== build ||
+    attributionEvidence.reverseSubmit.build !== build ||
+    !sameViewIdentity ||
+    !samePrimitiveIdentity
+  ) {
+    throw new Error('world-reorder pass requires same-identity attribution evidence');
+  }
+}
+
+function validateWorldReorderFalsification(evidence, falsification) {
   const worldReorder = falsification.find((entry) => entry.case === 'world-reorder');
-  if (worldReorder?.verdict === 'pass') {
-    const attributionEvidence = worldReorder.evidence?.attribution;
-    const validSubmit = (submit) =>
-      submit !== null &&
-      typeof submit === 'object' &&
-      Number.isSafeInteger(submit.frameId) &&
-      submit.frameId >= 0 &&
-      typeof submit.build === 'string' &&
-      submit.build.length > 0 &&
-      Number.isSafeInteger(submit.deviceGeneration) &&
-      submit.deviceGeneration >= 0;
-    if (
-      attributionEvidence?.status !== 'same-submit' ||
-      !validSubmit(attributionEvidence.forwardSubmit) ||
-      !validSubmit(attributionEvidence.reverseSubmit) ||
-      attributionEvidence.forwardSubmit.deviceGeneration !==
-        attributionEvidence.reverseSubmit.deviceGeneration
-    ) {
-      throw new Error('world-reorder pass requires renderer-owned same-submit attribution');
-    }
-    const attribution = worldReorder.evidence?.worldAttribution;
-    const worldIdentities = worldReorder.evidence?.worlds;
-    const forward = worldReorder.evidence?.forward;
-    const reverse = worldReorder.evidence?.reverse;
-    const sameViewIdentity =
-      worldReorder.evidence?.sameViewIdentity === true &&
-      forward?.view !== undefined &&
-      forward.view === reverse?.view;
-    const samePrimitiveIdentity = worldReorder.evidence?.samePrimitiveIdentity === true;
-    if (
-      attribution === undefined ||
-      worldIdentities === undefined ||
-      typeof worldIdentities.treatment !== 'string' ||
-      typeof worldIdentities.baseline !== 'string' ||
-      attributionEvidence.forwardSubmit.build !== evidence.identity.build ||
-      attributionEvidence.reverseSubmit.build !== evidence.identity.build ||
-      !sameViewIdentity ||
-      !samePrimitiveIdentity
-    ) {
-      throw new Error('world-reorder pass requires same-identity attribution evidence');
-    }
-    const attributionFailure = worldReorderAttributionFailure({
-      expectedBuild: evidence.identity.build,
-      forwardSubmit: attributionEvidence.forwardSubmit,
-      reverseSubmit: attributionEvidence.reverseSubmit,
-      forwardView: forward?.view,
-      reverseView: reverse?.view,
-      forwardSlot: worldReorder.evidence?.forwardSlot,
-      reverseSlot: worldReorder.evidence?.reverseSlot,
-      worldIdentities,
-      worldAttribution: attribution,
-    });
-    if (attributionFailure !== undefined) {
-      throw new Error(attributionFailure);
-    }
+  if (worldReorder?.verdict !== 'pass') return;
+  const reorderEvidence = worldReorder.evidence;
+  const attributionEvidence = reorderEvidence?.attribution;
+  validateWorldReorderSubmits(attributionEvidence);
+  validateWorldReorderIdentity(reorderEvidence, attributionEvidence, evidence.identity.build);
+  const attributionFailure = worldReorderAttributionFailure({
+    expectedBuild: evidence.identity.build,
+    forwardSubmit: attributionEvidence.forwardSubmit,
+    reverseSubmit: attributionEvidence.reverseSubmit,
+    forwardView: reorderEvidence?.forward?.view,
+    reverseView: reorderEvidence?.reverse?.view,
+    forwardSlot: reorderEvidence?.forwardSlot,
+    reverseSlot: reorderEvidence?.reverseSlot,
+    worldIdentities: reorderEvidence?.worlds,
+    worldAttribution: reorderEvidence?.worldAttribution,
+  });
+  if (attributionFailure !== undefined) {
+    throw new Error(attributionFailure);
   }
-  if (falsification.some((entry) => entry.verdict !== 'pass')) {
-    return { ...evidence, verdict: 'not-production-ready' };
-  }
-  const metrics = evidence.metrics;
-  if (metrics.settleSubmits !== SETTLE_SUBMITS) {
-    throw new Error(`performance metric settleSubmits must be ${SETTLE_SUBMITS}`);
-  }
+}
+
+/** HZB off keeps every candidate visible; HZB on settles to the locked visible/occluded split. */
+function togglesLockedWorkload(toggleEvidence) {
+  const offCount = toggleEvidence?.off?.count;
+  const onCount = toggleEvidence?.on?.count;
+  return (
+    offCount?.candidates === BENCHMARK_CANDIDATES &&
+    offCount?.visible === BENCHMARK_CANDIDATES &&
+    offCount?.occluded === 0 &&
+    onCount?.candidates === BENCHMARK_CANDIDATES &&
+    onCount?.visible === BENCHMARK_VISIBLE &&
+    onCount?.occluded === BENCHMARK_OCCLUDED
+  );
+}
+
+function validateOcclusionToggleFalsifications(falsification, metrics) {
   const occlusionToggle = falsification.find((entry) => entry.case === 'occlusion-off-on');
   if (occlusionToggle?.verdict === 'pass') {
-    const offCount = occlusionToggle.evidence?.off?.count;
-    const onCount = occlusionToggle.evidence?.on?.count;
     const settled = occlusionToggle.evidence?.settleFrames;
     if (
-      offCount?.candidates !== BENCHMARK_CANDIDATES ||
-      offCount?.visible !== BENCHMARK_CANDIDATES ||
-      offCount?.occluded !== 0 ||
-      onCount?.candidates !== BENCHMARK_CANDIDATES ||
-      onCount?.visible !== BENCHMARK_VISIBLE ||
-      onCount?.occluded !== BENCHMARK_OCCLUDED ||
+      !togglesLockedWorkload(occlusionToggle.evidence) ||
       !Number.isSafeInteger(settled) ||
       settled < metrics.settleSubmits
     ) {
@@ -504,22 +536,14 @@ export function validatePerformanceEvidence(evidence) {
     }
   }
   const gpuOcclusionOff = falsification.find((entry) => entry.case === 'gpu-occlusion-off');
-  if (gpuOcclusionOff?.verdict === 'pass') {
-    const offCount = gpuOcclusionOff.evidence?.off?.count;
-    const onCount = gpuOcclusionOff.evidence?.on?.count;
-    if (
-      offCount?.candidates !== BENCHMARK_CANDIDATES ||
-      offCount?.visible !== BENCHMARK_CANDIDATES ||
-      offCount?.occluded !== 0 ||
-      onCount?.candidates !== BENCHMARK_CANDIDATES ||
-      onCount?.visible !== BENCHMARK_VISIBLE ||
-      onCount?.occluded !== BENCHMARK_OCCLUDED
-    ) {
-      throw new Error(
-        'gpu-occlusion-off falsification must lose every occluded instance with HZB off and restore it with HZB on',
-      );
-    }
+  if (gpuOcclusionOff?.verdict === 'pass' && !togglesLockedWorkload(gpuOcclusionOff.evidence)) {
+    throw new Error(
+      'gpu-occlusion-off falsification must lose every occluded instance with HZB off and restore it with HZB on',
+    );
   }
+}
+
+function validateWorkloadMetrics(metrics) {
   for (const key of [
     'lodCoverage',
     'submittedInstanceRatio',
@@ -543,27 +567,40 @@ export function validatePerformanceEvidence(evidence) {
       `performance evidence requires the locked ${BENCHMARK_CANDIDATES}/${BENCHMARK_VISIBLE}/${BENCHMARK_OCCLUDED} workload`,
     );
   }
+  return workload;
+}
+
+function hasLinkedIndirectDraws(facts) {
+  return (
+    Number.isInteger(facts.batchCount) &&
+    facts.batchCount > 0 &&
+    Number.isInteger(facts.indirectDrawCount) &&
+    facts.indirectDrawCount > 0 &&
+    facts.indirectDrawCount <= facts.batchCount * BENCHMARK_LOD_LEVEL_SLOTS
+  );
+}
+
+function isLinkedInspection(facts) {
+  return (
+    facts !== undefined &&
+    Number.isInteger(facts.candidates) &&
+    facts.candidates > 0 &&
+    hasLinkedIndirectDraws(facts) &&
+    Number.isInteger(facts.visible) &&
+    Number.isInteger(facts.occluded) &&
+    facts.visible >= 0 &&
+    facts.occluded >= 0 &&
+    facts.visible + facts.occluded === facts.candidates &&
+    Array.isArray(facts.lodHistogram) &&
+    facts.lodHistogram.reduce((sum, row) => sum + row.count, 0) === facts.candidates
+  );
+}
+
+function validateInspection(metrics, workload) {
   const inspection = metrics.inspection;
   if (inspection === undefined) throw new Error('performance evidence requires baseline/treatment inspection facts');
   for (const condition of ['baseline', 'treatment']) {
-    const facts = inspection[condition];
-    if (
-      facts === undefined ||
-      !Number.isInteger(facts.candidates) ||
-      facts.candidates <= 0 ||
-      !Number.isInteger(facts.batchCount) ||
-      facts.batchCount <= 0 ||
-      !Number.isInteger(facts.indirectDrawCount) ||
-      facts.indirectDrawCount <= 0 ||
-      facts.indirectDrawCount > facts.batchCount * BENCHMARK_LOD_LEVEL_SLOTS ||
-      !Number.isInteger(facts.visible) ||
-      !Number.isInteger(facts.occluded) ||
-      facts.visible < 0 ||
-      facts.occluded < 0 ||
-      facts.visible + facts.occluded !== facts.candidates ||
-      !Array.isArray(facts.lodHistogram) ||
-      facts.lodHistogram.reduce((sum, row) => sum + row.count, 0) !== facts.candidates
-    ) {
+    if (!isLinkedInspection(inspection[condition])) {
       throw new Error(`performance ${condition} inspection is not linked to its candidate workload`);
     }
   }
@@ -588,58 +625,70 @@ export function validatePerformanceEvidence(evidence) {
       `baseline inspection must report the same ${BENCHMARK_CANDIDATES} candidate workload as LOD0-pinned all-visible`,
     );
   }
+  return { baselineInspection, treatmentInspection };
+}
+
+function isLinkedGroup(facts) {
+  return (
+    facts !== undefined &&
+    facts.candidates === BENCHMARK_CANDIDATES &&
+    Number.isInteger(facts.visible) &&
+    Number.isInteger(facts.occluded) &&
+    hasLinkedIndirectDraws(facts) &&
+    facts.visible + facts.occluded === facts.candidates
+  );
+}
+
+function validateGroups(metrics, treatmentInspection) {
   const groups = metrics.groups;
   if (groups === undefined) {
     throw new Error('performance evidence requires control/LOD-only/occlusion-only/treatment groups');
   }
   for (const groupName of ['control', 'lodOnly', 'occlusionOnly', 'treatment']) {
-    const facts = groups[groupName];
-    if (
-      facts === undefined ||
-      facts.candidates !== BENCHMARK_CANDIDATES ||
-      !Number.isInteger(facts.visible) ||
-      !Number.isInteger(facts.occluded) ||
-      !Number.isInteger(facts.batchCount) ||
-      facts.batchCount <= 0 ||
-      !Number.isInteger(facts.indirectDrawCount) ||
-      facts.indirectDrawCount <= 0 ||
-      facts.indirectDrawCount > facts.batchCount * BENCHMARK_LOD_LEVEL_SLOTS ||
-      facts.visible + facts.occluded !== facts.candidates
-    ) {
+    if (!isLinkedGroup(groups[groupName])) {
       throw new Error(`performance ${groupName} group is not linked to the locked workload`);
     }
   }
   if (groups.occlusionOnly.frames !== treatmentInspection.frames) {
     throw new Error('CPU control and treatment require the same warm-up and retained frame windows');
   }
+  return groups;
+}
+
+function groupsReachSettleWindow(groups, metrics) {
+  return ['control', 'lodOnly', 'occlusionOnly', 'treatment'].every(
+    (groupName) => !(groups[groupName].frames < metrics.settleSubmits),
+  );
+}
+
+function isLod0Pinned(group) {
+  return group.lodCoverage === 0 && !group.lodHistogram.some((row) => row.level !== 0);
+}
+
+function isAllVisible(group) {
+  return group.visible === BENCHMARK_CANDIDATES && group.occluded === 0;
+}
+
+function isLockedOcclusion(group) {
+  return group.visible === BENCHMARK_VISIBLE && group.occluded === BENCHMARK_OCCLUDED;
+}
+
+function hasLodCoverage(group) {
+  return !(group.lodCoverage <= 0);
+}
+
+function validateGroupIsolation(groups) {
   if (
-    ['control', 'lodOnly', 'occlusionOnly', 'treatment'].some(
-      (groupName) => groups[groupName].frames < metrics.settleSubmits,
-    )
-  ) {
-    // Keep a real but explicitly non-admitting artifact when a bounded probe
-    // ended before the settle window. Short snapshots are useful diagnostics,
-    // but they cannot claim settled workload attribution.
-    return { ...evidence, verdict: 'not-production-ready' };
-  }
-  if (
-    groups.control.visible !== BENCHMARK_CANDIDATES ||
-    groups.control.occluded !== 0 ||
-    groups.control.lodCoverage !== 0 ||
-    groups.control.lodHistogram.some((row) => row.level !== 0) ||
-    groups.lodOnly.visible !== BENCHMARK_CANDIDATES ||
-    groups.lodOnly.occluded !== 0 ||
-    groups.lodOnly.lodCoverage <= 0 ||
-    groups.occlusionOnly.visible !== BENCHMARK_VISIBLE ||
-    groups.occlusionOnly.occluded !== BENCHMARK_OCCLUDED ||
-    groups.occlusionOnly.lodCoverage !== 0 ||
-    groups.occlusionOnly.lodHistogram.some((row) => row.level !== 0) ||
-    groups.treatment.visible !== BENCHMARK_VISIBLE ||
-    groups.treatment.occluded !== BENCHMARK_OCCLUDED ||
-    groups.treatment.lodCoverage <= 0
+    !(isAllVisible(groups.control) && isLod0Pinned(groups.control)) ||
+    !(isAllVisible(groups.lodOnly) && hasLodCoverage(groups.lodOnly)) ||
+    !(isLockedOcclusion(groups.occlusionOnly) && isLod0Pinned(groups.occlusionOnly)) ||
+    !(isLockedOcclusion(groups.treatment) && hasLodCoverage(groups.treatment))
   ) {
     throw new Error('performance groups must isolate control, LOD-only, occlusion-only, and treatment');
   }
+}
+
+function validateCpuSummaryLinks(cpuSummaries, groups, baselineInspection, treatmentInspection) {
   for (const [condition, facts] of [
     ['baseline', baselineInspection], ['baseline', groups.control],
     ['occlusionOnly', groups.occlusionOnly],
@@ -650,6 +699,9 @@ export function validatePerformanceEvidence(evidence) {
       throw new Error(`CPU ${condition} summary must derive from pooled raw process observations`);
     }
   }
+}
+
+function validateTreatmentDerivedMetrics(metrics, treatmentInspection) {
   const derivedLodCoverage = treatmentInspection.lodHistogram
     .filter((row) => row.level > 0)
     .reduce((sum, row) => sum + row.count, 0) / treatmentInspection.candidates;
@@ -673,6 +725,10 @@ export function validatePerformanceEvidence(evidence) {
       throw new Error(`GPU timing metric ${metric} is not finite`);
     }
   }
+}
+
+/** Returns the incremental LOD CPU median regression after checking the p95 derivation. */
+function deriveCpuMedianRegression(metrics, groups, treatmentInspection) {
   // Compare the LOD treatment with the occlusion-only group: both paths carry
   // the same occluder and HZB cost, so this ratio owns the incremental LOD
   // CPU work instead of charging fixed occlusion overhead to LOD. The no-occluder baseline remains the GPU A/B control below.
@@ -682,9 +738,14 @@ export function validatePerformanceEvidence(evidence) {
   if (Math.abs(metrics.cpuP95Regression - derivedCpuP95Regression) > 1e-6) {
     throw new Error('CPU p95 regression must be derived from linked A/B inspection');
   }
-  const derivedCpuMedianRegression =
+  return (
     (treatmentInspection.cpuP50Us - groups.occlusionOnly.cpuP50Us) /
-    groups.occlusionOnly.cpuP50Us;
+    groups.occlusionOnly.cpuP50Us
+  );
+}
+
+function deriveGpuTiming(evidence) {
+  const metrics = evidence.metrics;
   const baseline = evidence.samples.filter((sample) => sample.condition === 'baseline').map((sample) => sample.gpuFrameUs);
   const treatment = evidence.samples.filter((sample) => sample.condition === 'treatment').map((sample) => sample.gpuFrameUs);
   const baselineMedian = nearestRank(baseline, 0.5);
@@ -697,6 +758,10 @@ export function validatePerformanceEvidence(evidence) {
   if (Math.abs(metrics.gpuMedianImprovement - derivedImprovement) > 1e-6 || Math.abs(metrics.gpuP95Regression - derivedP95Regression) > 1e-6) {
     throw new Error('GPU timing metrics must be derived from raw samples');
   }
+  return { derivedImprovement, derivedP95Regression };
+}
+
+function admitsProduction(metrics, gpuTiming, derivedCpuMedianRegression) {
   // `submittedInstanceRatio` is the retained submitted-instance count divided
   // by the locked candidate count. The production gate proves an at-least-80%
   // reduction, so lower is better and the ratio must be <= 0.2.
@@ -705,16 +770,51 @@ export function validatePerformanceEvidence(evidence) {
     metrics.submittedInstanceRatio <= 0.2 &&
     metrics.geometryWorkReduction >= 0.5;
   const passesGain =
-    derivedImprovement >= GPU_MEDIAN_IMPROVEMENT_LIMIT && derivedP95Regression <= 0.05;
+    gpuTiming.derivedImprovement >= GPU_MEDIAN_IMPROVEMENT_LIMIT && gpuTiming.derivedP95Regression <= 0.05;
   // CPU p95 remains in the evidence for diagnosis. Admission uses the paired
   // post-warm-up median because the p95 tail is not stable across hosted
   // machines and can be dominated by one GC or scheduler interruption.
   const passesCpu = derivedCpuMedianRegression <= CPU_MEDIAN_REGRESSION_LIMIT;
+  return passesBudget && passesGain && passesCpu;
+}
+
+export function validatePerformanceEvidence(evidence) {
+  validateEvidenceIdentity(evidence);
+  if (evidence.metrics?.timestampAvailable !== true) return { ...evidence, verdict: 'unavailable' };
+  if (!validateRawGpuSamples(evidence)) return { ...evidence, verdict: 'identity-mismatch' };
+  const cpuSummaries = validateCpuObservations(evidence);
+  const falsification = validateFalsificationProtocols(evidence);
+  validateWorldReorderFalsification(evidence, falsification);
+  if (falsification.some((entry) => entry.verdict !== 'pass')) {
+    return { ...evidence, verdict: 'not-production-ready' };
+  }
+  const metrics = evidence.metrics;
+  if (metrics.settleSubmits !== SETTLE_SUBMITS) {
+    throw new Error(`performance metric settleSubmits must be ${SETTLE_SUBMITS}`);
+  }
+  validateOcclusionToggleFalsifications(falsification, metrics);
+  const workload = validateWorkloadMetrics(metrics);
+  const { baselineInspection, treatmentInspection } = validateInspection(metrics, workload);
+  const groups = validateGroups(metrics, treatmentInspection);
+  if (!groupsReachSettleWindow(groups, metrics)) {
+    // Keep a real but explicitly non-admitting artifact when a bounded probe
+    // ended before the settle window. Short snapshots are useful diagnostics,
+    // but they cannot claim settled workload attribution.
+    return { ...evidence, verdict: 'not-production-ready' };
+  }
+  validateGroupIsolation(groups);
+  validateCpuSummaryLinks(cpuSummaries, groups, baselineInspection, treatmentInspection);
+  validateTreatmentDerivedMetrics(metrics, treatmentInspection);
+  const derivedCpuMedianRegression = deriveCpuMedianRegression(metrics, groups, treatmentInspection);
+  const gpuTiming = deriveGpuTiming(evidence);
   return {
     ...evidence,
-    verdict: passesBudget && passesGain && passesCpu ? 'production-ready' : 'not-production-ready',
+    verdict: admitsProduction(metrics, gpuTiming, derivedCpuMedianRegression)
+      ? 'production-ready'
+      : 'not-production-ready',
   };
 }
+
 
 function digestBytes(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;

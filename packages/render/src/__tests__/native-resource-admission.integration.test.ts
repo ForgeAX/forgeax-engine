@@ -5,7 +5,6 @@ import {
   createRenderFeatureHost,
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameBatch,
-  runRenderFeatureFrame,
 } from '../features/host';
 import { createPreparedResourceMaps } from '../features/native-resource-admission';
 import {
@@ -131,7 +130,7 @@ async function fixture() {
   };
   const host = createRenderFeatureHost([feature]).unwrap();
   const frame = (number: number, generation = 0) =>
-    runRenderFeatureFrame(host, [
+    host.runFrame([
       {
         identity: 'main',
         render: true,

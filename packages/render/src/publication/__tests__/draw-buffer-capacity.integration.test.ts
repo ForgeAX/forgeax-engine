@@ -14,8 +14,8 @@ import type { GpuScene } from '../../gpu-scene';
 import { RhiErrorListenerRegistry } from '../../lifecycle';
 import { Materials } from '../../materials';
 import * as folds from '../../record/fold-buckets';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 it('submits 50k shared GPU main and shadow candidates with one material slot', async () => {
   // The real Render Worker publication path admits 50k Mesh consumers.
@@ -122,10 +122,10 @@ it('submits 50k shared GPU main and shadow candidates with one material slot', a
     propagateTransforms(world).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    const result = renderer.draw({ publication: packet });
+    const result = renderer.draw({ publication: encodeRenderPublication(packet) });
     if (errors.length)
       throw (errors[0] as { detail?: { error?: unknown } }).detail?.error ?? errors[0];
     if (!result.ok) throw result.error;

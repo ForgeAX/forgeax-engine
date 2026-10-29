@@ -77,10 +77,15 @@ import {
 } from './engine-inputs/prepare-engine-shader-source.js';
 
 export {
-  engineShaderSourceDigest,
-  PACKAGED_SOURCE_RECORD,
-  type PackagedSourceRecord,
-} from './engine-inputs/source-digest.js';
+  decodePackagedProfiles,
+  encodePackagedProfiles,
+  PACKAGED_PROFILE_NAMES,
+  PACKAGED_PROFILES_FILE,
+  type PackagedProfileName,
+  type PackagedProfiles,
+  packagedProfilePublication,
+} from './engine-inputs/packaged-profiles.js';
+export { engineShaderSourceDigest } from './engine-inputs/source-digest.js';
 export { VIEW_ABI, type ViewAbi, type ViewAbiField } from './engine-inputs/view-abi.js';
 
 import {
@@ -145,6 +150,17 @@ function engineMaterialArtifactReceipt(
         defines.SKINNING_DISABLED === false,
         vertexColorAvailable,
       );
+    case 'forgeax::default-unlit':
+      // Every entry of the rigid scene-index variant reads the visible stream;
+      // direct and skinned unlit programs publish no scene-index receipt.
+      return defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true && defines.SKINNING_DISABLED === true
+        ? createMaterialProgramArtifactReceipt({
+            schema: engineMaterialParamSchema(identifier),
+            directEntry: 'vs_main',
+            sceneIndexEntry: 'vs_main',
+            vertexInputs: materialVertexInputs(compiled.wgsl, 'vs_main'),
+          })
+        : undefined;
     default:
       return undefined;
   }
@@ -1332,6 +1348,29 @@ function buildVariantKey(defines: Record<string, boolean>): string {
  * scene-index layout only in StandardPbrRasterAdapter. Explicit callers can
  * still request the canonical all-true key from the manifest.
  */
+/**
+ * A scene-index receipt that only GPU variants publish is an opt-in lane: the
+ * default entry stays the direct sibling. Families whose direct programs share
+ * the receipt keep their canonical key.
+ */
+function directEntryVariantKey(
+  variants: readonly MaterialShaderManifestVariant[],
+  key: string,
+): string {
+  const selected = variants.find((variant) => variant.definesKey === key);
+  if (selected?.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE !== true || selected.receipt === undefined)
+    return key;
+  const direct = variants.find(
+    (variant) =>
+      variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === false &&
+      Object.entries(selected.defines).every(
+        ([axis, value]) =>
+          axis === 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' || variant.defines[axis] === value,
+      ),
+  );
+  return direct !== undefined && direct.receipt === undefined ? direct.definesKey : key;
+}
+
 function buildEntryVariantKey(axes: readonly string[]): string {
   const hasClusterAxis = axes.includes('CLUSTER_FORWARD_AVAILABLE');
   if (!hasClusterAxis) {
@@ -1758,6 +1797,7 @@ async function compileEngineEntry(
     variantAxes.length > 0 ? cartesianDefines(variantAxes).filter(isSupportedVariantDefines) : [{}];
 
   const variants: MaterialShaderManifestVariant[] = [];
+  const entryCandidates = new Map<string, ManifestEntryValue>();
   // feat-20260629 M4: uvSetCount from first variant compile result
   let engineUvSetCount = 0;
   const sourceForRouting = file.source;
@@ -1933,22 +1973,25 @@ async function compileEngineEntry(
     // EXCEPT CLUSTER_FORWARD_AVAILABLE is true. For shaders without the
     // CLUSTER_FORWARD_AVAILABLE axis (pbr-skin, unlit) this is the all-true
     // variant — unchanged from pre-amendment behavior.
-    if (definesKey === buildEntryVariantKey(variantAxes)) {
-      state.entries.set(file.id, {
-        ...manifestEntry,
-        hash,
-        wgsl: manifestEntry.wgsl,
-        bindings: bindingsJson,
-        uvSetCount: variantUvSetCount,
-      });
-    }
+    entryCandidates.set(definesKey, {
+      ...manifestEntry,
+      hash,
+      wgsl: manifestEntry.wgsl,
+      bindings: bindingsJson,
+      uvSetCount: variantUvSetCount,
+    });
     state.variantWgsl.set(`${file.id}#${definesKey}`, manifestEntry.wgsl);
   }
 
   if (variantAxes.length > 0) {
-    const defaultVariant = variantAxes.includes('DIRECT_DFG_LUT_AVAILABLE')
-      ? variants.find((variant) => variant.definesKey === buildEntryVariantKey(variantAxes))
-      : variants[0];
+    const entryKey = directEntryVariantKey(variants, buildEntryVariantKey(variantAxes));
+    const entry = entryCandidates.get(entryKey);
+    if (entry !== undefined) state.entries.set(file.id, entry);
+    const defaultVariant =
+      variantAxes.includes('DIRECT_DFG_LUT_AVAILABLE') ||
+      entryKey !== buildEntryVariantKey(variantAxes)
+        ? variants.find((variant) => variant.definesKey === entryKey)
+        : variants[0];
     if (defaultVariant !== undefined) {
       // bug-20260610: derive a synthetic identifier for non-material engine
       // entries (shadow_caster etc.) so the runtime variant-resolution path

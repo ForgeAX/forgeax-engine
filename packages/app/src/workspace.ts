@@ -43,11 +43,10 @@ import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack
 import type { EngineWorkspaceTargetTools } from './workspace-target-tools';
 
 /**
- * Engine-owned workspace service names. A frontend plugin consumes
- * the service through its Host plugin; it does not implement a second asset
+ * Engine-owned workspace plugin identity. A frontend plugin consumes
+ * the workspace through its Host plugin; it does not implement a second asset
  * registry, scene loader, camera controller, or renderer.
  */
-export const ENGINE_WORKSPACE_SERVICE = 'engine.workspace';
 export const ENGINE_WORKSPACE_PLUGIN_ID = 'forgeax:engine-workspace';
 export const ENGINE_WORKSPACE_API_VERSION = 'forgeax.engine.workspace/1';
 /** Host transport topic used to dispatch commands into the browser realm. */
@@ -202,6 +201,16 @@ export interface EngineWorkspacePreviewDisplay {
   readonly mode: 'material' | 'wireframe';
   readonly collision: boolean;
   readonly bounds: boolean;
+  readonly uv?: {
+    readonly channels: readonly number[];
+    readonly layout?: {
+      readonly channel: number;
+      readonly lod: 0;
+      readonly coordinates: readonly number[];
+      readonly triangleIndices: readonly number[];
+      readonly assetBinding: EngineWorkspaceAssetBinding;
+    };
+  };
   readonly capabilities: {
     readonly wireframe: boolean;
     readonly collision: boolean;
@@ -210,6 +219,7 @@ export interface EngineWorkspacePreviewDisplay {
 }
 
 export interface EngineWorkspacePreview {
+  readonly material?: import('./workspace-material-preview').MaterialPreviewControl;
   readonly writeAssetField?: (input: WorkspaceAssetFieldWrite) => Promise<void>;
   readonly prepareAssetContent?: (
     content: import('@forgeax/engine-import').RuntimePackContent,
@@ -223,6 +233,7 @@ export interface EngineWorkspacePreview {
   readonly display?: {
     get(options?: {
       readonly signal?: AbortSignal;
+      readonly uvChannel?: number;
     }): EngineWorkspacePreviewDisplay | Promise<EngineWorkspacePreviewDisplay>;
     set(
       input: EngineWorkspacePreviewDisplayOptions,
@@ -292,6 +303,7 @@ export interface EngineWorkspacePlay extends EngineWorkspacePreview {
  * workspace preview below.
  */
 export interface EngineWorkspaceResourcePreviewOwner {
+  readonly material?: EngineWorkspacePreview['material'];
   readonly texture?: TextureViewControl;
   readonly assetBinding?: EngineWorkspaceAssetBinding;
   readonly display?: EngineWorkspacePreview['display'];
@@ -1323,6 +1335,16 @@ export interface EngineWorkspaceAppTargetOptions {
   ) => Promise<unknown> | unknown;
 }
 
+function resourcePreviewControls(
+  owner: EngineWorkspaceResourcePreviewOwner | undefined,
+): Pick<EngineWorkspacePreview, 'texture' | 'material' | 'display'> {
+  return {
+    ...(owner?.texture === undefined ? {} : { texture: owner.texture }),
+    ...(owner?.material === undefined ? {} : { material: owner.material }),
+    ...(owner?.display === undefined ? {} : { display: owner.display }),
+  };
+}
+
 export async function createEngineWorkspaceAppPreview(
   input: EngineWorkspaceAppTargetOptions & {
     readonly assets: AssetRegistry;
@@ -1539,11 +1561,20 @@ export async function createEngineWorkspaceAppPreview(
         sceneRoot = nextRoot;
         loadedScene = nextScene;
         if (fallbackCamera !== undefined) {
-          for (const row of input.app.world.query({ with: [Camera] }).unwrap()) {
-            if (row.entity === fallbackCamera) continue;
-            input.app.world.despawn(fallbackCamera).unwrap();
-            fallbackCamera = undefined;
-            break;
+          querySpans: for (const querySpan of input.app.world
+            .query({ with: [Camera] })
+            .unwrap()
+            .spans()
+            .unwrap()) {
+            const queryEntities = querySpan.entities;
+            for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+              const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+
+              if (queriedEntity === fallbackCamera) continue;
+              input.app.world.despawn(fallbackCamera).unwrap();
+              fallbackCamera = undefined;
+              break querySpans;
+            }
           }
         }
         fallbackCamera ??= ensureFallbackCamera(
@@ -1557,14 +1588,13 @@ export async function createEngineWorkspaceAppPreview(
       return target.target;
     },
     asset: input.asset,
-    ...(resourceOwner?.texture === undefined ? {} : { texture: resourceOwner.texture }),
+    ...resourcePreviewControls(resourceOwner),
     get assetBinding() {
       return assetBinding;
     },
     get scene() {
       return loadedScene;
     },
-    ...(resourceOwner?.display === undefined ? {} : { display: resourceOwner.display }),
     handle: {
       app: input.app,
       world: input.app.world,

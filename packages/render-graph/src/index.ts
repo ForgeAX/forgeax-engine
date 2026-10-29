@@ -6,7 +6,7 @@
 // - Result<T, E> / ok / err -- binary result type
 // - PassInfo / ResourceInfo -- query interfaces
 
-export { RenderGraphBuilder } from './builder.js';
+export { RenderGraphBuilder, renderGraphCompileCount } from './builder.js';
 export {
   err,
   type InvalidFormatDetail,
@@ -77,7 +77,6 @@ export type {
   GraphExtent,
   GraphPass,
   GraphPassKind,
-  GraphResource,
   GraphResourceKind,
   GraphResourceOrigin,
   GraphResourceResolver,

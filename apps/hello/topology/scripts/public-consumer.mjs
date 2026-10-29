@@ -59,7 +59,7 @@ const pointMesh = authoringMesh('point-list');
 const lineMesh = authoringMesh('line-list');
 const pointAdmission = admitPointsLines({
   entity: 1,
-  points: { sizePx: 4, shape: 0 },
+  points: { size: 4, shape: 0 },
   mesh: pointMesh,
   material,
 });

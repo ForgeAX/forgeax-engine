@@ -14,6 +14,8 @@ import { type AssetHandle, err, type Handle, ok, type Result } from '@forgeax/en
 import {
   assertComponentStorage,
   deepFreeze,
+  type FieldKind,
+  type FieldPlan,
   registerComponentDefinition,
 } from './component-schema';
 import type { EntityHandle } from './entity-handle';
@@ -581,6 +583,11 @@ export function isComponentDefinitionOrderValid(): boolean {
 }
 
 /** @internal Read the owner-assigned identity for storage/archetype code. */
+/** @internal Identity probe for content keys; unregistered components are `undefined`. */
+export function registeredComponentId(component: Component): ComponentId | undefined {
+  return ownerRegistry.ids.get(component);
+}
+
 export function componentId(component: Component): ComponentId {
   const id = ownerRegistry.ids.get(component);
   if (id === undefined) throw new Error(`Component identity missing for '${component.name}'.`);
@@ -879,6 +886,46 @@ function fieldSpecType(fieldName: string, spec: FieldSpec): SchemaFieldType {
   return t as SchemaFieldType;
 }
 
+const NUMERIC_SCALARS: ReadonlySet<string> = new Set([
+  'f32',
+  'f64',
+  'i32',
+  'u32',
+  'i16',
+  'u16',
+  'i8',
+  'u8',
+  'enum',
+]);
+
+/** Classify one validated field type once, at definition time. */
+function deriveFieldPlan(field: FieldReflection): FieldPlan {
+  const type = field.type;
+  const arrayMeta = field.arrayMeta;
+  if (arrayMeta !== undefined) {
+    const element = arrayMeta.elementType;
+    const reference = element.startsWith('shared<') || element.startsWith('asset<');
+    const fixed = arrayMeta.length !== undefined;
+    return Object.freeze({
+      kind: fixed ? 'fixed-array' : 'array',
+      numeric: NUMERIC_SCALARS.has(element),
+      releases: !fixed || reference,
+    });
+  }
+  const plan = (kind: FieldKind, releases = false, numeric = false): FieldPlan =>
+    Object.freeze({ kind, numeric, releases });
+  if (NUMERIC_SCALARS.has(type)) return plan('number', false, true);
+  if (type === 'bool') return plan('bool');
+  if (type === 'entity') return plan('entity');
+  if (type === 'string') return plan('string', true);
+  if (type === 'buffer') return plan('buffer', true);
+  if (type.startsWith('buffer<')) return plan('fixed-buffer');
+  if (type.startsWith('shared<')) return plan('shared', true);
+  if (type.startsWith('asset<')) return plan('asset', true);
+  // `ref` and `unique<T>` share the UniqueRefStore row.
+  return plan('unique', true);
+}
+
 /**
  * Define a component. Returns a frozen opaque token with exactly three runtime
  * facts: `.name`, `.fields`, and `.storage`. Numeric identity, flat schema,
@@ -1022,15 +1069,22 @@ export function defineComponent<const N extends string, const S extends FieldsIn
   const token = Object.freeze({ name, fields: frozenFields, storage }) as Component<N, SchemaOf<S>>;
   ownerRegistry.ids.set(token, id);
   ownerRegistry.schemas.set(token, frozenSchema);
-  registerComponentDefinition(token, {
-    fields: frozenFields,
-    defaults: frozenDefaults,
-    policy: {
-      transient: options?.transient ?? false,
-      meta,
-      requires: Object.freeze([...(options?.requires ?? [])]),
+  const fieldPlans: Record<string, FieldPlan> = {};
+  for (const [fieldName, field] of Object.entries(reflectedFields))
+    fieldPlans[fieldName] = deriveFieldPlan(field);
+  registerComponentDefinition(
+    token,
+    {
+      fields: frozenFields,
+      defaults: frozenDefaults,
+      policy: {
+        transient: options?.transient ?? false,
+        meta,
+        requires: Object.freeze([...(options?.requires ?? [])]),
+      },
     },
-  });
+    fieldPlans,
+  );
   return Object.freeze(token);
 }
 

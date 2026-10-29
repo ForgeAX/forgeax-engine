@@ -13,13 +13,41 @@ import { TransparentSort } from '@forgeax/engine-render/authoring';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
-import { expect, it } from 'vitest';
+import { afterAll, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { observeNativeDeviceRequests } from './native-device-work.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { unwrap } from './specular-aa.fixture';
+
+// Reuse device/pipelines across the parameter matrix; every case retains its
+// own World, lease and render target, all released before the next sample.
+const nativeDevices = observeNativeDeviceRequests();
+async function createCompositionHost() {
+  const surface = offscreenCanvas(32);
+  const host = unwrap(
+    await constructRuntimeRendererHost(
+      surface.canvas as unknown as HTMLCanvasElement,
+      { rhi: webgpu.rhi },
+      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+    ),
+  );
+  return { surface, host };
+}
+let sharedHost: ReturnType<typeof createCompositionHost> | undefined;
+afterAll(async () => {
+  try {
+    if (sharedHost === undefined) return;
+    const { surface, host } = await sharedHost;
+    unwrap(await host.renderer.dispose());
+    surface.destroy();
+    nativeDevices.assertMaximum(1);
+  } finally {
+    nativeDevices.restore();
+  }
+});
 
 it.each(
   [false, true].flatMap((premultiplied) =>
@@ -32,14 +60,8 @@ it.each(
   opaqueBack,
   reverse,
 }) => {
-  const surface = offscreenCanvas(32);
-  const host = unwrap(
-    await constructRuntimeRendererHost(
-      surface.canvas as unknown as HTMLCanvasElement,
-      { rhi: webgpu.rhi },
-      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
-    ),
-  );
+  sharedHost ??= createCompositionHost();
+  const { host } = await sharedHost;
   const renderer = host.renderer;
   const target = unwrap(
     renderer.createRenderTarget({
@@ -191,7 +213,5 @@ it.each(
   } finally {
     lease.dispose();
     unwrap(renderer.destroyRenderTarget(target));
-    unwrap(await renderer.dispose());
-    surface.destroy();
   }
 }, 120_000);

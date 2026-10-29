@@ -275,30 +275,3 @@ export function resolveSingleLayerMediumBackground(
     distanceMeters: maxDistance,
   };
 }
-
-/** Screen-space approximation of the Euclidean endpoint path, clamped to the declared maximum. */
-export function estimateSingleLayerPathLength(input: {
-  readonly surfacePosition: readonly [number, number, number];
-  readonly backgroundPosition: readonly [number, number, number] | undefined;
-  readonly maxDistanceMeters: number;
-}): { readonly distanceMeters: number; readonly valid: boolean } {
-  const maxDistance = Math.max(finiteOr(input.maxDistanceMeters, DEFAULT_MAX_DISTANCE_METERS), 0);
-  if (
-    input.surfacePosition.length !== 3 ||
-    input.backgroundPosition === undefined ||
-    input.backgroundPosition.length !== 3 ||
-    !input.surfacePosition.every(Number.isFinite) ||
-    !input.backgroundPosition.every(Number.isFinite)
-  ) {
-    return { distanceMeters: maxDistance, valid: false };
-  }
-  const distance = Math.hypot(
-    (input.backgroundPosition[0] ?? 0) - (input.surfacePosition[0] ?? 0),
-    (input.backgroundPosition[1] ?? 0) - (input.surfacePosition[1] ?? 0),
-    (input.backgroundPosition[2] ?? 0) - (input.surfacePosition[2] ?? 0),
-  );
-  return {
-    distanceMeters: Math.min(Math.max(finiteOr(distance, maxDistance), 0), maxDistance),
-    valid: Number.isFinite(distance),
-  };
-}

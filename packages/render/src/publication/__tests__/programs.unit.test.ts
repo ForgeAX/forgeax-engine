@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   createMaterialProgramArtifactReceipt,
@@ -64,7 +65,8 @@ it('admits a cold publication once and retains its validated program and schema 
   expect(accepted.paramSchemaProjection.derivedInterface).toBe(
     validated.paramSchemaProjection.derivedInterface,
   );
-  expect(validation.paramSchemaProjectionStats().derivations).toBe(1);
+  // Equal schema content admitted earlier in this realm is shared, not derived again.
+  expect(validation.paramSchemaProjectionStats().derivations).toBeLessThanOrEqual(1);
   expect(assets.shaderRegistry.paramSchemaProjectionStats()).toEqual({
     admissions: 1,
     derivations: 0,
@@ -164,7 +166,7 @@ it('still validates an installed receipt when the incoming object was mutated in
   installPublicationPrograms(assets, [row]);
   Object.assign(row.shader.receipt, { generation: Number.NaN });
   expect(() => installPublicationPrograms(assets, [row])).toThrow();
-  expect(assets.shaderRegistry.findMaterialArtifact(row.key).unwrap().receipt?.generation).toBe(3);
+  expect(assets.shaderRegistry.findMaterialArtifact(row.key).unwrap().receipt?.generation).toBe(5);
 });
 
 it('owns receipt content so an in-place valid change cannot alter the admitted program', () => {
@@ -236,4 +238,121 @@ it('rejects conflicting programs atomically and preserves the installed shader',
       { ...first, artifact: { key: 'wrong', bytes: new Uint8Array() } },
     ]),
   ).toThrow('mismatched');
+});
+
+it('shares equal ABI facts between separately received programs without freezing the input', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const first = structuredClone(program('forgeax::interned-a'));
+  const second = structuredClone(program('forgeax::interned-b'));
+  installPublicationPrograms(assets, [first]);
+  installPublicationPrograms(assets, [second]);
+  const a = assets.shaderRegistry.findMaterialArtifact(first.key).unwrap();
+  const b = assets.shaderRegistry.findMaterialArtifact(second.key).unwrap();
+  // Two Worker clones of equal facts resolve to one canonical receipt and schema.
+  expect(b.receipt).toBe(a.receipt);
+  expect(b.paramSchema).toBe(a.paramSchema);
+  expect(Object.isFrozen(a.receipt)).toBe(true);
+  // The received rows stay the caller's mutable values.
+  expect(Object.isFrozen(first.shader.receipt)).toBe(false);
+});
+
+function byteProgram(key = 'game::byte-program') {
+  const source = `@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); } // ${key}`;
+  const bytes = new TextEncoder().encode(source);
+  return {
+    key,
+    shader: {
+      sourceEncoding: 'utf8' as const,
+      paramSchema: [],
+      entryPoints: [{ name: 'vs_main', stage: 'vertex' as const, bindings: [] }],
+    },
+    artifact: { key, bytes, digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}` },
+  } satisfies RenderPublication['programs'][number];
+}
+
+it('owns byte publications and rejects late tampering atomically without decoding', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const first = byteProgram();
+  const fresh = byteProgram('game::fresh-byte');
+  const changed = structuredClone(first);
+  changed.artifact.bytes[0] = 0;
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  expect(() => installPublicationPrograms(assets, [fresh, changed])).toThrow();
+  expect(assets.shaderRegistry.materialArtifactDeclaration(fresh.key)).toBeUndefined();
+  expect(assets.getMaterialArtifact(fresh.key)).toBeUndefined();
+  installPublicationPrograms(assets, structuredClone([first, fresh]));
+  expect(decode).not.toHaveBeenCalled();
+  installPublicationPrograms(assets, structuredClone([first, fresh]));
+  expect(decode).not.toHaveBeenCalled();
+  const original = new TextDecoder().decode(first.artifact.bytes);
+  decode.mockClear();
+  // Caller-owned bytes cannot change the accepted lazy source.
+  first.artifact.bytes.fill(0);
+  expect(assets.shaderRegistry.findMaterialArtifact(first.key).unwrap().source).toBe(original);
+  expect(decode).toHaveBeenCalledTimes(1);
+  expect(assets.shaderRegistry.materialArtifactDeclaration(fresh.key)?.kind).toBe('bytes');
+});
+
+it('rejects byte publication metadata conflicts before admission, including repeated entry reads', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const first = byteProgram();
+  installPublicationPrograms(assets, [first]);
+  const changed = structuredClone(first);
+  const reads = changed.shader.entryPoints[0];
+  if (reads === undefined) throw new Error('Missing entry reads');
+  reads.name = 'changed';
+  const fresh = byteProgram('game::metadata-fresh');
+  expect(() => installPublicationPrograms(assets, [fresh, changed])).toThrow(
+    'conflicting immutable shader',
+  );
+  expect(assets.shaderRegistry.materialArtifactDeclaration(fresh.key)).toBeUndefined();
+  expect(assets.shaderRegistry.materialArtifactDeclaration(first.key)?.kind).toBe('bytes');
+  installPublicationPrograms(assets, [fresh, first]);
+});
+
+it('admits mixed direct and lazy rows while checking source-dependent errors on first use', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const lazy = byteProgram();
+  const direct = program();
+  installPublicationPrograms(assets, [direct, lazy]);
+  expect(assets.shaderRegistry.materialArtifactDeclaration(direct.key)?.kind).toBe('ready');
+  expect(assets.shaderRegistry.materialArtifactDeclaration(lazy.key)?.kind).toBe('bytes');
+  const bytes = new TextEncoder().encode('fn bad() { textureSample(baseColorTexture, s, uv); }');
+  const invalid = {
+    ...byteProgram('game::invalid-byte-source'),
+    artifact: {
+      key: 'game::invalid-byte-source',
+      bytes,
+      digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    },
+  };
+  installPublicationPrograms(assets, [invalid]);
+  expect(() => assets.shaderRegistry.findMaterialArtifact(invalid.key)).toThrow('samples texture');
+  expect(assets.shaderRegistry.materialArtifactDeclaration(invalid.key)?.kind).toBe('bytes');
+});
+
+it.each([
+  'encoding',
+  'artifact',
+  'digest',
+] as const)('rejects an incomplete byte publication %s before committing earlier rows', (dimension) => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const first = byteProgram('game::shape-first');
+  const invalid = byteProgram('game::shape-invalid');
+  if (dimension === 'encoding') Object.assign(invalid.shader, { sourceEncoding: 'unknown' });
+  if (dimension === 'artifact') Object.assign(invalid, { artifact: undefined });
+  if (dimension === 'digest') Object.assign(invalid.artifact, { digest: undefined });
+  expect(() => installPublicationPrograms(assets, [first, invalid])).toThrow('complete artifact');
+  expect(assets.shaderRegistry.materialArtifactDeclaration(first.key)).toBeUndefined();
+  expect(assets.getMaterialArtifact(first.key)).toBeUndefined();
 });

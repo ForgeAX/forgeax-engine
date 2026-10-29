@@ -52,8 +52,8 @@ import {
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { MaterialResource } from '../material-resource';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import {
   makeZeroCameraFallbackSnapshot,
   type RenderFrameState,
@@ -65,10 +65,11 @@ import type { PipelineState, RenderSystemInternals } from '../record/render-cont
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
 import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
+import type { ViewLights } from '../world/render-lights';
 import {
   admitGpuFixture,
   mesh,
@@ -120,6 +121,16 @@ describe('GPU-driven scene-index mesh address selection', () => {
     const clusteredSkinGroup = {} as BindGroup;
     const transformBuffer = {} as Buffer;
     const paletteBuffer = {} as Buffer;
+    const task = {
+      data: paletteBuffer,
+      auxiliary: {} as Buffer,
+      dataOffset: 0,
+      auxiliaryOffset: 768,
+      dataSize: 1024,
+      auxiliarySize: 16,
+      jointCount: 0,
+      flags: 0,
+    };
     const clusterBindGroupForSkin = vi.fn(() => clusteredSkinGroup);
 
     expect(
@@ -129,16 +140,11 @@ describe('GPU-driven scene-index mesh address selection', () => {
         meshBindGroup: directSkinGroup,
         sceneTransformBuffer: transformBuffer,
         sceneTransformBytes: 768,
-        skinPaletteBinding: { buffer: paletteBuffer, bindingWindowBytes: 16_320 },
+        skinTaskBinding: task,
         frameResources: { clusterBindGroupForSkin },
       }),
     ).toBe(clusteredSkinGroup);
-    expect(clusterBindGroupForSkin).toHaveBeenCalledExactlyOnceWith(
-      transformBuffer,
-      768,
-      paletteBuffer,
-      16_320,
-    );
+    expect(clusterBindGroupForSkin).toHaveBeenCalledExactlyOnceWith(transformBuffer, 768, task);
   });
 });
 
@@ -343,8 +349,8 @@ describe('GPU-driven production projection', () => {
         if (!completed.ok) throw completed.error;
         expect(bundles).toHaveBeenCalled();
       }
+      // A hit replays a bundle recorded by the first frame without re-recording it.
       bundles.mockClear();
-      recorded.clear();
       submit.mockClear();
       submitted.mockClear();
       acknowledged.mockClear();
@@ -391,6 +397,143 @@ describe('GPU-driven production projection', () => {
       execute.mockRestore();
       bundles.mockRestore();
       submit.mockRestore();
+      renderer.dispose();
+    }
+  });
+
+  it('never replays a retained raster run that names a visible window from before a ProbeBlend buffer replacement', async () => {
+    const renderer = await constructRenderer(
+      {
+        width: 16,
+        height: 16,
+        getContext: () => null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      } as unknown as HTMLCanvasElement,
+      { rhi },
+      { shaderManifestUrl: manifestDataUrl(`/* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`, true) },
+    );
+    // Visible-window bind groups the material adapter hands out, and the ones a
+    // ProbeBlend replacement has since reset.
+    const windows = new Set<BindGroup>();
+    const stale = new Set<BindGroup>();
+    const createWindow = MaterialAbiRasterAdapter.prototype.visibleWindowBindGroupForBuffer;
+    const windowSpy = vi
+      .spyOn(MaterialAbiRasterAdapter.prototype, 'visibleWindowBindGroupForBuffer')
+      .mockImplementation(function (this: MaterialAbiRasterAdapter, ...args) {
+        const group = createWindow.apply(this, args);
+        if (group.ok) windows.add(group.value);
+        return group;
+      });
+    let replacement: Buffer | undefined;
+    const ensureProbe = MaterialAbiRasterAdapter.prototype.ensureProbeBlendRecordBuffer;
+    const probeSpy = vi
+      .spyOn(MaterialAbiRasterAdapter.prototype, 'ensureProbeBlendRecordBuffer')
+      .mockImplementation(function (this: MaterialAbiRasterAdapter, buffer) {
+        return ensureProbe.call(this, replacement ?? buffer);
+      });
+    // Bind groups each recorded bundle names.
+    const named = new WeakMap<object, readonly unknown[]>();
+    const createBundle = RhiNullDevice.prototype.createRenderBundleEncoder;
+    const bundleSpy = vi
+      .spyOn(RhiNullDevice.prototype, 'createRenderBundleEncoder')
+      .mockImplementation(function (this: RhiNullDevice, desc) {
+        const created = createBundle.call(this, desc);
+        if (!created.ok) return created;
+        const encoder = created.value;
+        const groups: unknown[] = [];
+        const setBindGroup = encoder.setBindGroup.bind(encoder);
+        const finish = encoder.finish.bind(encoder);
+        return ok(
+          Object.assign(encoder, {
+            setBindGroup: (...args: Parameters<typeof encoder.setBindGroup>) => {
+              groups.push(args[1]);
+              return setBindGroup(...args);
+            },
+            finish: () => {
+              const bundle = finish();
+              if (bundle.ok) named.set(bundle.value as object, groups);
+              return bundle;
+            },
+          }),
+        );
+      });
+    const executed: object[] = [];
+    const executeOriginal = RhiNullRenderPassEncoder.prototype.executeBundles;
+    const execute = vi
+      .spyOn(RhiNullRenderPassEncoder.prototype, 'executeBundles')
+      .mockImplementation(function (this: RhiNullRenderPassEncoder, handles) {
+        const values = [...handles];
+        executed.push(...(values as object[]));
+        return executeOriginal.call(this, values);
+      });
+    const windowsOf = (bundles: readonly object[]) =>
+      bundles.flatMap((bundle) =>
+        (named.get(bundle) ?? []).filter((group) => windows.has(group as BindGroup)),
+      );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      const assets = renderer.assetRegistry;
+      const world = new World({ assets });
+      const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+      const attached = renderer.attach(world);
+      if (!attached.ok) throw attached.error;
+      const lease = attached.value;
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 5] } },
+          { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
+        )
+        .unwrap();
+      world
+        .spawn(
+          { component: Transform, data: {} },
+          { component: MeshFilter, data: { assetHandle: cube } },
+          {
+            component: MeshRenderer,
+            data: {
+              materials: [assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap()],
+            },
+          },
+        )
+        .unwrap();
+      world.update(1 / 60).unwrap();
+      const input = { leases: [lease], camera: { lease }, environment: { lease } };
+      const frame = async () => {
+        executed.length = 0;
+        const drawn = renderer.draw(input);
+        if (!drawn.ok) throw drawn.error;
+        const receipt = drawn.value;
+        if (receipt === undefined) throw new Error('missing submission receipt');
+        const completed = await receipt.completed;
+        if (!completed.ok) throw completed.error;
+        return [...executed];
+      };
+      await frame();
+      const hits = () => renderer.inspect().renderScene.gpuDriven.preparedBundleHits ?? 0;
+      const hitsBefore = hits();
+      const replayed = await frame();
+      // The unchanged second frame replays a retained run that names a visible window.
+      expect(hits()).toBeGreaterThan(hitsBefore);
+      expect(windowsOf(replayed).length).toBeGreaterThan(0);
+      // The Renderer's ProbeBlend buffer is replaced: the adapter resets every
+      // visible-window bind group while the live raster owners persist.
+      for (const group of windows) stale.add(group);
+      replacement = renderer.device
+        .createBuffer({ size: 4096, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST })
+        .unwrap();
+      const rebound = await frame();
+      const windowsAfter = windowsOf(rebound);
+      expect(windowsAfter.length).toBeGreaterThan(0);
+      expect(windowsAfter.filter((group) => stale.has(group as BindGroup))).toEqual([]);
+      // The rebuilt run is retained again under the new window identity.
+      const settled = await frame();
+      expect(windowsOf(settled).filter((group) => stale.has(group as BindGroup))).toEqual([]);
+    } finally {
+      execute.mockRestore();
+      bundleSpy.mockRestore();
+      probeSpy.mockRestore();
+      windowSpy.mockRestore();
       renderer.dispose();
     }
   });
@@ -492,10 +635,10 @@ describe('GPU-driven production projection', () => {
       world.update(1 / 60).unwrap();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
-      const drawn = renderer.draw({ publication: packet });
+      const drawn = renderer.draw({ publication: encodeRenderPublication(packet) });
       const prepared = prepare.mock.results.at(-1)?.value;
       expect(prepared).toMatchObject({
         ok: true,
@@ -556,16 +699,21 @@ describe('GPU-driven production projection', () => {
         expect(view.getFloat32(member.offset, true)).toBeCloseTo(value, 6);
       }
       expect(layout.numericMembers.map((field) => field.name)).not.toContain('alphaCutoff');
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       for (const geometryLane of ['direct', 'automatic'] as const) {
         world.update(1 / 60).unwrap();
         const next = publisher.prepare(world.getResource(Time).elapsed).unwrap();
         const publication = structuredClone(next.packet, {
-          transfer: renderPublicationTransfers(next.packet),
+          transfer: renderPublicationTransfers(next.message),
         });
         next.accept();
         directDraws.mockClear();
-        const drawn = renderer.draw({ publication, geometryLane });
+        const drawn = renderer.draw({
+          publication: encodeRenderPublication(publication),
+          geometryLane,
+        });
         expect(drawn.ok, JSON.stringify(errors)).toBe(true);
         if (!drawn.ok) throw drawn.error;
         const receipt = drawn.value;
@@ -580,7 +728,12 @@ describe('GPU-driven production projection', () => {
         if (geometryLane === 'direct') expect(directDraws).toHaveBeenCalled();
         expect(renderer.inspect().renderScene.projectionRecords).toBe(1);
         expect(errors).toEqual([]);
-        publisher.recycle(publication.revision, renderPublicationTransfers(publication)).unwrap();
+        publisher
+          .recycle(
+            publication.revision,
+            renderPublicationTransfers(encodeRenderPublication(publication)),
+          )
+          .unwrap();
       }
     } finally {
       prepare.mockRestore();
@@ -634,6 +787,7 @@ describe('GPU-driven production projection', () => {
     );
     const inspect = vi.spyOn(GpuDrivenProduction.prototype, 'inspect');
     const emit = vi.spyOn(gpuDrawReceipts, 'emitGpuDrivenDrawReceipts');
+    const summarize = vi.spyOn(gpuDrawReceipts, 'summarizeGpuDrivenDraws');
     const ssrInputs = vi.spyOn(mainPass, 'hasSsrSceneInputs');
     try {
       const changed = entities[371];
@@ -644,13 +798,14 @@ describe('GPU-driven production projection', () => {
         world.update(1 / 60).unwrap();
         const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
         const packet = structuredClone(candidate.packet, {
-          transfer: renderPublicationTransfers(candidate.packet),
+          transfer: renderPublicationTransfers(candidate.message),
         });
         candidate.accept();
         inspect.mockClear();
         emit.mockClear();
+        summarize.mockClear();
         ssrInputs.mockClear();
-        const submitted = renderer.draw({ publication: packet });
+        const submitted = renderer.draw({ publication: encodeRenderPublication(packet) });
         if (!submitted.ok) throw submitted.error;
         const receipt = submitted.value;
         if (receipt === undefined) throw new Error('missing publication receipt');
@@ -658,27 +813,34 @@ describe('GPU-driven production projection', () => {
         if (!completed.ok) throw completed.error;
         expect.soft(inspect, `frame ${frame} full inspection`).not.toHaveBeenCalled();
         expect(emit).toHaveBeenCalledOnce();
-        expect(emit.mock.calls[0]?.[0]).toHaveLength(744);
-        expect(emit.mock.results[0]?.value).toMatchObject({
+        // After the first GPU selection, per-row receipts visit residual rows only.
+        expect([...(emit.mock.calls[0]?.[0] ?? [])]).toHaveLength(frame === 0 ? 744 : 0);
+        expect(summarize).not.toHaveBeenCalled();
+        expect(ssrInputs).not.toHaveBeenCalled();
+        const state = renderer.inspect().renderScene;
+        expect(summarize).toHaveBeenCalledOnce();
+        expect(summarize.mock.calls[0]?.[0]).toHaveLength(744);
+        expect(summarize.mock.results[0]?.value).toMatchObject({
           gpuDraws: 744,
           gpuEntities: 744,
           cpuDraws: 0,
         });
-        expect(new Set(emit.mock.calls[0]?.[0].map((row) => row.material)).size).toBe(
+        expect(new Set(summarize.mock.calls[0]?.[0].map((row) => row.material)).size).toBe(
           frame < 3 ? 1 : 2,
         );
-        expect(ssrInputs).not.toHaveBeenCalled();
-        const state = renderer.inspect().renderScene;
         expect(state.projectionRecords).toBe(744);
         expect(state.gpuDriven.cpuFallbackDrawItems).toBe(0);
         expect(state.gpuDriven.gpuOwnedEntityCount).toBe(744);
         expect(state.gpuDriven.gpuOwnedSnapshotsMaterialized).toBe(0);
         expect(state.gpuDriven.cpuValidationScans).toBe(0);
-        publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        publisher
+          .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+          .unwrap();
       }
     } finally {
       inspect.mockRestore();
       emit.mockRestore();
+      summarize.mockRestore();
       ssrInputs.mockRestore();
       publisher.dispose();
       renderer.dispose();
@@ -893,7 +1055,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(warm?.topologySignature).toBe(prepared.topologySignature);
+    expect(warm?.topologySignature()).toBe(prepared.topologySignature());
     warm?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
     expect(production.inspect()).toMatchObject({ batchBindGroupCreates: 0 });
 
@@ -922,7 +1084,7 @@ describe('GPU-driven production projection', () => {
       .unwrap();
     // Admission is a per-view GPU bitmap indexed by primitive slot: hiding an
     // entity uploads dirty words but must not rebuild the plan or the graph.
-    expect(suppressed?.topologySignature).toBe(prepared.topologySignature);
+    expect(suppressed?.topologySignature()).toBe(prepared.topologySignature());
     expect(production.inspect()).toMatchObject({ batchCount: 1 });
 
     suppressed?._commitResourceReplacement();
@@ -948,7 +1110,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(restored?.topologySignature).toBe(prepared.topologySignature);
+    expect(restored?.topologySignature()).toBe(prepared.topologySignature());
     expect(production.inspect()).toMatchObject({ batchCount: 1 });
     // Selector accounting precedes suppression; suppression precedes the
     // compacted append in the early admission shared by both cull entry points.
@@ -1030,7 +1192,7 @@ describe('GPU-driven production projection', () => {
       filteredPlanBuilds: 0,
       suppressionUploadBytes: 4,
     });
-    expect(admitted?.topologySignature).toBe(prepared?.topologySignature);
+    expect(admitted?.topologySignature()).toBe(prepared?.topologySignature());
     production.dispose();
     availability.scene.dispose();
   });
@@ -1089,7 +1251,7 @@ describe('GPU-driven production projection', () => {
         )
         .unwrap();
       prepared?._commitResourceReplacement();
-      return prepared?.topologySignature;
+      return prepared?.topologySignature();
     };
     try {
       const first = spawn([1, 2, 3]);
@@ -1102,10 +1264,11 @@ describe('GPU-driven production projection', () => {
       expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(4);
       expect(grown).toBe(first);
       expect(pipelineInvalidations).not.toHaveBeenCalled();
-      // Falsifier: crossing the power-of-two candidate capacity replaces the
-      // view buffers, which is a real graph resource dependency.
+      // Crossing the power-of-two candidate capacity replaces the view
+      // buffers; the graph resolves them when it executes and survives too.
       const replaced = spawn([5]);
-      expect(replaced).not.toBe(first);
+      expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(5);
+      expect(replaced).toBe(first);
     } finally {
       pipelineInvalidations.mockRestore();
       production.dispose();
@@ -1205,6 +1368,7 @@ describe('GPU-driven production projection', () => {
     };
     const state = {
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+      temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
       compiledFrameGraphGeneration: 0,
       retiredCompiledFrameGraphs: new Set(),
@@ -1221,10 +1385,11 @@ describe('GPU-driven production projection', () => {
       colorAttachmentFormat: 'rgba8unorm',
     } as unknown as PipelineState;
     const lights = {
-      cascadeCount: undefined,
+      cascades: undefined,
       pointShadow: [],
       spot: [],
-    } as unknown as ExtractedLights;
+      shadowViews: [],
+    } as unknown as ViewLights;
     const compile = () =>
       ensureCompiledFrameGraph(
         internals,
@@ -1728,7 +1893,7 @@ describe('GPU-driven production projection', () => {
     availability.scene.dispose();
   });
 
-  it('preserves distinct materials when texture masks converge and reuses their PSO', async () => {
+  it('batches materials whose texture masks converge and reuses their PSO', async () => {
     const device = (
       await (await rhi.requestAdapter()).unwrap().requestDevice()
     ).unwrap() as RhiNullDevice;
@@ -1790,15 +1955,16 @@ describe('GPU-driven production projection', () => {
       expect(zeroPipeline).toBeDefined();
       first?._commitResourceReplacement();
       const stable = prepare();
-      expect(stable?.topologySignature).toBe(first?.topologySignature);
+      expect(stable?.topologySignature()).toBe(first?.topologySignature());
       stable?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
       stable?._commitResourceReplacement();
       pipelines.mockClear();
       availability.scene.sync(projection.apply([updateSnapshot(row(2, 0))])).unwrap();
       topology.rebuild(projection.slotsSnapshot());
       const changed = prepare();
-      expect(changed?.topologySignature).not.toBe(first?.topologySignature);
-      expect(production.inspect().batchCount).toBe(2);
+      expect(changed?.topologySignature()).not.toBe(first?.topologySignature());
+      // Converged materials share one batch; each row keeps its own material row.
+      expect(production.inspect().batchCount).toBe(1);
       if (changed === undefined) throw new Error('expected changed GPU frame');
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const gpu = changed.project(graph, 'rgba8unorm', 1).unwrap();
@@ -2384,13 +2550,13 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(stable?.topologySignature).toBe(prepared.topologySignature);
+    expect(stable?.topologySignature()).toBe(prepared.topologySignature());
     expect(production.inspect()).toMatchObject({
       gpuOwnedSnapshotsMaterialized: 0,
       filteredPlanBuilds: 0,
       sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
-      viewConstantsUploadBytes: 528,
+      viewConstantsUploadBytes: 784,
       viewBindGroupCreates: 0,
       batchBindGroupCreates: 0,
       indirectDrawCount: 3,
@@ -2614,7 +2780,7 @@ describe('GPU-driven production projection', () => {
         }),
       )
       .unwrap();
-    expect(replacementPrepared?.topologySignature).not.toBe(prepared.topologySignature);
+    expect(replacementPrepared?.topologySignature()).not.toBe(prepared.topologySignature());
 
     production.dispose();
     replacement.scene.dispose();

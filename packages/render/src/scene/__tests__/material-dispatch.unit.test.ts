@@ -1,5 +1,5 @@
 import { vec3 } from '@forgeax/engine-math';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
@@ -7,6 +7,7 @@ import { MaterialDispatch, MaterialFrame } from '../material-dispatch';
 import type { MeshFrame } from '../mesh-frame';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { type SceneSlotFrame, SceneSlots } from '../scene-slots';
+import { setSceneRow } from './scene-row-writes';
 
 const slotFrames = new WeakMap<readonly RenderSceneSlot[], SceneSlotFrame>();
 
@@ -87,10 +88,11 @@ it('visits only copied tree paths for a local change among 10000 unrelated asset
 
 it('orders complete and Direct work by source identity after slot recycling and across Worlds', () => {
   const shared = new MaterialResource(material(1));
-  const rows = [slot(9, shared), slot(2, shared), slot(7, shared)].map((row, index) => ({
-    ...row,
-    snapshot: { ...row.snapshot, worldId: index === 2 ? 1 : 0, entityKey: index === 1 ? 1 : 2 },
-  }));
+  const rows = [slot(9, shared), slot(2, shared), slot(7, shared)].map((row, index) => {
+    const worldId = index === 2 ? 1 : 0;
+    const entityKey = index === 1 ? 1 : 2;
+    return { ...row, worldId, entityKey, snapshot: { ...row.snapshot, worldId, entityKey } };
+  });
   const owner = new MaterialDispatch();
   for (const row of rows) owner.bind(row.slot, row.snapshot);
   const frame = owner.materials();
@@ -296,7 +298,7 @@ function slot(id: number, resource: MaterialResource, caster = true): RenderScen
     layer: id % 3,
     ...(caster ? {} : { shadowCaster: false as const }),
   };
-  return { slot: id, generation: 1, worldId: 0, entityKey: id, snapshot };
+  return { slot: id, generation: 1, version: 0, worldId: 0, entityKey: id, snapshot };
 }
 
 it('adopts shared Passes while retaining exact prior frames and participation', () => {
@@ -580,11 +582,31 @@ it('retains an admitted default across replacing the last old Mesh binding', asy
 
 // Native arrays describe cold fixture input; actual dispatch reads the retained owner.
 
+/** One random-edit row: hidden, Mesh-expression, preparation (hidden or visible) or direct. */
+function randomEditSnapshot(
+  snapshot: RenderableSnapshot,
+  kind: number,
+  edit: number,
+  resources: readonly MaterialResource[],
+): RenderableSnapshot {
+  if (kind === 0) return { ...snapshot, authorVisible: false };
+  if (kind >= 5 && kind < 11) return snapshot;
+  const meshRow = {
+    ...snapshot,
+    assetHandle: 1 + (kind % 2),
+    materialOverrides: [undefined, resources[(kind * 3 + edit) % 9]],
+  };
+  // Preparation rows keep their effective Mesh-default materials accepted
+  // even when hidden; toggling it must match a complete query too.
+  if (kind === 11) return { ...meshRow, authorVisible: false, pipelinePreparation: [] };
+  if (kind === 12) return { ...meshRow, pipelinePreparation: [] };
+  return meshRow;
+}
 function fixedSlots(rows: readonly RenderSceneSlot[]): SceneSlotFrame {
   let frame = slotFrames.get(rows);
   if (frame === undefined) {
     const slots = new SceneSlots();
-    for (const row of rows) slots.set(row.slot, row);
+    for (const row of rows) setSceneRow(slots, row.slot, row);
     frame = slots.capture();
     slotFrames.set(rows, frame);
   }
@@ -757,4 +779,182 @@ it('keeps the query and dispatch list when a pose-only republication rebinds the
   const moved = owner.query(slots);
   expect(moved).not.toBe(first);
   expect([...moved].every((entry) => entry.layer === 3)).toBe(true);
+});
+
+it.each([
+  false,
+  true,
+])('change-driven Pass queries match a complete query through random membership edits (resolver %s)', async (withResolver) => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const cube = createPrimitiveMesh('cube').unwrap();
+  const resources = Array.from(
+    { length: 9 },
+    (_, i) => new MaterialResource(material(i + 1, 1000 + (i % 4) * 500, i % 2 === 0)),
+  );
+  const byHandle = new Map(
+    resources.map((resource) => [resource.snapshot.materialHandle, resource]),
+  );
+  const resolver = withResolver
+    ? (_world: number, handle: number) => byHandle.get(handle) ?? (resources[0] as MaterialResource)
+    : undefined;
+  const incremental = new MaterialDispatch(resolver);
+  const complete = new MaterialDispatch(resolver);
+  const changeDriven = vi.spyOn(
+    incremental as unknown as { queryIncrementally(): boolean },
+    'queryIncrementally',
+  );
+  const twoSlots = { ...cube, materialSlots: [{ slotName: 'first' }, { slotName: 'second' }] };
+  const meshes = new MeshFrame()
+    .with(0, 1, twoSlots, [resources[1] as MaterialResource, resources[2] as MaterialResource])
+    .with(0, 2, twoSlots, [resources[3] as MaterialResource, resources[4] as MaterialResource]);
+  const meshDefaults = new Map([
+    [1, resources[1]],
+    [2, resources[3]],
+  ]);
+  // Effective resources of a row: direct, or its Mesh slot defaults and overrides.
+  const uses = (snapshot: RenderableSnapshot, resource: MaterialResource) =>
+    snapshot.materialOverrides === undefined
+      ? snapshot.material === resource
+      : snapshot.materialOverrides[1] === resource ||
+        (!withResolver && meshDefaults.get(snapshot.assetHandle ?? 0) === resource);
+  const rows = new Map<number, RenderSceneSlot>();
+  const describe = (frame: ReturnType<MaterialDispatch['query']>) =>
+    [...frame].map(
+      (entry) =>
+        `${entry.materialHandle}:${entry.entityIndex}:${entry.renderableIndex}:${entry.queue}:${entry.tags.LightMode}`,
+    );
+  let state = withResolver ? 11 : 7;
+  for (let step = 0; step < 900; step++) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const id = state % 211;
+    const resource = resources[(state >>> 9) % resources.length];
+    if (resource === undefined) throw new Error('missing fixture material');
+    if (step % 61 === 0)
+      // Retire every row of one material so its Passes and counts leave the frame.
+      for (const [key, row] of [...rows])
+        if (uses(row.snapshot, resource)) {
+          for (const owner of [incremental, complete]) owner.remove(key);
+          rows.delete(key);
+        }
+    const edits = 1 + ((state >>> 20) % 4);
+    for (let edit = 0; edit < edits; edit++) {
+      const target = (id + edit * 37) % 211;
+      if ((state >>> 4) % 9 === 0) {
+        for (const owner of [incremental, complete]) owner.remove(target);
+        rows.delete(target);
+      } else if (step % 97 === 0 && edit === 0) {
+        resource.adopt(
+          material(resource.snapshot.materialHandle ?? 0, 1000 + ((state >>> 16) % 5) * 250, true),
+        );
+        for (const owner of [incremental, complete]) owner.adopt(resource);
+      } else {
+        const row = slot(target, resource, (state >>> 12) % 3 !== 0);
+        const snapshot = randomEditSnapshot(
+          row.snapshot,
+          (state >>> (14 + edit)) % 13,
+          edit,
+          resources,
+        );
+        rows.set(target, { ...row, snapshot });
+        for (const owner of [incremental, complete]) owner.bind(target, snapshot);
+      }
+    }
+    const slots = fixedSlots([...rows.values()].sort((a, b) => a.slot - b.slot));
+    // The reference owner always rebuilds its complete projection.
+    (complete as unknown as { invalidateQuery(): void }).invalidateQuery();
+    const expected = query(complete, slots, meshes);
+    const actual = query(incremental, slots, meshes);
+    expect(describe(actual)).toEqual(describe(expected));
+    for (const resource of resources)
+      expect(incremental.materials().get(resource)?.bindings).toBe(
+        complete.materials().get(resource)?.bindings,
+      );
+  }
+  // Most queries follow membership-only edits and take the change-driven path.
+  expect(
+    changeDriven.mock.results.filter((result) => result.value === true).length,
+  ).toBeGreaterThan(700);
+});
+
+it('keeps dispatch entries only while consecutive queries read them; bindings own no entry objects', () => {
+  const resource = new MaterialResource(material(131, 2000, true));
+  const rows = Array.from({ length: 64 }, (_, id) => slot(id, resource));
+  const owner = new MaterialDispatch();
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const cold = [...owner.query(slots)];
+  expect(cold).toHaveLength(128);
+  // A consecutive reader shares the identities the previous query read.
+  const warm = [...owner.query(slots)];
+  expect(warm.every((entry, index) => entry === cold[index])).toBe(true);
+  // A query nothing read drops the generation: a cold traversal is not resident.
+  owner.query(slots);
+  owner.query(slots);
+  const later = [...owner.query(slots)];
+  expect(later).toEqual(cold);
+  expect(later.some((entry, index) => entry === cold[index])).toBe(false);
+  // Binding facts are numeric columns; no per-binding object holds entries.
+  const columns = (owner as unknown as { bindings: { groups: unknown[]; count: number } }).bindings;
+  expect(columns.count).toBe(64);
+  expect(new Set(columns.groups).size).toBe(1);
+});
+
+it('shares the caster set with members until a visible non-caster forks it, and rejoins after', () => {
+  const resource = new MaterialResource(material(132, 2000, true));
+  const owner = new MaterialDispatch();
+  const casters = (rows: readonly RenderSceneSlot[]) =>
+    [...owner.query(fixedSlots(rows))]
+      .filter((entry) => entry.tags.LightMode === 'ShadowCaster')
+      .map((entry) => entry.entityIndex);
+  const groupOf = () =>
+    (owner as unknown as { bindings: { groups: { members: unknown; ownCasters: unknown }[] } })
+      .bindings.groups[0];
+  const rows = [slot(0, resource), slot(1, resource), slot(2, resource)];
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  expect(groupOf()?.ownCasters).toBeUndefined();
+  expect(casters(rows)).toEqual([0, 1, 2]);
+  const quiet = slot(3, resource, false);
+  owner.bind(quiet.slot, quiet.snapshot);
+  const mixed = [...rows, quiet];
+  expect(casters(mixed)).toEqual([0, 1, 2]);
+  owner.remove(1);
+  const fewer = [rows[0], rows[2], quiet] as RenderSceneSlot[];
+  expect(casters(fewer)).toEqual([0, 2]);
+  owner.remove(3);
+  expect(groupOf()?.ownCasters).toBeUndefined();
+  expect(casters([rows[0], rows[2]] as RenderSceneSlot[])).toEqual([0, 2]);
+});
+
+it('bulk binding appends member pages instead of copying one roster page per member', () => {
+  const resource = new MaterialResource(material(1, 2000, true));
+  const rows = 8192;
+  // Reverse order exercises the staged sort; every second row is a non-caster.
+  const slots = Array.from({ length: rows }, (_, id) => slot(id, resource, id % 2 === 0));
+  const owner = new MaterialDispatch();
+  const Native = globalThis.Float64Array;
+  let constructed = 0;
+  class Counting extends Native {
+    constructor(...args: unknown[]) {
+      super(...(args as [number]));
+      constructed++;
+    }
+  }
+  globalThis.Float64Array = Counting as unknown as Float64ArrayConstructor;
+  try {
+    for (let index = rows - 1; index >= 0; index--) {
+      const row = slots[index] as RenderSceneSlot;
+      owner.bind(row.slot, row.snapshot);
+    }
+  } finally {
+    globalThis.Float64Array = Native;
+  }
+  const frame = query(owner, fixedSlots(slots));
+  expect(constructed).toBeLessThan(rows / 8);
+  const forward = frame.filter((entry) => entry.tags.LightMode !== 'ShadowCaster');
+  expect(forward.map((entry) => entry.entityIndex)).toEqual(slots.map((row) => row.entityKey));
+  const casters = frame.filter((entry) => entry.tags.LightMode === 'ShadowCaster');
+  expect(casters.map((entry) => entry.entityIndex)).toEqual(
+    slots.filter((row) => row.slot % 2 === 0).map((row) => row.entityKey),
+  );
 });

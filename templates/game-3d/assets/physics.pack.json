@@ -6,7 +6,7 @@
       "kind": "plugin",
       "payload": {
         "module": {
-          "specifier": "@forgeax/engine/physics/rapier3d"
+          "specifier": "@forgeax/engine/physics-rapier3d"
         }
       }
     }

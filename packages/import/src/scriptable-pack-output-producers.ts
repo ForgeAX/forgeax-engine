@@ -1,4 +1,8 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  encodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
 import type { ScriptablePackSceneComponent } from '@forgeax/engine-pack/source';
 import { externalizeSceneAsset } from '@forgeax/engine-scene';
 import type {
@@ -52,8 +56,25 @@ function producerError(input: AssetOutputInput, reason: unknown): ImportError {
     code: 'import-internal-error',
     expected: `ScriptablePack ${input.asset.kind} output ${input.sourceKey} to satisfy its domain producer contract`,
     hint: 'fix the generated Asset payload and rebuild the ScriptablePack',
-    detail: { reason: reason instanceof Error ? reason.message : String(reason) },
+    detail: { reason: describeProducerFailure(reason) },
   });
+}
+
+const MESH_BIN_FIX_HINT =
+  'MeshAsset.vertices must match MeshAsset.attributes; after changing attributes (for example colour) rebuild vertices with withVertexColors(mesh, colors) or packInterleavedVertexAttributes';
+
+/** Structured producer errors are plain objects: never let them print as [object Object]. */
+function describeProducerFailure(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (reason !== null && typeof reason === 'object' && 'code' in reason) {
+    const fields = reason as Record<string, unknown>;
+    const parts = ['sourceKey', 'expected', 'actual', 'recovery'].flatMap((key) =>
+      typeof fields[key] === 'string' ? [`${key}: ${fields[key]}`] : [],
+    );
+    const hint = fields.code === 'mesh-bin-payload-invalid' ? `; ${MESH_BIN_FIX_HINT}` : '';
+    return `${String(fields.code)} (${parts.join('; ')})${hint}`;
+  }
+  return String(reason);
 }
 
 function formatGuid(value: AssetGuidType | string): string {
@@ -484,7 +505,21 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
         if (!guid.ok) throw guid.error;
         refs.push(ref(guid.value, 'events', index));
       }
-      return { payload: clip, refs, artifacts: { body: jsonArtifact(clip) } };
+      const samples = encodeAnimationClipSamples(clip as unknown as Record<string, unknown>);
+      // Pack projection replaces the inline arrays with windows into this artifact.
+      return {
+        payload: clip,
+        refs,
+        artifacts:
+          samples === undefined
+            ? {}
+            : {
+                [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+                  mediaType: 'application/octet-stream',
+                  bytes: samples.bytes,
+                },
+              },
+      };
     }
     case 'animation-graph': {
       const graph = asset as AnimationGraph;
@@ -652,7 +687,7 @@ export function createAssetOutputProducerRegistry(
     registry.register(
       createSafeProducer(
         kind,
-        kind === 'animation-clip' ? 'animation-clip/2' : 'ordinary-pod/1',
+        kind === 'animation-clip' ? 'animation-clip/3' : 'ordinary-pod/1',
         ordinaryPodProduct,
       ),
     );

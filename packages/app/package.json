@@ -69,7 +69,7 @@
     "@forgeax/engine-skinning": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "@types/ws": "^8.5.10",
-    "ws": "^8.20.0",
+    "ws": "^8.22.0",
     "@forgeax/engine-graphics-extras": "workspace:*"
   },
   "forgeax": {

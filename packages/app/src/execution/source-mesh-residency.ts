@@ -31,12 +31,14 @@ interface Request {
   readonly prepared: Promise<Prepared>;
   readonly entity: number | undefined;
   readonly meshHandle: number;
+  readonly revision: number;
   ready: boolean;
   consumedCompletion?: number;
   consumedOrder?: number;
   consumedLane?: DynamicGeometryRecordStageLane;
   ended?: DynamicGeometryError;
   failure?: DynamicGeometryError;
+  receiverDisposed?: true;
   finish(result: Prepared): void;
   fail(cause: unknown): void;
   release?: {
@@ -220,6 +222,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       prepared,
       entity: input.entity,
       meshHandle: Number(input.meshHandle),
+      revision: input.assetRevision,
       ready: false,
       finish,
       fail,
@@ -335,6 +338,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
   ): Promise<void> {
     const request = retained;
     if (request === undefined) return Promise.resolve();
+    if (request.receiverDisposed) return Promise.resolve();
     if (request.release !== undefined) {
       if (evict && !request.release.evict) {
         request.release.evict = true;
@@ -431,6 +435,31 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     bindings?.delete(requestId);
     if (bindings?.size === 0) this.byEntity.delete(request.entity);
   }
+  /**
+   * The newest request for this mesh handle is ready with exactly this
+   * revision, in the current session, and the receiver keeps its payload until
+   * the next publication adopts it (no request to evict it has been sent).
+   */
+  holdsPrepared(meshHandle: number, revision: number): boolean {
+    let latest: Request | undefined;
+    let latestId = -1;
+    for (const [requestId, request] of this.requests)
+      if (request.meshHandle === meshHandle && requestId > latestId) {
+        latest = request;
+        latestId = requestId;
+      }
+    const live = this.session();
+    return (
+      latest?.ready === true &&
+      latest.revision === revision &&
+      latest.ended === undefined &&
+      latest.failure === undefined &&
+      (latest.release === undefined || !latest.release.evict) &&
+      live?.source === latest.session.source &&
+      live.epoch === latest.session.epoch &&
+      live.generation === latest.session.generation
+    );
+  }
   publishedFixedStep(world: World): number | undefined {
     return world === this.world ? this.fixedStep : undefined;
   }
@@ -459,13 +488,23 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     for (const request of this.requests.values()) {
       request.ready = false;
       request.ended = error;
-      request.fail(error);
-      request.release?.reject(error);
+      if (request.receiverDisposed) {
+        request.finish(err(request.failure ?? error));
+        request.release?.resolve();
+      } else {
+        request.fail(error);
+        request.release?.reject(error);
+      }
     }
     this.requests.clear();
     this.credits.clear();
     this.byEntity.clear();
     this.fixedStep = undefined;
+  }
+  /** Only a successful receiver disposal ACK proves all its allocations released. */
+  confirmRetirement(): void {
+    for (const request of this.requests.values()) request.receiverDisposed = true;
+    this.clear('Render Worker retirement confirmed');
   }
   async dispose(): Promise<void> {
     const results = await Promise.allSettled(

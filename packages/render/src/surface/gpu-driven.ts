@@ -56,7 +56,7 @@ const ERROR_POLICY: Readonly<
   },
   'surface-producer-not-ready': {
     expected: 'scene-index, resources, and dynamic input facts are ready for the published model',
-    hint: 'repair the owning producer publication and retry; capability fallback does not cover stale assets',
+    hint: 'repair the owning producer publication and retry; capability fallback does not cover stale assets. If the material declares surface.dynamicInput, publish its page every frame with renderer.setSurfaceDynamicInput({ page, ranges, projectionRevision, frameTime }) (dynamicInputReady=false means no page was published); the stock single-layer-medium water needs no page, so drop surface.dynamicInput from the material to draw without one',
   },
   'surface-generation-stale': {
     expected: 'prepared Surface facts belong to the current device generation',

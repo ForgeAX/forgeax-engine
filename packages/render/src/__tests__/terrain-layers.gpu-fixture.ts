@@ -264,15 +264,22 @@ ${sampling.replace(/^#.*\n/gm, '')}
     adopted();
     const filtered = fixed();
     const average = (0.05126953125 + 0.2158203125 + 1) / 4;
-    // Native sRGB arithmetic permits backend rounding before the one half-float
-    // derived output. Keep the error far below an sRGB-after-filter falsifier.
+    // The derived layer is rgba16float. WebGPU leaves the precision of a filtered
+    // sample implementation-defined: Vulkan returns the f32 blend, while Apple GPUs
+    // return a filtered half-float texture at half precision (0.316650390625 for
+    // the 0.3167724609375 midpoint). One half-float spacing of the expected value
+    // stays orders of magnitude below the sRGB-after-filter falsifier (~0.15).
+    const halfFloatSpacing = (value: number) =>
+      value === 0 ? 2 ** -24 : 2 ** (Math.floor(Math.log2(Math.abs(value))) - 10);
     const expectFiltered = (actual: readonly number[], expected: readonly number[]) => {
       expect(actual).toHaveLength(expected.length);
       for (let i = 0; i < expected.length; i++) {
         const observed = actual[i],
           wanted = expected[i];
         assert(observed !== undefined && wanted !== undefined);
-        expect(Math.abs(observed - wanted)).toBeLessThanOrEqual(0.00001);
+        expect(Math.abs(observed - wanted)).toBeLessThanOrEqual(
+          Math.max(0.00001, halfFloatSpacing(wanted)),
+        );
       }
     };
     expectFiltered(await run([filtered], [0.5, 0.5]), [average * 0.5, average, average, 1]);

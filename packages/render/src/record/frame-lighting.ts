@@ -1,10 +1,16 @@
+import { mat4 } from '@forgeax/engine-math';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { fnv1a32 } from '@forgeax/engine-types';
-import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { standardBloomAdmitted } from '../bloom-admission';
-import { type AtmosphereViews, atmosphereBindings } from '../environment/bindings';
+import {
+  type AtmosphereViews,
+  atmosphereBindings,
+  pushAtmosphereBindingResources,
+} from '../environment/bindings';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { FrameList } from '../scene/frame-list';
+import type { ViewLights } from '../world/render-lights';
 // @forgeax/engine-runtime - RenderSystem record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
@@ -57,7 +63,6 @@ import type { ReflectionProbeSelectionResult } from '../reflection/projection';
 import type { CameraSnapshot, RenderHdrpClusterPhase } from '../render-contract';
 import type {
   DirectionalLightSnapshot,
-  ExtractedLights,
   IesProfileSnapshot,
   RenderableSnapshot,
   SkyboxSnapshot,
@@ -79,10 +84,14 @@ import {
   isLitMaterialSnapshot,
   warnMultiLightDirectional,
 } from './helpers';
+import { LightTable } from './light-table';
 import {
+  bindGroupChainLeaf2,
+  bindGroupChainLeaf3,
   getOrCreateFromChain,
   MESH_PER_ENTITY_STRIDE,
   MESH_UBO_FULL_ARRAY_BYTES,
+  rememberBindGroup,
 } from './mesh-ssbo';
 import type {
   _InternalRenderPipelineContext,
@@ -151,6 +160,9 @@ function mapClusterUploadFailure(
     },
   });
 }
+
+/** Retained View bind-group chain key; filled and consumed synchronously. */
+const viewChainKeys: object[] = [];
 
 /**
  * feat-20260704 M3/w18: per-frame bind-group cache resolution, extracted
@@ -293,46 +305,40 @@ export function buildPerFrameBindGroups(
           hdrpClusterMembershipBindGroup,
         };
       }
-      const extendedLightingViews =
-        extendedLightingResources !== undefined
-          ? [
-              extendedLightingResources.moments,
-              extendedLightingResources.sampler,
-              extendedLightingResources.iesProfileTextureView,
-              extendedLightingResources.cookieTextureView,
-              extendedLightingResources.ltcLambertTextureView,
-              extendedLightingResources.ltcGgxTextureView,
-              extendedLightingResources.cookieMatrixBuffer,
-            ]
-          : [];
       const projectorAvailable = pipelineState.projectorAvailable !== false;
       const lowLimitCloudBindings = !extendedLighting && !projectorAvailable;
       const b11View = graphTargets?.projector ?? pipelineState.defaultWhiteTextureView;
       const b12Sampler = graphTargets?.projectorSampler ?? pipelineState.defaultSampler;
-      const atmosphereEntries = atmosphereBindings(pipelineState, graphTargets?.atmosphere);
+      // The chain key is rebuilt into one retained array on every pass that
+      // binds the View group; entries are built only on a cache miss.
+      const keys = viewChainKeys;
+      keys.length = 0;
+      keys.push(pipelineState.viewUniformBuffer);
+      pushAtmosphereBindingResources(keys, pipelineState, graphTargets?.atmosphere);
+      keys.push(b3View, shadowSampler, b5View, pipelineState.shadowParamsBuffer, b8View);
+      if (extendedLightingResources !== undefined) {
+        keys.push(
+          extendedLightingResources.moments,
+          extendedLightingResources.sampler,
+          extendedLightingResources.iesProfileTextureView,
+          extendedLightingResources.cookieTextureView,
+          extendedLightingResources.ltcLambertTextureView,
+          extendedLightingResources.ltcGgxTextureView,
+          extendedLightingResources.cookieMatrixBuffer,
+        );
+      } else if (projectorAvailable) {
+        keys.push(b11View, b12Sampler);
+      }
+      keys.push(pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer);
+      if (!lowLimitCloudBindings)
+        keys.push(cloudShadowView, pipelineState.viewLinearSampler ?? pipelineState.defaultSampler);
       viewBindGroup = getOrCreateFromChain(
         frameState.viewBindGroupCache,
-        [
-          pipelineState.viewUniformBuffer,
-          ...atmosphereEntries.map((entry) => entry.resource.value as object),
-          b3View,
-          shadowSampler,
-          b5View,
-          pipelineState.shadowParamsBuffer,
-          b8View,
-          ...extendedLightingViews,
-          ...(extendedLightingResources === undefined && projectorAvailable
-            ? [b11View, b12Sampler]
-            : []),
-          pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer,
-          ...(lowLimitCloudBindings
-            ? []
-            : [cloudShadowView, pipelineState.viewLinearSampler ?? pipelineState.defaultSampler]),
-        ],
+        keys,
         'view-main',
         () => {
           const entries: BindGroupEntry[] = [
-            ...atmosphereEntries,
+            ...atmosphereBindings(pipelineState, graphTargets?.atmosphere),
             {
               binding: 0,
               resource: {
@@ -540,13 +546,13 @@ export function buildPerFrameBindGroups(
         // as the mesh path) so a grow event rotates the chain key.
         hdrpClusterBindGroup = getOrCreateFromChain(
           frameState.meshBindGroupCache,
-          [meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer, hdrpBuffers],
+          [meshSsboBuffer(pipelineState.meshStorageBuffer, 0), hdrpBuffers],
           'hdrp-unified',
           () => {
             const bg = createHdrpUnifiedBindGroup(
               internals,
               hdrpBuffers,
-              meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer,
+              meshSsboBuffer(pipelineState.meshStorageBuffer, 0),
             );
             if (bg === null) {
               throw new RhiError({
@@ -578,7 +584,7 @@ export function buildPerFrameBindGroups(
 export function prepareFrameLighting(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  lights: ExtractedLights,
+  lights: ViewLights,
   camera: CameraSnapshot,
   pipelineState?: Pick<
     PipelineState,
@@ -587,9 +593,9 @@ export function prepareFrameLighting(
 ): Result<
   {
     light: DirectionalLightSnapshot;
-    pointLights: ExtractedLights['point'];
-    spotLights: ExtractedLights['spot'];
-    rectLights: ExtractedLights['rect'];
+    pointLights: ViewLights['point'];
+    spotLights: ViewLights['spot'];
+    rectLights: ViewLights['rect'];
     totalLightCount: number;
     standard: StandardTopologyInputValue;
   },
@@ -640,7 +646,7 @@ export function prepareFrameLighting(
     }
   }
 
-  // ExtractedLights three-arm consumption (R-10 preparation; M2 / w16):
+  // ViewLights three-arm consumption (R-10 preparation; M2 / w16):
   //
   //   - lights.directional : feeds the View UBO at slot [16..23]
   //                          (lightDir + lightColor; existing path).
@@ -710,8 +716,8 @@ export function prepareFrameLighting(
   const prepared = prepareStandardLighting({
     directional: directionalLight,
     local,
-    view: computeViewMatrix(camera),
-    projection: computeProjectionMatrix(camera),
+    view: computeViewMatrix(camera, mat4.create()),
+    projection: computeProjectionMatrix(camera, mat4.create()),
     near: camera.near,
     far: camera.far,
     grid: clusterGrid,
@@ -794,7 +800,7 @@ const WHITE_LIGHT_TEXTURE_CHAIN = new Uint8Array(COOKIE_SLICE_MIP_CHAIN_BYTES).f
 export function writeLightModifierTextures(
   internals: RenderSystemInternals,
   pipelineState: PipelineState,
-  lights: Pick<ExtractedLights, 'point' | 'spot' | 'rect'>,
+  lights: Pick<ViewLights, 'point' | 'spot' | 'rect'>,
 ): void {
   const iesTexture = pipelineState.iesProfileTexture;
   const cookieTexture = pipelineState.cookieTexture;
@@ -919,7 +925,9 @@ export function writeLightModifierTextures(
  * lane[shadowAtlasLayer] = (near, far, depthBias, normalBias). Lanes for non-shadow
  * slots stay zero (the WGSL sample path is gated by PointLight.shadowAtlasLayer
  * >= 0). Always writes the complete Point/Spot block so stale non-zero lanes from a previous
- * frame's allocation cannot poison the current frame.
+ * frame's allocation cannot poison the current frame. The Render World light
+ * roster keeps its arrays until a light changes, so a buffer already holding
+ * this roster's block is not rewritten.
  *
  * @internal
  */
@@ -928,6 +936,14 @@ export function writeShadowParamsBuffer(
   frameState: RenderFrameState,
   pipelineState: PipelineState,
 ): void {
+  const written = frameState.shadowParamsSource;
+  if (
+    written !== undefined &&
+    written.buffer === pipelineState.shadowParamsBuffer &&
+    written.point === frameState.pointShadowSnapshots &&
+    written.spot === frameState.spotShadowSnapshots
+  )
+    return;
   const SHADOW_PARAMS_LANE_COUNT = 4;
   const SHADOW_PARAMS_FLOATS_PER_LANE = 4;
   const shadowParamsArr = new Float32Array(SHADOW_PARAMS_BYTES / Float32Array.BYTES_PER_ELEMENT);
@@ -977,8 +993,15 @@ export function writeShadowParamsBuffer(
     shadowParamsArr,
   );
   if (!shadowParamsWriteRes.ok) {
+    delete frameState.shadowParamsSource;
     internals.errorRegistry.fire(shadowParamsWriteRes.error);
+    return;
   }
+  frameState.shadowParamsSource = {
+    buffer: pipelineState.shadowParamsBuffer,
+    point: frameState.pointShadowSnapshots,
+    spot: frameState.spotShadowSnapshots,
+  };
 }
 
 /**
@@ -1000,12 +1023,12 @@ export function warnZeroLightStandard(
   skylight: SkylightSnapshot | undefined,
   totalLightCount: number,
 ): void {
-  const hasStandardMaterial = renderables.some((r) => isLitMaterialSnapshot(r.material.snapshot));
+  // The row scan runs only when the warning is still possible.
   if (
     skylight === undefined &&
     totalLightCount === 0 &&
-    hasStandardMaterial &&
-    !frameState.warnedZeroLightStandard
+    !frameState.warnedZeroLightStandard &&
+    renderables.some((r) => isLitMaterialSnapshot(r.material.snapshot))
   ) {
     frameState.warnedZeroLightStandard = true;
     const env = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
@@ -1015,6 +1038,21 @@ export function warnZeroLightStandard(
       );
     }
   }
+}
+
+const LIGHT_TABLES = new WeakMap<object, LightTable>();
+
+/** The light table of a storage bundle; a replaced bundle starts a fresh table. */
+export function lightTableOf(
+  internals: RenderSystemInternals,
+  buffers: Extract<NonNullable<ReturnType<typeof getOrCreateHdrpBuffers>>, { kind: 'storage' }>,
+): LightTable {
+  let table = LIGHT_TABLES.get(buffers);
+  if (table === undefined) {
+    table = new LightTable(internals.device, buffers.lightDataBuffer);
+    LIGHT_TABLES.set(buffers, table);
+  }
+  return table;
 }
 
 /**
@@ -1093,9 +1131,9 @@ export function writeHdrpClusterAndSsaoBuffers(
   }
 
   if (pipelineState !== undefined) {
-    const preparedPoints: ExtractedLights['point'][number][] = [];
-    const preparedSpots: ExtractedLights['spot'][number][] = [];
-    const preparedRects: ExtractedLights['rect'][number][] = [];
+    const preparedPoints: ViewLights['point'][number][] = [];
+    const preparedSpots: ViewLights['spot'][number][] = [];
+    const preparedRects: ViewLights['rect'][number][] = [];
     for (const local of prepared.local) {
       if (local.source?.kind === 'point') preparedPoints.push(local.source);
       else if (local.source?.kind === 'spot') preparedSpots.push(local.source);
@@ -1121,55 +1159,7 @@ export function writeHdrpClusterAndSsaoBuffers(
     .process?.env;
   if (envFalsify?.FORGEAX_HDRP_FALSIFY_CLUSTER_GRID_ZERO) clusterGridBuf.fill(0);
 
-  const hdrpPayload = runHdrpClusterProfilePhase(
-    profilePhase,
-    'record/scene-state/hdrp-cluster/payload-packing',
-    () => {
-      const lightDataPayload = new Float32Array(
-        prepared.layout.lightDataSlotCount * DIRECT_LIGHT_SLOT_FLOAT_COUNT,
-      );
-      let slotIdx = 0;
-      for (const local of prepared.local) {
-        const source = local.source;
-        if (source === undefined) return null;
-        const projectorSelected =
-          projectorLightSlotIndex === undefined ? undefined : projectorLightSlotIndex === slotIdx;
-        const packed = packDirectLightSlot(source, projectorSelected);
-        lightDataPayload.set(packed, slotIdx * DIRECT_LIGHT_SLOT_FLOAT_COUNT);
-        slotIdx += 1;
-      }
-
-      // scope-amend-webgl2-ubo: SSAO intensity is folded into the
-      // cluster_uniform .w lane (formerly pad), removing the dedicated
-      // @binding(9) UBO that pushed fragment-stage UBO count past
-      // WebGL2's max_uniform_buffers_per_shader_stage=11. Disabled-SSAO
-      // path writes 0 so `mix(1.0, ssao*ao, 0.0) = 1.0` in the lighting
-      // shader (no PSO recompile across enable/disable).
-      const clusterSsaoConfig = frameState.installedPipelineConfig?.ssao;
-      const clusterSsaoIntensity =
-        clusterSsaoConfig !== undefined && clusterSsaoConfig.enabled === true
-          ? (clusterSsaoConfig.intensity ?? 1.0)
-          : 0;
-      const clusterUniformPayload = packClusterUniform(
-        { x: gridX, y: gridY, z: gridZ },
-        camera.near,
-        camera.far,
-        clusterSsaoIntensity,
-        transport.admittedLightCount,
-      );
-
-      return {
-        hdrpBuffers,
-        lightDataUploadPayload: lightDataPayload.subarray(
-          0,
-          slotIdx * DIRECT_LIGHT_SLOT_FLOAT_COUNT,
-        ),
-        clusterUniformPayload: new Uint8Array(clusterUniformPayload),
-      };
-    },
-  );
-
-  if (hdrpPayload === null) {
+  if (prepared.local.some((local) => local.source === undefined)) {
     return err(
       new StandardClusterTransportUnavailableError(
         prepared.local.length,
@@ -1178,20 +1168,43 @@ export function writeHdrpClusterAndSsaoBuffers(
     );
   }
 
+  // scope-amend-webgl2-ubo: SSAO intensity is folded into the cluster_uniform
+  // .w lane (formerly pad), removing the dedicated @binding(9) UBO that pushed
+  // fragment-stage UBO count past WebGL2's max_uniform_buffers_per_shader_stage=11.
+  // Disabled-SSAO path writes 0, which lighting reads as "no screen AO" (no PSO
+  // recompile across enable/disable).
+  const clusterSsaoConfig = frameState.installedPipelineConfig?.ssao;
+  const clusterSsaoIntensity =
+    clusterSsaoConfig !== undefined && clusterSsaoConfig.enabled === true
+      ? (clusterSsaoConfig.intensity ?? 1.0)
+      : 0;
+  const clusterUniformPayload = new Uint8Array(
+    packClusterUniform(
+      { x: gridX, y: gridY, z: gridZ },
+      camera.near,
+      camera.far,
+      clusterSsaoIntensity,
+      transport.admittedLightCount,
+    ),
+  );
+
   const bufferUpload = runHdrpClusterProfilePhase(
     profilePhase,
     'record/scene-state/hdrp-cluster/buffer-upload',
     (): Result<void, RenderError> => {
-      const { hdrpBuffers, lightDataUploadPayload, clusterUniformPayload } = hdrpPayload;
       if (hdrpBuffers.kind === 'texture') {
         const { words, layout, texture } = hdrpBuffers;
-        words.set(
-          new Uint32Array(
-            lightDataUploadPayload.buffer,
-            lightDataUploadPayload.byteOffset,
-            lightDataUploadPayload.length,
-          ),
-        );
+        // The texture transport shares one upload with the camera's grid, so it repacks every slot.
+        for (const [slot, local] of prepared.local.entries()) {
+          const packed = packDirectLightSlot(
+            local.source as NonNullable<typeof local.source>,
+            projectorLightSlotIndex === undefined ? undefined : projectorLightSlotIndex === slot,
+          );
+          words.set(
+            new Uint32Array(packed.buffer, packed.byteOffset, packed.length),
+            slot * DIRECT_LIGHT_SLOT_FLOAT_COUNT,
+          );
+        }
         words.set(clusterGridBuf, layout.gridOffset);
         words.set(lightIndexListBuf.subarray(0, lightIndexCount), layout.indexOffset);
         const rows = Math.ceil((layout.indexOffset + lightIndexCount) / (layout.width * 4));
@@ -1203,10 +1216,9 @@ export function writeHdrpClusterAndSsaoBuffers(
         );
         if (!upload.ok) return err(mapClusterUploadFailure('integer-texture', upload.error));
       } else {
-        const lightDataUpload = internals.device.queue.writeBuffer(
-          hdrpBuffers.lightDataBuffer,
-          0,
-          lightDataUploadPayload,
+        const lightDataUpload = lightTableOf(internals, hdrpBuffers).write(
+          prepared.local,
+          projectorLightSlotIndex,
         );
         if (!lightDataUpload.ok)
           return err(mapClusterUploadFailure('light-data', lightDataUpload.error));
@@ -1351,36 +1363,33 @@ export function meshSlotBindGroup(
   bindGroupCounts: BindGroupCounts,
   byteOffset: number,
 ): BindGroup {
-  const { buffer } = meshSsboBufferBinding(pipelineState.meshStorageBuffer, byteOffset);
-  return getOrCreateFromChain(
+  const buffer = meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset);
+  const bindings = bindGroupChainLeaf2(
     frameState.meshBindGroupCache,
-    [pipelineState.meshBindGroupLayout, buffer],
-    'mesh',
-    () => {
-      const result = device.createBindGroup({
-        label: 'pbr-mesh-bg',
-        layout: pipelineState.meshBindGroupLayout,
-        entries: [
-          {
-            binding: 0,
-            resource: {
-              kind: 'buffer',
-              value: {
-                buffer,
-                offset: 0,
-                size: device.caps.storageBuffer
-                  ? MESH_PER_ENTITY_STRIDE
-                  : MESH_UBO_FULL_ARRAY_BYTES,
-              },
-            },
-          },
-        ],
-      });
-      if (!result.ok) throw result.error;
-      return result.value;
-    },
-    bindGroupCounts,
+    pipelineState.meshBindGroupLayout,
+    buffer,
   );
+  const cached = bindings.get('mesh');
+  if (cached !== undefined) return cached;
+  const result = device.createBindGroup({
+    label: 'pbr-mesh-bg',
+    layout: pipelineState.meshBindGroupLayout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          kind: 'buffer',
+          value: {
+            buffer,
+            offset: 0,
+            size: device.caps.storageBuffer ? MESH_PER_ENTITY_STRIDE : MESH_UBO_FULL_ARRAY_BYTES,
+          },
+        },
+      },
+    ],
+  });
+  if (!result.ok) throw result.error;
+  return rememberBindGroup(bindings, 'mesh', result.value, bindGroupCounts);
 }
 
 /** Preserve the complete clustered lighting ABI while selecting a physical mesh page. */
@@ -1400,29 +1409,27 @@ export function clusteredMeshSlotBindGroup(
       hint: 'inspect prior cluster allocation errors',
     });
   }
-  const { buffer } = meshSsboBufferBinding(pipelineState.meshStorageBuffer, byteOffset);
-  return getOrCreateFromChain(
-    frameState.meshBindGroupCache,
-    [buffer, buffers, ...(hdrpSsaoBlurredView === undefined ? [] : [hdrpSsaoBlurredView])],
-    'hdrp-unified',
-    () => {
-      const group = createHdrpUnifiedBindGroup(
-        runtime,
-        buffers,
-        buffer,
-        hdrpSsaoBlurredView === undefined
-          ? { enabled: false }
-          : { enabled: true, ssaoBlurredView: hdrpSsaoBlurredView },
-      );
-      if (group === null) {
-        throw new RhiError({
-          code: 'webgpu-runtime-error',
-          expected: 'clustered draw bind group creation succeeds',
-          hint: 'inspect prior createBindGroup errors',
-        });
-      }
-      return group;
-    },
-    bindGroupCounts,
+  const buffer = meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset);
+  const bindings =
+    hdrpSsaoBlurredView === undefined
+      ? bindGroupChainLeaf2(frameState.meshBindGroupCache, buffer, buffers)
+      : bindGroupChainLeaf3(frameState.meshBindGroupCache, buffer, buffers, hdrpSsaoBlurredView);
+  const cached = bindings.get('hdrp-unified');
+  if (cached !== undefined) return cached;
+  const group = createHdrpUnifiedBindGroup(
+    runtime,
+    buffers,
+    buffer,
+    hdrpSsaoBlurredView === undefined
+      ? { enabled: false }
+      : { enabled: true, ssaoBlurredView: hdrpSsaoBlurredView },
   );
+  if (group === null) {
+    throw new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'clustered draw bind group creation succeeds',
+      hint: 'inspect prior createBindGroup errors',
+    });
+  }
+  return rememberBindGroup(bindings, 'hdrp-unified', group, bindGroupCounts);
 }

@@ -32,6 +32,9 @@ interface PlayerState {
 }
 
 declare global {
+  var __forgeaxInputEvents:
+    | readonly { type: string; atMs: number; pointerId?: number; code?: string }[]
+    | undefined;
   var __forgeaxWorkerEvents: unknown[] | undefined;
   var __forgeaxWorkerPresentation:
     | {
@@ -48,6 +51,28 @@ declare global {
         renderer(): { state: string; execution: ExecutionReport };
       }
     | undefined;
+}
+
+/** Keep the actual native input sequence with a failed Worker journey. */
+function observeNativeInput(): void {
+  const events: { type: string; atMs: number; pointerId?: number; code?: string }[] = [];
+  globalThis.__forgeaxInputEvents = events;
+  for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'keydown', 'keyup'])
+    document.addEventListener(
+      type,
+      (event) => {
+        if (events.length >= 64) return;
+        const pointer = event as PointerEvent,
+          key = event as KeyboardEvent;
+        events.push({
+          type,
+          atMs: performance.now(),
+          ...(pointer.pointerId === undefined ? {} : { pointerId: pointer.pointerId }),
+          ...(key.code === undefined ? {} : { code: key.code }),
+        });
+      },
+      { capture: true },
+    );
 }
 
 it('new game-3d defaults to combined workers with visible UI, input, physics and animation', async (context) => {
@@ -169,6 +194,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
       if (pageLifecycle.length < 64)
         pageLifecycle.push(`request ${request.url()} ${request.failure()?.errorText}`);
     });
+    await page.addInitScript(observeNativeInput);
     await page.addInitScript(() => {
       const NativeWorker = Worker;
       globalThis.__forgeaxWorkerEvents = [];
@@ -385,7 +411,13 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     expect(touched.animation.walkWeight).toBeGreaterThan(0);
     expect(touched.camera.pointerLocked).toBe(false);
     await touch.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
-    await expect.poll(async () => (await read()).animation.walkWeight).toBe(0);
+    // CDP acknowledgment alone does not establish DOM control release. Qualify
+    // it before checking the separately delivered intent in the source Worker.
+    await expect.poll(() => currentPage.locator('#game-ui [data-ui-part].held').count()).toBe(0);
+    // The source World samples the Host's port message on a later Update.
+    // Use the same bounded Worker input window as movement above; Vitest's
+    // one-second unit assertion default can expire before that Update on CI.
+    await expect.poll(async () => (await read()).animation.walkWeight, { timeout: 30_000 }).toBe(0);
     const evidence = resolve(
       import.meta.dirname,
       '../../../../artifacts/worker-execution-policy-3297/new-project',
@@ -510,8 +542,9 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     }
     const state = await page
       ?.evaluate(() => ({
+        inputEvents: globalThis.__forgeaxInputEvents,
         fatal: document.querySelector('#forgeax-fatal-details')?.textContent,
-        frame: document.documentElement.dataset.forgeaxFrameSubmitted,
+        frame: document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId,
         execution: globalThis.__forgeaxGameInspection?.renderer().execution,
         workerEvents: globalThis.__forgeaxWorkerEvents,
         workerPresentation: globalThis.__forgeaxWorkerPresentation,

@@ -2,11 +2,11 @@ import { vec2 as v2 } from '@forgeax/engine/math';
 import {
   Collider,
   ColliderShapeValue,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
 import type { RapierPhysicsWorld2D } from '@forgeax/engine/physics-rapier2d';
+import physics2d from '@forgeax/engine/physics-rapier2d';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnCamera } from '../../lab/stage';
@@ -19,9 +19,17 @@ export default defineFeature({
   title: 'Rapier 2D backend',
   catalog: '2D Rapier backend',
   kind: 'probe',
-  appOptions: { plugins: [physicsPlugin('rapier-2d')] },
+  appOptions: {
+    plugins: [
+      {
+        async apply(ctx) {
+          await ctx.plugin(physics2d, { solverIterations: 2 });
+        },
+      },
+    ],
+  },
   summary:
-    'physicsPlugin("rapier-2d") loads the 2D Rapier WASM and inserts a PhysicsWorld2D resource. Bodies use Transform x/y and Collider halfExtents x/y; raycast and teleport take Vec2.',
+    'physics2d loads the 2D Rapier WASM with two solver iterations and inserts a PhysicsWorld2D resource. Bodies use Transform x/y and Collider halfExtents x/y; raycast and teleport take Vec2.',
   expect:
     'All checks pass: the 2D resource appears, a dynamic box falls onto a static floor in the XY plane, a Vec2 raycast hits the floor, teleport moves the box, and despawn removes the native body.',
   async setup({ world, frames, hud }) {
@@ -38,6 +46,10 @@ export default defineFeature({
     );
     if (physics === undefined) return { checks: () => checks.items };
     hud.status(`Rapier 2D ready after ${waitedFrames} frames`);
+    checks.ok(
+      'configured global solver iterations = 2',
+      physics.raw.integrationParameters.numSolverIterations === 2,
+    );
     checks.near(
       'default 2D gravity is -9.81 on Y',
       physics.getGravity()[1] ?? Number.NaN,

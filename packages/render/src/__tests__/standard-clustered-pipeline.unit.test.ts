@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { resolvePostColorDomainContract } from '../render-pipeline';
 
 const clusteredSource = readFileSync(
-  new URL('../pipeline/standard-pipeline.ts', import.meta.url),
+  new URL('../pipeline/standard-deferred-lane.ts', import.meta.url),
   'utf8',
 );
 const clusterGraphSource = readFileSync(
@@ -69,8 +69,8 @@ describe('Standard clustered post color-domain order', () => {
   it('retains clustered Spot shadow receiver and atlas dependencies', () => {
     const result = resolvePostColorDomainContract('linear-hdr');
     expect(result).toContainEqual(['bloom', 'linear-hdr', 'linear-hdr']);
-    expect(clusteredSource).toContain('spotShadow: shadows.value.spot');
-    expect(clusteredSource).toContain('shadows.value.spot,');
+    expect(clusteredSource).toContain('spotShadow: shadows.spot');
+    expect(clusteredSource).toContain('spotShadow: sources.shadows.spot.view');
     expect(clusterGraphSource).toContain("'hdrp-light-index-list'");
   });
 

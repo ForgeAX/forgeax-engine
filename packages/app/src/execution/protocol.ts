@@ -1,4 +1,4 @@
-import type { AudioIntent, MusicState } from '@forgeax/engine-audio';
+import type { AudioIntent } from '@forgeax/engine-audio';
 import type { SharedSpanBinding } from '@forgeax/engine-ecs/shared';
 import type { GamepadFeedbackIntent, InputBackendSample } from '@forgeax/engine-input';
 import type { RenderError, RenderPublicationIdentity } from '@forgeax/engine-render';
@@ -15,8 +15,7 @@ import type {
 
 export interface ExecutionFrameMessage {
   readonly kind: 'frame';
-  readonly musicState?: MusicState;
-  readonly audioPreparation?: import('@forgeax/engine-audio').AudioPreparationReceipt;
+  readonly audioState?: import('./types').ExecutionAudioReport;
   readonly rejectedAudioPublications?: readonly import('@forgeax/engine-audio').AudioClipIdentity[];
   readonly worldIdentity: string;
   readonly frameId: number;
@@ -25,6 +24,11 @@ export interface ExecutionFrameMessage {
   readonly sampleTimeSeconds?: number;
   /** Explicit pause/resume or replay lifecycle boundary for temporal owners. */
   readonly temporalReset?: boolean;
+  /**
+   * `false`: a paused update-only step. The Engine updates the World, publishes
+   * and draws nothing, and settles credit with `simulation-complete`.
+   */
+  readonly render?: false;
   readonly inputSample: InputBackendSample;
   readonly canvasWidth: number;
   readonly canvasHeight: number;
@@ -39,6 +43,8 @@ export interface ExecutionFrameCompletion {
   readonly deviceGeneration?: number;
   /** Compiled graph generation paired with the submitted picture. */
   readonly graphGeneration?: number;
+  /** Render Worker milliseconds from queue submission to completion. */
+  readonly renderSubmitToCompleteMs?: number;
   /**
    * Serialized output mapping for the accepted frame. `undefined` means that
    * no accepted submitted display context is available; consumers must fail
@@ -88,6 +94,7 @@ export class FrameCreditLedger {
     canvasSize: CanvasDrawingBufferSize = { width: 0, height: 0 },
     sampleTimeSeconds?: number,
     temporalReset = false,
+    render = true,
   ): ExecutionFrameMessage | undefined {
     if (this.inFlight !== null) {
       this.throttledTicks += 1;
@@ -105,6 +112,7 @@ export class FrameCreditLedger {
       deltaSeconds,
       ...(sampleTimeSeconds === undefined ? {} : { sampleTimeSeconds }),
       ...(temporalReset ? { temporalReset: true } : {}),
+      ...(render ? {} : { render: false as const }),
       inputSample: sampleInput(),
       canvasWidth: canvasSize.width,
       canvasHeight: canvasSize.height,
@@ -154,13 +162,28 @@ export interface ExecutionInitMessage {
   readonly time?: import('@forgeax/engine-ecs').TimePolicy;
   readonly animation?: import('@forgeax/engine-animation').AnimationPlaybackOptions;
   readonly diagnostics?: import('./types').ExecutionDiagnosticsOptions;
+  /** Installed in the Engine Worker and forwarded to the Render Worker realm. */
+  readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
   /** Renderer-realm display output color space; the Renderer owns negotiation. */
   readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
-  /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
+  /**
+   * Captured exact pipeline recipes, prepared before renderer initialization completes.
+   * The Host supplies them with every message that starts a Renderer realm (`init`,
+   * `rebuild`, `render-replace`); startup records drop them after handing them
+   * to the active Renderer owner.
+   */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /** Captured recipes compiled after renderer readiness without blocking it. */
+  readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  readonly assetBudgetBytes?: number;
+  /** Page load progress scope; Worker realms report load work to it. */
+  readonly loadProgressScope?: string;
   readonly workers: import('./types').ExecutionSelection;
 }
+
+/** Realm-retained startup facts. Startup-only payloads are supplied by each starting message. */
+export type RetainedExecutionInit = Omit<ExecutionInitMessage, 'pipelineLibrary'>;
 
 export interface ExecutionHostControlMessage {
   readonly kind: 'host-control';
@@ -184,6 +207,15 @@ export interface ExecutionRebuildMessage {
   readonly kind: 'rebuild';
   readonly canvas?: OffscreenCanvas;
   readonly worldIdentity: string;
+  readonly pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'];
+}
+
+export interface ExecutionRenderReplaceMessage {
+  readonly kind: 'render-replace';
+  readonly epoch: number;
+  readonly canvas: OffscreenCanvas;
+  readonly pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'];
+  readonly backgroundPipelineLibrary?: ExecutionInitMessage['backgroundPipelineLibrary'];
 }
 
 export interface ExecutionRebuiltMessage {
@@ -258,7 +290,7 @@ export interface ExecutionSurfaceResultMessage {
 
 export type HostToEngineMessage =
   | ExecutionSurfaceResultMessage
-  | { readonly kind: 'render-replace'; readonly epoch: number; readonly canvas: OffscreenCanvas }
+  | ExecutionRenderReplaceMessage
   | ExecutionInitMessage
   | ExecutionFrameMessage
   | ExecutionRebuildMessage
@@ -301,6 +333,11 @@ export interface ExecutionRenderErrorMessage {
 export type EngineToHostMessage =
   | { readonly kind: 'kernel-worker'; readonly workerId: number; readonly port: MessagePort }
   | { readonly kind: 'kernel-retire'; readonly workerId: number }
+  /**
+   * The Render Worker session posts its render-submitted / render-complete
+   * notices on this port, so Host credit never queues behind an Engine World tick.
+   */
+  | { readonly kind: 'render-host-port'; readonly epoch: number; readonly port: MessagePort }
   | { readonly kind: 'surface-request'; readonly worldIdentity: string; readonly requestId: number }
   | { readonly kind: 'disposed'; readonly error?: unknown }
   | ExecutionSimulationCompletion
@@ -309,6 +346,8 @@ export type EngineToHostMessage =
       readonly epoch: number;
       readonly capabilities?: ExecutionRenderCapabilities;
       readonly limits?: ExecutionRenderLimits;
+      /** Device texture bound for Host canvas sizing; not part of the report limits. */
+      readonly maxTextureDimension2D?: number;
     }
   | ExecutionRenderErrorMessage
   | { readonly kind: 'render-lost'; readonly epoch: number; readonly detail: string }

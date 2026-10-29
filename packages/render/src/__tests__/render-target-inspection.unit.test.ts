@@ -36,7 +36,7 @@ describe('bounded render-target inspection', () => {
 
   it('keeps selection inspection bounded to current primitives', () => {
     const projection = new ReflectionProbeProjection();
-    const snapshot = projection.update([], []);
+    const snapshot = projection.update([], undefined, () => undefined);
     expect(snapshot.scannedPrimitives).toBe(0);
     expect(snapshot.selected.size).toBe(0);
     expect(projection.selection(1, 2)).toEqual({ kind: 'skylight' });

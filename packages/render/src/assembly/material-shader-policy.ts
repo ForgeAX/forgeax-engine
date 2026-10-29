@@ -1,22 +1,32 @@
+import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
+
 // Material shader policy and async adapter.
 // Variant selection, module caching, and manifest material preparation stay
 // independent from renderer lifetime and generation-scoped ready state.
 
+import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { PipelineLayout, Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
   findVariantByKey,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
+  materialShaderSource,
   materialShaderUvSetCount,
   materialShaderVertexInputRequired,
+  type RegisteredMaterialShaderEntry,
   type ShaderCatalog,
   type ShaderCatalogDevice,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardPhysicalTextureFields,
 } from '@forgeax/engine-shader';
-import type { ParamSchemaEntry } from '@forgeax/engine-types';
+import type {
+  ParamSchemaEntry,
+  PassKind,
+  PrimitiveTopology,
+  VertexAttributeMap,
+} from '@forgeax/engine-types';
 import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 import {
   atmosphereMaterialVisibilityLayoutEntries,
@@ -26,7 +36,9 @@ import { RENDER_FEATURE_VERTEX_LAYOUTS } from '../features/prepared-graphics';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
 import type { RhiErrorListenerRegistry } from '../lifecycle';
 import { assertStorageBufferCap } from '../light-buffer-layout';
+import { materialVertexConstants } from '../material-stage-constants';
 import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
+import { colorFormatsForPassKind, type PipelineSpec, passKindPolicyTable } from '../pipeline-spec';
 import {
   deriveExtendedLightingCapability,
   extendedLightingSampledTextureCapacityAvailable,
@@ -58,6 +70,8 @@ import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from './shader-prewarm-policy'
  * shaders. Externally still typed as ShaderCatalogDevice (see callers in
  * ShaderCatalog).
  */
+export type SeedShaderModule = ShaderDeviceAdapterInternal['seedModule'];
+
 export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
   /**
    * feat-20260609 R3-fixup: seed the adapter's moduleCache with an
@@ -65,7 +79,7 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
    * shadow_caster pre-bake so the lazy PSO build hit on
    * `module-forgeax::default-shadow-caster` returns OK on frame 1.
    */
-  seedModule(label: string, module: ShaderModule): void;
+  seedModule(label: string, module: ShaderModule, source: string | ShaderSource): void;
   /**
    * Whether this generation drew with the module: a pipeline requested the
    * label and it compiled. Seeding alone (boot prewarm) does not count, so a
@@ -73,9 +87,40 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
    */
   hasModule(label: string): boolean;
   invalidateModule(label: string): void;
+  /** Retire the explicit generation warmup roster and pending callbacks. */
+  dispose(): void;
 }
 
 type ShaderModuleAdapterMode = 'validated' | 'immediate';
+
+function resolveModuleSource(
+  desc: {
+    readonly code: string;
+    readonly label?: string | undefined;
+  },
+  previous?: ShaderSource,
+): Result<ShaderSource, RhiError> {
+  const sourceInput = shaderSourceForDescriptor(desc) ?? desc.code;
+  let source: ShaderSource;
+  try {
+    source =
+      typeof sourceInput === 'string'
+        ? previous?.matches(sourceInput)
+          ? previous
+          : new ShaderSource([sourceInput])
+        : sourceInput;
+  } catch (cause) {
+    if (cause instanceof RhiError) return err(cause);
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'source admission before GPU module creation',
+        hint: cause instanceof Error ? cause.message : String(cause),
+      }),
+    );
+  }
+  return ok(source);
+}
 
 export function makeShaderDeviceAdapter(
   rhiDevice: RhiDevice,
@@ -94,7 +139,23 @@ export function makeShaderDeviceAdapter(
     | undefined,
   mode: ShaderModuleAdapterMode = 'validated',
 ): ShaderDeviceAdapterInternal {
-  const moduleCache = new Map<string, ShaderModule>();
+  const moduleCache = new Map<string, WeakRef<ShaderModule>>();
+  let disposed = false;
+  const sources = new Map<string, ShaderSource>();
+  const release = new FinalizationRegistry<{ key: string; ref: WeakRef<ShaderModule> }>(
+    ({ key, ref }) => {
+      if (moduleCache.get(key) !== ref) return;
+      moduleCache.delete(key);
+      sources.delete(key);
+      requested.delete(key);
+      epochs.delete(key);
+    },
+  );
+  const remember = (key: string, module: ShaderModule) => {
+    const ref = new WeakRef(module);
+    moduleCache.set(key, ref);
+    release.register(module, { key, ref });
+  };
   const errorCache = new Map<string, RhiError>();
   const pending = new Map<string, { readonly epoch: number; error?: RhiError }>();
   const epochs = new Map<string, number>();
@@ -102,9 +163,26 @@ export function makeShaderDeviceAdapter(
 
   return {
     createShaderModule(desc): Result<ShaderModule, RhiError> {
-      const key = desc.label ?? desc.code;
+      if (disposed) return err(makeRhiNotAvailableError(desc.label ?? 'retired shader owner'));
+      // The label's existing owner can validate borrowed text directly. Repeated
+      // draw and pending requests do not need another owner or SHA pass.
+      const resolved = resolveModuleSource(
+        desc,
+        desc.label === undefined ? undefined : sources.get(desc.label),
+      );
+      if (!resolved.ok) return resolved;
+      const source = resolved.value;
+      const key = desc.label ?? source.identity;
+      const previous = sources.get(key);
+      if (previous !== undefined && previous.identity !== source.identity) {
+        epochs.set(key, (epochs.get(key) ?? 0) + 1);
+        moduleCache.delete(key);
+        errorCache.delete(key);
+        pending.delete(key);
+      }
+      sources.set(key, source);
       requested.add(key);
-      const cachedModule = moduleCache.get(key);
+      const cachedModule = moduleCache.get(key)?.deref();
       if (cachedModule !== undefined) return ok(cachedModule);
       const cachedError = errorCache.get(key);
       if (cachedError !== undefined) return err(cachedError);
@@ -117,12 +195,10 @@ export function makeShaderDeviceAdapter(
       // and authored shaders. The public async factory still owns diagnostics;
       // pipeline creation remains the validation point for the fast path.
       if (mode === 'immediate' && immediateCreateShaderModule !== undefined) {
-        const immediateResult = immediateCreateShaderModule(rhiDevice, {
-          code: desc.code,
-          ...(desc.label === undefined ? {} : { label: desc.label }),
-        });
+        desc = source.descriptor(desc.label);
+        const immediateResult = immediateCreateShaderModule(rhiDevice, desc);
         if (immediateResult.ok) {
-          moduleCache.set(key, immediateResult.value);
+          remember(key, immediateResult.value);
           return immediateResult;
         }
         errorCache.set(key, immediateResult.error);
@@ -139,15 +215,14 @@ export function makeShaderDeviceAdapter(
         request = { epoch };
         pending.set(key, request);
         const operation = request;
-        const desc2: { code: string; label?: string | undefined } = { code: desc.code };
-        if (desc.label !== undefined) desc2.label = desc.label;
+        const desc2 = source.descriptor(desc.label);
         const asyncResult: Promise<Result<ShaderModule, RhiError>> = asyncCreateShaderModule
           ? asyncCreateShaderModule(rhiDevice, desc2)
           : invokeDeviceCreateShaderModule(rhiDevice, desc2);
         void asyncResult.then((result) => {
           if (pending.get(key) !== operation || (epochs.get(key) ?? 0) !== operation.epoch) return;
           if (result.ok) {
-            moduleCache.set(key, result.value);
+            remember(key, result.value);
           } else {
             errorCache.set(key, result.error);
           }
@@ -162,17 +237,33 @@ export function makeShaderDeviceAdapter(
       request.error ??= makeRhiNotAvailableError(key);
       return err(request.error);
     },
-    seedModule(label: string, module: ShaderModule): void {
-      moduleCache.set(label, module);
+    seedModule(label: string, module: ShaderModule, sourceInput: string | ShaderSource): void {
+      if (disposed) return;
+      const source =
+        typeof sourceInput === 'string' ? new ShaderSource([sourceInput]) : sourceInput;
+      sources.set(label, source);
+      errorCache.delete(label);
+      pending.delete(label);
+      remember(label, module);
     },
     hasModule(label: string): boolean {
-      return requested.has(label) && moduleCache.has(label);
+      return requested.has(label) && moduleCache.get(label)?.deref() !== undefined;
     },
     invalidateModule(label: string): void {
       epochs.set(label, (epochs.get(label) ?? 0) + 1);
       moduleCache.delete(label);
+      sources.delete(label);
       errorCache.delete(label);
       pending.delete(label);
+    },
+    dispose(): void {
+      disposed = true;
+      moduleCache.clear();
+      sources.clear();
+      pending.clear();
+      errorCache.clear();
+      requested.clear();
+      epochs.clear();
     },
   };
 }
@@ -408,7 +499,8 @@ export async function prepareMaterialShaders(
         hint: 'regenerate the shader manifest with the complete variant Cartesian product',
       });
     }
-    const wgsl = chosen?.composedWgsl ?? msEntry.composedWgsl;
+    const selected = chosen ?? msEntry;
+    const wgsl = selected.composedWgsl;
     if (wgsl.length > 0) {
       const existing = registry.findMaterialArtifact(msEntry.identifier);
       if (existing.ok) continue;
@@ -428,6 +520,7 @@ export async function prepareMaterialShaders(
         msEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(msEntry.identifier, {
         source: wgsl,
+        sourceReference: materialShaderSource(selected),
         ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema,
         ...(chosen?.receipt === undefined && msEntry.receipt === undefined
@@ -466,6 +559,7 @@ export async function prepareMaterialShaders(
       const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(shadowCasterIdentifier, {
         source: manifestEntry.composedWgsl,
+        sourceReference: materialShaderSource(manifestEntry),
         ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
         ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
@@ -763,10 +857,17 @@ export function stripCloudShadowBindingsForLowLimit(source: string): string {
 export function prepareLowLimitMaterialShaderEntry<T extends { readonly source: string }>(
   entry: T,
   sampledTextureLimit: number | undefined,
-): T {
+): Omit<T, 'program' | 'sourceReference'> {
   if ((sampledTextureLimit ?? 0) >= STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES) return entry;
-  const source = stripCloudShadowBindingsForLowLimit(entry.source);
-  return source === entry.source ? entry : ({ ...entry, source } as T);
+  const original = entry.source;
+  const source = stripCloudShadowBindingsForLowLimit(original);
+  if (source === original) return entry;
+  const {
+    program: _program,
+    sourceReference: _reference,
+    ...facts
+  } = entry as T & { program?: unknown; sourceReference?: unknown };
+  return { ...facts, source };
 }
 
 export function allowsUnlitPreparedFallback(
@@ -1011,6 +1112,168 @@ export function normalizeMaterialShaderVariantSet(
   return manifestEntry !== undefined && manifestEntry.variants.length === 0
     ? undefined
     : requestedVariantSet;
+}
+
+/**
+ * The pipeline variant key a material PSO compiles. No manifest means a
+ * backend-specific published artifact with no synthesized key; a mesh
+ * without a vertex-color projection selects the no-color axis; custom
+ * shaders keep only the axes their manifest declares.
+ */
+export function resolveMaterialPipelineVariantSet(
+  requestedVariantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry | undefined,
+  pipelineShaderId: string,
+  vertexLayoutProjected: boolean,
+): string | undefined {
+  if (manifestEntry === undefined) return undefined;
+  let variantSet = normalizeMaterialShaderVariantSet(requestedVariantSet, manifestEntry);
+  if (
+    !vertexLayoutProjected &&
+    manifestEntry.variants.some((variant) => 'VERTEX_COLOR_AVAILABLE' in variant.defines)
+  ) {
+    variantSet = withoutVertexColorAxis(variantSet, manifestEntry);
+  }
+  if (pipelineShaderId.startsWith('forgeax::')) return variantSet;
+  return declaredVariantAxesOnly(variantSet, manifestEntry);
+}
+
+function withoutVertexColorAxis(
+  variantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry,
+): string | undefined {
+  if (variantSet !== '') {
+    return variantSet?.replace('VERTEX_COLOR_AVAILABLE=true', 'VERTEX_COLOR_AVAILABLE=false');
+  }
+  const noColorVariant = manifestEntry.variants.find(
+    (variant) =>
+      variant.defines.VERTEX_COLOR_AVAILABLE === false &&
+      Object.entries(variant.defines).every(
+        ([axis, value]) => axis === 'VERTEX_COLOR_AVAILABLE' || value === true,
+      ),
+  );
+  return noColorVariant?.definesKey ?? 'VERTEX_COLOR_AVAILABLE=false';
+}
+
+function declaredVariantAxesOnly(
+  variantSet: string | undefined,
+  manifestEntry: MaterialShaderManifestEntry,
+): string | undefined {
+  if (variantSet === undefined || variantSet === '') return variantSet;
+  const declaredAxes = new Set<string>();
+  for (const variant of manifestEntry.variants) {
+    for (const axis of Object.keys(variant.defines)) declaredAxes.add(axis);
+  }
+  const filteredVariantParts = variantSet
+    .split('+')
+    .filter((part) => declaredAxes.has(part.slice(0, part.indexOf('='))))
+    .sort();
+  return filteredVariantParts.length === 0 ? undefined : filteredVariantParts.join('+');
+}
+
+/**
+ * Substitute the manifest variant's composed WGSL for a registered entry.
+ * `''` is the canonical all-true request and still enters the lookup; the
+ * binding layout stays derived from the registered paramSchema.
+ */
+export function manifestVariantShaderEntry(
+  registry: ShaderCatalog,
+  pipelineShaderId: string,
+  variantSet: string | undefined,
+  entry: RegisteredMaterialShaderEntry,
+): RegisteredMaterialShaderEntry {
+  if (variantSet === undefined) return entry;
+  for (const manifestEntry of registry.materialShaderManifestEntries()) {
+    if (manifestEntry.identifier !== pipelineShaderId) continue;
+    const variant = findVariantByKey(manifestEntry, variantSet);
+    if (!variant) return entry;
+    return {
+      get source() {
+        return variant.composedWgsl;
+      },
+      program: registry.materialProgram(
+        materialShaderSource(variant),
+        variant.entryPoints ?? variant.receipt?.entryPoints,
+      ),
+      paramSchema: entry.paramSchema,
+      paramSchemaProjection: entry.paramSchemaProjection,
+    };
+  }
+  return entry;
+}
+
+/** Shader axis of a material PSO spec; absent entries and constants stay absent. */
+export function materialPipelineShaderSpec(
+  id: string,
+  passKind: PassKind,
+  variantSet: string | undefined,
+  vertexEntry: string | undefined,
+  fragmentEntry: string | undefined,
+  constants: Readonly<Record<string, number>> | undefined,
+): PipelineSpec['shader'] {
+  const vertexConstants = materialVertexConstants(constants);
+  return {
+    id,
+    passKind,
+    variantSet,
+    ...(vertexEntry === undefined ? {} : { vertexEntry }),
+    ...(fragmentEntry === undefined ? {} : { fragmentEntry }),
+    ...(constants === undefined ? {} : { constants }),
+    ...(vertexConstants === constants ? {} : { vertexConstants }),
+  };
+}
+
+/** Attachment axis: declared extra outputs follow the primary color format. */
+export function materialPipelineAttachments(
+  passKind: PassKind,
+  colorFormat: GPUTextureFormat,
+  additionalColorFormats: readonly GPUTextureFormat[] | undefined,
+  depthFormatOverride: GPUTextureFormat | null | undefined,
+  sampleCount: number,
+): PipelineSpec['attachments'] {
+  return {
+    colorFormats:
+      additionalColorFormats === undefined
+        ? colorFormatsForPassKind(passKind, colorFormat)
+        : [colorFormat, ...additionalColorFormats],
+    depthFormat: materialPipelineDepthFormat(passKind, depthFormatOverride),
+    sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
+  };
+}
+
+/** Depth-only passes default to depth32float; `null` requests a color-only pipeline. */
+function materialPipelineDepthFormat(
+  passKind: PassKind,
+  depthFormatOverride: GPUTextureFormat | null | undefined,
+): GPUTextureFormat | undefined {
+  if (passKindPolicyTable[passKind]?.shape === 'depth-only')
+    return depthFormatOverride ?? 'depth32float';
+  return depthFormatOverride === null
+    ? undefined
+    : (depthFormatOverride ?? 'depth32float-stencil8');
+}
+
+/**
+ * Geometry axis. The shader-declared UV count is threaded whenever it is
+ * greater than one: built-in PBR reserves all eight supported UV inputs and
+ * single-UV meshes remain byte-stable because missing sets alias the last.
+ */
+export function materialPipelineGeometry(
+  topology: PrimitiveTopology | undefined,
+  stripIndexFormat: 'uint16' | 'uint32' | undefined,
+  vertexLayout: VertexAttributeMap,
+  shaderUvSetCount: number | undefined,
+  vertexLayoutProjection: VertexLayoutProjection | undefined,
+  vertexBuffers: PipelineSpec['geometry']['vertexBuffers'],
+): PipelineSpec['geometry'] {
+  return {
+    topology: topology ?? 'triangle-list',
+    stripIndexFormat,
+    vertexLayout,
+    ...(shaderUvSetCount !== undefined && shaderUvSetCount > 1 ? { shaderUvSetCount } : {}),
+    ...(vertexLayoutProjection === undefined ? {} : { vertexLayoutProjection }),
+    ...(vertexBuffers === undefined ? {} : { vertexBuffers }),
+  };
 }
 
 /** Feature-owned graphics use the same device admission as ordinary materials. */

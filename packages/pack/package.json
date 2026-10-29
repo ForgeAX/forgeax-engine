@@ -24,10 +24,6 @@
       "types": "./dist/guid.d.ts",
       "import": "./dist/guid.mjs"
     },
-    "./builtin": {
-      "types": "./dist/builtin.d.ts",
-      "import": "./dist/builtin.mjs"
-    },
     "./errors": {
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.mjs"
@@ -120,8 +116,8 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "ajv-formats": "^3.0.1",
-    "tsup": "^8.3.5",
-    "vitest": "4.1.11"
+    "tsup": "^9.0.0",
+    "vitest": "4.1.12"
   },
   "forgeax": {
     "metrics": {
@@ -149,11 +145,12 @@
     }
   },
   "dependencies": {
+    "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "acorn": "8.16.0",
     "fast-glob": "^3.3.3",
-    "typescript": "^5.8.3",
+    "typescript": "6.0.3",
     "upng-js": "^2.1.0",
     "uuidv7": "^1.2.1",
     "@forgeax/engine-tool-runtime": "workspace:*",

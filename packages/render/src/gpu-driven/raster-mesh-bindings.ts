@@ -10,6 +10,8 @@ export interface RasterMeshBinding {
 /** A live raster publication's unique mesh imports, captured before any graph pass executes. */
 export class RasterMeshBindings {
   private readonly rows = new Map<MeshGpuHandles, RasterMeshBinding>();
+  /** Advances whenever a capture observes a different physical vertex or index buffer. */
+  revision = 0;
 
   forMesh(mesh: MeshGpuHandles): RasterMeshBinding {
     let row = this.rows.get(mesh);
@@ -17,6 +19,14 @@ export class RasterMeshBindings {
       row = { mesh, vertex: undefined, index: undefined };
       this.rows.set(mesh, row);
     }
+    return row;
+  }
+
+  /** Keep a retained row's binding in this publication, so capture still refreshes it. */
+  adopt(row: RasterMeshBinding): RasterMeshBinding {
+    const current = this.rows.get(row.mesh);
+    if (current !== undefined) return current;
+    this.rows.set(row.mesh, row);
     return row;
   }
 
@@ -36,6 +46,7 @@ export class RasterMeshBindings {
       ) {
         throw new Error('current raster mesh buffers must resolve before any pass executes');
       }
+      if (row.vertex !== vertexHandle || row.index !== indexHandle) this.revision++;
       row.vertex = vertexHandle;
       row.index = indexHandle;
     }

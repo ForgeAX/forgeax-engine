@@ -5,15 +5,11 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Physics interface package for forgeax-engine — ECS component schemas (RigidBody / Collider / CollisionEvent), PhysicsWorld Resource interface, PhysicsErrorCode union, and the physicsPlugin(backend) factory that dynamic-imports the rapier 2D / 3D WASM backend on build.",
+  "description": "Physics component schemas, resource contracts, and backend-neutral plugin lifetime.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
-    },
-    "./rapier3d": {
-      "types": "./dist/rapier3d.d.ts",
-      "import": "./dist/rapier3d.mjs"
     },
     "./package.json": "./package.json"
   },
@@ -39,27 +35,13 @@
     "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
-    "@forgeax/engine-physics-rapier2d": "workspace:*",
-    "@forgeax/engine-physics-rapier3d": "workspace:*",
     "@forgeax/engine-shader": "workspace:*"
-  },
-  "peerDependencies": {
-    "@forgeax/engine-physics-rapier2d": "workspace:*",
-    "@forgeax/engine-physics-rapier3d": "workspace:*"
-  },
-  "peerDependenciesMeta": {
-    "@forgeax/engine-physics-rapier2d": {
-      "optional": true
-    },
-    "@forgeax/engine-physics-rapier3d": {
-      "optional": true
-    }
   },
   "forgeax": {
     "metrics": {
       "bundle-size": {
         "enabled": false,
-        "reason": "interface + plugin factory package — physicsPlugin dynamic-imports the rapier backend, so the bundled payload is the factory shell only; bundle-size tracked by the backend packages it lazy-loads"
+        "reason": "Backend-neutral component and plugin lifetime contracts; concrete backend modules own their WASM."
       },
       "fps": {
         "enabled": false,
@@ -67,7 +49,7 @@
       },
       "bench": {
         "enabled": false,
-        "reason": "interface + plugin factory package — type definitions, component schemas, and a dynamic-import factory; no hot-path benchmark surface"
+        "reason": "Component schemas and shared backend lifetime; backend owners provide simulation benchmarks."
       },
       "gate": {
         "enabled": false,

@@ -49,6 +49,7 @@ type LiveOperation =
   | 'reload'
   | 'stop'
   | 'capture'
+  | 'look'
   | 'verify'
   | 'rhi/capture'
   | 'profile/capture'
@@ -69,6 +70,14 @@ const number = { type: 'number' } satisfies ToolJsonSchema;
 const integer = { type: 'integer' } satisfies ToolJsonSchema;
 const port = { type: 'integer', minimum: 0, maximum: 65_535 } satisfies ToolJsonSchema;
 const liveIdentity = { revision: string };
+const liveReady = {
+  readyTimeoutMs: {
+    type: 'integer',
+    minimum: 0,
+    description:
+      'Wait up to this many milliseconds for a reloading, replaced, or busy live runtime before running; 0 fails immediately. Default 120000.',
+  },
+} satisfies Readonly<Record<string, ToolJsonSchema>>;
 
 const schema = (
   properties: Readonly<Record<string, ToolJsonSchema>>,
@@ -96,8 +105,14 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'project.init': schema({ ...root, install: boolean, dryRun: boolean }),
   'project.check': schema({ ...root, json: boolean }),
   'project.test': schema({ ...root, json: boolean }),
-  'project.package': schema({ ...root, output: string, format: string, json: boolean }),
-  'project.preview': schema({ ...root, port, json: boolean }),
+  'project.package': schema({
+    ...root,
+    output: string,
+    format: string,
+    compress: boolean,
+    json: boolean,
+  }),
+  'project.preview': schema({ ...root, dist: string, port, json: boolean }),
   'project.capture': schema({
     ...root,
     output: string,
@@ -110,6 +125,36 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     requireUi: boolean,
     deterministic: boolean,
   }),
+  'project.play': schema(
+    {
+      ...root,
+      script: {
+        type: 'string',
+        description: 'Playthrough module whose default export receives the play helper.',
+      },
+      backend: captureBackend,
+      headless: boolean,
+      port,
+      viewports: {
+        type: 'string',
+        description:
+          'WxH[,WxH...] (default 1280x720,1280x600); the script runs in the first, later ones get a screenshot and the HUD layout check.',
+      },
+      requireUi: boolean,
+      timeoutMs: { type: 'integer', minimum: 1 },
+      detail: {
+        type: 'boolean',
+        description: 'Return the complete play report instead of the compact summary.',
+      },
+      progress: {
+        type: 'boolean',
+        description:
+          'Progress lines on stderr (one at start, then at most one per 30 s). Default true.',
+      },
+      json: boolean,
+    },
+    ['script'],
+  ),
   'project.engine.status': schema({ ...root, json: boolean }),
   'project.engine.use-local': schema({ ...root, path: string, json: boolean }),
   'project.engine.unlink': schema({ ...root, json: boolean }),
@@ -149,7 +194,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   ),
   'sdk.install': schema({ ...root, version: string }),
   'preview.analyze': schema({ ...root, artifact: string, json: boolean }),
-  'rhi.capture': schema({ ...root, output: string, json: boolean }),
+  'rhi.capture': schema({ ...root, ...liveReady, output: string, json: boolean }),
   'rhi.summary': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
   'rhi.timing': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
   'rhi.inspect': schema(
@@ -174,6 +219,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   ),
   'profile.capture': schema({
     ...root,
+    ...liveReady,
     output: string,
     frameLimit: integer,
     eventLimit: integer,
@@ -202,35 +248,47 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     rhiCapture: boolean,
   }),
   'dev.status': schema({ ...root }),
-  'dev.verify': schema(
+  'dev.verify': schema({
+    ...root,
+    ...liveIdentity,
+    ...liveReady,
+    output: string,
+    checkpoint: string,
+    requireUi: boolean,
+    timeoutMs: { type: 'integer', minimum: 1 },
+  }),
+  'dev.pipelines.export': schema(
     {
       ...root,
       ...liveIdentity,
       output: string,
-      checkpoint: string,
-      requireUi: boolean,
-      timeoutMs: { type: 'integer', minimum: 1 },
+      limits: schema({
+        outputBytes: { type: 'integer', minimum: 1 },
+        temporaryBytes: { type: 'integer', minimum: 1 },
+        entries: { type: 'integer', minimum: 1 },
+      }),
     },
     ['revision'],
   ),
-  'dev.pipelines.export': schema({ ...root, ...liveIdentity, output: string }, ['revision']),
   'dev.reload': schema({ ...root }),
   'dev.stop': schema({ ...root }),
   'dev.eval': schema(
-    { ...root, ...liveIdentity, code: string, timeoutMs: integer, lease: boolean },
+    { ...root, ...liveIdentity, ...liveReady, code: string, timeoutMs: integer, lease: boolean },
     ['code', 'revision'],
   ),
   'dev.find': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     name: string,
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }),
-  'dev.camera.release': schema({ ...root, ...liveIdentity }),
-  'dev.camera.get': schema({ ...root, ...liveIdentity }),
+  'dev.camera.release': schema({ ...root, ...liveIdentity, ...liveReady }),
+  'dev.camera.get': schema({ ...root, ...liveIdentity, ...liveReady }),
   'dev.camera.set': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     position: { type: 'array', items: number, minItems: 3 },
     target: { type: 'array', items: number, minItems: 3 },
     up: { type: 'array', items: number, minItems: 3 },
@@ -240,6 +298,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'dev.focus': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     name: string,
     ref: string,
     distance: number,
@@ -250,11 +309,34 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'dev.capture': schema({
     ...root,
     ...liveIdentity,
+    ...liveReady,
     output: string,
     checkpoint: {
       type: 'string',
       description:
         'Wait for a game-published forgeaxCaptureReady value. Omit for an immediate snapshot; this is not an image name.',
+    },
+  }),
+  'dev.look': schema({
+    ...root,
+    ...liveIdentity,
+    ...liveReady,
+    output: { type: 'string', description: 'Directory for the view PNGs.' },
+    cameras: {
+      type: 'array',
+      maxItems: 8,
+      description:
+        'Fixed observation cameras, each {name?, position, target, up?, lens?} as for dev camera set; omit for the game camera.',
+      items: { type: 'object' },
+    },
+    viewports: {
+      type: 'string',
+      description:
+        'WxH[,WxH...] CSS viewports, as for project play (headless dev page only); omit for the current size.',
+    },
+    hideUi: {
+      type: 'boolean',
+      description: 'Hide #game-ui while capturing so the image and metrics show the scene alone.',
     },
   }),
 };
@@ -791,6 +873,28 @@ export function createUnifiedCommandContributions(
       'Starts a temporary project and captures evidence.',
       'browserCaptureCommand',
     ),
+    command(
+      'project.play',
+      'Play project',
+      'Starts a temporary project, runs a playthrough module with real input, and verifies the final frame.',
+      async (args, context) =>
+        (await import('../play.js')).playCommand(rootArgs(projectRoot, args), {
+          signal: context.signal,
+        }),
+      'build',
+      {
+        errors: [
+          'tool-invalid-args',
+          'tool-capability-unavailable',
+          'play-script-invalid',
+          'play-not-ready',
+          'play-step-failed',
+          'play-timeout',
+          'play-runtime-failed',
+          'tool-run-cancelled',
+        ],
+      },
+    ),
     project(
       'project.engine.status',
       'Engine status',
@@ -877,6 +981,13 @@ export function createUnifiedCommandContributions(
         return exportPipelineLibrary(projectRoot, {
           revision: args.revision as string,
           ...(typeof args.output === 'string' ? { output: args.output } : {}),
+          ...(args.limits === undefined
+            ? {}
+            : {
+                limits: args.limits as NonNullable<
+                  Parameters<typeof exportPipelineLibrary>[1]['limits']
+                >,
+              }),
         });
       },
       'host',
@@ -929,6 +1040,12 @@ export function createUnifiedCommandContributions(
       'Capture live project',
       'Captures the held Page after a confirmed submitted frame.',
       'capture',
+    ),
+    live(
+      'dev.look',
+      'Look at live project',
+      'Waits for the edited revision, captures fresh frames and reports luma, saturation, contrast, clipping and subject separation.',
+      'look',
     ),
   ] as readonly ToolContribution[];
 }

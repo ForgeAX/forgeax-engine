@@ -12,7 +12,9 @@ export function ensureFallbackCamera(
   aspect = 1,
 ): ReturnType<World['spawn']> | undefined {
   const cameras = world.query({ with: [Camera] }).unwrap();
-  if (!cameras[Symbol.iterator]().next().done) return undefined;
+  for (const span of cameras.spans().unwrap()) {
+    if (span.length > 0) return undefined;
+  }
   return world.spawn(
     { component: Transform, data: { pos: [0, 0.6, 5] } },
     { component: Camera, data: perspective({ fov: Math.PI / 3, aspect, far: 1000 }) },

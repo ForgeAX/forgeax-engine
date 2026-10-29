@@ -5,6 +5,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import type { StandardProbeGlobal } from '../pipeline/standard-profile';
+import { meshAttributeChannels } from '../publication/packed-rows-mesh';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { MaterialFrame } from '../scene/material-dispatch';
@@ -232,8 +233,9 @@ export async function prepareProbeCards(
     const geometry = meshDistanceFieldSource(mesh, {
       sectionSidedness: source.field.sectionSidedness,
     }).unwrap();
+    const channels = meshAttributeChannels(mesh);
     const attribute = (name: keyof MeshAsset['attributes']) => {
-      const value = mesh.attributes[name];
+      const value = channels[name];
       if (value === undefined) return undefined;
       if (value instanceof Float32Array) return value.slice();
       if (value instanceof ArrayBuffer && value.byteLength % 4 === 0)

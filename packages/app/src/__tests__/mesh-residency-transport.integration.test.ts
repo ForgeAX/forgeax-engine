@@ -105,7 +105,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(meshHandle);
     const sourceFixedStep = world.getResource(FixedTime).tick;
     const publication = publisher.prepare(0).unwrap();
-    const packet = structuredClone(publication.packet);
+    const packet = structuredClone(publication.message);
     publication.accept();
     const draw = renderer.draw({ publication: packet });
     if (!draw.ok) throw draw.error;
@@ -152,7 +152,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
       world.update(1 / 60).unwrap();
       const tick = world.getResource(FixedTime).tick;
       const prepared = publisher.prepare(index).unwrap();
-      const nextPacket = structuredClone(prepared.packet);
+      const nextPacket = structuredClone(prepared.message);
       prepared.accept();
       const nextDraw = renderer.draw({ publication: nextPacket });
       if (!nextDraw.ok) throw nextDraw.error;
@@ -313,7 +313,7 @@ it.each([
     ).toBe(true);
     const sourceFixedStep = world.getResource(FixedTime).tick;
     const publication = publisher.prepare(0).unwrap();
-    const packet = structuredClone(publication.packet);
+    const packet = structuredClone(publication.message);
     publication.accept();
     const drawn = renderer.draw({ publication: packet });
     if (!drawn.ok) throw drawn.error;

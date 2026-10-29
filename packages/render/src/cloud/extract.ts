@@ -1,5 +1,7 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { Time } from '@forgeax/engine-ecs';
+import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { CloudLayer, type CloudLayerData } from '../components/cloud-layer';
 import { DirectionalLight } from '../components/directional-light';
@@ -60,7 +62,8 @@ export function selectCloudLayerFrame(
 export function extractCloudLayer(
   world: World,
 ): Result<ExtractedCloudLayer | undefined, CloudLayerError> {
-  const candidates: CloudLayerCandidate[] = [];
+  let owner: EntityHandle | undefined;
+  let ownerCount = 0;
   // Older worlds may be rendered without renderComponentsPlugin. The absence
   // of the optional cloud vocabulary is the empty state, not an extraction
   // failure; once the component is registered, query failures remain visible
@@ -68,32 +71,54 @@ export function extractCloudLayer(
   try {
     const query = world.query({ read: [CloudLayer] });
     if (!query.ok) return ok(undefined);
-    for (const row of query.value)
-      candidates.push({ entityKey: row.entity, data: row.get(CloudLayer) });
+    for (const row of query.value) {
+      owner ??= row.entity;
+      ownerCount++;
+    }
   } catch {
     return ok(undefined);
   }
+  if (owner === undefined) return ok(undefined);
+  if (ownerCount > 1) return err(new CloudLayerOwnerConflictError(ownerCount));
+  const read = world[worldRead];
+  const wind = readRenderArrayView(world, owner, CloudLayer, 'wind') as Float32Array;
+  const candidates: CloudLayerCandidate[] = [
+    {
+      entityKey: owner,
+      data: {
+        seed: read.getFieldValue(owner, CloudLayer, 'seed') as number,
+        baseHeight: read.getFieldValue(owner, CloudLayer, 'baseHeight') as number,
+        thickness: read.getFieldValue(owner, CloudLayer, 'thickness') as number,
+        scale: read.getFieldValue(owner, CloudLayer, 'scale') as number,
+        coverage: read.getFieldValue(owner, CloudLayer, 'coverage') as number,
+        density: read.getFieldValue(owner, CloudLayer, 'density') as number,
+        quality: read.getFieldValue(owner, CloudLayer, 'quality') as number,
+        shadowRange: read.getFieldValue(owner, CloudLayer, 'shadowRange') as number,
+        wind,
+      },
+    },
+  ];
   let sunDirection: readonly [number, number, number] | undefined;
   let sunRadiance: readonly [number, number, number] | undefined;
   try {
     const query = world.query({ read: [DirectionalLight] });
     if (query.ok) {
-      for (const row of query.value) {
-        const light = row.get(DirectionalLight);
-        const intensity = Number.isFinite(light.intensity) ? Math.max(0, light.intensity) : 0;
-        // DirectionalLight stores the outgoing vector (light -> surface),
-        // while cloud optical paths integrate from the receiver toward the
-        // sun. Keep the extracted cloud direction in that incoming convention
-        // so low-sun gating and the GPU `-view.lightDir` path agree.
+      const read = world[worldRead];
+      for (const span of query.value.spans().unwrap()) {
+        if (span.length === 0) continue;
+        const entity = span.entities[0] as EntityHandle;
+        const strength = read.getFieldValue(entity, DirectionalLight, 'intensity') as number;
+        const intensity = Number.isFinite(strength) ? Math.max(0, strength) : 0;
+        // Stored direction points from light to surface; cloud integration follows the incoming sun.
         sunDirection = [
-          -(light.direction[0] ?? 0),
-          -(light.direction[1] ?? -1),
-          -(light.direction[2] ?? 0),
+          -(read.getArrayElement(entity, DirectionalLight, 'direction', 0) as number),
+          -(read.getArrayElement(entity, DirectionalLight, 'direction', 1) as number),
+          -(read.getArrayElement(entity, DirectionalLight, 'direction', 2) as number),
         ];
         sunRadiance = [
-          (light.color[0] ?? 1) * intensity,
-          (light.color[1] ?? 1) * intensity,
-          (light.color[2] ?? 1) * intensity,
+          (read.getArrayElement(entity, DirectionalLight, 'color', 0) as number) * intensity,
+          (read.getArrayElement(entity, DirectionalLight, 'color', 1) as number) * intensity,
+          (read.getArrayElement(entity, DirectionalLight, 'color', 2) as number) * intensity,
         ];
         break;
       }

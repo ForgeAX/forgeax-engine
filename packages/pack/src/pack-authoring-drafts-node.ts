@@ -83,6 +83,26 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
     }
     return readPackDraftSource(path, source, sourceOptions);
   };
+  const readOpeningSource = async (path: { absolute: string; path: string }) => {
+    let text = await readFile(path.absolute, 'utf8');
+    for (let round = 0; ; round++) {
+      let source: PackDraftSource;
+      try {
+        source = await parse(path.path, text);
+      } catch (cause) {
+        // Initial legacy-source recovery has no draft for refreshEntry to settle.
+        // A coalesced write must not leave that opening on its truncated read.
+        const current = await readFile(path.absolute, 'utf8');
+        if (current === text || round >= MAX_REFRESH_ROUNDS) throw cause;
+        text = current;
+        continue;
+      }
+      const current = await readFile(path.absolute, 'utf8');
+      if (current === text) return source;
+      if (round >= MAX_REFRESH_ROUNDS) throw conflict(path.path, 'source changed while opening');
+      text = current;
+    }
+  };
   const refreshEntry = async (
     entry: Entry,
     onPrepared?: (snapshot: PackDraftSnapshot) => void,
@@ -111,6 +131,22 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
         return result;
       text = current;
     }
+  };
+
+  const refresh = (entry: Entry, onPrepared?: (snapshot: PackDraftSnapshot) => void) => {
+    const pending = (entry.refreshing ?? Promise.resolve()).then(() =>
+      refreshEntry(entry, onPrepared),
+    );
+    entry.refreshing = pending.catch(() => undefined);
+    return pending;
+  };
+
+  const reopen = async (entry: Entry) => {
+    const snapshot = entry.draft.snapshot();
+    if (snapshot.error?.code !== 'pack-source-mutation-unsupported') return snapshot;
+    const recovered = await refresh(entry);
+    if (!recovered) throw new Error('Pack authoring draft closed while reopening');
+    return recovered;
   };
 
   const save = async (
@@ -170,7 +206,7 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
         const path = await confined(request.sourcePath);
         const existing = paths.get(path.absolute);
         const opened = existing ? documents.get(existing) : undefined;
-        if (opened) return opened.draft.snapshot();
+        if (opened) return reopen(opened);
         const opening = openings.get(path.absolute);
         if (opening) return opening;
         if (documents.size + openings.size >= 32)
@@ -179,7 +215,7 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
             'close an unused document before opening more than 32 drafts',
           );
         const pending = (async () => {
-          const source = await parse(path.path, await readFile(path.absolute, 'utf8'));
+          const source = await readOpeningSource(path);
           if (disposed) throw new Error('Pack authoring drafts were disposed while opening');
           const id = randomUUID();
           const owner = options.owner?.(source.document);
@@ -294,11 +330,7 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
         );
       const entry = id ? documents.get(id) : undefined;
       if (!entry) return undefined;
-      const refresh = (entry.refreshing ?? Promise.resolve()).then(() =>
-        refreshEntry(entry, onPrepared),
-      );
-      entry.refreshing = refresh.catch(() => undefined);
-      return refresh;
+      return refresh(entry, onPrepared);
     },
     dispose(): void {
       disposed = true;

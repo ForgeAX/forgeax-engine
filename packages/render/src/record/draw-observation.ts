@@ -12,6 +12,10 @@ export function createDrawObservation(
   const draws: MaterialDrawObservation[] = [];
   let reason: Extract<DrawObservation, { status: 'unavailable' }>['reason'] | undefined;
   return {
+    /** A GPU-lane draw without a per-row receipt; its lineage is never observable. */
+    recordGpuLane(): void {
+      reason ??= 'unsupported-lane';
+    },
     record(
       entry: Pick<ValidatedRenderable, 'source'>,
       submeshIndex: number | undefined,

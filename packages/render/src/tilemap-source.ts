@@ -233,10 +233,22 @@ export function extractTilemapSources(
       ...(visible ? {} : { authorVisible: false }),
     });
   };
-  if (selected !== undefined) for (const entity of selected) append(entity as EntityHandle);
-  else
-    for (const row of world.query({ read: [Tilemap, Transform, GlobalTransform] }).unwrap())
-      append(row.entity);
+  // The changed set spans every renderable kind; a component miss would allocate an error per entity.
+  if (selected !== undefined) {
+    for (const entity of selected)
+      if (world.hasComponent(entity as EntityHandle, Tilemap)) append(entity as EntityHandle);
+  } else
+    for (const querySpan of world
+      .query({ read: [Tilemap, Transform, GlobalTransform] })
+      .unwrap()
+      .spans()
+      .unwrap()) {
+      const queryEntities = querySpan.entities;
+      for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+        const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+        append(queriedEntity);
+      }
+    }
 }
 
 /** Actual visible chunk work reads current shared content; asset changes never fan out to cells. */
@@ -253,8 +265,8 @@ export function projectTilemapView(
   if (camera === undefined) return { frame, materials };
   const viewProjection = mat4.multiply(
     mat4.create(),
-    computeProjectionMatrix(camera),
-    computeViewMatrix(camera),
+    computeProjectionMatrix(camera, mat4.create()),
+    computeViewMatrix(camera, mat4.create()),
   );
   const renderables: RenderableSnapshot[] = [],
     dispatch: DispatchEntry[] = [];

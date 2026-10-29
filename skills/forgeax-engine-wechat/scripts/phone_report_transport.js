@@ -8,12 +8,16 @@ function message(error) {
 export function digest(bytes) {
   return Array.from(sha256(bytes), function (byte) { return byte.toString(16).padStart(2, '0'); }).join('');
 }
+export function encodePhoneReport(report) {
+  var body = JSON.stringify(report);
+  var bytes = utf8fromStringLoose(body);
+  return { body: body, bytes: bytes.length, sha256: digest(bytes) };
+}
 export function persistPhoneReport(wx, report, label) {
   var payload;
   try {
-    var body = JSON.stringify(report);
-    var bytes = utf8fromStringLoose(body);
-    payload = { body: body, bytes: bytes.length, sha256: digest(bytes) };
+    payload = encodePhoneReport(report);
+    var body = payload.body;
     if (typeof wx.getFileSystemManager !== 'function' || !wx.env || !wx.env.USER_DATA_PATH) {
       report.artifact = { status: 'unavailable', reason: 'native-filesystem-unavailable' };
     } else {

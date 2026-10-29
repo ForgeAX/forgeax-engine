@@ -149,9 +149,9 @@ function typeDefault(fieldType: string): unknown {
  * walks it field-by-field and applies layer-4 silent fallback when a
  * raw `0` lands on a managed-family arm.
  *
- * Pure: no World / store side effect. Thread-safety irrelevant (single-
- * thread JS engine), but the helper allocates one `Object.create(null)`
- * per call so repeated invocations cannot share a mutable record.
+ * Pure: no World / store side effect. Each call returns a fresh record so
+ * repeated invocations cannot share mutable state; a field-less tag shares
+ * one frozen empty record.
  *
  * @param token  Component token (name + schema + optional defaults).
  * @param raw    Partial spawn-data raw — caller's `Partial<ShapeOf<S>>`.
@@ -161,15 +161,26 @@ function typeDefault(fieldType: string): unknown {
  * @returns      Record with every schema field populated by layer-1 /
  *               layer-2 / layer-3 defaults in that order.
  */
+const EMPTY_FILLED: Record<string, unknown> = Object.freeze(Object.create(null));
+
 export function fillComponentDefaults<S extends ComponentSchema>(
   token: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
 ): Record<string, unknown> {
+  const definition = componentDefinition(token);
+  const fieldNames = definition.fieldNames;
+  // Tags have nothing to fill; one frozen record serves every caller.
+  if (fieldNames.length === 0) return EMPTY_FILLED;
   const schema = componentSchema(token) as Record<string, string>;
-  const layer2 = componentDefinition(token).defaults;
-  const out: Record<string, unknown> = Object.create(null);
+  const layer2 = definition.defaults;
+  // A plain literal keeps the record in fast (shared hidden class) mode; only a
+  // schema declaring `__proto__` needs the prototype-free dictionary form.
+  const out: Record<string, unknown> = Object.hasOwn(schema, '__proto__')
+    ? Object.create(null)
+    : {};
   const rawObj = (raw as Record<string, unknown> | undefined) ?? undefined;
-  for (const fieldName of Object.keys(schema)) {
+  for (let index = 0; index < fieldNames.length; index++) {
+    const fieldName = fieldNames[index] as string;
     const fieldType = schema[fieldName];
     if (fieldType === undefined) continue;
     // layer 1 — explicit raw value (caller may pass undefined to mean
@@ -188,6 +199,22 @@ export function fillComponentDefaults<S extends ComponentSchema>(
     out[fieldName] = typeDefault(fieldType);
   }
   return out;
+}
+
+/**
+ * One field of `fillComponentDefaults(token, raw)` without building the
+ * record: the explicit raw value, else the layer-2 default, else the layer-3
+ * type default. Row writers resolve fields this way to skip the temporary.
+ */
+export function filledFieldValue(
+  defaults: Readonly<Record<string, unknown>> | undefined,
+  fieldType: string,
+  raw: Readonly<Record<string, unknown>> | undefined,
+  fieldName: string,
+): unknown {
+  if (raw !== undefined && fieldName in raw) return raw[fieldName];
+  if (defaults !== undefined && fieldName in defaults) return defaults[fieldName];
+  return typeDefault(fieldType);
 }
 
 // Re-export the private dispatch for unit-test introspection (t1
@@ -227,8 +254,8 @@ export function validateComponentDataKeys<S extends ComponentSchema>(
   if (raw === undefined) return null;
   const schema = componentSchema(token) as Record<string, unknown>;
   const rawObj = raw as Record<string, unknown>;
-  for (const fieldName of Object.keys(rawObj)) {
-    if (!(fieldName in schema)) {
+  for (const fieldName in rawObj) {
+    if (!(fieldName in schema) && Object.hasOwn(rawObj, fieldName)) {
       return new SpawnDataUnknownFieldError(token.name, fieldName, Object.keys(schema));
     }
   }

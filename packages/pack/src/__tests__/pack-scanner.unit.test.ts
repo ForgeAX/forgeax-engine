@@ -17,6 +17,38 @@ afterEach(async () => {
 });
 
 describe('ScriptablePack and Pack source scanner', () => {
+  it('reports the missing Meta property without blaming a valid GUID', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-meta-diagnostic-'));
+    roots.push(root);
+    await writeFile(join(root, 'source.png'), new Uint8Array([1]));
+    await writeFile(
+      join(root, 'source.png.meta.json'),
+      JSON.stringify({
+        schemaVersion: '1.0.0',
+        kind: 'external-asset-package',
+        importer: 'image',
+        source: 'source.png',
+        subAssets: [{ guid: SOURCE_PACKAGE, kind: 'texture', sourceIndex: 0 }],
+      }),
+    );
+    const result = await scanInventory([root]);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'pack-malformed-meta',
+        detail: {
+          ajvErrors: expect.arrayContaining([
+            expect.objectContaining({
+              keyword: 'required',
+              params: { missingProperty: 'importSettings' },
+            }),
+          ]),
+        },
+      },
+    });
+    if (!result.ok) expect(result.error.hint).not.toContain('check guid');
+  });
+
   it('indexes direct v3 output keys as derived GUIDs without requiring entry GUIDs', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-pack-scan-'));
     roots.push(root);

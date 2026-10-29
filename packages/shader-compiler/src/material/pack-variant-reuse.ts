@@ -67,18 +67,41 @@ function retainedBytes(asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>)
   return JSON.stringify(asset).length * 2;
 }
 
-/** Pack owns fresh source bytes; GUIDs and uniform values remain per-publication data. */
+/**
+ * Pack owns fresh source bytes; GUIDs and uniform values remain per-publication data.
+ * Keys include the complete source identity, so Packs with equal sources share
+ * compiled variants even when other Packs cook in between, and concurrent Packs
+ * asking for one variant wait for a single compilation. Retention stays bounded
+ * by entry count and bytes across all identities.
+ */
 export function createMaterialPackVariantCompiler(compile: typeof compileShader) {
-  const variants = new Map<
-    string,
-    {
-      readonly asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>;
-      readonly bytes: number;
-    }
-  >();
+  type Retained = {
+    readonly asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>;
+    readonly bytes: number;
+  };
+  const variants = new Map<string, Retained>();
+  const compiling = new Map<string, Promise<void>>();
   let heldBytes = 0;
-  let namespace: string | undefined;
-  let generation = 0;
+  const retain = (key: string, cooked: MaterialCookedAsset): void => {
+    let asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>;
+    let bytes: number;
+    try {
+      asset = structuredClone({ passes: cooked.passes, layerPlan: cooked.layerPlan });
+      bytes = retainedBytes(asset);
+    } catch {
+      return;
+    }
+    if (bytes > MAX_RETAINED_BYTES) return;
+    while (variants.size >= MAX_ENTRIES || heldBytes + bytes > MAX_RETAINED_BYTES) {
+      const oldest = variants.keys().next().value;
+      if (oldest === undefined) break;
+      heldBytes -= variants.get(oldest)?.bytes ?? 0;
+      variants.delete(oldest);
+    }
+    heldBytes -= variants.get(key)?.bytes ?? 0;
+    variants.set(key, { asset, bytes });
+    heldBytes += bytes;
+  };
   return async (request: MaterialCookRequest, sourceIdentity: string | undefined) => {
     if (
       sourceIdentity === undefined ||
@@ -88,13 +111,6 @@ export function createMaterialPackVariantCompiler(compile: typeof compileShader)
         typeof request.vertexColorAvailable !== 'boolean')
     )
       return cookMaterialAsset(request, compile);
-    if (namespace !== sourceIdentity) {
-      variants.clear();
-      heldBytes = 0;
-      namespace = sourceIdentity;
-      generation++;
-    }
-    const ticket = generation;
     const resolved = resolveMaterialAsset(request.material, request.table);
     if (!resolved.ok) return resolved;
     const contract = contractKey(resolved.value.asset);
@@ -105,47 +121,47 @@ export function createMaterialPackVariantCompiler(compile: typeof compileShader)
         )
         .digest('hex');
     const key = contract === undefined ? undefined : keyFor(contract);
-    const previous = key === undefined ? undefined : variants.get(key);
-    if (key !== undefined && previous !== undefined) {
-      variants.delete(key);
-      variants.set(key, previous);
-      // Compilation has no uniform-value input. Re-resolve and select this
-      // material's current values and refs before its independent publication.
-      return ok({
-        ...structuredClone(previous.asset),
-        resolved: {
-          ...resolved.value,
-          asset: deriveSurfaceShadowPasses(selectMaterialStaticContract(resolved.value.asset)),
-        },
-      });
+    if (key !== undefined) {
+      // Another Pack is compiling this exact variant; share its result. A
+      // failed or unretained compilation leaves this request to compile itself.
+      const inFlight = compiling.get(key);
+      if (inFlight !== undefined && !variants.has(key)) await inFlight;
+      const previous = variants.get(key);
+      if (previous !== undefined) {
+        variants.delete(key);
+        variants.set(key, previous);
+        // Compilation has no uniform-value input. Re-resolve and select this
+        // material's current values and refs before its independent publication.
+        return ok({
+          ...structuredClone(previous.asset),
+          resolved: {
+            ...resolved.value,
+            asset: deriveSurfaceShadowPasses(selectMaterialStaticContract(resolved.value.asset)),
+          },
+        });
+      }
     }
-    const cooked = await cookMaterialAsset(request, compile);
-    if (!cooked.ok || key === undefined) return cooked;
-    // A source replacement during an awaited compilation must not re-admit
-    // the superseded namespace, including an A -> B -> A replacement.
-    if (ticket !== generation) return cooked;
-    if (!plainJson(request.table) || !plainJson(request.context)) return cooked;
-    const current = resolveMaterialAsset(request.material, request.table);
-    const currentContract = current.ok ? contractKey(current.value.asset) : undefined;
-    if (currentContract === undefined || keyFor(currentContract) !== key) return cooked;
-    let asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>;
-    let bytes: number;
+    let settle: (() => void) | undefined;
+    const done =
+      key === undefined
+        ? undefined
+        : new Promise<void>((resolve) => {
+            settle = resolve;
+          });
+    if (key !== undefined && done !== undefined) compiling.set(key, done);
     try {
-      asset = structuredClone({ passes: cooked.value.passes, layerPlan: cooked.value.layerPlan });
-      bytes = retainedBytes(asset);
-    } catch {
+      const cooked = await cookMaterialAsset(request, compile);
+      if (!cooked.ok || key === undefined) return cooked;
+      if (!plainJson(request.table) || !plainJson(request.context)) return cooked;
+      // Retain only what the request still describes after the awaited compile.
+      const current = resolveMaterialAsset(request.material, request.table);
+      const currentContract = current.ok ? contractKey(current.value.asset) : undefined;
+      if (currentContract === undefined || keyFor(currentContract) !== key) return cooked;
+      retain(key, cooked.value);
       return cooked;
+    } finally {
+      if (key !== undefined && compiling.get(key) === done) compiling.delete(key);
+      settle?.();
     }
-    if (bytes > MAX_RETAINED_BYTES) return cooked;
-    while (variants.size >= MAX_ENTRIES || heldBytes + bytes > MAX_RETAINED_BYTES) {
-      const oldest = variants.keys().next().value;
-      if (oldest === undefined) break;
-      heldBytes -= variants.get(oldest)?.bytes ?? 0;
-      variants.delete(oldest);
-    }
-    heldBytes -= variants.get(key)?.bytes ?? 0;
-    variants.set(key, { asset, bytes });
-    heldBytes += bytes;
-    return cooked;
   };
 }

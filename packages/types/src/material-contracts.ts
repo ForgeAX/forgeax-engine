@@ -260,6 +260,11 @@ export interface MaterialRenderState {
   readonly depthBiasClamp?: number;
   /** Blend state descriptor (spec-aligned with `GPUBlendState`). Default: undefined (no blending). */
   readonly blend?: GPUBlendState;
+  /**
+   * Three `Material.fog` equivalent. `false` exempts the draw from scene fog. Default: `true`.
+   * Forward opaque draws with `false` render after the fullscreen fog pass; deferred ones still fog.
+   */
+  readonly fog?: boolean;
   /** Enable alpha-to-coverage when the active camera uses MSAA. Default: `false`. */
   readonly alphaToCoverageEnabled?: boolean;
   /** Stencil face state. Default: undefined (no stencil operations). */

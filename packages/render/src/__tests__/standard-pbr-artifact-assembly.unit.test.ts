@@ -448,7 +448,9 @@ describe('Standard PBR artifact assembly', () => {
     const receipt = createStandardPbrArtifactReceipt(true);
 
     expect(artifact?.receipt).toEqual(receipt);
-    expect(artifact?.receipt?.skinPaletteAddress).toEqual({ group: 2, binding: 1, stride: 64 });
+    expect(artifact?.receipt?.vertexInputs.some((input) => input.semantic === 'skinIndex')).toBe(
+      true,
+    );
     expect(artifact?.vertexInputs).toHaveLength(receipt.vertexInputs.length);
   });
 

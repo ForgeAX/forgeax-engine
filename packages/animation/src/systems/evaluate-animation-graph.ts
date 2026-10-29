@@ -91,7 +91,13 @@ export function evaluateAnimationGraph(world: World, dt: number): void {
   const query = world.query({ with: [AnimationPlayer] }).unwrap();
 
   const entities: EntityHandle[] = [];
-  for (const row of query) entities.push(row.entity);
+  for (const querySpan of query.spans().unwrap()) {
+    const queryEntities = querySpan.entities;
+    for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+      const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+      entities.push(queriedEntity);
+    }
+  }
 
   for (const entityRaw of entities) {
     evaluateOneEntity(world, entityRaw, dt);

@@ -21,6 +21,7 @@ import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { type LinearHdrImage, luminanceRgba16f } from './contact-shadow.fixture';
 
 export const CAPSULE_SHADOW_SIZE = testQuality.squareSize;
@@ -129,7 +130,7 @@ export function spawnSkinnedCharacter(
  * -x/-z, so its ground shadow falls toward +x/+z (screen right and down).
  * One capsule on its single joint approximates the body.
  */
-function buildCapsuleScene(world: World, assets: AssetRegistry) {
+function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCache: boolean) {
   const ground = Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 });
   world
     .spawn(
@@ -194,6 +195,7 @@ function buildCapsuleScene(world: World, assets: AssetRegistry) {
         shadowFilter: DirectionalShadowFilterValue.pcssHigh,
         shadowAngularRadius: 0.02,
         maxPenumbraTexels: 32,
+        staticShadowCache,
       },
     })
     .unwrap();
@@ -274,11 +276,12 @@ export async function verifyCapsuleShadow(
     readonly recorder?: RecorderAttachment;
     readonly capture?: (tape: EncodedTape, variant: CapsuleShadowVariant) => void | Promise<void>;
     readonly image?: (name: string, observation: LinearHdrImage) => void;
+    readonly staticShadowCache?: boolean;
   } = {},
 ): Promise<CapsuleShadowEvidence> {
   const size = CAPSULE_SHADOW_SIZE;
   const world = new World({ assets });
-  const scene = buildCapsuleScene(world, assets);
+  const scene = buildCapsuleScene(world, assets, options.staticShadowCache ?? true);
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -306,7 +309,7 @@ export async function verifyCapsuleShadow(
       );
       if (pending !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
-        await options.capture?.((await pending).unwrap(), variant);
+        await options.capture?.(compactTape((await pending).unwrap()), variant);
       }
       if (!last) continue;
       const observation = unwrap(

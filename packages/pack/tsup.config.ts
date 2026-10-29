@@ -10,7 +10,6 @@ export default defineConfig({
     schema: 'src/schema-compiled.ts',
     'schema-build': 'src/schema-build.ts',
     guid: 'src/guid.ts',
-    builtin: 'src/builtin.ts',
     errors: 'src/errors.ts',
     bridge: 'src/bridge.ts',
     scanner: 'src/scanner.ts',

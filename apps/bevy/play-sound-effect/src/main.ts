@@ -3,7 +3,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { AudioSource, audioPlugin } from '@forgeax/engine-audio';
+import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
 import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
@@ -109,7 +109,7 @@ if (!started.ok) {
   throw new Error('bevy-play-sound-effect: app.start failed');
 }
 (window as typeof window & {
-  __playSoundEffectStop?: () => { contextState: string; activeSourceCount: number };
+  __playSoundEffectStop?: () => AudioState;
 }).__playSoundEffectStop = () => {
   const stopped = app.stop();
   if (!stopped.ok) throw new Error(`app.stop failed: ${stopped.error.code}`);

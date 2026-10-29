@@ -18,8 +18,10 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
+  BindGroupLayout,
   Buffer,
   ComputePipeline,
+  PipelineLayout,
   RhiCommandEncoder,
   RhiComputePassEncoder,
   RhiDevice,
@@ -99,6 +101,11 @@ export interface RayPathTracer {
   ): Result<GraphBuffer, RenderGraphError | RayReferenceError>;
   /** Ordered GPU reset; no host write can overtake already encoded samples. */
   reset(encoder: RhiCommandEncoder): Result<void, RayReferenceError>;
+  /** Stable-shape scene edits keep the existing pipelines and buffers. Caller fences old graphs. */
+  updateScene(
+    scene: RaySurfaceScene,
+    edit: { readonly triangles: readonly number[]; readonly nodes: readonly number[] },
+  ): Result<void, RhiError | RayReferenceError>;
   dispose(): void;
 }
 export const RAY_COVERAGE_CANDIDATES = 64;
@@ -244,6 +251,50 @@ export async function createSubmittedRayPathTracer(
   return prepared;
 }
 
+type RayPathBufferName = keyof RayPathTracer['buffers'];
+type RayPathBufferUsage = 'storage-read' | 'storage-read-write' | 'uniform-read' | 'indirect-read';
+type DirectDfgLutResource = Extract<
+  ReturnType<typeof getOrCreateDirectDfgLut>,
+  { readonly ok: true }
+>['value'];
+const RAY_PATH_KERNELS = [
+  'generate',
+  'trace',
+  'shade',
+  'accumulate',
+  'beginCoverage',
+  'gather',
+  'resolve',
+  'sealCoverage',
+  'beginShadow',
+  'gatherShadow',
+  'resolveShadow',
+  'endShadow',
+] as const;
+// Single-thread producers of GPU-written workgroup counts (WGSL group 1).
+const RAY_PATH_PRODUCERS = ['armMaterials', 'armRound'] as const;
+type RayPathKernelName = (typeof RAY_PATH_KERNELS)[number];
+type RayPathProducerName = (typeof RAY_PATH_PRODUCERS)[number];
+
+interface RayPathWork {
+  label: string;
+  pipeline: ComputePipeline;
+  bindings: readonly BindGroup[];
+  buffers: readonly { buffer: Buffer; usage: RayPathBufferUsage }[];
+  textures: readonly TextureView[];
+  /** Direct workgroup count; with `indirect`, only the fallback without indirect dispatch. */
+  workgroups: number;
+  /** Byte offset of GPU-written workgroup counts in the dispatch-args buffer. */
+  indirect?: number;
+}
+
+/** Each material evaluates the pixel slots or, through GPU-written counts, one round's pool. */
+interface RayPathMaterialWork {
+  readonly id: number;
+  readonly pixel: RayPathWork;
+  readonly pool: RayPathWork;
+}
+
 /** One frozen GPU transport; textures and optional GPU initial rays remain borrowed. */
 async function createRayPathTransport(
   device: RhiDevice,
@@ -254,7 +305,6 @@ async function createRayPathTransport(
   if (!settings.ok) return settings;
   const lights = packLights(request.lights);
   if (!lights.ok) return lights;
-  const pixels = request.settings.width * request.settings.height;
   const usesLut = request.materials.some((material) =>
     materialUsesDirectDfgLut(material.program.paramSchema),
   );
@@ -263,311 +313,471 @@ async function createRayPathTransport(
     return rayReferenceFailure(
       'LUT material requires the cooked DIRECT_DFG_LUT_AVAILABLE path kernel',
     );
-  const maxBounces = request.settings.maxBounces;
-  if (
-    request.materials.length > 32 ||
-    new Set(request.materials.map((m) => m.id)).size !== request.materials.length ||
-    request.materials.some((m) => !Number.isInteger(m.id) || m.id < 0 || m.id > 0xffffffff)
-  )
+  if (!hasDistinctMaterialIds(request.materials))
     return rayReferenceFailure('expected at most 32 distinct u32 material IDs', true);
   const masked = new Set(
     request.materials
       .filter((material) => material.evaluateCoverage)
       .map((material) => material.id),
   );
-  const hasCoverage = masked.size > 0;
-  new Float32Array(settings.value.buffer)[7] = hasCoverage ? 1 : 0;
+  new Float32Array(settings.value.buffer)[7] = masked.size > 0 ? 1 : 0;
   new Float32Array(settings.value.buffer)[11] = request.lights.length;
-  const triangles = request.scene.triangles.slice();
+  const triangles = encodeTriangleTraversal(request, masked);
+  if (!triangles.ok) return triangles;
+  const lutScope = usesLut ? (request.deviceScope ?? DeviceScope.create(0, 'ray-path')) : undefined;
+  const assembly = new RayPathTransportAssembly(
+    device,
+    compile,
+    request,
+    masked,
+    new RayPathResourceOwner(device, request.deviceScope === undefined ? lutScope : undefined),
+  );
+  return assembly.build(kernelSource, lutScope, triangles.value, settings.value, lights.value);
+}
+
+function hasDistinctMaterialIds(materials: readonly TransportMaterial[]): boolean {
+  return (
+    materials.length <= 32 &&
+    new Set(materials.map((m) => m.id)).size === materials.length &&
+    materials.every((m) => Number.isInteger(m.id) && m.id >= 0 && m.id <= 0xffffffff)
+  );
+}
+
+/** Copy the triangle table and stamp each triangle's traversal sidedness and coverage flag. */
+function encodeTriangleTraversal(
+  request: RayTransportInputs & { readonly materials: readonly TransportMaterial[] },
+  masked: ReadonlySet<number>,
+  changed?: readonly number[],
+): Result<Uint8Array, RayReferenceError> {
+  const triangles =
+    changed === undefined ? request.scene.triangles.slice() : new Uint8Array(changed.length * 80);
   const triangleView = new DataView(triangles.buffer);
   const materialById = new Map(request.materials.map((m) => [m.id, m]));
-  for (let i = 0; i < request.scene.triangleCount; i++) {
-    const material = materialById.get(triangleView.getUint32(i * 80 + 60, true));
+  for (let row = 0; row < (changed?.length ?? request.scene.triangleCount); row++) {
+    const i = changed?.[row] ?? row;
+    if (!Number.isInteger(i) || i < 0 || i >= request.scene.triangleCount)
+      return rayReferenceFailure('scene edit references an absent triangle');
+    if (changed !== undefined)
+      triangles.set(request.scene.triangles.subarray(i * 80, (i + 1) * 80), row * 80);
+    const material = materialById.get(triangleView.getUint32(row * 80 + 60, true));
     if (!material) return rayReferenceFailure('triangle references an absent material');
-    const instance = triangleView.getUint32(i * 80 + 48, true);
-    const coordinates = material.snapshot.textureCoordinates;
-    for (const entry of material.program.paramSchema.filter((p) => p.type === 'texture2d')) {
-      if (
-        entry.name === 'normalTexture' &&
-        !request.scene.instanceAttributes.get(instance)?.tangentFrame
-      )
-        return rayReferenceFailure(
-          `instance ${instance} normal texture requires authored normals and tangents`,
-        );
-      const set = coordinates?.get(entry.name)?.set ?? 0;
-      if (set >= (request.scene.instanceAttributes.get(instance)?.uvCount ?? 0))
-        return rayReferenceFailure(`instance ${instance} is missing material UV set ${set}`);
-    }
-    const cull = material.snapshot.renderState?.cullMode ?? 'back';
+    const instance = triangleView.getUint32(row * 80 + 48, true);
+    const attributes = instanceTextureFailure(request.scene, material, instance);
+    if (attributes !== undefined) return attributes;
     const winding = new DataView(
       request.scene.attributes.buffer,
       request.scene.attributes.byteOffset,
     ).getFloat32(i * RAY_ATTRIBUTE_TRIANGLE_STRIDE + 108, true);
-    const side = request.faces === 'both' ? 0 : cull === 'back' ? 1 : cull === 'front' ? 2 : 0;
-    triangleView.setUint32(i * 80 + 68, winding < 0 && side !== 0 ? 3 - side : side, true);
-    triangleView.setUint32(i * 80 + 72, masked.has(material.id) ? 1 : 0, true);
+    const side = traversalSide(request.faces, material.snapshot.renderState?.cullMode ?? 'back');
+    triangleView.setUint32(row * 80 + 68, winding < 0 && side !== 0 ? 3 - side : side, true);
+    triangleView.setUint32(row * 80 + 72, masked.has(material.id) ? 1 : 0, true);
   }
-  const descriptors = new Map<Buffer, { label: string; size: number; usage: number }>();
-  const lutScope = usesLut ? (request.deviceScope ?? DeviceScope.create(0, 'ray-path')) : undefined;
-  const ownedScope = request.deviceScope === undefined ? lutScope : undefined;
-  const dispose = () => {
-    for (const buffer of descriptors.keys()) device.destroyBuffer(buffer);
-    descriptors.clear();
-    ownedScope?.dispose();
-  };
-  const lut = lutScope === undefined ? undefined : getOrCreateDirectDfgLut(device, lutScope);
-  if (lut !== undefined && !lut.ok) {
-    dispose();
-    return lut;
+  return ok(triangles);
+}
+
+/** Does the instance carry every UV set and tangent frame its material textures read? */
+function instanceTextureFailure(
+  scene: RaySurfaceScene,
+  material: TransportMaterial,
+  instance: number,
+): Result<never, RayReferenceError> | undefined {
+  const coordinates = material.snapshot.textureCoordinates;
+  const attributes = scene.instanceAttributes.get(instance);
+  for (const entry of material.program.paramSchema.filter((p) => p.type === 'texture2d')) {
+    if (entry.name === 'normalTexture' && !attributes?.tangentFrame)
+      return rayReferenceFailure(
+        `instance ${instance} normal texture requires authored normals and tangents`,
+      );
+    const set = coordinates?.get(entry.name)?.set ?? 0;
+    if (set >= (attributes?.uvCount ?? 0))
+      return rayReferenceFailure(`instance ${instance} is missing material UV set ${set}`);
   }
-  const directDfgLut = lut?.value;
-  const make = (label: string, bytes: Uint8Array, uniform = false): Result<Buffer, RhiError> => {
-    const buffer = device.createBuffer({
+  return undefined;
+}
+
+/** 0 = two-sided, 1 = cull back, 2 = cull front (before winding correction). */
+function traversalSide(faces: RayTransportInputs['faces'], cull: string): number {
+  if (faces === 'both') return 0;
+  if (cull === 'back') return 1;
+  return cull === 'front' ? 2 : 0;
+}
+
+/** Transport-owned buffers and the optional private device scope, released together. */
+class RayPathResourceOwner {
+  readonly descriptors = new Map<Buffer, { label: string; size: number; usage: number }>();
+
+  constructor(
+    private readonly device: RhiDevice,
+    private readonly ownedScope: DeviceScope | undefined,
+  ) {}
+
+  make(label: string, bytes: Uint8Array, uniform = false): Result<Buffer, RhiError> {
+    const usage = (uniform ? 0x40 : 0x80) | 0x0c;
+    const buffer = this.device.createBuffer({
       label: `ray-path.${label}`,
       size: bytes.byteLength,
-      usage: (uniform ? 0x40 : 0x80) | 0x0c,
+      usage,
     });
     if (!buffer.ok) return buffer;
-    descriptors.set(buffer.value, {
-      label,
-      size: bytes.byteLength,
-      usage: (uniform ? 0x40 : 0x80) | 0x0c,
-    });
-    const wrote = device.queue.writeBuffer(buffer.value, 0, bytes);
+    this.descriptors.set(buffer.value, { label, size: bytes.byteLength, usage });
+    const wrote = this.device.queue.writeBuffer(buffer.value, 0, bytes);
     return wrote.ok ? buffer : wrote;
-  };
+  }
+
+  dispose(): void {
+    for (const buffer of this.descriptors.keys()) this.device.destroyBuffer(buffer);
+    this.descriptors.clear();
+    this.ownedScope?.dispose();
+  }
+
+  /** Release everything this transport owns, then report the failure. */
+  release<E>(failure: Result<never, E>): Result<never, E> {
+    this.dispose();
+    return failure;
+  }
+}
+
+/** Build-time sizing and GPU object creation for one transport; never per frame. */
+class RayPathTransportAssembly {
+  private readonly pixels: number;
+  private readonly pixelGroups: number;
+  private readonly hasCoverage: boolean;
   // Masked coverage candidates share one pool in the tail of inputs/surfaces; the
   // pixel region rounds up so the pool range satisfies storage offset alignment.
-  const poolBase = Math.ceil(pixels / 8) * 8;
-  const poolCapacity = hasCoverage ? rayCoveragePoolCapacity(pixels) : 0;
-  const materialSlots = hasCoverage ? poolBase + poolCapacity : pixels;
-  const coverageHeader = new Uint8Array(
-    RAY_COVERAGE_HEADER + (hasCoverage ? pixels : 1) * RAY_COVERAGE_QUERY_STRIDE,
-  );
-  new Uint32Array(coverageHeader.buffer, 0, 8).set([0, 0, 0, 0, 0, poolCapacity, poolBase, 0]);
-  const lightUniform = new Uint8Array(32 * 64);
-  lightUniform.set(lights.value);
-  const data = {
-    triangles,
-    nodes: request.scene.nodes,
-    attributes: request.scene.attributes,
-    paths: new Uint8Array(pixels * RAY_PATH_STRIDE),
-    inputs: new Uint8Array(materialSlots * RAY_MATERIAL_INPUT_STRIDE),
-    surfaces: new Uint8Array(materialSlots * RAY_MATERIAL_SURFACE_STRIDE),
-    accumulation: new Uint8Array(pixels * RAY_ACCUMULATION_STRIDE),
-    lights: lightUniform,
-    settings: settings.value,
-    coverage: coverageHeader,
-  };
-  const buffers = {} as Record<keyof typeof data, Buffer>;
-  for (const key of Object.keys(data) as (keyof typeof data)[]) {
-    const result = make(key, data[key], key === 'settings' || key === 'lights');
-    if (!result.ok) {
-      dispose();
-      return result;
-    }
-    buffers[key] = result.value;
-  }
-  const initialRays =
-    request.settings.rays === undefined
-      ? undefined
-      : packInitialPathRays(request.settings.rays, request.settings.seed);
-  let initialRayBuffer = request.settings.rayBuffer;
-  const module = await compile(device, { code: kernelSource, label: 'ray-path.kernel' });
-  if (!module.ok) {
-    dispose();
-    return module;
-  }
-  const kernelEntries = Object.keys(data).map((_, binding) => ({
-    binding,
-    visibility: 4,
-    buffer: {
-      type:
-        binding === 8 || binding === 7
-          ? ('uniform' as const)
-          : [0, 1, 2].includes(binding)
-            ? ('read-only-storage' as const)
-            : ('storage' as const),
+  private readonly poolBase: number;
+  private readonly poolCapacity: number;
+  private readonly indirect: boolean;
+
+  constructor(
+    private readonly device: RhiDevice,
+    private readonly compile: CompileShader,
+    private readonly request: RayTransportInputs & {
+      readonly materials: readonly TransportMaterial[];
     },
-  }));
-  const kernelLayout = device.createBindGroupLayout({
-    entries: [
-      ...kernelEntries,
-      ...(directDfgLut === undefined
-        ? []
-        : [
-            {
-              binding: 10,
-              visibility: 4,
-              texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-            },
-            { binding: 11, visibility: 4, sampler: { type: 'filtering' as const } },
-          ]),
-    ],
-  });
-  if (!kernelLayout.ok) {
-    dispose();
-    return kernelLayout;
+    private readonly masked: ReadonlySet<number>,
+    private readonly owner: RayPathResourceOwner,
+  ) {
+    this.pixels = request.settings.width * request.settings.height;
+    this.pixelGroups = Math.ceil(this.pixels / 64);
+    this.hasCoverage = masked.size > 0;
+    this.poolBase = Math.ceil(this.pixels / 8) * 8;
+    this.poolCapacity = this.hasCoverage ? rayCoveragePoolCapacity(this.pixels) : 0;
+    this.indirect = device.caps.indirectDrawing;
   }
-  const kernelPipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [kernelLayout.value],
-  });
-  if (!kernelPipelineLayout.ok) {
-    dispose();
-    return kernelPipelineLayout;
+
+  async build(
+    kernelSource: string,
+    lutScope: DeviceScope | undefined,
+    triangles: Uint8Array,
+    settings: Uint8Array,
+    lights: Uint8Array,
+  ): Promise<Result<RayPathTracer, Failure>> {
+    const { device, owner } = this;
+    const lut = lutScope === undefined ? undefined : getOrCreateDirectDfgLut(device, lutScope);
+    if (lut !== undefined && !lut.ok) return owner.release(lut);
+    const directDfgLut = lut?.value;
+    const buffers = this.createKernelBuffers(triangles, settings, lights);
+    if (!buffers.ok) return owner.release(buffers);
+    const initialRays =
+      this.request.settings.rays === undefined
+        ? undefined
+        : packInitialPathRays(this.request.settings.rays, this.request.settings.seed);
+    const module = await this.compile(device, { code: kernelSource, label: 'ray-path.kernel' });
+    if (!module.ok) return owner.release(module);
+    const kernel = this.createKernelBindings(buffers.value, directDfgLut);
+    if (!kernel.ok) return owner.release(kernel);
+    const producers = this.createCoverageProducers(buffers.value.coverage);
+    if (!producers.ok) return owner.release(producers);
+    const pipelines = this.createPipelines(
+      module.value,
+      kernel.value.pipelineLayout,
+      producers.value.layout,
+    );
+    if (!pipelines.ok) return owner.release(pipelines);
+    const argsBindings = this.createProducerBindings(producers.value);
+    if (!argsBindings.ok) return owner.release(argsBindings);
+    const kernelWork: RayPathKernelRecording = {
+      pipelines: pipelines.value,
+      group: kernel.value.group,
+      resources: kernel.value.resources,
+      textures: directDfgLut === undefined ? [] : [directDfgLut.view],
+      coverage: buffers.value.coverage,
+      args: producers.value.args,
+      argsBindings: argsBindings.value,
+      pixelGroups: this.pixelGroups,
+      indirect: this.indirect,
+    };
+    const generation = await this.createGenerationWork(kernelWork, buffers.value, initialRays);
+    if (!generation.ok) return owner.release(generation);
+    const materialWork = await this.createMaterialWorks(buffers.value, producers.value.args);
+    if (!materialWork.ok) return owner.release(materialWork);
+    const works = scheduleRayPathWorks(
+      kernelWork,
+      generation.value,
+      materialWork.value,
+      this.masked,
+      this.request,
+    );
+    return ok(
+      freezeRayPathTracer(
+        owner,
+        buffers.value,
+        this.pixels,
+        works,
+        producers.value.args,
+        directDfgLut,
+        (scene, edit) => this.updateScene(buffers.value, scene, edit),
+      ),
+    );
   }
-  const kernelBindings = device.createBindGroup({
-    layout: kernelLayout.value,
-    entries: [
-      ...Object.values(buffers).map((buffer, binding) => ({
-        binding,
-        resource: { kind: 'buffer' as const, value: { buffer } },
-      })),
-      ...(directDfgLut === undefined
-        ? []
-        : [
-            { binding: 10, resource: { kind: 'textureView' as const, value: directDfgLut.view } },
-            { binding: 11, resource: { kind: 'sampler' as const, value: directDfgLut.sampler } },
-          ]),
-    ],
-  });
-  if (!kernelBindings.ok) {
-    dispose();
-    return kernelBindings;
-  }
-  const names = [
-    'generate',
-    'trace',
-    'shade',
-    'accumulate',
-    'beginCoverage',
-    'gather',
-    'resolve',
-    'sealCoverage',
-    'beginShadow',
-    'gatherShadow',
-    'resolveShadow',
-    'endShadow',
-  ] as const;
-  // Single-thread producers of GPU-written workgroup counts (WGSL group 1).
-  const producers = ['armMaterials', 'armRound'] as const;
-  const indirect = device.caps.indirectDrawing;
-  const argsUsage = 0x80 | (indirect ? 0x100 : 0);
-  const args = hasCoverage
-    ? device.createBuffer({ label: 'ray-path.dispatch-args', size: 24, usage: argsUsage })
-    : undefined;
-  if (args !== undefined) {
-    if (!args.ok) {
-      dispose();
-      return args;
+
+  private updateScene(
+    buffers: Record<RayPathBufferName, Buffer>,
+    scene: RaySurfaceScene,
+    edit: { readonly triangles: readonly number[]; readonly nodes: readonly number[] },
+  ): Result<void, RhiError | RayReferenceError> {
+    if (
+      scene.triangles.byteLength !== this.request.scene.triangles.byteLength ||
+      scene.nodes.byteLength !== this.request.scene.nodes.byteLength ||
+      scene.attributes.byteLength !== this.request.scene.attributes.byteLength
+    )
+      return rayReferenceFailure('scene edit changes the transport buffer shape');
+    for (const node of edit.nodes)
+      if (!Number.isInteger(node) || node < 0 || node * 48 >= scene.nodes.byteLength)
+        return rayReferenceFailure('scene edit references an absent BVH node');
+    // Material admission and all addresses are checked before any live buffer writes.
+    const triangles = encodeTriangleTraversal(
+      { ...this.request, scene },
+      this.masked,
+      edit.triangles,
+    );
+    if (!triangles.ok) return triangles;
+    for (let row = 0; row < edit.triangles.length; row++) {
+      const index = edit.triangles[row] as number;
+      const triangle = this.device.queue.writeBuffer(
+        buffers.triangles,
+        index * 80,
+        triangles.value.subarray(row * 80, (row + 1) * 80),
+      );
+      if (!triangle.ok) return triangle;
+      const attribute = this.device.queue.writeBuffer(
+        buffers.attributes,
+        index * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+        scene.attributes.subarray(
+          index * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+          (index + 1) * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+        ),
+      );
+      if (!attribute.ok) return attribute;
     }
-    descriptors.set(args.value, { label: 'dispatch-args', size: 24, usage: argsUsage });
+    for (const index of edit.nodes) {
+      const node = this.device.queue.writeBuffer(
+        buffers.nodes,
+        index * 48,
+        scene.nodes.subarray(index * 48, (index + 1) * 48),
+      );
+      if (!node.ok) return node;
+    }
+    return ok(undefined);
   }
-  const argsBuffer = args?.ok ? args.value : undefined;
-  const argsLayout = device.createBindGroupLayout({
-    entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }],
-  });
-  if (!argsLayout.ok) {
-    dispose();
-    return argsLayout;
+
+  private createKernelBuffers(
+    triangles: Uint8Array,
+    settings: Uint8Array,
+    lights: Uint8Array,
+  ): Result<Record<RayPathBufferName, Buffer>, RhiError> {
+    const { pixels, hasCoverage, poolBase, poolCapacity, request } = this;
+    const materialSlots = hasCoverage ? poolBase + poolCapacity : pixels;
+    const coverageHeader = new Uint8Array(
+      RAY_COVERAGE_HEADER + (hasCoverage ? pixels : 1) * RAY_COVERAGE_QUERY_STRIDE,
+    );
+    new Uint32Array(coverageHeader.buffer, 0, 8).set([0, 0, 0, 0, 0, poolCapacity, poolBase, 0]);
+    const lightUniform = new Uint8Array(32 * 64);
+    lightUniform.set(lights);
+    const data: Record<RayPathBufferName, Uint8Array> = {
+      triangles,
+      nodes: request.scene.nodes,
+      attributes: request.scene.attributes,
+      paths: new Uint8Array(pixels * RAY_PATH_STRIDE),
+      inputs: new Uint8Array(materialSlots * RAY_MATERIAL_INPUT_STRIDE),
+      surfaces: new Uint8Array(materialSlots * RAY_MATERIAL_SURFACE_STRIDE),
+      accumulation: new Uint8Array(pixels * RAY_ACCUMULATION_STRIDE),
+      lights: lightUniform,
+      settings,
+      coverage: coverageHeader,
+    };
+    const buffers = {} as Record<RayPathBufferName, Buffer>;
+    for (const key of Object.keys(data) as RayPathBufferName[]) {
+      const result = this.owner.make(key, data[key], key === 'settings' || key === 'lights');
+      if (!result.ok) return result;
+      buffers[key] = result.value;
+    }
+    return ok(buffers);
   }
-  // Producers bind only `coverage` in group 0: the full kernel group already holds
-  // the 8 storage buffers WebGPU guarantees per stage.
-  const coverageLayout = device.createBindGroupLayout({
-    entries: [{ binding: 9, visibility: 4, buffer: { type: 'storage' } }],
-  });
-  if (!coverageLayout.ok) {
-    dispose();
-    return coverageLayout;
-  }
-  const producerLayout = device.createPipelineLayout({
-    bindGroupLayouts: [coverageLayout.value, argsLayout.value],
-  });
-  if (!producerLayout.ok) {
-    dispose();
-    return producerLayout;
-  }
-  const pipelines = {} as Record<
-    (typeof names)[number] | (typeof producers)[number],
-    ComputePipeline
-  >;
-  for (const name of [...names, ...(hasCoverage ? producers : [])]) {
-    const result = device.createComputePipeline({
-      label: `ray-path.${name}`,
-      layout: (producers as readonly string[]).includes(name)
-        ? producerLayout.value
-        : kernelPipelineLayout.value,
-      compute: { module: module.value, entryPoint: name },
+
+  private createKernelBindings(
+    buffers: Record<RayPathBufferName, Buffer>,
+    directDfgLut: DirectDfgLutResource | undefined,
+  ) {
+    const device = this.device;
+    const kernelEntries = Object.keys(buffers).map((_, binding) => ({
+      binding,
+      visibility: 4,
+      buffer: { type: kernelBufferType(binding) },
+    }));
+    const layout = device.createBindGroupLayout({
+      entries: [
+        ...kernelEntries,
+        ...(directDfgLut === undefined
+          ? []
+          : [
+              {
+                binding: 10,
+                visibility: 4,
+                texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+              },
+              { binding: 11, visibility: 4, sampler: { type: 'filtering' as const } },
+            ]),
+      ],
     });
-    if (!result.ok) {
-      dispose();
-      return result;
-    }
-    pipelines[name] = result.value;
-  }
-  let argsBindings: readonly [BindGroup, BindGroup] | undefined;
-  if (argsBuffer !== undefined) {
-    const header = device.createBindGroup({
-      layout: coverageLayout.value,
-      entries: [{ binding: 9, resource: { kind: 'buffer', value: { buffer: buffers.coverage } } }],
-    });
-    if (!header.ok) {
-      dispose();
-      return header;
-    }
+    if (!layout.ok) return layout;
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
+    if (!pipelineLayout.ok) return pipelineLayout;
     const group = device.createBindGroup({
-      layout: argsLayout.value,
-      entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: argsBuffer } } }],
+      layout: layout.value,
+      entries: [
+        ...Object.values(buffers).map((buffer, binding) => ({
+          binding,
+          resource: { kind: 'buffer' as const, value: { buffer } },
+        })),
+        ...(directDfgLut === undefined
+          ? []
+          : [
+              { binding: 10, resource: { kind: 'textureView' as const, value: directDfgLut.view } },
+              { binding: 11, resource: { kind: 'sampler' as const, value: directDfgLut.sampler } },
+            ]),
+      ],
     });
-    if (!group.ok) {
-      dispose();
-      return group;
-    }
-    argsBindings = [header.value, group.value];
+    if (!group.ok) return group;
+    // Derive conservative bound-resource accesses from the same kernel binding layout.
+    // RHI Debug retains shader entry points for finer per-dispatch usage inspection.
+    const resources: RayPathWork['buffers'] = Object.values(buffers).map((buffer, binding) => ({
+      buffer,
+      usage: kernelResourceUsage(kernelEntries[binding]?.buffer.type),
+    }));
+    return ok({ pipelineLayout: pipelineLayout.value, group: group.value, resources });
   }
-  type Work = {
-    label: string;
-    pipeline: ComputePipeline;
-    bindings: readonly BindGroup[];
-    buffers: readonly {
-      buffer: Buffer;
-      usage: 'storage-read' | 'storage-read-write' | 'uniform-read' | 'indirect-read';
-    }[];
-    textures: readonly TextureView[];
-    /** Direct workgroup count; with `indirect`, only the fallback without indirect dispatch. */
-    workgroups: number;
-    /** Byte offset of GPU-written workgroup counts in the dispatch-args buffer. */
-    indirect?: number;
-  };
-  const pixelGroups = Math.ceil(pixels / 64);
-  // Derive conservative bound-resource accesses from the same kernel binding layout.
-  // RHI Debug retains shader entry points for finer per-dispatch usage inspection.
-  const kernelResources: Work['buffers'] = Object.values(buffers).map((buffer, binding) => ({
-    buffer,
-    usage:
-      kernelEntries[binding]?.buffer.type === 'uniform'
-        ? 'uniform-read'
-        : kernelEntries[binding]?.buffer.type === 'read-only-storage'
-          ? 'storage-read'
-          : 'storage-read-write',
-  }));
-  let generation: Work = {
-    pipeline: pipelines.generate,
-    bindings: [kernelBindings.value],
-    label: 'ray-path.generate',
-    buffers: kernelResources,
-    textures: directDfgLut === undefined ? [] : [directDfgLut.view],
-    workgroups: pixelGroups,
-  };
-  if (initialRays !== undefined) {
-    const seeds = make('initial-rays', initialRays);
-    if (!seeds.ok) {
-      dispose();
-      return seeds;
+
+  /** Dispatch-args buffer and the layouts/bindings of its single-thread producers. */
+  private createCoverageProducers(coverage: Buffer) {
+    const { device, hasCoverage } = this;
+    const argsUsage = 0x80 | (this.indirect ? 0x100 : 0);
+    const args = hasCoverage
+      ? device.createBuffer({ label: 'ray-path.dispatch-args', size: 24, usage: argsUsage })
+      : undefined;
+    if (args !== undefined) {
+      if (!args.ok) return args;
+      this.owner.descriptors.set(args.value, {
+        label: 'dispatch-args',
+        size: 24,
+        usage: argsUsage,
+      });
     }
-    initialRayBuffer = seeds.value;
+    const argsBuffer = args?.ok ? args.value : undefined;
+    const argsLayout = device.createBindGroupLayout({
+      entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }],
+    });
+    if (!argsLayout.ok) return argsLayout;
+    // Producers bind only `coverage` in group 0: the full kernel group already holds
+    // the 8 storage buffers WebGPU guarantees per stage.
+    const coverageLayout = device.createBindGroupLayout({
+      entries: [{ binding: 9, visibility: 4, buffer: { type: 'storage' } }],
+    });
+    if (!coverageLayout.ok) return coverageLayout;
+    const layout = device.createPipelineLayout({
+      bindGroupLayouts: [coverageLayout.value, argsLayout.value],
+    });
+    if (!layout.ok) return layout;
+    return ok({
+      args: argsBuffer,
+      argsLayout: argsLayout.value,
+      coverageLayout: coverageLayout.value,
+      layout: layout.value,
+      coverage,
+    });
   }
-  if (initialRayBuffer !== undefined) {
+
+  private createPipelines(
+    module: ShaderModule,
+    kernelLayout: PipelineLayout,
+    producerLayout: PipelineLayout,
+  ): Result<Record<RayPathKernelName | RayPathProducerName, ComputePipeline>, RhiError> {
+    const pipelines = {} as Record<RayPathKernelName | RayPathProducerName, ComputePipeline>;
+    for (const name of [...RAY_PATH_KERNELS, ...(this.hasCoverage ? RAY_PATH_PRODUCERS : [])]) {
+      const result = this.device.createComputePipeline({
+        label: `ray-path.${name}`,
+        layout: (RAY_PATH_PRODUCERS as readonly string[]).includes(name)
+          ? producerLayout
+          : kernelLayout,
+        compute: { module, entryPoint: name },
+      });
+      if (!result.ok) return result;
+      pipelines[name] = result.value;
+    }
+    return ok(pipelines);
+  }
+
+  private createProducerBindings(producers: {
+    readonly args: Buffer | undefined;
+    readonly argsLayout: BindGroupLayout;
+    readonly coverageLayout: BindGroupLayout;
+    readonly coverage: Buffer;
+  }): Result<readonly [BindGroup, BindGroup] | undefined, RhiError> {
+    if (producers.args === undefined) return ok(undefined);
+    const header = this.device.createBindGroup({
+      layout: producers.coverageLayout,
+      entries: [
+        { binding: 9, resource: { kind: 'buffer', value: { buffer: producers.coverage } } },
+      ],
+    });
+    if (!header.ok) return header;
+    const group = this.device.createBindGroup({
+      layout: producers.argsLayout,
+      entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: producers.args } } }],
+    });
+    if (!group.ok) return group;
+    return ok([header.value, group.value]);
+  }
+
+  /** The default generate kernel, or a pass that seeds paths from supplied initial rays. */
+  private async createGenerationWork(
+    kernel: RayPathKernelRecording,
+    buffers: Record<RayPathBufferName, Buffer>,
+    initialRays: Uint8Array | undefined,
+  ): Promise<Result<RayPathWork, Failure>> {
+    let initialRayBuffer = this.request.settings.rayBuffer;
+    if (initialRays !== undefined) {
+      const seeds = this.owner.make('initial-rays', initialRays);
+      if (!seeds.ok) return seeds;
+      initialRayBuffer = seeds.value;
+    }
+    if (initialRayBuffer === undefined)
+      return ok({
+        pipeline: kernel.pipelines.generate,
+        bindings: [kernel.group],
+        label: 'ray-path.generate',
+        buffers: kernel.resources,
+        textures: kernel.textures,
+        workgroups: kernel.pixelGroups,
+      });
+    return this.createInitialRayWork(initialRayBuffer, buffers);
+  }
+
+  private async createInitialRayWork(
+    initialRayBuffer: Buffer,
+    buffers: Record<RayPathBufferName, Buffer>,
+  ): Promise<Result<RayPathWork, Failure>> {
+    const device = this.device;
     const layout = device.createBindGroupLayout({
       entries: [0, 1, 2].map((binding) => ({
         binding,
@@ -575,43 +785,31 @@ async function createRayPathTransport(
         buffer: { type: binding === 0 ? ('read-only-storage' as const) : ('storage' as const) },
       })),
     });
-    if (!layout.ok) {
-      dispose();
-      return layout;
-    }
+    if (!layout.ok) return layout;
     const group = device.createBindGroup({
       layout: layout.value,
       entries: [initialRayBuffer, buffers.paths, buffers.accumulation].map((buffer, binding) => ({
         binding,
-        resource: { kind: 'buffer' as const, value: { buffer, size: pixels * RAY_PATH_STRIDE } },
+        resource: {
+          kind: 'buffer' as const,
+          value: { buffer, size: this.pixels * RAY_PATH_STRIDE },
+        },
       })),
     });
-    if (!group.ok) {
-      dispose();
-      return group;
-    }
+    if (!group.ok) return group;
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
-    if (!pipelineLayout.ok) {
-      dispose();
-      return pipelineLayout;
-    }
-    const shader = await compile(device, {
+    if (!pipelineLayout.ok) return pipelineLayout;
+    const shader = await this.compile(device, {
       code: INITIAL_PATH_RAYS_WGSL,
       label: 'ray-path.initial-rays',
     });
-    if (!shader.ok) {
-      dispose();
-      return shader;
-    }
+    if (!shader.ok) return shader;
     const pipeline = device.createComputePipeline({
       layout: pipelineLayout.value,
       compute: { module: shader.value, entryPoint: 'generateInitialRays' },
     });
-    if (!pipeline.ok) {
-      dispose();
-      return pipeline;
-    }
-    generation = {
+    if (!pipeline.ok) return pipeline;
+    return ok({
       pipeline: pipeline.value,
       bindings: [group.value],
       label: 'ray-path.initial-rays',
@@ -621,24 +819,43 @@ async function createRayPathTransport(
         { buffer: buffers.accumulation, usage: 'storage-read-write' },
       ],
       textures: [],
-      workgroups: pixelGroups,
-    };
+      workgroups: this.pixelGroups,
+    });
   }
-  const materialLayout = device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: 4, buffer: { type: 'read-only-storage' } },
-      { binding: 1, visibility: 4, buffer: { type: 'storage' } },
-      { binding: 2, visibility: 4, buffer: { type: 'uniform' } },
-    ],
-  });
-  if (!materialLayout.ok) {
-    dispose();
-    return materialLayout;
+
+  private async createMaterialWorks(
+    buffers: Record<RayPathBufferName, Buffer>,
+    argsBuffer: Buffer | undefined,
+  ): Promise<Result<RayPathMaterialWork[], Failure>> {
+    const materialLayout = this.device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: 4, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: 4, buffer: { type: 'storage' } },
+        { binding: 2, visibility: 4, buffer: { type: 'uniform' } },
+      ],
+    });
+    if (!materialLayout.ok) return materialLayout;
+    const materialWork: RayPathMaterialWork[] = [];
+    for (const material of this.request.materials) {
+      const work = await this.createMaterialWork(
+        material,
+        materialLayout.value,
+        buffers,
+        argsBuffer,
+      );
+      if (!work.ok) return work;
+      materialWork.push(work.value);
+    }
+    return ok(materialWork);
   }
-  // Each material evaluates either the pixel slots or, through GPU-written counts,
-  // the pooled coverage candidates of one round.
-  const materialWork: { id: number; pixel: Work; pool: Work }[] = [];
-  for (const m of request.materials) {
+
+  private async createMaterialWork(
+    m: TransportMaterial,
+    materialLayout: BindGroupLayout,
+    buffers: Record<RayPathBufferName, Buffer>,
+    argsBuffer: Buffer | undefined,
+  ): Promise<Result<RayPathMaterialWork, Failure>> {
+    const device = this.device;
     const materialBindings = createSurfaceMaterialBindings(
       device,
       m.program.paramSchema,
@@ -646,27 +863,21 @@ async function createRayPathTransport(
       4,
       m.resolveTexture,
     );
-    if (!materialBindings.ok) {
-      dispose();
-      return materialBindings;
-    }
-    descriptors.set(materialBindings.value.uniform, {
+    if (!materialBindings.ok) return materialBindings;
+    this.owner.descriptors.set(materialBindings.value.uniform, {
       label: `material-${m.id}.uniform`,
       size: materialBindings.value.bytes,
       usage: 72,
     });
-    const selector = make(
+    const selector = this.owner.make(
       `material-selector-${m.id}`,
       new Uint8Array(new Uint32Array([m.id, 0, 0, 0]).buffer),
       true,
     );
-    if (!selector.ok) {
-      dispose();
-      return selector;
-    }
+    if (!selector.ok) return selector;
     const slotBindings = (first: number, count: number) =>
       device.createBindGroup({
-        layout: materialLayout.value,
+        layout: materialLayout,
         entries: [
           { buffer: buffers.inputs, stride: RAY_MATERIAL_INPUT_STRIDE },
           { buffer: buffers.surfaces, stride: RAY_MATERIAL_SURFACE_STRIDE },
@@ -680,41 +891,28 @@ async function createRayPathTransport(
           },
         })),
       });
-    const workBindings = slotBindings(0, pixels);
-    if (!workBindings.ok) {
-      dispose();
-      return workBindings;
-    }
-    const poolBindings = hasCoverage ? slotBindings(poolBase, poolCapacity) : workBindings;
-    if (!poolBindings.ok) {
-      dispose();
-      return poolBindings;
-    }
+    const workBindings = slotBindings(0, this.pixels);
+    if (!workBindings.ok) return workBindings;
+    const poolBindings = this.hasCoverage
+      ? slotBindings(this.poolBase, this.poolCapacity)
+      : workBindings;
+    if (!poolBindings.ok) return poolBindings;
     const layout = device.createPipelineLayout({
-      bindGroupLayouts: [materialLayout.value, materialBindings.value.layout],
+      bindGroupLayouts: [materialLayout, materialBindings.value.layout],
     });
-    if (!layout.ok) {
-      dispose();
-      return layout;
-    }
-    const shader = await compile(device, {
+    if (!layout.ok) return layout;
+    const shader = await this.compile(device, {
       code: m.program.source,
       label: `ray-path.material-${m.id}`,
     });
-    if (!shader.ok) {
-      dispose();
-      return shader;
-    }
+    if (!shader.ok) return shader;
     const pipeline = device.createComputePipeline({
       label: `ray-path.material-${m.id}`,
       layout: layout.value,
       compute: { module: shader.value, entryPoint: 'cs_surface' },
     });
-    if (!pipeline.ok) {
-      dispose();
-      return pipeline;
-    }
-    const pixel: Work = {
+    if (!pipeline.ok) return pipeline;
+    const pixel: RayPathWork = {
       label: `ray-path.material-${m.id}`,
       pipeline: pipeline.value,
       buffers: [
@@ -725,17 +923,17 @@ async function createRayPathTransport(
       ],
       textures: materialBindings.value.textureViews,
       bindings: [workBindings.value, materialBindings.value.group],
-      workgroups: pixelGroups,
+      workgroups: this.pixelGroups,
     };
-    materialWork.push({
+    return ok({
       id: m.id,
       pixel,
       pool: {
         ...pixel,
         label: `ray-path.pool-material-${m.id}`,
         bindings: [poolBindings.value, materialBindings.value.group],
-        workgroups: Math.ceil(poolCapacity / 64),
-        ...(argsBuffer !== undefined && indirect
+        workgroups: Math.ceil(this.poolCapacity / 64),
+        ...(argsBuffer !== undefined && this.indirect
           ? {
               indirect: 0,
               buffers: [...pixel.buffers, { buffer: argsBuffer, usage: 'indirect-read' as const }],
@@ -744,102 +942,168 @@ async function createRayPathTransport(
       },
     });
   }
-  let disposed = false;
-  const works: Work[] = [];
-  works.push(generation);
-  const deferred = (work: Omit<Work, 'workgroups' | 'indirect'>): Work =>
-    argsBuffer !== undefined && indirect
-      ? {
-          ...work,
-          workgroups: pixelGroups,
-          indirect: 12,
-          buffers: [...work.buffers, { buffer: argsBuffer, usage: 'indirect-read' }],
-        }
-      : { ...work, workgroups: pixelGroups };
-  for (let bounce = 0; bounce < maxBounces; bounce++) {
-    const kernel = (name: (typeof names)[number], round = 0): Work => ({
-      label: `ray-path.${name}-${bounce}${round > 0 ? `-round-${round}` : ''}`,
-      pipeline: pipelines[name],
-      bindings: [kernelBindings.value],
-      buffers: kernelResources,
-      textures: directDfgLut === undefined ? [] : [directDfgLut.view],
-      workgroups: pixelGroups,
-    });
-    const produce = (name: (typeof producers)[number]): Work => {
-      if (argsBuffer === undefined || argsBindings === undefined)
-        return rayReferenceFailure('coverage rounds require dispatch args').unwrap();
-      return {
-        label: `ray-path.${name}-${bounce}`,
-        pipeline: pipelines[name],
-        bindings: argsBindings,
-        buffers: [
-          { buffer: buffers.coverage, usage: 'storage-read-write' },
-          { buffer: argsBuffer, usage: 'storage-read-write' },
-        ],
-        textures: [],
-        workgroups: 1,
-      };
-    };
-    // Every pixel gathers in round 0; later rounds see only the rays the full pool
-    // deferred. Dispatch count is independent of candidate depth.
-    const rounds = (gather: 'gather' | 'gatherShadow', resolve: 'resolve' | 'resolveShadow') => {
-      for (let round = 0; round < RAY_COVERAGE_ROUNDS; round++) {
-        const sized = (name: typeof gather | typeof resolve) =>
-          round === 0 ? kernel(name) : deferred(kernel(name, round));
-        works.push(sized(gather), produce('armMaterials'));
-        for (const m of materialWork) if (masked.has(m.id)) works.push(m.pool);
-        works.push(sized(resolve));
-        if (round + 1 < RAY_COVERAGE_ROUNDS) works.push(produce('armRound'));
+}
+
+function kernelBufferType(binding: number): 'uniform' | 'read-only-storage' | 'storage' {
+  if (binding === 8 || binding === 7) return 'uniform';
+  return [0, 1, 2].includes(binding) ? 'read-only-storage' : 'storage';
+}
+
+function kernelResourceUsage(type: string | undefined): RayPathBufferUsage {
+  if (type === 'uniform') return 'uniform-read';
+  return type === 'read-only-storage' ? 'storage-read' : 'storage-read-write';
+}
+
+/** Frozen kernel dispatch facts shared by every scheduled bounce. */
+interface RayPathKernelRecording {
+  readonly pipelines: Record<RayPathKernelName | RayPathProducerName, ComputePipeline>;
+  readonly group: BindGroup;
+  readonly resources: RayPathWork['buffers'];
+  readonly textures: readonly TextureView[];
+  readonly coverage: Buffer;
+  readonly args: Buffer | undefined;
+  readonly argsBindings: readonly [BindGroup, BindGroup] | undefined;
+  readonly pixelGroups: number;
+  readonly indirect: boolean;
+}
+
+function kernelWork(
+  kernel: RayPathKernelRecording,
+  name: RayPathKernelName,
+  bounce: number,
+  round = 0,
+): RayPathWork {
+  return {
+    label: `ray-path.${name}-${bounce}${round > 0 ? `-round-${round}` : ''}`,
+    pipeline: kernel.pipelines[name],
+    bindings: [kernel.group],
+    buffers: kernel.resources,
+    textures: kernel.textures,
+    workgroups: kernel.pixelGroups,
+  };
+}
+
+/** Later coverage rounds dispatch only the GPU-counted rays the full pool deferred. */
+function deferredWork(kernel: RayPathKernelRecording, work: RayPathWork): RayPathWork {
+  return kernel.args !== undefined && kernel.indirect
+    ? {
+        ...work,
+        workgroups: kernel.pixelGroups,
+        indirect: 12,
+        buffers: [...work.buffers, { buffer: kernel.args, usage: 'indirect-read' }],
       }
-    };
-    if (!hasCoverage) {
-      works.push(kernel('trace'), ...materialWork.map((m) => m.pixel), kernel('shade'));
+    : { ...work, workgroups: kernel.pixelGroups };
+}
+
+function producerWork(
+  kernel: RayPathKernelRecording,
+  name: RayPathProducerName,
+  bounce: number,
+): RayPathWork {
+  if (kernel.args === undefined || kernel.argsBindings === undefined)
+    return rayReferenceFailure('coverage rounds require dispatch args').unwrap();
+  return {
+    label: `ray-path.${name}-${bounce}`,
+    pipeline: kernel.pipelines[name],
+    bindings: kernel.argsBindings,
+    buffers: [
+      { buffer: kernel.coverage, usage: 'storage-read-write' },
+      { buffer: kernel.args, usage: 'storage-read-write' },
+    ],
+    textures: [],
+    workgroups: 1,
+  };
+}
+
+/** The complete ordered dispatch list of one sample. */
+function scheduleRayPathWorks(
+  kernel: RayPathKernelRecording,
+  generation: RayPathWork,
+  materialWork: readonly RayPathMaterialWork[],
+  masked: ReadonlySet<number>,
+  request: Pick<RayTransportInputs, 'settings' | 'lights'>,
+): RayPathWork[] {
+  const works: RayPathWork[] = [generation];
+  for (let bounce = 0; bounce < request.settings.maxBounces; bounce++) {
+    if (masked.size === 0) {
+      works.push(
+        kernelWork(kernel, 'trace', bounce),
+        ...materialWork.map((m) => m.pixel),
+        kernelWork(kernel, 'shade', bounce),
+      );
       continue;
     }
-    works.push(kernel('beginCoverage'));
-    rounds('gather', 'resolve');
+    works.push(kernelWork(kernel, 'beginCoverage', bounce));
+    pushCoverageRounds(works, kernel, materialWork, masked, bounce, 'gather', 'resolve');
     // Opaque hits need one Surface evaluation after candidate resolution,
     // rather than once per rejected alpha layer.
     for (const m of materialWork) if (!masked.has(m.id)) works.push(m.pixel);
-    works.push(kernel('sealCoverage'));
+    works.push(kernelWork(kernel, 'sealCoverage', bounce));
     // Analytic lights and one environment NEE ray reuse the same bounded query storage.
     for (let light = 0; light <= request.lights.length; light++) {
-      works.push(kernel('beginShadow'));
-      rounds('gatherShadow', 'resolveShadow');
-      works.push(kernel('endShadow'));
+      works.push(kernelWork(kernel, 'beginShadow', bounce));
+      pushCoverageRounds(
+        works,
+        kernel,
+        materialWork,
+        masked,
+        bounce,
+        'gatherShadow',
+        'resolveShadow',
+      );
+      works.push(kernelWork(kernel, 'endShadow', bounce));
     }
-    works.push(kernel('shade'));
+    works.push(kernelWork(kernel, 'shade', bounce));
   }
   works.push({
     label: 'ray-path.accumulate',
-    pipeline: pipelines.accumulate,
-    bindings: [kernelBindings.value],
-    buffers: kernelResources,
-    textures: directDfgLut === undefined ? [] : [directDfgLut.view],
-    workgroups: pixelGroups,
+    pipeline: kernel.pipelines.accumulate,
+    bindings: [kernel.group],
+    buffers: kernel.resources,
+    textures: kernel.textures,
+    workgroups: kernel.pixelGroups,
   });
+  return works;
+}
 
-  // WebGPU orders storage writes between dispatches of one compute pass, so
-  // consecutive works share one compute pass whenever their declared usages
-  // merge into one compatible usage scope (reads upgrade to read-write).
-  const batches: { works: Work[]; usages: Map<Buffer, Work['buffers'][number]['usage']> }[] = [];
+// Every pixel gathers in round 0; later rounds see only the rays the full pool
+// deferred. Dispatch count is independent of candidate depth.
+function pushCoverageRounds(
+  works: RayPathWork[],
+  kernel: RayPathKernelRecording,
+  materialWork: readonly RayPathMaterialWork[],
+  masked: ReadonlySet<number>,
+  bounce: number,
+  gather: 'gather' | 'gatherShadow',
+  resolve: 'resolve' | 'resolveShadow',
+): void {
+  for (let round = 0; round < RAY_COVERAGE_ROUNDS; round++) {
+    const sized = (name: typeof gather | typeof resolve) =>
+      round === 0
+        ? kernelWork(kernel, name, bounce)
+        : deferredWork(kernel, kernelWork(kernel, name, bounce, round));
+    works.push(sized(gather), producerWork(kernel, 'armMaterials', bounce));
+    for (const m of materialWork) if (masked.has(m.id)) works.push(m.pool);
+    works.push(sized(resolve));
+    if (round + 1 < RAY_COVERAGE_ROUNDS) works.push(producerWork(kernel, 'armRound', bounce));
+  }
+}
+
+/** A dispatch batch sharing one compute pass and its merged buffer usage scope. */
+interface RayPathBatch {
+  readonly works: RayPathWork[];
+  usages: Map<Buffer, RayPathBufferUsage>;
+}
+
+// WebGPU orders storage writes between dispatches of one compute pass, so
+// consecutive works share one compute pass whenever their declared usages
+// merge into one compatible usage scope (reads upgrade to read-write).
+function batchRayPathWorks(works: readonly RayPathWork[]): RayPathBatch[] {
+  const batches: RayPathBatch[] = [];
   for (const work of works) {
     const last = batches[batches.length - 1];
-    const merged = new Map(last?.usages);
-    const compatible =
-      last !== undefined &&
-      work.buffers.every(({ buffer, usage }) => {
-        const prior = merged.get(buffer);
-        if (prior === undefined || prior === usage) {
-          merged.set(buffer, usage);
-          return true;
-        }
-        // Indirect arguments and uniforms never share a usage scope with storage.
-        if ([prior, usage].some((u) => u === 'uniform-read' || u === 'indirect-read')) return false;
-        merged.set(buffer, 'storage-read-write');
-        return true;
-      });
-    if (compatible) {
+    const merged = last === undefined ? undefined : mergeWorkUsages(last.usages, work);
+    if (last !== undefined && merged !== undefined) {
       last.works.push(work);
       last.usages = merged;
     } else
@@ -848,8 +1112,40 @@ async function createRayPathTransport(
         usages: new Map(work.buffers.map(({ buffer, usage }) => [buffer, usage])),
       });
   }
+  return batches;
+}
 
-  const record = (pass: RhiComputePassEncoder, work: Work) => {
+/** The merged usage scope, or undefined when the work cannot join this pass. */
+function mergeWorkUsages(
+  usages: ReadonlyMap<Buffer, RayPathBufferUsage>,
+  work: RayPathWork,
+): Map<Buffer, RayPathBufferUsage> | undefined {
+  const merged = new Map(usages);
+  for (const { buffer, usage } of work.buffers) {
+    const prior = merged.get(buffer);
+    if (prior === undefined || prior === usage) {
+      merged.set(buffer, usage);
+      continue;
+    }
+    // Indirect arguments and uniforms never share a usage scope with storage.
+    if ([prior, usage].some((u) => u === 'uniform-read' || u === 'indirect-read')) return undefined;
+    merged.set(buffer, 'storage-read-write');
+  }
+  return merged;
+}
+
+function freezeRayPathTracer(
+  owner: RayPathResourceOwner,
+  buffers: Record<RayPathBufferName, Buffer>,
+  pixels: number,
+  works: readonly RayPathWork[],
+  argsBuffer: Buffer | undefined,
+  directDfgLut: DirectDfgLutResource | undefined,
+  updateScene: RayPathTracer['updateScene'],
+): RayPathTracer {
+  let disposed = false;
+  const batches = batchRayPathWorks(works);
+  const record = (pass: RhiComputePassEncoder, work: RayPathWork) => {
     if (disposed) rayReferenceFailure('path tracer is disposed').unwrap();
     pass.setPipeline(work.pipeline);
     work.bindings.forEach((group, index) => {
@@ -859,10 +1155,14 @@ async function createRayPathTransport(
       pass.dispatchWorkgroupsIndirect(argsBuffer, work.indirect);
     else pass.dispatchWorkgroups(work.workgroups, 1, 1);
   };
-  return ok({
+  return {
     buffers,
     pixelCount: pixels,
     dispatchCount: works.length,
+    updateScene(scene, edit) {
+      if (disposed) return rayReferenceFailure('path tracer is disposed');
+      return updateScene(scene, edit);
+    },
     recordSample(encoder) {
       if (disposed) return rayReferenceFailure('path tracer is disposed');
       for (const [index, batch] of batches.entries()) {
@@ -899,7 +1199,7 @@ async function createRayPathTransport(
       };
       for (const work of works) {
         for (const { buffer } of work.buffers) {
-          if (!descriptors.has(buffer) && !graphBuffers.has(buffer))
+          if (!owner.descriptors.has(buffer) && !graphBuffers.has(buffer))
             return rayReferenceFailure('borrowed ray buffer has no producer graph resource');
         }
         for (const view of work.textures) {
@@ -907,7 +1207,7 @@ async function createRayPathTransport(
             return rayReferenceFailure('material texture has no producer graph resource');
         }
       }
-      for (const [buffer, descriptor] of descriptors) {
+      for (const [buffer, descriptor] of owner.descriptors) {
         if (graphBuffers.has(buffer)) continue;
         const imported = graph.importBuffer(
           `${input.label}.${descriptor.label}`,
@@ -969,8 +1269,8 @@ async function createRayPathTransport(
     dispose() {
       if (!disposed) {
         disposed = true;
-        dispose();
+        owner.dispose();
       }
     },
-  });
+  };
 }

@@ -26,7 +26,7 @@ test('npm consumer iterates the discovered template collection', async () => {
 test('ZIP and npm carrier retain distinct offline store contracts', async () => {
   const builder = await source('scripts/forgeax/build-sdk.mjs');
   assert.match(builder, /sdkCarrier/);
-  assert.match(builder, /filter: \(source\) => source !== resolve\(stage, 'store'\)/);
+  assert.match(builder, /stageSdkCarrier\(stage, carrierSdkRoot, engineTarball.path\)/);
   assert.match(builder, /templates: SDK_TEMPLATES\.map/);
   assert.match(builder, /\['packages\/preview\/scripts\/build-canonical-kit\.mjs'\]/);
   assert.match(builder, /FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitRoot/);

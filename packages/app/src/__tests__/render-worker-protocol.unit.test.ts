@@ -124,22 +124,28 @@ async function start(
   vi.stubGlobal('onmessage', undefined);
   await import('../execution/render-worker-runtime');
   const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
-  receive({
-    data: {
-      kind: 'init',
-      canvas: {} as OffscreenCanvas,
-      bootstrapUrl: 'test://bootstrap',
-      identity: { source: 'test', epoch: 1 },
-      worldIdentity: 'test-world',
-      ...options,
-    } satisfies Extract<RenderWorkerInput, { kind: 'init' }>,
-  });
+  const initMessage = {
+    kind: 'init',
+    canvas: {} as OffscreenCanvas,
+    bootstrapUrl: 'test://bootstrap',
+    identity: { source: 'test', epoch: 1 },
+    worldIdentity: 'test-world',
+    ...options,
+  } satisfies Extract<RenderWorkerInput, { kind: 'init' }>;
+  receive({ data: initMessage });
   await vi.waitFor(() =>
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ kind: ready ? 'ready' : 'failed' }),
     ),
   );
-  return { post, receive };
+  return { post, receive, initMessage };
+}
+
+/** A hand-built empty protocol record; the Renderer is mocked, so no column is decoded. */
+function publicationMessage(revision: number, side?: Record<string, unknown>) {
+  const record = new ArrayBuffer(128);
+  new Float64Array(record)[0] = 4;
+  return { source: 'test', epoch: 1, revision, record, ...(side === undefined ? {} : { side }) };
 }
 
 function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canvas' = 'video') {
@@ -147,38 +153,33 @@ function drawMessage(revision: number, close = vi.fn(), source: 'video' | 'canva
     kind: 'draw',
     frameId: revision,
     sourceFixedStep: revision + 10,
+    engineUpdateMs: 1.5,
+    engineCreditWaitMs: 0,
     worldIdentity: 'test-world',
     width: 32,
     height: 32,
-    publication: {
-      source: 'test',
-      epoch: 1,
-      revision,
-      features: [],
-      templates: [],
-      materials: [],
-      videoFrames: source === 'video' ? [{ frame: { close } }] : [],
-      canvasFrames:
-        source === 'canvas'
-          ? [
+    publication: publicationMessage(revision, {
+      ...(source === 'video' ? { videoFrames: [{ frame: { close } }] } : {}),
+      ...(source === 'canvas'
+        ? {
+            canvasFrames: [
               { id: 1, version: revision, disposed: false, frame: { close } },
               { id: 2, version: revision, disposed: true },
-            ]
-          : [],
-      upserts: new Float32Array(0),
-      removed: new Uint32Array(0),
-      transformEntities: new Uint32Array(0),
-      transforms: new Float32Array(0),
-    },
+            ],
+          }
+        : {}),
+    }),
   };
 }
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function workerCaptureRecorder() {
@@ -729,6 +730,35 @@ it('forwards the pending cause captured on the completed receipt, without inspec
     });
     expect(completed[1]?.[0].frame).not.toHaveProperty('presentationPendingReason');
     expect(structuredClone(completed[0]?.[0]).frame.presentationPendingReason).toEqual(reason);
+    // Always-on Render Worker cadence: a draw interval from the second draw on,
+    // and a non-negative submit-to-complete latency on every completion.
+    const submitted = post.mock.calls.filter(([m]) => m.kind === 'submitted');
+    expect(submitted[0]?.[0].frame).not.toHaveProperty('renderDrawIntervalMs');
+    expect(submitted[1]?.[0].frame.renderDrawIntervalMs).toBeGreaterThanOrEqual(0);
+    // Always-on stall accounting on every submitted frame; a reason from the second on.
+    for (const [message] of submitted) {
+      for (const field of [
+        'renderDrawCpuMs',
+        'renderAwaitMs',
+        'renderQueuedMs',
+        'renderGraphCompiles',
+        'renderPipelineCreations',
+      ] as const)
+        expect(message.frame[field]).toBeGreaterThanOrEqual(0);
+    }
+    expect(submitted[0]?.[0].frame).not.toHaveProperty('renderStallReason');
+    expect(submitted[0]?.[0].frame).toMatchObject({ engineUpdateMs: 1.5, engineCreditWaitMs: 0 });
+    expect(['render-cpu', 'credit', 'simulation', 'publication', 'queue']).toContain(
+      submitted[1]?.[0].frame.renderStallReason,
+    );
+    // Always-on per-frame work counts: RHI commands since the previous submitted
+    // frame (from the second draw on) and the drawn publication's bytes.
+    expect(submitted[0]?.[0].frame).not.toHaveProperty('rhiCommands');
+    expect(submitted[1]?.[0].frame.rhiCommands).toMatchObject({ submits: 0, draws: 0 });
+    for (const [message] of submitted)
+      expect(message.frame.publicationBytes).toEqual({ columns: 128, assets: 0 });
+    for (const [message] of completed)
+      expect(message.frame.renderSubmitToCompleteMs).toBeGreaterThanOrEqual(0);
   } finally {
     completion.resolve({ ok: true, value: undefined });
     receive({ data: { kind: 'dispose' } });
@@ -1295,19 +1325,7 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
       worldIdentity: 'test-world',
       width: 32,
       height: 32,
-      publication: {
-        source: 'test',
-        epoch: 1,
-        revision: 1,
-        features: [],
-        templates: [],
-        materials: [],
-        videoFrames: [],
-        upserts: new Float32Array(0),
-        removed: new Uint32Array(0),
-        transformEntities: new Uint32Array(0),
-        transforms: new Float32Array(0),
-      },
+      publication: publicationMessage(1),
     },
   });
   await vi.waitFor(() =>
@@ -1337,19 +1355,9 @@ it('reports publication overflow as deterministic protocol failure and drains ow
     worldIdentity: 'test-world',
     width: 32,
     height: 32,
-    publication: {
-      source: 'test',
-      epoch: 1,
-      revision,
-      features: [],
-      templates: [],
-      materials: [],
+    publication: publicationMessage(revision, {
       videoFrames: [{ frame: { close: closeFrames[revision - 1] } }],
-      upserts: new Float32Array(0),
-      removed: new Uint32Array(0),
-      transformEntities: new Uint32Array(0),
-      transforms: new Float32Array(0),
-    },
+    }),
   });
   try {
     receive({ data: draw(1) });
@@ -1425,15 +1433,7 @@ it.each([
       frameId: 1,
       width: 32,
       height: 32,
-      publication: {
-        source: 'test',
-        epoch: 1,
-        revision: 1,
-        features: [],
-        templates: [],
-        materials: [],
-        videoFrames: [],
-      },
+      publication: publicationMessage(1),
     },
   });
   try {
@@ -1632,6 +1632,17 @@ it('forwards a ready-time public Renderer error without consuming frame credit',
   const delivered = post.mock.calls.length;
   mocks.listener?.({ kind: 'error', error });
   expect(post).toHaveBeenCalledTimes(delivered);
+});
+
+it('retains a snapshot of init identity for later Renderer errors', async () => {
+  const { post, receive, initMessage } = await start();
+  const identity = { ...initMessage.identity };
+  (initMessage.identity as { source: string; epoch: number }).source = 'replaced';
+  mocks.listener?.({ kind: 'error', error: asynchronousRendererError() });
+  expect(post).toHaveBeenCalledWith(expect.objectContaining({ kind: 'renderer-error', identity }));
+  expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
 });
 
 it('retains initialization Renderer errors as failure without posting ready', async () => {
@@ -1984,7 +1995,9 @@ it('installs game-owned fullscreen declarations before drawing and retires their
         data: enabled,
         ...(revision === 1 ? { fullscreen: structuredClone(descriptor) } : {}),
       };
-      receive({ data: { ...message, publication: { ...message.publication, features: [row] } } });
+      receive({
+        data: { ...message, publication: { ...message.publication, side: { features: [row] } } },
+      });
       await vi.waitFor(() =>
         expect(post).toHaveBeenCalledWith(
           expect.objectContaining({ kind: 'completed', revision }),
@@ -2004,7 +2017,7 @@ it('installs game-owned fullscreen declarations before drawing and retires their
         ...message,
         publication: {
           ...message.publication,
-          features: [{ identity: descriptor.identity, data: true }],
+          side: { features: [{ identity: descriptor.identity, data: true }] },
         },
       },
     });
@@ -2018,6 +2031,47 @@ it('installs game-owned fullscreen declarations before drawing and retires their
   } finally {
     receive({ data: { kind: 'dispose' } });
     await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it.each([
+  'resolve',
+  'reject',
+] as const)('joins composite retirement after returning credit even when retirement promises %s', async (terminal) => {
+  const credit = deferred<{ ok: true; value: undefined }>();
+  const completed = deferred<{ ok: true; value: undefined }>();
+  const close = vi.fn();
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: { deviceGeneration: 7, creditCompleted: credit.promise, completed: completed.promise },
+  });
+  const { post, receive } = await start();
+  try {
+    receive({ data: drawMessage(1, close) });
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith(expect.objectContaining({ kind: 'submitted' })),
+    );
+    credit.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'completed' }),
+        expect.any(Array),
+      ),
+    );
+    expect(close).not.toHaveBeenCalled();
+    receive({ data: { kind: 'dispose' } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    if (terminal === 'reject') completed.reject(new Error('retirement-only failure'));
+    else completed.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+  } finally {
+    credit.resolve({ ok: true, value: undefined });
+    completed.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
   }
 });
 

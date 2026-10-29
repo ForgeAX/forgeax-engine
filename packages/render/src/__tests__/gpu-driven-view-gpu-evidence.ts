@@ -21,16 +21,13 @@ import {
   GpuDrivenView,
 } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
-import {
-  GPU_BUFFER_USAGE_COPY_DST,
-  GPU_BUFFER_USAGE_MAP_READ,
-  GPU_BUFFER_USAGE_STORAGE,
-} from '../gpu-usage';
+import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import {
   type SurfaceSubmissionCandidate,
   SurfaceSubmissionObservationOwner,
@@ -279,6 +276,66 @@ export async function runGpuDrivenInactiveBatchEvidence() {
     return results;
   } finally {
     device.destroyBuffer(readback);
+    view.dispose();
+    scene.dispose();
+  }
+}
+
+/**
+ * A row removed between encoding a frame and mapping its LOD readback: the
+ * decoded members still name the (slot, generation) encoded with that copy,
+ * and the current scene no longer holds that generation, so joins drop it.
+ */
+export async function runGpuDrivenLodReadbackGenerationEvidence() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const projection = new RenderScene();
+  const delta = projection.apply([
+    updateSnapshot(snapshot(1, 0)),
+    updateSnapshot(snapshot(2, 0.2)),
+  ]);
+  const available = GpuScene.create(device, 2).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  scene.sync(delta).unwrap();
+  const topology = new BatchTopology();
+  topology.apply(delta);
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  try {
+    const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+    updateGpuView(view, topology.query(topology.sourcePlan(), undefined), scene, planes).unwrap();
+    const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    view.addPasses(graph).unwrap();
+    const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    view._commitResourceReplacement();
+    const encoder = device.createCommandEncoder().unwrap();
+    compiled.execute({ encoder }).unwrap();
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    const encoded = projection.slotsSnapshot();
+    const removed = encoded.lookup(0, 1);
+    if (removed === undefined) throw new Error('Missing encoded row');
+    // The scene moves on before the readback maps; the view keeps its plan.
+    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const selection = await view.readLodSelection();
+    await compiled.retire();
+    const current = projection.slotsSnapshot();
+    return {
+      removedSlotAllocated: scene.instanceIndexForSlot(removed.slot, 0) !== undefined,
+      members: (selection?.actualMembers ?? [])
+        .map((member) => ({
+          slot: member.primitiveIndex,
+          encodedGeneration:
+            member.generation === encoded.slotAt(member.primitiveIndex)?.generation,
+          current: current.slotAt(member.primitiveIndex)?.generation === member.generation,
+        }))
+        .sort((left, right) => left.slot - right.slot),
+      removedSlot: removed.slot,
+    };
+  } finally {
     view.dispose();
     scene.dispose();
   }
@@ -1067,6 +1124,10 @@ export async function runSharedGeometryCullEvidence() {
     mapped.unmap();
     await compiled.retire();
   };
+  // Measured edits must not cross an arena capacity doubling, which uploads
+  // the whole arena; reserve headroom before the first (full) upload.
+  const headroom = scene.inputs.arena.allocateDescriptor(16_384);
+  scene.inputs.arena.releaseDescriptor(headroom, 16_384);
   try {
     await draw(oldGeometry, oldMaterial);
     const wide = first.with(0, 3, {
@@ -1107,15 +1168,9 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
   if (rawDevice === undefined) throw new Error('Skin visible raw device unavailable');
   rawDevice.pushErrorScope('validation');
   const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
-  const palette = device
-    .createBuffer({
-      size: 18 * 64,
-      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-    })
-    .unwrap();
   const readback = device
     .createBuffer({
-      size: 80,
+      size: 16,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
@@ -1123,6 +1178,12 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
   const available = GpuScene.create(device, 4).unwrap();
   if (available.status !== 'available') throw new Error('Skin visible GPU Scene unavailable');
   const scene = available.scene;
+  const skin = new SkinSceneInputs(scene.inputs.arena, () => ({
+    kind: 'skeleton',
+    jointCount: 1,
+    inverseBindMatrices: mat4.identity(mat4.create()),
+  }));
+  const skinFrames = new SkinFrames(skin);
   const topology = new BatchTopology();
   const view = GpuDrivenView.create({
     device,
@@ -1139,19 +1200,7 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
           pipelineClass: 'skin-pbr',
           geometry: { ...draw.geometry, deformation: 'skin' },
         })) ?? [],
-      skin: {
-        identity: 'visible-instance-palette',
-        generation: 1,
-        fence: 1,
-        jointCount: 1,
-        byteOffset: 17 * 64,
-        customDataStart: 17,
-        buffer: palette,
-        storageOrUniform: 'storage',
-        dirtyRanges: [],
-        uploadBytes: 0,
-        bounds: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
-      },
+      skinBinding: { skeleton: 7, joints: [19] },
     };
     const background = snapshot(2, 10);
     const draw = background.gpuDrivenDraws?.[0];
@@ -1171,7 +1220,14 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
     // Two culled submesh executions share physical instance0. The skin is
     // therefore instance1 but candidate2, with independent palette base17.
     const delta = projection.apply([updateSnapshot(rigid), updateSnapshot(source)]);
-    scene.sync(delta).unwrap();
+    skin.apply(delta);
+    const pose = mat4.identity(mat4.create());
+    pose[12] = 7;
+    skin.joint(0, 19, pose);
+    const frame = skinFrames.prepareFrame(projection.slotsSnapshot());
+    if (frame === undefined) throw new Error('Skin visible fixed input unavailable');
+    // Numeric GPU allocation order deliberately differs from true Scene slots.
+    scene.sync({ ...delta, createdSlots: [...delta.createdSlots].reverse() }).unwrap();
     topology.apply(delta);
     const plan = topology.query(topology.sourcePlan(), undefined);
     if (plan.candidateCount !== 3 || plan.batches.length !== 3)
@@ -1183,6 +1239,14 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
       plan,
       scene,
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+      undefined,
+      0,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      frame,
     ).unwrap();
     const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     view.addPasses(graph).unwrap();
@@ -1192,7 +1256,6 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
     const encoder = device.createCommandEncoder().unwrap();
     compiled.execute({ encoder }).unwrap();
     encoder.copyBufferToBuffer(visible, skinBatch.visibleBase * 16, readback, 0, 16);
-    encoder.copyBufferToBuffer(scene.instanceBuffer, 0, readback, 16, 64);
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
     const words = new Uint32Array(mapped.getMappedRange().unwrap().slice(0));
@@ -1205,14 +1268,15 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
     return {
       visibleInstance,
       candidateIndex: words[2],
-      paletteBase: words[4 + visibleInstance * 4 + 2],
+      sourceSlot: frame.slots.lookup(0, source.entityKey)?.slot,
+      primitiveIndex: scene.primitiveIndexForSlot(1),
     };
   } finally {
     await device.queue.onSubmittedWorkDone();
     await compiled?.retire();
     view.dispose();
+    skin.dispose();
     scene.dispose();
-    device.destroyBuffer(palette).unwrap();
     device.destroyBuffer(readback).unwrap();
   }
 }

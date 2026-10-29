@@ -27,7 +27,9 @@ import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { describeReplayWork } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export async function verifyMaterialMrt(options: {
@@ -225,7 +227,7 @@ export async function verifyMaterialMrt(options: {
       (await recorder.frameBoundary()).unwrap();
       const encoded = (await capture).unwrap();
       observe = false;
-      await options.save(`${extent}.rhitape`, encoded.bytes);
+      await options.save(`${extent}.rhitape`, compactTape(encoded).bytes);
       const tape = decodeTape(encoded.bytes).unwrap();
       const model = buildFrameModel(tape);
       const work = model.works.find(
@@ -271,22 +273,28 @@ export async function verifyMaterialMrt(options: {
       for (const falsify of [false, true]) {
         const replayTape = falsify
           ? decodeTape(
-              encodeTape({
-                ...tape,
-                events: tape.events.map((event, index) =>
-                  index === work.eventIndex
-                    ? event.kind === 'drawIndexed'
-                      ? { ...event, indexCount: 0 }
-                      : event.kind === 'draw'
-                        ? { ...event, vertexCount: 0 }
-                        : event
-                    : event,
-                ),
-              }).unwrap(),
+              encodeTape(
+                {
+                  ...tape,
+                  events: tape.events.map((event, index) =>
+                    index === work.eventIndex
+                      ? event.kind === 'drawIndexed'
+                        ? { ...event, indexCount: 0 }
+                        : event.kind === 'draw'
+                          ? { ...event, vertexCount: 0 }
+                          : event
+                      : event,
+                  ),
+                },
+                { compression: 'gzip' },
+              ).unwrap(),
             ).unwrap()
           : tape;
         if (falsify)
-          await options.save(`${extent}-missing-draw.rhitape`, encodeTape(replayTape).unwrap());
+          await options.save(
+            `${extent}-missing-draw.rhitape`,
+            encodeTape(replayTape, { compression: 'gzip' }).unwrap(),
+          );
         const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
         const device = (
           await adapter.requestDevice(
@@ -301,16 +309,22 @@ export async function verifyMaterialMrt(options: {
           await openReplay(replayTape, { device, createShaderModule: webgpu.createShaderModule })
         ).unwrap();
         try {
-          const inspection = (
-            await replay.inspectWork(work.workIndex, ['pipeline', 'bindings'])
-          ).unwrap();
+          const inspection = describeReplayWork(work);
           if (!falsify)
             await options.save(
               `${extent}-inspection.json`,
               new TextEncoder().encode(JSON.stringify(inspection, null, 2)),
             );
-          for (const [index, id] of work.attachments.colorViewHandleIds.entries()) {
-            const pixels = (await replay.readResourceAtWork(id, work.workIndex)).unwrap();
+          const reads = (
+            await replay.readAtWorks(
+              work.attachments.colorViewHandleIds.map((resourceId) => ({
+                resourceId,
+                workIndex: work.workIndex,
+              })),
+            )
+          ).unwrap();
+          for (const [index, result] of reads.entries()) {
+            const pixels = result.unwrap();
             const expected = live[index];
             if (expected === undefined) throw new Error('missing reference pixels');
             if (falsify) expect([...pixels.bytes]).not.toEqual([...expected]);

@@ -57,8 +57,9 @@ function counters(): ShadowPreparationCounters {
     cacheHits: 0,
     cacheRebuilds: 0,
     cacheRebuildReasons: {},
-    membershipBuilds: 0,
-    membershipCandidateScans: 0,
+    layerSlotVisits: 0,
+    layerBatchSelections: 0,
+    layerBatchPatches: 0,
     planComparisons: 0,
     batchChecks: 0,
     candidateScans: 0,
@@ -104,7 +105,6 @@ describe('shadow preparation on retained topology', () => {
     expect([...changed]).toEqual(Array.from({ length: 64 }, (_, index) => 40 * 64 + index));
     expect(work.candidateScans).toBe(256);
     expect(work.primitiveChecks).toBe(64);
-    expect(work.membershipCandidateScans).toBe(0);
     expect(before.candidateCount).toBe(5120);
   });
 

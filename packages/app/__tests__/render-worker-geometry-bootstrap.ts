@@ -1,3 +1,4 @@
+import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 import { rendererCrashProbe } from './render-worker-recovery-fixture';
 import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import {
@@ -76,7 +77,14 @@ const entry: ExecutionBootstrapEntry = (data) => {
           world
             .spawn({
               component: DirectionalLight,
-              data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3], color: [1, 1, 1] },
+              data: {
+                castShadow: true,
+                mapSize: testQuality.shadowMapSize,
+                cascadeCount: testQuality.cascadeCount,
+                intensity: 3,
+                direction: [-0.5, -1, -0.3],
+                color: [1, 1, 1],
+              },
             })
             .unwrap();
           let mesh = createBoxGeometry(2, 2, 2).unwrap();
@@ -163,7 +171,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
               .addComponent(entity, { component: Instances, data: { transforms: matrix } })
               .unwrap();
           if (mode === 'points')
-            world.addComponent(entity, { component: Points, data: { sizePx: 8 } }).unwrap();
+            world.addComponent(entity, { component: Points, data: { size: 8 } }).unwrap();
           if (mode === 'lines')
             world.addComponent(entity, { component: Lines, data: { width: 5 } }).unwrap();
           const port = ctx.executionBootstrapHost.port;

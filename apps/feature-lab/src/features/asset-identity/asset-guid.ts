@@ -1,4 +1,4 @@
-import { BUILTIN_HANDLE_CUBE, deriveBuiltin } from '@forgeax/engine/pack/builtin';
+import { CONTENT_PACKAGE_IDS, EngineContent } from '@forgeax/engine/content';
 import { AssetGuid, PackageId } from '@forgeax/engine/pack/guid';
 import { defineFeature } from '../../lab/feature';
 
@@ -10,7 +10,7 @@ export default defineFeature({
   catalog: 'AssetGuid',
   kind: 'headless',
   summary:
-    'UUID parse/format/equals/random plus UUIDv5 derive (PackageId + sourceKey) and builtin derivation.',
+    'UUID parse/format/equals/random plus UUIDv5 derive (PackageId + sourceKey), including Engine Content identities.',
   expect:
     'Round trip is lossless, malformed strings return pack-guid-malformed, random is UUIDv7, derive is stable.',
   run(checks) {
@@ -59,9 +59,9 @@ export default defineFeature({
     );
 
     checks.equal(
-      'builtin cube constant matches deriveBuiltin',
-      AssetGuid.format(deriveBuiltin('HANDLE_CUBE')),
-      BUILTIN_HANDLE_CUBE,
+      'Engine Content cube GUID derives from its Pack namespace and source key',
+      AssetGuid.format(AssetGuid.derive(CONTENT_PACKAGE_IDS.meshes, 'mesh/cube')),
+      EngineContent.meshes.cube,
     );
   },
 });

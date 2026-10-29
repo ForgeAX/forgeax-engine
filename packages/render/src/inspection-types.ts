@@ -282,6 +282,17 @@ export interface RenderFeatureGraphInspection {
   readonly compilePrimaryCauses: Readonly<Record<string, number>>;
   /** All changed dependencies; multiple entries can describe one compilation. */
   readonly compileChangedDependencies: Readonly<Record<string, number>>;
+  /** Graphs compiled for a frame that did not submit, promoted again without a compile. */
+  readonly unsubmittedGraphReuses?: number;
+  /** Last 32 compiles: bounded before/after values of their first changed dependencies. */
+  readonly recentCompileChanges?: readonly {
+    readonly frame: number;
+    readonly changes: readonly {
+      readonly dependency: string;
+      readonly before: string;
+      readonly after: string;
+    }[];
+  }[];
   readonly candidatesWithPreparedBatches: number;
   readonly preparedKeyChanges: number;
   readonly accepted: number;
@@ -483,16 +494,17 @@ export interface GpuDrivenLaneSummary {
 
 /**
  * Per-submission structural work projected by the existing RenderScene/GPU
- * Scene/palette owners. These are frame deltas, not lifetime totals, so a
- * stable GPU-only frame is expected to report zero for every field.
+ * Scene owners. These are frame deltas, not lifetime totals, so a stable
+ * GPU-only frame is expected to report zero for every field.
  */
 export interface GpuDrivenStructureMetrics {
   readonly worldEntitiesScanned: number;
   readonly sceneTableUploadBytes: number;
-  readonly paletteUploadBytes: number;
 }
 
 export interface GpuDrivenProductionInspection {
+  /** Diagnostic: inputs that replaced the GPU-driven raster graph identity. */
+  readonly graphIdentityChanges?: Readonly<Record<string, number>>;
   /** Requested diagnostic and reference-order changes, never GPU execution counts. */
   readonly gbufferBatchOrderDiagnostic?: GBufferOrderDiagnosticInspection;
   /** Exact producer-selected Surface artifact prepared for the last candidate. */
@@ -522,7 +534,7 @@ export interface GpuDrivenProductionInspection {
   readonly worldEntitiesScanned: number;
   /** GPU Scene table bytes uploaded for the last prepared frame. */
   readonly sceneTableUploadBytes: number;
-  /** Skin palette bytes uploaded for the last prepared frame. */
+  /** Successful CPU current/previous Skin matrix upload bytes for the last recording, including writes before failure; excludes task headers. GPU compute output is not a CPU upload. */
   readonly paletteUploadBytes: number;
   /** Scene snapshots prepared for admission; unchanged scenes report zero even when views move. */
   readonly gpuOwnedSnapshotsMaterialized: number;
@@ -534,13 +546,10 @@ export interface GpuDrivenProductionInspection {
   readonly filteredBatchBuilds: number;
   /** Submission-plan batches re-derived for the last frame; zero on a prepared-plan cache hit. */
   readonly planRebuildBatches: number;
+  /** Prepared-plan assemblies adopted whole for the last frame, without a row walk. */
+  readonly preparedAssemblyHits: number;
   /** Submission-plan candidates re-derived for the last frame; zero on a prepared-plan cache hit. */
   readonly planRebuildCandidates: number;
-  /**
-   * LOD candidates whose selected raster levels changed since the previous
-   * frame over the same prepared plan; a plan rebuild resets the baseline.
-   */
-  readonly lodSelectionChanges: number;
   /** Existing shadow casters that switched between the static and dynamic layer this frame. */
   readonly shadowCasterFlips: number;
   /** Classification attempts and population before per-view caster selection. */
@@ -570,6 +579,7 @@ export interface GpuDrivenProductionInspection {
   readonly visibleWindowCreates?: number;
   readonly visibleWindowHits?: number;
   readonly visibleWindowResets?: number;
+  /** Prepared raster bundles replayed from retained runs or batch caches. */
   readonly preparedBundleHits?: number;
   readonly preparedBundleBuilds?: number;
   readonly preparedBundleCommands?: number;
@@ -698,8 +708,8 @@ export type ShadowViewInvalidationReason =
   | 'submit-aborted'
   /** A shadow material program or layout publication was replaced. */
   | 'artifact-changed'
-  /** The skin palette buffer or pose content changed. */
-  | 'skin-palette-changed'
+  /** Selected Skin content changed, or its current frame has no canonical content revision. */
+  | 'skin-task-demand'
   /** The camera clipping that shadow casters honor changed. */
   | 'view-clipping-changed'
   /** The view's static layer rastered, so the composed layer is rebuilt from it. */
@@ -714,8 +724,6 @@ export type ShadowViewInvalidationReason =
   | 'membership-changed'
   /** The light view-projection or culling planes changed. */
   | 'view-changed'
-  /** The LOD projected heights for this view changed. */
-  | 'lod-changed'
   /**
    * The retained layer omits casters the main camera saw no receivers of, so
    * it re-rasters without that cull before it may serve later frames.

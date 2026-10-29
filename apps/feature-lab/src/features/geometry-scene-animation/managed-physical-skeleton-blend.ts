@@ -6,10 +6,10 @@ import {
   Collider,
   ColliderShapeValue,
   type PhysicsWorld,
-  physicsPlugin,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
+import physics3d from '@forgeax/engine/physics-rapier3d';
 import { GlobalTransform, Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
@@ -22,7 +22,7 @@ export default defineFeature({
   appOptions: {
     animation: { cadence: 'fixed' },
     time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 },
-    plugins: [physicsPlugin('rapier-3d'), skeletalMotionPlugin({ physics: true })],
+    plugins: [physics3d, skeletalMotionPlugin({ physics: true })],
   },
   summary:
     'Three actual Skins share authored cuboid bodies and managed hinges. Green, orange and cyan use visual weights 0, 0.5 and 1 while all bodies run the same native simulation.',

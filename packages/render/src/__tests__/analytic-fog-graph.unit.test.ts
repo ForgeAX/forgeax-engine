@@ -107,10 +107,14 @@ function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
-      (frame) => frame.currentTexture,
+      (frame) => frame.outputTarget().texture,
     );
     if (!texture.ok) throw texture.error;
-    const view = graph.importView(texture.value, { label: `${label}.view` }, (frame) => frame.view);
+    const view = graph.importView(
+      texture.value,
+      { label: `${label}.view` },
+      (frame) => frame.outputTarget().view,
+    );
     if (!view.ok) throw view.error;
     return { texture: texture.value, view: view.value, format, sampleCount: 1 as const };
   };
@@ -130,6 +134,7 @@ function inspect(
     readonly antialias?: 'fxaa' | 'taa';
     readonly depthOfField?: boolean;
     readonly extent?: RenderExtent;
+    readonly unfoggedOpaque?: true;
   } = {},
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -150,7 +155,11 @@ function inspect(
       projectGpuDriven: () => ok(undefined),
       contributeFeatures: () => ok(undefined),
     },
-    { ...topology('on', options), analyticFog: fog },
+    {
+      ...topology('on', options),
+      analyticFog: fog,
+      ...(options.unfoggedOpaque === undefined ? {} : { unfoggedOpaque: true }),
+    },
   );
   if (!built.ok) throw built.error;
   const compiled = graph.compile({ device, surfaceSize: { width: 640, height: 360 } });
@@ -179,6 +188,22 @@ describe('analytic distance and height fog graph', () => {
       { resource: 'scene-color', usage: 'color-attachment' },
     ]);
     expect(info.resources.some((r) => r.label === 'analytic-fog-color')).toBe(false);
+  });
+
+  it('adds no unfogged opaque pass unless a fog:false opaque material is present', () => {
+    const names = inspect(true).passes.map((p) => p.name);
+    expect(names).not.toContain('main-unfogged');
+  });
+
+  it('draws fog:false opaque materials after the opaque fog pass (Three Material.fog)', () => {
+    const info = inspect(true, { unfoggedOpaque: true });
+    const names = info.passes.map((p) => p.name);
+    const unfogged = names.indexOf('main-unfogged');
+    expect(unfogged).toBeGreaterThan(names.indexOf('analytic-fog'));
+    expect(unfogged).toBeLessThan(names.indexOf('transparent'));
+    expect(inspect(false, { unfoggedOpaque: true }).passes.map((p) => p.name)).not.toContain(
+      'main-unfogged',
+    );
   });
 
   it('keeps fog on the internal lattice before TAA and DoF', () => {
@@ -216,10 +241,12 @@ it('retains fog bindings until physical resources change and retries failed repl
     .importTexture(
       'depth',
       { format: 'depth32float', size: 'surface', usage: 20 },
-      (frame) => frame.currentTexture,
+      (frame) => frame.outputTarget().texture,
     )
     .unwrap();
-  const view = graph.importView(depth, { aspect: 'depth-only' }, (frame) => frame.view).unwrap();
+  const view = graph
+    .importView(depth, { aspect: 'depth-only' }, (frame) => frame.outputTarget().view)
+    .unwrap();
   graph
     .addRasterPass('clear', {
       accesses: [{ resource: color.view, usage: 'color-attachment' }],
@@ -254,8 +281,7 @@ it('retains fog bindings until physical resources change and retries failed repl
   const execute = () =>
     compiled.execute({
       encoder: localDevice.createCommandEncoder().unwrap(),
-      currentTexture: currentDepth.texture,
-      view: currentDepth.view,
+      outputTarget: () => ({ texture: currentDepth.texture, view: currentDepth.view }),
       runtime: {
         device: localDevice,
         lookupPostProcess: () => ({ source: 'synthetic' }),

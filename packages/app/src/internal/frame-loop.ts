@@ -14,6 +14,7 @@ import type { AppErrorCode, AppErrorDetailFor } from '../errors';
 import { AppError } from '../errors';
 import type { ExecutionFrameInspection } from '../execution';
 import { APP_PHASE_CATALOG, type DrawSource } from '../types';
+import type { FramePacer } from './frame-pacer';
 
 type FrameState = 'idle' | 'running' | 'paused' | 'stopped';
 
@@ -35,6 +36,8 @@ export interface FrameLoopOptions {
   readonly beforeDraw?: () => void;
   readonly drawSource?: DrawSource;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
+  /** Optional frame-rate limit; a callback it rejects only reserves its successor. */
+  readonly pacer?: FramePacer;
 }
 
 export interface FrameLoopHandle {
@@ -44,8 +47,11 @@ export interface FrameLoopHandle {
   drainFrameReceipts(): Promise<void>;
   pause(): Result<void, AppError>;
   resume(): Result<void, AppError>;
-  /** Run one complete update/draw frame through this loop while paused. */
-  stepFrame(deltaSeconds: number): Result<void, AppError | RenderError>;
+  /**
+   * Run one complete update/draw frame through this loop while paused;
+   * `render: false` runs the update only (no draw, no receipt credit).
+   */
+  stepFrame(deltaSeconds: number, render?: boolean): Result<void, AppError | RenderError>;
   /** Replace the per-frame world routing pull without replacing the loop. */
   setDrawSource(drawSource: FrameLoopOptions['drawSource']): void;
   getState(): FrameState;
@@ -313,8 +319,10 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         return false;
       }
       try {
-        const inspected = renderer.inspect?.();
-        const generation = inspected?.frame?.deviceGeneration;
+        // currentDeviceGeneration avoids materializing a per-entity
+        // diagnostic snapshot on every completed frame.
+        const generation =
+          renderer.currentDeviceGeneration?.() ?? renderer.inspect?.()?.frame?.deviceGeneration;
         if (Number.isSafeInteger(generation) && generation !== receipt.deviceGeneration)
           return false;
       } catch {
@@ -462,7 +470,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     }
   }
 
-  function runFrame(deltaSeconds?: number): Result<void, AppError | RenderError> {
+  function runFrame(deltaSeconds?: number, render = true): Result<void, AppError | RenderError> {
     waitingForCredit = false;
     const manualStep = deltaSeconds !== undefined;
     let timestamp: number;
@@ -488,7 +496,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       lastTimestamp = timestamp;
       return ok(undefined);
     }
-    if (pendingReceipts >= maxFramesInFlight) {
+    if (render && pendingReceipts >= maxFramesInFlight) {
       throttledTicks += 1;
       waitingForCredit = !manualStep && state === 'running';
       return ok(undefined);
@@ -563,6 +571,10 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         }
       });
 
+      if (!render) {
+        skipDraw(sampleTimeSeconds, reportError);
+        return;
+      }
       runProfiledPhase(session, 'renderer-draw', () => {
         try {
           opts.beforeDraw?.();
@@ -645,12 +657,30 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     });
     endFrame(session);
     try {
-      opts.debugRhi?.onFrameEnd();
+      if (render) opts.debugRhi?.onFrameEnd();
     } catch {
       // Debug capture is an observational bridge. A recorder failure must not
       // change the App frame result or make the host loop stop.
     }
     return frameError === undefined ? ok(undefined) : err(frameError);
+  }
+
+  /**
+   * An update-only step submits nothing: it still reconciles the host camera,
+   * advances the manual sample clock by its delta and makes the next drawn
+   * frame a temporal reset, since that picture follows a skipped interval.
+   */
+  function skipDraw(
+    sampleTimeSeconds: number,
+    reportError: (error: AppError | RenderError) => void,
+  ): void {
+    try {
+      opts.beforeDraw?.();
+    } catch (cause: unknown) {
+      reportError(makeWorldUpdateError(cause));
+    }
+    lastSampleTimeSeconds = sampleTimeSeconds;
+    temporalResetPending = true;
   }
 
   function tick(): void {
@@ -666,6 +696,22 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       setState('paused');
       opts.onError?.(scheduled.error);
       return;
+    }
+    // A limited loop keeps the reserved successor and skips this callback
+    // until the limit interval has elapsed; an unlimited loop never samples here.
+    const pacer = opts.pacer;
+    if (pacer !== undefined && pacer.limit() !== null) {
+      let sampled: number;
+      try {
+        sampled = now();
+      } catch (cause) {
+        setState('paused');
+        cancelFrame();
+        opts.onError?.(makeWorldUpdateError(cause));
+        return;
+      }
+      if (!pacer.due(sampled)) return;
+      pacer.admitted(sampled);
     }
 
     // Device loss is a renderer-owned degraded interval, not an application
@@ -688,13 +734,13 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       drawSource = nextDrawSource;
     },
     drainFrameReceipts,
-    stepFrame(deltaSeconds): Result<void, AppError | RenderError> {
+    stepFrame(deltaSeconds, render = true): Result<void, AppError | RenderError> {
       const reason =
         state !== 'paused'
           ? 'state'
           : !Number.isFinite(deltaSeconds) || deltaSeconds < 0
             ? 'delta'
-            : pendingReceipts >= maxFramesInFlight
+            : render && pendingReceipts >= maxFramesInFlight
               ? 'credit'
               : undefined;
       if (reason !== undefined) {
@@ -707,7 +753,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           ),
         );
       }
-      return runFrame(deltaSeconds);
+      return runFrame(deltaSeconds, render);
     },
     start(): Result<void, AppError> {
       if (state === 'running') {
@@ -715,7 +761,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           makeAppError(
             'app-already-running',
             'state must be "idle" or "paused" to start',
-            'call stop() first or check getState() before retrying',
+            'audit start() call sites; the App is already running',
             {},
           ),
         );
@@ -750,7 +796,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           makeAppError(
             'app-not-started',
             'state must be "running" to stop',
-            'check getState() before calling stop(); idle handles cannot stop',
+            'call start() before stop(); idle handles cannot stop',
             {},
           ),
         );

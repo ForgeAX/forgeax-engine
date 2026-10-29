@@ -79,6 +79,7 @@ export class WebAudioEngine {
     this.gestureResumeHandler = () => {
       void this.tryResume();
     };
+    this.registerGestureListener();
   }
 
   /**
@@ -124,8 +125,13 @@ export class WebAudioEngine {
   // Gesture listener -- D-3 bounded resume retry on user gesture
   // -----------------------------------------------------------------------
 
-  private registerGestureListener(ctx: BaseAudioContext): void {
-    if (!this.ownsContext || ctx.state !== 'suspended') {
+  private registerGestureListener(ctx = this.ctx): void {
+    if (
+      !this.ownsContext ||
+      this.closed ||
+      typeof document === 'undefined' ||
+      (ctx !== undefined && ctx.state !== 'suspended')
+    ) {
       return;
     }
     if (this.gestureListening) {
@@ -149,8 +155,29 @@ export class WebAudioEngine {
   }
 
   private async tryResume(): Promise<void> {
-    const ctx = this.ctx;
-    if (!ctx || !this.ownsContext || this.closed || ctx.state !== 'suspended') return;
+    if (!this.ownsContext || this.closed) return;
+    let ctx: BaseAudioContext;
+    try {
+      // Create synchronously inside the trusted gesture, before any decode or Worker reply.
+      ctx = this.ensureContext();
+    } catch (cause) {
+      this.lastError = new AudioError({
+        code: 'control-failed',
+        expected: 'Host AudioContext creation during a gesture',
+        hint: 'Inspect native audio availability and retry a user gesture.',
+        detail: {
+          code: 'control-failed',
+          reason: cause instanceof Error ? cause.message : String(cause),
+        },
+      });
+      this.removeGestureListener();
+      this.registerGestureListener();
+      return;
+    }
+    if (ctx.state !== 'suspended') {
+      this.removeGestureListener();
+      return;
+    }
     if (this.resumeInFlight !== undefined) return this.resumeInFlight;
 
     const attempt = (async () => {
@@ -170,11 +197,14 @@ export class WebAudioEngine {
             this.removeGestureListener();
           }
         }
-        this.resumeInFlight = undefined;
       }
     })();
     this.resumeInFlight = attempt;
-    return attempt;
+    try {
+      await attempt;
+    } finally {
+      this.resumeInFlight = undefined;
+    }
   }
 
   private recordResumeFailure(): void {
@@ -853,7 +883,10 @@ export class WebAudioEngine {
     if (!result.ok) this.lastError = result.error;
   }
 
-  getState(): AudioState {
+  getState(): AudioState & {
+    readonly contextState: 'running' | 'suspended' | 'closed';
+    readonly activeSourceCount: number;
+  } {
     if (this.retireClosedContext()) {
       return { contextState: 'closed', activeSourceCount: 0, lastError: null };
     }

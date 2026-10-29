@@ -34,7 +34,7 @@ All shapes are **line-list** wireframe (never filled). No persistent storage -- 
 
 ## Package positioning
 
-`@forgeax/engine-debug-draw` keeps shape generation at the leaf layer alongside `@forgeax/engine-math`; its RenderFeature adapter consumes only the declarative render contract. The adapter takes the active view roster, declares one frame-owned primitive buffer, and emits view-scoped line draws with each view's projection and target. Dependencies are `@forgeax/engine-render` + `@forgeax/engine-rhi` + `@forgeax/engine-math` + `@forgeax/engine-types`. It does **not** depend on `engine-ecs` / `engine-runtime` / `engine-render-graph` / `engine-shader`.
+`@forgeax/engine-debug-draw` keeps shape generation at the leaf layer alongside `@forgeax/engine-math`. Dependencies are `@forgeax/engine-rhi` + `@forgeax/engine-math` + `@forgeax/engine-types`. It does **not** depend on `engine-ecs` / `engine-runtime` / `engine-render-graph` / `engine-shader`.
 
 | Layer | Package | Depends on |
 |:--|:--|:--|
@@ -51,9 +51,9 @@ Runtime auto-attach wiring lives in `packages/runtime/src/debug-draw-glue.ts` --
 ### `createDebugDraw(opts)` -- factory
 
 ```ts
-export type CreateDebugDraw = (
+export function createDebugDraw(
   opts: DebugDrawOptions,
-) => Promise<Result<DebugDraw, DebugDrawError>>;
+): Promise<Result<DebugDraw, DebugDrawError>>;
 ```
 
 | Option | Type | Default | Purpose |

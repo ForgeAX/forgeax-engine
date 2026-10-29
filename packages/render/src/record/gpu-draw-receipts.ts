@@ -1,6 +1,5 @@
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
-import { skinLaneReason } from '../gpu-driven/production-raster-prepare';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 
@@ -30,15 +29,34 @@ export interface GpuDrawSummary {
   >;
 }
 
-/** Emit requested draw observations after submission; no per-entity selection table is retained. */
+/** Emit the GPU receipts of the given rows' owned draws; CPU draws receipt themselves. */
 export function emitGpuDrivenDrawReceipts(
-  renderables: FrameList<RenderableSnapshot>,
+  rows: Iterable<RenderableSnapshot>,
   selection: GpuDrawSelection,
   onRenderableDraw: (
     entry: { readonly source: RenderableSnapshot },
     submeshIndex: number,
     receipt: RenderableDrawReceipt,
   ) => void,
+): void {
+  for (const source of rows) {
+    const draws = source.gpuDrivenDraws;
+    if (draws === undefined) continue;
+    for (let index = 0; index < draws.length; index++) {
+      const draw = draws[index];
+      if (draw !== undefined && selection.owns(source, draw, index))
+        onRenderableDraw({ source }, gpuDrivenSourceDrawItemIndex(draw, index), {
+          lane: 'gpu',
+          ready: true,
+        });
+    }
+  }
+}
+
+/** Lane counters of one submitted frame; a pure function of its rows and selection. */
+export function summarizeGpuDrivenDraws(
+  renderables: FrameList<RenderableSnapshot>,
+  selection: GpuDrawSelection,
 ): GpuDrawSummary {
   const deformationReasons = new Map<
     'skin-bounds-missing' | 'skin-address-missing' | 'resource-not-ready',
@@ -65,21 +83,15 @@ export function emitGpuDrivenDrawReceipts(
       if (draw !== undefined && selection.owns(source, draw, index)) {
         gpuDraws++;
         summary.gpuDraws++;
-        onRenderableDraw({ source }, gpuDrivenSourceDrawItemIndex(draw, index), {
-          lane: 'gpu',
-          ready: true,
-        });
         continue;
       }
       cpuDraws++;
       summary.cpuDraws++;
-      const skinReason = skinLaneReason(source);
-      if (skinReason !== undefined || draw?.preparationError?.detail.owner === 'skin') {
+      if (draw?.preparationError?.detail.owner === 'skin') {
         const reason =
-          skinReason ??
-          (draw?.preparationError?.detail.reason === 'skin-address-missing'
+          draw?.preparationError?.detail.reason === 'skin-address-missing'
             ? 'skin-address-missing'
-            : 'resource-not-ready');
+            : 'resource-not-ready';
         summary.deformationDraws++;
         deformationReasons.set(reason, (deformationReasons.get(reason) ?? 0) + 1);
       } else if (

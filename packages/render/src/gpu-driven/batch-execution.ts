@@ -8,12 +8,13 @@ import {
   isTriangleTopology,
   type MaterialRenderState,
   ok,
+  RenderQueue,
   type Result,
 } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { supportsGpuShadowRenderState } from '../material-render-state';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
+import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { standardTransmissionValue } from '../transmission/projection';
 import { GPU_DRIVEN_LOD_LEVEL_CAPACITY } from './batch-layout';
@@ -68,6 +69,8 @@ export interface BatchPass {
   readonly shaderId: string;
   readonly sceneIndexProgramKey?: string;
   readonly renderState?: MaterialRenderState;
+  /** Dispatch queue; GPU-driven batches encode before the CPU list, so transparent and overlay queues stay direct. */
+  readonly queue?: number;
   readonly vertexEntry?: string;
   readonly fragmentEntry?: string;
 }
@@ -98,6 +101,36 @@ export type BatchExecution =
       readonly prepared: PreparedGpuDrivenDraw;
     };
 
+/**
+ * Standard-family and scene-index specialized programs prepare their GPU-lane
+ * pipelines asynchronously and hold the picture pending meanwhile. Other
+ * programs (opaque Unlit) were presentable on the direct lane before joining
+ * the GPU lane, so their GPU-lane pipelines keep that synchronous readiness.
+ */
+export function gpuLanePreparesAsynchronously(artifact: MaterialShaderArtifact): boolean {
+  return (
+    artifact.specializationKey !== undefined ||
+    artifact.material === SHADOW_CASTER_SHADER_ID ||
+    isCanonicalStandardPbrMaterialShader(artifact.material)
+  );
+}
+
+function needsDirectRoute(material: MaterialSnapshot, pass: BatchPass): boolean {
+  const state = pass.renderState;
+  if (state?.stencil !== undefined) return true;
+  if (pass.kind === 'shadow' && !supportsGpuShadowRenderState(state)) return true;
+  if ((material.textureSources?.size ?? 0) > 0) return true;
+  if ((material.videoTextureFields?.size ?? 0) > 0) return true;
+  if (pass.kind !== 'forward') return false;
+  // fog:false opaque draws record after the opaque fog pass, on the direct route only.
+  return (
+    (pass.queue ?? RenderQueue.Geometry) >= RenderQueue.Transparent ||
+    state?.blend !== undefined ||
+    state?.fog === false ||
+    (standardTransmissionValue(material) ?? 0) > 0
+  );
+}
+
 /** This join cannot inspect candidates, slots or a representative entity. */
 export function prepareBatchExecution(
   geometry: BatchGeometry,
@@ -110,16 +143,7 @@ export function prepareBatchExecution(
     return ok({ route: 'none' });
   const direct = (): Result<BatchExecution, GpuDrivenPreparationError> =>
     ok({ route: 'direct', material, pass });
-  const state = pass.renderState;
-  if (
-    state?.stencil !== undefined ||
-    (pass.kind === 'shadow' && !supportsGpuShadowRenderState(state)) ||
-    (material.textureSources?.size ?? 0) > 0 ||
-    (material.videoTextureFields?.size ?? 0) > 0 ||
-    (pass.kind === 'forward' &&
-      (state?.blend !== undefined || (standardTransmissionValue(material) ?? 0) > 0))
-  )
-    return direct();
+  if (needsDirectRoute(material, pass)) return direct();
 
   const required =
     pass.sceneIndexProgramKey !== undefined || isCanonicalStandardPbrMaterialShader(pass.shaderId);
@@ -153,7 +177,7 @@ export function prepareBatchExecution(
     ...(pass.fragmentEntry === undefined ? {} : { fragmentEntry: pass.fragmentEntry }),
   };
   const sourceInputs = geometry.receipt.vertexInputs;
-  // UV aliases may reuse existing bytes, but cannot invent a zero-UV region in an uploaded mesh.
+  // UV aliases reuse bytes inside the uploaded stride (Geometry owns the alias choice).
   const layout =
     geometry.layout === undefined ||
     artifact.uvSetCount === undefined ||

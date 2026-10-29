@@ -21,9 +21,17 @@ import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ComponentData, EcsError, World } from './world';
 import { worldInternal } from './world-internal';
 
-function tableRow(world: World, record: { archetypeId: number; archetypeRow: number }): number {
-  const archetype = world[worldInternal].getGraph().archetypes[record.archetypeId];
-  return archetype?.rows[record.archetypeRow] ?? -1;
+function tableRow(world: World, slot: number): number {
+  const records = world[worldInternal].getRecords();
+  const archetype = world[worldInternal].getGraph().archetypes[records.archetypeId[slot] as number];
+  return archetype?.rows[records.archetypeRow[slot] as number] ?? -1;
+}
+
+function archetypeOf(world: World, slot: number): Archetype | undefined {
+  const records = world[worldInternal].getRecords();
+  return (world[worldInternal].getGraph() as ArchetypeGraph).archetypes[
+    records.archetypeId[slot] as number
+  ];
 }
 
 /**
@@ -91,17 +99,15 @@ export function worldRemoveChild<S extends ComponentSchema>(
   const childResult = world[worldInternal].lookupAlive(child, 'removeChild', component.name);
   if (!childResult.ok) return childResult;
 
-  const childRecord = childResult.value;
-  const childArch = (world[worldInternal].getGraph() as ArchetypeGraph).archetypes[
-    childRecord.archetypeId
-  ];
+  const childSlot = childResult.value;
+  const childArch = archetypeOf(world, childSlot);
   if (!childArch) {
     return err(
       new StaleEntityError(child as number, entityIndex(child), entityGeneration(child), {
         operation: 'removeChild',
         component: component.name,
         expectedGeneration: entityGeneration(child),
-        actualGeneration: childRecord.generation,
+        actualGeneration: world[worldInternal].getRecords().generationOf(childSlot),
       }),
     );
   }
@@ -116,7 +122,7 @@ export function worldRemoveChild<S extends ComponentSchema>(
   const oldValue = world[worldInternal].readRow(
     childArch,
     holderComp,
-    tableRow(world, childRecord),
+    tableRow(world, childSlot),
   ) as Record<string, unknown>;
   const currentTarget = relationshipTargetEntity(holderComp, oldValue);
   if (currentTarget !== parent) {
@@ -168,17 +174,15 @@ export function worldReparent<S extends ComponentSchema>(
   const childResult = world[worldInternal].lookupAlive(child, 'reparent', component.name);
   if (!childResult.ok) return childResult;
 
-  const childRecord = childResult.value;
-  const childArch = (world[worldInternal].getGraph() as ArchetypeGraph).archetypes[
-    childRecord.archetypeId
-  ];
+  const childSlot = childResult.value;
+  const childArch = archetypeOf(world, childSlot);
   if (!childArch) {
     return err(
       new StaleEntityError(child as number, entityIndex(child), entityGeneration(child), {
         operation: 'reparent',
         component: component.name,
         expectedGeneration: entityGeneration(child),
-        actualGeneration: childRecord.generation,
+        actualGeneration: world[worldInternal].getRecords().generationOf(childSlot),
       }),
     );
   }
@@ -204,7 +208,7 @@ export function worldIterAncestors(world: World, entity: EntityHandle): Iterable
       const records = world[worldInternal].getRecords();
       const slot = entityIndex(entity);
       const generation = entityGeneration(entity);
-      if (!world[worldInternal].recordIsLive(records[slot], generation)) return;
+      if (!records.isLive(slot, generation)) return;
 
       const visited = new Set<number>();
       let currentSlot = slot;
@@ -214,11 +218,8 @@ export function worldIterAncestors(world: World, entity: EntityHandle): Iterable
         if (visited.has(key)) return;
         visited.add(key);
 
-        const currentRecord = records[currentSlot];
-        if (!world[worldInternal].recordIsLive(currentRecord, currentGeneration)) return;
-        const currentArch = (world[worldInternal].getGraph() as ArchetypeGraph).archetypes[
-          currentRecord.archetypeId
-        ];
+        if (!records.isLive(currentSlot, currentGeneration)) return;
+        const currentArch = archetypeOf(world, currentSlot);
         if (!currentArch) return;
 
         let foundParent = false;
@@ -233,14 +234,14 @@ export function worldIterAncestors(world: World, entity: EntityHandle): Iterable
           const value = world[worldInternal].readRow(
             currentArch,
             component,
-            tableRow(world, currentRecord),
+            tableRow(world, currentSlot),
           ) as Record<string, unknown>;
           const target = relationshipTargetEntity(component, value);
           if (target === null) continue;
           yield target;
           currentSlot = entityIndex(target);
           currentGeneration = entityGeneration(target);
-          if (!world[worldInternal].recordIsLive(records[currentSlot], currentGeneration)) return;
+          if (!records.isLive(currentSlot, currentGeneration)) return;
           foundParent = true;
           break;
         }
@@ -257,30 +258,22 @@ export function worldIterDescendants(world: World, entity: EntityHandle): Iterab
       const records = world[worldInternal].getRecords();
       const slot = entityIndex(entity);
       const generation = entityGeneration(entity);
-      if (!world[worldInternal].recordIsLive(records[slot], generation)) return;
+      if (!records.isLive(slot, generation)) return;
 
       const visited = new Set<number>();
       const stack: number[] = [slot];
       while (stack.length > 0) {
         const currentSlot = stack.pop();
         if (currentSlot === undefined) break;
-        const currentRecord = records[currentSlot];
-        if (!currentRecord || currentRecord.archetypeId === -1) continue;
-        const currentArch = world[worldInternal].getGraph().archetypes[currentRecord.archetypeId];
+        if (currentSlot >= records.length || records.archetypeId[currentSlot] === -1) continue;
+        const currentArch = archetypeOf(world, currentSlot);
         if (!currentArch) continue;
 
-        for (const child of descendantChildren(
-          world,
-          currentArch,
-          tableRow(world, currentRecord),
-        )) {
+        for (const child of descendantChildren(world, currentArch, tableRow(world, currentSlot))) {
           const childSlot = entityIndex(child);
           const childGeneration = entityGeneration(child);
           const key = pack(childSlot, childGeneration);
-          if (
-            visited.has(key) ||
-            !world[worldInternal].recordIsLive(records[childSlot], childGeneration)
-          ) {
+          if (visited.has(key) || !records.isLive(childSlot, childGeneration)) {
             continue;
           }
           visited.add(key);
@@ -333,11 +326,8 @@ function relationshipChainCycleHit(
     const key = pack(currentSlot, currentGeneration);
     if (visited.has(key)) return null;
     visited.add(key);
-    const currentRecord = world[worldInternal].getRecords()[currentSlot];
-    if (!world[worldInternal].recordIsLive(currentRecord, currentGeneration)) return null;
-    const currentArchetype = (world[worldInternal].getGraph() as ArchetypeGraph).archetypes[
-      currentRecord.archetypeId
-    ];
+    if (!world[worldInternal].getRecords().isLive(currentSlot, currentGeneration)) return null;
+    const currentArchetype = archetypeOf(world, currentSlot);
     if (
       !currentArchetype?.components.some(
         (candidate) => componentId(candidate) === componentId(holderComponent),
@@ -347,7 +337,7 @@ function relationshipChainCycleHit(
     const value = world[worldInternal].readRow(
       currentArchetype,
       holderComponent,
-      tableRow(world, currentRecord),
+      tableRow(world, currentSlot),
     ) as Record<string, unknown>;
     const target = relationshipTargetEntity(holderComponent, value);
     if (target === null) return null;

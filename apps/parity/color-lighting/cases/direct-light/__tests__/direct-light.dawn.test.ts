@@ -350,6 +350,8 @@ function spawnHdrpScene(
       innerConeDeg: spot?.innerConeDeg ?? light.innerConeDeg ?? 0,
       outerConeDeg: spot?.outerConeDeg ?? light.outerConeDeg ?? 45,
       castShadow: falsifier === 'no-shadow-allocation' ? false : (spot?.castShadow ?? false),
+      // Preserve the independent spot-shadow conformance oracle's resolution.
+      mapSize: 1024,
       ...(projectorHandle === undefined ? {} : { projector: projectorHandle }),
     } },
   ).unwrap();

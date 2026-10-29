@@ -11,7 +11,68 @@ export interface Node<T> {
   readonly right: Node<T> | undefined;
 }
 
+/** A node class; trees of one kind share one hidden class and field representations. */
+export type NodeKind = new <T>(
+  value: T,
+  queue: number,
+  key: number,
+  weight: number,
+  left: Node<T> | undefined,
+  right: Node<T> | undefined,
+) => Node<T>;
+
+/**
+ * A distinct node class. A tree whose keys stay small integers keeps them
+ * unboxed only if no other tree of its kind ever stores a larger key, so hot
+ * trees with dense keys own a kind.
+ */
+export function treeKind(): NodeKind {
+  return class TreeNode<T> implements Node<T> {
+    readonly queue: number;
+    readonly key: number;
+    readonly priority: number;
+    readonly value: T;
+    readonly weight: number;
+    readonly count: number;
+    readonly size: number;
+    readonly left: Node<T> | undefined;
+    readonly right: Node<T> | undefined;
+    constructor(
+      value: T,
+      queue: number,
+      key: number,
+      weight: number,
+      left: Node<T> | undefined,
+      right: Node<T> | undefined,
+    ) {
+      let hash =
+        (key | 0) ^
+        Math.imul(Math.floor(key / 4294967296), 0x9e3779b9) ^
+        Math.imul(queue, 0x85ebca6b);
+      hash = Math.imul(hash ^ (hash >>> 16), 0x7feb352d);
+      hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b);
+      this.value = value;
+      this.queue = queue;
+      this.key = key;
+      this.weight = weight;
+      // 30 bits keep the priority a small integer instead of a boxed heap number.
+      this.priority = (hash ^ (hash >>> 16)) >>> 2;
+      this.count = weight + (left?.count ?? 0) + (right?.count ?? 0);
+      this.size = 1 + (left?.size ?? 0) + (right?.size ?? 0);
+      this.left = left;
+      this.right = right;
+    }
+  } as NodeKind;
+}
+
+const DEFAULT_KIND = treeKind();
+
+function kindOf(node: Node<unknown>): NodeKind {
+  return node.constructor as NodeKind;
+}
+
 function node<T>(
+  kind: NodeKind,
   value: T,
   queue: number,
   key: number,
@@ -19,25 +80,11 @@ function node<T>(
   left?: Node<T>,
   right?: Node<T>,
 ): Node<T> {
-  let hash =
-    (key | 0) ^ Math.imul(Math.floor(key / 4294967296), 0x9e3779b9) ^ Math.imul(queue, 0x85ebca6b);
-  hash = Math.imul(hash ^ (hash >>> 16), 0x7feb352d);
-  hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b);
-  return {
-    value,
-    queue,
-    key,
-    weight,
-    priority: (hash ^ (hash >>> 16)) >>> 0,
-    count: weight + (left?.count ?? 0) + (right?.count ?? 0),
-    size: 1 + (left?.size ?? 0) + (right?.size ?? 0),
-    left,
-    right,
-  };
+  return new kind(value, queue, key, weight, left, right);
 }
 
 function rebuild<T>(root: Node<T>, left: Node<T> | undefined, right: Node<T> | undefined): Node<T> {
-  return node(root.value, root.queue, root.key, root.weight, left, right);
+  return node(kindOf(root), root.value, root.queue, root.key, root.weight, left, right);
 }
 
 function before(queue: number, key: number, root: Node<unknown>): boolean {
@@ -50,17 +97,22 @@ export function put<T>(
   queue: number,
   key: number,
   weight: number,
+  kind: NodeKind = root === undefined ? DEFAULT_KIND : kindOf(root),
 ): Node<T> {
-  if (root === undefined) return node(value, queue, key, weight);
+  if (root === undefined) return node(kind, value, queue, key, weight);
   if (queue === root.queue && key === root.key)
-    return node(value, queue, key, weight, root.left, root.right);
+    return root.value === value && root.weight === weight
+      ? root
+      : node(kind, value, queue, key, weight, root.left, root.right);
   if (before(queue, key, root)) {
-    const left = put(root.left, value, queue, key, weight);
+    const left = put(root.left, value, queue, key, weight, kind);
+    if (left === root.left) return root;
     return left.priority < root.priority
       ? rebuild(left, left.left, rebuild(root, left.right, root.right))
       : rebuild(root, left, root.right);
   }
-  const right = put(root.right, value, queue, key, weight);
+  const right = put(root.right, value, queue, key, weight, kind);
+  if (right === root.right) return root;
   return right.priority < root.priority
     ? rebuild(right, rebuild(root, root.left, right.left), right.right)
     : rebuild(root, root.left, right);
@@ -81,23 +133,54 @@ export function remove<T>(
 ): Node<T> | undefined {
   if (root === undefined) return undefined;
   if (queue === root.queue && key === root.key) return merge(root.left, root.right);
-  return before(queue, key, root)
-    ? rebuild(root, remove(root.left, queue, key), root.right)
-    : rebuild(root, root.left, remove(root.right, queue, key));
+  if (before(queue, key, root)) {
+    const left = remove(root.left, queue, key);
+    return left === root.left ? root : rebuild(root, left, root.right);
+  }
+  const right = remove(root.right, queue, key);
+  return right === root.right ? root : rebuild(root, root.left, right);
 }
 
-export function* nodes<T>(root: Node<T> | undefined): Generator<Node<T>> {
-  const pending: Node<T>[] = [];
-  while (root !== undefined || pending.length > 0) {
+/**
+ * In-order traversal. Each step reuses one result object (consumers read the
+ * value before the next step), so walking a root allocates per walk, not per node.
+ */
+class NodeIterator<T> implements IterableIterator<Node<T>> {
+  readonly #pending: Node<T>[] = [];
+  #root: Node<T> | undefined;
+  readonly #result: { value: Node<T> | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(root: Node<T> | undefined) {
+    this.#root = root;
+  }
+  next(): IteratorResult<Node<T>> {
+    let root = this.#root;
+    const pending = this.#pending;
     while (root !== undefined) {
       pending.push(root);
       root = root.left;
     }
     const current = pending.pop();
-    if (current === undefined) return;
-    yield current;
-    root = current.right;
+    const result = this.#result;
+    if (current === undefined) {
+      this.#root = undefined;
+      result.value = undefined;
+      result.done = true;
+    } else {
+      this.#root = current.right;
+      result.value = current;
+    }
+    return result as IteratorResult<Node<T>>;
   }
+  [Symbol.iterator](): IterableIterator<Node<T>> {
+    return this;
+  }
+}
+
+export function nodes<T>(root: Node<T> | undefined): IterableIterator<Node<T>> {
+  return new NodeIterator(root);
 }
 export function prefix<T>(
   root: Node<T> | undefined,
@@ -163,26 +246,26 @@ function split<T>(
 export function changes<T>(
   before: Node<T> | undefined,
   after: Node<T> | undefined,
-  visit: (before: T | undefined, after: T | undefined, key: number) => void,
+  visit: (before: T | undefined, after: T | undefined, key: number, queue: number) => void,
 ): void {
   if (before === after) return;
   if (before === undefined) {
-    for (const item of nodes(after)) visit(undefined, item.value, item.key);
+    for (const item of nodes(after)) visit(undefined, item.value, item.key, item.queue);
   } else if (after === undefined) {
-    for (const item of nodes(before)) visit(item.value, undefined, item.key);
+    for (const item of nodes(before)) visit(item.value, undefined, item.key, item.queue);
   } else if (before.queue === after.queue && before.key === after.key) {
     changes(before.left, after.left, visit);
-    if (before.value !== after.value) visit(before.value, after.value, after.key);
+    if (before.value !== after.value) visit(before.value, after.value, after.key, after.queue);
     changes(before.right, after.right, visit);
   } else if (before.priority < after.priority) {
     const [left, found, right] = split(after, before.queue, before.key);
     changes(before.left, left, visit);
-    if (before.value !== found) visit(before.value, found, before.key);
+    if (before.value !== found) visit(before.value, found, before.key, before.queue);
     changes(before.right, right, visit);
   } else {
     const [left, found, right] = split(before, after.queue, after.key);
     changes(left, after.left, visit);
-    if (found !== after.value) visit(found, after.value, after.key);
+    if (found !== after.value) visit(found, after.value, after.key, after.queue);
     changes(right, after.right, visit);
   }
 }

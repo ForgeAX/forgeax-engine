@@ -6,10 +6,10 @@ import type { RenderFeatureExecutionFrame } from '../features/frame-execution';
 import { createRenderFeatureHost, getRenderFeaturePlanExecutionProjection } from '../features/host';
 import {
   cloneRenderFeaturePlanSignatureSnapshot,
-  freezeRenderFeaturePlan,
   type RenderFeatureWorkPlan,
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureSnapshotEquals,
+  validateRenderFeaturePlan,
 } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { RenderFeatureComputeGraphProjection } from '../features/render-graph-compute';
@@ -48,7 +48,7 @@ it('keeps copy enablement as frame data while still validating every disabled co
     [false, false],
   ]) {
     const current = plan(flags[0], flags[1]);
-    expect(freezeRenderFeaturePlan('copy', current).ok).toBe(true);
+    expect(validateRenderFeaturePlan('copy', current).ok).toBe(true);
     expect(renderFeaturePlanSignature(current)).toBe(signature);
     expect(cloneRenderFeaturePlanSignatureSnapshot(current, snapshot)).toBe(snapshot);
     expect(renderFeaturePlanSignatureSnapshotEquals(current, snapshot)).toBe(true);
@@ -64,7 +64,7 @@ it('keeps copy enablement as frame data while still validating every disabled co
       },
     ],
   };
-  expect(freezeRenderFeaturePlan('copy', invalid).ok).toBe(false);
+  expect(validateRenderFeaturePlan('copy', invalid).ok).toBe(false);
 });
 
 it('records exactly the live ordered copies through one retained real host/graph projection', async () => {

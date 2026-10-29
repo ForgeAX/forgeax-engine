@@ -94,7 +94,6 @@ export interface GpuDrivenSample {
   readonly frame: number;
   readonly planRebuildBatches: number;
   readonly planRebuildCandidates: number;
-  readonly lodSelectionChanges: number;
   readonly filteredPlanBuilds: number;
   readonly preparedBatchBuilds: number;
   readonly filteredBatchBuilds: number;
@@ -208,7 +207,6 @@ function sampleGpuDriven(
     frame,
     planRebuildBatches: inspection.planRebuildBatches,
     planRebuildCandidates: inspection.planRebuildCandidates,
-    lodSelectionChanges: inspection.lodSelectionChanges,
     filteredPlanBuilds: inspection.filteredPlanBuilds,
     preparedBatchBuilds: inspection.preparedBatchBuilds,
     filteredBatchBuilds: inspection.filteredBatchBuilds,

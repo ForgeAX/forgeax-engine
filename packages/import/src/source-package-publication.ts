@@ -9,6 +9,7 @@ import {
   DdcGenerationSession,
   type DdcHead,
   DdcLifecycle,
+  DdcStoreError,
   ddcOutputDigest,
 } from '@forgeax/engine-ddc';
 import { canonicalDdcJson } from '@forgeax/engine-ddc/key';
@@ -137,13 +138,19 @@ async function stageSourcePackageDdc(
     const candidate = await session.stageEntry(input.entry);
     return ok(Object.assign(candidate, { root: input.root, session, context: input.context }));
   } catch (error) {
-    return err(
-      sourcePackageError('source-package-ddc-failed', input.context, {
-        stage: 'ddc',
-        reason: error instanceof Error ? error.message : String(error),
-      }),
-    );
+    return err(sourcePackageDdcFailure(input.context, error));
   }
+}
+
+function sourcePackageDdcFailure(
+  context: SourcePackageErrorContext,
+  error: unknown,
+): SourcePackageError {
+  return sourcePackageError('source-package-ddc-failed', context, {
+    stage: 'ddc',
+    reason: error instanceof Error ? error.message : String(error),
+    ...(error instanceof DdcStoreError ? { ddcError: error.toBrowserProjection() } : {}),
+  });
 }
 
 /**
@@ -197,17 +204,13 @@ async function commitSourcePackageDdc(
         sourcePackageError('source-package-ddc-failed', candidate.context, {
           stage: 'ddc',
           reason: `DDC lifecycle commit returned ${commit.result}`,
+          ddcCommitResult: commit.result,
         }),
       );
     }
     return ok(commit.head);
   } catch (error) {
-    return err(
-      sourcePackageError('source-package-ddc-failed', candidate.context, {
-        stage: 'ddc',
-        reason: error instanceof Error ? error.message : String(error),
-      }),
-    );
+    return err(sourcePackageDdcFailure(candidate.context, error));
   }
 }
 

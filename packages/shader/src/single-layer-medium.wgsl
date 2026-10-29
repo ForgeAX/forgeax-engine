@@ -3,6 +3,7 @@
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_material::single_layer_medium_surface_v1::{SingleLayerMediumSurfaceInput, SingleLayerMediumSurfaceData}
 #import forgeax_view::common::{View, Mesh, InstanceData, view}
+#import forgeax_view::fog::{view_fog}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, SCENE_INDEX_LOCAL_IDENTITY}
 #else
@@ -169,7 +170,12 @@ fn surfaceFrameFacts(index: u32) -> SurfaceFrameFacts {
     words[3],
     vec3<f32>(bitcast<f32>(words[4]), bitcast<f32>(words[5]), bitcast<f32>(words[6])),
     bitcast<f32>(words[8]),
-    words[11],
+    // The typed medium graph always publishes the paired raw-depth and
+    // backdrop resources, so availability is a property of the graph, not of
+    // a per-instance row. A row that was never written (no dynamicInput page,
+    // or a candidate row the CPU projection did not address) reads as zero and
+    // used to discard the whole water surface.
+    1u,
   );
 #else
   return SurfaceFrameFacts(0.0, 0u, 0u, index, vec3<f32>(0.0), 0.0, 0u);
@@ -528,7 +534,8 @@ fn sampleMediumDiffuse(
   let dimensions = vec2<f32>(textureDimensions(surfaceBackdropTexture));
   let ssaoUv = clamp(pixelPosition.xy / max(dimensions, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
   let ssao = textureSample(ssaoBlurredTexture, ssaoBlurredSampler, ssaoUv).r;
-  diffuse *= mix(1.0, ssao, get_ssao_intensity());
+  // The AO producer already applied the intensity exponent before filtering.
+  diffuse *= select(1.0, ssao, get_ssao_intensity() > 0.0);
 #endif
   return diffuse;
 }
@@ -537,6 +544,27 @@ fn fresnelWeight(normal: vec3<f32>, viewDirection: vec3<f32>, ior: f32) -> f32 {
   let f = (ior - 1.0) / (ior + 1.0);
   let f0 = f * f;
   return clamp(f0 + (1.0 - f0) * pow(1.0 - max(dot(normal, viewDirection), 0.0), 5.0), 0.0, 1.0);
+}
+
+// Sun glint: the Three.js Water specular term. The mirrored sun direction against
+// the eye, raised to a shininess that follows the Surface roughness
+// (2 / roughness^2 - 2, ~137 for 0.12 where Three.js defaults to 100), scaled by
+// the main DirectionalLight colour (intensity premultiplied) at Three's 0.5 weight.
+// The lobe widens with the screen-space change of the normal across the pixel
+// (Toksvig-style), so far, sub-pixel waves blur into a soft sheen instead of
+// sparkling; near, resolved waves keep a tight highlight. The caller applies
+// Fresnel, the shadow factor and the foam cover.
+fn mediumSunGlint(
+  normal: vec3<f32>,
+  viewDirection: vec3<f32>,
+  lightDirection: vec3<f32>,
+  roughness: f32,
+  footprintVariance: f32,
+) -> f32 {
+  let mirrored = reflect(-lightDirection, normal);
+  let cosine = max(dot(mirrored, viewDirection), 0.0);
+  let shininess = clamp(2.0 / (roughness * roughness + footprintVariance) - 2.0, 1.0, 1000.0);
+  return 0.5 * pow(cosine, shininess);
 }
 
 fn surfaceFinite(value: f32) -> bool {
@@ -672,6 +700,8 @@ fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMedium
     0u,
     pixelPosition.xy,
   );
+  let normalFootprint = fwidth(orientedNormal);
+  let footprintVariance = dot(normalFootprint, normalFootprint);
   let directLight = directionalShadow * max(dot(orientedNormal, lightDirection), 0.0) * view.lightColor;
   let light = directLight + sampleMediumDiffuse(orientedNormal, pixelPosition, probeIdentity);
   let transmissionColor = background * transmittance + inScatter * light;
@@ -681,7 +711,16 @@ fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMedium
   let foamColor = mix(transmissionColor, vec3<f32>(0.9, 0.95, 1.0), foam);
   // Fresnel is the sole energy split: the transmitted and reflected terms
   // sum to one even when the sampled background is a sky miss.
-  let result = foamColor * (1.0 - fresnel) + reflection * fresnel;
+  let glint = mediumSunGlint(orientedNormal, viewDirection, lightDirection, roughness, footprintVariance)
+    * fresnel * view.lightColor * directionalShadow * (1.0 - foam);
+  let shaded = foamColor * (1.0 - fresnel) + reflection * fresnel + glint;
+  // The opaque fog pass already fogged the backdrop at its own depth. Fog the
+  // water surface's own light at the water depth and keep that carried
+  // backdrop as is, the way translucent_fog_transmission does for glass.
+  let carried = background * transmittance * (1.0 - foam) * (1.0 - fresnel);
+  let fog = view_fog(view, input.positionWS);
+  let waterOpacity = vec3<f32>(1.0) - transmittance * (1.0 - foam) * (1.0 - fresnel);
+  let result = (shaded - carried) * fog.transmittance + carried + waterOpacity * fog.inscatter;
   return vec4<f32>(max(result, vec3<f32>(0.0)), clamp(surface.coverage, 0.0, 1.0));
 }
 

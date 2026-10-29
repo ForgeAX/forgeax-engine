@@ -16,18 +16,18 @@ function readPkgDeps(): string[] {
 }
 
 describe('package dependency closure (AC-02)', () => {
-  it('depends on the low-level vocabulary plus the RenderFeature plan contract', () => {
+  it('depends only on the low-level vocabulary', () => {
     const deps = readPkgDeps();
     const forgeaxDeps = deps.filter((d) => d.startsWith('@forgeax/'));
-    expect(forgeaxDeps).toHaveLength(4);
-    expect(forgeaxDeps).toContain('@forgeax/engine-render');
+    expect(forgeaxDeps).toHaveLength(3);
     expect(forgeaxDeps).toContain('@forgeax/engine-rhi');
     expect(forgeaxDeps).toContain('@forgeax/engine-math');
     expect(forgeaxDeps).toContain('@forgeax/engine-types');
   });
 
-  it('does not depend on engine-ecs, engine-runtime, engine-render-graph, or engine-shader', () => {
+  it('does not depend on engine-ecs, engine-runtime, engine-render, engine-render-graph, or engine-shader', () => {
     const deps = readPkgDeps();
+    expect(deps).not.toContain('@forgeax/engine-render');
     expect(deps).not.toContain('@forgeax/engine-ecs');
     expect(deps).not.toContain('@forgeax/engine-runtime');
     expect(deps).not.toContain('@forgeax/engine-render-graph');

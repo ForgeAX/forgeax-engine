@@ -92,6 +92,206 @@ function isRawSourceLocator(packageUrl: string): boolean {
   );
 }
 
+function scopedSnapshotError(
+  raw: unknown,
+  expectedScope: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>,
+): AssetError | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return parseError(
+      'scoped catalog snapshot to be an object with schema, scopeId, generation, authority, and entries',
+    );
+  }
+  const snapshot = raw as Record<string, unknown>;
+  if (
+    snapshot.schemaVersion !== 'runtime-catalog-snapshot-v1' ||
+    typeof snapshot.scopeId !== 'string' ||
+    typeof snapshot.generation !== 'number' ||
+    !Number.isSafeInteger(snapshot.generation)
+  ) {
+    return parseError('scoped catalog snapshot to satisfy its runtime schema');
+  }
+  if (
+    snapshot.scopeId !== expectedScope.scopeId ||
+    snapshot.generation !== expectedScope.generation
+  ) {
+    return parseError('scoped catalog snapshot to match the active scope and generation', {
+      expectedScope,
+      actualScope: { scopeId: snapshot.scopeId, generation: snapshot.generation },
+    });
+  }
+  if (snapshot.authority !== 'authoritative') {
+    return parseError(
+      'scoped catalog snapshot authority to be authoritative before identity lookup',
+      { authority: snapshot.authority, diagnostics: snapshot.diagnostics },
+      'repair the active game catalog before loading assets',
+    );
+  }
+  return undefined;
+}
+
+interface CatalogRowIdentity {
+  readonly rawRow: Record<string, unknown>;
+  readonly guid: string;
+  readonly packageUrl: string;
+  readonly kind: string;
+}
+
+/** A row must be a navigation-only object naming a cooked package by GUID and kind. */
+function catalogRowIdentity(item: unknown): Result<CatalogRowIdentity, AssetError> {
+  if (item === null || typeof item !== 'object') {
+    return err(parseError('each catalog row to be an object'));
+  }
+  const rawRow = item as Record<string, unknown>;
+  const legacyLocator = ['relative', 'Url'].join('');
+  if (
+    legacyLocator in rawRow ||
+    'metadata' in rawRow ||
+    'compression' in rawRow ||
+    'artifacts' in rawRow ||
+    'assetCodec' in rawRow ||
+    'contentEncoding' in rawRow
+  ) {
+    return err(parseError('catalog rows to expose navigation fields only'));
+  }
+  const { guid, packageUrl, kind } = rawRow;
+  if (
+    typeof guid !== 'string' ||
+    guid.length === 0 ||
+    typeof packageUrl !== 'string' ||
+    packageUrl.length === 0 ||
+    typeof kind !== 'string' ||
+    kind.length === 0
+  ) {
+    return err(parseError('each catalog row to contain guid, packageUrl, and kind strings'));
+  }
+  if (isRawSourceLocator(packageUrl)) {
+    return err(parseError(`catalog packageUrl ${packageUrl} to identify a cooked package`));
+  }
+  return ok({ rawRow, guid, packageUrl, kind });
+}
+
+function catalogRowFieldError(
+  rawRow: Record<string, unknown>,
+  guid: string,
+): AssetError | undefined {
+  const refs = rawRow.refs;
+  if (refs !== undefined && (!Array.isArray(refs) || !refs.every((ref) => typeof ref === 'string')))
+    return parseError(`catalog refs for GUID ${guid} to be a string array`);
+  if (
+    rawRow.sourceOverrides !== undefined &&
+    (rawRow.sourceOverrides === null ||
+      typeof rawRow.sourceOverrides !== 'object' ||
+      Array.isArray(rawRow.sourceOverrides))
+  ) {
+    return parseError(`catalog sourceOverrides for GUID ${guid} to be an object`);
+  }
+  if (
+    rawRow.sourceOverrideDescriptors !== undefined &&
+    !Array.isArray(rawRow.sourceOverrideDescriptors)
+  ) {
+    return parseError(`catalog sourceOverrideDescriptors for GUID ${guid} to be an array`);
+  }
+  return undefined;
+}
+
+function resolveRowUrl(
+  identity: CatalogRowIdentity,
+  resolveUrl: (packageUrl: string) => string,
+): Result<string, AssetError> {
+  try {
+    return ok(resolveUrl(identity.packageUrl));
+  } catch (error) {
+    return err(
+      parseError(`catalog entry ${identity.guid} to resolve its packageUrl`, {
+        packageUrl: identity.packageUrl,
+        reason: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+function catalogNavigationFields(
+  rawRow: Record<string, unknown>,
+): Pick<
+  CatalogRecord,
+  'authoring' | 'name' | 'sourcePath' | 'refs' | 'cookReceiptUrl' | 'packageId'
+> {
+  return {
+    ...(rawRow.authoring !== undefined
+      ? { authoring: rawRow.authoring as AssetAuthoringCapability }
+      : {}),
+    ...(typeof rawRow.name === 'string' ? { name: rawRow.name } : {}),
+    ...(typeof rawRow.sourcePath === 'string' ? { sourcePath: rawRow.sourcePath } : {}),
+    ...(rawRow.refs !== undefined ? { refs: rawRow.refs as readonly string[] } : {}),
+    ...(typeof rawRow.cookReceiptUrl === 'string' ? { cookReceiptUrl: rawRow.cookReceiptUrl } : {}),
+    ...(typeof rawRow.packageId === 'string' ? { packageId: rawRow.packageId } : {}),
+  };
+}
+
+function catalogProvenanceFields(
+  rawRow: Record<string, unknown>,
+): Pick<
+  CatalogRecord,
+  | 'provenance'
+  | 'revision'
+  | 'sourceKey'
+  | 'sourceIndex'
+  | 'sourceOverrides'
+  | 'sourceOverrideDescriptors'
+  | 'relations'
+  | 'diagnostics'
+> {
+  return {
+    ...(rawRow.provenance !== undefined
+      ? { provenance: rawRow.provenance as ProviderProvenance }
+      : {}),
+    ...(rawRow.revision !== undefined ? { revision: rawRow.revision as ResourceRevision } : {}),
+    ...(typeof rawRow.sourceKey === 'string' ? { sourceKey: rawRow.sourceKey } : {}),
+    ...(typeof rawRow.sourceIndex === 'number' ? { sourceIndex: rawRow.sourceIndex } : {}),
+    ...(rawRow.sourceOverrides !== undefined
+      ? { sourceOverrides: rawRow.sourceOverrides as SourceOverrideMap }
+      : {}),
+    ...(rawRow.sourceOverrideDescriptors !== undefined
+      ? {
+          sourceOverrideDescriptors:
+            rawRow.sourceOverrideDescriptors as readonly SourceOverrideDescriptor[],
+        }
+      : {}),
+    ...(Array.isArray(rawRow.relations)
+      ? { relations: rawRow.relations as readonly AssetRelation[] }
+      : {}),
+    ...(Array.isArray(rawRow.diagnostics)
+      ? { diagnostics: rawRow.diagnostics as readonly CatalogDiagnostic[] }
+      : {}),
+  };
+}
+
+function catalogLifecycleFields(
+  rawRow: Record<string, unknown>,
+): Pick<CatalogRecord, 'subject' | 'execution' | 'lifecycle' | 'projection' | 'publication'> {
+  return {
+    ...(rawRow.subject === 'internal-asset' || rawRow.subject === 'imported-output'
+      ? { subject: rawRow.subject }
+      : {}),
+    ...(rawRow.execution === 'direct' || rawRow.execution === 'cooked'
+      ? { execution: rawRow.execution }
+      : {}),
+    ...(rawRow.lifecycle === 'missing' ||
+    rawRow.lifecycle === 'cooking' ||
+    rawRow.lifecycle === 'current' ||
+    rawRow.lifecycle === 'stale' ||
+    rawRow.lifecycle === 'failed'
+      ? { lifecycle: rawRow.lifecycle }
+      : {}),
+    ...(rawRow.projection !== undefined
+      ? { projection: rawRow.projection as CatalogProjection }
+      : {}),
+    ...(rawRow.publication !== undefined
+      ? { publication: rawRow.publication as AssetPublicationEnvelope }
+      : {}),
+  };
+}
+
 /** Parse the shared pack-index/catalog wire shape without loading payloads. */
 export function parseCatalog(
   raw: unknown,
@@ -100,42 +300,8 @@ export function parseCatalog(
   expectedScope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>,
 ): Result<Map<string, CatalogRecord>, AssetError> {
   if (expectedScope !== undefined) {
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-      return err(
-        parseError(
-          'scoped catalog snapshot to be an object with schema, scopeId, generation, authority, and entries',
-        ),
-      );
-    }
-    const snapshot = raw as Record<string, unknown>;
-    if (
-      snapshot.schemaVersion !== 'runtime-catalog-snapshot-v1' ||
-      typeof snapshot.scopeId !== 'string' ||
-      typeof snapshot.generation !== 'number' ||
-      !Number.isSafeInteger(snapshot.generation)
-    ) {
-      return err(parseError('scoped catalog snapshot to satisfy its runtime schema'));
-    }
-    if (
-      snapshot.scopeId !== expectedScope.scopeId ||
-      snapshot.generation !== expectedScope.generation
-    ) {
-      return err(
-        parseError('scoped catalog snapshot to match the active scope and generation', {
-          expectedScope,
-          actualScope: { scopeId: snapshot.scopeId, generation: snapshot.generation },
-        }),
-      );
-    }
-    if (snapshot.authority !== 'authoritative') {
-      return err(
-        parseError(
-          'scoped catalog snapshot authority to be authoritative before identity lookup',
-          { authority: snapshot.authority, diagnostics: snapshot.diagnostics },
-          'repair the active game catalog before loading assets',
-        ),
-      );
-    }
+    const scopeError = scopedSnapshotError(raw, expectedScope);
+    if (scopeError !== undefined) return err(scopeError);
   }
   const decoded = decodeCatalogWire(raw);
   if (!decoded.ok) return decoded;
@@ -143,127 +309,22 @@ export function parseCatalog(
 
   const catalog = new Map<string, CatalogRecord>();
   for (const item of rows) {
-    if (item === null || typeof item !== 'object') {
-      return err(parseError('each catalog row to be an object'));
-    }
-    const rawRow = item as Record<string, unknown>;
-    const legacyLocator = ['relative', 'Url'].join('');
-    if (
-      legacyLocator in rawRow ||
-      'metadata' in rawRow ||
-      'compression' in rawRow ||
-      'artifacts' in rawRow ||
-      'assetCodec' in rawRow ||
-      'contentEncoding' in rawRow
-    ) {
-      return err(parseError('catalog rows to expose navigation fields only'));
-    }
-    if (
-      typeof rawRow.guid !== 'string' ||
-      rawRow.guid.length === 0 ||
-      typeof rawRow.packageUrl !== 'string' ||
-      rawRow.packageUrl.length === 0 ||
-      typeof rawRow.kind !== 'string' ||
-      rawRow.kind.length === 0
-    ) {
-      return err(parseError('each catalog row to contain guid, packageUrl, and kind strings'));
-    }
-    if (isRawSourceLocator(rawRow.packageUrl)) {
-      return err(
-        parseError(`catalog packageUrl ${rawRow.packageUrl} to identify a cooked package`),
-      );
-    }
-    const guid = rawRow.guid.toLowerCase();
-    if (catalog.has(guid)) return err(parseError(`catalog GUID ${rawRow.guid} to be unique`));
-    const refs = rawRow.refs;
-    if (
-      refs !== undefined &&
-      (!Array.isArray(refs) || !refs.every((ref) => typeof ref === 'string'))
-    ) {
-      return err(parseError(`catalog refs for GUID ${rawRow.guid} to be a string array`));
-    }
-    if (
-      rawRow.sourceOverrides !== undefined &&
-      (rawRow.sourceOverrides === null ||
-        typeof rawRow.sourceOverrides !== 'object' ||
-        Array.isArray(rawRow.sourceOverrides))
-    ) {
-      return err(parseError(`catalog sourceOverrides for GUID ${rawRow.guid} to be an object`));
-    }
-    if (
-      rawRow.sourceOverrideDescriptors !== undefined &&
-      !Array.isArray(rawRow.sourceOverrideDescriptors)
-    ) {
-      return err(
-        parseError(`catalog sourceOverrideDescriptors for GUID ${rawRow.guid} to be an array`),
-      );
-    }
-    let resolvedUrl: string;
-    try {
-      resolvedUrl = resolveUrl(rawRow.packageUrl);
-    } catch (error) {
-      return err(
-        parseError(`catalog entry ${rawRow.guid} to resolve its packageUrl`, {
-          packageUrl: rawRow.packageUrl,
-          reason: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    }
-    const row: CatalogRecord = {
-      packageUrl: resolvedUrl,
-      kind: rawRow.kind,
-      ...(rawRow.authoring !== undefined
-        ? { authoring: rawRow.authoring as AssetAuthoringCapability }
-        : {}),
-      ...(typeof rawRow.name === 'string' ? { name: rawRow.name } : {}),
-      ...(typeof rawRow.sourcePath === 'string' ? { sourcePath: rawRow.sourcePath } : {}),
-      ...(refs !== undefined ? { refs: refs as readonly string[] } : {}),
-      ...(typeof rawRow.cookReceiptUrl === 'string'
-        ? { cookReceiptUrl: rawRow.cookReceiptUrl }
-        : {}),
-      ...(typeof rawRow.packageId === 'string' ? { packageId: rawRow.packageId } : {}),
-      ...(rawRow.provenance !== undefined
-        ? { provenance: rawRow.provenance as ProviderProvenance }
-        : {}),
-      ...(rawRow.revision !== undefined ? { revision: rawRow.revision as ResourceRevision } : {}),
-      ...(typeof rawRow.sourceKey === 'string' ? { sourceKey: rawRow.sourceKey } : {}),
-      ...(typeof rawRow.sourceIndex === 'number' ? { sourceIndex: rawRow.sourceIndex } : {}),
-      ...(rawRow.sourceOverrides !== undefined
-        ? { sourceOverrides: rawRow.sourceOverrides as SourceOverrideMap }
-        : {}),
-      ...(rawRow.sourceOverrideDescriptors !== undefined
-        ? {
-            sourceOverrideDescriptors:
-              rawRow.sourceOverrideDescriptors as readonly SourceOverrideDescriptor[],
-          }
-        : {}),
-      ...(Array.isArray(rawRow.relations)
-        ? { relations: rawRow.relations as readonly AssetRelation[] }
-        : {}),
-      ...(Array.isArray(rawRow.diagnostics)
-        ? { diagnostics: rawRow.diagnostics as readonly CatalogDiagnostic[] }
-        : {}),
-      ...(rawRow.subject === 'internal-asset' || rawRow.subject === 'imported-output'
-        ? { subject: rawRow.subject }
-        : {}),
-      ...(rawRow.execution === 'direct' || rawRow.execution === 'cooked'
-        ? { execution: rawRow.execution }
-        : {}),
-      ...(rawRow.lifecycle === 'missing' ||
-      rawRow.lifecycle === 'cooking' ||
-      rawRow.lifecycle === 'current' ||
-      rawRow.lifecycle === 'stale' ||
-      rawRow.lifecycle === 'failed'
-        ? { lifecycle: rawRow.lifecycle }
-        : {}),
-      ...(rawRow.projection !== undefined
-        ? { projection: rawRow.projection as CatalogProjection }
-        : {}),
-      ...(rawRow.publication !== undefined
-        ? { publication: rawRow.publication as AssetPublicationEnvelope }
-        : {}),
-    };
-    catalog.set(guid, row);
+    const identity = catalogRowIdentity(item);
+    if (!identity.ok) return identity;
+    const { rawRow, guid: rawGuid } = identity.value;
+    const guid = rawGuid.toLowerCase();
+    if (catalog.has(guid)) return err(parseError(`catalog GUID ${rawGuid} to be unique`));
+    const fieldError = catalogRowFieldError(rawRow, rawGuid);
+    if (fieldError !== undefined) return err(fieldError);
+    const resolvedUrl = resolveRowUrl(identity.value, resolveUrl);
+    if (!resolvedUrl.ok) return resolvedUrl;
+    catalog.set(guid, {
+      packageUrl: resolvedUrl.value,
+      kind: identity.value.kind,
+      ...catalogNavigationFields(rawRow),
+      ...catalogProvenanceFields(rawRow),
+      ...catalogLifecycleFields(rawRow),
+    });
   }
   const revisionError = checkExpectedRevision([...catalog.values()], expectedRevision);
   if (revisionError !== undefined) return err(revisionError);

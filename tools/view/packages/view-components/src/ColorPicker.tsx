@@ -12,7 +12,28 @@ export type ColorPickerProps = {
   /** Emits the selected color only when OK is pressed. */
   onChange: (value: ColorValue) => void;
   label: string;
+  locale?: 'en' | 'zh';
 };
+
+const zh = {
+  'value': '数值', 'Recent colors': '最近使用的颜色', 'Recent': '最近使用',
+  'Screen color sampling is unavailable in this browser.': '此浏览器不支持屏幕取色。',
+  'Saved color themes': '已保存的颜色主题', 'Create new theme': '新建主题',
+  'Edit current theme': '编辑当前主题', 'Rename': '重命名', 'Duplicate': '复制', 'Delete': '删除',
+  'Edit color': '编辑颜色', 'picker': '颜色选择器', 'Color Picker': '颜色选择器',
+  'Close color picker': '关闭颜色选择器', 'OK': '确定', 'Cancel': '取消',
+  'Hue and saturation': '色相与饱和度', 'Saturation': '饱和度', 'Value': '明度',
+  'Add selected color to': '将当前颜色添加到', 'Add original color to': '将原始颜色添加到',
+  'sRGB Preview': 'sRGB 预览', 'Toggle color spectrum': '切换色谱',
+  'Pick color from screen': '从屏幕取色', 'Hide color shortcut bar': '隐藏快捷栏',
+  'Show color shortcut bar': '显示快捷栏', 'Linear': '线性',
+  'color space': '色彩空间', 'Hex color space': '十六进制色彩空间',
+  'Hex color': '十六进制颜色', 'Color shortcut bar': '颜色快捷栏',
+  'Choose shortcut colors': '选择快捷栏颜色', 'Shortcut colors': '快捷栏颜色',
+  'Theme name': '主题名称', 'Save theme name': '保存主题名称',
+  'Cancel rename': '取消重命名', 'Color shortcut source': '快捷栏颜色来源',
+  'color': '颜色',
+} as const;
 
 const format = (value: number) => String(Number(value.toFixed(COLOR_PICKER_DECIMALS)));
 
@@ -41,8 +62,8 @@ function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
   items[next]?.focus();
 }
 
-function ColorRange({ label, value, max, gradient, checkerboard = false, onChange }: {
-  label: string; value: number; max: number; gradient: string; checkerboard?: boolean; onChange: (value: number) => void;
+function ColorRange({ label, value, max, gradient, checkerboard = false, onChange, valueLabel }: {
+  label: string; value: number; max: number; gradient: string; checkerboard?: boolean; valueLabel: string; onChange: (value: number) => void;
 }) {
   const [text, setText] = useState(format(value));
   const focused = useRef(false);
@@ -52,7 +73,7 @@ function ColorRange({ label, value, max, gradient, checkerboard = false, onChang
     <input type="range" min="0" max={max} step="0.001" value={value} aria-label={label}
       style={{ '--color-gradient': gradient } as CSSProperties} onChange={event => onChange(Number(event.target.value))} />
     <input className="fx-color-picker__number" type="number" min="0" max={max} step="0.001"
-      aria-label={`${label} value`} value={text} onFocus={() => { focused.current = true; }}
+      aria-label={`${label} ${valueLabel}`} value={text} onFocus={() => { focused.current = true; }}
       onBlur={() => { focused.current = false; setText(format(value)); }} onChange={event => {
         setText(event.target.value);
         const number = Number(event.target.value);
@@ -61,8 +82,10 @@ function ColorRange({ label, value, max, gradient, checkerboard = false, onChang
   </label>;
 }
 
-export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
+export function ColorPicker({ value, onChange, label, locale = 'en' }: ColorPickerProps) {
+  const tr = (message: keyof typeof zh) => locale === 'zh' ? zh[message] : message;
   const [open, setOpen] = useState(false);
+  const [suppressTriggerHint, setSuppressTriggerHint] = useState(false);
   const [current, setCurrent] = useState<ColorValue>(() => toColorValue(value));
   const [srgbPreview, setSrgbPreview] = useState(true);
   const [hexMode, setHexMode] = useState<'srgb' | 'linear'>('srgb');
@@ -87,7 +110,7 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
   const palettes = useSyncExternalStore(subscribeColorPickerPalettes, getColorPickerPalettes, getServerColorPickerPalettes);
   const selectedTheme = palettes.themes.find(theme => theme.id === palettes.selectedThemeId);
   const quickColors = selectedTheme?.colors ?? palettes.recent;
-  const quickColorDestination = selectedTheme?.name ?? 'Recent colors';
+  const quickColorDestination = selectedTheme?.name ?? tr('Recent colors');
   const addQuickColor = (color: ColorValue) => {
     if (selectedTheme) addColorToTheme(selectedTheme.id, color);
     else recordRecentColor(color);
@@ -115,11 +138,12 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
     setSampleError('');
     setOpen(true);
   };
-  const cancel = () => { setOpen(false); };
+  const cancel = () => { setSuppressTriggerHint(true); setOpen(false); };
   const accept = () => {
     const selected = roundColorValue(current);
     onChange(selected);
     recordRecentColor(selected);
+    setSuppressTriggerHint(true);
     setOpen(false);
   };
   const pickWheel = (event: PointerEvent<HTMLDivElement>) => {
@@ -135,7 +159,7 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
   };
   const sample = async () => {
     const EyeDropper = (window as Window & { EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> } }).EyeDropper;
-    if (!EyeDropper) { setSampleError('Screen color sampling is unavailable in this browser.'); return; }
+    if (!EyeDropper) { setSampleError(tr('Screen color sampling is unavailable in this browser.')); return; }
     try {
       const picked = parseColorHex((await new EyeDropper().open()).sRGBHex);
       if (picked) update([picked[0], picked[1], picked[2], current[3]]);
@@ -166,24 +190,24 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
   };
   const themeItems: MenuItem[] = [
     { id: 'recent', selection: 'radio', checked: !selectedTheme,
-      label: <span className="fx-color-picker__theme-label"><Clock3 aria-hidden />Recent</span>,
+      label: <span className="fx-color-picker__theme-label"><Clock3 aria-hidden />{tr('Recent')}</span>,
       onSelect: () => { selectColorTheme(null); closeThemeMenu(); } },
-    { type: 'title', label: 'Saved color themes' },
+    { type: 'title', label: tr('Saved color themes') },
     ...palettes.themes.map(theme => ({
       id: theme.id, selection: 'radio' as const, checked: theme.id === selectedTheme?.id,
       label: <span className="fx-color-picker__theme-label"><Clapperboard aria-hidden />{theme.name}</span>,
       onSelect: () => { selectColorTheme(theme.id); closeThemeMenu(); },
     })),
     { type: 'separator' },
-    { id: 'create', label: 'Create new theme', icon: <CirclePlus aria-hidden />,
-      disabled: palettes.themes.length >= 24, onSelect: () => { createColorTheme(); closeThemeMenu(); } },
-    { type: 'title', label: 'Edit current theme' },
-    { id: 'rename', label: 'Rename', icon: <Pencil aria-hidden />, disabled: !selectedTheme,
+    { id: 'create', label: tr('Create new theme'), icon: <CirclePlus aria-hidden />,
+      disabled: palettes.themes.length >= 24, onSelect: () => { createColorTheme(locale === 'zh' ? '新主题' : 'New Theme'); closeThemeMenu(); } },
+    { type: 'title', label: tr('Edit current theme') },
+    { id: 'rename', label: tr('Rename'), icon: <Pencil aria-hidden />, disabled: !selectedTheme,
       onSelect: () => { setThemeName(selectedTheme?.name ?? ''); setRenamingTheme(true); } },
-    { id: 'duplicate', label: 'Duplicate', icon: <Copy aria-hidden />,
+    { id: 'duplicate', label: tr('Duplicate'), icon: <Copy aria-hidden />,
       disabled: !selectedTheme || palettes.themes.length >= 24,
-      onSelect: () => { if (selectedTheme) duplicateColorTheme(selectedTheme.id); closeThemeMenu(); } },
-    { id: 'delete', label: 'Delete', icon: <Trash2 aria-hidden />, danger: true, disabled: !selectedTheme,
+      onSelect: () => { if (selectedTheme) duplicateColorTheme(selectedTheme.id, locale === 'zh' ? ' 副本' : ' Copy'); closeThemeMenu(); } },
+    { id: 'delete', label: tr('Delete'), icon: <Trash2 aria-hidden />, danger: true, disabled: !selectedTheme,
       onSelect: () => { if (selectedTheme) deleteColorTheme(selectedTheme.id); closeThemeMenu(); } },
   ];
   const wheelStyle = { '--wheel-value': brightness, '--wheel-color': hueColor } as CSSProperties;
@@ -193,15 +217,18 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
   };
 
   return <>
-    <Tooltip title={`Edit ${label} color`} portaled disabled={open}>
-      <button type="button" className="fx-color-picker__trigger fx-color-picker__transparent" aria-label={`${label} picker`}
-        style={{ '--swatch-color': previewColor(toColorValue(value)) } as CSSProperties} onClick={begin} />
+    <Tooltip title={`${tr('Edit color')}: ${label}`} portaled disabled={open || suppressTriggerHint}>
+      <button type="button" className="fx-color-picker__trigger fx-color-picker__transparent" aria-label={`${label} ${tr('picker')}`}
+        style={{ '--swatch-color': previewColor(toColorValue(value)) } as CSSProperties}
+        onPointerLeave={() => { if (!open) setSuppressTriggerHint(false); }}
+        onBlur={() => { if (!open) setSuppressTriggerHint(false); }}
+        onClick={begin} />
     </Tooltip>
-    <Dialog open={open} onClose={cancel} title="Color Picker" closeLabel="Close color picker"
-      className="fx-color-picker" footer={<><Button onClick={accept}>OK</Button><Button onClick={cancel}>Cancel</Button></>}>
+    <Dialog open={open} onClose={cancel} title={tr('Color Picker')} closeLabel={tr('Close color picker')}
+      className="fx-color-picker" footer={<><Button onClick={accept}>{tr('OK')}</Button><Button onClick={cancel}>{tr('Cancel')}</Button></>}>
       <div className="fx-color-picker__top">
         <div ref={wheel} className={`fx-color-picker__wheel${spectrumOpen ? ' fx-color-picker__wheel--spectrum' : ''}`}
-          role="slider" tabIndex={0} aria-label="Hue and saturation"
+          role="slider" tabIndex={0} aria-label={tr('Hue and saturation')}
           aria-valuemin={0} aria-valuemax={360} aria-valuenow={Math.round(hue)} style={wheelStyle}
           onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); pickWheel(event); }}
           onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) pickWheel(event); }}
@@ -212,37 +239,37 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
           <span className="fx-color-picker__wheel-marker" style={markerStyle} />
         </div>
         <div className="fx-color-picker__verticals">
-          <label className="fx-color-picker__vertical" title="Saturation"
+          <label className="fx-color-picker__vertical" title={tr('Saturation')}
             style={{ '--vertical-gradient': hsvGradient('to top', 'saturation') } as CSSProperties}>
-            <input type="range" aria-label="Saturation" min="0" max="1" step="0.001" value={saturation}
+            <input type="range" aria-label={tr('Saturation')} min="0" max="1" step="0.001" value={saturation}
               onChange={event => atHue(hue, Number(event.target.value))} />
           </label>
-          <label className="fx-color-picker__vertical" title="Value"
+          <label className="fx-color-picker__vertical" title={tr('Value')}
             style={{ '--vertical-gradient': hsvGradient('to top', 'value') } as CSSProperties}>
-            <input type="range" aria-label="Value" min="0" max="1" step="0.001" value={brightness}
+            <input type="range" aria-label={tr('Value')} min="0" max="1" step="0.001" value={brightness}
               onChange={event => atHue(hue, saturation, Number(event.target.value))} />
           </label>
         </div>
         <div className="fx-color-picker__aside">
-          <Tooltip title={`Add selected color to ${quickColorDestination}`} topLayer>
+          <Tooltip title={`${tr('Add selected color to')} ${quickColorDestination}`} topLayer>
             <button type="button" className="fx-color-picker__preview fx-color-picker__preview-add fx-color-picker__transparent"
-              aria-label={`Add selected color to ${quickColorDestination}`}
+              aria-label={`${tr('Add selected color to')} ${quickColorDestination}`}
               style={{ '--swatch-color': previewColor(current, srgbPreview) } as CSSProperties}
               onClick={() => addQuickColor(current)}><Plus aria-hidden /></button>
           </Tooltip>
-          <Tooltip title={`Add original color to ${quickColorDestination}`} topLayer>
+          <Tooltip title={`${tr('Add original color to')} ${quickColorDestination}`} topLayer>
             <button type="button" className="fx-color-picker__preview fx-color-picker__preview-add fx-color-picker__transparent"
-              aria-label={`Add original color to ${quickColorDestination}`}
+              aria-label={`${tr('Add original color to')} ${quickColorDestination}`}
               style={{ '--swatch-color': previewColor(initial.current, srgbPreview) } as CSSProperties}
               onClick={() => addQuickColor(initial.current)}><Plus aria-hidden /></button>
           </Tooltip>
-          <Checkbox label="sRGB Preview" checked={srgbPreview} onChange={event => setSrgbPreview(event.target.checked)} />
+          <Checkbox label={tr('sRGB Preview')} checked={srgbPreview} onChange={event => setSrgbPreview(event.target.checked)} />
           <div className="fx-color-picker__tools">
-            <Tooltip title="Toggle color spectrum" topLayer><IconButton label="Toggle color spectrum" title="" aria-pressed={spectrumOpen}
+            <Tooltip title={tr('Toggle color spectrum')} topLayer><IconButton label={tr('Toggle color spectrum')} title="" aria-pressed={spectrumOpen}
               icon={<span className="fx-color-picker__spectrum" />} onClick={() => setSpectrumOpen(!spectrumOpen)} /></Tooltip>
-            <Tooltip title="Pick color from screen" topLayer><IconButton label="Pick color from screen" title="" icon={<Pipette />} onClick={() => void sample()} /></Tooltip>
-            <Tooltip title={quickBarVisible ? 'Hide color shortcut bar' : 'Show color shortcut bar'} topLayer>
-              <IconButton label={quickBarVisible ? 'Hide color shortcut bar' : 'Show color shortcut bar'} title=""
+            <Tooltip title={tr('Pick color from screen')} topLayer><IconButton label={tr('Pick color from screen')} title="" icon={<Pipette />} onClick={() => void sample()} /></Tooltip>
+            <Tooltip title={quickBarVisible ? tr('Hide color shortcut bar') : tr('Show color shortcut bar')} topLayer>
+              <IconButton label={quickBarVisible ? tr('Hide color shortcut bar') : tr('Show color shortcut bar')} title=""
                 aria-pressed={quickBarVisible} icon={<Clapperboard />} onClick={() => setQuickBarVisible(!quickBarVisible)} />
             </Tooltip>
           </div>
@@ -251,34 +278,34 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
       </div>
       <div className="fx-color-picker__channels">
         <div className="fx-color-picker__channel-group">
-          {(['R', 'G', 'B'] as const).map((name, index) => <ColorRange key={name} label={name} value={current[index]!} max={1}
+          {(['R', 'G', 'B'] as const).map((name, index) => <ColorRange key={name} label={name} valueLabel={tr('value')} value={current[index]!} max={1}
             gradient={rgbGradient(index)} onChange={number => update([
               index === 0 ? number : current[0], index === 1 ? number : current[1], index === 2 ? number : current[2], current[3],
             ])} />)}
-          <ColorRange label="A" value={current[3]} max={1} checkerboard
+          <ColorRange label="A" valueLabel={tr('value')} value={current[3]} max={1} checkerboard
             gradient={`linear-gradient(to right, ${transparentColor}, ${fullColor})`}
             onChange={number => update([current[0], current[1], current[2], number])} />
         </div>
         <div className="fx-color-picker__channel-group">
-          <ColorRange label="H" value={hue} max={360} gradient="linear-gradient(to right, red, yellow, lime, cyan, blue, magenta, red)" onChange={number => atHue(number)} />
-          <ColorRange label="S" value={saturation} max={1} gradient={hsvGradient('to right', 'saturation')} onChange={number => atHue(hue, number)} />
-          <ColorRange label="V" value={brightness} max={1} gradient={hsvGradient('to right', 'value')} onChange={number => atHue(hue, saturation, number)} />
+          <ColorRange label="H" valueLabel={tr('value')} value={hue} max={360} gradient="linear-gradient(to right, red, yellow, lime, cyan, blue, magenta, red)" onChange={number => atHue(number)} />
+          <ColorRange label="S" valueLabel={tr('value')} value={saturation} max={1} gradient={hsvGradient('to right', 'saturation')} onChange={number => atHue(hue, number)} />
+          <ColorRange label="V" valueLabel={tr('value')} value={brightness} max={1} gradient={hsvGradient('to right', 'value')} onChange={number => atHue(hue, saturation, number)} />
           <div className="fx-color-picker__hex">
             <button ref={hexMenuTrigger} type="button" className="fx-color-picker__hex-mode"
-              aria-label={`Hex ${hexMode === 'srgb' ? 'sRGB' : 'Linear'} color space`}
+              aria-label={`Hex ${hexMode === 'srgb' ? 'sRGB' : tr('Linear')} ${tr('color space')}`}
               aria-haspopup="menu" aria-expanded={hexMenuOpen} aria-controls={hexMenuId} onClick={toggleHexMenu}>
-              Hex <span>{hexMode === 'srgb' ? 'sRGB' : 'Linear'}</span><ChevronDown aria-hidden />
+              Hex <span>{hexMode === 'srgb' ? 'sRGB' : tr('Linear')}</span><ChevronDown aria-hidden />
             </button>
             <div ref={hexMenu} id={hexMenuId} popover="auto" className="fx-color-picker__popover"
               onToggle={event => setHexMenuOpen(event.currentTarget.matches(':popover-open'))}
               onKeyDown={onMenuKeyDown}>
-              <Menu label="Hex color space" items={(['srgb', 'linear'] as const).map(mode => ({
-                id: mode, label: `Hex ${mode === 'srgb' ? 'sRGB' : 'Linear'}`,
+              <Menu label={tr('Hex color space')} items={(['srgb', 'linear'] as const).map(mode => ({
+                id: mode, label: `Hex ${mode === 'srgb' ? 'sRGB' : tr('Linear')}`,
                 selection: 'radio', checked: hexMode === mode,
                 onSelect: () => { setHexMode(mode); hexMenu.current?.hidePopover(); hexMenuTrigger.current?.focus(); },
               }))} />
             </div>
-            <input aria-label="Hex color" value={hexText} maxLength={9}
+            <input aria-label={tr('Hex color')} value={hexText} maxLength={9}
               onFocus={() => { hexFocused.current = true; }}
               onChange={event => {
               setHexText(event.target.value.toUpperCase());
@@ -288,10 +315,10 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
           </div>
         </div>
       </div>
-      {quickBarVisible ? <div className="fx-color-picker__quickbar" aria-label="Color shortcut bar">
-        <Tooltip title="Choose shortcut colors" topLayer>
+      {quickBarVisible ? <div className="fx-color-picker__quickbar" aria-label={tr('Color shortcut bar')}>
+        <Tooltip title={tr('Choose shortcut colors')} topLayer>
           <button ref={themeMenuTrigger} type="button" className="fx-color-picker__quickbar-select"
-            aria-label={`Shortcut colors: ${selectedTheme?.name ?? 'Recent'}`} aria-haspopup="menu"
+            aria-label={`${tr('Shortcut colors')}: ${selectedTheme?.name ?? tr('Recent')}`} aria-haspopup="menu"
             aria-expanded={themeMenuOpen} aria-controls={themeMenuId} onClick={() => {
               setRenamingTheme(false);
               if (togglePopover(themeMenu.current, themeMenuTrigger.current))
@@ -311,20 +338,20 @@ export function ColorPicker({ value, onChange, label }: ColorPickerProps) {
             renameColorTheme(selectedTheme.id, themeName);
             closeThemeMenu();
           }}>
-            <input ref={themeNameInput} aria-label="Theme name" maxLength={48} value={themeName}
+            <input ref={themeNameInput} aria-label={tr('Theme name')} maxLength={48} value={themeName}
               onChange={event => setThemeName(event.target.value)} />
-            <button type="submit" aria-label="Save theme name"><Check aria-hidden /></button>
-            <button type="button" aria-label="Cancel rename" onClick={() => setRenamingTheme(false)}><X aria-hidden /></button>
-          </form> : <Menu label="Color shortcut source" items={themeItems} />}
+            <button type="submit" aria-label={tr('Save theme name')}><Check aria-hidden /></button>
+            <button type="button" aria-label={tr('Cancel rename')} onClick={() => setRenamingTheme(false)}><X aria-hidden /></button>
+          </form> : <Menu label={tr('Color shortcut source')} items={themeItems} />}
         </div>
-        <Tooltip title={`Add selected color to ${quickColorDestination}`} topLayer>
-          <button type="button" className="fx-color-picker__quickbar-add" aria-label={`Add selected color to ${quickColorDestination}`}
+        <Tooltip title={`${tr('Add selected color to')} ${quickColorDestination}`} topLayer>
+          <button type="button" className="fx-color-picker__quickbar-add" aria-label={`${tr('Add selected color to')} ${quickColorDestination}`}
             onClick={() => addQuickColor(current)}><Plus aria-hidden /></button>
         </Tooltip>
         <div className="fx-color-picker__quickbar-colors">
           {quickColors.map((item, index) => <button key={`${colorHex(item)}-${index}`} type="button"
             className="fx-color-picker__quickbar-swatch fx-color-picker__transparent"
-            aria-label={`${selectedTheme?.name ?? 'Recent'} color ${index + 1}`}
+            aria-label={`${selectedTheme?.name ?? tr('Recent')} ${tr('color')} ${index + 1}`}
             style={{ '--swatch-color': previewColor(item) } as CSSProperties} onClick={() => update(item)} />)}
         </div>
       </div> : null}

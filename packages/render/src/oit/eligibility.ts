@@ -1,4 +1,5 @@
 import type { MaterialRenderState } from '@forgeax/engine-types';
+import { derivedRenderState } from '../material-render-state';
 
 /**
  * Why a transparent draw under a `weighted-blended` view stays in the sorted
@@ -103,6 +104,10 @@ export function classifyOitDraw(input: {
 export function oitAccumulateRenderState(
   state: MaterialRenderState | undefined,
 ): MaterialRenderState {
+  return derivedRenderState(state, 'oit-accumulate', accumulateState);
+}
+
+function accumulateState(state: MaterialRenderState | undefined): MaterialRenderState {
   const {
     blend: _blend,
     colorWriteMask: _mask,

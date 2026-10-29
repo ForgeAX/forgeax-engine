@@ -405,3 +405,41 @@ it('rejects owner retirement reentry before deleting a live source', async () =>
     f.dispose();
   }
 });
+
+it('counts copy-on-write for a leased allocation, then in-place writes, and retires layout edits', async () => {
+  const f = await fixture();
+  const lease = f.store.retainMeshResidency(f.handle);
+  assert(lease);
+  const counters = f.store.meshChangeCounters;
+  try {
+    f.update().unwrap();
+    expect(counters).toEqual({ inPlace: 0, copyOnWrite: 1, retired: 0 });
+    // The fork is already the key's generation; no complete re-preparation follows.
+    const create = vi.spyOn(f.device, 'createBuffer');
+    const forked = f.store.getMeshGpuHandles(f.handle);
+    assert(forked);
+    expect(forked.vertexBuffer).not.toBe(f.first.vertexBuffer);
+    expect(f.store.ensureResident(f.handle, f.current()).unwrap()).toBe(forked);
+    expect(f.first.vertexBuffer.isDestroyed).toBe(false);
+    f.update(Float32Array.of(1, 2, 3)).unwrap();
+    expect(counters).toEqual({ inPlace: 1, copyOnWrite: 1, retired: 0 });
+    expect(f.store.getMeshGpuHandles(f.handle)).toBe(forked);
+    expect(create).not.toHaveBeenCalled();
+    await lease.release(false);
+    expect(f.first.vertexBuffer.isDestroyed).toBe(true);
+    expect(forked.vertexBuffer.isDestroyed).toBe(false);
+    // A complete replacement changes geometry fields and falls back to re-preparation.
+    const observer = f.assets.observe().unwrap();
+    f.assets.replace(f.handle, createBoxGeometry(3, 3, 3).unwrap()).unwrap();
+    const batch = observer.read().unwrap();
+    const change = batch.changes.find((item) => item.handle === f.handle);
+    assert(change);
+    f.store.adoptMeshChange(change, f.current()).unwrap();
+    batch.accept();
+    observer.dispose();
+    expect(counters.retired).toBe(1);
+    expect(f.store.getMeshGpuHandles(f.handle)).toBeUndefined();
+  } finally {
+    f.dispose();
+  }
+});

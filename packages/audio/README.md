@@ -1,5 +1,9 @@
 # @forgeax/engine-audio
 
+## Host observation across realms
+
+An intent backend reports `contextState: 'unavailable'` and `activeSourceCount: null` until Host feedback arrives. These values mean no observation, not suspended playback or zero voices. App sends one serialized Host snapshot on each admitted Worker frame, including preparation, music, cache, streaming and error facts. Worker queries observe that snapshot; it can lag native playback by a frame. Transport failures remain local errors. Use the Host execution report for the current playback owner.
+
 > **Realm-neutral declarative audio subsystem.** Owns `AudioSource`, `AudioListener`, the ECS tick/plugin, the `AudioBackend` protocol, POD clip publications, and the closed intent vocabulary. Browser playback lives in `@forgeax/engine-audio-webaudio` and always remains Host-owned.
 
 ## Core surface
@@ -174,7 +178,7 @@ intents. Queries scan at most the declared capacities with cached inverses; no
 physics trigger, BVH, reverb preset asset, occlusion solver, multiple-listener
 mixing or geometry-derived impulse response is added.
 
-[The frozen acceptance contract](../audio-webaudio/bench/acoustic-contract.md)
+The frozen acceptance contract
 records geometry/PCM oracles, negative controls and performance/resource budgets.
 
 ## Error model (charter P3 explicit failure)
@@ -250,7 +254,7 @@ Routing, loop, bus and cone settings are sampled on the playing edge; stop and
 restart to change them. Live pose, volume, rate, pause and seek controls remain live.
 The native inverse-distance model uses reference distance 1 and rolloff 1.
 Directional cones affect gain, not obstruction, diffraction, Doppler or room
-acoustics. [Native measurements and reproduction](../audio-webaudio/bench/spatial-results.md).
+acoustics. Native measurements and reproduction.
 
 ## Quantized layered music
 
@@ -320,6 +324,6 @@ owner and its nodes. Streaming stems return `unsupported-stream`; MIDI and indep
 time stretching are outside this capability. The closed failure vocabulary and
 recovery fields live in [`src/music.ts`](src/music.ts).
 
-[Source choices and frozen measurement contract](../audio-webaudio/bench/music/contract.md)
+Source choices and frozen measurement contract
 
 AudioIntent declares each acoustic and bus operation once; Host consumers and Worker queues use that same closed union.

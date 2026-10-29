@@ -80,16 +80,43 @@ function firstFit(
   return firstFit(root.right, count, alignment);
 }
 
+const SPARE_RANGE = 256;
+const descending = (a: number, b: number) => b - a;
+
 /** Reusable physical ranges; changing one allocation never compacts another. */
 export class StableRangeAllocator {
   private next = 0;
   private free: FreeRange | undefined;
+  /** Released small ranges by exact count, outside the tree until reused or flushed.
+   * Reuse takes the lowest start, like first fit, so dirty uploads stay compact. */
+  private readonly spare = new Map<number, number[]>();
+  private readonly unsorted = new Set<number>();
+  private spareCount = 0;
+
+  /**
+   * `spareLimit` keeps up to that many released units of small ranges for
+   * exact-size reuse. Churn of a few recurring sizes then skips the tree;
+   * any allocation the tree cannot fit flushes them back before growing.
+   */
+  constructor(private readonly spareLimit = 0) {}
 
   allocate(count: number, alignment = 1): number {
     if (count <= 0) return 0;
     if (!Number.isSafeInteger(alignment) || alignment < 1)
       throw new RangeError('range alignment must be a positive integer');
+    const spare = this.spare.get(count);
+    if (spare !== undefined && this.unsorted.delete(count)) spare.sort(descending);
+    const reused = spare?.at(-1);
+    if (reused !== undefined && reused % alignment === 0) {
+      spare?.pop();
+      this.spareCount -= count;
+      return reused;
+    }
     let range = firstFit(this.free, count, alignment);
+    if (range === undefined && this.spareCount > 0) {
+      this.flushSpare();
+      range = firstFit(this.free, count, alignment);
+    }
     if (range === undefined) {
       let tail = this.free;
       while (tail?.right !== undefined) tail = tail.right;
@@ -102,12 +129,12 @@ export class StableRangeAllocator {
       const end = start + count;
       this.free = remove(this.free, previousStart);
       this.next = Math.max(this.next, end);
-      if (start > previousStart) this.release(previousStart, start - previousStart);
-      if (end < previousEnd) this.release(end, previousEnd - end);
+      if (start > previousStart) this.insertFree(previousStart, start - previousStart);
+      if (end < previousEnd) this.insertFree(end, previousEnd - end);
       return start;
     }
     const start = Math.ceil(this.next / alignment) * alignment;
-    if (start > this.next) this.release(this.next, start - this.next);
+    if (start > this.next) this.insertFree(this.next, start - this.next);
     this.next = start + count;
     return start;
   }
@@ -121,6 +148,29 @@ export class StableRangeAllocator {
 
   release(start: number, count: number): void {
     if (count <= 0) return;
+    if (count <= SPARE_RANGE && this.spareCount + count <= this.spareLimit) {
+      let spare = this.spare.get(count);
+      if (spare === undefined) {
+        spare = [];
+        this.spare.set(count, spare);
+      }
+      spare.push(start);
+      this.unsorted.add(count);
+      this.spareCount += count;
+      return;
+    }
+    this.insertFree(start, count);
+  }
+
+  private flushSpare(): void {
+    for (const [count, starts] of this.spare)
+      for (const start of starts) this.insertFree(start, count);
+    this.spare.clear();
+    this.unsorted.clear();
+    this.spareCount = 0;
+  }
+
+  private insertFree(start: number, count: number): void {
     let before: FreeRange | undefined;
     let after: FreeRange | undefined;
     let node = this.free;
@@ -150,8 +200,18 @@ export class StableRangeAllocator {
   requiredCapacity(): number {
     return this.next;
   }
+  /** End of the last live range; released tail capacity remains available for reuse. */
+  allocatedEnd(): number {
+    this.flushSpare();
+    let tail = this.free;
+    while (tail?.right !== undefined) tail = tail.right;
+    return tail !== undefined && tail.start + tail.count === this.next ? tail.start : this.next;
+  }
   reset(start = 0): void {
     this.next = start;
     this.free = undefined;
+    this.spare.clear();
+    this.unsorted.clear();
+    this.spareCount = 0;
   }
 }

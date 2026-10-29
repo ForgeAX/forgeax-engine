@@ -1,5 +1,4 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import { runtimeAssetReference } from '../../internal';
@@ -28,7 +27,8 @@ export async function loadMaterialFixture(
         kind: 'material',
         ...record.resolved,
         passes: record.resolved.passes as import('@forgeax/engine-types').MaterialPassList,
-        cooked: JSON.parse(serializeCookedMaterialRecord(record)),
+        // The publication fixture owns JSON encoding; retain byte views for its digest.
+        cooked: record,
       } as MaterialAsset,
     },
   ]);

@@ -91,6 +91,36 @@ function fixture(
   };
 }
 
+it('lets trusted production finish a build beyond the low-level fifteen-second default', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: ReturnType<typeof ok<PackOutputMap>>) => void;
+  const f = fixture(
+    definePack({
+      schemaVersion: '2.0.0',
+      packageId,
+      build: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    }),
+  );
+  let settled = false;
+  const pending = f
+    .lazy()
+    .build(context as never)
+    .then((value) => {
+      settled = true;
+      return value;
+    });
+  await vi.advanceTimersByTimeAsync(16_000);
+  expect(settled).toBe(false);
+  expect(f.active()).toBe(1);
+  finish(ok({}));
+  expect(await pending).toEqual(ok({}));
+  expect(f.releases).toEqual(['complete']);
+  expect(f.active()).toBe(0);
+});
+
 it('does not retain an executor for inventory and bounds serial execution to one live lease', async () => {
   const f = fixture();
   const definitions = Array.from({ length: 80 }, f.lazy);
@@ -203,9 +233,10 @@ it('preserves blocked read errors and reacquires a lease for a later worklist re
 });
 
 it.each([
-  'module-load',
-  'build',
-] as const)('retains the original 15000 ms %s timeout and releases its lease', async (phase) => {
+  // Both trusted phases stay finite under the busy-host authoring policy.
+  ['module-load', 120_000],
+  ['build', 120_000],
+] as const)('bounds the %s phase at %i ms and releases its lease', async (phase, timeoutMs) => {
   vi.useFakeTimers();
   const f = fixture(
     definePack({
@@ -216,14 +247,14 @@ it.each([
   );
   if (phase === 'module-load') f.load.mockImplementationOnce(() => new Promise<never>(() => {}));
   const pending = f.lazy().build(context as never);
-  await vi.advanceTimersByTimeAsync(14999);
+  await vi.advanceTimersByTimeAsync(timeoutMs - 1);
   expect(f.active()).toBe(1);
   await vi.advanceTimersByTimeAsync(1);
   expect(await pending).toMatchObject({
     ok: false,
     error: {
       code: 'pack-parameter-invalid',
-      detail: { reason: 'timeout', phase, timeoutMs: 15000 },
+      detail: { reason: 'timeout', phase, timeoutMs },
     },
   });
   expect(f.active()).toBe(0);

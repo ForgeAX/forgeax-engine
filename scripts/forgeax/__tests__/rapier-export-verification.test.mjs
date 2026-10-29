@@ -13,10 +13,7 @@ test('Rapier export verification accepts its real payload and refuses changed gl
   await mkdir(resolve(root, 'scripts/forgeax'), { recursive: true });
   await mkdir(resolve(root, 'packages/physics-rapier2d'), { recursive: true });
   await mkdir(resolve(root, 'scripts/lib'), { recursive: true });
-  await cp(
-    resolve('scripts/lib/rust-build-paths.mjs'),
-    resolve(root, 'scripts/lib/rust-build-paths.mjs'),
-  );
+  await cp(resolve('scripts/lib'), resolve(root, 'scripts/lib'), { recursive: true });
   for (const directory of ['scripts', 'patches'])
     await cp(
       resolve('packages/physics-rapier3d', directory),

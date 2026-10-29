@@ -1,6 +1,6 @@
 import { type Buffer, RhiError } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
-import { meshSsboBufferBinding, writeMeshSsboBuffer } from '../assembly/mesh-ssbo-grow';
+import { writeMeshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialSnapshot } from '../render-system-extract';
@@ -182,14 +182,25 @@ const resourceChains = new WeakMap<object, unknown>();
 const resourceLeaf = {};
 export function materialUniformResources(handles: readonly object[]): object {
   let node = resourceChains;
-  for (const handle of handles) {
-    let next = node.get(handle) as WeakMap<object, unknown> | undefined;
-    if (next === undefined) {
-      next = new WeakMap();
-      node.set(handle, next);
-    }
-    node = next;
+  for (const handle of handles) node = resourceChild(node, handle);
+  return resourceIdentity(node);
+}
+
+/** `materialUniformResources([resources, extra])` without the per-draw array. */
+function extendedUniformResources(resources: object, extra: object): object {
+  return resourceIdentity(resourceChild(resourceChild(resourceChains, resources), extra));
+}
+
+function resourceChild(node: WeakMap<object, unknown>, handle: object): WeakMap<object, unknown> {
+  let next = node.get(handle) as WeakMap<object, unknown> | undefined;
+  if (next === undefined) {
+    next = new WeakMap();
+    node.set(handle, next);
   }
+  return next;
+}
+
+function resourceIdentity(node: WeakMap<object, unknown>): object {
   let identity = node.get(resourceLeaf) as object | undefined;
   if (identity === undefined) {
     identity = {};
@@ -203,6 +214,54 @@ interface Payload {
 }
 const payloads = new WeakMap<MaterialSnapshot, WeakMap<object, Payload>>();
 const writers = new WeakMap<Buffer, Map<number, Payload>>();
+
+type UploadProofOperation = 'check' | 'forget' | 'remember';
+
+function uploadTargetProof(
+  buffer: Buffer,
+  offset: number,
+  payload: Payload,
+  operation: UploadProofOperation,
+): boolean {
+  let offsets = writers.get(buffer);
+  if (operation === 'check') return offsets?.get(offset) === payload;
+  if (operation === 'forget') offsets?.delete(offset);
+  else {
+    if (offsets === undefined) {
+      offsets = new Map();
+      writers.set(buffer, offsets);
+    }
+    offsets.set(offset, payload);
+  }
+  return true;
+}
+
+/** Walk physical targets directly: no per-draw arrays and no scratch spanning queue callbacks. */
+function uploadTargetsProof(
+  buffer: Buffer | null,
+  pages: PerSubmeshMaterialBgDeps['pipelineState']['materialUniformBuffer']['pages'],
+  byteOffset: number,
+  payload: Payload,
+  operation: UploadProofOperation,
+): boolean {
+  if (pages === undefined) {
+    if (buffer === null) throw new Error('Material upload requires an allocated buffer');
+    return uploadTargetProof(buffer, byteOffset, payload, operation);
+  }
+  const first = Math.max(0, Math.floor((byteOffset - pages.byteSize) / pages.byteStride) + 1);
+  const last = Math.min(
+    pages.buffers.length - 1,
+    Math.floor((byteOffset + payload.bytes.byteLength - 1) / pages.byteStride),
+  );
+  for (let index = first; index <= last; index++) {
+    const target = pages.buffers[index];
+    if (target === undefined)
+      throw new Error('Material upload requires an allocated physical page');
+    const offset = Math.max(0, byteOffset - index * pages.byteStride);
+    if (!uploadTargetProof(target, offset, payload, operation)) return false;
+  }
+  return first <= last;
+}
 
 function counters(frameState: PerSubmeshMaterialBgDeps['frameState']) {
   frameState.materialUboCounters ??= {
@@ -229,8 +288,8 @@ export function prepareMaterialUniform(
   const { runtime, pipelineState, frameState } = deps;
   const inspection = counters(frameState);
   const parameters = runtime.preparedMaterialParameters?.(material);
-  if (parameters !== undefined) resources = materialUniformResources([resources, parameters]);
-  if (missingBaseColor) resources = materialUniformResources([resources, missingResources]);
+  if (parameters !== undefined) resources = extendedUniformResources(resources, parameters);
+  if (missingBaseColor) resources = extendedUniformResources(resources, missingResources);
   const slots = allocation(runtime);
   const slot = slots.slot(material, resources);
   const capacity =
@@ -287,44 +346,22 @@ export function prepareMaterialUniform(
     inspection.packMisses++;
   } else inspection.packHits++;
 
+  const queue = runtime.device.queue;
   const storage = pipelineState.materialUniformBuffer;
-  const byteOffset = slot * MATERIAL_PER_ENTITY_STRIDE;
-  const targets: { buffer: Buffer; offset: number }[] = [];
+  // The growth owner publishes replacement buffers/pages atomically and never
+  // edits an accepted page roster. Keep those physical identities across a
+  // queue callback, which may prepare another material and grow this wrapper.
+  const buffer = storage.buffer;
   const pages = storage.pages;
-  if (pages === undefined) {
-    const binding = meshSsboBufferBinding(storage, byteOffset);
-    targets.push({ buffer: binding.buffer, offset: binding.byteOffset });
-  } else {
-    const first = Math.max(0, Math.floor((byteOffset - pages.byteSize) / pages.byteStride) + 1);
-    const last = Math.min(
-      pages.buffers.length - 1,
-      Math.floor((byteOffset + payload.bytes.byteLength - 1) / pages.byteStride),
-    );
-    for (let index = first; index <= last; index++) {
-      const buffer = pages.buffers[index];
-      if (buffer === undefined)
-        throw new Error('Material upload requires an allocated physical page');
-      targets.push({ buffer, offset: Math.max(0, byteOffset - index * pages.byteStride) });
-    }
-  }
-  if (
-    targets.length > 0 &&
-    targets.every(({ buffer, offset }) => writers.get(buffer)?.get(offset) === payload)
-  ) {
+  const byteOffset = slot * MATERIAL_PER_ENTITY_STRIDE;
+  if (uploadTargetsProof(buffer, pages, byteOffset, payload, 'check')) {
     inspection.skippedUploads++;
     return slot;
   }
   // Proof spans every intersecting page, and is published only after the full write succeeds.
-  for (const { buffer, offset } of targets) writers.get(buffer)?.delete(offset);
-  writeMeshSsboBuffer(runtime.device.queue, storage, byteOffset, payload.bytes);
-  for (const { buffer, offset } of targets) {
-    let written = writers.get(buffer);
-    if (written === undefined) {
-      written = new Map();
-      writers.set(buffer, written);
-    }
-    written.set(offset, payload);
-  }
+  uploadTargetsProof(buffer, pages, byteOffset, payload, 'forget');
+  writeMeshSsboBuffer(queue, storage, byteOffset, payload.bytes);
+  uploadTargetsProof(buffer, pages, byteOffset, payload, 'remember');
   inspection.uploadRanges++;
   inspection.uploadedLogicalBytes += payload.bytes.byteLength;
   return slot;

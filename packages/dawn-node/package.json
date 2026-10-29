@@ -30,8 +30,18 @@
     "build:native": "node scripts/prepare-native.mjs"
   },
   "dependencies": {
-    "upstream-webgpu": "npm:webgpu@0.4.0",
     "@webgpu/types": "0.1.71"
+  },
+  "peerDependencies": {
+    "upstream-webgpu": "npm:webgpu@0.4.0"
+  },
+  "peerDependenciesMeta": {
+    "upstream-webgpu": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "upstream-webgpu": "npm:webgpu@0.4.0"
   },
   "forgeax": {
     "metrics": {

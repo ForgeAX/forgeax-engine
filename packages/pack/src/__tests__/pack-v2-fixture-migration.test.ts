@@ -7,21 +7,16 @@ const root = resolve(import.meta.dirname, '../../../../');
 
 const fixtures = [
   {
-    path: 'apps/hello/cube/assets/cube-mesh.pack.json',
-    assets: [{ guid: 'cbe42beb-8975-5096-b3a1-3dda4cb4c077', refs: [] }],
-  },
-  {
     path: 'apps/hello/room/assets/room.pack.json',
     assets: [
       {
         guid: '019e2808-d3ba-735f-811f-ae7bbb465392',
         refs: [
-          'cbe42beb-8975-5096-b3a1-3dda4cb4c077',
+          '440eb5ef-dcfd-5bc5-80ac-e16ebe5fd4bd',
           'f6af7007-158f-4d92-9e47-93bf2f213e1f',
           '008e4f75-e7a3-4715-b05b-b93a9ec12074',
         ],
       },
-      { guid: 'cbe42beb-8975-5096-b3a1-3dda4cb4c077', refs: [] },
       { guid: 'f6af7007-158f-4d92-9e47-93bf2f213e1f', refs: [] },
       { guid: '008e4f75-e7a3-4715-b05b-b93a9ec12074', refs: [] },
     ],

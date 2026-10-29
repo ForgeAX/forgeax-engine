@@ -283,8 +283,8 @@ export class ViewWorkspaceClient {
     return this.call<EngineWorkspaceCameraResult>('camera.get', { tabId, targetGeneration, ...(targetId === undefined ? {} : { targetId }) }, options);
   }
 
-  getPreviewDisplay({ targetId, targetGeneration, tabId, ...options }: WorkspaceTargetOptions) {
-    return this.call<WorkspacePreviewDisplay>('preview.display.get', { targetId, targetGeneration, tabId }, options);
+  getPreviewDisplay({ targetId, targetGeneration, tabId, uvChannel, ...options }: WorkspaceTargetOptions & { uvChannel?: number }) {
+    return this.call<WorkspacePreviewDisplay>('preview.display.get', { targetId, targetGeneration, tabId, ...(uvChannel === undefined ? {} : { uvChannel }) }, options);
   }
 
   setPreviewDisplay(display: WorkspacePreviewDisplayOptions, { targetId, targetGeneration, tabId, ...options }: WorkspaceTargetOptions) {

@@ -1,5 +1,6 @@
 import type { Buffer, RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { textureFormatBlock } from '@forgeax/engine-types';
+import { uuidv7 } from 'uuidv7';
 import type { RenderError } from '../errors/render';
 import {
   RenderTargetCapabilityMissingError,
@@ -165,7 +166,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
   const activePhysical = new WeakMap<object, RenderTargetPhysical>();
   const candidatePhysical = new WeakMap<object, RenderTargetPhysical>();
   const submittedPhysicals = new WeakSet<RenderTargetPhysical>();
-  const sourceOwner = crypto.randomUUID();
+  const sourceOwner = uuidv7();
   let nextSourceId = 1;
   const readbacks = new Map<RenderTargetReadbackTicket, ReadbackRecord>();
   const frameWriters = new Set<RenderTarget>();

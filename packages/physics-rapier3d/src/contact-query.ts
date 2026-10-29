@@ -7,20 +7,22 @@ import {
   type PhysicsVector,
 } from '@forgeax/engine-physics';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { Collider, RigidBody, World } from '../pkg/rapier.mjs';
+import type { RigidBody, World } from '../pkg/rapier.mjs';
 
 const limit = 4096;
 type ContactOwner = { readonly entity: number; readonly shape?: string; readonly body: RigidBody };
-type ResolveOwner = (collider: Collider) => ContactOwner | undefined;
+/** Resolve a collider handle and its native parent body to its managed owner. */
+type ResolveOwner = (collider: number, parent: RigidBody | null) => ContactOwner | undefined;
 type VisitKind = 'colliders' | 'pairs' | 'manifolds' | 'points';
+type PhysicsVectorLike = { readonly x: number; readonly y: number; readonly z: number };
 
 export function currentContactOwner(
-  collider: Collider,
+  collider: number,
+  parent: RigidBody | null,
   entities: ReadonlyMap<number, { readonly bodyHandle: number }>,
   world: EcsWorld | undefined,
   shapes: ReadonlyMap<number, { readonly id: string }>,
 ): ContactOwner | undefined {
-  const parent = collider.parent();
   if (parent === null || parent === undefined) return undefined;
   const owner = parent.userData;
   if (
@@ -31,8 +33,9 @@ export function currentContactOwner(
         world.hasComponent(owner as EntityHandle, Disabled)))
   )
     return undefined;
-  const shape = shapes.get(collider.handle);
-  return { entity: owner, body: parent, ...(shape ? { shape: shape.id } : {}) };
+  const shape = shapes.get(collider);
+  // One literal per branch: a conditional spread allocated a temporary per contact pair.
+  return shape ? { entity: owner, body: parent, shape: shape.id } : { entity: owner, body: parent };
 }
 
 /** Both projections share completed-step admission and retain atomic query failures. */
@@ -83,36 +86,67 @@ class ContactQueryBudget {
   }
 }
 
+/** One native contact row of a body: handles plus solver-manifold facts. */
+interface ContactPairRow {
+  readonly collider: number;
+  readonly other: number;
+  readonly manifolds: number;
+  /** 1 touching, 0 not touching, -1 a non-finite solver normal before any match. */
+  readonly touching: number;
+}
+
+/**
+ * Visit a body's managed contact pairs from one native roster read. The native
+ * pass applies the enabled/sensor/group admission per pair in native order;
+ * owner resolution, liveness and the visit budget stay here with the same
+ * per-pair accounting as the former per-collider callback walk.
+ */
 function visitContactPairs(
   world: World,
   body: RigidBody,
   owner: ResolveOwner,
   budget: ContactQueryBudget,
   filterMask: number | undefined,
-  visit: (collider: Collider, other: Collider, own: ContactOwner, otherOwner: ContactOwner) => void,
+  direction: PhysicsVectorLike | undefined,
+  minimumDot: number | undefined,
+  visit: (row: ContactPairRow, own: ContactOwner, otherOwner: ContactOwner) => void,
 ): void {
-  const colliderCount = body.numColliders();
-  budget.add('colliders', colliderCount);
-  for (let index = 0; index < colliderCount; index += 1) {
-    const collider = body.collider(index);
-    if (!collider?.isEnabled() || collider.isSensor()) continue;
-    const own = owner(collider);
-    if (!own) continue;
-    world.contactPairsWith(collider, (other) => {
-      budget.add('pairs');
-      // Native adjacency can retain a removed collider until the next step.
-      if (!other) return;
-      if (!other.isEnabled() || other.isSensor()) return;
-      if (filterMask !== undefined) {
-        const groups = other.collisionGroups();
-        if (((groups >>> 16) & filterMask) === 0 || ((filterMask >>> 16) & groups) === 0) return;
+  budget.add('colliders', body.numColliders());
+  const rows = world.narrowPhase.bodyContactPairs(
+    world.bodies,
+    world.colliders,
+    body.handle,
+    filterMask,
+    direction,
+    minimumDot,
+  );
+  let index = 0;
+  while (index < rows.length) {
+    const collider = rows[index] as number;
+    const end = index + 2 + (rows[index + 1] as number) * 4;
+    index += 2;
+    const own = owner(collider, body);
+    // An unowned own collider is skipped without charging its pairs.
+    if (own)
+      for (let row = index; row < end; row += 4) {
+        budget.add('pairs');
+        // Removed, disabled, sensor and masked-out partners carry -1 manifolds.
+        // Reject them before Native parent reads and ECS liveness checks.
+        const manifolds = rows[row + 2] as number;
+        if (manifolds < 0) continue;
+        const parent = rows[row + 1] as number;
+        const otherOwner = owner(
+          rows[row] as number,
+          Number.isNaN(parent) ? null : world.bodies.get(parent),
+        );
+        if (!otherOwner || otherOwner.entity === own.entity) continue;
+        visit(
+          { collider, other: rows[row] as number, manifolds, touching: rows[row + 3] as number },
+          own,
+          otherOwner,
+        );
       }
-      // Reject unrelated collision layers before Native parent reads and ECS
-      // liveness checks. Rubble piles query actor and support layers separately.
-      const otherOwner = owner(other);
-      if (!otherOwner || otherOwner.entity === own.entity) return;
-      visit(collider, other, own, otherOwner);
-    });
+    index = end;
   }
 }
 
@@ -138,52 +172,67 @@ export function queryContactManifolds(
       });
     return [value.x, value.y, value.z];
   };
-  visitContactPairs(world, body, owner, budget, filterMask, (collider, other, own, otherOwner) => {
-    const otherBody = otherOwner.body;
-    const awake =
-      (body.isDynamic() && !body.isSleeping()) ||
-      (otherBody.isDynamic() && !otherBody.isSleeping());
-    world.narrowPhase.contactPair(
-      collider.handle,
-      other.handle,
-      world.bodies,
-      (manifold, flipped) => {
-        budget.add('manifolds');
-        const pointCount = manifold.numSolverContacts();
-        budget.add('points', pointCount);
-        if (pointCount === 0) return;
-        const normal = vector(manifold.normal());
-        const points: PhysicsVector[] = new Array(pointCount);
-        for (let point = 0; point < pointCount; point += 1)
-          points[point] = vector(manifold.solverContactPoint(point));
-        let normalImpulse: number | null = null;
-        if (awake) {
-          normalImpulse = 0;
-          for (let contact = 0; contact < pointCount; contact += 1) {
-            const impulse = manifold.solverContactImpulse(contact);
-            if (!Number.isFinite(impulse) || impulse < 0)
+  visitContactPairs(
+    world,
+    body,
+    owner,
+    budget,
+    filterMask,
+    undefined,
+    undefined,
+    (row, own, otherOwner) => {
+      // A pair without any solver contact contributes only its empty manifold
+      // roster; skip the per-manifold native reads for it.
+      if (row.touching === 0) {
+        budget.add('manifolds', row.manifolds);
+        return;
+      }
+      const otherBody = otherOwner.body;
+      const awake =
+        (body.isDynamic() && !body.isSleeping()) ||
+        (otherBody.isDynamic() && !otherBody.isSleeping());
+      world.narrowPhase.contactPair(
+        row.collider,
+        row.other,
+        world.bodies,
+        (manifold, flipped) => {
+          budget.add('manifolds');
+          const pointCount = manifold.numSolverContacts();
+          budget.add('points', pointCount);
+          if (pointCount === 0) return;
+          const normal = vector(manifold.normal());
+          const points: PhysicsVector[] = new Array(pointCount);
+          for (let point = 0; point < pointCount; point += 1)
+            points[point] = vector(manifold.solverContactPoint(point));
+          let normalImpulse: number | null = null;
+          if (awake) {
+            normalImpulse = 0;
+            for (let contact = 0; contact < pointCount; contact += 1) {
+              const impulse = manifold.solverContactImpulse(contact);
+              if (!Number.isFinite(impulse) || impulse < 0)
+                throw new ManagedPhysicsError('managed-physics-unavailable', {
+                  reason: 'current contact query requires finite nonnegative native impulses',
+                });
+              normalImpulse += impulse;
+            }
+            if (!Number.isFinite(normalImpulse))
               throw new ManagedPhysicsError('managed-physics-unavailable', {
-                reason: 'current contact query requires finite nonnegative native impulses',
+                reason: 'current contact impulse sum exceeds finite numeric range',
               });
-            normalImpulse += impulse;
           }
-          if (!Number.isFinite(normalImpulse))
-            throw new ManagedPhysicsError('managed-physics-unavailable', {
-              reason: 'current contact impulse sum exceeds finite numeric range',
-            });
-        }
-        result.push({
-          other: otherOwner.entity,
-          ...(own.shape === undefined ? {} : { shape: own.shape }),
-          ...(otherOwner.shape === undefined ? {} : { otherShape: otherOwner.shape }),
-          normal: flipped ? [-normal[0], -normal[1], -normal[2]] : normal,
-          points,
-          normalImpulse,
-        });
-      },
-      true,
-    );
-  });
+          result.push({
+            other: otherOwner.entity,
+            ...(own.shape === undefined ? {} : { shape: own.shape }),
+            ...(otherOwner.shape === undefined ? {} : { otherShape: otherOwner.shape }),
+            normal: flipped ? [-normal[0], -normal[1], -normal[2]] : normal,
+            points,
+            normalImpulse,
+          });
+        },
+        true,
+      );
+    },
+  );
   return result;
 }
 
@@ -216,19 +265,24 @@ export function queryContactNeighbors(
         };
   const result = new Set<number>();
   const budget = new ContactQueryBudget(entity);
-  visitContactPairs(world, body, owner, budget, filterMask, (collider, other, _own, otherOwner) => {
-    if (result.has(otherOwner.entity)) return;
-    const pair = world.narrowPhase.contactPairHasSolverContact(
-      collider.handle,
-      other.handle,
-      budget.remaining,
-      direction,
-      normalFilter?.minimumDot,
-    );
-    // Charge the complete roster, including native any()'s unvisited tail.
-    // The native wrapper skips the scan when that roster exceeds the budget.
-    budget.add('manifolds', pair.manifoldCount);
-    if (pair.touching) result.add(otherOwner.entity);
-  });
+  visitContactPairs(
+    world,
+    body,
+    owner,
+    budget,
+    filterMask,
+    direction,
+    normalFilter?.minimumDot,
+    (row, _own, otherOwner) => {
+      if (result.has(otherOwner.entity)) return;
+      // Charge the complete roster, including native any()'s unvisited tail.
+      budget.add('manifolds', row.manifolds);
+      if (row.touching < 0)
+        throw new ManagedPhysicsError('managed-physics-unavailable', {
+          reason: 'current contact query failed: current contacts require a finite solver normal',
+        });
+      if (row.touching > 0) result.add(otherOwner.entity);
+    },
+  );
   return [...result];
 }

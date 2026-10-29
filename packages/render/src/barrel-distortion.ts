@@ -31,6 +31,8 @@ export interface BarrelDistortionCameraFrame extends Pick<CameraSnapshot, 'proje
 // and remains rejected.
 const COMPUTED_UV_BOUNDARY_EPSILON = Number.EPSILON * 16;
 
+const ownedMappings = new WeakSet<BarrelDistortionMapping>();
+
 /**
  * Detach and deep-freeze a mapping before it crosses a public or realm
  * boundary. Worker structured cloning drops the source object's frozen state,
@@ -39,8 +41,11 @@ const COMPUTED_UV_BOUNDARY_EPSILON = Number.EPSILON * 16;
 export function freezeBarrelDistortionMapping(
   mapping: BarrelDistortionMapping,
 ): BarrelDistortionMapping {
+  // A same-realm immutable publication is already detached. Structured clone
+  // creates a different identity, so receiving realms still freeze their copy.
+  if (ownedMappings.has(mapping)) return mapping;
   const camera = mapping.camera;
-  return Object.freeze({
+  const fixed = Object.freeze({
     ...mapping,
     ...(camera === undefined
       ? {}
@@ -53,9 +58,11 @@ export function freezeBarrelDistortionMapping(
           }),
         }),
   });
+  ownedMappings.add(fixed);
+  return fixed;
 }
 
-/** Attach the unjittered camera facts at the queue-submit publication boundary. */
+/** Detach current unjittered camera facts at the submission boundary. */
 export function attachBarrelDistortionCameraFrame(
   mapping: BarrelDistortionMapping,
   camera: BarrelDistortionCameraFrame,

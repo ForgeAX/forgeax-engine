@@ -10,7 +10,9 @@ forgeax-engine. A **leaf** package: depends on `@forgeax/engine-ecs` (`Result`),
 - **Surface**: reusable 3D procedural factories
   (`createBoxGeometry` / `createCapsuleGeometry` / `createConeGeometry` /
   `createCylinderGeometry` / `createPlaneGeometry` / `createSphereGeometry` /
-  `createTorusGeometry` / `createExtrusionGeometry` / `createSweepGeometry` /
+  `createTorusGeometry` / `createIcosahedronGeometry` /
+  `createDodecahedronGeometry` / `createOctahedronGeometry` /
+  `createTetrahedronGeometry` / `createExtrusionGeometry` / `createSweepGeometry` /
   `createRevolutionGeometry` / `createProfileSweepGeometry`),
   each returning `Result<MeshAsset, AssetError>`; the vertex-attribute-layout
   SSOT (`deriveVertexBufferLayout` / `buildMeshAttributeMapForUvSets` /
@@ -39,10 +41,13 @@ an authoring map's attributes derives a different mask without retaining the map
 or its buffers. Layout offsets, formats, and digests still derive from the one
 canonical attribute schema.
 
-Runtime Mesh decoding uses the same canonical preparation for JSON, procedural
-descriptors and binary bodies. A binary body excludes duplicate JSON geometry.
+Runtime Mesh decoding uses the same canonical preparation for JSON and binary
+bodies; a symbolic geometry token is not a Mesh payload and fails as
+`asset-package-invalid`. A binary body excludes duplicate JSON geometry.
 Empty meshes retain zero vertices and finite zero bounds; an empty index array
 on a nonempty mesh selects vertex-only geometry.
+
+Attribute presence maps such as `DEFAULT_VERTEX_ATTRIBUTE_MAP` are layout declarations, not populated runtime mesh channels. A nonempty raw `MeshAsset` must supply complete finite channels matching its packed vertices. Prefer `createMeshBuilder` for custom authored data; for an existing canonical packed stream, use `unpackInterleavedVertexAttributes` with its layout projection instead of maintaining a second deinterleaver. Zero-vertex geometry still declares a valid triangle-list submesh and material slot; `submeshes: []` remains invalid.
 
 `unpackInterleavedVertexAttributes` copies the complete attribute set into one
 owned backing buffer with nonoverlapping typed views. Respect each view's byte
@@ -57,7 +62,37 @@ canonical position/normal/UV/tangent data and indexed submeshes, then call
 `build()` once to obtain a `Result<MeshAsset, AssetError>`. The builder derives
 the interleaved vertex layout, index width, submesh ranges, and AABB from the
 same attribute-layout and bounds owners used by procedural factories; callers
-do not maintain a second stride, bounds, or layout table. Malformed cardinality,
+do not maintain a second stride, bounds, or layout table.
+
+All indexed submeshes address the same accumulated vertex stream.
+`appendIndices` retains raw values; appending vertices does not rebase them.
+For two separate three-vertex batches, indices `[0, 1, 2]` select the first
+batch and `[3, 4, 5]` select the second. Reusing `[0, 1, 2]` intentionally
+shares the first batch. `indexOffset` selects a range in the index buffer;
+it is not a vertex base, and `vertexCount` does not move that base.
+
+When the mesh has `triangle-list` or `triangle-strip` submeshes, `build()` also
+completes the surface stream that stock materials read; line and point
+submeshes share the completed stream, and point/line-only meshes are left as
+authored. A fully authored normal/uv/tangent stream is returned untouched.
+
+- An omitted `normal` becomes area-weighted vertex normals, smooth across
+  shared indices. glTF asks for flat normals when they are missing; here flat
+  shading comes from not sharing vertices between faces, so the builder never
+  changes the authored vertex or index count.
+- An omitted `uv` becomes zeros. A textured material on such a mesh samples
+  texel (0, 0) everywhere; author UVs when the surface is textured.
+- An omitted `tangent` is derived from the UV basis (`computeTangentVec4`)
+  using normalized authored normals, per vertex; a vertex with a zero normal
+  (unused, or on a degenerate triangle) takes its face normal, and vertices
+  without a UV basis take a normal-plane frame with `w = 1`. Completion never
+  fails the build. Authored attributes are published verbatim.
+
+Shader UV sets a mesh lacks are aliased inside its uploaded vertex: to the last
+present UV set, or to `position.xy` for a raw UV-less `MeshAsset` (the vertex
+stride never grows, so direct and GPU-driven draws read the same bytes).
+
+Malformed cardinality,
 non-finite attributes, out-of-range indices, and empty commits fail with the
 existing structured `asset-parse-failed` detail. A rejected build can be
 repaired and retried without publishing a partial mesh.
@@ -126,6 +161,15 @@ locations `0..12` remain unchanged. Render and asset consumers carry this
 projection instead of calculating offsets or a parallel stride. See
 [`VertexAttributeMap`](../types/src/index.ts) for the public POD shape.
 
+`withVertexColor(mesh, rgbaLinear)` adds or replaces the canonical `color`
+attribute with one constant linear RGBA value and repacks the interleaved
+vertices; index, tangent, bounds and submesh facts are preserved. Engine Content
+uses it to give its meshes a white vertex color.
+
+`withVertexColors(mesh, colors, { space })` sets per-vertex colours (RGB or RGBA floats
+per vertex, linear by default, `space: 'srgb'` decodes RGB) and repacks the
+interleaved vertices, so no `packInterleavedVertexAttributes` call is needed.
+
 ### 30s hands-on example
 
 ```ts
@@ -134,7 +178,7 @@ import { createBoxGeometry, createSphereGeometry } from '@forgeax/engine-geometr
 // 1. Build a unit box (6 faces, 1 segment per edge)
 const box = createBoxGeometry(1, 1, 1);
 if (!box.ok) return; // box.error.code === 'asset-parse-failed'
-console.log(box.value.vertexCount); // 24 (4 vertices * 6 faces)
+console.log(box.value.submeshes[0]?.vertexCount); // 24 (4 vertices * 6 faces); MeshAsset has no top-level vertexCount
 
 // 2. Build a UV sphere and hand the MeshAsset to the AssetRegistry for a handle
 const sphere = createSphereGeometry(1, 32, 24);
@@ -147,7 +191,7 @@ The primitive factories cover the common built-in shapes. For reusable authored
 geometry, `createExtrusionGeometry` triangulates a concave contour with holes,
 adds caps and outward walls, and optionally bevels both rims.
 `createProfileSweepGeometry` transports a polygon section along a sampled 3D
-path; `createSweepGeometry` provides circular profiles, and
+path; `createSweepGeometry` provides smooth-shaded circular profiles, and
 `createRevolutionGeometry` turns a `(radius, height)` profile around Y. Each operation validates finite input before
 allocating a MeshAsset and returns through the same tangent, layout, and AABB
 owners. For an imported
@@ -229,14 +273,15 @@ time; expanded to the 12-float runtime layout (adds tangent vec4) by
 |:--|:--|:--|
 | `createBoxGeometry` | `(w, h, d, wSeg?, hSeg?, dSeg?)` | 1 / dim |
 | `createCapsuleGeometry` | `(radius, length, capSeg?, radSeg?)` | capSeg >= 1, radSeg >= 3; total height = length + 2*radius (Bevy `Capsule3d` convention) |
-| `createConeGeometry` | `(radius, height, radSeg?, hSeg?)` | radSeg=16; delegates to cylinder with top=0 |
-| `createCylinderGeometry` | `(rTop, rBottom, h, radSeg?, hSeg?)` | radSeg=16; at least one radius > 0 |
+| `createConeGeometry` | `(radius, height, radSeg?, hSeg?, openEnded?)` | radSeg=16; delegates to cylinder with top=0 |
+| `createCylinderGeometry` | `(rTop, rBottom, h, radSeg?, hSeg?, openEnded?)` | radSeg=16; at least one radius > 0; `openEnded` (Three.js) omits both caps |
 | `createPlaneGeometry` | `(w, h, wSeg?, hSeg?)` | 1 / dim; XY plane, +Z normal |
 | `createSphereGeometry` | `(radius, wSeg?, hSeg?)` | wSeg >= 3, hSeg >= 2 |
 | `createTorusGeometry` | `(radius, tube, radSeg?, tubSeg?)` | radSeg >= 3, tubSeg >= 3 |
+| `createIcosahedronGeometry`, `createDodecahedronGeometry`, `createOctahedronGeometry`, `createTetrahedronGeometry` | `(radius = 1, detail = 0, { normals? })` | integer detail in [0, 64]; Three.js `PolyhedronGeometry`: each face splits into (detail + 1)^2 unshared triangles on the sphere, flat normals at detail 0 and sphere normals above unless `normals` is `'flat'` or `'smooth'` |
 | `createExtrusionGeometry` | `(contour, depth, options?)` | Simple outer contour with disjoint interior holes; depth > 0 |
 | `createProfileSweepGeometry` | `(shape, path, options?)` | Simple polygon section (including holes), sampled 3D path; bounded transport frames |
-| `createSweepGeometry` | `(path, radius, radialSeg?)` | 2+ distinct finite 3D points, radius > 0, radialSeg >= 3 |
+| `createSweepGeometry` | `(path, radius, radialSeg?, { capped? })` | 2+ distinct finite 3D points, radius > 0, radialSeg >= 3; open paths capped by default |
 | `createRevolutionGeometry` | `(profile, radialSeg?)` | 2+ finite non-negative-radius points spanning height, radialSeg >= 3 |
 
 All factories populate `position` / `normal` / `uv` attributes with lowercase
@@ -532,7 +577,7 @@ identity is checked by the capture consumer before GPU allocation. This preparat
 has CPU/codec/cooker tests; representative GPU capture and residency acceptance
 belongs to the ongoing software-representation iteration.
 
-Measured examples, pinned source references and RHI replay evidence: [advanced modeling report](docs/advanced-modeling.md).
+Measured examples, pinned source references and RHI replay evidence: advanced modeling report.
 
 ### Mesh publication boundary
 
@@ -550,6 +595,17 @@ than dropping it. Use Import's complete Mesh output producer for export; it
 validates and emits the existing field artifact alongside either binary or JSON
 geometry. `normalizeMeshPayload` likewise requires complete publication handling
 when a distance-field attachment is present.
+
+### Circular sweep frames and caps
+
+`createSweepGeometry` carries each ring's X axis from the previous ring by
+projection onto the new cross-section plane, so rings do not flip when the path
+tangent crosses a world-axis threshold. The seam column shares exact positions
+with column zero. `capped` (default `true`, the profile sweep option) closes both
+open ends with fans whose normals are the outward end tangents; cap rings copy
+the tube ring positions bit-for-bit, so the position-welded result is a closed,
+consistently oriented 2-manifold. Cap UVs are planar, mapping the unit disc into
+`[0, 1]^2`. A closed path (repeated endpoint) never receives caps.
 
 ### Profile sweep UV and degeneracy
 

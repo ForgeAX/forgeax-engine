@@ -1,4 +1,10 @@
 import type { MeshAsset } from '@forgeax/engine-types';
+import {
+  isPackedRowsMesh,
+  type PackedRowsMesh,
+  packedRowsMeshError,
+  unpackPackedRows,
+} from './packed-rows-mesh';
 
 function sameMeshByteRange(
   left: ArrayBufferLike,
@@ -64,8 +70,12 @@ export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
   return owned(mesh) ? mesh : copyPublishedMesh(mesh);
 }
 
-/** Compare a structured-cloned Mesh POD without replacing its resource identity. */
+/**
+ * Compare a structured-cloned Mesh POD without replacing its resource identity.
+ * A packed-rows mesh is compared with a full mesh by `samePackedAndFullMesh`.
+ */
 export function samePublishedMesh(left: MeshAsset, right: MeshAsset): boolean {
+  if (isPackedRowsMesh(left) !== isPackedRowsMesh(right)) return samePackedAndFullMesh(left, right);
   const same = (a: unknown, b: unknown): boolean => {
     if (Object.is(a, b)) return true;
     if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
@@ -102,4 +112,31 @@ export function samePublishedMesh(left: MeshAsset, right: MeshAsset): boolean {
     return true;
   };
   return same(left, right);
+}
+
+/**
+ * A packed-rows mesh equals a full mesh exactly when every non-channel field is
+ * byte-identical, the attribute key/type sets match, and the channels rebuilt
+ * from its rows equal the full channels byte for byte.
+ */
+function samePackedAndFullMesh(left: MeshAsset, right: MeshAsset): boolean {
+  const leftPacked = isPackedRowsMesh(left);
+  const packed = (leftPacked ? left : right) as PackedRowsMesh;
+  const full = leftPacked ? right : left;
+  const { attributes: packedAttributes, renderAttributeStorage: _storage, ...packedRest } = packed;
+  const { attributes: fullAttributes, ...fullRest } = full;
+  if (!samePublishedMesh(packedRest as MeshAsset, fullRest as MeshAsset)) return false;
+  const packedChannels = packedAttributes as Record<string, unknown>;
+  const fullChannels = fullAttributes as Record<string, unknown>;
+  const keys = Object.keys(packedChannels);
+  if (keys.length !== Object.keys(fullChannels).length) return false;
+  const sameTypes = keys.every(
+    (key) =>
+      packedChannels[key]?.constructor === (fullChannels[key] as object | undefined)?.constructor,
+  );
+  if (!sameTypes || packedRowsMeshError(packed) !== undefined) return false;
+  return samePublishedMesh(
+    unpackPackedRows(packed) as unknown as MeshAsset,
+    fullAttributes as unknown as MeshAsset,
+  );
 }

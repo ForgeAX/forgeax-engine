@@ -13,9 +13,11 @@ import {
   type PipelineState,
   type RenderSystemInternals,
 } from '../record/render-context';
-import { SHADOW_CASTER_BUFFER_SIZE } from '../record/shadow-pass';
+import {
+  initializeShadowCasterUniforms,
+  SHADOW_CASTER_BUFFER_SIZE,
+} from '../record/shadow-caster-uniforms';
 import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
 import { createMeshSsboGrowController, INITIAL_MESH_SSBO_SLOT_COUNT } from './mesh-ssbo-grow';
 import {
   BLOOM_COMPOSITE_PARAMS_BYTES,
@@ -96,9 +98,6 @@ export function createViewPipelineState(
     ...base.perPassResources,
     skyboxRotationBuffer:
       base.perPassResources.skyboxRotationBuffer === null ? null : allocate('skybox-rotation', 16),
-    shadowLightSpaceMatrix: null,
-    shadowCsmLightViewProj: null,
-    shadowCsmSelection: null,
     ensureBloomResources,
     getBloomResources: () => candidate ?? bloom ?? null,
     commitBloomResources: () => {
@@ -166,17 +165,13 @@ export function createViewPipelineState(
       return pointsLinesView.buffer;
     },
     ensurePointsLinesViewCapacity: pointsLinesView.ensureCapacity,
-    shadowCasterCascadeBuffer: allocate('shadow-casters', SHADOW_CASTER_BUFFER_SIZE),
+    shadowCasterCascadeBuffer: initializeShadowCasterUniforms(
+      device.queue,
+      allocate('shadow-casters', SHADOW_CASTER_BUFFER_SIZE),
+    ),
     shadowParamsBuffer: allocate('shadow-params', SHADOW_PARAMS_BYTES),
     meshStorageBuffer: mesh.state.mesh as PipelineState['meshStorageBuffer'],
     materialUniformBuffer: mesh.state.material as PipelineState['materialUniformBuffer'],
-    skinPaletteAllocator: createSkinPaletteAllocator(
-      device,
-      device.caps.storageBuffer
-        ? device.limits.maxStorageBufferBindingSize
-        : device.limits.maxUniformBufferBindingSize,
-      device.caps.storageBuffer,
-    ),
     ...(base.cookieMatrixBuffer === undefined
       ? {}
       : {

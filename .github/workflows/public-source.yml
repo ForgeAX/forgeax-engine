@@ -15,6 +15,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+      - name: Setup pinned npm
+        run: |
+          npm install --global "npm@$(cat .npm-version)" --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "$(cat .npm-version)"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version

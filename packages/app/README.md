@@ -1,5 +1,26 @@
 # @forgeax/engine-app
 
+## Interactive material previews
+
+The optional native `workspaceMaterialPreviewPlugin` owns one preview object's
+generated mesh and quaternion. `createWorkspaceMaterialPreview(app, entity)`
+isolates its service per preview App. Removal restores the borrowed MeshFilter
+and orientation before releasing owned resources; reinstall starts at Sphere.
+`engine.preview.material.get/set/rotate/reset` use the existing exact target and
+generation guards. Set selects sphere/cylinder/plane/cube, rotate accepts finite
+yaw/pitch radians, and reset restores orientation while retaining the selected
+mesh. Replies return mesh, rotation, center and radius. The four geometry
+factories share a unit bounding sphere; Registry replacement retains the handle.
+The material, assetBinding publication, camera, lighting and game state remain
+with their existing owners. View owns mouse bindings, sensitivity and camera
+reset policy and consumes ordinary camera transactions for pan/dolly.
+
+The consuming View plugin and accepted browser/native evidence are documented
+in the paired material preview design.
+## Audio observation contract
+
+Execution report schema version 4 admits unavailable Host audio observation (`contextState: 'unavailable'`, `activeSourceCount: null`). Running/suspended/closed observations carry a non-negative count. Worker frame feedback carries the complete serialized Host audio snapshot, replacing separate preparation/music mirrors. The Worker reconstructs structured AudioError fields; its observations refer to the last admitted frame. Report consumers must select schema version 4 rather than treating unknown state as silence.
+
 ## Optional Pack author preview capabilities
 
 Workspace previews expose `writeAssetField`, `prepareAssetContent` and
@@ -176,6 +197,21 @@ display capability.
 UI labels, defaults and statistics visibility remain consumer policy. Scene,
 Play and independent run owners do not acquire resource display behavior.
 
+Mesh display queries also return optional `uv.channels`, containing the actual
+base-LOD UV channel indices (`uv` is channel 0, followed by `uv1` through `uv7`).
+`engine.preview.display.get({ targetId, targetGeneration, uvChannel })` returns
+that channel's optional `uv.layout`: finite UV coordinates, triangle-list indices,
+`channel`, `lod: 0`, and the preview owner's captured `assetBinding`. The display
+owner decodes canonical vertex storage through Geometry and traverses the same
+declared triangles as its other mesh projections. Missing channels fail instead
+of adopting a shader's UV fallback. Ordinary reads and all display writes omit
+the layout; no UV data is retained in workspace snapshots. Layout responses are
+limited to 8 MiB of UTF-8 JSON and fail explicitly rather than truncating geometry.
+The operation is a read: it changes no asset, material, camera or display setting.
+Consumers own channel selection and 2D presentation, including showing UVs outside
+the unit square without wrapping them. Hidden consumers cancel reads; target
+generation and captured publication identity still govern result admission.
+
 `createEngineWorkspaceTools(runtime)` supplies the domain Tool contributions;
 `snapshotEngineWorkspace(runtime)` projects current owners without surface handles.
 Register these tools once with the existing ToolApi. No View plugin, tab, or
@@ -224,6 +260,15 @@ workspace plugin installs no selection click listener and publishes no pick
 events. Presentation consumers own clicks, selection, cancellation and error
 display; a query does not choose a UI target or alter its selection. These
 tools remain callable with the presentation plugin absent.
+
+`engine.target.pick` accepts `granularity: 'bounds' | 'triangle'`. Omitting it
+keeps the existing bounds query; triangle mode uses the accepted display frame
+and the exact current CPU mesh surface. It tests every intersecting bounds
+candidate and returns the nearest triangle hit, so an empty foreground mesh does
+not occlude a rear entity. If any potentially occluding candidate has no
+supported current CPU geometry or pose, triangle mode returns a normal capability
+failure instead of a bounds hit. Direct queries remain read-only; View's Scene
+selection workflow consumes the returned entity identity.
 
 | Operation family | Explicit identity / owner |
 |:--|:--|
@@ -364,6 +409,12 @@ completed World update and retries only the draw at the same sample time. Only
 the new generation's completed receipt releases presentation credit. A `faulted`
 Renderer must be disposed and recreated, and `disposed` is terminal.
 
+Split rendering admits a source frame only when the current Render Worker is
+ready and has publication capacity. Recheck both after every asynchronous wait,
+before any World update: clearing a lost session's queue does not make the
+replacement ready. The same pending Host frame resumes after replacement without
+advancing its World twice.
+
 A submitted queue completion rejection faults its Renderer generation and fails
 the sibling receipts with the first cause. App observes the existing Renderer
 state, stops World updates and submissions, and keeps its timing baseline fresh;
@@ -392,13 +443,14 @@ Browser consumers can subscribe to `subscribeBrowserFrameSubmitted(canvas,
 listener)` to receive the accepted `frameId`, device/graph generations, output
 extent, and deeply frozen barrel mapping. The event is the worker-safe
 publication of the submitted frame context, so display picking and overlays use
-the same picture. The built root and browser entries share one runtime module
-identity for canvas frame state and App errors; publication, picking and reset
-must remain coherent when consumers import both entries. Remove the subscription
-when the canvas is retired; ignore stale events after device loss or zero-size
-output, then follow the existing
-`Renderer.state() -> inspect() -> recover()` route before accepting a new
-context.
+the same picture. The canvas retains the latest accepted submitted and completed
+facts in `canvas.forgeaxFrameProgress`; subscriptions remain future-only, with
+events notifying new frames. App clears this snapshot when its execution retires.
+The built root and browser entries share one runtime module identity for canvas
+frame state and App errors; publication, picking and reset must remain coherent
+when consumers import both entries. Remove the subscription when the canvas is
+retired. Ignore stale events after device loss or zero-size output and follow
+`Renderer.state() -> inspect() -> recover()` before accepting a new context.
 
 Use `renderer.inspect().barrelDistortion` to inspect the matching
 `effectiveMapping`, `extent`, `frameId`, `deviceGeneration`, `graphGeneration`,
@@ -445,6 +497,16 @@ resumes by `runId`, and resolves to the server-verified path and digest.
 App owns only the optional capture capability. Replay, readback, PNG output,
 and artifact/file handling remain in the RHI-debug core and DevKit shells, so
 the live App surface does not grow a second replay cache or inspection API.
+
+## WebGPU stub
+
+`createApp(canvas, { gpuStub: profile })` installs the `rhi-webgpu` WebGPU stub
+in the main realm before capability probing and forwards the same profile to the
+Engine and Render Worker realms, which install it before creating a Renderer.
+Execution selection treats Worker WebGPU as available. The App keeps the ordinary
+WebGPU backend and Worker topology without GPU work, so CPU diagnostics stay
+comparable across GPU-less hosts; pixels, GPU timing and FPS are not evidence.
+Generated hosts enable the default profile with `?forgeax-gpu-stub=1`.
 
 ## Worker execution
 
@@ -552,8 +614,8 @@ execution: { bootstrap, workers: { engine: false } }
 > placement, and move renderer setup into `configureRenderer`.
 
 Measured responsiveness, baseline costs and recovery evidence are documented in
-[Render Worker validation](render-worker-validation.md). The
-[Laya source comparison](render-worker-comparison.md) distinguishes native command
+Render Worker validation. The
+Laya source comparison distinguishes native command
 consumption from the browser GPU receipt boundary.
 
 An enabled Render Worker keeps World, asset loading, gameplay, input consumption, and audio
@@ -633,10 +695,19 @@ advanced. Topology changes use the existing publication temporal reset. Worker
 replacement invalidates the source candidate owner even if the new device uses
 the same numeric generation; `isDynamicGeometryCurrent(candidate)` exposes that
 owner check without inventing another device generation.
-If unexpected Worker loss leaves mesh release unconfirmed, the source reports
-the existing fatal execution fault with `meshReleaseUnconfirmed`; recovery must
-rebuild the paired World/Engine owner. Terminating a Worker is not a GPU release
-acknowledgment and does not make that original World reusable.
+For confirmed ready-time device loss with resident meshes, App freezes source
+admission and requests the receiver's existing bounded disposal handshake.
+A successful `disposed` acknowledgment proves mesh, Renderer and recorder
+cleanup before the existing epoch/baseline replacement retains the source World.
+
+Concurrent App disposal joins that same handshake instead of requesting mesh
+releases from the failed receiver.
+
+> [!IMPORTANT]
+> Unexpected transport loss, cleanup failure and disposal timeout leave GPU
+> release unconfirmed. They retain the fatal execution fault with
+> `meshReleaseUnconfirmed` and require rebuilding the paired World/Engine owner.
+> Worker termination alone is not a release acknowledgment.
 
 | Report fact | Meaning |
 |:--|:--|
@@ -798,6 +869,9 @@ transferred. `bootstrapPort` is the realm side of a host-created
 session closes it on final disposal, so World rebuild preserves the channel. Keep DOM UI on the Host side of that typed channel.
 `ExecutionBootstrapHost.setPointerLockAllowed` is the one built-in
 realm-to-Host control because browser input ownership remains on the Host.
+It is a latest-wins state: a command sent while Engine-realm plugins apply,
+before the Host has attached its browser input backend, is retained through the
+ready handoff and applied to that backend; replacement canvases inherit it.
 
 > [!IMPORTANT]
 > Runtime asset delivery in an execution realm uses `execution.assetCatalog`,
@@ -932,7 +1006,14 @@ replacement frame. `resume()` resets the host timestamp before the next frame,
 so the paused wall-clock interval is not added to `Time.elapsed`. A paused
 `stepFrame(deltaSeconds)` deliberately runs the complete World update and draw
 sequence with that delta; use it for deterministic tools and expiry journeys,
-not as proof that ordinary pause keeps time frozen.
+not as proof that ordinary pause keeps time frozen. `stepFrame(deltaSeconds, {
+render: false })` runs the same World update (input, `Time`, `Update`,
+`FixedUpdate`, host camera reconciliation) but submits no picture and needs no
+receipt credit, on the local loop and in the Worker composition (the Engine
+Worker settles it with `simulation-complete` and publishes nothing to the Render
+Worker). The next drawn frame carries the advanced sample time and a temporal
+reset. Picture-derived answers (GPU picking, submitted terrain height) stay at
+the last drawn frame until then, so fast-forward tools render the final frame.
 
 Frame pacing is part of that same authority: the loop checks receipt credit
 before the sequence above, and only a successful renderer submission consumes a
@@ -945,6 +1026,15 @@ owns exactly one replacement. This does not change the two-receipt limit or
 promise a particular Host callback cadence. A credit-return continuation keeps
 that same reservation, and pause, stop or observed device recovery retires the
 blocked frame.
+
+`app.execution.setFrameRateLimit(fps)` caps admitted frames on both the local
+loop and the Worker Host; `null` (the default) admits every display callback.
+The limit selects display callbacks, so a 30 FPS limit on a 60 Hz display admits
+every second callback with an even interval instead of alternating short and
+long frames. A due frame that waits for credit keeps the cadence anchored to its
+display callback. Each admitted frame still measures its real delta, so World
+time, `TimePolicy.maxDeltaSeconds` and fixed-step catch-up are unchanged. A
+value that is not `null` or a finite positive number throws `RangeError`.
 
 `app.onError` receives structured failures from the World update and renderer draw paths.
 
@@ -1103,10 +1193,10 @@ Pass optional capabilities as native Cordis plugins. Providers are explicit:
 ```ts
 import { audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
-import { physicsPlugin } from '@forgeax/engine-physics';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 
 const result = await createApp(canvas, {
-  plugins: [webAudioPlugin(), audioPlugin(), physicsPlugin('rapier-3d')],
+  plugins: [webAudioPlugin(), audioPlugin(), physics3d],
 });
 if (!result.ok) throw result.error;
 
@@ -1142,11 +1232,12 @@ the realm-neutral assembly with an explicit platform lease.
 | `ExecutionOptions.assetCatalog` | `ExecutionAssetCatalog` | Supplies the serializable catalog URL and optional scope fence to the selected Engine realm. |
 | `App.execution.report()` | `ExecutionReport` | Returns schema-valid worker decisions, Host capability observations, the actual Render Worker backend/storage-buffer capability and limit, health, frame-credit, performance, audio, and fault projection. |
 | `App.execution.rebuild()` | `Promise<Result<ExecutionReport, AppError>>` | Rebuilds only a poisoned Worker World with a new identity. |
+| `App.execution.setFrameRateLimit(fps)` | `void` | Caps admitted frames to `fps` on display callbacks with an even cadence; `null` removes the cap. Throws `RangeError` for other non-positive or non-finite values. |
 | `App.start()` | `Result<void, AppError>` | Arms the rAF loop. |
 | `App.stop()` / `pause()` / `resume()` | `Result<void, AppError>` | Controls the rAF lifecycle. |
 | `App.dispose()` | `Promise<Result<void, AppError>>` | Drains the Cordis realm, Host resources, and renderer ownership. |
 | `App.pluginContext` | `Context` | Native Cordis realm for runtime and asset-resident game plugins. |
-| `App.stepFrame(deltaSeconds)` | `Result<void, AppDispatchError>` | While paused, advances one deterministic update/draw frame through the same App frame authority used by rAF. |
+| `App.stepFrame(deltaSeconds, { render? })` | `Result<void, AppDispatchError>` | While paused, advances one deterministic update/draw frame through the same App frame authority used by rAF; `render: false` runs the update only. |
 | `App.releaseSurfacePreserveWorld()` / `restoreSurface()` | `Promise<Result<void, RhiError>>` | Temporarily pauses presentation and relinquishes the canvas surface while preserving the same World, Renderer, registry, and execution authority; restore resumes only a loop that was running before release. |
 | `App.onError(callback)` | `() => void` | Subscribes to structured World and renderer failures. |
 | `App.setDrawSource(drawSource)` | `void` | Replaces per-frame multi-world routing; `undefined` restores the single-world path. |
@@ -1159,6 +1250,47 @@ separate from Host worker feature detection. The fields follow the
 [`RenderInspection`](../render/src/render-contract.ts) capability contract and
 are checked by the [ExecutionReport validator](src/execution/schema.ts) and
 [JSON schema](schema/execution-report.schema.json).
+
+## Load progress
+
+One page-level model reports what is loading and how far it is. Engine
+producers add work in whichever realm does it; Worker realms post cumulative
+counters to their page (bound by `ExecutionInitMessage.loadProgressScope`) at
+most every 100 ms, so the stub and a real GPU report the same work.
+
+| Phase | Producer | Units |
+|:--|:--|:--|
+| `engine-code` | Generated host module start (the cover counts page script bytes before it) | 1 |
+| `workers` | Engine Worker spawn/start, Renderer creation, Render Worker start | workers and renderers started |
+| `downloads` | Every package read (catalog, Pack, artifact, Bundle range, loader binary) and the pipeline library document | files; bytes from `Content-Length` (transfer size) |
+| `assets` | Every new `AssetRegistry.load` (decode, programs and adoption included) | assets loaded |
+| `pipelines` | Pipeline-library preparation (whole batch upfront) and every async pipeline compilation | pipelines compiled |
+| `scene` | Plugin bootstrap, root activation and World commit | 1 per realm creation |
+| `first-frame` | Startup cover `prepare()` until it has entered | 1 |
+
+| Entry | Purpose |
+|:--|:--|
+| `beginLoadSession(id, phases, { startedAt? })` | Start measuring on the page; work unfinished at that moment, including work in flight, belongs to the session. |
+| `addLoadPhases(phases)` | Add App phases and weights to the active session. |
+| `addLoadWork(phase, { total?, done?, totalBytes?, bytes?, item? })` | Report increments from any realm. Undeclared phases are shown with weight 0. |
+| `beginLoadWork(phase, item?)` | One indeterminate unit; returns its idempotent completion. |
+| `endLoadSession(id)` | Finish at 100% and notify subscribers at once. |
+| `readLoadProgress()` / `subscribeLoadProgress(listener)` | Current `LoadProgressSnapshot`; subscribers are coalesced to 10 Hz. |
+| `describeLoadProgress(snapshot, labels?)` / `resolveLoadProgressLabels(input)` | Plain-words view (`activity`, `detail`, `percent`, `elapsed`) with English defaults and App labels. |
+
+Phase state is derived from counters: no work is `pending`, unfinished work is
+`active`, finished work is `done`. A phase may still discover work until it is
+settled, so its fraction is `done / (total + 1)` (the smaller of that and byte
+completion). It settles when its known work is finished and it is declared
+`bounded` (the producer reports its whole total first), when the session's last
+declared phase gets work, or when the session ends; phases without any work
+also settle at the last phase. Fractions are held at their session maximum;
+overall progress is their weighted mean and never decreases while totals grow. The
+current phase is the most recently activated phase with unfinished work; a
+shown phase that is still active stays at least 1 s before a newer one replaces
+it, so overlapping work (downloads during a map stage) stays readable.
+The generated host renders the `startup` session (`ENGINE_STARTUP_PHASES`) on
+its cover; games run their own sessions for later loads.
 
 ## Boundaries
 
@@ -1223,7 +1355,7 @@ remote `introspect` response; app does not define, validate, or own a component.
 |:--|:--|:--|
 | App -> remote | `startServer({ introspection })` carries data only | If remote is absent, verify dev mode or the explicit headless env flag |
 | Remote -> consumer | Existing `eval` and `introspect` methods remain the full surface | Use the returned `RemoteError` fields, never message parsing |
-| ECS/render | Registry and `Visibility` remain package-owned | Use `_import('@forgeax/engine-render')` in eval, not app-local labels |
+| ECS/render | Registry and `Visibility` remain package-owned | Use `_import('@forgeax/engine/render')` in eval, not app-local labels |
 
 The descriptor is a transport projection, not a live token: it contains schema,
 field reflection, labels, and JSON-safe metadata, but no methods or validator
@@ -1491,8 +1623,34 @@ complete WeChat project/RHI/UI/Worker target is qualified. See
 
 ## Renderer inspection through public App eval
 
+`inspectRenderer({pipelineLibraryCollection:true})` starts an explicit route retention
+scope on the current Renderer generation; `false` releases it. Inspection reports
+`pipelineLibraryCollecting`. A device change or disposal ends the scope, so collectors
+must verify that it is still active before declaring a full current-device route.
+The option is diagnostic and is not enabled during ordinary play.
+
+Startup/background libraries retain immutable realm-local source owners; transport
+borrows the portable full-text representation. Receiving realms keep raw strings
+whole without runtime fragmentation or eager source hashing. No cross-Worker string
+sharing is assumed. A startup `pipelineLibrary`
+remains owned by the Host and the active Renderer.
+With a Render Worker, the Engine Worker forwards it during initialization and
+retains only the remaining startup facts. The Host resupplies the library for
+Renderer replacement and World rebuild, so releasing the Engine Worker's copy
+does not remove recovery input. A failed or disposed child startup releases its
+one-shot forwarding field as well.
+
 `app.remoteEval` executes in the selected Engine realm. Its `execution` root
-exposes `inspectRenderer({ signal? })` (type `ExecutionRendererInspectionContext`):
+exposes `inspectRenderer({ signal?, fields?, pipelineLibrary?, pipelineLibraryLimits?, runtimeRequests? })` (type `ExecutionRendererInspectionContext`):
+
+`pipelineLibraryLimits` travels through the existing inspection request to the
+single export action, including independent Render Workers. Its failure retains the
+structured cause and does not change ordinary drawing or device recovery. A complete
+export includes `pipelineLibraryPolicy` so a consumer can declare a matching finite
+input policy.
+
+`runtimeRequests:true` selects cached bounded demand history and omits the legacy
+full pending recipe list, avoiding uncached Shader hashing in this incident read.
 
 ```js
 return await execution.inspectRenderer();
@@ -1504,6 +1662,11 @@ its existing child transport with request, World, source and epoch fences.
 Unavailable, cancelled, lost or disposed sessions fail explicitly. Reading does
 not draw, release credit, enable recording or change execution placement. Clone
 failure is returned, never filtered into a partial successful inspection.
+An explicit `fields: ['state', 'frame', 'pipelineLibrary']` selects those actual
+owner fields before structured cloning and child transport. The return type is
+the corresponding `Pick<RenderInspection, K>`; omission keeps the complete
+snapshot. Use this bounded counter read for whole-session pipeline diagnostics
+instead of repeatedly cloning unrelated scene and resource inventories.
 Failures use the closed AppError `app-renderer-inspection-unavailable` with
 canonical guidance and `detail.reason`/`cause`; they are returned to the observer,
 not dispatched as an App frame fault. The child read has a new 30-second upper
@@ -1516,9 +1679,17 @@ Inspection is neither a hardware-completion nor a pixel/presentation proof.
 
 ## Capture completion and issued receipts
 
+Ordinary Render Worker frames await their existing receipt observation promise.
+Timing or snapshot observations join that barrier when enabled. Retirement may
+drain only the current physical completion after the prior FIFO prefix has
+already completed successfully; early observation/prefix failures still drain
+both promises before closing video frames or retiring the receipt.
+
 `rhiCapture.captureFrame()` artifacts include `submittedFrame`. The App awaits the issued receipt completion for the recorded generation before publishing a capture. Missing submissions or retired generations remain unavailable; a prior `lastReceipt` never certifies a new capture.
 
 `createApp(canvas, { dynamicGeometryMeshBudgetBytes })` forwards the explicit retained dynamic mesh byte budget to Render. It remains POD through Engine and Render Worker startup; omission retains 64 MiB. Render validates positive safe integers up to 512 MiB and owns admission, fence retirement, and recovery.
+
+`createApp(canvas, { assetBudgetBytes })` sets the content byte budget of every Engine-created AssetRegistry serving the App World: the main-thread Renderer, the Engine Worker source realm, and the Render Worker Renderer. Omission keeps the 4 GiB default (`DEFAULT_ASSET_BUDGET_BYTES`); `createApp` rejects anything other than a positive safe integer before any realm starts. The budget guards against runaway growth; exceeding it fails adoption with `asset-budget-exceeded` / `available content bytes`.
 
 The browser-local debug bridge accepts `window.__forgeax.captureFrame(options, onSubmitted)`.
 Use its submission callback to start a canvas snapshot before GPU completion can yield to

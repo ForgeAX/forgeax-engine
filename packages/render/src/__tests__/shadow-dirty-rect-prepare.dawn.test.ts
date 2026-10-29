@@ -1,5 +1,11 @@
 import { World } from '@forgeax/engine-ecs';
-import type { BindGroup, BindGroupLayout, RhiDevice } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  BindGroupLayout,
+  Buffer,
+  RhiDevice,
+  RhiRenderPassEncoder,
+} from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import {
   createMaterialShaderProgram,
@@ -192,22 +198,50 @@ function customMaterialFixture(device: RhiDevice) {
   };
 }
 
-it.each([
-  { mode: 'explicit regions', reuseAdjacentShadow: false },
-  { mode: 'changed scene source', reuseAdjacentShadow: false },
-  { mode: 'explicit regions', reuseAdjacentShadow: true },
-  { mode: 'changed scene source', reuseAdjacentShadow: true },
-])('records real static shadow partial updates from $mode for 60 frames (owned reuse: $reuseAdjacentShadow)', async ({
-  mode,
-  reuseAdjacentShadow,
-}) => {
-  const { device, native } = await nativeDeviceFixture();
-  native.pushErrorScope('validation');
-  // The existing prepared-frame fixture carries real physical groups here.
-  // Only its material is a depth witness; encodeStaticShadowPass, its clear,
-  // binding preparation and every indirect draw are the production functions.
+type CustomMaterial = ReturnType<typeof customMaterialFixture>;
+type ShadowFixture = ReturnType<typeof preparedShadowFixture>;
+type ShadowSource = ReturnType<typeof shadowSourceFixture>;
+type ShaderModuleFactory = Parameters<typeof preparedShadowFixture>[0]['shaderModuleFactory'];
+
+const EXPLICIT_DIRTY = {
+  size: SIZE,
+  rects: [
+    { x0: 0, y0: 0, x1: 0.25, y1: 0.5 },
+    { x0: 0.75, y0: 0.5, x1: 1, y1: 1 },
+  ],
+};
+
+function createWitnessPipeline(
+  device: RhiDevice,
+  shaderModuleFactory: ShaderModuleFactory,
+  custom: CustomMaterial | undefined,
+  bindGroupLayouts: readonly BindGroupLayout[],
+) {
+  const module = shaderModuleFactory
+    .createShaderModule({ code: custom === undefined ? WITNESS : TEXTURED_WITNESS })
+    .unwrap();
+  return device
+    .createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [...bindGroupLayouts] }).unwrap(),
+      vertex: {
+        module,
+        entryPoint: custom === undefined ? 'vs_main' : 'vs_scene_index',
+        buffers: [],
+      },
+      ...(custom === undefined ? {} : { fragment: { module, entryPoint: 'fs_main', targets: [] } }),
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
+    })
+    .unwrap();
+}
+
+/**
+ * The existing prepared-frame fixture carries real physical groups here.
+ * Only its material is a depth witness; encodeStaticShadowPass, its clear,
+ * binding preparation and every indirect draw are the production functions.
+ */
+function createShadowRig(device: RhiDevice, custom: CustomMaterial | undefined) {
   const buffer = device.createBuffer({ size: 4096, usage: 8 | 32 | 64 | 256 }).unwrap();
-  const custom = mode === 'explicit regions' ? customMaterialFixture(device) : undefined;
   const dynamicLayout = (count: number) =>
     device
       .createBindGroupLayout({
@@ -232,94 +266,228 @@ it.each([
   const materialLayout = custom?.layout ?? dynamicLayout(1);
   const meshLayout = dynamicLayout(1);
   const visibleLayout = dynamicLayout(0);
-  const view = group(viewLayout, 2);
-  const materialGroup = custom?.neutralGroup ?? group(materialLayout, 1, MATERIAL_OFFSET);
-  const meshBindGroup = group(meshLayout, 1);
-  const visible = group(visibleLayout, 0);
   const shaderModuleFactory = {
     createShaderModule: (desc: Parameters<typeof createShaderModuleImmediate>[1]) =>
       createShaderModuleImmediate(device, desc),
   };
-  const module = shaderModuleFactory
-    .createShaderModule({ code: custom === undefined ? WITNESS : TEXTURED_WITNESS })
-    .unwrap();
-  const pipeline = device
-    .createRenderPipeline({
-      layout: device
-        .createPipelineLayout({
-          bindGroupLayouts: [viewLayout, materialLayout, meshLayout, visibleLayout],
-        })
-        .unwrap(),
-      vertex: {
-        module,
-        entryPoint: custom === undefined ? 'vs_main' : 'vs_scene_index',
-        buffers: [],
-      },
-      ...(custom === undefined ? {} : { fragment: { module, entryPoint: 'fs_main', targets: [] } }),
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
-    })
-    .unwrap();
   const fixture = preparedShadowFixture({
     device,
     buffer,
     layout: materialLayout,
-    view,
+    view: group(viewLayout, 2),
     shaderModuleFactory,
     shared: {
       indirectOffset: 0,
-      pipeline,
+      pipeline: createWitnessPipeline(device, shaderModuleFactory, custom, [
+        viewLayout,
+        materialLayout,
+        meshLayout,
+        visibleLayout,
+      ]),
       vertexBuffer: buffer,
-      materialGroup,
-      meshBindGroup,
-      visibleBindGroups: [visible],
+      materialGroup: custom?.neutralGroup ?? group(materialLayout, 1, MATERIAL_OFFSET),
+      meshBindGroup: group(meshLayout, 1),
+      visibleBindGroups: [group(visibleLayout, 0)],
       deformation: 'rigid',
     },
   });
-  if (custom !== undefined) {
-    const { deps } = custom;
-    Object.assign(fixture.context.pipelineState, deps.pipelineState);
-    Object.assign(fixture.context.runtime, deps.runtime);
-    Object.assign(fixture.context, {
-      world: deps.world,
-      store: deps.store,
-      materialBgAssemblyCache: deps.materialBgAssemblyCache,
-      gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: custom.sceneBuffer },
-    });
-    Object.assign(fixture.context.frameState, { materialBgShared: deps.materialBgShared });
-    const projections = fixture.projections as unknown as Map<
-      number,
-      GpuDrivenShadowBatchProjection
-    >;
-    for (const [id, projection] of projections)
-      projections.set(id, {
-        ...projection,
-        material: custom.material,
-        shadowArtifact: custom.artifact,
-      });
-    const state = fixture.context.pipelineState;
-    // Seed the already prepared opaque binding with its actual physical
-    // resources. The custom branch must still call the real material builder.
-    getOrCreateFromChain(
-      fixture.shadowMaterialBindGroups,
-      [
-        state.materialBindGroupLayout,
-        meshSsboBufferBinding(state.materialUniformBuffer, 0).buffer,
-        state.defaultSampler,
-        state.defaultNormalTextureView,
-        state.fallbackTextureView,
-        custom.sceneBuffer,
-        custom.fallback,
-      ],
-      'shadow-material-singleton',
-      () => custom.neutralGroup,
-      fixture.context.bindGroupCounts,
-    );
-  }
+  if (custom !== undefined) adoptCustomMaterial(fixture, custom);
   const commands = new Uint32Array(fixture.batches.length * 5);
   for (let index = 0; index < fixture.batches.length; index++)
     commands.set([3, 1, 0, 0, 0], index * 5);
   device.queue.writeBuffer(buffer, 0, commands).unwrap();
+  return { buffer, fixture, shaderModuleFactory };
+}
+
+/** Route the prepared fixture through the custom material's real assembly path. */
+function adoptCustomMaterial(fixture: ShadowFixture, custom: CustomMaterial): void {
+  const { deps } = custom;
+  Object.assign(fixture.context.pipelineState, deps.pipelineState);
+  Object.assign(fixture.context.runtime, deps.runtime);
+  Object.assign(fixture.context, {
+    world: deps.world,
+    store: deps.store,
+    materialBgAssemblyCache: deps.materialBgAssemblyCache,
+    gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: custom.sceneBuffer },
+  });
+  Object.assign(fixture.context.frameState, { materialBgShared: deps.materialBgShared });
+  const projections = fixture.projections as unknown as Map<number, GpuDrivenShadowBatchProjection>;
+  for (const [id, projection] of projections)
+    projections.set(id, {
+      ...projection,
+      material: custom.material,
+      shadowArtifact: custom.artifact,
+    });
+  const state = fixture.context.pipelineState;
+  // Seed the already prepared opaque binding with its actual physical
+  // resources. The custom branch must still call the real material builder.
+  getOrCreateFromChain(
+    fixture.shadowMaterialBindGroups,
+    [
+      state.materialBindGroupLayout,
+      meshSsboBufferBinding(state.materialUniformBuffer, 0).buffer,
+      state.defaultSampler,
+      state.defaultNormalTextureView,
+      state.fallbackTextureView,
+      custom.sceneBuffer,
+      custom.fallback,
+    ],
+    'shadow-material-singleton',
+    () => custom.neutralGroup,
+    fixture.context.bindGroupCounts,
+  );
+}
+
+/**
+ * Move, create and remove casters on the changed-source path and assert the
+ * pool's invalidation evidence. Returns frame 0's resource generation.
+ */
+function advanceShadowSource(
+  source: ShadowSource,
+  frame: number,
+  sourceResourceGeneration: number | undefined,
+): number | undefined {
+  if (frame === 1) source.update(shadowSourceSnapshot(1, -14, 4));
+  else if (frame > 1 && frame % 2 === 0)
+    source.update({ ...shadowSourceSnapshot(3, 20, 5), mobility: 'static' });
+  else if (frame > 1) source.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
+  const input = source.input();
+  const update = updateShadowView(source.pool, input).unwrap();
+  expect(update.cache).toBe('invalidated');
+  if (frame === 0) return update.view.inspect().resourceGeneration;
+  if (frame === 1) {
+    expect(input.ignoredChangeSlots.size).toBe(1);
+    expect(source.pool.invalidationReason(source.identity)).toBe('membership-changed');
+    expect(source.pool.dirtyRects(source.identity)).toHaveLength(2);
+  }
+  if (frame === 2) {
+    // Adding a different static batch grows caster input allocations,
+    // while the retained depth attachment below remains the same.
+    expect(update.view.inspect().resourceGeneration).toBeGreaterThan(
+      sourceResourceGeneration ?? -1,
+    );
+    expect(source.pool.dirtyRects(source.identity)).toHaveLength(1);
+  }
+  return sourceResourceGeneration;
+}
+
+/** Frame 0 redraws everything; later frames redraw only explicit or source-derived regions. */
+function shadowDirtyRegion(frame: number, source: ShadowSource | undefined) {
+  if (frame === 0) return undefined;
+  if (source === undefined) return EXPLICIT_DIRTY;
+  return { size: SIZE, rects: source.pool.dirtyRects(source.identity) ?? [] };
+}
+
+/** Observe the material group a custom-material shadow pass binds, directly or through bundles. */
+function spyMaterialBinding(pass: RhiRenderPassEncoder) {
+  const bindings = vi.spyOn(pass, 'setBindGroup');
+  const bundles = vi.spyOn(pass, 'executeBundles');
+  return {
+    bound: (): unknown => {
+      const encoded = bundles.mock.calls.flatMap(([handles]) => shadowBundleCommands(handles));
+      return (
+        encoded.filter((row) => row.method === 'setBindGroup' && row.args[0] === 1).at(-1)
+          ?.args[1] ?? bindings.mock.calls.filter(([index]) => index === 1).at(-1)?.[1]
+      );
+    },
+    restore: () => {
+      bindings.mockRestore();
+      bundles.mockRestore();
+    },
+  };
+}
+
+/**
+ * The custom material keeps its prepared group on every frame except the
+ * frame-30 texture replacement, which must rebuild it once. Returns the bound group.
+ */
+function expectCustomMaterialBinding(
+  custom: CustomMaterial,
+  frame: number,
+  observations: number,
+  bound: unknown,
+  previousMaterial: BindGroup | undefined,
+): BindGroup {
+  for (const [name, query] of Object.entries(custom.queries))
+    expect(query, name).toHaveBeenCalledTimes(observations);
+  expect(bound).toBeDefined();
+  if (frame === 30) expect(bound).not.toBe(previousMaterial);
+  else expect(bound).toBe(previousMaterial ?? custom.group);
+  return bound as BindGroup;
+}
+
+/**
+ * These pixel footprints are independent of the rectangles returned by the
+ * pool: x=-10 -> -14 spans columns 16..23, and the created/removed x=20
+ * caster spans columns 50..53.
+ */
+function expectedShadowDepth(
+  x: number,
+  y: number,
+  frame: number,
+  value: number,
+  changedSource: boolean,
+): number {
+  if (!changedSource) {
+    const explicit =
+      frame > 0 && ((x < SIZE / 4 && y < SIZE / 2) || (x >= (3 * SIZE) / 4 && y >= SIZE / 2));
+    return explicit ? value : 0.75;
+  }
+  const row = y >= 30 && y < 34;
+  if (frame > 1 && x >= 50 && x < 54 && row) return value;
+  if (frame > 0 && x >= 16 && x < 24 && row) return 0.25;
+  return 0.75;
+}
+
+function expectShadowDepthPixels(
+  pixels: Float32Array,
+  frame: number,
+  value: number,
+  changedSource: boolean,
+): void {
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      expect(pixels[y * (ROW_BYTES / 4) + x], `frame ${frame}, pixel ${x},${y}`).toBeCloseTo(
+        expectedShadowDepth(x, y, frame, value, changedSource),
+        5,
+      );
+    }
+  }
+}
+
+async function expectReadbackDepth(
+  readback: Buffer,
+  frame: number,
+  value: number,
+  changedSource: boolean,
+): Promise<void> {
+  const mapped = (await readback.mapAsync(1)).unwrap();
+  try {
+    expectShadowDepthPixels(
+      new Float32Array(mapped.getMappedRange().unwrap()),
+      frame,
+      value,
+      changedSource,
+    );
+  } finally {
+    mapped.unmap();
+  }
+}
+
+it.each([
+  { mode: 'explicit regions', reuseAdjacentShadow: false },
+  { mode: 'changed scene source', reuseAdjacentShadow: false },
+  { mode: 'explicit regions', reuseAdjacentShadow: true },
+  { mode: 'changed scene source', reuseAdjacentShadow: true },
+])('records real static shadow partial updates from $mode for 60 frames (owned reuse: $reuseAdjacentShadow)', async ({
+  mode,
+  reuseAdjacentShadow,
+}) => {
+  const { device, native } = await nativeDeviceFixture();
+  const createdPipelines = vi.spyOn(device, 'createRenderPipeline');
+  native.pushErrorScope('validation');
+  const custom = mode === 'explicit regions' ? customMaterialFixture(device) : undefined;
+  const { buffer, fixture, shaderModuleFactory } = createShadowRig(device, custom);
   const depth = device
     .createTexture({
       size: { width: SIZE, height: SIZE },
@@ -329,13 +497,6 @@ it.each([
     .unwrap();
   const depthView = device.createTextureView(depth, {}).unwrap();
   const readback = device.createBuffer({ size: ROW_BYTES * SIZE, usage: 1 | 8 }).unwrap();
-  const dirty = {
-    size: SIZE,
-    rects: [
-      { x0: 0, y0: 0, x1: 0.25, y1: 0.5 },
-      { x0: 0.75, y0: 0.5, x1: 1, y1: 1 },
-    ],
-  };
   const source =
     mode === 'changed scene source' ? shadowSourceFixture(device, shaderModuleFactory) : undefined;
   let sourceResourceGeneration: number | undefined;
@@ -346,29 +507,8 @@ it.each([
         for (const query of Object.values(custom.queries)) query.mockClear();
         if (frame === 30) custom.replaceTexture();
       }
-      if (source !== undefined) {
-        if (frame === 1) source.update(shadowSourceSnapshot(1, -14, 4));
-        else if (frame > 1 && frame % 2 === 0)
-          source.update({ ...shadowSourceSnapshot(3, 20, 5), mobility: 'static' });
-        else if (frame > 1) source.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
-        const input = source.input();
-        const update = updateShadowView(source.pool, input).unwrap();
-        expect(update.cache).toBe('invalidated');
-        if (frame === 0) sourceResourceGeneration = update.view.inspect().resourceGeneration;
-        if (frame === 1) {
-          expect(input.ignoredChangeSlots.size).toBe(1);
-          expect(source.pool.invalidationReason(source.identity)).toBe('membership-changed');
-          expect(source.pool.dirtyRects(source.identity)).toHaveLength(2);
-        }
-        if (frame === 2) {
-          // Adding a different static batch grows caster input allocations,
-          // while the retained depth attachment below remains the same.
-          expect(update.view.inspect().resourceGeneration).toBeGreaterThan(
-            sourceResourceGeneration ?? -1,
-          );
-          expect(source.pool.dirtyRects(source.identity)).toHaveLength(1);
-        }
-      }
+      if (source !== undefined)
+        sourceResourceGeneration = advanceShadowSource(source, frame, sourceResourceGeneration);
       const value = frame === 0 ? 0.75 : frame % 2 === 1 ? 0.25 : 0.5;
       custom?.setDepth(value);
       device.queue
@@ -388,37 +528,34 @@ it.each([
           depthClearValue: 0,
         },
       });
-      const bindings = custom === undefined ? undefined : vi.spyOn(pass, 'setBindGroup');
-      const bundles = custom === undefined ? undefined : vi.spyOn(pass, 'executeBundles');
+      const binding = custom === undefined ? undefined : spyMaterialBinding(pass);
       fixture.pipelineLookup.mockClear();
       encodeStaticShadowPass(
         fixture.context,
         pass,
         { kind: 'directional', index: 0 },
-        frame === 0
-          ? undefined
-          : source === undefined
-            ? dirty
-            : { size: SIZE, rects: source.pool.dirtyRects(source.identity) ?? [] },
+        shadowDirtyRegion(frame, source),
         reuseAdjacentShadow ? true : undefined,
       );
+      // Partial updates reuse the clear PSO prepared with the initial static layer.
+      expect(
+        createdPipelines.mock.calls.filter(
+          ([descriptor]) => descriptor.label === 'shadow-static-depth-clear',
+        ),
+      ).toHaveLength(1);
       // Raw calls retain every observation. The Renderer-owned path can
       // reuse adjacent accepted facts across the same 64 physical draws.
       const observations = reuseAdjacentShadow ? 1 : fixture.batches.length;
       expect(fixture.pipelineLookup).toHaveBeenCalledTimes(observations);
-      if (custom !== undefined && bindings !== undefined) {
-        for (const [name, query] of Object.entries(custom.queries))
-          expect(query, name).toHaveBeenCalledTimes(observations);
-        const encoded = bundles?.mock.calls.flatMap(([handles]) => shadowBundleCommands(handles));
-        const bound =
-          encoded?.filter((row) => row.method === 'setBindGroup' && row.args[0] === 1).at(-1)
-            ?.args[1] ?? bindings.mock.calls.filter(([index]) => index === 1).at(-1)?.[1];
-        expect(bound).toBeDefined();
-        if (frame === 30) expect(bound).not.toBe(previousMaterial);
-        else expect(bound).toBe(previousMaterial ?? custom.group);
-        previousMaterial = bound as BindGroup;
-        bindings.mockRestore();
-        bundles?.mockRestore();
+      if (custom !== undefined && binding !== undefined) {
+        previousMaterial = expectCustomMaterialBinding(
+          custom,
+          frame,
+          observations,
+          binding.bound(),
+          previousMaterial,
+        );
+        binding.restore();
       }
       pass.end();
       encoder.copyTextureToBuffer(
@@ -429,38 +566,7 @@ it.each([
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       await device.queue.onSubmittedWorkDone();
       source?.pool._commitResourceReplacement();
-      const mapped = (await readback.mapAsync(1)).unwrap();
-      const pixels = new Float32Array(mapped.getMappedRange().unwrap());
-      try {
-        for (let y = 0; y < SIZE; y++) {
-          for (let x = 0; x < SIZE; x++) {
-            // These pixel footprints are independent of the rectangles
-            // returned by the pool: x=-10 -> -14 spans columns 16..23,
-            // and the created/removed x=20 caster spans columns 50..53.
-            const moved = frame > 0 && x >= 16 && x < 24 && y >= 30 && y < 34;
-            const created = frame > 1 && x >= 50 && x < 54 && y >= 30 && y < 34;
-            const explicit =
-              frame > 0 &&
-              ((x < SIZE / 4 && y < SIZE / 2) || (x >= (3 * SIZE) / 4 && y >= SIZE / 2));
-            const expected =
-              source === undefined
-                ? explicit
-                  ? value
-                  : 0.75
-                : created
-                  ? value
-                  : moved
-                    ? 0.25
-                    : 0.75;
-            expect(pixels[y * (ROW_BYTES / 4) + x], `frame ${frame}, pixel ${x},${y}`).toBeCloseTo(
-              expected,
-              5,
-            );
-          }
-        }
-      } finally {
-        mapped.unmap();
-      }
+      await expectReadbackDepth(readback, frame, value, source !== undefined);
     }
     if (source !== undefined)
       expect(updateShadowView(source.pool, source.input()).unwrap().cache).toBe('hit');

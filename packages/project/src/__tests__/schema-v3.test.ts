@@ -60,3 +60,26 @@ it('rejects asset directories that are not portable project-relative paths', () 
     expect(GameProjectSchema.safeParse({ ...valid, assetRoots: [path] }).success, path).toBe(false);
   }
 });
+
+it('mounts explicitly declared read-only asset libraries by package specifier', () => {
+  expect(GameProjectSchema.parse(valid).assetLibraries).toEqual([]);
+  expect(
+    GameProjectSchema.parse({
+      ...valid,
+      assetLibraries: ['@forgeax/engine/content', '@studio/props', 'shared-kit'],
+    }).assetLibraries,
+  ).toEqual(['@forgeax/engine/content', '@studio/props', 'shared-kit']);
+  for (const assetLibraries of [
+    ['./vendor'],
+    ['/absolute'],
+    ['@studio/props/deep'],
+    ['Upper'],
+    ['@forgeax/engine/content', '@forgeax/engine/content'],
+    [''],
+  ]) {
+    expect(
+      GameProjectSchema.safeParse({ ...valid, assetLibraries }).success,
+      JSON.stringify(assetLibraries),
+    ).toBe(false);
+  }
+});

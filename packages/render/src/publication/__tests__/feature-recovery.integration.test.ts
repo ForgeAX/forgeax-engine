@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
@@ -9,15 +10,15 @@ import {
   RhiNullQueue,
 } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
-import { ShaderRegistry } from '@forgeax/engine-shader';
+import { createMaterialProgramArtifactReceipt, ShaderRegistry } from '@forgeax/engine-shader';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { standardPbrManifestRow } from '../../__tests__/shader-manifest-fixture';
 import { Camera, perspective } from '../../components/camera';
 import { constructRendererHost } from '../../construct-renderer';
 import type { RenderFeature } from '../../features/types';
-import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 type LostInfo = { readonly reason: 'unknown'; readonly message: string };
 class RecoverableDevice extends RhiNullDevice {
@@ -41,7 +42,7 @@ class RecoverableDevice extends RhiNullDevice {
   }
 }
 
-it('rehydrates submitted published feature data through the real Renderer recovery owner', async () => {
+it('recovers without replaying submitted feature data and plans the next publication cold', async () => {
   const devices: RecoverableDevice[] = [];
   const backend = {
     ...nullRhi,
@@ -69,6 +70,7 @@ it('rehydrates submitted published feature data through the real Renderer recove
   const handle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const asset = runtimeAssets(assets).resolveAsset<MeshAsset>(handle).unwrap();
   const seen: unknown[] = [];
+  const plannedGenerations: number[] = [];
   let receiverExtracts = 0;
   let submitted = 0;
   let marker = 1;
@@ -89,6 +91,7 @@ it('rehydrates submitted published feature data through the real Renderer recove
       return ok({ handle, marker });
     },
     plan: (data, context) => {
+      plannedGenerations.push(context.generation);
       const resolved = context.resolveAsset?.(0, data.handle);
       if (resolved === undefined || !resolved.ok) throw new Error('Missing exact published asset');
       expect(resolved.value).toEqual(asset);
@@ -148,14 +151,37 @@ it('rehydrates submitted published feature data through the real Renderer recove
   );
   if (!created.ok) throw created.error;
   const { renderer } = created.value;
+  const adopt = vi.spyOn(ShaderRegistry.prototype, 'installMaterialArtifactsFrom');
+  const pendingKey = 'game::unused-recovery-program';
+  const pendingReceipt = createMaterialProgramArtifactReceipt({
+    schema: [],
+    directEntry: 'vs_main',
+    vertexInputs: [],
+  });
   try {
     world.update(1 / 60).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    const drawn = renderer.draw({ publication: packet });
+    const bytes = new TextEncoder().encode(
+      '@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); } // unused recovery',
+    );
+    Object.assign(packet, {
+      programs: [
+        {
+          key: pendingKey,
+          shader: { sourceEncoding: 'utf8', paramSchema: [], receipt: pendingReceipt },
+          artifact: {
+            key: pendingKey,
+            bytes,
+            digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          },
+        },
+      ],
+    });
+    const drawn = renderer.draw({ publication: encodeRenderPublication(packet) });
     if (!drawn.ok) throw drawn.error;
     const frame = drawn.value;
     expect((await frame.completed).ok).toBe(true);
@@ -166,7 +192,7 @@ it('rehydrates submitted published feature data through the real Renderer recove
     marker = 2;
     const successor = publisher.prepare(0).unwrap();
     const unsubmitted = structuredClone(successor.packet, {
-      transfer: renderPublicationTransfers(successor.packet),
+      transfer: renderPublicationTransfers(successor.message),
     });
     successor.accept();
     expect(unsubmitted.features[0]?.data).toMatchObject({ marker: 2 });
@@ -175,17 +201,33 @@ it('rehydrates submitted published feature data through the real Renderer recove
     device.loss.resolve({ reason: 'unknown', message: 'published feature recovery test' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(renderer.state()).toBe('device-lost');
+    adopt.mockClear();
     const recovered = await renderer.recover();
     expect(receiverExtracts).toBe(0);
     expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true });
-    expect(seen).toHaveLength(2);
-    expect(seen[1]).toEqual(packet.features[0]?.data);
+    expect(seen).toHaveLength(1);
     expect(devices).toHaveLength(2);
+    const replacement = adopt.mock.contexts.find(
+      (registry) => registry.materialArtifactDeclaration(pendingKey)?.kind === 'bytes',
+    );
+    expect(replacement).toBeDefined();
+    const retained = replacement?.materialArtifactDeclaration(pendingKey);
+    expect(retained?.kind === 'bytes' ? retained.receipt : undefined).toEqual(pendingReceipt);
+    expect(replacement?.materialArtifactDeclaration(pendingKey)?.kind).toBe('bytes');
     expect(submitted).toBe(1);
+    const next = renderer.draw({ publication: encodeRenderPublication(unsubmitted) });
+    if (!next.ok) throw next.error;
+    expect((await next.value.completed).ok).toBe(true);
+    expect(receiverExtracts).toBe(0);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual(unsubmitted.features[0]?.data);
+    expect(plannedGenerations).toEqual([0, 1]);
+    expect(submitted).toBe(2);
     expect(
       devices[1]?.bookkeeper.allRecords().some((record) => record.kind === 'ComputePipeline'),
     ).toBe(true);
   } finally {
+    adopt.mockRestore();
     renderer.dispose();
     publisher.dispose();
   }

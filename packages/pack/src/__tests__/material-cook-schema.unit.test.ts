@@ -727,4 +727,51 @@ describe('cooked material schema', () => {
       },
     });
   });
+
+  it('admits a shared deep-frozen ABI once and keeps checking mutable ABIs', () => {
+    const primary = record.programs[0] as MaterialCookProgram;
+    const context = primary.selections[0]?.context;
+    if (context === undefined) throw new Error('missing fixture context');
+    const withAbi = (abi: unknown) =>
+      seal({
+        ...record,
+        programs: [
+          {
+            ...primary,
+            selections: [
+              { pass: 'forward', context, address: 'direct', entry: 'vs_main', abi },
+              {
+                pass: 'forward',
+                context,
+                address: 'scene-index',
+                entry: 'vs_scene_index',
+                abi,
+              },
+            ] as MaterialCookProgram['selections'],
+          },
+        ],
+      });
+    const frozen = structuredClone(submissionAbi) as Record<string, unknown>;
+    const freeze = (value: unknown): void => {
+      if (value === null || typeof value !== 'object') return;
+      for (const child of Object.values(value)) freeze(child);
+      Object.freeze(value);
+    };
+    freeze(frozen);
+    const shared = withAbi(frozen);
+    expect(validateCookedMaterialRecord(shared).ok).toBe(true);
+    expect(validateCookedMaterialRecord(shared).ok).toBe(true);
+    const mutable = structuredClone(submissionAbi) as Record<string, unknown>;
+    const editable = withAbi(mutable);
+    expect(validateCookedMaterialRecord(editable).ok).toBe(true);
+    mutable.materialRow = { addressUnitBytes: 16, byteLength: 15, fields: [] };
+    expect(validateCookedMaterialRecord(editable)).toMatchObject({
+      ok: false,
+      error: { detail: { field: 'programs[0].selections[0].abi' } },
+    });
+    const invalidFrozen = { ...frozen, materialRow: Object.freeze({ byteLength: 15 }) };
+    Object.freeze(invalidFrozen);
+    for (let attempt = 0; attempt < 2; attempt += 1)
+      expect(validateCookedMaterialRecord(withAbi(invalidFrozen)).ok).toBe(false);
+  });
 });

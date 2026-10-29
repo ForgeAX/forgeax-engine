@@ -120,9 +120,45 @@ export function createPostProcessParamsOwner(
     postProcessParamsBuffers = new Map();
     disposePostProcessResources(resources);
   };
+  /** Whether the active params buffer still serves this declaration (0 = needs none). */
+  const retainsParamsBuffer = (id: string, entry: PostProcessShaderEntry): boolean | 0 => {
+    if (id === 'forgeax.taa-resolve' || postProcessParamsByteSize(entry) === 0) return 0;
+    const accepted = postProcessParamsBuffers.has(id) ? lookupPostProcess(id) : undefined;
+    return (
+      accepted !== undefined &&
+      postProcessShaderEntrySignature(accepted) === postProcessShaderEntrySignature(entry)
+    );
+  };
+  /**
+   * Allocation-free steady-state check run before every frame's preparation:
+   * every declaration keeps its active buffer and no active buffer is
+   * orphaned, so the active map itself is the candidate.
+   */
+  const paramsBuffersUnchanged = (
+    featureEntries: ReadonlyMap<string, PostProcessShaderEntry>,
+  ): boolean => {
+    let retained = 0;
+    for (const id of builtinPostProcessEntries.keys()) {
+      // The declaration map below lets a feature entry replace a builtin one.
+      const entry = (featureEntries.get(id) ??
+        builtinPostProcessEntries.get(id)) as PostProcessShaderEntry;
+      const kept = retainsParamsBuffer(id, entry);
+      if (kept === false) return false;
+      if (kept) retained++;
+    }
+    for (const id of featureEntries.keys()) {
+      if (builtinPostProcessEntries.has(id)) continue;
+      const kept = retainsParamsBuffer(id, featureEntries.get(id) as PostProcessShaderEntry);
+      if (kept === false) return false;
+      if (kept) retained++;
+    }
+    return retained === postProcessParamsBuffers.size;
+  };
   const preparePostProcessParamsResources = (
     featureEntries: ReadonlyMap<string, PostProcessShaderEntry>,
   ): Result<PostProcessParamsCandidate, RhiError> => {
+    if (paramsBuffersUnchanged(featureEntries))
+      return ok({ buffers: postProcessParamsBuffers, created: [] });
     const declarations = new Map<string, PostProcessShaderEntry>([
       ...builtinPostProcessEntries.entries(),
       ...featureEntries.entries(),

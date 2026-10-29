@@ -94,7 +94,7 @@ export async function productionShadowFixture(count = 3, cascades = 3) {
       .flatMap(({ identity }) => [{ ...identity, layer: 'static' as const }, identity])
       .map((identity) => {
         const submission = frame.shadowViewPool?.submission(identity);
-        const bindings = frame.shadowBatchProjections?.get(shadowViewIdentityKey(identity));
+        const bindings = frame.shadowBatchProjections?.()?.get(shadowViewIdentityKey(identity));
         assert(submission && bindings);
         return {
           identity,

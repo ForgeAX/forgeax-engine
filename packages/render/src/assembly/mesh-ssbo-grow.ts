@@ -87,6 +87,17 @@ export function meshSsboBuffer(
 }
 
 /** Resolve the physical resource and dynamic offset from the same logical address. */
+/** The binding-relative offset of {@link meshSsboBufferBinding}, without a binding record. */
+export function meshSsboByteOffset(
+  storage: Pick<MeshSsboBufferWrapper, 'pages'>,
+  byteOffset: number,
+): number {
+  const pages = storage.pages;
+  return pages === undefined
+    ? byteOffset
+    : byteOffset - Math.floor(byteOffset / pages.byteStride) * pages.byteStride;
+}
+
 export function meshSsboBufferBinding(
   storage: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
   byteOffset: number,

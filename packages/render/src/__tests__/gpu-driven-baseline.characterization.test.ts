@@ -8,16 +8,15 @@ const count = (source: string, pattern: RegExp): number => source.match(pattern)
 const productionRaster = read('../gpu-driven/production-raster.ts');
 const productionRasterMaterial = read('../gpu-driven/production-raster-material.ts');
 const frameRecord = read('../record/frame.ts');
+const frameGpuDriven = read('../record/frame-gpu-driven.ts');
 const mainPass = read('../record/main-pass.ts');
 const shadowPass = read('../record/shadow-pass.ts');
-const paletteAllocator = read('../systems/skin-palette-allocator.ts');
+const skinTasks = read('../record/skin-tasks.ts');
 const extractRoot = read('../render-system-extract.ts');
 const extractTail = read('../render-system-extract-tail.ts');
 const rendererSystem = read('../render-system.ts');
-const rendererFactory = read('../assembly/factory.ts');
 const webgpuReady = read('../assembly/webgpu-ready.ts');
 const webgpuPbrReady = read('../assembly/webgpu-pbr-ready.ts');
-const skinPaletteOwner = read('../assembly/skin-palette-owner.ts');
 const gpuDrivenOwner = read('../assembly/gpu-driven-owner.ts');
 
 describe('GPU-driven baseline characterization', () => {
@@ -57,12 +56,14 @@ describe('GPU-driven baseline characterization', () => {
   });
 
   it('keeps probe-bearing rows on the GPU lane with the shared probe buffer', () => {
-    expect(frameRecord).toContain(
-      'const frameGpuDriven = fallbackLaneLimit ? undefined : gpuDriven;',
-    );
+    expect(frameRecord).toContain('return fallbackLaneLimit ? undefined : gpuDriven;');
     expect(frameRecord).not.toContain('const probeBlendFrame =');
-    expect(frameRecord).toContain('frameGpuDriven.scene?.probeBlend');
-    expect(frameRecord).toContain('probeBlendRecordBuffer: gpuProbeBlendBuffer');
+    expect(frameGpuDriven).toContain(
+      'ensureProbeBlendRecordBuffer(internals.device, frameState, scene?.probeBlend)',
+    );
+    expect(frameGpuDriven).toContain(
+      '...(probeBlendRecordBuffer === undefined ? {} : { probeBlendRecordBuffer })',
+    );
   });
 
   it('freezes CPU shadow caster enumeration as the pre-GPU baseline', () => {
@@ -71,28 +72,22 @@ describe('GPU-driven baseline characterization', () => {
     expect(shadowPass).toContain('recordShadowCasterDraws');
   });
 
-  it('freezes the frame-local full palette write behavior', () => {
-    expect(paletteAllocator).toContain('resetForFrame');
-    expect(paletteAllocator).toContain('storageCursor = 0');
-    expect(paletteAllocator).toContain('poolCursor = 0');
-    expect(count(paletteAllocator, /queue\.writeBuffer/g)).toBe(2);
-    expect(paletteAllocator).toContain('writeJointPalette');
-  });
-
   it('freezes current ownership and stable-frame inspection signals', () => {
     expect(productionRaster).toContain('selection: filtered.selection');
     expect(productionRaster).not.toContain('ownsAllRenderables');
-    expect(rendererSystem).toContain('gpuDriven: gpuDrivenProduction.inspect()');
+    expect(rendererSystem).toContain(
+      'gpuDriven: gpuDrivenProduction.inspect(skinTasks.paletteUploadBytes)',
+    );
     expect(productionRaster).toContain('gpuOwnedSnapshotsMaterialized');
     expect(productionRaster).toContain('validatedGpuOwnedRows');
     expect(productionRaster).toContain('cpuFallbackDrawItems');
   });
 
-  it('keeps the single-query and single-palette-owner constraints visible', () => {
+  it('keeps the single-query and single-task-owner constraints visible', () => {
     expect(count(extractTail, /read: \[MeshRenderer\]/g)).toBe(1);
-    const paletteOwners = [rendererFactory, skinPaletteOwner].join('\n');
-    expect(count(paletteOwners, /createSkinPaletteAllocator\(/g)).toBe(1);
-    expect(paletteAllocator).toContain('export function createSkinPaletteAllocator');
+    expect(count(rendererSystem, /new RecordingSkinTasks\(/g)).toBe(1);
+    expect(count(read('../record/recording-skin-tasks.ts'), /new SkinTasks\(/g)).toBe(1);
+    expect(skinTasks).toContain('export class SkinTasks');
     expect(gpuDrivenOwner).toContain('createGpuDrivenOwner');
   });
 });

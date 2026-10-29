@@ -45,7 +45,6 @@ export type {
   ReplicationComponentRecord,
   ReplicationDataPacket,
   ReplicationDataPacketBase,
-  ReplicationDataPacketKind,
   ReplicationDeltaPacket,
   ReplicationEntityKind,
   ReplicationEntityRecord,

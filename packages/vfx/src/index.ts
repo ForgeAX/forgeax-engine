@@ -87,7 +87,6 @@ export {
   VFX_FORCE_FIELD_LIMIT,
   VFX_VECTOR_FIELD_RESOLUTION_LIMIT,
   validateVfxForceFields,
-  validateVfxVectorFieldTexture,
   vfxForceFieldFailure,
 } from './force-fields.js';
 export type { VfxGpuAssetError } from './gpu-loader.js';
@@ -141,21 +140,15 @@ export {
 } from './instance.js';
 export type {
   VfxCustomLayout,
-  VfxParametersLayout,
   VfxParticleCoreAttribute,
   VfxParticleCoreField,
   VfxParticleCoreLayout,
-  VfxParticleCoreValue,
-  VfxParticleCoreValues,
 } from './particle-layout.js';
 export {
   deriveVfxCustomLayout,
-  encodeVfxParticleCore,
-  normalizedVfxParticleAge,
   VFX_PARTICLE_CORE_LAYOUT,
   VFX_PARTICLE_CORE_STRIDE,
   vfxParticleCoreField,
-  vfxParticleCoreWgsl,
 } from './particle-layout.js';
 export type { ParticleEffectPlayerData } from './player.js';
 export { ParticleEffectPlayer } from './player.js';

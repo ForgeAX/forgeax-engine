@@ -1,7 +1,14 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect, it } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  browserRendererFixture,
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  verifyReplay,
+} from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
 
 const cases = [
@@ -27,6 +34,7 @@ const materialOutputCases = [
 
 // Every declared case belongs to exactly one browser process, including new cases.
 export function testMaterialOutputPartition(partition: 0 | 1): void {
+  const rendererFor = browserRendererFixture();
   it.each(
     materialOutputCases.filter((_, index) => index % 2 === partition),
   )('matches WebGPU material output: %s', { timeout: 120000 }, async (caseName) => {
@@ -85,15 +93,16 @@ export function testMaterialOutputPartition(partition: 0 | 1): void {
     }
     const mesh = new THREE.Mesh(
       name === 'normal' || name === 'double-sided'
-        ? new THREE.SphereGeometry(1.3, 48, 24)
+        ? new THREE.SphereGeometry(
+            1.3,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          )
         : new THREE.PlaneGeometry(3, 3),
       material,
     );
     scene.add(mesh);
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = SIZE;
-    document.body.append(canvas);
-    const renderer = new THREE.WebGPURenderer({ canvas, antialias: name === 'coverage' });
+    const renderer = rendererFor({ antialias: name === 'coverage' });
     try {
       await renderer.init();
       await readyFrames(renderer, scene, camera, 60);
@@ -117,10 +126,8 @@ export function testMaterialOutputPartition(partition: 0 | 1): void {
         await verifyReplay(single);
       }
     } finally {
-      await renderer.dispose();
       material.dispose();
       texture.dispose();
-      canvas.remove();
     }
   });
 }

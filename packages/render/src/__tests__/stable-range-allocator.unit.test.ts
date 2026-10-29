@@ -60,6 +60,23 @@ it('extends an aligned retired tail while retaining its prefix hole', () => {
   expect(owner.requiredCapacity()).toBe(17);
 });
 
+it('derives the live end from released tail ranges without changing reusable capacity', () => {
+  for (const spareLimit of [0, 64]) {
+    const owner = new StableRangeAllocator(spareLimit);
+    expect(owner.allocatedEnd()).toBe(0);
+    for (let index = 0; index < 4096; index++) owner.allocate(4);
+    for (let index = 0; index < 4096; index += 2) owner.release(index * 4, 4);
+    expect(owner.allocatedEnd()).toBe(4096 * 4);
+    owner.release(4095 * 4, 4);
+    const visits = countRangeVisits(owner);
+    expect(owner.allocatedEnd()).toBe(4093 * 4 + 4);
+    expect(visits()).toBeLessThan(128);
+    expect(owner.requiredCapacity()).toBe(4096 * 4);
+    expect(owner.allocate(4)).toBe(0);
+    expect(owner.allocatedEnd()).toBe(4093 * 4 + 4);
+  }
+});
+
 it('does not sort the complete free roster when one middle interval is released', () => {
   const owner = new StableRangeAllocator();
   for (let index = 0; index < 4096; index++) owner.allocate(4);
@@ -139,4 +156,39 @@ it('merges both neighbours when deletion inherits the saved successor', () => {
   expect(owner.allocate(5)).toBe(4);
   expect(owner.allocate(1)).toBe(0);
   expect(owner.requiredCapacity()).toBe(10);
+});
+
+it('reuses exact released sizes without the tree and flushes them before growing', () => {
+  const ranges = new StableRangeAllocator(64);
+  const a = ranges.allocate(17);
+  const b = ranges.allocate(17);
+  const tail = ranges.requiredCapacity();
+  ranges.release(a, 17);
+  ranges.release(b, 17);
+  // Exact reuse keeps first-fit address order, not release order.
+  expect(ranges.allocate(17)).toBe(a);
+  expect(ranges.allocate(17)).toBe(b);
+  ranges.release(b, 17);
+  ranges.release(a, 17);
+  // Another size cannot fit until spare ranges coalesce back into the tree.
+  expect(ranges.allocate(34)).toBe(a);
+  expect(ranges.requiredCapacity()).toBe(tail);
+  // Over the limit, releases coalesce in the tree as before.
+  const big = ranges.allocate(48);
+  ranges.release(big, 48);
+  expect(ranges.allocate(48)).toBe(big);
+  ranges.release(big, 48);
+  ranges.release(a, 34);
+  const merged = ranges.allocate(82);
+  expect(merged === a || merged === big).toBe(true);
+});
+
+it('keeps alignment and reset semantics for exact spare reuse', () => {
+  const ranges = new StableRangeAllocator(64);
+  ranges.allocate(1);
+  const odd = ranges.allocate(4);
+  ranges.release(odd, 4);
+  expect(ranges.allocate(4, 4) % 4).toBe(0);
+  ranges.reset(1);
+  expect(ranges.allocate(4)).toBe(1);
 });

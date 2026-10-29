@@ -4,6 +4,7 @@ import { AssetGuid, PackageId } from '../guid.js';
 import {
   definePack,
   definePackageId,
+  PACK_AUTHORING_OPERATION_DESCRIPTORS,
   type PackParameterInheritanceSubject,
   parsePackSourceJson,
   projectDirectPackJson,
@@ -22,6 +23,17 @@ function packageId(value: string) {
 }
 
 describe('ScriptablePack and Pack authoring', () => {
+  it('advertises source mutations and revision checks accurately', () => {
+    for (const descriptor of PACK_AUTHORING_OPERATION_DESCRIPTORS) {
+      expect(descriptor.readOnly).toBe(!descriptor.id.startsWith('asset.source.'));
+      expect(descriptor.requiresRevision).toBe(
+        ['asset.source.values.apply', 'asset.source.rebuild', 'asset.source.cold-cook'].includes(
+          descriptor.id,
+        ),
+      );
+    }
+  });
+
   it('preserves explicit plugin production and rejects other capability values', () => {
     const definition = definePack({
       schemaVersion: '2.0.0',

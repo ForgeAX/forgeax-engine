@@ -1,6 +1,8 @@
 import { readAssetBundleTable } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { BundleTransferDiagnostics } from './bundle-diagnostics.js';
+import { findVerifiedArtifactBytes } from './shared-immutable.js';
 
 type BundleWindow = NonNullable<ArtifactDescriptor['byteRange']>;
 
@@ -17,6 +19,12 @@ export interface BundleWindowRead<Failure> {
   finish(stored: Uint8Array): Promise<Result<Uint8Array, Failure>>;
   /** Verify a private copy of a value another owner already extracted. */
   reuse(copy: Uint8Array): Promise<Result<Uint8Array, Failure>>;
+  /**
+   * Content digest of the decoded entry. A consumer may keep the realm's shared
+   * view of that content after the extracted value is gone; reusing it avoids a
+   * Range refetch.
+   */
+  readonly digest?: string;
   invalid(reason: string): Failure;
 }
 
@@ -32,6 +40,7 @@ interface Resident {
  * only that window; a host that answers with the whole file repopulates it.
  */
 export class BundleStore<Failure> {
+  readonly transfers = new BundleTransferDiagnostics();
   private readonly resident = new Map<string, Resident>();
   private readonly loading = new Map<string, Promise<Result<void, Failure>>>();
   private readonly fetched = new Set<string>();
@@ -51,14 +60,20 @@ export class BundleStore<Failure> {
     const key = `${bundle}\0${request.range.offset}`;
     const existing = this.windows.get(key);
     if (existing !== undefined && !('deref' in existing)) {
+      this.transfers.count(bundle, 'coalescedReads');
       const shared = await existing;
       return shared.ok ? request.reuse(shared.value.slice()) : shared;
     }
-    const alive = existing?.deref();
+    const alive =
+      existing?.deref() ??
+      (request.digest === undefined ? undefined : findVerifiedArtifactBytes(request.digest));
     if (alive !== undefined) {
       // Owners may mutate or transfer their bytes; a reuse is a verified private copy.
       const reused = await request.reuse(alive.slice());
-      if (reused.ok) return reused;
+      if (reused.ok) {
+        this.transfers.count(bundle, 'verifiedReuse');
+        return reused;
+      }
     }
     const current = this.windows.get(key);
     if (current !== undefined && current !== existing) return this.read(request);
@@ -66,6 +81,7 @@ export class BundleStore<Failure> {
     this.windows.set(key, pending);
     void pending.then(
       (result) => {
+        if (result.ok) this.transfers.count(bundle, 'decodedEntryBytes', result.value.byteLength);
         if (this.windows.get(key) !== pending) return;
         if (result.ok && typeof WeakRef === 'function')
           this.windows.set(key, new WeakRef(result.value));
@@ -81,6 +97,7 @@ export class BundleStore<Failure> {
   /** Release resident entries; extracted values keep their own owners. */
   trim(): number {
     const released = this.resident.size;
+    for (const key of this.resident.keys()) this.transfers.count(key, 'evictions');
     this.resident.clear();
     this.bytes = 0;
     return released;
@@ -103,6 +120,7 @@ export class BundleStore<Failure> {
   ): Promise<Result<Uint8Array, Failure>> {
     let stored = this.take(bundle, request.range);
     if (stored === undefined && this.fetched.has(bundle) && !this.loading.has(bundle)) {
+      this.transfers.count(bundle, 'rereads');
       const fetched = await request.fetch(true);
       if (!fetched.ok) return fetched;
       if (fetched.value.byteLength === request.range.length) return request.finish(fetched.value);
@@ -125,6 +143,7 @@ export class BundleStore<Failure> {
     const resident = this.resident.get(bundle);
     const stored = resident?.entries.get(range.offset);
     if (resident === undefined || stored === undefined) return undefined;
+    this.transfers.count(bundle, 'residentHits');
     resident.entries.delete(range.offset);
     resident.bytes -= stored.byteLength;
     this.bytes -= stored.byteLength;
@@ -141,7 +160,7 @@ export class BundleStore<Failure> {
       });
       this.loading.set(bundle, current);
       loading = current;
-    }
+    } else this.transfers.count(bundle, 'coalescedReads');
     return loading;
   }
 
@@ -183,6 +202,7 @@ export class BundleStore<Failure> {
     for (const [key, other] of this.resident) {
       if (this.bytes <= this.maxResidentBytes) break;
       if (key === bundle) continue;
+      this.transfers.count(key, 'evictions');
       this.resident.delete(key);
       this.bytes -= other.bytes;
     }

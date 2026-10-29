@@ -182,6 +182,7 @@ describe('ProbeBlendRecord renderer lane', () => {
       { binding: 5, visibility: 2, buffer: { type: 'uniform' } },
       { binding: 6, visibility: 1, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: 1, buffer: { type: 'read-only-storage' } },
+      { binding: 8, visibility: 1, buffer: { type: 'read-only-storage' } },
     ]);
     expect(
       layout.entries.filter(

@@ -76,16 +76,16 @@ describe('skinned shadow caster', () => {
     expect(shader).toContain('@group(1) @binding(46)');
     expect(shader).toContain('evaluate_standard_surface(input, material)');
     expect(shader).toContain('discard;');
-    expect(shader).toContain('@group(2) @binding(1)');
-    expect(shader).toContain('let skinMatrix = palette[');
+    expect(shader).toContain('#import forgeax_skin::task::');
+    expect(shader).toContain('skinTaskBlend(');
     expect(shader).toContain('let materialIndex = visible.y;');
-    expect(shader).toContain('let paletteBase = sceneInstances[visible.x].customDataStart;');
+    expect(shader).toContain('skinTaskDescriptor(paletteBase)');
     expect(shader).not.toContain('meshes[meshIndex]');
     expect(shader).toContain('@location(13) color : vec4<f32>');
     expect(shader).toContain('out.color = in.color;');
-    expect(record).toContain('entry.source.skin.byteOffset');
-    expect(record).toContain("'shadow-pbr-skin-mesh'");
-    expect(builder).toContain('buffers: [...ctx.vertexBuffers]');
+    expect(record).toContain('runtime.demandSkinTask?.(entry.source)');
+    expect(record).toContain('geometrySkinBindGroup(');
+    expect(builder).toContain('buffers: ctx.vertexBuffers');
   });
 
   it('keeps the optional scene-material binding out of the WebGL2 shadow singleton', () => {
@@ -145,15 +145,26 @@ describe('skinned shadow caster', () => {
     expect(skinnedVariant).toBe('SKINNING_DISABLED=false+STORAGE_BUFFER_AVAILABLE=false');
     expect(recordSource).toContain('entry.mesh.layoutProjection');
     expect(recordSource).toContain("skinned ? 'pbr-skin' : 'pbr'");
-    expect(recordSource).toContain('createPbrSkinMeshBindGroupEntries(');
+    expect(recordSource).toContain('geometrySkinBindGroup(');
     expect(recordSource).toContain('pbrSkinMeshDynamicOffsets(');
 
     const meshBuffer = {} as never;
     const paletteBuffer = {} as never;
-    const entries = createPbrSkinMeshBindGroupEntries(meshBuffer, 64, paletteBuffer, 128);
+    const task = {
+      data: paletteBuffer,
+      auxiliary: {} as never,
+      dataOffset: 512,
+      auxiliaryOffset: 768,
+      dataSize: 128,
+      auxiliarySize: 16,
+      jointCount: 1,
+      flags: 1,
+    };
+    const entries = createPbrSkinMeshBindGroupEntries(meshBuffer, 64, task);
     expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2]);
-    expect(entries[1]?.resource).toEqual(entries[2]?.resource);
-    expect(pbrSkinMeshDynamicOffsets(256, 512)).toEqual([256, 512, 512]);
+    expect(entries[1]?.resource).not.toEqual(entries[2]?.resource);
+    expect(pbrSkinMeshDynamicOffsets(256, task, true)).toEqual([256, 768]);
+    expect(pbrSkinMeshDynamicOffsets(256, task, false)).toEqual([256, 512, 768]);
   });
 
   it('keeps low-limit shadow view bindings paired with the optional projector layout', () => {
@@ -273,7 +284,7 @@ describe('skinned shadow caster', () => {
   function preparation(resources: MaterialResource[]) {
     let frame = new MaterialDispatch().materials();
     for (const resource of resources) frame = frame.with(resource);
-    const request = vi.fn(() => ({}));
+    const request = vi.fn(() => ({ pipeline: {}, group2Contract: 'mesh' }));
     const context = {
       materialFrame: frame,
       pipelinePreparationEntries: [
@@ -295,7 +306,7 @@ describe('skinned shadow caster', () => {
       ],
       runtime: {
         device: { caps: { storageBuffer: false } },
-        prepareMaterialShaderPipeline: request,
+        prepareMaterialShaderPipelineEntry: request,
       },
       frameState: {},
     } as unknown as _InternalRenderPipelineContext;

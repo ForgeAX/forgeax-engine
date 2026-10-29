@@ -1,4 +1,4 @@
-export type GpuPassTimingReasonCode =
+export type GpuPassTimingErrorCode =
   | 'gpu-timing-not-enabled'
   | 'timestamp-query-unsupported'
   | 'timestamp-period-unavailable'
@@ -22,13 +22,10 @@ export type GpuPassTimingJson =
   | readonly GpuPassTimingJson[]
   | { readonly [key: string]: GpuPassTimingJson };
 
-export interface GpuPassTimingReason {
-  readonly code: GpuPassTimingReasonCode;
+export interface GpuPassTimingError {
+  readonly code: GpuPassTimingErrorCode;
   readonly expected: string;
   readonly hint: string;
   readonly detail: { readonly [key: string]: GpuPassTimingJson };
   readonly cause?: { readonly [key: string]: GpuPassTimingJson } | undefined;
 }
-
-export type GpuPassTimingError = GpuPassTimingReason;
-export type GpuPassTimingErrorCode = GpuPassTimingReasonCode;

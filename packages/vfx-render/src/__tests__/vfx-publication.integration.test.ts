@@ -27,13 +27,14 @@ import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fix
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { isOwnedRenderFeatureProgramData } from '../../../render/src/features/prepared-gpu-work';
 import { Materials } from '../../../render/src/materials';
-import {
-  type RenderPublication,
-  renderPublicationAssetTransfers,
-  renderPublicationTransfers,
-} from '../../../render/src/publication/contract';
+import type { RenderPublication } from '../../../render/src/publication/contract';
 import { createRenderPublisher } from '../../../render/src/publication/publisher';
 import { RenderPublicationReceiver } from '../../../render/src/publication/receiver';
+import {
+  encodeRenderPublication,
+  renderPublicationAssetTransfers,
+  renderPublicationTransfers,
+} from '../../../render/src/publication/record';
 import type { RenderResourceScope } from '../../../render/src/publication/resource-scope';
 import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
 import {
@@ -456,12 +457,14 @@ it.each([
     world.update(1 / 60).unwrap();
     for (let iteration = 0; iteration < 2; iteration++) {
       const candidate = publisher.prepare(0).unwrap();
-      const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+      const packet = structuredClone(candidate.message, {
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       const accepted = receiver.accept(packet).unwrap();
-      const frame = required(packet.features[0]).data as Parameters<typeof consumer.plan>[0];
+      const frame = required(accepted.packet.features[0]).data as Parameters<
+        typeof consumer.plan
+      >[0];
       const row = required(required(frame.worlds[0]).materials.get(materialHandle));
       const enabledKinds = kinds.filter((kind) => kind !== disabled);
       const used = pass.startsWith('particle-');
@@ -509,7 +512,7 @@ it.each([
             : `forgeax::vfx-render.particles.${kind}`,
         ),
       );
-      if (iteration === 1) expect(packet.assets).toHaveLength(0);
+      if (iteration === 1) expect(accepted.packet.assets).toHaveLength(0);
       publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     }
   } finally {
@@ -639,12 +642,11 @@ it('publishes immutable VFX definitions once and keeps them out of frame feature
   const receiver = new RenderPublicationReceiver(identity);
   const seal = () => {
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+    const packet = structuredClone(candidate.message, {
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    receiver.accept(packet).unwrap();
-    return packet;
+    return receiver.accept(packet).unwrap().packet;
   };
   try {
     world.update(1 / 60).unwrap();
@@ -668,8 +670,12 @@ it('publishes immutable VFX definitions once and keeps them out of frame feature
     inspect(second.features);
     expect(original?.parameterBlock.buffer.byteLength).toBe(original?.parameterBlock.byteLength);
     expect(publisher.prepare(0).ok).toBe(false);
-    publisher.recycle(first.revision, renderPublicationTransfers(first)).unwrap();
-    publisher.recycle(second.revision, renderPublicationTransfers(second)).unwrap();
+    publisher
+      .recycle(first.revision, renderPublicationTransfers(encodeRenderPublication(first)))
+      .unwrap();
+    publisher
+      .recycle(second.revision, renderPublicationTransfers(encodeRenderPublication(second)))
+      .unwrap();
   } finally {
     publisher.dispose();
     receiver.dispose();
@@ -702,12 +708,13 @@ async function publicationFixture(effectAsset = effect) {
   const data = (packet: RenderPublication) => required(packet.features[0]).data as Frame;
   const seal = () => {
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+    const packet = structuredClone(candidate.message, {
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    resources = receiver.accept(packet).unwrap().resources;
-    return packet;
+    const accepted = receiver.accept(packet).unwrap();
+    resources = accepted.resources;
+    return accepted.packet;
   };
   const plan = (packet: RenderPublication, generation = 0) =>
     consumer.plan(
@@ -728,7 +735,9 @@ async function publicationFixture(effectAsset = effect) {
         { identity: source.identity, feedback: structuredClone(work.sourceFeedback) },
       ])
       .unwrap();
-    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    publisher
+      .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+      .unwrap();
   };
   const replace = async (renameEmitter = false) => {
     const updated = structuredClone(effect);
@@ -831,7 +840,7 @@ it('preserves the accepted effect and revision when adopting a replacement throw
       baseline: false,
       assetVersions: [{ ...row, revision: row.revision + 1, value: replacement }],
     };
-    expect(() => f.receiver.accept(second)).toThrow(failure);
+    expect(() => f.receiver.accept(encodeRenderPublication(second))).toThrow(failure);
     expect(f.resources.revision).toBe(first.revision);
     expect(f.resources.resolveAsset(row.handle, row.revision).unwrap()).toBe(accepted);
     expect(programSources(f.plan(first))).toEqual([required(effect.program.emitters[0]).wgsl]);
@@ -922,7 +931,7 @@ it.each([
     const second = f.seal();
     const advanced = f.plan(second);
     expect(bindings(advanced)[0]).toBe(layout);
-    // Logical layouts are retained; the exact current fixed-tick upload is not.
+    // Logical layouts are retained; the exact current tick upload is not.
     expect(runtimeBytes(advanced)).not.toEqual(runtimeBytes(initial));
     const recovered = f.plan(second, 1);
     expect(bindings(recovered)[0]).toEqual(layout);
@@ -1117,7 +1126,12 @@ it('plans exact old/new effects with one GUID across two sealed frames, abort, A
     expect(
       f.resources.resolveAsset(required(current.effect), required(current.revision)).unwrap(),
     ).toEqual(updated);
-    expect(f.publisher.recycle(second.revision, renderPublicationTransfers(second)).ok).toBe(false);
+    expect(
+      f.publisher.recycle(
+        second.revision,
+        renderPublicationTransfers(encodeRenderPublication(second)),
+      ).ok,
+    ).toBe(false);
     const rejected = f.plan(first);
     expect(programSources(rejected)).toEqual([required(effect.program.emitters[0]).wgsl]);
     f.consumer.onFrameAborted?.(f.data(first));
@@ -1174,16 +1188,18 @@ it('re-publishes discarded definitions and seeds a replacement epoch from curren
     const receiver = new RenderPublicationReceiver(identity);
     try {
       const candidate = publisher.prepare(0).unwrap();
-      const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+      const packet = structuredClone(candidate.message, {
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       const accepted = receiver.accept(packet).unwrap();
-      expect(packet.baseline).toBe(true);
-      expect(packet.assetVersions?.some((row) => row.value.kind === 'particle-effect')).toBe(true);
+      expect(accepted.packet.baseline).toBe(true);
+      expect(
+        accepted.packet.assetVersions?.some((row) => row.value.kind === 'particle-effect'),
+      ).toBe(true);
       const consumer = gpuParticleRenderFeature({ camera: { read: () => undefined } });
       const plan = consumer.plan(
-        f.data(packet),
+        f.data(accepted.packet),
         singleViewContext({
           resolveAsset: (_index, handle, revision) =>
             accepted.resources.resolveAsset(handle, revision),
@@ -1193,7 +1209,7 @@ it('re-publishes discarded definitions and seeds a replacement epoch from curren
         }),
       );
       expect(programSources(plan)).toEqual([required(updated.program.emitters[0]).wgsl]);
-      const broken = structuredClone(f.data(packet));
+      const broken = structuredClone(f.data(accepted.packet));
       const retained = required(broken.worlds[0]?.retained[0]);
       Object.assign(retained.intent, { programFingerprint: 'sha256:wrong-version' });
       expect(
@@ -1494,17 +1510,18 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
   world.update(1 / 60).unwrap();
   const publish = (materialBindings = false) => {
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
+    const packet = structuredClone(candidate.message, {
       transfer: [
-        ...renderPublicationTransfers(candidate.packet),
-        ...renderPublicationAssetTransfers(candidate.packet),
+        ...renderPublicationTransfers(candidate.message),
+        ...renderPublicationAssetTransfers(candidate.message),
       ],
     });
     candidate.accept();
     const accepted = receiver.accept(packet).unwrap();
+    const view = accepted.packet;
     const planned = consumer
       .plan(
-        data(packet),
+        data(view),
         singleViewContext({
           targets: [{ name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 }],
           resolveAsset: (_index, assetHandle, revision) =>
@@ -1521,7 +1538,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
     const geometry = planResources(planned)
       .filter((resource) => resource.kind === 'buffer')
       .filter((resource) => resource.name.endsWith('.geometry-buffer'));
-    consumer.onFrameSubmitted?.(data(packet));
+    consumer.onFrameSubmitted?.(data(view));
     publisher
       .acknowledgeFeatures(packet.revision, [
         { identity: source.identity, feedback: planned.sourceFeedback },
@@ -1531,7 +1548,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
       transfer: renderPublicationTransfers(packet),
     });
     publisher.recycle(packet.revision, returned).unwrap();
-    return { packet, data: data(packet), resources: accepted.resources, geometry, planned };
+    return { packet: view, data: data(view), resources: accepted.resources, geometry, planned };
   };
   return {
     world,
@@ -1841,11 +1858,12 @@ it('publishes fixed field textures once and keeps large samples out of steady ti
   const receiver = new RenderPublicationReceiver(identity);
   const publish = () => {
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet, {
-      transfer: renderPublicationTransfers(candidate.packet),
+    const packet = structuredClone(candidate.message, {
+      transfer: renderPublicationTransfers(candidate.message),
     });
     candidate.accept();
-    return { packet, accepted: receiver.accept(packet).unwrap() };
+    const accepted = receiver.accept(packet).unwrap();
+    return { message: packet, packet: accepted.packet, accepted };
   };
   try {
     world.update(1 / 60).unwrap();
@@ -1867,11 +1885,11 @@ it('publishes fixed field textures once and keeps large samples out of steady ti
       .unwrap();
     if (fixed.kind !== 'texture') throw new Error('Missing held texture');
     expect(new DataView(fixed.data.buffer, fixed.data.byteOffset).getFloat32(0, true)).toBe(1);
-    publisher.recycle(first.packet.revision, renderPublicationTransfers(first.packet)).unwrap();
+    publisher.recycle(first.packet.revision, renderPublicationTransfers(first.message)).unwrap();
     const third = publish();
     expect(third.packet.assetVersions ?? []).toHaveLength(0);
     expect(serialize(third.packet.features).byteLength).toBeLessThan(8_192);
-    expect(renderPublicationAssetTransfers(third.packet)).toHaveLength(0);
+    expect(renderPublicationAssetTransfers(third.message)).toHaveLength(0);
   } finally {
     publisher.dispose();
     receiver.dispose();
@@ -1964,7 +1982,7 @@ it.each([
     f.world.update(1 / 60).unwrap();
     const retained = f.publish(true);
     expect(retained.data.worlds[0]?.intents).toEqual([]);
-    expect(retained.data.worlds[0]?.retained[0]?.intent.emitter.id).toBe('emitter');
+    expect(retained.data.worlds[0]?.retained[0]?.emitter.id).toBe('emitter');
     expect(planPasses(retained.planned).some((pass) => pass.kind === 'raster')).toBe(
       state === 'paused',
     );

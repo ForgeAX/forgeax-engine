@@ -23,6 +23,7 @@ import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { derive, type TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -223,7 +224,7 @@ export async function verifyNormalBump(
         if (capture !== undefined) {
           const encoded = (await capture).unwrap();
           const name = `${renderPath}-${entry.name}`;
-          await save(`${name}.rhitape`, encoded.bytes);
+          await save(`${name}.rhitape`, compactTape(encoded).bytes);
           const tape = decodeTape(encoded.bytes).unwrap();
           const model = buildFrameModel(tape);
           const geometryWork = model.works.find((work) =>

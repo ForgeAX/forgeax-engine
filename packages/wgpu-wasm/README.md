@@ -10,7 +10,8 @@ canonical receipt plus generator, initializer, derived-glue and declaration dige
 The generated `wgpu-native.d.mts` retains the raw classes and exposes the typed
 native initializer without the browser loader. This build-only conversion needs
 the published artifact, not a local Rust checkout. Source builds separately require
-`verify-current.mjs` to match the current complete source closure.
+`verify-current.mjs` to match the current source closure, excluding Git/CI
+metadata and Cargo target outputs so SDK source can omit `.github/`.
 Generated runtime and declaration imports use the public
 `@forgeax/engine/wgpu-wasm/native-host` entry, whose SHA-256 export resolves the
 integrity dependency inside the complete Engine package. Consumers need only
@@ -187,7 +188,7 @@ bash packages/wgpu-wasm/build.sh            # 或 pnpm -F @forgeax/engine-wgpu-w
 pnpm -F @forgeax/engine-wgpu-wasm fetch-wasm
 ```
 
-路径 A 需 Rust ≥ 1.93 + `wasm32-unknown-unknown` target + `wasm-pack`（详见 [CONTRIBUTING.md](../../CONTRIBUTING.md) §Rust toolchain）。`rust-toolchain.toml` 在本目录 pin 1.93，rustup 通常自动应用；若未生效，跑 `rustup show` 检查。
+路径 A 需 Rust ≥ 1.93 + `wasm32-unknown-unknown` target + `wasm-pack`（详见 CONTRIBUTING.md §Rust toolchain）。`rust-toolchain.toml` 在本目录 pin 1.93，rustup 通常自动应用；若未生效，跑 `rustup show` 检查。
 
 路径 B 由根 `postinstall` 在 `pkg/` 缺失时**非致命**自动执行（离线 / 私仓无 `GITHUB_TOKEN` / bundle 未发布时仅告警，不阻断 `pnpm install`）。共享下载器先用 Node `fetch`，握手失败时依次尝试 `gh` 和平台原生 `curl`（Windows 为 `curl.exe`）；所有路径仍锁定当前仓库、`wasm-artifacts` tag 和 content-keyed asset。release 资产按内容 hash 命名（`scripts/content-key.mjs` 覆盖 `src/**/*.rs` + `Cargo.{toml,lock}` + `rust-toolchain.toml` + `build.sh`），CI `publish-wgpu-wasm-release` job 在 main push 时打包发布——源码改一次，asset 名随之变，**旧 stale `pkg/` 无从被服务**（根治 `.d.ts` 与 `rhi.rs` 漂移）。
 

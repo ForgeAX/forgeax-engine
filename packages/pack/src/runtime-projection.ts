@@ -8,16 +8,12 @@ import type {
 } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
 
-export interface RuntimeAssetProjectionInput<P = unknown> {
+interface RuntimeAssetProjectionInput<P = unknown> {
   readonly guid: string;
   readonly kind: string;
   readonly payload: P;
   readonly refs: readonly string[];
   readonly artifacts: Readonly<Record<string, AssetRuntimeArtifactDescriptor>>;
-}
-
-export interface RuntimePackProjectionInput<P = unknown> extends AssetPublicationTuple {
-  readonly assets: readonly RuntimeAssetProjectionInput<P>[];
 }
 
 function invalid(observed: string, expected: string): Result<never, PackV2Error> {

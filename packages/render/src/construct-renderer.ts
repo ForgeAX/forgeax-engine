@@ -1,4 +1,4 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { type AssetRegistry, validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { EngineEnvironmentError, type RhiBackendPack } from './assembly/backend-contract';
 import type { BundlerOptions } from './assembly/factory';
 import { createRenderer, exposeRenderer } from './assembly/factory';
@@ -76,6 +76,7 @@ export async function constructRendererHost(
   try {
     if (options?.dynamicGeometryMeshBudgetBytes !== undefined)
       validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
+    if (options?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
     const implementation = await createRenderer(canvas, options, bundler, backend);
     const initialization = implementation.initialization.then(
       (ready): RenderResult<void, RenderError> =>

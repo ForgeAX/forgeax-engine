@@ -49,6 +49,14 @@ runtime failures remain distinguishable.
 
 Real-GPU integration is in [`src/__tests__/dawn-real-gpu.dawn.test.ts`](./src/__tests__/dawn-real-gpu.dawn.test.ts) (4 describes, 4 codes triggered).
 
+## Command encoder ownership
+
+Command, render-pass and compute-pass encoder methods share their class prototype.
+Call them on the encoder receiver, as with native WebGPU; a retained method callback
+needs its receiver bound by its caller. Each command encoder still owns independent
+raw state, finish/pass guards and acceleration-structure context. Sharing methods
+does not reuse or reset a finished encoder or alter descriptor forwarding.
+
 ## Timestamp write contract
 
 Timestamp capture uses the WebGPU pass descriptor `timestampWrites` field on
@@ -86,6 +94,13 @@ The RHI rules decide what happens next:
 - `deriveRayQueryCaps` derives the caps. A device without the feature or limits reports
   `adapter-lacks-feature`.
 - Structural validation in `@forgeax/engine-rhi` runs before any raw call.
+
+The shim borrows already validated TLAS entry/instance descriptors directly for
+its synchronous native call: acceleration handles already are native objects and
+there are no Buffer handles to unwrap in a TLAS instance. This removes one full
+roster map and its per-instance object allocations. RHI descriptor/liveness
+validation, native command serialization and the backend TLAS build still consume
+the complete roster; this does not introduce native or GPU incremental builds.
 
 ## Query forwarding contract
 
@@ -137,7 +152,29 @@ the Render owner contract. Neither produces synthetic ticks.
 - Provider seam injection via `gpu?: GPU` parameter (research §F-6 webgpu-utils + CTS consensus); default routes through `globalThis.navigator.gpu`.
 - dawn.node real-GPU coverage: `src/__tests__/dawn-real-gpu.dawn.test.ts` (4 D-S3 triggers, candidate proposition 6 monitoring).
 
-## Intentional differences (vs spec / wgpu)
+## WebGPU stub
+
+`installWebGpuStub(profile)` replaces the calling realm's `navigator.gpu` and
+`'webgpu'` canvas contexts with a no-op `GPU` that reports `profile`'s adapter
+features, limits, info and preferred canvas format. Every ambient consumer keeps
+this package's ordinary path (`caps.backendKind === 'webgpu'`, profile-derived
+caps), but nothing reaches a GPU, Dawn or a software rasterizer: submissions and
+`onSubmittedWorkDone` complete immediately, pipelines and shaders succeed without
+validation, and mapped ranges are zero-filled. Use it for CPU-side engine and game
+cost on hosts without a usable GPU, or to remove GPU cost on a GPU host. It is
+never pixel, GPU-time or FPS acceptance evidence.
+
+| Export | Contract |
+|:--|:--|
+| `DEFAULT_WEBGPU_STUB_PROFILE` | Chrome 155 on an Apple M4 Pro (Metal 3), captured 2026-10-22. |
+| `captureWebGpuStubProfile(gpu, name)` | Captures a structured-cloneable profile from a real `GPU`; `null` without an adapter. |
+| `installWebGpuStub(profile)` | Idempotent per realm. Install before any backend selection in each realm that creates a Renderer. |
+| `installedWebGpuStub()` | Installed profile name, or `undefined`. |
+
+`createApp({ gpuStub })` installs it in the main realm and every execution Worker;
+generated hosts map `?forgeax-gpu-stub=1` to the default profile. Unlike
+`rhi-null`, which validates RHI ownership structurally for unit tests, the stub
+exists to keep the real browser WebGPU path while removing GPU work.
 
 - **`'x' in src` guard transit**: spec `?: T` vs forgeax `?: T | undefined` differ under `exactOptionalPropertyTypes:true`; the shim guards each field per F-3 anti-pattern 2.
 - **`device.lost` single source**: this package only forwards the spec Promise; fan-out is the engine's job (`LostListenerRegistry`).
@@ -145,6 +182,29 @@ the Render owner contract. Neither produces synthetic ticks.
 - **Real-path implementation (M4-M5 + query closure)**: command recording + queue submit + queue.writeBuffer landed; query-set creation/destruction, occlusion begin/end, resolve, and timestamp pass writes are forwarded or capability-gated. Render bundle creation, finish and execution are implemented with native WebGPU validation.
 - **Escape hatch tear-down**: `getRawDevice` (no prefix) removed in `feat-20260508-rhi-surface-completion` M4 (AC-RSC-05); the single sanctioned hatch is `_internal_getRawDevice` confined to the AC-08 (h) allow-list.
 - **destroyBuffer / destroyTexture (feat-20260612)**: per-handle destroyed-state bookkeeping in shim layer (`WeakMap<Handle, { destroyed: boolean }>`) on top of the spec's idempotent-void `GPUBuffer.destroy()` / `GPUTexture.destroy()`. Dual-backend behavior is symmetric: both shims track destroyed boolean per handle, fail-fast on second destroy with `'destroy-after-destroy'` error code, and never depend on wasm panic interception (plan-strategy D-6). Implementation at `packages/rhi-webgpu/src/device.ts`.
+
+## Command counts
+
+Every realm keeps cumulative counts of the commands it encodes through this
+package. Each wrapper adds an integer on its existing path, so the counts are
+always on and identical with the stub and a real GPU. They are CPU-side call
+counts, not GPU cost.
+
+| Export | Contract |
+|:--|:--|
+| `readRhiCommandCounts()` | Snapshot (`RhiCommandCounts`) since the realm loaded the package. |
+| `subtractRhiCommandCounts(after, before)` | Counts encoded between two snapshots. |
+| `RHI_COMMAND_COUNT_KEYS` | Field list, in report order. |
+
+Pass fields (`draws`, `pipelineSets`, `bindGroupSets`, `vertexBufferSets`,
+`dispatches`) count commands encoded into render and compute passes. `bundle*`
+fields count commands recorded into render bundles; replays count only as
+`bundlesExecuted`. `bufferWrites`/`bufferWriteBytes` and
+`textureWrites`/`textureWriteBytes` count queue writes and their copied source
+bytes; `bindGroupCreates`, `bufferCreates`, `textureCreates` count creation. The
+App Render Worker attaches the difference since its previous submitted frame to
+each `frame-submitted` as `rhiCommands`. The wasm `rhi-wgpu` backend does not
+count.
 
 ## FAQ
 
@@ -199,11 +259,102 @@ validation failure evicts an earlier unverified handle and remains retryable.
 before renderer readiness, including a replacement device. `renderer.inspect()` exposes
 counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.
 Worker execution uses `await execution.inspectRenderer({pipelineLibrary:true})`.
+`inspect().pending` lists every currently recorded scheduled or native pipeline
+compilation, plus `unidentified` requests whose dependencies could not be recorded. Each row carries the runtime/startup/background origin, queued/compiling
+stage, elapsed milliseconds, complete recipe, bind-group layouts and shader-source
+SHA-256 digests. Its semantic identity excludes labels and device-local module
+numbers, so screenshots can identify an exact state variant across devices.
+The inspection contains no shader source or native handles and is detached from
+the library. It describes live native requests, not CPU preparation, not-yet-issued
+warmup entries, or a proof of coverage for gameplay paths that have not requested a pipeline.
+`preload` compares the exact recipe against all libraries supplied to this device:
+`startup`, `background`, or `both` means declared; `absent` means no indexed library
+contains it; `indexing` keeps the answer unresolved while a supplied library is
+still constructing its dependency/recipe roster. The complete roster is indexed
+before native warmup requests are scheduled, so a later background entry is not
+misreported as missing when gameplay requests it first. The request `origin`
+alone is not a coverage verdict. No pending row is fabricated for a backend
+without this inspection.
 Watch new synchronous/asynchronous creations after loading to find missing scenario coverage.
+For a late observer, `inspect({runtimeRequests:true}).runtimeRequests` materializes
+the last 32 runtime-demanded native requests, including completed/failed requests
+and runtime demands joining an already compiling background entry. Ordinary
+inspection does not materialize this history. Explicit history inspection omits
+the legacy `pending` recipe list, whose uncached identities may require source hashing;
+the compilation counters remain available. Historical recipes use cached nullable
+digests and device-local identities only, including while requests are pending.
+Renderer and Worker callers opt in
+with `inspect({runtimeRequests:true})` and
+`execution.inspectRenderer({runtimeRequests:true, fields:['pipelineLibrary']})`.
+Recording adds only bounded metadata and references to the existing Program on a
+runtime miss/demand; completed cache hits and undemanded warmup do not record.
+Recording does not copy descriptors/WGSL, hash sources, schedule GPU work or alter
+compilation concurrency. Complete recipes and cached identities are read only by
+the explicit inspection. Disposal clears this history with its device owner. Its Program references are weak; a released recipe appears as null rather than extending GPU lifetime.
+The tuple `(libraryId, sequence)` identifies a request on that renderer realm;
+the semantic pipeline identity identifies the recipe across devices. `overwritten`
+is cumulative ring eviction, not a count of current-incident losses. A null pipeline
+and `preloadAtDemand:'unavailable'` preserve an unrecordable request without
+inventing a missing-manifest verdict. `returned` means a synchronous handle returned,
+not native compilation-completion evidence. Timestamps and `observedAtMs` use the
+library performance clock; caller/Worker receipt times have their own clock boundary.
+This is bounded diagnostic evidence, not a permanent trace or driver compiler timing.
+`prepare(manifest, {concurrency, background})` bounds outstanding native requests
+(default `pipelineWarmupConcurrency`, half the logical processors in 4..16; background
+default 1..4, capped independently of core count). Explicit background concurrency
+must be in 1..4; blocking concurrency must be in 1..16. Shader validation uses the same
+bound and preserves manifest dependency order. Background workers yield
+8 ms before each request, including cache hits, and stop scheduling after disposal.
+Native compilations already submitted cannot be cancelled or reprioritized; bounded
+concurrency is not proof of battle-frame nonregression. Qualify that path through
+the actual consumer's loading and combat windows.
+Each program becomes a library hit as soon as its native
+creation resolves; the returned Result still never reports a partial import ready.
+`RendererOptions.backgroundPipelineLibrary` / `CreateAppOptions.backgroundPipelineLibrary`
+starts a `background: true` prepare after first renderer readiness without awaiting it,
+so menus and Engine Worker loading overlap native compilation. Its progress is
+`inspect().backgroundWarmup` (`requested`, `completed`, `failed`, `elapsedMs`,
+`state: 'idle' | 'running' | 'done' | 'failed'`). A failure logs one console warning and
+never fails the renderer; affected pipelines compile on first use. Device recovery
+replays the blocking library before readiness and restarts the background lane on the
+replacement device after readiness. First readiness therefore does not imply that
+the entire background library is warm, including after recovery.
 The cumulative `warmup.elapsedMs` reports preparation wall time, including failed attempts.
 Export refuses in-flight compilation so pending requirements cannot silently disappear.
-Collection is bounded to 4096 entries per dependency class and 64 MiB of UTF-16 shader
-source. Unrecordable native dependencies or overflow make export fail explicitly.
+Registration never drops resource identity because of cumulative source bytes or
+entry counts. Records follow live native handles and their dependency owners through
+weak content indices; there is no additional strong device reuse cache. Renderer
+rosters retain their completed warmup graph for their generation, pending requests
+retain dependencies until settlement, and command/bundle owners retain them through
+execution and queue completion. Disposal clears the device indices. Collected
+content keys are removed without requiring deterministic GC timing.
+
+Source bodies belong to immutable CPU owners. Raw strings remain whole; runtime
+does not split or copy them into a fragment pool. Source hashing occurs once on
+actual identity demand, not while receiving unused startup/background libraries.
+Managed factory descriptors
+carry that owner through the existing code/label seam; a completed source hit does
+not expand or hash WGSL. Explicit raw-text calls remain a cold input path.
+
+`export(limits?)` exports the retained live graph selected at invocation, not an
+implicit history of released resources. A route collector uses `collect()` to retain the current and subsequent graph, then
+disposes the returned scope after export. This diagnostic holding is explicit and
+ends on device disposal. Unknown native dependencies and in-flight work still fail
+strictly. Output, transient allocation and input safety are finite action policies:
+`PIPELINE_LIBRARY_LIMITS` defaults to 512 MiB conservative JSON output, 4 GiB logical
+transient allocation and 65,536 entries. These are not live-resource capacities.
+`temporaryBytes` includes source expansion, cloning/encoding and Worker transport;
+the estimate is not a process-memory cap. Estimation precedes source expansion and
+cloning, including JSON escaping and descriptors. A failure returns `limit-exceeded`
+with `detail.kind='pipeline-library-limit'`, operation, limit, requested and maximum;
+it changes no resource or preparation state and may be retried with another policy.
+`prepare(manifest,{inputLimits})` declares its independent finite read policy. Default
+export/read policies are compatible; a complete export must fit its declared matching
+read policy. Increasing export limits never silently increases input permissions.
+
+The optional internal `prepare` owner is a generation/roster object. Retention ends
+with that owner; an ordinary successful `prepare()` does not grant permanent holding.
+The portable manifest stays version 1 and contains full WGSL only when serialized.
 
 The manifest version/backend and all dependency references are checked before native
 creation. Native validation still enforces the current device's features and limits;
@@ -212,3 +363,15 @@ supported device/profile family and refresh it when content changes. Exact sourc
 keys prevent stale reuse but cannot predict unvisited gameplay. Browser/driver caches
 may persist compiled code across launches; WebGPU does not expose persistence or guarantee
 zero driver compilation at the next launch. Library warmup moves that work before play.
+
+Managed Render selections admit an immutable final state during cold CPU preparation.
+The optional internal `selectRender` / `selectCompute` seam binds that state to the
+current native modules and layout. It queries the same device Program as raw requests
+and warmup; ready and pending hits do not materialize or canonicalize a complete
+native descriptor. Compute projection is applied before selection. Raw descriptors
+remain a cold path, and absent optional selection support uses the existing factory.
+
+`findRenderState` can borrow the state already admitted by warmup using a lazy
+field projection and stage/layout dependencies. The material path uses the same
+projection for equality and a true cold miss. The scan runs only on a local selection
+miss; it does not create a parallel device index or hash complete state again.

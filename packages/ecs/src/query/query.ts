@@ -7,11 +7,12 @@ import {
   componentId,
   componentSchema,
   isManagedField,
+  registeredComponentId,
   type ShapeOf,
   type TypedArrayFor,
 } from '../component';
-import { Disabled, Entity } from '../entity';
-import { type EntityHandle, encodeEntity, entityIndex } from '../entity-handle';
+import { Disabled } from '../entity';
+import { type EntityHandle, encodeEntity, entityGeneration, entityIndex } from '../entity-handle';
 import {
   DerivedWriteActiveError,
   QueryDataRequiresFieldsError,
@@ -22,6 +23,7 @@ import {
   type QuerySpanUnavailableReason,
   RelationshipTargetReadonlyError,
 } from '../errors';
+import { QueryBatchUnavailableError } from '../errors/query-batch-errors';
 import { worldPoisonedError } from '../errors/shared-kernel-errors';
 import type { WorldExecutionState } from '../execution/shared-kernel';
 import { DERIVED_WRITER } from '../internal';
@@ -31,7 +33,8 @@ import { sparseTagIndex } from '../storage/change-detection';
 import type { FieldView, ManagedColumnReader } from '../storage/column';
 import type { Table } from '../storage/table';
 import { type WorldInternal, worldInternal } from '../world-internal';
-import { ChangedEntityOrder } from './change-order';
+import { type BatchLease, IndexedBatch, type QueryBatch, RangeBatch } from './batch';
+import { type ChangedEntities, ChangedEntityOrder } from './change-order';
 import { createDerivedRangeWriter, type DerivedRangeWriter } from './derived-range-writer';
 
 export interface QueryDescriptor<
@@ -103,6 +106,8 @@ export interface Query<
    */
   at(entity: EntityHandle): QueryRow<R, W, O> | undefined;
   spans(): Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError>;
+  /** Borrow physical numeric columns with an explicit range or sparse row index. Read-only, non-temporal descriptors. */
+  batches(): Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError>;
   combinations(k?: number): Iterable<readonly QueryRow<R, W, O>[]>;
 }
 
@@ -125,6 +130,14 @@ interface CompiledDescriptor<
   readonly addedIds: readonly ComponentId[];
   readonly sparseRoute: boolean;
 }
+
+/** Shared terminal step; iterator results are read immediately by consumers. */
+const NO_CHANGED_ENTITIES = new Uint32Array(0) as ChangedEntities;
+const NO_CANDIDATES = new Uint32Array(0);
+const QUERY_DONE: IteratorReturnResult<undefined> = Object.freeze({
+  done: true,
+  value: undefined,
+});
 
 const ACCESS_ROLES = ['read', 'write', 'optional', 'with', 'without'] as const;
 const TEMPORAL_ROLES = ['changed', 'added'] as const;
@@ -213,11 +226,6 @@ class QueryRowFacade<
     return this;
   }
 
-  snapshot(): QueryRowFacade<R, W, O> {
-    if (this.archetype === undefined) throw new Error('Query row is not bound.');
-    return new QueryRowFacade<R, W, O>(this.world).bind(this.entity, this.archetype);
-  }
-
   has(component: R[number] | W[number] | O[number]): boolean {
     const id = componentId(component);
     return this.archetype !== undefined && archetypeHasComponent(this.archetype, id);
@@ -229,7 +237,23 @@ class QueryRowFacade<
     if (!this.has(component)) {
       return undefined;
     }
-    const result = this.world[worldInternal].getQueryRow(this.entity, component);
+    // Live row bound to its current archetype: read the columns directly,
+    // without the Result carrier of the identity-addressed World.get.
+    const owner = this.world[worldInternal];
+    const records = owner.getRecords();
+    const slot = entityIndex(this.entity);
+    if (
+      records.isLive(slot, entityGeneration(this.entity)) &&
+      owner.getGraph().archetypes[records.archetypeId[slot] as number] === this.archetype
+    ) {
+      const archetype = this.archetype as Archetype;
+      return owner.readRow(
+        archetype,
+        component,
+        archetype.rows[records.archetypeRow[slot] as number] ?? -1,
+      );
+    }
+    const result = owner.getQueryRow(this.entity, component);
     if (!result.ok) throw result.error;
     return result.value;
   }
@@ -265,22 +289,19 @@ class QueryRowFacade<
 class QuerySpanFacade<R extends readonly Component[], W extends readonly Component[]>
   implements QuerySpan<R, W>
 {
-  readonly entities: Readonly<Uint32Array>;
-
   constructor(
     private readonly world: WorldQueryAccess,
     private readonly table: Table,
     private readonly rowStart: number,
     readonly length: number,
-  ) {
-    const entityColumn = table.storage.get(componentId(Entity))?.fields.get('self');
-    this.entities = (
-      entityColumn === undefined
-        ? new Uint32Array(0)
-        : rowStart === 0 && length === entityColumn.view.length
-          ? entityColumn.view
-          : entityColumn.view.subarray(rowStart, rowStart + length)
-    ) as Readonly<Uint32Array>;
+  ) {}
+
+  /** Derived on demand: a changed-row span rarely needs its identity window. */
+  get entities(): Readonly<Uint32Array> {
+    const view = this.table.entities.view as Uint32Array;
+    return this.rowStart === 0 && this.length === view.length
+      ? view
+      : view.subarray(this.rowStart, this.rowStart + this.length);
   }
 
   get<C extends R[number]>(component: C): ReadonlyColumnShape<C> {
@@ -359,26 +380,43 @@ class ExecutableQuery<
   O extends readonly Component[],
 > implements Query<R, W, O>
 {
-  private readonly matchedArchetypes: ArchetypeId[] = [];
-  private readonly matchedTables: Table[] = [];
-  private scannedStorageCount = 0;
+  private readonly matchedArchetypes: ArchetypeId[];
+  private readonly matchedTables: Table[];
+  private readonly compiled: CompiledDescriptor<R, W, O>;
   private lastObservedEpoch = 0;
   private active = false;
+  private spansResult: Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError> | undefined;
   private changedOrder: ChangedEntityOrder | undefined;
+  private batchesResult:
+    | Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError>
+    | undefined;
 
   constructor(
     private readonly world: WorldQueryAccess,
-    private readonly compiled: CompiledDescriptor<R, W, O>,
-  ) {}
+    private readonly matches: QueryMatches,
+  ) {
+    this.compiled = matches.compiled as unknown as CompiledDescriptor<R, W, O>;
+    this.matchedArchetypes = matches.matchedArchetypes;
+    this.matchedTables = matches.matchedTables;
+  }
 
   [Symbol.iterator](): Iterator<QueryRow<R, W, O>> {
+    return this.rowIterator(false);
+  }
+
+  /** Shared matching and observation; combinations owns each returned facade. */
+  private rowIterator(ownedRows: boolean): Iterator<QueryRow<R, W, O>> {
     this.beginIteration();
     const structureEpoch = this.world[worldInternal].getStructureEpoch();
     const upperBound = this.world[worldInternal].getMutationEpoch();
     const changed = this.changedEntityCandidates(upperBound);
     if (changed === undefined) this.refreshMatches();
     let changedIndex = 0;
-    const row = new QueryRowFacade<R, W, O>(this.world);
+    const row = ownedRows ? undefined : new QueryRowFacade<R, W, O>(this.world);
+    // The step is reused in both modes; only combinations owns stable facades.
+    const step = { done: false, value: row as QueryRow<R, W, O> } satisfies IteratorYieldResult<
+      QueryRow<R, W, O>
+    >;
     const unchanged = this.hasUnchangedInput();
     let archetypeIndex = unchanged ? this.matchedArchetypes.length : 0;
     let tableIndex = unchanged ? this.matchedTables.length : 0;
@@ -397,7 +435,7 @@ class ExecutableQuery<
 
     return {
       next: (): IteratorResult<QueryRow<R, W, O>> => {
-        if (finished) return { done: true, value: undefined };
+        if (finished) return QUERY_DONE;
         try {
           this.assertReadableChanges();
         } catch (cause) {
@@ -419,18 +457,19 @@ class ExecutableQuery<
             const entity = changed[changedIndex++] as EntityHandle;
             const archetype = this.world[worldInternal].getEntityArchetype(entity);
             if (archetype === undefined) continue;
-            const record = this.world[worldInternal].getRecords()[entityIndex(entity)];
-            const tableRow = archetype.rows[record?.archetypeRow ?? -1] ?? -1;
+            const records = this.world[worldInternal].getRecords();
+            const tableRow = archetype.rows[records.archetypeRow[entityIndex(entity)] ?? -1] ?? -1;
             const table = this.world[worldInternal].getGraph().tables[archetype.tableId];
             if (
               table === undefined ||
               (!current && !this.changeMatches(entity, table, tableRow, upperBound))
             )
               continue;
-            return { done: false, value: row.bind(entity, archetype) };
+            step.value = this.bindRow(entity, archetype, row);
+            return step;
           }
           close(true);
-          return { done: true, value: undefined };
+          return QUERY_DONE;
         }
         if (!this.compiled.sparseRoute) {
           while (tableIndex < this.matchedTables.length) {
@@ -441,16 +480,15 @@ class ExecutableQuery<
               continue;
             }
             const currentTableRow = rowIndex++;
-            const entityColumn = table.storage.get(componentId(Entity))?.fields.get('self');
-            if (entityColumn === undefined) continue;
-            const entity = (entityColumn.view[currentTableRow] ?? 0) as EntityHandle;
+            const entity = (table.entities.view[currentTableRow] ?? 0) as EntityHandle;
             if (!this.changeMatches(entity, table, currentTableRow, upperBound)) continue;
             const recordArchetype = this.world[worldInternal].getEntityArchetype(entity);
             if (recordArchetype === undefined) continue;
-            return { done: false, value: row.bind(entity, recordArchetype) };
+            step.value = this.bindRow(entity, recordArchetype, row);
+            return step;
           }
           close(true);
-          return { done: true, value: undefined };
+          return QUERY_DONE;
         }
         while (archetypeIndex < this.matchedArchetypes.length) {
           const archetype =
@@ -466,20 +504,27 @@ class ExecutableQuery<
           const currentTableRow = archetype.rows[currentArchetypeRow] ?? 0;
           const table = this.world[worldInternal].getGraph().tables[archetype.tableId];
           if (table === undefined) continue;
-          const entityColumn = table.storage.get(componentId(Entity))?.fields.get('self');
-          if (entityColumn === undefined) continue;
-          const entity = (entityColumn.view[currentTableRow] ?? 0) as EntityHandle;
+          const entity = (table.entities.view[currentTableRow] ?? 0) as EntityHandle;
           if (!this.changeMatches(entity, table, currentTableRow, upperBound)) continue;
-          return { done: false, value: row.bind(entity, archetype) };
+          step.value = this.bindRow(entity, archetype, row);
+          return step;
         }
         close(true);
-        return { done: true, value: undefined };
+        return QUERY_DONE;
       },
       return: (): IteratorResult<QueryRow<R, W, O>> => {
         close(false);
-        return { done: true, value: undefined };
+        return QUERY_DONE;
       },
     };
+  }
+
+  private bindRow(
+    entity: EntityHandle,
+    archetype: Archetype,
+    borrowed: QueryRowFacade<R, W, O> | undefined,
+  ): QueryRow<R, W, O> {
+    return (borrowed ?? new QueryRowFacade<R, W, O>(this.world)).bind(entity, archetype);
   }
 
   at(entity: EntityHandle): QueryRow<R, W, O> | undefined {
@@ -489,10 +534,13 @@ class ExecutableQuery<
   }
 
   spans(): Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError> {
+    // Availability is a descriptor fact and the iterable only re-enters this
+    // query, so one success Result serves every per-frame `spans()` call.
+    if (this.spansResult !== undefined) return this.spansResult;
     const reason = this.spanUnavailableReason();
     if (reason !== undefined) return err(new QuerySpanUnavailableError(reason));
     const query = this;
-    return ok({
+    this.spansResult = ok({
       [Symbol.iterator](): Iterator<QuerySpan<R, W>> {
         query.beginIteration();
         const owner = query.world[worldInternal];
@@ -514,7 +562,7 @@ class ExecutableQuery<
         };
         return {
           next(): IteratorResult<QuerySpan<R, W>> {
-            if (finished) return { done: true, value: undefined };
+            if (finished) return QUERY_DONE;
             try {
               query.assertReadableChanges();
             } catch (cause) {
@@ -530,14 +578,12 @@ class ExecutableQuery<
                 owner.getMutationEpoch() === upperBound || !query.hasFutureChangedInput(upperBound);
               while (changedIndex < changed.length) {
                 const entity = changed[changedIndex++] as EntityHandle;
-                const record = owner.getRecords()[entityIndex(entity)];
-                const archetype =
-                  record === undefined
-                    ? undefined
-                    : owner.getGraph().archetypes[record.archetypeId];
+                const records = owner.getRecords();
+                const slot = entityIndex(entity);
+                const archetype = owner.getGraph().archetypes[records.archetypeId[slot] ?? -1];
                 const table =
                   archetype === undefined ? undefined : owner.getGraph().tables[archetype.tableId];
-                const start = archetype?.rows[record?.archetypeRow ?? -1] ?? -1;
+                const start = archetype?.rows[records.archetypeRow[slot] ?? -1] ?? -1;
                 if (
                   table === undefined ||
                   (!current && !query.denseChangeMatches(entity, table, start, upperBound))
@@ -546,12 +592,10 @@ class ExecutableQuery<
                 let count = 1;
                 while (changedIndex < changed.length) {
                   const next = changed[changedIndex] as EntityHandle;
-                  const nextRecord = owner.getRecords()[entityIndex(next)];
+                  const nextSlot = entityIndex(next);
                   const nextArchetype =
-                    nextRecord === undefined
-                      ? undefined
-                      : owner.getGraph().archetypes[nextRecord.archetypeId];
-                  const nextRow = nextArchetype?.rows[nextRecord?.archetypeRow ?? -1] ?? -1;
+                    owner.getGraph().archetypes[records.archetypeId[nextSlot] ?? -1];
+                  const nextRow = nextArchetype?.rows[records.archetypeRow[nextSlot] ?? -1] ?? -1;
                   if (
                     nextArchetype?.tableId !== table.id ||
                     nextRow !== start + count ||
@@ -577,15 +621,117 @@ class ExecutableQuery<
               }
             }
             close(true);
-            return { done: true, value: undefined };
+            return QUERY_DONE;
           },
           return(): IteratorResult<QuerySpan<R, W>> {
             close(false);
-            return { done: true, value: undefined };
+            return QUERY_DONE;
           },
         };
       },
     });
+    return this.spansResult;
+  }
+
+  batches(): Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError> {
+    if (this.batchesResult !== undefined) return this.batchesResult;
+    const descriptor = this.compiled.descriptor;
+    if ((descriptor.write?.length ?? 0) > 0) {
+      this.batchesResult = err(new QueryBatchUnavailableError('write-access'));
+    } else if (this.compiled.changedIds.length > 0 || this.compiled.addedIds.length > 0) {
+      this.batchesResult = err(new QueryBatchUnavailableError('temporal-filter'));
+    } else {
+      const lease: BatchLease = {
+        structureEpoch: 0,
+        active: false,
+        generation: 0,
+        assertReadable: () => this.assertBatchReadable(lease.structureEpoch),
+      };
+      this.batchesResult = ok({ [Symbol.iterator]: () => this.batchIterator(lease) });
+    }
+    return this.batchesResult;
+  }
+
+  private assertBatchReadable(epoch: number): void {
+    const owner = this.world[worldInternal];
+    if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
+    const poisoned = worldPoisonedError(this.world.execution);
+    if (poisoned !== undefined) throw poisoned;
+    const current = owner.getStructureEpoch();
+    if (current !== epoch) throw new QueryIterationInvalidatedError(epoch, current);
+  }
+
+  private batchIterator(lease: BatchLease): Iterator<QueryBatch<R, W, O>> {
+    const epoch = this.world[worldInternal].getStructureEpoch();
+    this.assertBatchReadable(epoch);
+    this.beginIteration();
+    lease.structureEpoch = epoch;
+    lease.active = true;
+    // Expire the preceding traversal's batch even before the first next().
+    lease.generation++;
+    const iterator = this.iterateBatches(lease, this.world[worldInternal].getMutationEpoch());
+    let finished = false;
+    return {
+      next: () => {
+        if (finished) return QUERY_DONE;
+        try {
+          const next = iterator.next();
+          if (next.done) finished = true;
+          return next;
+        } catch (cause) {
+          finished = true;
+          throw cause;
+        }
+      },
+      return: () => {
+        if (finished) return QUERY_DONE;
+        finished = true;
+        try {
+          return iterator.return(undefined);
+        } finally {
+          lease.active = false;
+          this.active = false;
+        }
+      },
+    };
+  }
+
+  private *iterateBatches(
+    lease: BatchLease,
+    upperBound: number,
+  ): Generator<QueryBatch<R, W, O>, undefined> {
+    let complete = false;
+    try {
+      lease.assertReadable();
+      this.refreshMatches();
+      const descriptor = this.compiled.descriptor;
+      const graph = this.world[worldInternal].getGraph();
+      if (this.compiled.sparseRoute) {
+        for (let index = 0; index < this.matchedArchetypes.length; index++) {
+          lease.assertReadable();
+          const archetype = graph.archetypes[this.matchedArchetypes[index] as number];
+          if (archetype === undefined || archetype.size === 0) continue;
+          const table = graph.tables[archetype.tableId] as Table;
+          lease.generation++;
+          yield new IndexedBatch(table, descriptor, lease, archetype.rows, archetype.size);
+        }
+      } else {
+        for (let index = 0; index < this.matchedTables.length; index++) {
+          lease.assertReadable();
+          const table = this.matchedTables[index] as Table;
+          if (table.size === 0) continue;
+          lease.generation++;
+          yield new RangeBatch(table, descriptor, lease, 0, table.size);
+        }
+      }
+      lease.assertReadable();
+      complete = true;
+    } finally {
+      lease.active = false;
+      this.active = false;
+      if (complete) this.lastObservedEpoch = upperBound;
+    }
+    return undefined;
   }
 
   [DERIVED_WRITER]<C extends W[number]>(
@@ -617,15 +763,15 @@ class ExecutableQuery<
         const previousObservedEpoch = query.lastObservedEpoch;
         const structureEpoch = query.world[worldInternal].getStructureEpoch();
         const rows: QueryRow<R, W, O>[] = [];
-        for (const row of query) {
-          rows.push((row as QueryRowFacade<R, W, O>).snapshot());
-        }
+        const iterator = query.rowIterator(true);
+        for (let next = iterator.next(); !next.done; next = iterator.next()) rows.push(next.value);
         query.active = true;
         let completed = false;
         try {
           if (k <= rows.length) {
             const indices = Array.from({ length: k }, (_, index) => index);
             while (true) {
+              query.assertReadableChanges();
               if (query.world[worldInternal].getStructureEpoch() !== structureEpoch) {
                 throw new QueryIterationInvalidatedError(
                   structureEpoch,
@@ -642,6 +788,12 @@ class ExecutableQuery<
               }
             }
           }
+          query.assertReadableChanges();
+          if (query.world[worldInternal].getStructureEpoch() !== structureEpoch)
+            throw new QueryIterationInvalidatedError(
+              structureEpoch,
+              query.world[worldInternal].getStructureEpoch(),
+            );
           completed = true;
         } finally {
           query.active = false;
@@ -652,25 +804,50 @@ class ExecutableQuery<
   }
 
   /** Only producer-indexed identities; physical ordering is derived for this actual iteration. */
-  private changedEntityCandidates(upper: number): EntityHandle[] | undefined {
-    const primary = this.compiled.changedIds[0] ?? this.compiled.addedIds[0];
-    if (primary === undefined) return undefined;
-    const entities: EntityHandle[] = [];
-    if (this.hasUnchangedInput()) return entities;
+  /**
+   * One candidate buffer per query: an iteration only begins after the
+   * previous one closed (`beginIteration`), so the buffer is never shared.
+   * A typed buffer with its own count: truncating a JS array frees its
+   * backing store, so every frame would regrow it.
+   */
+  // Allocated on the first change scan: structural queries never use them.
+  private candidates: Uint32Array = NO_CANDIDATES;
+  private candidateCount = 0;
+  private candidateUpper = 0;
+  private collectCandidateVisitor: ((index: number) => void) | undefined;
+  private candidateVisitor(): (index: number) => void {
+    this.collectCandidateVisitor ??= (index) => this.collectCandidate(index);
+    return this.collectCandidateVisitor;
+  }
+  private collectCandidate(index: number): void {
     const owner = this.world[worldInternal];
     const graph = owner.getGraph();
     const records = owner.getRecords();
-    owner.getComponentChangeIndex(primary)?.visitSince(this.lastObservedEpoch, upper, (index) => {
-      const record = records[index];
-      const archetype = record === undefined ? undefined : graph.archetypes[record.archetypeId];
-      if (archetype === undefined || record === undefined || !this.archetypeMatches(archetype))
-        return;
-      const entity = encodeEntity(index, record.generation);
-      const table = graph.tables[archetype.tableId];
-      const row = archetype.rows[record.archetypeRow] ?? -1;
-      if (table !== undefined && this.changeMatches(entity, table, row, upper))
-        entities.push(entity);
-    });
+    const archetype = graph.archetypes[records.archetypeId[index] ?? -1];
+    if (archetype === undefined || !this.archetypeMatches(archetype)) return;
+    const entity = encodeEntity(index, records.generation[index] as number);
+    const table = graph.tables[archetype.tableId];
+    const row = archetype.rows[records.archetypeRow[index] as number] ?? -1;
+    if (table === undefined || !this.changeMatches(entity, table, row, this.candidateUpper)) return;
+    if (this.candidateCount === this.candidates.length) {
+      const grown = new Uint32Array(Math.max(64, this.candidates.length * 2));
+      grown.set(this.candidates);
+      this.candidates = grown;
+    }
+    this.candidates[this.candidateCount++] = entity;
+  }
+
+  private changedEntityCandidates(upper: number): ChangedEntities | undefined {
+    const primary = this.compiled.changedIds[0] ?? this.compiled.addedIds[0];
+    if (primary === undefined) return undefined;
+    this.candidateCount = 0;
+    if (this.hasUnchangedInput()) return NO_CHANGED_ENTITIES;
+    const owner = this.world[worldInternal];
+    this.candidateUpper = upper;
+    owner
+      .getComponentChangeIndex(primary)
+      ?.visitSince(this.lastObservedEpoch, upper, this.candidateVisitor());
+    const entities = this.candidates.subarray(0, this.candidateCount) as ChangedEntities;
     if (entities.length > 1) {
       this.changedOrder ??= new ChangedEntityOrder(owner, this.compiled.sparseRoute);
       this.changedOrder.sort(entities);
@@ -682,7 +859,10 @@ class ExecutableQuery<
     const epochs = this.world[worldInternal].getComponentMutationEpochs();
     // Changed predicates are conjunctive. One unchanged input proves the
     // entire result empty without consulting any entity or table row.
-    return this.compiled.changedIds.some((id) => (epochs[id] ?? 0) <= this.lastObservedEpoch);
+    const changedIds = this.compiled.changedIds;
+    for (let index = 0; index < changedIds.length; index++)
+      if ((epochs[changedIds[index] as ComponentId] ?? 0) <= this.lastObservedEpoch) return true;
+    return false;
   }
 
   /** Called after health/derived/structure fences. Added facts are unchanged
@@ -713,39 +893,43 @@ class ExecutableQuery<
     const graph = this.world[worldInternal].getGraph();
     // A World's storage rosters only append; membership changes mutate rows
     // within those same owners. Match each new owner once, on the route this
-    // query consumes, and keep empty matches for later row repopulation.
+    // query consumes, and keep empty matches for later row repopulation. Every
+    // query with the same descriptor content shares this monotonic roster.
+    const matches = this.matches;
     if (this.compiled.sparseRoute) {
-      for (; this.scannedStorageCount < graph.archetypes.length; this.scannedStorageCount++) {
-        const archetype = graph.archetypes[this.scannedStorageCount];
+      for (; matches.scannedStorageCount < graph.archetypes.length; matches.scannedStorageCount++) {
+        const archetype = graph.archetypes[matches.scannedStorageCount];
         if (archetype !== undefined && this.archetypeMatches(archetype)) {
           this.matchedArchetypes.push(archetype.id);
         }
       }
     } else {
-      for (; this.scannedStorageCount < graph.tables.length; this.scannedStorageCount++) {
-        const table = graph.tables[this.scannedStorageCount];
+      for (; matches.scannedStorageCount < graph.tables.length; matches.scannedStorageCount++) {
+        const table = graph.tables[matches.scannedStorageCount];
         if (table !== undefined && this.tableMatches(table)) this.matchedTables.push(table);
       }
     }
   }
 
+  // Indexed loops: these run per candidate row on change-filtered iteration,
+  // where for-of would allocate an array iterator per call when not inlined.
   private archetypeMatches(archetype: Archetype): boolean {
-    for (const requiredId of this.compiled.requiredIds) {
-      if (!archetypeHasComponent(archetype, requiredId)) return false;
-    }
-    for (const excludedId of this.compiled.withoutIds) {
-      if (archetypeHasComponent(archetype, excludedId)) return false;
-    }
+    const requiredIds = this.compiled.requiredIds;
+    for (let index = 0; index < requiredIds.length; index++)
+      if (!archetypeHasComponent(archetype, requiredIds[index] as ComponentId)) return false;
+    const withoutIds = this.compiled.withoutIds;
+    for (let index = 0; index < withoutIds.length; index++)
+      if (archetypeHasComponent(archetype, withoutIds[index] as ComponentId)) return false;
     return true;
   }
 
   private tableMatches(table: Table): boolean {
-    for (const componentId of this.compiled.requiredIds) {
-      if (!table.storage.has(componentId)) return false;
-    }
-    for (const componentId of this.compiled.withoutIds) {
-      if (table.storage.has(componentId)) return false;
-    }
+    const requiredIds = this.compiled.requiredIds;
+    for (let index = 0; index < requiredIds.length; index++)
+      if (!table.storage.has(requiredIds[index] as ComponentId)) return false;
+    const withoutIds = this.compiled.withoutIds;
+    for (let index = 0; index < withoutIds.length; index++)
+      if (table.storage.has(withoutIds[index] as ComponentId)) return false;
     return true;
   }
 
@@ -756,13 +940,17 @@ class ExecutableQuery<
     upperBound: number,
   ): boolean {
     const graph = this.world[worldInternal].getGraph();
-    for (const componentId of this.compiled.changedIds) {
+    const changedIds = this.compiled.changedIds;
+    for (let index = 0; index < changedIds.length; index++) {
+      const componentId = changedIds[index] as ComponentId;
       const epoch =
         this.world[worldInternal].getComponentChangeIndex(componentId)?.get(entityIndex(entity)) ??
         0;
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
-    for (const componentId of this.compiled.addedIds) {
+    const addedIds = this.compiled.addedIds;
+    for (let index = 0; index < addedIds.length; index++) {
+      const componentId = addedIds[index] as ComponentId;
       const sparseSet = graph.sparseTags.get(componentId);
       const denseIndex = sparseSet === undefined ? -1 : sparseTagIndex(sparseSet, entity);
       const epoch =
@@ -819,7 +1007,84 @@ export function createQuery<
   world: WorldQueryAccess,
   descriptor: QueryDescriptor<R, W, O>,
 ): Result<Query<R, W, O>, QueryCreationError> {
-  const compiled = compileDescriptor(descriptor);
+  const matches = sharedQueryMatches(world, descriptor);
+  if (!matches.ok) return matches;
+  return ok(new ExecutableQuery<R, W, O>(world, matches.value));
+}
+
+/**
+ * Compiled descriptor plus its append-only storage match roster. Matching is
+ * purely structural, so every query of one World with the same descriptor
+ * content shares one instance; cursors, change epochs and the iteration guard
+ * remain per query. Per-frame `world.query(...)` calls therefore neither
+ * recompile nor rescan the storage roster.
+ */
+class QueryMatches {
+  readonly matchedArchetypes: ArchetypeId[] = [];
+  readonly matchedTables: Table[] = [];
+  scannedStorageCount = 0;
+  constructor(readonly compiled: CompiledDescriptor<Component[], Component[], Component[]>) {}
+}
+
+const DESCRIPTOR_ROLES = [...ACCESS_ROLES, ...TEMPORAL_ROLES] as const;
+const sharedMatches = new WeakMap<WorldInternal, Map<number, QueryMatches[]>>();
+
+// Allocation-free content key; equal hashes are confirmed by `sameDescriptor`.
+function descriptorHash(
+  descriptor: QueryDescriptor<Component[], Component[], Component[]>,
+): number {
+  let hash = 0x811c9dc5;
+  for (let role = 0; role < DESCRIPTOR_ROLES.length; role++) {
+    const components = descriptor[DESCRIPTOR_ROLES[role] as (typeof DESCRIPTOR_ROLES)[number]];
+    hash = Math.imul(hash ^ (role + 1), 16777619);
+    if (components === undefined) continue;
+    for (let index = 0; index < components.length; index++) {
+      const id = registeredComponentId(components[index] as Component);
+      hash = Math.imul(hash ^ (id === undefined ? 0x7fffffff : id + 2), 16777619);
+    }
+  }
+  return hash >>> 0;
+}
+
+function sameDescriptor(
+  left: QueryDescriptor<Component[], Component[], Component[]>,
+  right: QueryDescriptor<Component[], Component[], Component[]>,
+): boolean {
+  for (let role = 0; role < DESCRIPTOR_ROLES.length; role++) {
+    const key = DESCRIPTOR_ROLES[role] as (typeof DESCRIPTOR_ROLES)[number];
+    const a = left[key];
+    const b = right[key];
+    const length = a?.length ?? 0;
+    if (length !== (b?.length ?? 0)) return false;
+    for (let index = 0; index < length; index++)
+      if ((a as readonly Component[])[index] !== (b as readonly Component[])[index]) return false;
+  }
+  return true;
+}
+
+function sharedQueryMatches(
+  world: WorldQueryAccess,
+  descriptor: QueryDescriptor<readonly Component[], readonly Component[], readonly Component[]>,
+): Result<QueryMatches, QueryCreationError> {
+  const plain = descriptor as QueryDescriptor<Component[], Component[], Component[]>;
+  const owner = world[worldInternal];
+  let byHash = sharedMatches.get(owner);
+  if (byHash === undefined) {
+    byHash = new Map();
+    sharedMatches.set(owner, byHash);
+  }
+  const hash = descriptorHash(plain);
+  const bucket = byHash.get(hash);
+  if (bucket !== undefined) {
+    for (let index = 0; index < bucket.length; index++) {
+      const candidate = bucket[index] as QueryMatches;
+      if (sameDescriptor(candidate.compiled.descriptor, plain)) return ok(candidate);
+    }
+  }
+  const compiled = compileDescriptor(plain);
   if (!compiled.ok) return compiled;
-  return ok(new ExecutableQuery(world, compiled.value));
+  const matches = new QueryMatches(compiled.value);
+  if (bucket === undefined) byHash.set(hash, [matches]);
+  else bucket.push(matches);
+  return ok(matches);
 }

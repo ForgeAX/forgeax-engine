@@ -87,6 +87,7 @@ describe('Engine Worker thick bootstrap channel', () => {
       renderPipelines: [],
       computePipelines: [],
     };
+    const backgroundPipelineLibrary = { ...pipelineLibrary, shaders: [{ code: '// bg' }] };
     const worker = new FakeWorker();
     const offscreen = {} as OffscreenCanvas;
     const transferControlToOffscreen = vi.fn(() => offscreen);
@@ -96,7 +97,9 @@ describe('Engine Worker thick bootstrap channel', () => {
       bootstrapUrl: 'https://example.test/bootstrap.js',
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
+      assetBudgetBytes: 6 * 1024 * 1024 * 1024,
       pipelineLibrary,
+      backgroundPipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',
@@ -115,7 +118,9 @@ describe('Engine Worker thick bootstrap channel', () => {
       startupTimeoutMs: 100,
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
+      assetBudgetBytes: 6 * 1024 * 1024 * 1024,
       pipelineLibrary,
+      backgroundPipelineLibrary,
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',
@@ -369,4 +374,53 @@ it('preserves Kernel Worker creation failure through the existing startup fault'
     channel.port2.close();
     vi.unstubAllGlobals();
   }
+});
+
+it('delivers Render notices from the session port and closes a replaced port', async () => {
+  const worker = new FakeWorker();
+  const started = await startEngineWorker({
+    canvas: { transferControlToOffscreen: () => ({}) } as unknown as HTMLCanvasElement,
+    bootstrapUrl: 'https://example.test/bootstrap.js',
+    timeoutMs: 100,
+    workers: workerSelection({ engine: true, render: true, kernels: false }),
+    workerFactory: () => worker as unknown as Worker,
+  });
+  expect(started.ok).toBe(true);
+  if (!started.ok) return;
+  const received: EngineToHostMessage[] = [];
+  started.value.listen((message) => received.push(message));
+  const first = new MessageChannel();
+  worker.onmessage?.({
+    data: { kind: 'render-host-port', epoch: 1, port: first.port2 },
+  } as MessageEvent<EngineToHostMessage>);
+  const frame = {
+    kind: 'frame-complete',
+    worldIdentity: 'world-test',
+    frameId: 3,
+    deviceGeneration: 0,
+    presentation: 'ready',
+    engineUpdateMs: 0,
+    kernelWaitMs: 0,
+  } as const;
+  first.port1.postMessage({ kind: 'render-complete', epoch: 1, frame });
+  // Only Render notices are accepted from the Render Worker port.
+  first.port1.postMessage({ kind: 'fault', worldIdentity: null });
+  await vi.waitFor(() =>
+    expect(received).toContainEqual({ kind: 'render-complete', epoch: 1, frame }),
+  );
+  expect(received.some((message) => message.kind === 'fault')).toBe(false);
+  // A replacement session's port supersedes the old one.
+  const second = new MessageChannel();
+  worker.onmessage?.({
+    data: { kind: 'render-host-port', epoch: 2, port: second.port2 },
+  } as MessageEvent<EngineToHostMessage>);
+  first.port1.postMessage({ kind: 'render-complete', epoch: 1, frame: { ...frame, frameId: 4 } });
+  second.port1.postMessage({ kind: 'render-complete', epoch: 2, frame: { ...frame, frameId: 5 } });
+  await vi.waitFor(() =>
+    expect(received.some((m) => m.kind === 'render-complete' && m.frame.frameId === 5)).toBe(true),
+  );
+  expect(received.some((m) => m.kind === 'render-complete' && m.frame.frameId === 4)).toBe(false);
+  await started.value.dispose();
+  first.port1.close();
+  second.port1.close();
 });

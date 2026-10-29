@@ -11,12 +11,6 @@ it('reobserves the new document when startup adapter inspection races a reload',
   const server = createServer((_request, response) => {
     response.setHeader('content-type', 'text/html');
     response.end(`<!doctype html><canvas width="64" height="64"></canvas><script>
-      const canvas = document.querySelector('canvas'), ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#123456'; ctx.fillRect(0, 0, 64, 64);
-      ctx.fillStyle = '#ffee44'; ctx.fillRect(8, 8, 48, 48);
-      let frame = 0;
-      function tick() { document.documentElement.dataset.forgeaxFrameSubmitted = String(++frame); requestAnimationFrame(tick); }
-      requestAnimationFrame(tick);
       const requestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
       navigator.gpu.requestAdapter = async (...args) => {
         if (!sessionStorage.getItem('startupReload')) {

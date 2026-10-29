@@ -12,7 +12,13 @@ minimumReleaseAgeExclude:
 # The SDK ships this lockfile and its offline store as one verified unit. Do not
 # re-resolve its tarballs when a game changes only its own package identity.
 trustLockfile: true
-verifyDepsBeforeRun: warn
+# Renaming or re-versioning the game changes pnpm's recorded workspace state but
+# not its dependencies: the next pnpm command reconciles it once with a frozen,
+# fetch-free install instead of warning on every command. A hand-edited
+# dependency fails that frozen install visibly and never rewrites the lockfile;
+# add dependencies with `pnpm add <name>`.
+verifyDepsBeforeRun: install
+frozenLockfile: true
 enableGlobalVirtualStore: false
 
 supportedArchitectures:

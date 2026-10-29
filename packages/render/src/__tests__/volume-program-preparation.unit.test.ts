@@ -122,6 +122,22 @@ it('prepares canonical four stages without resources or work and retains all bou
   f.scope.retire();
 });
 
+it('stops validation before querying a replacement owner while the old scope is still alive', async () => {
+  const f = await fixture();
+  const gate = defer(f.device);
+  let current = true;
+  const context = { ...f.context, isCurrent: () => current };
+  const requests = vi.spyOn(f.factory, 'createShaderModule');
+  const pending = prepareVolumePrograms(context, sources, 'rgba16float');
+  const beforeReplacement = requests.mock.calls.length;
+  current = false;
+  expect(f.scope.isAlive()).toBe(true);
+  gate.release();
+  await expect(pending).rejects.toThrow('retired');
+  expect(requests).toHaveBeenCalledTimes(beforeReplacement);
+  f.scope.retire();
+});
+
 it('observes module replacement during async preparation, retries failure, and does not retain retired generations', async () => {
   const f = await fixture();
   const gate = defer(f.device);

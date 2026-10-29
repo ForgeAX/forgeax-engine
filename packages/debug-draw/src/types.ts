@@ -1,8 +1,7 @@
-// @forgeax/engine-debug-draw -- public types + factory signature (M1 / w4)
+// @forgeax/engine-debug-draw -- public types (M1 / w4)
 //
 // Decision anchors:
-// - plan-strategy D-1: shape generation stays on rhi/math/types; the optional
-//   RenderFeature adapter depends only on the declarative render contract.
+// - plan-strategy D-1: shape generation stays on rhi/math/types.
 // - plan-strategy D-2: depthMode single-instance single-PSO, no runtime switching
 // - plan-strategy D-4 / D-9: vertex stride 16 B, capacities configurable
 // - plan-strategy D-6: shape color = ColorLike (consumes engine-math existing type)
@@ -153,32 +152,3 @@ export interface DebugDraw {
   /** Release GPU buffer + PSO. Subsequent shape calls are no-ops. */
   destroy(): void;
 }
-
-/**
- * Create an immediate-mode debug-draw instance.
- *
- * Async because GPU shader module compilation (createShaderModule)
- * must be awaited. Returns Promise<Result<DebugDraw, DebugDrawError>>.
- *
- * @example Low-path usage
- * ```ts
- * const r = await createDebugDraw({ device, queue });
- * if (!r.ok) { ... }
- * const dd = r.value;
- * dd.line(a, b, [1, 0, 0, 1]);
- * dd.flush(encoder, swapChainView, cameraViewProj);
- * ```
- *
- * @example With less-equal depth testing
- * ```ts
- * const dd = await createDebugDraw({
- *   device, queue,
- *   format: 'bgra8unorm',
- *   depthFormat: 'depth24plus',
- *   depthMode: 'less-equal',
- * });
- * ```
- */
-export type CreateDebugDraw = (
-  opts: DebugDrawOptions,
-) => Promise<Result<DebugDraw, DebugDrawError>>;

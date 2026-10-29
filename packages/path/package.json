@@ -19,7 +19,6 @@
     "dist",
     "src",
     "README.md",
-    "VALIDATION.md",
     "LICENSE"
   ],
   "scripts": {

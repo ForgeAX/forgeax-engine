@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evolve Engine"
+  short_description: "Turn real consumer friction into verified Engine improvements"
+  default_prompt: "Use $forgeax-engine-evolve to investigate the supplied usage evidence, establish Engine responsibility, and implement and verify improvements within my requested scope."

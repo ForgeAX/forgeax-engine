@@ -33,6 +33,8 @@ function recoverySteps(error: SourcePackageError): readonly RecoveryStep[] {
       steps.push('rebuild', 'verify', 'retry');
       return steps;
     case 'source-package-ddc-failed':
+      steps.push('retry');
+      return steps;
     case 'source-package-publication-invalid':
     case 'source-package-guid-closure-mismatch':
       steps.push('cold-cook', 'verify', 'retry');
@@ -57,7 +59,7 @@ describe('producer recovery contract', () => {
     expect(error.detail.anchorGuid).toBe(context.anchorGuid);
   });
 
-  it('keeps the exact six-code policy surface closed and byte-identical', () => {
+  it('keeps the six-code policy surface closed with explicit default recovery guidance', () => {
     expect(codes).toHaveLength(6);
     expect(new Set(codes).size).toBe(6);
     expect(codes).toEqual([
@@ -91,8 +93,8 @@ describe('producer recovery contract', () => {
       },
       {
         code: 'source-package-ddc-failed',
-        expected: 'a readable persistent DDC entry with matching integrity evidence',
-        hint: 'discard the invalid derived entry, then rebuild or cold-cook the source package',
+        expected: 'a validated persistent DDC entry committed by the active publication owner',
+        hint: 'inspect the DDC failure and active publication, then retry through the producer',
       },
       {
         code: 'source-package-publication-invalid',
@@ -126,7 +128,7 @@ describe('producer recovery contract', () => {
       ['inspect', 'rebuild', 'verify', 'retry'],
       ['inspect', 'rebuild', 'verify', 'retry'],
       ['inspect', 'rebuild', 'verify', 'retry'],
-      ['inspect', 'cold-cook', 'verify', 'retry'],
+      ['inspect', 'retry'],
       ['inspect', 'cold-cook', 'verify', 'retry'],
       ['inspect', 'cold-cook', 'verify', 'retry'],
     ]);

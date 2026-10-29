@@ -13,8 +13,10 @@ export type WorkspaceInputBindings = 'scene' | 'orbit';
 export type WorkspaceInputOptions = {
   api: ViewWorkspaceClient; targetId: string; targetGeneration?: number; tabId?: string;
   bindings?: WorkspaceInputBindings;
+  dollyStepLimit?: number;
   interactionIdFactory?: () => string; shouldCapture?: (event: Event) => boolean;
   onError?: (error: unknown) => void; onFocusSelection?: () => unknown;
+  selectOnClick?: boolean;
   window?: Window | typeof globalThis; document?: Document;
 };
 type RemoveInput = ((reason?: string) => void) & { handlesAbort?: boolean };
@@ -26,7 +28,7 @@ export type WorkspaceShellOptions = {
   api?: ViewWorkspaceClient; presentation?: WorkspacePresentation; resourceBrowser?: boolean; presentationOnly?: boolean; inspectorPanel?: boolean;
   inputControllerFactory?: (options: WorkspaceInputOptions) => ViewWorkspaceInputController;
 };
-import { createViewportInputApi } from './camera-client.ts';
+import { createViewportInputApi } from '@forgeax/view-workspace-core/preview-camera';
 import { reportWorkspaceCommandError, workspaceDiagnosticRecord } from '@forgeax/view-workspace-core/command-error';
 import {
   VIEW_DISPLAY_TAB_ID,
@@ -186,12 +188,14 @@ export class ViewWorkspaceInputController {
   declare api: ViewWorkspaceClient;
   declare targetId: string;
   declare bindings: WorkspaceInputBindings;
+  declare dollyStepLimit: number;
   declare targetGeneration: number | undefined;
   declare tabId: string;
   declare interactionIdFactory: () => string;
   declare shouldCapture: (event: Event) => boolean;
   declare onError: (error: unknown) => void;
   declare onFocusSelection: () => unknown;
+  declare selectOnClick: boolean;
   declare speed: number;
   declare held: Set<string>;
   declare shiftHeld: boolean;
@@ -219,12 +223,14 @@ export class ViewWorkspaceInputController {
     api,
     targetId,
     bindings = 'scene',
+    dollyStepLimit = 4,
     targetGeneration,
     tabId = VIEW_WORKSPACE_TAB_ID,
     interactionIdFactory = () => createWorkspaceId('interaction'),
     shouldCapture = () => true,
     onError = () => {},
     onFocusSelection = () => {},
+    selectOnClick = true,
     window = globalThis,
     document = globalThis.document,
   }: Partial<WorkspaceInputOptions> = {}) {
@@ -232,6 +238,7 @@ export class ViewWorkspaceInputController {
     this.api = api;
     this.targetId = requireWorkspaceString(targetId, 'targetId');
     this.bindings = bindings === 'orbit' ? 'orbit' : 'scene';
+    this.dollyStepLimit = Number.isFinite(dollyStepLimit) && dollyStepLimit > 0 ? dollyStepLimit : 4;
     this.targetGeneration = targetGeneration;
     this.tabId = tabId;
     this.interactionIdFactory = interactionIdFactory;
@@ -241,6 +248,7 @@ export class ViewWorkspaceInputController {
     this.shouldCapture = shouldCapture;
     this.onError = onError;
     this.onFocusSelection = onFocusSelection;
+    this.selectOnClick = selectOnClick;
     this.speed = 4;
     this.held = new Set();
     this.shiftHeld = false;
@@ -499,7 +507,7 @@ export class ViewWorkspaceInputController {
       this.speed = Math.max(0.05, Math.min(1024, this.speed * Math.exp(-input.deltaY * 0.002)));
       motion = movement();
     } else if (input.type === 'wheel' || input.mode === 'dolly') {
-      motion = { type: 'dolly', amount: Math.max(-4, Math.min(4,
+      motion = { type: 'dolly', amount: Math.max(-this.dollyStepLimit, Math.min(this.dollyStepLimit,
         (input.type === 'wheel' ? input.deltaY : ('movementY' in input ? input.movementY : 0) * 4) * 0.001)), distance: 5 };
     } else if (input.mode === 'pan') {
       motion = { type: 'pan', x: -(('movementX' in input ? input.movementX : 0)) * 0.002,
@@ -803,7 +811,7 @@ export class ViewWorkspaceInputController {
       }
     };
     const click = (event: MouseEvent) => {
-      if (orbitBindings) return;
+      if (!this.selectOnClick || orbitBindings) return;
       const consumed = consumedClick;
       consumedClick = false;
       const dragged = clickStart && Math.hypot(event.clientX - clickStart.x, event.clientY - clickStart.y) > 4;

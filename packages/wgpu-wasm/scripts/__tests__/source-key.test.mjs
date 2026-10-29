@@ -49,6 +49,8 @@ test('source fingerprint survives SDK expansion and changes with maintained code
   await writeFile(join(root, '.git'), 'gitdir: private contributor metadata');
   await mkdir(join(root, 'target'));
   await writeFile(join(root, 'target/build-output'), 'disposable');
+  await mkdir(join(root, '.github/workflows'), { recursive: true });
+  await writeFile(join(root, '.github/workflows/ci.yml'), 'contributor-only: true\n');
   assert.equal(await hashWgpuSource(root), original);
   await writeFile(join(root, 'source.rs'), 'repaired');
   assert.notEqual(await hashWgpuSource(root), original);

@@ -66,6 +66,9 @@
     "rotation": "Rotation",
     "unavailable": "Unavailable",
     "assetRef": {
+      "previewLoading": "Loading asset preview",
+      "previewFailed": "Asset preview failed",
+      "previewUnsupported": "Asset preview unavailable",
       "openUnavailable": "Asset viewer unavailable",
       "readOnly": "Read-only asset reference",
       "none": "None",

@@ -3,6 +3,7 @@ import type { FrameReceipt, Renderer } from '@forgeax/engine-render';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createFrameLoop, type FrameLoopHandle } from '../internal/frame-loop';
+import { createFramePacer, type FramePacer } from '../internal/frame-pacer';
 import { testPlatform } from './platform-fixture';
 
 function relativeHost() {
@@ -36,6 +37,7 @@ function relativeHost() {
 function fixture(
   onSubmitted?: (loop: FrameLoopHandle) => void,
   onError?: (loop: FrameLoopHandle) => void,
+  pacer?: FramePacer,
 ) {
   const host = relativeHost();
   const drawStarts: number[] = [];
@@ -60,6 +62,7 @@ function fixture(
     platform: testPlatform(host),
     onSubmitted: () => onSubmitted?.(loop),
     onError: () => onError?.(loop),
+    ...(pacer === undefined ? {} : { pacer }),
   });
   return { host, drawStarts, loop };
 }
@@ -166,5 +169,24 @@ describe('frame loop request-relative Host pacing', () => {
     expect(host.pending.size).toBe(1);
     loop.stop().unwrap();
     expect(host.pending.size).toBe(0);
+  });
+
+  it('admits every second 16 ms callback under a 30 FPS limit and keeps the successor reserved', async () => {
+    const pacer = createFramePacer();
+    pacer.setLimit(30);
+    const { host, drawStarts, loop } = fixture(undefined, undefined, pacer);
+    loop.start().unwrap();
+    for (let callback = 0; callback < 8; callback++) {
+      host.pump();
+      await loop.drainFrameReceipts();
+      expect(host.pending.size).toBe(1);
+    }
+    expect(drawStarts).toEqual([16, 48, 80, 112]);
+    pacer.setLimit(null);
+    host.pump();
+    await loop.drainFrameReceipts();
+    host.pump();
+    expect(drawStarts.slice(4)).toHaveLength(2);
+    loop.stop().unwrap();
   });
 });

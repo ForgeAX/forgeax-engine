@@ -134,7 +134,7 @@ impl BaseDocument {
             .nodes
             .iter()
             .filter(|(_, node)| {
-                node.is_element() && *node.scroll_offset() != Point::ZERO && node.has_boxes()
+                node.is_element() && node.scroll_position() != Point::ZERO && node.has_boxes()
             })
             .map(|(id, _)| ScrollTarget::Node(id))
             .chain((self.viewport_scroll() != Point::ZERO).then_some(ScrollTarget::Viewport))
@@ -261,8 +261,7 @@ impl BaseDocument {
 
         // Single-line inputs scroll their text horizontally, multi-line inputs vertically.
         node.element_data()?.text_input_data()?;
-        let content_box_width = node.final_layout().content_box_width();
-        let content_box_height = node.final_layout().content_box_height();
+        let viewport = node.text_input_viewport_size();
         let input = node
             .element_data_mut()
             .and_then(|el| el.text_input_data_mut())
@@ -273,10 +272,10 @@ impl BaseDocument {
         let mut remainder = delta;
         if input.is_multiline {
             remainder.y =
-                -(input.scroll_by(-delta.y as f32, content_box_width, content_box_height) as f64);
+                -(input.scroll_by(-delta.y as f32, viewport.width, viewport.height) as f64);
         } else {
             remainder.x =
-                -(input.scroll_by(-delta.x as f32, content_box_width, content_box_height) as f64);
+                -(input.scroll_by(-delta.x as f32, viewport.width, viewport.height) as f64);
         }
 
         let has_changed = remainder != delta;
@@ -366,21 +365,40 @@ impl BaseDocument {
                     return false;
                 };
 
-                let initial = *node.scroll_offset();
-                *node.scroll_offset_mut() = offset;
+                if !node.has_boxes() {
+                    return false;
+                }
+                let initial = node.scroll_position();
+                if let Some(input) = node
+                    .element_data_mut()
+                    .and_then(|element| element.text_input_data_mut())
+                {
+                    input.scroll_offset = if input.is_multiline {
+                        offset.y
+                    } else {
+                        offset.x
+                    } as f32;
+                } else {
+                    *node.scroll_offset_mut() = offset;
+                }
                 if offset == initial {
                     return false;
                 }
 
-                let layout = *node.final_layout();
+                let metrics = (
+                    node.scroll_width(),
+                    node.scroll_height(),
+                    node.client_width(),
+                    node.client_height(),
+                );
                 self.nodes.bump_geometry_generation();
                 let event = BlitzScrollEvent {
                     scroll_top: offset.y,
                     scroll_left: offset.x,
-                    scroll_width: layout.scroll_width() as i32,
-                    scroll_height: layout.scroll_height() as i32,
-                    client_width: layout.size.width as i32,
-                    client_height: layout.size.height as i32,
+                    scroll_width: metrics.0 as i32,
+                    scroll_height: metrics.1 as i32,
+                    client_width: metrics.2 as i32,
+                    client_height: metrics.3 as i32,
                 };
                 dispatch_event(DomEvent::new(node_id, DomEventData::Scroll(event)));
 
@@ -540,6 +558,21 @@ impl BaseDocument {
                 let Some(node) = self.nodes.get(node_id) else {
                     return (Point::ZERO, Point::ZERO);
                 };
+
+                if let Some(input) = node
+                    .element_data()
+                    .and_then(|element| element.text_input_data())
+                {
+                    let viewport = node.text_input_viewport_size();
+                    let maximum =
+                        f64::from(input.max_scroll_offset(viewport.width, viewport.height));
+                    let max = if input.is_multiline {
+                        Point { x: 0.0, y: maximum }
+                    } else {
+                        Point { x: maximum, y: 0.0 }
+                    };
+                    return (node.scroll_position(), max);
+                }
 
                 // An axis with a non-scrolling overflow value has no scrollable range, even
                 // when its content overflows.

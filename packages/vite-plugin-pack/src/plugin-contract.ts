@@ -72,6 +72,12 @@ export interface PluginPackOptions {
 export interface PluginPackDdcOptions {
   readonly buildCacheRoot?: string | undefined;
   readonly projectDdcRoot?: string | undefined;
+  /**
+   * Project root that build-cache keys spell source paths relative to, so an
+   * equal project at another location reuses its products. Without it, dev
+   * entries are private to one checkout location.
+   */
+  readonly identityRoot?: string | undefined;
 }
 
 /** Internal fixture seams; the public Vite contract does not expose these owners. */

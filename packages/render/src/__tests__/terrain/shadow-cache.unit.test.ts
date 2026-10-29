@@ -6,16 +6,13 @@ import { prepareDirectionalShadowCache } from '../../record/directional-shadow-c
 import type { DirectionalShadowCache, RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
 import type { CameraSnapshot } from '../../render-contract';
-import type {
-  ExtractedFrame,
-  ExtractedLights,
-  RenderableSnapshot,
-} from '../../render-system-extract';
+import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import type { FrameList } from '../../scene/frame-list';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { MeshFrame } from '../../scene/mesh-frame';
 import type { PersistentShadowCasterProjection } from '../../scene/render-scene';
 import { projectTerrainView } from '../../terrain/view';
+import type { ViewLights } from '../../world/render-lights';
 import { runtimeTerrainFixture, terrainViewPreparation } from './runtime-fixture';
 
 it('invalidates real cache decisions for only fractional or neighbor geometry while old World/caster/light proofs remain true', () => {
@@ -53,7 +50,6 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
   const casters = (sections: FrameList<RenderableSnapshot>) =>
     ({
       meshDraws: { meshDrawSlot: () => 0, beginMeshDrawFrame: () => {} },
-      prepareDrawDispatch: () => [],
       content: {
         meshes: new MeshFrame(),
         subsurface: { source: 0, authorVisible: 0, admitted: 0 },
@@ -65,7 +61,7 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
       },
       renderables: sections,
       dispatch: [],
-      worldBoundsOf: () => undefined,
+      worldBoundsOf: () => false,
     }) satisfies PersistentShadowCasterProjection;
   const internals = {
     assets: { catalogEpoch: 1 },
@@ -77,10 +73,12 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     directionalShadowCache: null,
   } as unknown as RenderFrameState;
   const lights = {
-    cascadeCount: 1,
-    lightViewProj: [new Float32Array(16)],
-    directionalShadowQuality: { kind: 'pcf', kernel: 3 },
-  } as unknown as ExtractedLights;
+    cascades: {
+      cascadeCount: 1,
+      lightViewProj: [new Float32Array(16)],
+      directionalShadowQuality: { kind: 'pcf', kernel: 3 },
+    },
+  } as unknown as ViewLights;
   const changes = new MeshChanges();
   const reads = new ShadowMeshReads(changes);
   reads.add(changes.create());

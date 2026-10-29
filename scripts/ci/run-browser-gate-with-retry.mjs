@@ -106,6 +106,10 @@ const retryPatterns = Object.freeze({
     // the app registers its capture hooks. Retry only this exact signature in
     // the dedicated CSM job; a second attempt remains a hard failure.
     /\[learn-render 5\.3\.3 csm\][\s\S]*capture hook readiness timed out after 90000ms[\s\S]*rendererBootstrap[\s\S]*"name":"adapter-request-start"[\s\S]*"shaderManifest":null[\s\S]*captureHooks[\s\S]*"__prepareCsmCapture":false[\s\S]*"__captureCsm":false/,
+    // A cold Vite dependency scan can hold the MSAA app navigation past its
+    // 30s budget on a loaded runner. Retry only this exact app/script timeout;
+    // OFF/ON capture and P2 assertions still run, and a second timeout stays red.
+    /\$ pnpm --filter @forgeax\/engine-rhi-debug build && node scripts\/smoke-browser-pair\.mjs[\s\S]*\[optimizer\] scanning dependencies\.\.\.[\s\S]*page\.goto: Timeout 30000ms exceeded\.[\s\S]*waiting until "domcontentloaded"[\s\S]*apps\/learn-render\/4\.advanced-opengl\/10\.anti-aliasing-msaa\/scripts\/smoke-browser-pair\.mjs:\d+:\d+/,
     /capture (?:off|on) failed before materializing v7 tape:[\s\S]*"code":"capture-timeout"/,
     /capture\/live-readback threw:[\s\S]*"code":"capture-snapshot-failed"[\s\S]*"stage":"snapshot"[\s\S]*A valid external Instance reference no longer exists/,
     /transient WebGPU external Instance loss/,

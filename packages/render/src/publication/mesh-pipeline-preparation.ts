@@ -1,6 +1,7 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
+import type { MaterialShaderEntry, RegisteredMaterialShaderEntry } from '@forgeax/engine-shader';
 import { type AssetHandle, err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { renderMaterialContext } from '../extract/material-context';
@@ -8,6 +9,19 @@ import type { RenderableSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import type { MeshPipelinePreparation } from './contract';
 import { publicationMaterialProgramKeys } from './programs';
+
+// Program delivery is selected by the publisher after capture. Borrow text only
+// when an unpublished entry is actually serialized across the Worker boundary.
+function publicationShader(entry: RegisteredMaterialShaderEntry): MaterialShaderEntry {
+  const program = entry.program;
+  return {
+    get source() {
+      return program.source;
+    },
+    paramSchema: entry.paramSchema,
+    ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
+  };
+}
 
 /** Extract one real candidate through the ordinary material owner, without rebinding ECS. */
 export function captureMeshPipelinePreparation(input: {
@@ -29,7 +43,7 @@ export function captureMeshPipelinePreparation(input: {
       ),
     );
   try {
-    const frame = extractFrames([input.world], 0, input.assets, undefined, undefined, {
+    const frame = extractFrames([input.world], 0, input.assets, undefined, {
       ...renderMaterialContext(input.capabilities, input.limits),
       cull: 'none',
       retainHidden: true,
@@ -44,8 +58,7 @@ export function captureMeshPipelinePreparation(input: {
     )
       return invalid('candidate render snapshot is unavailable');
     if (
-      row.skin !== undefined ||
-      row.skinPose !== undefined ||
+      row.skinBinding !== undefined ||
       row.morph !== undefined ||
       row.terrain !== undefined ||
       row.pointsLines !== undefined ||
@@ -63,11 +76,7 @@ export function captureMeshPipelinePreparation(input: {
         const artifact = input.assets.getMaterialArtifact(key);
         programs.set(key, {
           key,
-          shader: {
-            source: shader.value.source,
-            paramSchema: shader.value.paramSchema,
-            ...(shader.value.receipt === undefined ? {} : { receipt: shader.value.receipt }),
-          },
+          shader: publicationShader(shader.value),
           ...(artifact === undefined ? {} : { artifact }),
         });
       }

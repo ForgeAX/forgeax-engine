@@ -98,3 +98,53 @@ describe('visibility resolver truth table', () => {
     expect(hidden.effective(child)).toBe('hidden');
   });
 });
+
+describe('on-demand parent reads', () => {
+  it('match the whole-World hierarchy projection', async () => {
+    const { projectHierarchy } = await import('@forgeax/engine-scene');
+    const world = new World();
+    const hidden = spawn(world, 'hidden');
+    const child = spawn(world, 'inherited', hidden);
+    const grandchild = spawn(world, 'inherited', child);
+    const override = spawn(world, 'visible', hidden);
+    const belowOverride = spawn(world, 'inherited', override);
+    const visible = spawn(world, 'visible', hidden);
+    const below = spawn(world, 'inherited', visible);
+    const entities = [hidden, child, grandchild, override, belowOverride, visible, below];
+    const lazy = resolveVisibility(world);
+    const projected = resolveVisibility(world, projectHierarchy(world));
+    for (const entity of entities) {
+      expect(lazy.get(entity)).toEqual(projected.get(entity));
+      expect(lazy.effective(entity)).toBe(projected.effective(entity));
+    }
+    expect(lazy.diagnostics).toEqual(projected.diagnostics);
+    expect(lazy.effective(grandchild)).toBe('hidden');
+    expect(lazy.effective(below)).toBe('visible');
+  });
+
+  it('answers visible without hierarchy reads when nothing is hidden', () => {
+    const world = new World();
+    const root = spawn(world, 'visible');
+    const child = spawn(world, 'inherited', root);
+    const snapshot = resolveVisibility(world);
+    expect(snapshot.hasAnyHiddenIntent).toBe(false);
+    expect(snapshot.effective(child)).toBe('visible');
+    expect(snapshot.get(child)).toEqual({
+      intent: 'inherited',
+      effective: 'visible',
+      source: 'parent',
+    });
+  });
+
+  it('keeps answering from the hierarchy once ChildOf changes after capture', () => {
+    const world = new World();
+    const hidden = spawn(world, 'hidden');
+    const shown = spawn(world, 'visible');
+    const child = spawn(world, 'inherited', hidden);
+    const snapshot = resolveVisibility(world);
+    world.set(child, ChildOf, { parent: shown }).unwrap();
+    // The capture did not read the old parent; the projection is the only parent fact left.
+    expect(snapshot.effective(child)).toBe('visible');
+    expect(resolveVisibility(world).effective(child)).toBe('visible');
+  });
+});

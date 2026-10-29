@@ -57,6 +57,23 @@ export interface ReplicatedSnake {
   readonly color: number;
 }
 
+export interface SnakeSessionView {
+  readonly started: boolean;
+  readonly gameplayTick: number;
+  readonly startedAtGameplayTick: number;
+  readonly lastDirectionCommandPlayerNetworkId: number;
+  readonly lastDirectionCommandGameplayTick: number;
+}
+
+/** One frame's replica projection, accumulated across the head and body row passes. */
+interface ReplicaFrame {
+  readonly liveIds: Set<number>;
+  readonly snakes: ReplicatedSnake[];
+  readonly playerColors: Map<number, number>;
+  food?: { x: number; y: number };
+  gameSession?: SnakeSessionView;
+}
+
 export interface RenderSnake {
   readonly id: number;
   readonly position: readonly [number, number, number];
@@ -256,13 +273,7 @@ export function renderSnakeState(
   tick: number,
   snakes: readonly ReplicatedSnake[],
   food?: { readonly x: number; readonly y: number },
-  session?: {
-    readonly started: boolean;
-    readonly gameplayTick: number;
-    readonly startedAtGameplayTick: number;
-    readonly lastDirectionCommandPlayerNetworkId: number;
-    readonly lastDirectionCommandGameplayTick: number;
-  },
+  session?: SnakeSessionView,
   localPlayerNetworkId?: number,
 ): void {
   target.dataset.testid = 'snake-state';
@@ -382,6 +393,208 @@ export function registerReplicaDerivation(
         )
         .unwrap();
   }
+
+  function readSessionView(rowId: number): SnakeSessionView | undefined {
+    const sessionComponent = replica.readComponent(rowId, SnakeSession);
+    if (sessionComponent === undefined) return undefined;
+    return {
+      started: Boolean(sessionComponent.started),
+      gameplayTick: Number(sessionComponent.gameplayTick ?? 0),
+      startedAtGameplayTick: Number(sessionComponent.startedAtGameplayTick ?? 0),
+      lastDirectionCommandPlayerNetworkId: Number(
+        sessionComponent.lastDirectionCommandPlayerNetworkId ?? 0,
+      ),
+      lastDirectionCommandGameplayTick: Number(
+        sessionComponent.lastDirectionCommandGameplayTick ?? 0,
+      ),
+    };
+  }
+
+  function readFoodPosition(rowId: number): { x: number; y: number } | undefined {
+    const foodComponent = replica.readComponent(rowId, Food);
+    const foodPosition = replica.readComponent(rowId, GridPosition);
+    if (foodComponent === undefined || foodPosition === undefined) return undefined;
+    return { x: Number(foodPosition.x ?? 0), y: Number(foodPosition.y ?? 0) };
+  }
+
+  function collectSnakeHead(
+    frameWorld: World,
+    cube: typeof primitiveCube,
+    rowId: number,
+    frame: ReplicaFrame,
+  ): void {
+    const position = replica.readComponent(rowId, GridPosition);
+    const snake = replica.readComponent(rowId, Snake);
+    if (position === undefined || snake === undefined) return;
+    const body = replica.readComponent(rowId, SnakeBody);
+    const bodySegments = replicaEntityReferences(body?.segments);
+    const x = Number(position.x ?? 0);
+    const y = Number(position.y ?? 0);
+    const playerNetworkId = Number(snake.playerNetworkId ?? 0);
+    const color = playerNetworkId % 2;
+    frame.liveIds.add(rowId);
+    frame.snakes.push({
+      id: rowId,
+      x,
+      y,
+      score: Number(snake.score ?? 0),
+      bodyLength: bodySegments.length + 1,
+      direction: (['up', 'right', 'down', 'left'][Number(snake.direction ?? 0)] ??
+        'right') as ReplicatedSnake['direction'],
+      networkEntityId: rowId,
+      playerNetworkId,
+      color,
+    });
+    frame.playerColors.set(playerNetworkId, color);
+    let entity = renderEntities.get(rowId);
+    if (entity === undefined) {
+      entity = frameWorld
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 0] } },
+          { component: MeshFilter, data: { assetHandle: cube } },
+          {
+            component: MeshRenderer,
+            data: { materials: [snakeMaterials[color] ?? snakeMaterials[0]] },
+          },
+        )
+        .unwrap();
+      renderEntities.set(rowId, entity);
+    }
+    frameWorld.set(entity, Transform, { pos: gridToWorldPosition(x, y) });
+  }
+
+  function collectReplicaRow(
+    frameWorld: World,
+    cube: typeof primitiveCube,
+    rowId: number,
+    frame: ReplicaFrame,
+  ): void {
+    const sessionView = readSessionView(rowId);
+    if (sessionView !== undefined) {
+      frame.gameSession = sessionView;
+      return;
+    }
+    const foodPosition = readFoodPosition(rowId);
+    if (foodPosition !== undefined) {
+      frame.food = foodPosition;
+      return;
+    }
+    collectSnakeHead(frameWorld, cube, rowId, frame);
+  }
+
+  function collectBodySegment(
+    frameWorld: World,
+    cube: typeof primitiveCube,
+    rowId: number,
+    frame: ReplicaFrame,
+  ): void {
+    const segment = replica.readComponent(rowId, SnakeSegment);
+    const position = replica.readComponent(rowId, GridPosition);
+    if (segment === undefined || position === undefined) return;
+    const color = frame.playerColors.get(Number(segment.playerNetworkId ?? 0));
+    if (color === undefined) return;
+    if (hideBodyForVisualFalsification) return;
+    frame.liveIds.add(rowId);
+    let entity = renderEntities.get(rowId);
+    if (entity === undefined) {
+      entity = frameWorld
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 0], scale: [0.9, 0.9, 0.9] } },
+          { component: MeshFilter, data: { assetHandle: cube } },
+          {
+            component: MeshRenderer,
+            data: { materials: [snakeBodyMaterials[color] ?? snakeBodyMaterials[0]] },
+          },
+        )
+        .unwrap();
+      renderEntities.set(rowId, entity);
+    }
+    frameWorld.set(entity, Transform, {
+      pos: gridToWorldPosition(Number(position.x ?? 0), Number(position.y ?? 0)),
+      scale: [0.9, 0.9, 0.9],
+    });
+  }
+
+  /** Joins once per recovered epoch and reports readiness while the session waits. */
+  function announceToAuthority(
+    recovery: NetRecoverySnapshot | undefined,
+    gameSession: SnakeSessionView | undefined,
+  ): void {
+    if (session === undefined || recovery?.state.kind !== 'active') return;
+    if (joinedEpoch !== recovery.state.epoch) {
+      const join = encodeCommand({ kind: 'join' });
+      if (!join.ok) throw join.error;
+      const sent = session.sendToAuthority(recovery.sessionId, join.value);
+      if (sent.ok) {
+        joinedEpoch = recovery.state.epoch;
+        readyEpoch = undefined;
+        if (sinks.stateTarget !== undefined) {
+          sinks.stateTarget.dataset.lifecycle = 'join-sent';
+          sinks.stateTarget.dataset.joinSent = 'true';
+          sinks.stateTarget.dataset.waitingTick = '0';
+        }
+      }
+    }
+    if (gameSession?.started === false && readyEpoch !== recovery.state.epoch) {
+      const ready = encodeCommand({ kind: 'ready' });
+      if (!ready.ok) throw ready.error;
+      const sent = session.sendToAuthority(recovery.sessionId, ready.value);
+      if (sent.ok) readyEpoch = recovery.state.epoch;
+    }
+  }
+
+  function showWaitingRoom(frameWorld: World, frame: ReplicaFrame): void {
+    for (const [, entity] of renderEntities) frameWorld.despawn(entity).unwrap();
+    renderEntities.clear();
+    if (sinks.stateTarget !== undefined)
+      renderSnakeState(
+        sinks.stateTarget,
+        replica.tick,
+        [],
+        frame.food,
+        frame.gameSession,
+        localPlayerNetworkId,
+      );
+    if (sinks.stateTarget !== undefined) sinks.stateTarget.dataset.renderEntityCount = '0';
+  }
+
+  function adoptLocalPlayer(gameSession: SnakeSessionView | undefined): void {
+    if (
+      localPlayerNetworkId === undefined &&
+      sinks.directionCommandEvidence?.lastSendResult === 'sent' &&
+      (gameSession?.lastDirectionCommandPlayerNetworkId ?? 0) > 0
+    )
+      localPlayerNetworkId = gameSession?.lastDirectionCommandPlayerNetworkId;
+  }
+
+  function publishFrame(frameWorld: World, frame: ReplicaFrame): void {
+    const { food } = frame;
+    if (food !== undefined && foodEntity !== undefined)
+      frameWorld
+        .set(foodEntity, Transform, {
+          pos: gridToWorldPosition(food.x, food.y),
+          scale: [0.55, 0.55, 0.55],
+        })
+        .unwrap();
+    for (const [id, entity] of renderEntities) {
+      if (!frame.liveIds.has(id)) {
+        frameWorld.despawn(entity).unwrap();
+        renderEntities.delete(id);
+      }
+    }
+    if (sinks.stateTarget !== undefined)
+      renderSnakeState(
+        sinks.stateTarget,
+        replica.tick,
+        frame.snakes,
+        food,
+        frame.gameSession,
+        localPlayerNetworkId,
+      );
+    if (sinks.stateTarget !== undefined)
+      sinks.stateTarget.dataset.renderEntityCount = String(renderEntities.size);
+  }
+
   world.addSystem(Update, {
     name: 'snake-replica-derivation',
     queries: [],
@@ -392,186 +605,20 @@ export function registerReplicaDerivation(
 
       const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
-      const liveIds = new Set<number>();
-      const snakes: ReplicatedSnake[] = [];
-      let food: { x: number; y: number } | undefined;
+      const frame: ReplicaFrame = { liveIds: new Set(), snakes: [], playerColors: new Map() };
       const rows = replica.snapshot();
-      const playerColors = new Map<number, number>();
-      let gameSession:
-        | {
-            started: boolean;
-            gameplayTick: number;
-            startedAtGameplayTick: number;
-            lastDirectionCommandPlayerNetworkId: number;
-            lastDirectionCommandGameplayTick: number;
-          }
-        | undefined;
-      for (const row of rows) {
-        const foodComponent = replica.readComponent(row.id, Food);
-        const foodPosition = replica.readComponent(row.id, GridPosition);
-        const sessionComponent = replica.readComponent(row.id, SnakeSession);
-        if (sessionComponent !== undefined) {
-          gameSession = {
-            started: Boolean(sessionComponent.started),
-            gameplayTick: Number(sessionComponent.gameplayTick ?? 0),
-            startedAtGameplayTick: Number(sessionComponent.startedAtGameplayTick ?? 0),
-            lastDirectionCommandPlayerNetworkId: Number(
-              sessionComponent.lastDirectionCommandPlayerNetworkId ?? 0,
-            ),
-            lastDirectionCommandGameplayTick: Number(
-              sessionComponent.lastDirectionCommandGameplayTick ?? 0,
-            ),
-          };
-          continue;
-        }
-        if (foodComponent !== undefined && foodPosition !== undefined) {
-          food = { x: Number(foodPosition.x ?? 0), y: Number(foodPosition.y ?? 0) };
-          continue;
-        }
-        const position = replica.readComponent(row.id, GridPosition);
-        const snake = replica.readComponent(row.id, Snake);
-        if (position === undefined || snake === undefined) continue;
-        const body = replica.readComponent(row.id, SnakeBody);
-        const bodySegments = replicaEntityReferences(body?.segments);
-        liveIds.add(row.id);
-        snakes.push({
-          id: row.id,
-          x: Number(position.x ?? 0),
-          y: Number(position.y ?? 0),
-          score: Number(snake.score ?? 0),
-          bodyLength: bodySegments.length + 1,
-          direction: (['up', 'right', 'down', 'left'][Number(snake.direction ?? 0)] ??
-            'right') as ReplicatedSnake['direction'],
-          networkEntityId: row.id,
-          playerNetworkId: Number(snake.playerNetworkId ?? 0),
-          color: Number(snake.playerNetworkId ?? 0) % 2,
-        });
-        const color = Number(snake.playerNetworkId ?? 0) % 2;
-        playerColors.set(Number(snake.playerNetworkId ?? 0), color);
-        let entity = renderEntities.get(row.id);
-        if (entity === undefined) {
-          entity = world
-            .spawn(
-              { component: Transform, data: { pos: [0, 0, 0] } },
-              { component: MeshFilter, data: { assetHandle: primitiveCube } },
-              {
-                component: MeshRenderer,
-                data: {
-                  materials: [
-                    snakeMaterials[Number(snake.playerNetworkId) % 2] ?? snakeMaterials[0],
-                  ],
-                },
-              },
-            )
-            .unwrap();
-          renderEntities.set(row.id, entity);
-        }
-        world.set(entity, Transform, {
-          pos: gridToWorldPosition(Number(position.x ?? 0), Number(position.y ?? 0)),
-        });
-      }
+      for (const row of rows) collectReplicaRow(world, primitiveCube, row.id, frame);
       const recovery = session?.getRecoverySnapshot();
       if (sinks.stateTarget !== undefined && recovery !== undefined)
         syncSessionSnapshot(sinks.stateTarget, recovery);
-      if (session !== undefined && recovery?.state.kind === 'active') {
-        if (joinedEpoch !== recovery.state.epoch) {
-          const join = encodeCommand({ kind: 'join' });
-          if (!join.ok) throw join.error;
-          const sent = session.sendToAuthority(recovery.sessionId, join.value);
-          if (sent.ok) {
-            joinedEpoch = recovery.state.epoch;
-            readyEpoch = undefined;
-            if (sinks.stateTarget !== undefined) {
-              sinks.stateTarget.dataset.lifecycle = 'join-sent';
-              sinks.stateTarget.dataset.joinSent = 'true';
-              sinks.stateTarget.dataset.waitingTick = '0';
-            }
-          }
-        }
-      }
-      if (
-        session !== undefined &&
-        recovery?.state.kind === 'active' &&
-        gameSession?.started === false &&
-        readyEpoch !== recovery.state.epoch
-      ) {
-        const ready = encodeCommand({ kind: 'ready' });
-        if (!ready.ok) throw ready.error;
-        const sent = session.sendToAuthority(recovery.sessionId, ready.value);
-        if (sent.ok) readyEpoch = recovery.state.epoch;
-      }
-      if (hasBrowserVisuals && gameSession?.started === false) {
-        for (const [, entity] of renderEntities) world.despawn(entity).unwrap();
-        renderEntities.clear();
-        if (sinks.stateTarget !== undefined)
-          renderSnakeState(
-            sinks.stateTarget,
-            replica.tick,
-            [],
-            food,
-            gameSession,
-            localPlayerNetworkId,
-          );
-        if (sinks.stateTarget !== undefined) sinks.stateTarget.dataset.renderEntityCount = '0';
+      announceToAuthority(recovery, frame.gameSession);
+      if (hasBrowserVisuals && frame.gameSession?.started === false) {
+        showWaitingRoom(world, frame);
         return;
       }
-      for (const row of rows) {
-        const segment = replica.readComponent(row.id, SnakeSegment);
-        const position = replica.readComponent(row.id, GridPosition);
-        if (segment === undefined || position === undefined) continue;
-        const color = playerColors.get(Number(segment.playerNetworkId ?? 0));
-        if (color === undefined) continue;
-        if (hideBodyForVisualFalsification) continue;
-        liveIds.add(row.id);
-        let entity = renderEntities.get(row.id);
-        if (entity === undefined) {
-          entity = world
-            .spawn(
-              { component: Transform, data: { pos: [0, 0, 0], scale: [0.9, 0.9, 0.9] } },
-              { component: MeshFilter, data: { assetHandle: primitiveCube } },
-              {
-                component: MeshRenderer,
-                data: { materials: [snakeBodyMaterials[color] ?? snakeBodyMaterials[0]] },
-              },
-            )
-            .unwrap();
-          renderEntities.set(row.id, entity);
-        }
-        world.set(entity, Transform, {
-          pos: gridToWorldPosition(Number(position.x ?? 0), Number(position.y ?? 0)),
-          scale: [0.9, 0.9, 0.9],
-        });
-      }
-      if (
-        localPlayerNetworkId === undefined &&
-        sinks.directionCommandEvidence?.lastSendResult === 'sent' &&
-        (gameSession?.lastDirectionCommandPlayerNetworkId ?? 0) > 0
-      )
-        localPlayerNetworkId = gameSession?.lastDirectionCommandPlayerNetworkId;
-      if (food !== undefined && foodEntity !== undefined)
-        world
-          .set(foodEntity, Transform, {
-            pos: gridToWorldPosition(food.x, food.y),
-            scale: [0.55, 0.55, 0.55],
-          })
-          .unwrap();
-      for (const [id, entity] of renderEntities) {
-        if (!liveIds.has(id)) {
-          world.despawn(entity).unwrap();
-          renderEntities.delete(id);
-        }
-      }
-      if (sinks.stateTarget !== undefined)
-        renderSnakeState(
-          sinks.stateTarget,
-          replica.tick,
-          snakes,
-          food,
-          gameSession,
-          localPlayerNetworkId,
-        );
-      if (sinks.stateTarget !== undefined)
-        sinks.stateTarget.dataset.renderEntityCount = String(renderEntities.size);
+      for (const row of rows) collectBodySegment(world, primitiveCube, row.id, frame);
+      adoptLocalPlayer(frame.gameSession);
+      publishFrame(world, frame);
     },
   });
   return renderEntities;

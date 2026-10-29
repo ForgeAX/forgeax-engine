@@ -1,8 +1,24 @@
 import type { PipelineLibraryManifest, RenderPipelineDescriptor } from '@forgeax/engine-rhi';
+import { ownPipelineLibrary, pipelineDescriptorState } from '@forgeax/engine-rhi';
+import {
+  ShaderSource,
+  shaderSourceForDescriptor,
+  snapshotLoadTimeline,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { disposeDevice, makeRhiDevice } from '../device';
 import { createShaderModule, createShaderModuleImmediate } from '../index';
+import { PipelineCompilationRecords } from '../pipeline-compilation-records';
+import { backgroundPipelineWarmupConcurrency } from '../pipeline-library';
 import { createMockGpu } from './__mocks__/gpu-device';
+
+// Observe the real Node hash without adding Node ambient types to the browser RHI.
+interface NativeHash {
+  update(input: string | Uint8Array, encoding?: string): NativeHash;
+}
+const { Hash } = (
+  globalThis as unknown as { process: { getBuiltinModule(id: string): unknown } }
+).process.getBuiltinModule('node:crypto') as { Hash: { prototype: NativeHash } };
 
 async function fixture() {
   const gpu = createMockGpu(),
@@ -44,6 +60,120 @@ async function fixture() {
     descriptor,
   };
 }
+
+it('does not hash an uncached Shader through the pending list during lightweight history inspection', async () => {
+  const f = await fixture();
+  const pending = f.device.createRenderPipelineAsync(f.descriptor());
+  const inspection = f.device.pipelineLibrary.inspect({ runtimeRequests: true });
+  expect(inspection.pending).toBeUndefined();
+  expect(inspection.runtimeRequests?.requests[0]?.pipeline?.shaders[0]?.sourceDigest).toBeNull();
+  await pending;
+});
+
+it('retains a runtime request that completed before an asynchronous observer arrives', async () => {
+  const f = await fixture();
+  await f.device.createRenderPipelineAsync(f.descriptor());
+  expect(f.device.pipelineLibrary.inspect().runtimeRequests).toBeUndefined();
+  const inspection = f.device.pipelineLibrary.inspect({ runtimeRequests: true });
+  expect(inspection.compilationPending).toBe(0);
+  expect(inspection.pending).toBeUndefined();
+  expect(inspection.runtimeRequests).toMatchObject({
+    latestSequence: 1,
+    overwritten: 0,
+    requests: [
+      {
+        sequence: 1,
+        mode: 'async',
+        outcome: 'completed',
+        preloadAtDemand: 'absent',
+        pipeline: {
+          localIdentity: 1,
+          identity: null,
+          kind: 'render',
+          shaders: [{ sourceDigest: null }],
+        },
+      },
+    ],
+  });
+  const request = inspection.runtimeRequests?.requests[0];
+  if (request === undefined || request.startedAtMs === null)
+    throw new Error('Missing runtime request');
+  expect(request.completedAtMs).toBeGreaterThanOrEqual(request.startedAtMs);
+  expect(request.startedAtMs).toBeGreaterThanOrEqual(request.requestedAtMs);
+  expect(JSON.stringify(inspection.runtimeRequests)).not.toContain('shader source');
+});
+
+it('bounds runtime evidence while completed cache hits add no requests or native work', async () => {
+  const f = await fixture();
+  for (let i = 0; i < 80; i++)
+    await f.device.createRenderPipelineAsync(f.descriptor(`source ${i}`));
+  const descriptor = f.descriptor('source 79');
+  const record = vi.spyOn(PipelineCompilationRecords.prototype, 'begin');
+  const inspect = vi.spyOn(PipelineCompilationRecords.prototype, 'inspect');
+  for (let i = 0; i < 500; i++) f.device.createRenderPipeline(descriptor).unwrap();
+  expect(record).not.toHaveBeenCalled();
+  expect(f.device.pipelineLibrary.inspect().runtimeRequests).toBeUndefined();
+  expect(inspect).not.toHaveBeenCalled();
+  const history = f.device.pipelineLibrary.inspect({ runtimeRequests: true }).runtimeRequests;
+  if (history === undefined) throw new Error('Missing runtime history');
+  expect(history).toMatchObject({ capacity: 32, latestSequence: 80, overwritten: 48 });
+  expect(history.requests).toHaveLength(32);
+  expect(history.requests[0]?.sequence).toBe(49);
+  expect(history.requests.at(-1)?.sequence).toBe(80);
+  expect(f.render).toHaveBeenCalledTimes(80);
+  expect(f.sync).not.toHaveBeenCalled();
+  record.mockRestore();
+  inspect.mockRestore();
+});
+
+it('retains a runtime demand joining an existing background compilation without issuing another one', async () => {
+  const a = await fixture();
+  a.device.createRenderPipeline(a.descriptor()).unwrap();
+  const manifest = a.device.pipelineLibrary.export().unwrap(),
+    b = await fixture();
+  let release: (value: GPURenderPipeline) => void = () => {
+    throw new Error('Native request not started');
+  };
+  b.render.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const warm = b.device.pipelineLibrary.prepare(manifest, { background: true, concurrency: 1 });
+  await vi.waitFor(() => expect(b.render).toHaveBeenCalledOnce());
+  expect(
+    b.device.pipelineLibrary.inspect({ runtimeRequests: true }).runtimeRequests?.requests,
+  ).toEqual([]);
+  const demand = b.device.createRenderPipelineAsync(b.descriptor());
+  release({} as GPURenderPipeline);
+  await warm;
+  await demand;
+  expect(
+    b.device.pipelineLibrary.inspect({ runtimeRequests: true }).runtimeRequests?.requests,
+  ).toMatchObject([
+    {
+      outcome: 'completed',
+      origin: 'background-warmup',
+      preloadAtDemand: 'background',
+      pipeline: { preload: 'background' },
+    },
+  ]);
+  expect(b.render).toHaveBeenCalledOnce();
+});
+
+it('retains failures/retries and distinguishes returned sync handles from native completion', async () => {
+  const f = await fixture();
+  f.render.mockRejectedValueOnce(new Error('deliberate failure'));
+  expect((await f.device.createRenderPipelineAsync(f.descriptor())).ok).toBe(false);
+  await f.device.createRenderPipelineAsync(f.descriptor());
+  f.device.createRenderPipeline(f.descriptor('sync-only')).unwrap();
+  expect(
+    f.device.pipelineLibrary
+      .inspect({ runtimeRequests: true })
+      .runtimeRequests?.requests.map((row) => row.outcome),
+  ).toEqual(['failed', 'completed', 'returned']);
+});
 
 it('reuses build-projected compute closures for ordinary sync/async requests and archive round trips', async () => {
   const f = await fixture();
@@ -403,4 +533,408 @@ it('never qualifies a sync-only compute handle or an unresolved native compilati
   if (!('ok' in ready)) throw Error('completed compute recipe remained async');
   expect(ready.unwrap()).toBe(pipeline);
   expect(f.compute).toHaveBeenCalledTimes(1);
+});
+
+async function backgroundArchive(count: number) {
+  const a = await fixture();
+  for (let i = 0; i < count; i++)
+    a.device.createRenderPipeline(a.descriptor(`source ${i}`)).unwrap();
+  return JSON.parse(
+    JSON.stringify(a.device.pipelineLibrary.export().unwrap()),
+  ) as PipelineLibraryManifest;
+}
+
+it('keeps background concurrency bounded on small and large machines', () => {
+  for (const cores of [undefined, 0, 1, 2, 8, 32, 192, Number.NaN]) {
+    const count = backgroundPipelineWarmupConcurrency(cores);
+    expect(count).toBeGreaterThanOrEqual(1);
+    expect(count).toBeLessThanOrEqual(4);
+  }
+});
+
+it('yields before issuing background requests and stops after disposal', async () => {
+  const archive = await backgroundArchive(5);
+  const b = await fixture();
+  const prepared = b.device.pipelineLibrary.prepare(archive, { background: true });
+  expect(b.render).not.toHaveBeenCalled();
+  disposeDevice(b.device);
+  expect((await prepared).ok).toBe(false);
+  expect(b.render).not.toHaveBeenCalled();
+});
+
+it('validates independent background modules concurrently without reordering dependencies', async () => {
+  const archive = await backgroundArchive(5);
+  const b = await fixture();
+  const finish: ((info: GPUCompilationInfo) => void)[] = [];
+  const byCode = new Map<string, GPUShaderModule>();
+  const modules = vi.spyOn(b.raw, 'createShaderModule').mockImplementation((descriptor) => {
+    const module = {
+      getCompilationInfo: () => new Promise<GPUCompilationInfo>((resolve) => finish.push(resolve)),
+    } as GPUShaderModule;
+    byCode.set(descriptor.code, module);
+    return module;
+  });
+  const prepared = b.device.pipelineLibrary.prepare(archive, { background: true, concurrency: 2 });
+  await vi.waitFor(() => expect(finish).toHaveLength(2));
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  expect(modules).toHaveBeenCalledTimes(2);
+  finish[1]?.({ messages: [] } as unknown as GPUCompilationInfo);
+  await vi.waitFor(() => expect(finish).toHaveLength(3));
+  finish[0]?.({ messages: [] } as unknown as GPUCompilationInfo);
+  for (let i = 2; i < 5; i++) {
+    await vi.waitFor(() => expect(finish.length).toBeGreaterThan(i));
+    finish[i]?.({ messages: [] } as unknown as GPUCompilationInfo);
+  }
+  expect((await prepared).ok).toBe(true);
+  expect(modules).toHaveBeenCalledTimes(5);
+  for (const [index, [descriptor]] of b.render.mock.calls.entries()) {
+    const recipe = archive.renderPipelines[index];
+    if (recipe === undefined) throw new Error('Missing archived recipe');
+    const code = archive.shaders[recipe.vertex.module]?.code;
+    if (code === undefined) throw new Error('Missing archived shader');
+    expect(descriptor.vertex.module).toBe(byCode.get(code));
+  }
+});
+
+it.each([
+  2, 4,
+])('bounds background compilation to %i and publishes each completed entry before the import settles', async (concurrency) => {
+  const archive = await backgroundArchive(5);
+  const b = await fixture();
+  const finishes: ((p: GPURenderPipeline) => void)[] = [];
+  let inFlight = 0,
+    peak = 0;
+  b.render.mockImplementation(
+    () =>
+      new Promise<GPURenderPipeline>((resolve) => {
+        peak = Math.max(peak, ++inFlight);
+        finishes.push((p) => {
+          inFlight--;
+          resolve(p);
+        });
+      }),
+  );
+  expect(b.device.pipelineLibrary.inspect().backgroundWarmup.state).toBe('idle');
+  const prepared = b.device.pipelineLibrary.prepare(archive, { background: true, concurrency });
+  await vi.waitFor(() => expect(finishes).toHaveLength(concurrency));
+  expect(b.device.pipelineLibrary.inspect().backgroundWarmup).toMatchObject({
+    requested: 5,
+    completed: 0,
+    state: 'running',
+  });
+  const handle = {} as GPURenderPipeline;
+  finishes[0]?.(handle);
+  await vi.waitFor(() => expect(finishes).toHaveLength(concurrency + 1));
+  // The first completed recipe is a hit while the remaining recipes are still compiling.
+  const recipe = archive.renderPipelines[0];
+  const code = recipe === undefined ? undefined : archive.shaders[recipe.vertex.module]?.code;
+  expect(b.device.createRenderPipeline(b.descriptor(code)).unwrap()).toBe(handle);
+  expect(b.sync).not.toHaveBeenCalled();
+  for (let i = 1; i < 5; i++) {
+    await vi.waitFor(() => expect(finishes.length).toBeGreaterThan(i));
+    finishes[i]?.({} as GPURenderPipeline);
+  }
+  expect((await prepared).unwrap()).toMatchObject({
+    warmup: { requested: 0, completed: 0, failed: 0 },
+    backgroundWarmup: { requested: 5, completed: 5, failed: 0, state: 'done' },
+  });
+  expect(peak).toBe(concurrency);
+});
+
+it('reports a background failure on its own lane and keeps completed entries usable', async () => {
+  const archive = await backgroundArchive(3);
+  const b = await fixture();
+  b.render.mockRejectedValueOnce(
+    Object.assign(new Error('bad pipeline'), { reason: 'validation' }),
+  );
+  const result = await b.device.pipelineLibrary.prepare(archive, { background: true });
+  expect(result.ok).toBe(false);
+  expect(b.device.pipelineLibrary.inspect()).toMatchObject({
+    warmup: { requested: 0, completed: 0, failed: 0 },
+    backgroundWarmup: { requested: 3, completed: 2, failed: 1, state: 'failed' },
+    compilationCompleted: 2,
+  });
+  expect((await b.device.pipelineLibrary.prepare(archive, { concurrency: 0 })).ok).toBe(false);
+  expect(
+    (await b.device.pipelineLibrary.prepare(archive, { background: true, concurrency: 5 })).ok,
+  ).toBe(false);
+  expect(b.device.pipelineLibrary.inspect().backgroundWarmup.state).toBe('failed');
+});
+
+it('records native shader and pipeline creation on the load timeline, once per native call', async () => {
+  const before = snapshotLoadTimeline().records.length;
+  const f = await fixture();
+  const d = f.descriptor('timeline shader source');
+  f.device.createRenderPipeline(d).unwrap();
+  (await f.device.createRenderPipelineAsync({ ...d, label: 'async fog' })).unwrap();
+  // A cache hit performs no native work and records nothing.
+  f.device.createRenderPipeline(f.descriptor('timeline shader source')).unwrap();
+  const rows = snapshotLoadTimeline().records.slice(before);
+  expect(rows.filter((r) => r.kind === 'shader')).toEqual([
+    expect.objectContaining({ name: 'module', bytes: 'timeline shader source'.length }),
+  ]);
+  expect(
+    rows.filter((r) => r.kind === 'pipeline').map((r) => [r.name, r.detail?.mode, r.detail?.kind]),
+  ).toEqual([
+    ['fog', 'sync', 'render'],
+    ['async fog', 'async', 'render'],
+  ]);
+});
+
+it('warms recipes in manifest position order across the render and compute tables', async () => {
+  const a = await fixture();
+  for (let i = 0; i < 3; i++) a.device.createRenderPipeline(a.descriptor(`render ${i}`)).unwrap();
+  for (let i = 0; i < 2; i++)
+    a.device
+      .createComputePipeline({
+        layout: 'auto',
+        compute: { module: a.module(`compute ${i}`), entryPoint: 'cs' },
+      })
+      .unwrap();
+  const archive = a.device.pipelineLibrary.export().unwrap();
+  for (const background of [false, true]) {
+    const b = await fixture();
+    const order: string[] = [];
+    b.render.mockImplementation(async (d) => {
+      order.push(`render ${(d.vertex.module as unknown as { label?: string }).label ?? ''}`);
+      return {} as GPURenderPipeline;
+    });
+    b.compute.mockImplementation(async (d) => {
+      order.push(`compute ${(d.compute.module as unknown as { label?: string }).label ?? ''}`);
+      return {} as GPUComputePipeline;
+    });
+    expect(
+      (await b.device.pipelineLibrary.prepare(archive, { background, concurrency: 1 })).ok,
+    ).toBe(true);
+    expect(order.map((entry) => entry.split(' ')[0])).toEqual([
+      'render',
+      'compute',
+      'render',
+      'compute',
+      'render',
+    ]);
+  }
+});
+
+it('keeps projected module identities when prior runtime sources cross the old cumulative collection limit', async () => {
+  const f = await fixture();
+  // Both individual inputs are legal. Only their device-lifetime sum crosses
+  // the old UTF-16 collection boundary, and the projected endpoint is new.
+  f.module('a'.repeat(30 * 1024 * 1024));
+  const manifest: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [{ code: 'b'.repeat(3 * 1024 * 1024) }, { code: 'projected' }],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [{ layout: 'auto', compute: { module: 0, entryPoint: 'main' } }],
+    computeEntryModules: [{ module: 0, entryPoint: 'main', specializedModule: 1 }],
+  };
+  const prepared = await f.device.pipelineLibrary.prepare(manifest);
+  expect(prepared.ok).toBe(true);
+  expect(f.compute).toHaveBeenCalledOnce();
+  const originalSource = manifest.shaders[0];
+  if (originalSource === undefined) throw new Error('Missing original module');
+  const original = f.module(originalSource.code);
+  const hit = f.device.createComputePipelineAsync?.({
+    layout: 'auto',
+    compute: { module: original, entryPoint: 'main' },
+  });
+  expect((await hit)?.ok).toBe(true);
+  expect(f.compute).toHaveBeenCalledOnce();
+});
+
+it('keeps resource identity and native reuse beyond the former registration cutoff', async () => {
+  const f = await fixture();
+  const held = Array.from({ length: 4100 }, (_, i) => f.module(`owned source ${i}`));
+  const last = held.at(-1);
+  if (last === undefined) throw new Error('Missing final module');
+  const descriptor: RenderPipelineDescriptor = {
+    layout: 'auto',
+    vertex: { module: last, entryPoint: 'main', buffers: [] },
+  };
+  await f.device.createRenderPipelineAsync(descriptor);
+  await f.device.createRenderPipelineAsync(descriptor);
+  expect(f.render).toHaveBeenCalledOnce();
+  expect(f.device.pipelineLibrary.inspect().unrecordable).toBe(0);
+});
+
+it('limits each complete export before source expansion and allows a retry without poisoning readiness', async () => {
+  const f = await fixture();
+  const descriptor = f.descriptor('export source with "escapes" and \n newline');
+  await f.device.createRenderPipelineAsync(descriptor);
+  const before = f.device.pipelineLibrary.inspect();
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  const failed = f.device.pipelineLibrary.export({ outputBytes: 1 });
+  expect(failed.ok).toBe(false);
+  if (!failed.ok)
+    expect(failed.error.detail).toMatchObject({
+      kind: 'pipeline-library-limit',
+      operation: 'export',
+      limit: 'outputBytes',
+      maximum: 1,
+    });
+  expect(read).not.toHaveBeenCalled();
+  const temporary = f.device.pipelineLibrary.export({ temporaryBytes: 1 });
+  expect(temporary.ok).toBe(false);
+  if (!temporary.ok) expect(temporary.error.detail).toMatchObject({ limit: 'temporaryBytes' });
+  expect(read).not.toHaveBeenCalled();
+  read.mockRestore();
+  const manifest = f.device.pipelineLibrary.export().unwrap();
+  expect(f.device.pipelineLibrary.inspect()).toEqual(before);
+  const next = await fixture();
+  expect((await next.device.pipelineLibrary.prepare(manifest)).ok).toBe(true);
+  expect(next.device.pipelineLibrary.export().unwrap()).toEqual(manifest);
+  await f.device.createRenderPipelineAsync(descriptor);
+  expect(f.render).toHaveBeenCalledOnce();
+});
+
+it('receives cloned background sources without splitting or hashing unused WGSL', () => {
+  const text = 'fn background() {}\n\n'.repeat(2_000);
+  const input: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [{ code: text }, { code: text, label: 'same source' }],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  };
+  const hash = vi.spyOn(Hash.prototype, 'update');
+  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const copy = vi.spyOn(String, 'fromCharCode');
+  try {
+    for (let realm = 0; realm < 3; realm++) {
+      const owned = ownPipelineLibrary(structuredClone(input));
+      const first = shaderSourceForDescriptor(owned.shaders[0] as object);
+      expect(first).toBeDefined();
+      expect(shaderSourceForDescriptor(owned.shaders[1] as object)).toBe(first);
+      expect(owned.shaders[0]?.code).toBe(text);
+      expect(Object.isFrozen(owned.shaders)).toBe(true);
+    }
+    expect(copy).not.toHaveBeenCalled();
+    expect(hash).not.toHaveBeenCalled();
+    expect(encode).not.toHaveBeenCalled();
+  } finally {
+    copy.mockRestore();
+    hash.mockRestore();
+    encode.mockRestore();
+  }
+});
+
+it('hashes background sources as modules are created, not in the complete source preflight', async () => {
+  const f = await fixture();
+  const texts = ['fn first() {}', 'fn second() {}', 'fn third() {}'];
+  const sources = texts.map((text) => new ShaderSource([text]));
+  const input = ownPipelineLibrary({
+    version: 1,
+    backend: 'webgpu',
+    shaders: sources.map((source) => source.descriptor()),
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  });
+  const hashed: string[] = [];
+  const update = Hash.prototype.update;
+  const hashing = vi.spyOn(Hash.prototype, 'update').mockImplementation(function (
+    this: NativeHash,
+    input,
+    encoding,
+  ) {
+    if (typeof input === 'string' && texts.includes(input)) hashed.push(input);
+    return update.call(this, input, encoding);
+  });
+  const create = f.raw.createShaderModule;
+  let firstCreation: string[] | undefined;
+  const creation = vi.spyOn(f.raw, 'createShaderModule').mockImplementation((descriptor) => {
+    firstCreation ??= [...hashed];
+    return create.call(f.raw, descriptor);
+  });
+  try {
+    expect((await f.device.pipelineLibrary.prepare(input, { background: true, sources })).ok).toBe(
+      true,
+    );
+    expect(firstCreation).toEqual([texts[0]]);
+    expect(hashed).toEqual(texts);
+  } finally {
+    creation.mockRestore();
+    hashing.mockRestore();
+    disposeDevice(f.device);
+  }
+});
+
+it('seals all input recipes even when their shader descriptors already have owners', () => {
+  const source = new ShaderSource(['@compute @workgroup_size(1) fn main() {}']);
+  const input: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [source.descriptor(undefined)],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [{ layout: 'auto', compute: { module: 0, entryPoint: 'main' } }],
+  };
+  const reads = vi.spyOn(ShaderSource.prototype, 'read');
+  let owned: PipelineLibraryManifest;
+  try {
+    owned = ownPipelineLibrary(input);
+    expect(reads).not.toHaveBeenCalled();
+  } finally {
+    reads.mockRestore();
+  }
+  (input.computePipelines as unknown[]).push({});
+  expect(owned.computePipelines).toHaveLength(1);
+  expect(Object.isFrozen(owned.computePipelines[0]?.compute)).toBe(true);
+  expect(ownPipelineLibrary(owned)).toBe(owned);
+  expect(() => ownPipelineLibrary(owned, { outputBytes: 2 })).toThrow('limit-exceeded');
+});
+
+it('rejects array accessors without evaluating them during input allocation checks', async () => {
+  const f = await fixture();
+  const input = f.device.pipelineLibrary.export().unwrap();
+  const getter = vi.fn(() => ({ layout: 'auto', compute: { module: 0 } }));
+  const recipes: unknown[] = [];
+  Object.defineProperty(recipes, '0', { get: getter, enumerable: true });
+  const result = await f.device.pipelineLibrary.prepare({
+    ...input,
+    computePipelines: recipes as PipelineLibraryManifest['computePipelines'],
+  });
+  expect(result.ok).toBe(false);
+  expect(getter).not.toHaveBeenCalled();
+});
+
+it('selects the same ready or pending record without snapshot, serialization or native creation', async () => {
+  const f = await fixture();
+  const descriptor = f.descriptor();
+  const state = pipelineDescriptorState('render', descriptor as unknown as Record<string, unknown>);
+  const dependencies = {
+    layout: descriptor.layout,
+    vertex: descriptor.vertex.module,
+    ...(descriptor.fragment === undefined ? {} : { fragment: descriptor.fragment.module }),
+  };
+  const pending = f.device.createRenderPipelineAsync(descriptor);
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    const joined = f.device.pipelineLibrary.selectRender?.(state, dependencies, true);
+    expect(joined).toBeInstanceOf(Promise);
+    const result = await joined;
+    expect(result?.ok).toBe(true);
+    const ready = f.device.pipelineLibrary.selectRender?.(state, dependencies, true);
+    expect(ready).toEqual(result);
+    expect(stringify).not.toHaveBeenCalled();
+    expect(f.render).toHaveBeenCalledOnce();
+  } finally {
+    stringify.mockRestore();
+  }
+  await pending;
+  const changed = pipelineDescriptorState('render', {
+    ...descriptor,
+    primitive: { topology: 'line-list' },
+  } as unknown as Record<string, unknown>);
+  expect(f.device.pipelineLibrary.selectRender?.(changed, dependencies, true)).toEqual({
+    ok: true,
+    value: undefined,
+  });
 });

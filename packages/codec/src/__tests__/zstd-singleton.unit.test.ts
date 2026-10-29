@@ -6,7 +6,7 @@ import { _setZstdImporter, decompressZstd } from '../zstd.js';
  * zstd lazy-init singleton test (w5).
  *
  * Validates that the decompressZstd implementation:
- * 1. Does NOT trigger the fzstd importer until the first decompress call (AC-12 zero-cost).
+ * 1. Does NOT trigger the decoder importer until the first decompress call (AC-12 zero-cost).
  * 2. Loads the decompressor exactly once even under concurrent first callers.
  * 3. Retries on init failure (does NOT permanently cache the failure).
  *
@@ -23,7 +23,7 @@ function makeBytes(size: number): Uint8Array {
 }
 
 afterEach(() => {
-  // Restore the real fzstd importer + reset the singleton so tests do not leak state.
+  // Restore the default importer + reset the singleton so tests do not leak state.
   _setZstdImporter();
 });
 

@@ -129,10 +129,3 @@ export function validateSurfaceSource(
     exportName: SURFACE_EXPORT,
   });
 }
-
-/** Validate a single-layer medium Surface without exposing a water category. */
-export function validateSingleLayerMediumSurfaceSource(
-  request: Omit<SurfaceContractRequest, 'model'>,
-): Result<SurfaceContract, SurfaceContractError> {
-  return validateSurfaceSource({ ...request, model: 'single-layer-medium' });
-}

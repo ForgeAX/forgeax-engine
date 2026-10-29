@@ -10,3 +10,9 @@ export function uiEvidenceDirectory(testPath: string, name: string): string {
   if (packageStart < 0) throw new Error(`UI test is outside its package: ${testPath}`);
   return `${path.slice(0, packageStart)}/artifacts/${name}`;
 }
+
+/** Native edit chords follow the browser Host platform. */
+export function selectAllKeys(): string {
+  const modifier = navigator.platform.startsWith('Mac') ? 'Meta' : 'Control';
+  return `{${modifier}>}a{/${modifier}}`;
+}

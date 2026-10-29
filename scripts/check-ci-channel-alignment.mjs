@@ -7,4 +7,7 @@ const version = readFileSync(new URL('../.pnpm-version', import.meta.url), 'utf8
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 assert.match(version, /^\d+\.\d+\.\d+$/);
 assert.equal(manifest.packageManager, `pnpm@${version}`, 'pnpm pins must match');
+const npmVersion = readFileSync(new URL('../.npm-version', import.meta.url), 'utf8').trim();
+assert.match(npmVersion, /^\d+\.\d+\.\d+$/);
 console.log(`pnpm pin aligned: ${version}`);
+console.log(`npm pin: ${npmVersion}`);

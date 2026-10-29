@@ -24,7 +24,7 @@ import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extr
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { createSkinPaletteAllocator } from '../systems/skin-palette-allocator';
+import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 import { observeCandidateReads } from './gpu-driven-candidate-read-observer';
 import { mesh, standardPbrInputs } from './gpu-driven-production-fixture';
 
@@ -44,26 +44,22 @@ async function fixture(
   const materialPipelineState = pbr.materialPipelineState;
   assert(materialPipelineState);
   const receipt = createStandardPbrArtifactReceipt(skinned);
-  const palette = skinned ? createSkinPaletteAllocator(device, 1 << 20) : undefined;
-  const skinReceipt = palette?.allocatePersistentSlice({
-    identity: 'shared-pose',
-    generation: 1,
-    jointCount: 1,
-    bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-  });
-  if (palette !== undefined) {
+  if (skinned) {
     const skinLayout = device
       .createBindGroupLayout({
-        entries: [0, 1].map((binding) => ({
-          binding,
-          visibility: 1,
-          buffer: { type: 'read-only-storage' as const },
-        })),
+        entries: [
+          {
+            binding: 0,
+            visibility: 1,
+            buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+          },
+          { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
+        ],
       })
       .unwrap();
     Object.assign(pbr, { materialArtifact: { ...pbr.materialArtifact, receipt } });
     Object.assign(materialPipelineState, {
-      skinPaletteAllocator: palette,
       gpuDrivenPbrSkinPipelineLayout: materialPipelineState.gpuDrivenPbrPipelineLayout,
       pbrSkinMeshBindGroupLayout: skinLayout,
     });
@@ -113,7 +109,12 @@ async function fixture(
     ],
   };
   const material = new MaterialResource(transparent ? blended : opaque);
-  const secondMaterial = new MaterialResource({ ...opaque, materialHandle: 8 });
+  // A distinct texture binding keeps the second material in its own batch.
+  const secondMaterial = new MaterialResource({
+    ...opaque,
+    materialHandle: 8,
+    textureHandles: new Map([['baseColorTexture', 8]]),
+  } as unknown as MaterialSnapshot);
   const draw = {
     kind: 'indexed' as const,
     first: 0,
@@ -133,7 +134,7 @@ async function fixture(
   };
   const snapshot: RenderableSnapshot = {
     worldId: 0,
-    ...(skinReceipt === undefined ? {} : { skin: skinReceipt }),
+    ...(skinned ? { skinBinding: { skeleton: 7, joints: [19] } } : {}),
     entityKey: 0,
     assetHandle: 3,
     material,
@@ -170,11 +171,21 @@ async function fixture(
   if (available.status !== 'available') throw new Error('Missing GPU Scene');
   const scene = available.scene;
   scene.sync(delta).unwrap();
+  const skinInputs = new SkinSceneInputs(scene.inputs.arena, () => ({
+    kind: 'skeleton',
+    jointCount: 1,
+    inverseBindMatrices: mat4.identity(mat4.create()),
+  }));
+  const skinFrames = new SkinFrames(skinInputs);
+  skinInputs.apply(delta);
+  skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+  const skinFrame = skinFrames.prepareFrame(projection.slotsSnapshot());
   const slots = projection.slotsSnapshot();
   const topology = new BatchTopology();
   topology.rebuild(slots);
   const dispatch = new MaterialDispatch();
   for (const slot of slots) dispatch.bind(slot.slot, slot.snapshot);
+  topology.adoptMaterials(dispatch.materials(), projection.slotAt);
   const programs = new GpuDrivenMaterialProgramProjection();
   const gpuMesh = mesh(device);
   const work = { memberReads: 0, candidateReads: 0, sharedMeshReads: 0, slotReads: 0 };
@@ -217,6 +228,7 @@ async function fixture(
   };
   const state = {
     scene,
+    skin: skinFrame,
     plan,
     slots,
     completeGeometry: topology.completeGeometry,
@@ -264,13 +276,14 @@ async function fixture(
   const adopt = (snapshot: MaterialSnapshot) => {
     material.adopt(snapshot);
     dispatch.adopt(material);
+    topology.adoptMaterials(dispatch.materials(), projection.slotAt);
     scene.sync({ ...projection.apply([]), materialUpdates: [material] }).unwrap();
   };
   const dispose = () => {
     stopObservingCandidates();
     production.dispose();
+    skinInputs.dispose();
     scene.dispose();
-    palette?.dispose();
     gpuMesh.vertexBuffer.destroy();
     gpuMesh.indexBuffer?.destroy();
   };
@@ -452,7 +465,7 @@ it('retains candidate addresses when one of several material batches leaves the 
         sharedMeshReads: 2,
         slotReads: 0,
       });
-      expect(f.production.inspect().sharedInputUploadBytes).toBe(4 * 1024 + 8); // Map pages and material descriptor.
+      expect(f.production.inspect().sharedInputUploadBytes).toBe(4 * 1024 + 12); // Map pages and material descriptor.
       expect(f.production.inspect().indirectDrawCount).toBe(material === f.opaque ? 2 : 1);
     }
   } finally {
@@ -478,13 +491,13 @@ it('uses the captured material frame for shadow projection and invalidates adopt
     old.updateShadowViews?.(views).unwrap();
     old._sealResourceReads().unwrap();
     f.adopt({ ...f.opaque, roughness: 0.8 });
-    const first = old.shadowBatchProjections?.values().next().value?.values().next().value;
+    const first = old.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     expect(first?.material.roughness).toBe(0.5);
     old._commitResourceReplacement?.();
     expect(() => old.updateShadowViews?.(views)).toThrow('open resource frame');
     const next = f.prepare();
     next?.updateShadowViews?.(views).unwrap();
-    const current = next?.shadowBatchProjections?.values().next().value?.values().next().value;
+    const current = next?.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     expect(current?.material.roughness).toBe(0.8);
     expect(next?.shadowViewPool?.invalidationReason(identity)).toBe('content-changed');
   } finally {
@@ -507,7 +520,7 @@ it('invalidates shadow depth when the shared mesh changes in place', async () =>
   try {
     const old = f.prepare();
     old?.updateShadowViews?.(views).unwrap();
-    const first = old?.shadowBatchProjections?.values().next().value?.values().next().value;
+    const first = old?.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     old?._commitResourceReplacement?.();
     const quiet = f.prepare();
     quiet?.updateShadowViews?.(views).unwrap();
@@ -516,7 +529,7 @@ it('invalidates shadow depth when the shared mesh changes in place', async () =>
     f.touchMesh();
     const next = f.prepare();
     next?.updateShadowViews?.(views).unwrap();
-    const changed = next?.shadowBatchProjections?.values().next().value?.values().next().value;
+    const changed = next?.shadowBatchProjections?.()?.values().next().value?.values().next().value;
     expect(changed?.mesh).toBe(first?.mesh);
     expect(changed?.meshContentEpoch).toBe((first?.meshContentEpoch ?? -1) + 1);
     expect(next?.shadowViewPool?.invalidationReason(identity)).toBe('content-changed');
@@ -579,7 +592,7 @@ it('keeps the ShadowCaster GPU execution when Forward changes to a blended pass'
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     expect(frame?.project(graph, 'rgba8unorm', 1).ok).toBe(true);
     frame?.updateShadowViews?.(views).unwrap();
-    expect(frame?.shadowBatchProjections?.values().next().value?.size).toBe(1);
+    expect(frame?.shadowBatchProjections?.()?.values().next().value?.size).toBe(1);
   } finally {
     f.dispose();
   }

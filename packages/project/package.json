@@ -29,13 +29,13 @@
   },
   "dependencies": {
     "@forgeax/engine-pack": "workspace:*",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "tsup": "^8.3.5",
+    "tsup": "^9.0.0",
     "typescript": "^5.8.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "forgeax": {
     "metrics": {

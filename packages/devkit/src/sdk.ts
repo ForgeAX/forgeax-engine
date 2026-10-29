@@ -46,7 +46,14 @@ interface SdkTemplateResource {
 interface SdkSource {
   readonly root: 'source/engine';
   readonly format: 'git-archive-public-snapshot';
-  readonly excluded: readonly ['.gitmodules', 'forgeax-engine-assets'];
+  readonly excluded: readonly [
+    '.gitmodules',
+    'forgeax-engine-assets',
+    '.github',
+    'third_party/wgpu/.github',
+    'third_party/blitz/.github',
+    'tools/view/.github',
+  ];
   readonly gitDependencies: readonly {
     readonly root: 'third_party/wgpu' | 'third_party/blitz' | 'tools/view';
     readonly commit: string;
@@ -58,7 +65,7 @@ interface SdkSource {
 
 export interface SdkManifest {
   readonly viewCommit: string;
-  readonly schemaVersion: '1.9.0';
+  readonly schemaVersion: '1.11.0';
   readonly sdkVersion: string;
   readonly engineCommit: string;
   readonly requirements: {
@@ -73,6 +80,12 @@ export interface SdkManifest {
   readonly resources: readonly SdkResource[];
   readonly templateResources: readonly SdkTemplateResource[];
   readonly source: SdkSource;
+  readonly artifacts: readonly {
+    readonly path: string;
+    readonly bytes: number;
+    readonly sha256: string;
+    readonly enginePath?: string;
+  }[];
 }
 
 export interface SdkContext {

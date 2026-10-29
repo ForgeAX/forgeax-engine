@@ -2,6 +2,7 @@ import { AssetReferenceField, CollapsibleSection, PropertyRow, Text } from '@for
 import type { InspectorResourceReference } from '../inspection.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import { INSPECTOR_ACTIONS } from '../schema.ts';
+import { useInspectorThumbnail } from './InspectorThumbnails';
 
 export function InspectorAssetReference({ reference, openAsset, browseAsset, inline = false }: {
   reference: InspectorResourceReference;
@@ -10,6 +11,7 @@ export function InspectorAssetReference({ reference, openAsset, browseAsset, inl
   inline?: boolean;
 }) {
   const { t } = useTranslation();
+  const thumbnail = useInspectorThumbnail(reference.guid);
   const rawName = reference.rawValue && typeof reference.rawValue === 'object' && 'name' in reference.rawValue
     && typeof reference.rawValue.name === 'string' ? reference.rawValue.name : undefined;
   const name = reference.asset?.name || reference.asset?.sourceKey || rawName || reference.guid
@@ -36,7 +38,11 @@ export function InspectorAssetReference({ reference, openAsset, browseAsset, inl
         useSelection: t('inspector.assetRef.useSelection'), browse: t('inspector.assetRef.browse'),
         reveal: t('inspector.assetRef.reveal'), more: t('inspector.assetRef.more'),
         clear: t('inspector.assetRef.clear'), copyGuid: t('inspector.assetRef.copyGuid'),
+        previewLoading: t('inspector.assetRef.previewLoading'), previewFailed: t('inspector.assetRef.previewFailed'),
+        previewUnsupported: t('inspector.assetRef.previewUnsupported'),
       }} openAction={INSPECTOR_ACTIONS.openAsset}
+        thumbnail={canOpen ? { state: !thumbnail || thumbnail.state === 'queued' || thumbnail.state === 'cooking'
+          ? 'loading' : thumbnail.state, src: thumbnail?.dataUrl, hint: thumbnail?.error?.hint } : undefined}
         onOpen={canOpen && reference.guid ? () => openAsset(reference.guid!) : undefined}
         onBrowse={canOpen && reference.guid && browseAsset ? () => browseAsset(reference.guid!) : undefined} />
     </div>

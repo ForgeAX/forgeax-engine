@@ -26,7 +26,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-rhi": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-types": "workspace:*"

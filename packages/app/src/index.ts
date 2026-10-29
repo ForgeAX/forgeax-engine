@@ -19,6 +19,35 @@ export {
   createFullscreenRenderFeature,
   type FullscreenRenderFeatureOptions,
 } from '@forgeax/engine-render/authoring';
+// Live load progress: Engine producers and App sessions share one page model.
+export {
+  addLoadPhases,
+  addLoadWork,
+  beginLoadSession,
+  beginLoadWork,
+  collectLoadTimeline,
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  describeLoadProgress,
+  ENGINE_STARTUP_PHASES,
+  endLoadSession,
+  type LoadPhaseDefinition,
+  type LoadPhaseProgress,
+  type LoadPhaseState,
+  type LoadProgressLabelInput,
+  type LoadProgressLabels,
+  type LoadProgressSnapshot,
+  type LoadProgressView,
+  type LoadTimelineInspection,
+  type LoadTimelineKind,
+  type LoadTimelineRealmSnapshot,
+  type LoadTimelineRecord,
+  type LoadTimelineSnapshot,
+  type LoadWork,
+  markLoadTimeline,
+  readLoadProgress,
+  resolveLoadProgressLabels,
+  subscribeLoadProgress,
+} from '@forgeax/engine-types';
 export type {
   AssetDecoderContributionRef,
   AssetRuntimeAssembly,
@@ -33,14 +62,13 @@ export {
 } from './assets-runtime-assembly';
 export {
   type BrowserFrameCompleted,
+  type BrowserFrameProgress,
   type BrowserFrameSubmitted,
-  FORGEAX_FRAME_COMPLETED_DATASET,
   FORGEAX_FRAME_COMPLETED_EVENT,
-  FORGEAX_FRAME_SUBMITTED_DATASET,
   FORGEAX_FRAME_SUBMITTED_EVENT,
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
-  resetBrowserFrameSubmitted,
+  resetBrowserFrameProgress,
   subscribeBrowserFrameSubmitted,
 } from './browser-frame-signal';
 export { canvasAspectPlugin } from './canvas-policy';
@@ -85,6 +113,7 @@ export type {
   ExecutionOptions,
   ExecutionRenderCapabilities,
   ExecutionRendererInspectionContext,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
   ExecutionRenderLimits,
   ExecutionReport,
@@ -93,7 +122,6 @@ export type {
   ExecutionWorkerDecision,
   ExecutionWorkerPolicy,
   ExecutionWorkersOptions,
-  ExecutionWorldHealth,
   KernelDispatchReason,
   PreparedExecutionBootstrap,
 } from './execution';
@@ -174,7 +202,6 @@ export {
   ENGINE_WORKSPACE_COMMAND_TOPIC,
   ENGINE_WORKSPACE_PLUGIN_ID,
   ENGINE_WORKSPACE_PREVIEWABLE_KINDS,
-  ENGINE_WORKSPACE_SERVICE,
   type EngineWorkspaceAppTargetOptions,
   EngineWorkspaceError,
   engineWorkspacePlugin,
@@ -265,6 +292,7 @@ export {
 export type {
   App,
   AppAssembleArgs,
+  AppStepFrameOptions,
   AssembleAppError,
   BundlerOptions,
   CanvasAppError,
@@ -280,6 +308,15 @@ export {
   engineWorkspaceBrowserPlugin,
   engineWorkspaceInputPlugin,
 } from './workspace-browser';
+export type {
+  MaterialPreviewControl,
+  MaterialPreviewMesh,
+  MaterialPreviewState,
+} from './workspace-material-preview';
+export {
+  createWorkspaceMaterialPreview,
+  workspaceMaterialPreviewPlugin,
+} from './workspace-material-preview';
 export {
   createEngineWorkspaceTools,
   ENGINE_WORKSPACE_STATE_TOPIC,

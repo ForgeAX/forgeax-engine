@@ -333,12 +333,12 @@ async function captureRhiOnce(page, label) {
   // before arming the recorder, so the tape describes one topology rather than
   // a resize transition carrying retired and replacement MSAA targets.
   await page.waitForTimeout(RHI_CAPTURE_SETTLE_MS);
-  const frameIdBeforeCapture = await page.evaluate(() =>
-    Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0),
+  const frameIdBeforeCapture = await page.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
   );
   await page.waitForFunction(
     ({ previousFrameId, stableFrames }) =>
-      Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) >=
+      (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >=
       previousFrameId + stableFrames,
     { previousFrameId: frameIdBeforeCapture, stableFrames: RHI_CAPTURE_STABLE_FRAMES },
     { timeout: 10_000 },
@@ -571,126 +571,135 @@ async function stopVite() {
   viteProc.unref();
 }
 
-async function runLiveMaterialScenario(baseUrl, page) {
-  const expectedVariant = `M3_MULTI_UV_VARIANT=${startVariant}`;
-  const expectedPost = inheritanceLiveMaterialScenario ? inheritancePost : 'inversion';
-  const reversePipelineJourney = inheritanceLiveMaterialScenario && reversePipelineFalsifier;
-  const expectedHistory = doubleResizeChurn
-    ? '640x360>480x270>720x405>640x360>480x270>720x405>640x360'
-    : resizeChurn
-      ? '640x360>480x270>720x405>640x360'
-      : '640x360';
+function expectedLiveMaterialResizeHistory() {
+  if (doubleResizeChurn) return '640x360>480x270>720x405>640x360>480x270>720x405>640x360';
+  if (resizeChurn) return '640x360>480x270>720x405>640x360';
+  return '640x360';
+}
 
-  const runLeg = async (falsified, label) => {
-    const falsifierQuery = falsified
-      ? inheritanceLiveMaterialScenario
-        ? pipelineFalsifier
-          ? inheritanceFalsifierKind === 'pipeline-texture'
-            ? '&falsify-pipeline&falsify-live-inheritance'
-            : '&falsify-pipeline'
-          : reversePipelineFalsifier
-            ? inheritanceFalsifierKind === 'reverse-pipeline-texture'
-              ? '&falsify-reverse-pipeline&falsify-live-inheritance'
-              : '&falsify-reverse-pipeline'
-            : '&falsify-live-inheritance'
-        : '&falsify-live-material'
-      : '';
-    const liveMaterialQuery = inheritanceLiveMaterialScenario
-      ? parameterFalsifier
-        ? 'inheritance-parameter-mutation-resize'
-        : 'inheritance-two-slot-swap-resize'
-      : 'two-slot-swap-resize';
-    await page.setViewportSize({ width: 800, height: 600 });
-    await page.goto(
-      `${baseUrl}/?pipeline=custom&variant=${startVariant}&post=passthrough&live-material=${liveMaterialQuery}${falsifierQuery}${querySuffix}${liveVariantSwitch ? '&live-variant-switch' : ''}`,
-      { waitUntil: 'networkidle', timeout: 30_000 },
-    );
-    await page.waitForFunction(
-      ({ expectedAntialias, expectedVariant }) => document.querySelector('#variant-status')?.textContent === expectedVariant
-        && document.querySelector('#pipeline-status')?.textContent === 'M3_PIPELINE=custom'
-        && document.querySelector('#post-status')?.textContent === 'M3_POST_EFFECT=passthrough'
-        && document.querySelector('#texture-status')?.textContent === 'M3_TEXTURE_BINDING=baseColorTexture+detailTexture'
-        && document.querySelector('#antialias-status')?.textContent === expectedAntialias
-        && globalThis.__forgeaxMultiUvEvidence?.ready === true,
-      { expectedAntialias: `M3_ANTIALIAS=${useMsaa ? 'msaa' : 'none'}`, expectedVariant },
-      { timeout: 15_000 },
-    );
-    await waitForNonBlackCanvas(page, `${label} baseline`);
-    if (liveVariantSwitch) {
-      await select(page, '#variant-select', switchedVariant, '#variant-status');
-    }
-    await select(page, '#post-select', expectedPost, '#post-status');
-    const resizeHistory = [];
+function inheritanceFalsifierQuery() {
+  if (pipelineFalsifier) {
+    return inheritanceFalsifierKind === 'pipeline-texture'
+      ? '&falsify-pipeline&falsify-live-inheritance'
+      : '&falsify-pipeline';
+  }
+  if (reversePipelineFalsifier) {
+    return inheritanceFalsifierKind === 'reverse-pipeline-texture'
+      ? '&falsify-reverse-pipeline&falsify-live-inheritance'
+      : '&falsify-reverse-pipeline';
+  }
+  return '&falsify-live-inheritance';
+}
+
+function liveMaterialFalsifierQuery(falsified) {
+  if (!falsified) return '';
+  return inheritanceLiveMaterialScenario ? inheritanceFalsifierQuery() : '&falsify-live-material';
+}
+
+function liveMaterialQueryName() {
+  if (!inheritanceLiveMaterialScenario) return 'two-slot-swap-resize';
+  return parameterFalsifier
+    ? 'inheritance-parameter-mutation-resize'
+    : 'inheritance-two-slot-swap-resize';
+}
+
+async function openLiveMaterialScene(baseUrl, page, falsified, label) {
+  const expectedVariant = `M3_MULTI_UV_VARIANT=${startVariant}`;
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(
+    `${baseUrl}/?pipeline=custom&variant=${startVariant}&post=passthrough&live-material=${liveMaterialQueryName()}${liveMaterialFalsifierQuery(falsified)}${querySuffix}${liveVariantSwitch ? '&live-variant-switch' : ''}`,
+    { waitUntil: 'networkidle', timeout: 30_000 },
+  );
+  await page.waitForFunction(
+    ({ expectedAntialias, expectedVariant }) => document.querySelector('#variant-status')?.textContent === expectedVariant
+      && document.querySelector('#pipeline-status')?.textContent === 'M3_PIPELINE=custom'
+      && document.querySelector('#post-status')?.textContent === 'M3_POST_EFFECT=passthrough'
+      && document.querySelector('#texture-status')?.textContent === 'M3_TEXTURE_BINDING=baseColorTexture+detailTexture'
+      && document.querySelector('#antialias-status')?.textContent === expectedAntialias
+      && globalThis.__forgeaxMultiUvEvidence?.ready === true,
+    { expectedAntialias: `M3_ANTIALIAS=${useMsaa ? 'msaa' : 'none'}`, expectedVariant },
+    { timeout: 15_000 },
+  );
+  await waitForNonBlackCanvas(page, `${label} baseline`);
+}
+
+async function applyLiveMaterialResizes(page) {
+  const resizeHistory = [];
+  await resizeCanvas(page, 640, 360, resizeHistory);
+  if (resizeChurn) {
+    await resizeCanvas(page, 480, 270, resizeHistory);
+    await resizeCanvas(page, 720, 405, resizeHistory);
     await resizeCanvas(page, 640, 360, resizeHistory);
-    if (resizeChurn) {
+    if (doubleResizeChurn) {
       await resizeCanvas(page, 480, 270, resizeHistory);
       await resizeCanvas(page, 720, 405, resizeHistory);
       await resizeCanvas(page, 640, 360, resizeHistory);
-      if (doubleResizeChurn) {
-        await resizeCanvas(page, 480, 270, resizeHistory);
-        await resizeCanvas(page, 720, 405, resizeHistory);
-        await resizeCanvas(page, 640, 360, resizeHistory);
-      }
     }
-    if (reversePipelineJourney) {
-      await select(page, '#pipeline-select', 'standard', '#pipeline-status');
-      await waitForNonBlackCanvas(page, `${label} reverse standard pipeline`);
-    }
-    await page.evaluate((history) => {
-      const evidence = globalThis.__forgeaxMultiUvEvidence;
-      if (evidence !== undefined) evidence.liveMaterial.resizeHistory = history;
-    }, resizeHistory);
-    await waitForNonBlackCanvas(page, `${label} resized before rebind`);
-    const before = await capture(page, `${label}-before`);
-    const beforeEvidence = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial);
-    const frameIdBeforeRebind = await page.evaluate(() =>
-      Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0),
-    );
-    const mutation = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.applyLiveMaterialRebind());
-    if (mutation?.ok !== true) throw new Error(`${label} live material rebind failed: ${JSON.stringify(mutation)}`);
-    await page.waitForFunction(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial.applied === true, null, { timeout: 10_000 });
-    await page.waitForFunction(
-      (previousFrameId) => Number(document.documentElement.dataset.forgeaxFrameSubmitted ?? 0) > previousFrameId,
-      frameIdBeforeRebind,
-      { timeout: 10_000 },
-    );
-    await waitForNonBlackCanvas(page, `${label} resized after rebind`);
-    const after = await capture(page, `${label}-after`);
-    const rhi = await captureRhi(page, `${label}-after`);
-    const afterEvidence = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial);
-    return {
-      before,
-      after,
-      delta: changedPixels(before, after, liveMaterialScenario ? 0 : 12),
-      beforeEvidence,
-      afterEvidence,
-      rhi,
-    };
+  }
+  return resizeHistory;
+}
+
+async function rebindLiveMaterial(page, label) {
+  const frameIdBeforeRebind = await page.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
+  );
+  const mutation = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.applyLiveMaterialRebind());
+  if (mutation?.ok !== true) throw new Error(`${label} live material rebind failed: ${JSON.stringify(mutation)}`);
+  await page.waitForFunction(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial.applied === true, null, { timeout: 10_000 });
+  await page.waitForFunction(
+    (previousFrameId) =>
+      (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > previousFrameId,
+    frameIdBeforeRebind,
+    { timeout: 10_000 },
+  );
+}
+
+async function runLiveMaterialLeg(baseUrl, page, falsified, label, expectedPost, reversePipelineJourney) {
+  await openLiveMaterialScene(baseUrl, page, falsified, label);
+  if (liveVariantSwitch) {
+    await select(page, '#variant-select', switchedVariant, '#variant-status');
+  }
+  await select(page, '#post-select', expectedPost, '#post-status');
+  const resizeHistory = await applyLiveMaterialResizes(page);
+  if (reversePipelineJourney) {
+    await select(page, '#pipeline-select', 'standard', '#pipeline-status');
+    await waitForNonBlackCanvas(page, `${label} reverse standard pipeline`);
+  }
+  await page.evaluate((history) => {
+    const evidence = globalThis.__forgeaxMultiUvEvidence;
+    if (evidence !== undefined) evidence.liveMaterial.resizeHistory = history;
+  }, resizeHistory);
+  await waitForNonBlackCanvas(page, `${label} resized before rebind`);
+  const before = await capture(page, `${label}-before`);
+  const beforeEvidence = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial);
+  await rebindLiveMaterial(page, label);
+  await waitForNonBlackCanvas(page, `${label} resized after rebind`);
+  const after = await capture(page, `${label}-after`);
+  const rhi = await captureRhi(page, `${label}-after`);
+  const afterEvidence = await page.evaluate(() => globalThis.__forgeaxMultiUvEvidence?.liveMaterial);
+  return {
+    before,
+    after,
+    delta: changedPixels(before, after, liveMaterialScenario ? 0 : 12),
+    beforeEvidence,
+    afterEvidence,
+    rhi,
   };
+}
 
-  const normal = await runLeg(false, 'live-material-normal');
-  const falsifier = await runLeg(true, 'live-material-falsifier');
-  writeFileSync(resolve(ARTIFACT_DIR, 'live-material-browser.json'), `${JSON.stringify({
-    normal: {
-      before: { state: normal.before.state, png: normal.before.pngPath },
-      after: { state: normal.after.state, png: normal.after.pngPath },
-      delta: normal.delta,
-      beforeEvidence: normal.beforeEvidence,
-      afterEvidence: normal.afterEvidence,
-      rhi: normal.rhi,
-    },
-    falsifier: {
-      before: { state: falsifier.before.state, png: falsifier.before.pngPath },
-      after: { state: falsifier.after.state, png: falsifier.after.pngPath },
-      delta: falsifier.delta,
-      beforeEvidence: falsifier.beforeEvidence,
-      afterEvidence: falsifier.afterEvidence,
-      rhi: falsifier.rhi,
-    },
-  }, null, 2)}\n`);
+function liveMaterialLegArtifact(leg) {
+  return {
+    before: { state: leg.before.state, png: leg.before.pngPath },
+    after: { state: leg.after.state, png: leg.after.pngPath },
+    delta: leg.delta,
+    beforeEvidence: leg.beforeEvidence,
+    afterEvidence: leg.afterEvidence,
+    rhi: leg.rhi,
+  };
+}
 
+function assertNormalLiveMaterialRebind(normal, expectedPipeline, expectedPost) {
   const normalLive = normal.afterEvidence;
-  const falsifiedLive = falsifier.afterEvidence;
   if (normal.delta === null || normal.delta.changed < 1000) throw new Error(`two-slot rebind did not change normal pixels: ${JSON.stringify(normal.delta)}`);
   if (
     parameterFalsifier
@@ -702,10 +711,13 @@ async function runLiveMaterialScenario(baseUrl, page) {
   if (normalLive.afterComponentMaterialHandle !== normalLive.afterMaterialHandle) {
     throw new Error(`normal component handle did not follow rebind: ${JSON.stringify(normalLive)}`);
   }
-  const expectedPipeline = reversePipelineJourney ? 'M3_PIPELINE=standard' : 'M3_PIPELINE=custom';
   if (normal.after.state.pipeline !== expectedPipeline || normal.after.state.post !== `M3_POST_EFFECT=${expectedPost}`) {
     throw new Error(`normal rebind left composed scene: ${JSON.stringify(normal.after.state)}`);
   }
+}
+
+function assertLiveMaterialFalsifierObservability(falsifier) {
+  const falsifiedLive = falsifier.afterEvidence;
   if (textureSlotFalsifier && falsifiedLive?.baseColorSlotChanged === true && falsifiedLive.detailSlotChanged === true) {
     throw new Error(`live-material falsifier still changed both slots: ${JSON.stringify(falsifiedLive)}`);
   }
@@ -719,86 +731,142 @@ async function runLiveMaterialScenario(baseUrl, page) {
   } else if (falsifier.delta === null || falsifier.delta.changed < 1000) {
     throw new Error(`live-material falsifier was not observable: ${JSON.stringify(falsifier.delta)}`);
   }
-  if (inheritanceLiveMaterialScenario) {
-    if (normalLive?.inheritanceBacked !== true || falsifiedLive?.inheritanceBacked !== true) {
-      throw new Error(`inheritance live material path was not marked inheritance-backed: ${JSON.stringify({ normalLive, falsifiedLive })}`);
-    }
-    if (
-      normalLive.sourceRootGuid === null ||
-      normalLive.sourceDerivedGuid === null ||
-      normalLive.sourceRootGuid === normalLive.sourceDerivedGuid ||
-      normalLive.sourceRootArtifactDigest !== normalLive.sourceArtifactDigest ||
-      normalLive.sourceRootCookInputDigest !== normalLive.sourceCookInputDigest
-    ) {
-      throw new Error(`inheritance live material source evidence is incomplete: ${JSON.stringify(normalLive)}`);
-    }
-    const inheritanceMaterialCausality =
-      normalLive.beforeTextureHandles[0] !== normalLive.afterTextureHandles[0] &&
-      normalLive.beforeTextureHandles[1] !== normalLive.afterTextureHandles[1];
-    const falsifierMaterialCausality =
-      falsifiedLive.beforeTextureHandles[0] !== falsifiedLive.afterTextureHandles[0] &&
-      falsifiedLive.beforeTextureHandles[1] !== falsifiedLive.afterTextureHandles[1];
-    const inheritanceParameterCausality =
-      normalLive.baseColorParameterChanged === true &&
-      normalLive.baseColorUvTransformChanged === true &&
-      falsifiedLive.baseColorParameterChanged === false &&
-      falsifiedLive.baseColorUvTransformChanged === false;
-    if (!parameterFalsifier && !inheritanceMaterialCausality) {
-      throw new Error(`inheritance live material texture causality failed: ${JSON.stringify({ normalLive, falsifiedLive })}`);
-    }
-    if (parameterFalsifier) {
-      if (
-        !inheritanceParameterCausality ||
-        falsifiedLive.falsifierMarker !== 'FALSIFY_EXPECTED_FAILURE:live-inheritance-parameters' ||
-        falsifier.rhi.draws !== normal.rhi.draws
-      ) {
-        throw new Error(`inheritance live material parameter falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive, normalRhi: normal.rhi, falsifierRhi: falsifier.rhi })}`);
-      }
-    } else if (textureSlotFalsifier) {
-      if (
-        falsifierMaterialCausality ||
-        falsifiedLive.falsifierMarker !== 'FALSIFY_EXPECTED_FAILURE:live-inheritance-rebind'
-      ) {
-        throw new Error(`inheritance live material texture falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive })}`);
-      }
-      if (
-        (reversePipelineFalsifier || inheritanceFalsifierKind === 'pipeline-texture') &&
-        (falsifier.rhi.passCount === normal.rhi.passCount || falsifier.rhi.dawnReadback.sha256 === normal.rhi.dawnReadback.sha256)
-      ) {
-        throw new Error(`inheritance joint pipeline texture falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive, normalRhi: normal.rhi, falsifierRhi: falsifier.rhi })}`);
-      }
-    } else if (
-      !falsifierMaterialCausality ||
-      falsifiedLive.falsifierMarker !== null ||
-      falsifier.rhi.passCount === normal.rhi.passCount ||
-      (inheritancePost !== 'passthrough' && falsifier.rhi.dawnReadback.sha256 === normal.rhi.dawnReadback.sha256)
-    ) {
-      throw new Error(`inheritance pipeline falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive, normalRhi: normal.rhi, falsifierRhi: falsifier.rhi })}`);
-    }
+}
+
+function assertInheritanceSourceEvidence(normalLive, falsifiedLive) {
+  if (normalLive?.inheritanceBacked !== true || falsifiedLive?.inheritanceBacked !== true) {
+    throw new Error(`inheritance live material path was not marked inheritance-backed: ${JSON.stringify({ normalLive, falsifiedLive })}`);
   }
-  if (liveVariantSwitch) {
-    const expectedAfterVariant = `M3_MULTI_UV_VARIANT=${switchedVariant}`;
-    if (normal.after.state.variant !== expectedAfterVariant || falsifier.after.state.variant !== expectedAfterVariant) {
-      throw new Error(`inheritance live-material variant switch failed: ${JSON.stringify({ normal: normal.after.state, falsifier: falsifier.after.state })}`);
-    }
+  if (
+    normalLive.sourceRootGuid === null ||
+    normalLive.sourceDerivedGuid === null ||
+    normalLive.sourceRootGuid === normalLive.sourceDerivedGuid ||
+    normalLive.sourceRootArtifactDigest !== normalLive.sourceArtifactDigest ||
+    normalLive.sourceRootCookInputDigest !== normalLive.sourceCookInputDigest
+  ) {
+    throw new Error(`inheritance live material source evidence is incomplete: ${JSON.stringify(normalLive)}`);
   }
-  if (inheritanceDepthPost) {
-    const normalHasDepth = hasDepthBinding(normal.rhi.report);
-    const falsifierHasDepth = hasDepthBinding(falsifier.rhi.report);
-    const expectedFalsifierHasDepth = !reversePipelineFalsifier && !pipelineFalsifier;
-    if (!normalHasDepth || falsifierHasDepth !== expectedFalsifierHasDepth) {
-      throw new Error(
-        `inherited depth post binding topology mismatch: normal=${normalHasDepth} falsifier=${falsifierHasDepth} expectedFalsifier=${expectedFalsifierHasDepth}`,
-      );
-    }
+}
+
+function changedBothTextureHandles(live) {
+  return (
+    live.beforeTextureHandles[0] !== live.afterTextureHandles[0] &&
+    live.beforeTextureHandles[1] !== live.afterTextureHandles[1]
+  );
+}
+
+function assertInheritanceParameterFalsifier(normal, falsifier) {
+  const normalLive = normal.afterEvidence;
+  const falsifiedLive = falsifier.afterEvidence;
+  const inheritanceParameterCausality =
+    normalLive.baseColorParameterChanged === true &&
+    normalLive.baseColorUvTransformChanged === true &&
+    falsifiedLive.baseColorParameterChanged === false &&
+    falsifiedLive.baseColorUvTransformChanged === false;
+  if (
+    !inheritanceParameterCausality ||
+    falsifiedLive.falsifierMarker !== 'FALSIFY_EXPECTED_FAILURE:live-inheritance-parameters' ||
+    falsifier.rhi.draws !== normal.rhi.draws
+  ) {
+    throw new Error(`inheritance live material parameter falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive, normalRhi: normal.rhi, falsifierRhi: falsifier.rhi })}`);
   }
+}
+
+function assertInheritanceTextureFalsifier(normal, falsifier) {
+  const normalLive = normal.afterEvidence;
+  const falsifiedLive = falsifier.afterEvidence;
+  if (
+    changedBothTextureHandles(falsifiedLive) ||
+    falsifiedLive.falsifierMarker !== 'FALSIFY_EXPECTED_FAILURE:live-inheritance-rebind'
+  ) {
+    throw new Error(`inheritance live material texture falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive })}`);
+  }
+  if (
+    (reversePipelineFalsifier || inheritanceFalsifierKind === 'pipeline-texture') &&
+    (falsifier.rhi.passCount === normal.rhi.passCount || falsifier.rhi.dawnReadback.sha256 === normal.rhi.dawnReadback.sha256)
+  ) {
+    throw new Error(`inheritance joint pipeline texture falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive, normalRhi: normal.rhi, falsifierRhi: falsifier.rhi })}`);
+  }
+}
+
+function assertInheritancePipelineFalsifier(normal, falsifier) {
+  const normalLive = normal.afterEvidence;
+  const falsifiedLive = falsifier.afterEvidence;
+  if (
+    !changedBothTextureHandles(falsifiedLive) ||
+    falsifiedLive.falsifierMarker !== null ||
+    falsifier.rhi.passCount === normal.rhi.passCount ||
+    (inheritancePost !== 'passthrough' && falsifier.rhi.dawnReadback.sha256 === normal.rhi.dawnReadback.sha256)
+  ) {
+    throw new Error(`inheritance pipeline falsifier failed: ${JSON.stringify({ normalLive, falsifiedLive, normalRhi: normal.rhi, falsifierRhi: falsifier.rhi })}`);
+  }
+}
+
+function assertInheritanceLiveMaterial(normal, falsifier) {
+  const normalLive = normal.afterEvidence;
+  const falsifiedLive = falsifier.afterEvidence;
+  assertInheritanceSourceEvidence(normalLive, falsifiedLive);
+  if (!parameterFalsifier && !changedBothTextureHandles(normalLive)) {
+    throw new Error(`inheritance live material texture causality failed: ${JSON.stringify({ normalLive, falsifiedLive })}`);
+  }
+  if (parameterFalsifier) {
+    assertInheritanceParameterFalsifier(normal, falsifier);
+  } else if (textureSlotFalsifier) {
+    assertInheritanceTextureFalsifier(normal, falsifier);
+  } else {
+    assertInheritancePipelineFalsifier(normal, falsifier);
+  }
+}
+
+function assertLiveVariantSwitch(normal, falsifier) {
+  const expectedAfterVariant = `M3_MULTI_UV_VARIANT=${switchedVariant}`;
+  if (normal.after.state.variant !== expectedAfterVariant || falsifier.after.state.variant !== expectedAfterVariant) {
+    throw new Error(`inheritance live-material variant switch failed: ${JSON.stringify({ normal: normal.after.state, falsifier: falsifier.after.state })}`);
+  }
+}
+
+function assertInheritedDepthBindings(normal, falsifier) {
+  const normalHasDepth = hasDepthBinding(normal.rhi.report);
+  const falsifierHasDepth = hasDepthBinding(falsifier.rhi.report);
+  const expectedFalsifierHasDepth = !reversePipelineFalsifier && !pipelineFalsifier;
+  if (!normalHasDepth || falsifierHasDepth !== expectedFalsifierHasDepth) {
+    throw new Error(
+      `inherited depth post binding topology mismatch: normal=${normalHasDepth} falsifier=${falsifierHasDepth} expectedFalsifier=${expectedFalsifierHasDepth}`,
+    );
+  }
+}
+
+function assertLiveMaterialLegEvidence(label, leg, expectedHistory) {
+  if (leg.afterEvidence?.resizeHistory.join('>') !== expectedHistory) {
+    throw new Error(`${label} resize history wrong: ${leg.afterEvidence?.resizeHistory.join('>')}`);
+  }
+  if (leg.rhi.draws === 0 || leg.rhi.inspect?.workIndex === undefined || leg.rhi.dawnReadback.nonBlackPixelCount === 0) {
+    throw new Error(`${label} RHI/Dawn evidence missing: ${JSON.stringify(leg.rhi)}`);
+  }
+}
+
+async function runLiveMaterialScenario(baseUrl, page) {
+  const expectedPost = inheritanceLiveMaterialScenario ? inheritancePost : 'inversion';
+  const reversePipelineJourney = inheritanceLiveMaterialScenario && reversePipelineFalsifier;
+  const expectedHistory = expectedLiveMaterialResizeHistory();
+
+  const normal = await runLiveMaterialLeg(baseUrl, page, false, 'live-material-normal', expectedPost, reversePipelineJourney);
+  const falsifier = await runLiveMaterialLeg(baseUrl, page, true, 'live-material-falsifier', expectedPost, reversePipelineJourney);
+  writeFileSync(resolve(ARTIFACT_DIR, 'live-material-browser.json'), `${JSON.stringify({
+    normal: liveMaterialLegArtifact(normal),
+    falsifier: liveMaterialLegArtifact(falsifier),
+  }, null, 2)}\n`);
+
+  const normalLive = normal.afterEvidence;
+  const falsifiedLive = falsifier.afterEvidence;
+  const expectedPipeline = reversePipelineJourney ? 'M3_PIPELINE=standard' : 'M3_PIPELINE=custom';
+  assertNormalLiveMaterialRebind(normal, expectedPipeline, expectedPost);
+  assertLiveMaterialFalsifierObservability(falsifier);
+  if (inheritanceLiveMaterialScenario) assertInheritanceLiveMaterial(normal, falsifier);
+  if (liveVariantSwitch) assertLiveVariantSwitch(normal, falsifier);
+  if (inheritanceDepthPost) assertInheritedDepthBindings(normal, falsifier);
   for (const [label, leg] of [['normal', normal], ['falsifier', falsifier]]) {
-    if (leg.afterEvidence?.resizeHistory.join('>') !== expectedHistory) {
-      throw new Error(`${label} resize history wrong: ${leg.afterEvidence?.resizeHistory.join('>')}`);
-    }
-    if (leg.rhi.draws === 0 || leg.rhi.inspect?.workIndex === undefined || leg.rhi.dawnReadback.nonBlackPixelCount === 0) {
-      throw new Error(`${label} RHI/Dawn evidence missing: ${JSON.stringify(leg.rhi)}`);
-    }
+    assertLiveMaterialLegEvidence(label, leg, expectedHistory);
   }
   console.log(`[m3-live-material] PASS pipeline=${expectedPipeline.replace('M3_PIPELINE=', '')} post=${expectedPost} msaa=${useMsaa} startVariant=${startVariant} variantSwitch=${liveVariantSwitch} falsifier=${inheritanceLiveMaterialScenario ? inheritanceFalsifierKind : 'texture'} normalChanged=${normal.delta.changed} falsifierChanged=${falsifier.delta.changed} normalSlots=${normalLive.baseColorSlotChanged}/${normalLive.detailSlotChanged} falsifierSlots=${falsifiedLive?.baseColorSlotChanged}/${falsifiedLive?.detailSlotChanged} normalParams=${normalLive.baseColorParameterChanged}/${normalLive.baseColorUvTransformChanged} falsifierParams=${falsifiedLive?.baseColorParameterChanged}/${falsifiedLive?.baseColorUvTransformChanged} resizeHistory=${expectedHistory} draws=${normal.rhi.draws}/${falsifier.rhi.draws} dawnSha=${normal.rhi.dawnReadback.sha256}/${falsifier.rhi.dawnReadback.sha256} artifacts=${ARTIFACT_DIR}`);
 }

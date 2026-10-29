@@ -1,11 +1,13 @@
 import type { EngineWorkspacePresentation } from '@forgeax/engine/app';
 import type { Context } from '@forgeax/engine-plugin';
 export type PreviewOwner = { panelId: string; pageType: string };
+export type PreviewCameraFinish = { targetId: string; generation?: number };
 export type ViewPresentation = {
   attachScene?: (input: { target: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0]['target']; container: HTMLElement }) => () => void;
   attachPreview?: (input: { target: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0]['target']; container: HTMLElement; owner: PreviewOwner }) => { ready: Promise<void>; dispose(): Promise<void> };
   retainPlacement?: (target: { targetId: string; generation?: number }, release: () => Promise<void>) => () => void;
   releaseSurface?: (target: { targetId: string; generation?: number }) => Promise<void>;
+  finishPreviewCamera?: (target: PreviewCameraFinish) => Promise<void> | void;
 } & Omit<EngineWorkspacePresentation, 'attach'> & { owner?: PreviewOwner; attach?: (input: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0] & { owner?: PreviewOwner }) => ReturnType<NonNullable<EngineWorkspacePresentation['attach']>> };
 export type PresentationConfig = { presentation?: ViewPresentation; targetPresentation?: ViewPresentation };
 declare module '@forgeax/engine-plugin' {
@@ -33,6 +35,12 @@ export function liveEnginePresentation(ctx: Context, config: PresentationConfig 
     },
     detach(input) {
       return read()?.detach?.(input);
+    },
+    resolveTarget(targetId) {
+      return read()?.resolveTarget?.(targetId);
+    },
+    async finishPreviewCamera(target) {
+      await read()?.finishPreviewCamera?.(target);
     },
     get attachPreview() { return read()?.attachPreview; },
   };

@@ -126,7 +126,13 @@ export function advanceAnimationPlayer(world: World, dt: number): void {
   try {
     // Structural author callbacks can change target membership while a player
     // advances. Collect handles before writes and keep nested evaluations isolated.
-    for (const row of query) scratch.entities.push(row.entity);
+    for (const querySpan of query.spans().unwrap()) {
+      const queryEntities = querySpan.entities;
+      for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+        const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+        scratch.entities.push(queriedEntity);
+      }
+    }
     for (const entityRaw of scratch.entities) advanceOnePlayer(world, entityRaw, dt, scratch);
   } finally {
     scratch.entities.length = 0;
@@ -414,7 +420,7 @@ function buildTargetMap(world: World, player: EntityHandle): TargetMap {
     else
       bindings.set(targetId, {
         entity: target,
-        transform: world.get(target, Transform).ok,
+        transform: world.hasComponent(target, Transform),
         index: bindings.size,
       });
   }
@@ -690,7 +696,8 @@ function resolveChannelTarget(
     }
     return binding;
   }
-  if (!world.get(target, Transform).ok) {
+  // Presence only; a full component read would materialize its array views.
+  if (!world.hasComponent(target, Transform)) {
     emitTargetDiagnostic(
       world,
       player,

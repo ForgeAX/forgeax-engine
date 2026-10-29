@@ -15,10 +15,6 @@
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.mjs"
     },
-    "./browser-user-timing": {
-      "types": "./dist/browser-user-timing.d.ts",
-      "import": "./dist/browser-user-timing.mjs"
-    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.mjs",

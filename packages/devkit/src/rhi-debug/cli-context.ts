@@ -97,7 +97,7 @@ async function replayGpu(tape: V7Tape): Promise<ProviderResult> {
   } catch (cause) {
     return providerUnavailable(
       'the Dawn WebGPU provider to load',
-      'Dawn replay is opt-in: run `pnpm --filter @forgeax/engine-dawn-node build:native` from an Engine source checkout and retry rhi.inspect. Ray Query tapes use FORGEAX_WEBGPU_NODE=wgpu-native with its native addon built.',
+      'Dawn replay is opt-in: on Linux add the optional provider to the project (`pnpm add -D upstream-webgpu@npm:webgpu@0.4.0`); on macOS/Windows run `pnpm --filter @forgeax/engine-dawn-node build:native` from an Engine source checkout. Then retry rhi.inspect. Ray Query tapes use FORGEAX_WEBGPU_NODE=wgpu-native with its native addon built.',
       cause instanceof Error ? cause.message : String(cause),
     );
   }

@@ -10,7 +10,7 @@ import {
   importRenderPipelineSurface,
   type RenderPipeline,
 } from '../authoring';
-import { Camera } from '../components/camera';
+import { Camera, perspective } from '../components/camera';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 const pipeline: RenderPipeline = {
@@ -52,7 +52,10 @@ it('a custom pipeline output transform captures the armed final-display observat
   const attachment = renderer.attach(world);
   if (!attachment.ok) throw attachment.error;
   registerPropagateTransforms(world);
-  world.spawn({ component: Transform, data: { pos: [0, 0, 4] } }, { component: Camera, data: {} });
+  world.spawn(
+    { component: Transform, data: { pos: [0, 0, 4] } },
+    { component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 1 }) },
+  );
   const input = {
     leases: [attachment.value],
     camera: { lease: attachment.value },

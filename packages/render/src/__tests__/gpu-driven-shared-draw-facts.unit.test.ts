@@ -9,7 +9,6 @@ import {
   type GpuDrivenBatch,
   type GpuDrivenBatchBinding,
 } from '../gpu-driven/batch-topology';
-import { prepareLodProjectionPlan } from '../gpu-driven/production-raster-lod';
 import {
   assembleFilteredBatch,
   assembleFilteredGroups,
@@ -230,7 +229,6 @@ describe('GPU-driven shared draw preparation', () => {
     try {
       const result = f.prepare();
       const source = result.prepared.source;
-      const lodPlan = prepareLodProjectionPlan(source);
       const guarded = {
         ...source,
         batches: source.batches.map((batch) => ({
@@ -240,9 +238,8 @@ describe('GPU-driven shared draw preparation', () => {
           },
         })),
       };
-      const retained = assemblePreparedPlan(guarded, result.rows, f.worldKeys, lodPlan);
+      const retained = assemblePreparedPlan(guarded, result.rows, f.worldKeys);
       expect(retained.batchRows).toEqual(result.rows);
-      expect(retained.lodPlan).toBe(lodPlan);
       expect(result.rows).toHaveLength(4);
       for (const snapshot of f.snapshots) expect(result.selection.ownsAll(snapshot)).toBe(true);
     } finally {

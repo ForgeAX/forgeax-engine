@@ -29,8 +29,8 @@ export function lodHeightScale(camera: LodViewCamera): number {
 }
 
 /**
- * Writes the WGSL `LodViewConstants` row at `byteOffset`. `clamp` marks the
- * reference row a shadow view bounds its own selection with.
+ * Writes the WGSL `LodViewConstants` row at `byteOffset`. `clamp` caps the
+ * view's selection at `SHADOW_LOD_COARSEST` (shadow views).
  */
 export function writeLodViewConstants(
   target: DataView,
@@ -173,28 +173,15 @@ fn lodCrossfade(
   return LodCrossfade(selectLodLevel(height, 0u, false, rows, levelCount), 0.0, false);
 }
 
-// Finest level a view draws for a height: the paired cross-fade keeps its
-// finer level.
-fn lodFinestLevel(
-  height: f32,
-  crossfade: bool,
-  rows: array<GpuSceneLod, ${LOD_PROJECTION_ROW_CAPACITY}>,
-  levelCount: u32,
-) -> u32 {
-  if (crossfade) { return lodCrossfade(height, rows, levelCount).level; }
-  return selectLodLevel(height, 0u, false, rows, levelCount);
-}
-
-// Lowest height that keeps a view within maxCoarser levels of reference:
-// it clears the threshold introducing level reference + maxCoarser + 1 by the
-// hysteresis band, so neither selection nor cross-fade reaches that level.
-fn lodClampHeight(
-  reference: u32,
-  maxCoarser: u32,
+// Lowest height that keeps a selection at or finer than level coarsest: it clears
+// the threshold introducing level coarsest + 1 by the hysteresis band, so
+// neither selection nor cross-fade reaches that level.
+fn lodCoarsestHeight(
+  coarsest: u32,
   rows: array<GpuSceneLod, ${LOD_PROJECTION_ROW_CAPACITY}>,
   levelCount: u32,
 ) -> f32 {
-  let level = reference + maxCoarser + 1u;
+  let level = coarsest + 1u;
   if (level >= min(levelCount, ${LOD_PROJECTION_ROW_CAPACITY}u)) { return 0.0; }
   return rows[level].screenCoverage * (1.0 + rows[0].hysteresis);
 }

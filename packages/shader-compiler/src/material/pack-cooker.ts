@@ -23,6 +23,7 @@ import {
   unlitMaterialParameters,
 } from '@forgeax/engine-types';
 import type { MaterialCookRequest } from './cook.js';
+import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
 import { withNodeMaterialWorkers } from './node-material-cooker.js';
 import { createNodeMaterialProgramCompiler, mapMaterialVariants } from './node-program-compiler.js';
 import {
@@ -60,13 +61,6 @@ const require = createRequire(import.meta.url);
 // the Pack collector's header grammar aligned with `shaderModuleId()` and the
 // Vite manifest loader so a cold cooker cannot silently drop those modules.
 const MODULE_ID_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.-]+(?:::[A-Za-z0-9_.-]+)*)\s*$/m;
-const ENGINE_MODULE_ALIASES: Readonly<Record<string, string>> = {
-  'forgeax_material::standard': 'forgeax::default-standard-pbr',
-  'forgeax_material::unlit': 'forgeax::default-unlit',
-  'forgeax_material::pbr-skin': 'forgeax::pbr-skin',
-  'forgeax_material::sprite': 'forgeax::sprite',
-  'forgeax_material::sprite-lit': 'forgeax::sprite-lit',
-};
 const UNLIT_ROOT_MODULES = new Set(['forgeax_material::unlit', 'forgeax::default-unlit']);
 const SPRITE_ROOT_MODULES = new Set([
   'forgeax_material::sprite',
@@ -98,7 +92,7 @@ async function collectWgslFiles(root: string): Promise<readonly string[]> {
   }
 }
 
-function packagedShaderRoots(): readonly string[] {
+export function materialShaderSourceRoots(): readonly string[] {
   const roots: string[] = [];
   for (const [packageName, relativePath, workspacePath] of [
     ['@forgeax/engine-shader', 'src', 'packages/shader/src'],
@@ -360,7 +354,7 @@ export function createMaterialPackCooker(
     key: 'material',
     concurrency: 'parallel',
     async cacheIdentity() {
-      const packagedRoots = packagedShaderRoots();
+      const packagedRoots = materialShaderSourceRoots();
       const sources = await collectMaterialSources([...roots, ...packagedRoots], packagedRoots);
       const sourceRecords = [...sources.engine, ...sources.project];
       // Package slots stay fixed even when their install paths change. Empty
@@ -418,7 +412,7 @@ export function createMaterialPackCooker(
         ...input,
         source: normalizeMaterialAsset(input.source),
       };
-      const packagedRoots = packagedShaderRoots();
+      const packagedRoots = materialShaderSourceRoots();
       const sourceRoots = [
         ...roots,
         ...(input.sourcePath === undefined ? [] : [dirname(resolve(input.sourcePath))]),

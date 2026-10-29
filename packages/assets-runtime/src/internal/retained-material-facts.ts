@@ -1,7 +1,10 @@
-import { isMaterialProgramAbi, type MaterialProgramAbi } from '@forgeax/engine-types';
-
-const retainedPayloads = new WeakSet<object>();
-const retainedAbis = new WeakSet<object>();
+import { internJson, isMaterialProgramAbi, type MaterialProgramAbi } from '@forgeax/engine-types';
+import {
+  isRetainedMaterialPayload,
+  isSharedMaterialAbi,
+  markRetainedMaterialPayload,
+  shareFrozenMaterialAbi,
+} from './shared-immutable.js';
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -21,23 +24,9 @@ function freezeJson(root: object): void {
   }
 }
 
-function abiKey(value: object): string | undefined {
-  let exact = true;
-  try {
-    const key = JSON.stringify(value, (_key, child: unknown) => {
-      if (typeof child === 'number' && (!Number.isFinite(child) || Object.is(child, -0)))
-        exact = false;
-      return child;
-    });
-    return exact ? key : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Only freshly parsed resource-package JSON enters this owner. */
 export function retainJsonMaterialFacts(assets: readonly unknown[]): void {
-  const abis = new Map<string, MaterialProgramAbi>();
+  const abis = new Map<object, MaterialProgramAbi | null>();
   const programs = new WeakSet<object>();
   for (const raw of assets) {
     const asset = object(raw);
@@ -60,22 +49,27 @@ export function retainJsonMaterialFacts(assets: readonly unknown[]): void {
         const selection = object(rawSelection);
         const abi = object(selection?.abi);
         if (selection === undefined || abi === undefined) continue;
-        const key = abiKey(abi);
-        if (key === undefined) continue;
-        let retained = abis.get(key);
+        // The package program table already shares one ABI object per entry;
+        // canonicalize each distinct object once.
+        let retained = abis.get(abi);
         if (retained === undefined) {
-          if (!isMaterialProgramAbi(abi)) continue;
-          freezeJson(abi);
-          retained = abi;
-          abis.set(key, retained);
-          retainedAbis.add(retained);
+          retained = null;
+          // Equal ABI nodes are held once across ABIs and packages.
+          if (isMaterialProgramAbi(abi)) {
+            const canonical = internJson(abi) as MaterialProgramAbi | undefined;
+            if (canonical !== undefined) {
+              retained = canonical;
+              shareFrozenMaterialAbi(retained);
+            }
+          }
+          abis.set(abi, retained);
         }
-        selection.abi = retained;
+        if (retained !== null) selection.abi = retained;
       }
     }
     freezeJson(cooked);
     Object.defineProperty(payload, 'cooked', { writable: false, configurable: false });
-    retainedPayloads.add(payload);
+    markRetainedMaterialPayload(payload);
   }
 }
 
@@ -84,7 +78,7 @@ export function cloneRetainedPackPayload(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
   const cloned = structuredClone(payload);
-  if (retainedPayloads.has(payload)) {
+  if (isRetainedMaterialPayload(payload)) {
     Object.defineProperty(cloned, 'cooked', {
       value: payload.cooked,
       writable: false,
@@ -96,5 +90,5 @@ export function cloneRetainedPackPayload(
 }
 
 export function isRetainedMaterialAbi(value: unknown): value is MaterialProgramAbi {
-  return value !== null && typeof value === 'object' && retainedAbis.has(value);
+  return value !== null && typeof value === 'object' && isSharedMaterialAbi(value);
 }

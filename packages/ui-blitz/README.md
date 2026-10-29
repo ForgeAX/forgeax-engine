@@ -32,7 +32,7 @@ flowchart LR
 | Nodes | Facades wrap exact 64-bit generational Blitz identities. Attributes, children, values and focus are read from the core; weak facade caches do not mirror the tree. |
 | Mutations | Create/insert/remove, inert template content, deep cloning, fragment `innerHTML`, text, attributes, class, dataset and inline style synchronously update the core. Removed nodes remain usable while referenced. |
 | Unsupported source | Initial HTML, `innerHTML`, style text, `style.setProperty`, `style.cssText`, and attributes are checked before mutation. `UiDomError` retains `code`, `operation`, `cause` and structured `diagnostics` with ranges and recovery hints. The shared table governs all targets; native parsing cannot silently widen it. |
-| Read barrier | Computed style, rectangles and hit tests resolve current derived state before returning. Client rectangles include the same resolved CSS transforms as painting and hit testing; offset geometry stays untransformed. A scroller's border box stays fixed while ancestor scrolling moves descendant rectangles. Viewport-fixed descendants retain matching pixels, rectangles and hit targets when excess user scrolling reaches the viewport; a transformed ancestor keeps its own fixed-position containment. Hidden flattened descendants expose zero geometry. Layout shrink clamps existing scroll offsets before reads and paint. `scrollIntoView`, including focus/validation reveal, aligns each scrolling ancestor in its own CSS coordinate space; viewport transforms do not scale scroll offsets. Transformed descendants extend the same layout-owned scroll extent used by CSSOM and clamping, with inner scrollport clipping retained. Default focus centers a fully hidden target on each axis, reveals a partly visible target at the nearest edge, and retains already visible controls; `preventScroll` skips that reveal. Explicit `scrollIntoView` keeps its requested alignment. Nested scrollports share the core alignment and clamp owner, and the facade delivers events only for actual changes after releasing the native borrow. Single-line input measurement uses the resolved content space, so constrained controls do not leak the parent width into ancestor scroll extents. Text input and textarea intrinsic `normal` height measures an empty Parley line from the current computed font and viewport scale, including leading; the current value and fallback glyphs cannot resize the control. Explicit numeric/length line-height keeps its CSS value. Grid changes do not replace nodes. Block scroll extents include the final collapsed child margin and padding, so maximum scrolling can expose the complete trailing space. |
+| Read barrier | Computed style, rectangles and hit tests resolve current derived state before returning. Client rectangles include the same resolved CSS transforms as painting and hit testing; offset geometry stays untransformed. A scroller's border box stays fixed while ancestor scrolling moves descendant rectangles. Viewport-fixed descendants retain matching pixels, rectangles and hit targets when excess user scrolling reaches the viewport; a transformed ancestor keeps its own fixed-position containment. Hidden flattened descendants expose zero geometry. Layout shrink clamps existing scroll offsets before reads and paint. `scrollIntoView`, including focus/validation reveal, aligns each scrolling ancestor in its own CSS coordinate space; viewport transforms do not scale scroll offsets. Transformed descendants extend the same layout-owned scroll extent used by CSSOM and clamping, with inner scrollport clipping retained. Default focus centers a fully hidden target on each axis, reveals a partly visible target at the nearest edge, and retains already visible controls; `preventScroll` skips that reveal. Explicit `scrollIntoView` keeps its requested alignment. Nested scrollports share the core alignment and clamp owner, and the facade delivers events only for actual changes after releasing the native borrow. Single-line input measurement uses the resolved content space, so constrained controls do not leak the parent width into ancestor scroll extents. Single-line `clientWidth` and `scrollWidth` describe the content-space editor viewport and its current text overflow; their `scrollHeight` stays at the vertical client extent because text scrolls only horizontally. Multiline and non-text control metrics retain their padding-box owner. Text input and textarea intrinsic `normal` height measures an empty Parley line from the current computed font and viewport scale, including leading; the current value and fallback glyphs cannot resize the control. Explicit numeric/length line-height keeps its CSS value. Grid changes do not replace nodes. Block scroll extents include the final collapsed child margin and padding, so maximum scrolling can expose the complete trailing space. |
 | ShadowRoot | Open roots use native Stylo author cascades and real fragments. Queries remain scoped; inheritance and layout follow the flattened tree. Event paths snapshot retargeting before callbacks. `mountUi` uses this same surface. |
 | Events | Snapshot paths before listeners; release the WASM borrow before JavaScript. Capture/target/bubble, nested dispatch, cancellation, once and AbortSignal subscriptions are synchronous. A callback may dispose its UI Host: removed listeners and remaining input/default actions stop before reading the freed document. Listener errors go to the supplied `onError`. |
 | Input | The `input` port consumes logical pointer/wheel/key/string facts. It applies control activation, focus, label forwarding, scroll/click cancellation and default submission on the same document. Tab can enter an initially unfocused document and honors canceled key defaults. Native sequential navigation retains its starting position after blur or focused-subtree removal; later insertions and removals adjust that position, while current native eligibility and inert ancestry select the next control. The facade requests a candidate and releases the native borrow before dispatching focus transitions. Accepted sequential focus selects a text control's current content before focus callbacks through the native editor; script and pointer focus preserve their existing selection behavior. Changed replacement strings clear that selection, and its highlight only paints on the focused control. Escape preserves an ordinary editor's focus and draft; dropdown cancellation remains control-owned. Focus transfer commits the old edit before blur with no provisional new focus. Change/blur callbacks can redirect focus or retire the intended target, which native eligibility rechecks before adoption. After `beforeinput` callbacks, text defaults recheck the control's current attachment, editability, inert ancestry and native layout/focus eligibility; a retired editor receives neither a write nor a following `input` event. `focusedText` and `subscribeFocus` expose focus state; `subscribeTextEdit` reports accepted input/label taps that request native editing. Form validation rereads each control after earlier `invalid` callbacks and routes uncanceled feedback to the first control that native focus accepts, preserving callback-directed focus changes. These ports do not acquire platform events. |
@@ -55,7 +55,7 @@ The output covers the requested physical dimensions: positive integers up to
 coverage, glyphs, images, clipping and filtered layer order; the Renderer performs
 the raster work. The portable Vello feature adds no wgpu dependency to the UI WASM.
 The [shared data contract](../types/src/ui-paint.ts) is the public type authority;
-the [native ABI](rust/GPU-ABI.md) records packed instance and shader bindings.
+the native ABI records packed instance and shader bindings.
 
 Pass `{ kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) }`
 as `RendererOptions.ui`. A CPU reference uses `{ kind: 'rgba', paint: time => ui.paint(time) }`.
@@ -72,6 +72,10 @@ retained input identity and edits, focus/validation, busy/error recovery, indepe
 instances and disposal. Long translated feedback remains actionable in a narrow
 viewport. This uses the shared localization owner and the same authored controller;
 system fonts, native control decoration and validation popup wording may differ.
+The guide gate compares control overflow relative to each native client box and
+still requires matching outer widths and ancestor scroll extents. Chromium 157's
+number controls report a different inner client width from Chromium 154; that
+decoration must not hide an input leaking its parent width into scroll overflow.
 
 Setting an ancestor to `display: none` cancels descendant CSS animations in the
 native style owner, so a hidden loading spinner does not invalidate the complete
@@ -86,6 +90,12 @@ core layout. CPU/GPU painting applies scrolling once in the element's local
 coordinates, including CSS transforms. Native hit testing inverts transforms before
 applying the local scroll offset and rejects clipped descendants against the
 unscrolled scrollport, so invisible content cannot intercept sibling controls.
+
+Horizontal text-entry inputs expose their content clip through inline client
+geometry, including `clientLeft`; block-axis padding and the control border box
+remain unchanged. Script scrolling, caret clamping, wheel input and painting use
+the existing native editor offset and viewport, including number-button space.
+Textarea and ordinary overflow boxes retain their padding-box client geometry.
 
 Fixed descendants retain their ancestor stacking contexts even when the viewport
 owns their layout. Paint and hit culling share bounds from that paint tree, so an
@@ -102,6 +112,8 @@ active/hover state and the focused editor. Reentrant cancellation cannot notify
 the same contact twice; an error reporter failure does not skip the remaining
 contacts or editor release. Startup gameplay gating is separate from UI
 acquisition, so fatal/Reload controls stay usable.
+For a display-only change, `cancel({ preserveFocus: true })` revokes contacts and
+active/hover state while retaining the focused editor and its native edit lease.
 
 A string-only native keyboard opens on `subscribeTextEdit`, reads `focusedText`,
 and closes its lease on `subscribeFocus`. Programmatic focus and validation focus
@@ -223,7 +235,7 @@ disabled except `blitz-dom/woff,raster`, and `anyrender_vello_cpu` 0.18.0 define
 Release optimizes for size globally and uses `opt-level = 3` for `vello_common`'s
 CPU path/strip preparation. This changes compilation, not the portable GPU ABI
 or the renderer's ownership; measured scope and payload identity are recorded in
-the [current consumer acceptance](reports/current-consumer-acceptance.md).
+the current consumer acceptance.
 
 ```sh
 pnpm --filter @forgeax/engine-ui-blitz build:wasm
@@ -260,7 +272,7 @@ terminal for that module realm. A different host cannot replace an adopted host.
 
 ## Verification
 
-The [current consumer acceptance matrix](reports/current-consumer-acceptance.md)
+The current consumer acceptance matrix
 maps the complete game guide and shared startup UI to retained core/browser
 evidence, ordinary-package simulator scenarios and remaining target/cost checks.
 
@@ -269,7 +281,7 @@ evidence, ordinary-package simulator scenarios and remaining target/cost checks.
 | `cargo +1.99.0 test --locked --manifest-path packages/ui-blitz/Cargo.toml` | Real core Grid pixels, mutations, collection, nested CSS/failures, companion PNG pixels and published Chinese WOFF2 coverage |
 | Package `pnpm test` | Real generated WASM: DOM/input, published WOFF2 and PNG, transport/decode failures, cancellation and late-result fencing |
 | Package `pnpm test:browser` or `dom.browser.test.ts` via the repository browser gate | Identical form/event/localized-guide operations and Grid rectangles against actual browser DOM; the focused gate requires no renderer shader/asset publication |
-| [WeChat diagnostic](../../skills/forgeax-engine-wechat/references/blitz.md) | Native WXWebAssembly loading and the qualified simulator actions; separate from Engine composition |
+| WeChat diagnostic | Native WXWebAssembly loading and the qualified simulator actions; separate from Engine composition |
 
 The maintained fork's deterministic headless test prerequisites and fixes are
 recorded in [`FORGEAX.md`](../../third_party/blitz/FORGEAX.md). The licensed ASCII

@@ -5,6 +5,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type { BindGroup, BindGroupLayout, RenderPipeline, Sampler } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
+import { shaderSourceDescriptor } from '@forgeax/engine-types';
 import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
@@ -52,7 +53,9 @@ export function addSsrCompositionPass(
             expected: 'SSR composition shader module factory',
             hint: 'construct the renderer through a backend pack with shader module support',
           });
-        const module = factory.createShaderModule({ code: source, label: 'ssr_compose' }).unwrap();
+        const module = factory
+          .createShaderModule(shaderSourceDescriptor(source, 'ssr_compose'))
+          .unwrap();
         const layout = device
           .createBindGroupLayout({
             entries: [

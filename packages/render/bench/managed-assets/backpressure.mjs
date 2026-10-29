@@ -33,9 +33,9 @@ export async function createBackpressureBenchmark(canvas,config,mode){
       const publisher=createRenderPublisher(world,assets,identity,ready.inspection.capabilities,[feature]);
       consumers.push({initial:ready.inspection,async reset(){await request({kind:'reset'});},async draw(measure){
         const start=performance.now(),candidate=publisher.prepare(performance.now()/1000).unwrap(),preparationCpuMs=performance.now()-start;
-        const columns=renderPublicationTransfers(candidate.packet),assetBuffers=renderPublicationAssetTransfers(candidate.packet);
+        const columns=renderPublicationTransfers(candidate.message),assetBuffers=renderPublicationAssetTransfers(candidate.message);
         const transferBytes=[...columns,...assetBuffers].reduce((sum,buffer)=>sum+buffer.byteLength,0);
-        const pending=request({kind:'draw',packet:candidate.packet,measure},[...columns,...assetBuffers]);candidate.accept();
+        const pending=request({kind:'draw',packet:candidate.message,measure},[...columns,...assetBuffers]);candidate.accept();
         const result=await pending;publisher.acknowledgeFeatures(result.revision,result.features).unwrap();publisher.recycle(result.revision,result.buffers).unwrap();
         return {...result,buffers:undefined,features:undefined,preparationCpuMs,transferBytes,adopted};
       },async dispose(){publisher.dispose();await request({kind:'dispose'});worker.terminate();}});

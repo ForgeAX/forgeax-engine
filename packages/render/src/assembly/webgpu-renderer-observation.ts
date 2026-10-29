@@ -196,160 +196,197 @@ interface RendererReceiptObservationContext {
   readonly isCaptureGenerationCurrent: () => ((generation: number) => boolean) | undefined;
 }
 
-/** Observe one issued receipt, rechecking its live owners after asynchronous work. */
-export async function observeRendererReceipt(
+type DrawObservation = ReturnType<typeof observeMaterialDraws>;
+
+function requestsTargetReadback(request: FrameObservationRequest): boolean {
+  return (
+    (request.targetReadbacks?.length ?? 0) > 0 || (request.framebufferSnapshots?.length ?? 0) > 0
+  );
+}
+
+/** Pass timings ride along a frame-data observation only when explicitly requested. */
+function attachesPassTimings(
+  request: FrameObservationRequest,
+  context: RendererReceiptObservationContext,
+  includesFrameData: boolean,
+): boolean {
+  return (
+    includesFrameData &&
+    context.gpuPassTimingOptions !== undefined &&
+    request.include.includes('timings')
+  );
+}
+
+async function observeAttachedPassTimings(
+  receipt: FrameReceipt,
+  request: FrameObservationRequest,
+  context: RendererReceiptObservationContext,
+): Promise<RenderResult<GpuPassTimingObservation | undefined, RenderError>> {
+  const timingResult =
+    context.timingObservationStore === undefined
+      ? await observeGpuPassTimingDisabled(receipt, request, () => context.currentGeneration())
+      : await context.timingObservationStore.observe(receipt, request);
+  if (!timingResult.ok) return timingResult;
+  return ok(timingResult.value.timings);
+}
+
+/** A timing-enabled request without frame data, LOD or draws needs only the timing owner. */
+function isTimingOnlyRequest(
+  context: RendererReceiptObservationContext,
+  includesFrameData: boolean,
+  includesLodOcclusion: boolean,
+  includesDraws: boolean,
+): boolean {
+  return (
+    context.gpuPassTimingOptions !== undefined &&
+    !includesFrameData &&
+    !includesLodOcclusion &&
+    !includesDraws
+  );
+}
+
+function observeTimingOnly(
   receipt: FrameReceipt,
   request: FrameObservationRequest,
   context: RendererReceiptObservationContext,
 ): Promise<RenderResult<FrameReceiptObservation, RenderError>> {
-  const {
-    staleObservationReceipt,
-    gpuPassTimingOptions,
-    timingObservationStore,
-    observeTiming,
-    lodObservationValidity,
-    renderTargetHost,
-    receiptTimings,
-  } = context;
+  return context.timingObservationStore === undefined
+    ? context.observeTiming(receipt, request, () => context.currentGeneration())
+    : context.timingObservationStore.observe(receipt, request);
+}
+
+/** Read and project the receipt-bound color domains armed before draw. */
+async function observeReceiptColorDomains(
+  receipt: FrameReceipt,
+  requestedDomains: readonly RenderPipelineObservationCapture['domain'][],
+  context: RendererReceiptObservationContext,
+): Promise<RenderResult<NonNullable<FrameReceiptObservation['observations']>, RenderError>> {
+  if (new Set(requestedDomains).size !== requestedDomains.length) {
+    return err(
+      new RendererContractFailureError(
+        'observe',
+        'each receipt-bound color domain may be requested only once',
+      ),
+    );
+  }
   const { receiptObservationCaptures, receiptObservationBuffers, destroyedObservationBuffers } =
     context.observationOwner;
-  const stale = staleObservationReceipt(receipt);
-  if (stale !== undefined) return err(stale);
-  const includesDomain = (request.include as readonly string[]).some(isFrameObservationDomain);
-  const includesLodOcclusion = request.include.includes('lod-occlusion');
-  const includesDraws = request.include.includes('draws');
-  const includesReadback =
-    (request.targetReadbacks?.length ?? 0) > 0 || (request.framebufferSnapshots?.length ?? 0) > 0;
-  let timingObservation: GpuPassTimingObservation | undefined;
-  if (
-    (includesDomain || includesReadback) &&
-    gpuPassTimingOptions !== undefined &&
-    request.include.includes('timings')
-  ) {
-    const timingResult =
-      timingObservationStore === undefined
-        ? await observeGpuPassTimingDisabled(receipt, request, () => context.currentGeneration())
-        : await timingObservationStore.observe(receipt, request);
-    if (!timingResult.ok) return timingResult;
-    timingObservation = timingResult.value.timings;
-  }
-  if (
-    gpuPassTimingOptions !== undefined &&
-    !includesDomain &&
-    !includesReadback &&
-    !includesLodOcclusion &&
-    !includesDraws
-  ) {
-    return timingObservationStore === undefined
-      ? observeTiming(receipt, request, () => context.currentGeneration())
-      : timingObservationStore.observe(receipt, request);
-  }
-  const completed = await receipt.completed;
-  if (!completed.ok) return completed;
-  const staleAfterCompletion = staleObservationReceipt(receipt);
-  if (staleAfterCompletion !== undefined) return err(staleAfterCompletion);
-  const requestedDomains = (request.include as readonly string[]).filter(isFrameObservationDomain);
-  let observations: FrameReceiptObservation['observations'];
-  if (requestedDomains.length > 0) {
-    if (new Set(requestedDomains).size !== requestedDomains.length) {
-      return err(
-        new RendererContractFailureError(
-          'observe',
-          'each receipt-bound color domain may be requested only once',
-        ),
-      );
-    }
-    const readCaptures = receiptObservationCaptures.get(receipt);
-    receiptObservationCaptures.delete(receipt);
-    if (readCaptures === undefined) {
-      return err(
-        new RendererContractFailureError(
-          'observe',
-          'receipt-bound color-domain observations were not explicitly armed before draw, are stale, duplicated, or unavailable',
-        ),
-      );
-    }
-    const capturesResult = await readCaptures();
-    const receiptCaptures = receiptObservationBuffers.get(receipt);
-    if (receiptCaptures?.every((capture) => destroyedObservationBuffers.has(capture.buffer))) {
-      receiptObservationBuffers.delete(receipt);
-    }
-    if (!capturesResult.ok) return capturesResult;
-    const staleAfterReadback = staleObservationReceipt(receipt);
-    if (staleAfterReadback !== undefined) return err(staleAfterReadback);
-    const projected = projectReceiptColorObservations(
-      receipt,
-      capturesResult.value,
-      requestedDomains,
-      context.backendKind(),
+  const readCaptures = receiptObservationCaptures.get(receipt);
+  receiptObservationCaptures.delete(receipt);
+  if (readCaptures === undefined) {
+    return err(
+      new RendererContractFailureError(
+        'observe',
+        'receipt-bound color-domain observations were not explicitly armed before draw, are stale, duplicated, or unavailable',
+      ),
     );
-    if (!projected.ok) return projected;
-    observations = projected.value;
   }
-  let lodOcclusion: LodOcclusionReceiptObservation | undefined;
-  let lodCaptureState: RendererReceiptLodCaptureState | undefined;
-  {
-    // This readback also publishes Surface GPU draw membership for ordinary observations.
-    const captureState = context.latestLodObservation();
-    lodCaptureState = captureState;
-    if (captureState?.receipt !== receipt || context.latestReceipt() !== receipt) {
-      lodOcclusion = unavailableLodObservation('superseded');
-    } else if (captureState.error !== undefined) {
-      return err(captureState.error);
-    } else if (captureState.observation !== undefined) {
-      const validity = lodObservationValidity(captureState, receipt);
-      const failure = lodObservationCaptureFailure(captureState.capture, validity);
-      if (failure !== undefined) {
-        lodOcclusion = unavailableLodObservation(failure, captureState.observation.views);
-      } else if (
-        !cachedLodObservationMatchesCapture(captureState.capture, captureState.observation)
-      ) {
-        lodOcclusion = unavailableLodObservation(
-          'lod-readback-unavailable',
-          captureState.observation.views,
-        );
-      } else {
-        lodOcclusion = captureState.observation;
-      }
-      captureState.observation = lodOcclusion;
-    } else {
-      captureState.promise ??= observeLodOcclusionCapture(
-        receipt,
-        captureState.capture,
-        lodObservationValidity(captureState, receipt),
-      );
-      try {
-        lodOcclusion = await captureState.promise;
-        captureState.observation = lodOcclusion;
-      } catch (cause) {
-        if (cause instanceof RendererOperationError) {
-          captureState.error = cause;
-          return err(cause);
-        }
-        const detail =
-          cause instanceof Error
-            ? {
-                code: cause.name,
-                expected: cause.message,
-                hint: 'inspect the Render LOD readback owner',
-              }
-            : {
-                code: 'unknown',
-                expected: String(cause),
-                hint: 'inspect the Render LOD readback owner',
-              };
-        const error = new RendererOperationError('device-operation-failed', {
-          operation: 'complete-frame',
-          frameId: receipt.frameId,
-          deviceGeneration: receipt.deviceGeneration,
-          cause: detail,
-        });
-        captureState.error = error;
-        return err(error);
-      }
-    }
+  const capturesResult = await readCaptures();
+  const receiptCaptures = receiptObservationBuffers.get(receipt);
+  if (receiptCaptures?.every((capture) => destroyedObservationBuffers.has(capture.buffer))) {
+    receiptObservationBuffers.delete(receipt);
   }
-  if (!includesLodOcclusion) lodOcclusion = undefined;
+  if (!capturesResult.ok) return capturesResult;
+  const staleAfterReadback = context.staleObservationReceipt(receipt);
+  if (staleAfterReadback !== undefined) return err(staleAfterReadback);
+  return projectReceiptColorObservations(
+    receipt,
+    capturesResult.value,
+    requestedDomains,
+    context.backendKind(),
+  );
+}
+
+/**
+ * A cached LOD observation stays valid only while its capture still matches;
+ * otherwise it degrades to an unavailable observation keeping its views.
+ */
+function revalidateLodObservation(
+  state: RendererReceiptLodCaptureState,
+  receipt: FrameReceipt,
+  observation: LodOcclusionReceiptObservation,
+  context: RendererReceiptObservationContext,
+): LodOcclusionReceiptObservation {
+  const validity = context.lodObservationValidity(state, receipt);
+  const failure = lodObservationCaptureFailure(state.capture, validity);
+  if (failure !== undefined) return unavailableLodObservation(failure, observation.views);
+  if (!cachedLodObservationMatchesCapture(state.capture, observation))
+    return unavailableLodObservation('lod-readback-unavailable', observation.views);
+  return observation;
+}
+
+/** Foreign LOD readback failures become one structured device-operation error. */
+function lodReadbackOperationError(
+  cause: unknown,
+  receipt: FrameReceipt,
+): RendererExpectedOperationError {
+  if (cause instanceof RendererOperationError) return cause;
+  const detail =
+    cause instanceof Error
+      ? { code: cause.name, expected: cause.message, hint: 'inspect the Render LOD readback owner' }
+      : { code: 'unknown', expected: String(cause), hint: 'inspect the Render LOD readback owner' };
+  return new RendererOperationError('device-operation-failed', {
+    operation: 'complete-frame',
+    frameId: receipt.frameId,
+    deviceGeneration: receipt.deviceGeneration,
+    cause: detail,
+  });
+}
+
+/**
+ * The receipt's LOD occlusion when it is already decided: superseded, latched
+ * failure, or a revalidated cached observation. `undefined` means this
+ * receipt's readback is still pending. The readback also publishes Surface GPU
+ * draw membership for ordinary observations, so it runs for every request.
+ */
+function settledReceiptLodOcclusion(
+  receipt: FrameReceipt,
+  state: RendererReceiptLodCaptureState | undefined,
+  context: RendererReceiptObservationContext,
+): RenderResult<LodOcclusionReceiptObservation, RenderError> | undefined {
+  if (state?.receipt !== receipt || context.latestReceipt() !== receipt)
+    return ok(unavailableLodObservation('superseded'));
+  if (state.error !== undefined) return err(state.error);
+  if (state.observation === undefined) return undefined;
+  const observation = revalidateLodObservation(state, receipt, state.observation, context);
+  state.observation = observation;
+  return ok(observation);
+}
+
+/** Await (once) the receipt's pending LOD readback, latching its observation or failure. */
+async function awaitReceiptLodReadback(
+  receipt: FrameReceipt,
+  state: RendererReceiptLodCaptureState | undefined,
+  context: RendererReceiptObservationContext,
+): Promise<RenderResult<LodOcclusionReceiptObservation, RenderError>> {
+  if (state === undefined) return ok(unavailableLodObservation('superseded'));
+  state.promise ??= observeLodOcclusionCapture(
+    receipt,
+    state.capture,
+    context.lodObservationValidity(state, receipt),
+  );
+  try {
+    const observation = await state.promise;
+    state.observation = observation;
+    return ok(observation);
+  } catch (cause) {
+    const error = lodReadbackOperationError(cause, receipt);
+    state.error = error;
+    return err(error);
+  }
+}
+
+/** Target readbacks and framebuffer snapshots requested for this receipt. */
+async function observeReceiptReadbacks(
+  receipt: FrameReceipt,
+  request: FrameObservationRequest,
+  renderTargetHost: RendererReceiptObservationContext['renderTargetHost'],
+): Promise<
+  RenderResult<
+    Pick<FrameReceiptObservation, 'targetReadbacks' | 'framebufferSnapshots'>,
+    RenderError
+  >
+> {
   const targetReadbacks =
     request.targetReadbacks === undefined || request.targetReadbacks.length === 0
       ? undefined
@@ -360,66 +397,137 @@ export async function observeRendererReceipt(
     request.framebufferSnapshots ?? [],
   );
   if (!snapshots.ok) return snapshots;
+  return ok({
+    ...(targetReadbacks === undefined
+      ? {}
+      : { targetReadbacks: Object.freeze(targetReadbacks.value) }),
+    ...(request.framebufferSnapshots === undefined
+      ? {}
+      : { framebufferSnapshots: snapshots.value }),
+  });
+}
+
+function receiptVolumeTimings(
+  receipt: FrameReceipt,
+  receiptTimings: RendererReceiptObservationContext['receiptTimings'],
+): Promise<VolumeTimingObservation> {
+  return (
+    receiptTimings.get(receipt) ??
+    Promise.resolve<VolumeTimingObservation>({
+      status: 'unavailable',
+      reason: 'timestamp capture was not requested for this frame',
+    })
+  );
+}
+
+/** Draw membership for the latest capture of this receipt. */
+function observeReceiptDraws(
+  receipt: FrameReceipt,
+  context: RendererReceiptObservationContext,
+): DrawObservation {
+  const latest = context.latestLodObservation();
+  const current = latest?.receipt === receipt ? latest : undefined;
+  return observeMaterialDraws(
+    current?.capture,
+    current?.draws,
+    context.lodObservationValidity(
+      latest ?? { receipt, capture: undefined, draws: undefined },
+      receipt,
+    ),
+    context.isCaptureGenerationCurrent(),
+  );
+}
+
+/**
+ * Final LOD and draw metadata after the timing observation: a still-current
+ * capture revalidates its LOD observation, and draws plus LOD share one
+ * metadata budget rather than two independent allowances.
+ */
+function receiptLodAndDraws(
+  receipt: FrameReceipt,
+  context: RendererReceiptObservationContext,
+  lodCaptureState: RendererReceiptLodCaptureState | undefined,
+  requestedLodOcclusion: LodOcclusionReceiptObservation | undefined,
+  includesDraws: boolean,
+): Pick<FrameReceiptObservation, 'lodOcclusion' | 'draws'> {
+  let lodOcclusion = requestedLodOcclusion;
+  if (lodOcclusion !== undefined && lodCaptureState?.receipt === receipt) {
+    lodOcclusion = revalidateLodObservation(lodCaptureState, receipt, lodOcclusion, context);
+    lodCaptureState.observation = lodOcclusion;
+  }
+  if (!includesDraws) return lodOcclusion === undefined ? {} : { lodOcclusion };
+  const draws = observeReceiptDraws(receipt, context);
+  if (
+    new TextEncoder().encode(JSON.stringify({ draws, lodOcclusion })).byteLength <=
+    MAX_RECEIPT_OBSERVATION_BYTES
+  )
+    return lodOcclusion === undefined ? { draws } : { lodOcclusion, draws };
+  const tooLarge = unavailableDrawObservation('snapshot-too-large');
+  return lodOcclusion === undefined
+    ? { draws: tooLarge }
+    : { lodOcclusion: unavailableLodObservation('snapshot-too-large'), draws: tooLarge };
+}
+
+/** Observe one issued receipt, rechecking its live owners after asynchronous work. */
+export async function observeRendererReceipt(
+  receipt: FrameReceipt,
+  request: FrameObservationRequest,
+  context: RendererReceiptObservationContext,
+): Promise<RenderResult<FrameReceiptObservation, RenderError>> {
+  const { staleObservationReceipt } = context;
+  const stale = staleObservationReceipt(receipt);
+  if (stale !== undefined) return err(stale);
+  const requestedDomains = (request.include as readonly string[]).filter(isFrameObservationDomain);
+  const includesLodOcclusion = request.include.includes('lod-occlusion');
+  const includesDraws = request.include.includes('draws');
+  const includesFrameData = requestedDomains.length > 0 || requestsTargetReadback(request);
+  let timings: GpuPassTimingObservation | undefined;
+  if (attachesPassTimings(request, context, includesFrameData)) {
+    const attached = await observeAttachedPassTimings(receipt, request, context);
+    if (!attached.ok) return attached;
+    timings = attached.value;
+  }
+  if (isTimingOnlyRequest(context, includesFrameData, includesLodOcclusion, includesDraws))
+    return observeTimingOnly(receipt, request, context);
+  const completed = await receipt.completed;
+  if (!completed.ok) return completed;
+  const staleAfterCompletion = staleObservationReceipt(receipt);
+  if (staleAfterCompletion !== undefined) return err(staleAfterCompletion);
+  let observations: FrameReceiptObservation['observations'];
+  if (requestedDomains.length > 0) {
+    const projected = await observeReceiptColorDomains(receipt, requestedDomains, context);
+    if (!projected.ok) return projected;
+    observations = projected.value;
+  }
+  const lodCaptureState = context.latestLodObservation();
+  const lod =
+    settledReceiptLodOcclusion(receipt, lodCaptureState, context) ??
+    (await awaitReceiptLodReadback(receipt, lodCaptureState, context));
+  if (!lod.ok) return lod;
+  const readbacks = await observeReceiptReadbacks(receipt, request, context.renderTargetHost);
+  if (!readbacks.ok) return readbacks;
   const volumeTimings = request.include.includes('timings')
-    ? await (receiptTimings.get(receipt) ??
-        Promise.resolve<VolumeTimingObservation>({
-          status: 'unavailable',
-          reason: 'timestamp capture was not requested for this frame',
-        }))
+    ? await receiptVolumeTimings(receipt, context.receiptTimings)
     : undefined;
-  const observation = await observeTiming(receipt, request, () => context.currentGeneration());
+  const observation = await context.observeTiming(receipt, request, () =>
+    context.currentGeneration(),
+  );
   if (!observation.ok) return observation;
   const staleAfterObservation = staleObservationReceipt(receipt);
   if (staleAfterObservation !== undefined) return err(staleAfterObservation);
-  if (
-    includesLodOcclusion &&
-    lodCaptureState !== undefined &&
-    lodCaptureState.receipt === receipt &&
-    lodOcclusion !== undefined
-  ) {
-    const validity = lodObservationValidity(lodCaptureState, receipt);
-    const failure = lodObservationCaptureFailure(lodCaptureState.capture, validity);
-    if (failure !== undefined) {
-      lodOcclusion = unavailableLodObservation(failure, lodOcclusion.views);
-    } else if (!cachedLodObservationMatchesCapture(lodCaptureState.capture, lodOcclusion)) {
-      lodOcclusion = unavailableLodObservation('lod-readback-unavailable', lodOcclusion.views);
-    }
-    lodCaptureState.observation = lodOcclusion;
-  }
-  const latestLodObservation = context.latestLodObservation();
-  let draws = includesDraws
-    ? observeMaterialDraws(
-        latestLodObservation?.receipt === receipt ? latestLodObservation.capture : undefined,
-        latestLodObservation?.receipt === receipt ? latestLodObservation.draws : undefined,
-        lodObservationValidity(
-          latestLodObservation ?? { receipt, capture: undefined, draws: undefined },
-          receipt,
-        ),
-        context.isCaptureGenerationCurrent(),
-      )
-    : undefined;
-  // Draws and LOD share one metadata budget, not two independent allowances.
-  if (
-    draws !== undefined &&
-    new TextEncoder().encode(JSON.stringify({ draws, lodOcclusion })).byteLength >
-      MAX_RECEIPT_OBSERVATION_BYTES
-  ) {
-    draws = unavailableDrawObservation('snapshot-too-large');
-    if (lodOcclusion !== undefined) lodOcclusion = unavailableLodObservation('snapshot-too-large');
-  }
   return ok(
     Object.freeze({
       ...observation.value,
-      ...(targetReadbacks === undefined
-        ? {}
-        : { targetReadbacks: Object.freeze(targetReadbacks.value) }),
-      ...(request.framebufferSnapshots === undefined
-        ? {}
-        : { framebufferSnapshots: snapshots.value }),
-      ...(timingObservation === undefined ? {} : { timings: timingObservation }),
+      ...readbacks.value,
+      ...(timings === undefined ? {} : { timings }),
       ...(volumeTimings === undefined ? {} : { volumeTimings }),
-      ...(lodOcclusion === undefined ? {} : { lodOcclusion }),
-      ...(draws === undefined ? {} : { draws }),
+      ...receiptLodAndDraws(
+        receipt,
+        context,
+        lodCaptureState,
+        includesLodOcclusion ? lod.value : undefined,
+        includesDraws,
+      ),
       ...(observations === undefined ? {} : { observations }),
     }),
   );

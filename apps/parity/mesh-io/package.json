@@ -61,7 +61,7 @@
     "@webgpu/types": "^0.1.74",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
-    "vite": "8.0.16",
+    "vite": "8.3.5",
     "@forgeax/engine-mesh-io": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*",
     "draco3dgltf": "1.5.7",

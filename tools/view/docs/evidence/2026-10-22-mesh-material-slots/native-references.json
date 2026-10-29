@@ -1,0 +1,516 @@
+{
+  "preview": {
+    "asset": {
+      "guid": "68819e53-5d1e-58a6-9d0a-e6eb48d5fdb6",
+      "kind": "mesh",
+      "sourceKey": "mesh/box",
+      "path": "assets/proof.pack.ts",
+      "packageId": "019fb7ce-3900-7000-8000-000000000000",
+      "lifecycle": "current",
+      "previewable": true
+    },
+    "target": {
+      "targetId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383",
+      "generation": 1,
+      "sessionId": "workspace-bc7a46ab-23a9-4e50-877f-d2a5105bbb75",
+      "worldId": "world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2",
+      "headed": true,
+      "width": 1280,
+      "height": 720
+    },
+    "assetBinding": {
+      "publication": {
+        "schemaVersion": "asset-publication/1",
+        "sourcePath": "assets/proof.pack.ts",
+        "sourceRevision": "sha256:c25458d5037bbfbf52de18e8be4499a65852ca60097236ee6a8ebce2dc3b9569",
+        "generation": 1,
+        "digest": "sha256:30fd4053f6578eb76b5bfd442d108bca9cac775c8700e0b3c4e342eb3947c83e",
+        "outputSetDigest": "sha256:44ecc6c06403121a26c19448af4ab5de5e21716b1dcfb99a90400da813a5b43d",
+        "outputs": [
+          {
+            "guid": "70df3f6e-7d87-5cfb-807f-71ed340a7b41",
+            "sourceKey": "material/box",
+            "kind": "material",
+            "digest": "sha256:c4e1dfbc41086382bc1b91b91a0e51790102bdac1a0e3c7d33eca23fd4b2ff83",
+            "refs": []
+          },
+          {
+            "guid": "68819e53-5d1e-58a6-9d0a-e6eb48d5fdb6",
+            "sourceKey": "mesh/box",
+            "kind": "mesh",
+            "digest": "sha256:6a95b46002a21d50a19ad74b1b4528d713d0568553c64b47c75a0a5914b18f95",
+            "refs": [
+              "70df3f6e-7d87-5cfb-807f-71ed340a7b41",
+              "70df3f6e-7d87-5cfb-807f-71ed340a7b41"
+            ]
+          },
+          {
+            "guid": "24365a15-380e-5b19-9ea2-c961b5afc25d",
+            "sourceKey": "scene/proof",
+            "kind": "scene",
+            "digest": "sha256:6dc52607b6d74920b14793fd297944c23e43c28bb529c2390c5e6b4a41c1d0a3",
+            "refs": [
+              "68819e53-5d1e-58a6-9d0a-e6eb48d5fdb6"
+            ]
+          }
+        ],
+        "receipt": {
+          "schemaVersion": "asset-publication-receipt/1",
+          "sourcePath": "assets/proof.pack.ts",
+          "sourceRevision": "sha256:c25458d5037bbfbf52de18e8be4499a65852ca60097236ee6a8ebce2dc3b9569",
+          "inputFingerprint": "sha256:c25458d5037bbfbf52de18e8be4499a65852ca60097236ee6a8ebce2dc3b9569",
+          "outputDigest": "sha256:30fd4053f6578eb76b5bfd442d108bca9cac775c8700e0b3c4e342eb3947c83e",
+          "outputSetDigest": "sha256:44ecc6c06403121a26c19448af4ab5de5e21716b1dcfb99a90400da813a5b43d",
+          "externalEvidence": []
+        },
+        "externalEvidence": [],
+        "current": {
+          "generation": 1,
+          "digest": "sha256:30fd4053f6578eb76b5bfd442d108bca9cac775c8700e0b3c4e342eb3947c83e",
+          "outputSetDigest": "sha256:44ecc6c06403121a26c19448af4ab5de5e21716b1dcfb99a90400da813a5b43d",
+          "packageUrl": "/__pack/scopes/view-mesh-material-slots-proof/1/asset/__forgeax-ddc/019fb7ce-3900-7000-8000-000000000000.sha256-c25458d5037bbfbf52de18e8be4499a65852ca60097236ee6a8ebce2dc3b9569-02fd161c2cb7345d8cc5c140d6dd46e3a75a7f917750b6eca132ca5e8da58c08.pack.json",
+          "receiptKey": "sha256:c25458d5037bbfbf52de18e8be4499a65852ca60097236ee6a8ebce2dc3b9569"
+        },
+        "scopeId": "view-mesh-material-slots-proof"
+      },
+      "meta": {
+        "kind": "mesh",
+        "vertexCount": 24,
+        "indexCount": 36,
+        "triangleCount": 12,
+        "uvChannelCount": 1,
+        "submeshes": [
+          {
+            "indexOffset": 0,
+            "indexCount": 36,
+            "vertexCount": 24,
+            "topology": "triangle-list",
+            "materialSlot": 0
+          }
+        ],
+        "materialSlots": [
+          {
+            "slotName": "Surface",
+            "sourceKey": "proof:box",
+            "defaultMaterial": 4
+          },
+          {
+            "slotName": "Repeated",
+            "defaultMaterial": 4
+          },
+          {
+            "slotName": "Engine default"
+          }
+        ],
+        "aabb": [
+          -1,
+          -1,
+          -1,
+          1,
+          1,
+          1
+        ],
+        "indexFormat": "uint32",
+        "attributes": [
+          "position",
+          "normal",
+          "uv",
+          "tangent"
+        ],
+        "geometryBytes": 1296,
+        "lodCount": 1,
+        "skinned": false,
+        "morphTargetCount": 0,
+        "collision": {
+          "present": false,
+          "vertexCount": 0,
+          "triangleCount": 0
+        }
+      }
+    }
+  },
+  "tree": {
+    "targetId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383",
+    "worldId": "world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2",
+    "revision": 5,
+    "sampledAt": 1792660014808,
+    "nodes": [
+      {
+        "entity": 0,
+        "entityId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383:world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2:0",
+        "name": null,
+        "componentNames": [
+          "Entity",
+          "GlobalTransform",
+          "Transform",
+          "MeshFilter",
+          "MeshRenderer"
+        ],
+        "parentId": null
+      },
+      {
+        "entity": 1,
+        "entityId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383:world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2:1",
+        "name": null,
+        "componentNames": [
+          "Entity",
+          "GlobalTransform",
+          "Transform",
+          "Camera"
+        ],
+        "parentId": null
+      },
+      {
+        "entity": 2,
+        "entityId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383:world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2:2",
+        "name": null,
+        "componentNames": [
+          "Entity",
+          "DirectionalLight"
+        ],
+        "parentId": null
+      },
+      {
+        "entity": 3,
+        "entityId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383:world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2:3",
+        "name": null,
+        "componentNames": [
+          "Entity",
+          "Skylight"
+        ],
+        "parentId": null
+      },
+      {
+        "entity": 4,
+        "entityId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383:world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2:4",
+        "name": null,
+        "componentNames": [
+          "Entity",
+          "SkyboxBackground"
+        ],
+        "parentId": null
+      }
+    ],
+    "nextOffset": null
+  },
+  "inspections": [
+    {
+      "entity": 0,
+      "entityId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383:world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2:0",
+      "name": null,
+      "targetId": "target-9e28cd34-95c4-40cf-87c5-8c79105e9269:preview:c430cb04-604a-4e62-8a78-0fbc2645f383",
+      "worldId": "world-a6e8ed5c-f0a9-4921-b017-947d3ee9e159-2",
+      "sampledAt": 1792660014906,
+      "assetReferences": {
+        "references": [
+          {
+            "key": "MeshFilter.assetHandle",
+            "component": "MeshFilter",
+            "field": "assetHandle",
+            "origin": "component",
+            "kind": "mesh",
+            "handle": 5,
+            "status": "resolved",
+            "guid": "68819e53-5d1e-58a6-9d0a-e6eb48d5fdb6"
+          },
+          {
+            "key": "MeshRenderer.materials[0]",
+            "component": "MeshRenderer",
+            "field": "materials",
+            "origin": "component",
+            "index": 0,
+            "kind": "material",
+            "handle": 4,
+            "status": "resolved",
+            "guid": "70df3f6e-7d87-5cfb-807f-71ed340a7b41",
+            "slotName": "Surface"
+          },
+          {
+            "key": "MeshRenderer.materials[1]",
+            "component": "MeshRenderer",
+            "field": "materials",
+            "origin": "component",
+            "index": 1,
+            "kind": "material",
+            "handle": 4,
+            "status": "resolved",
+            "guid": "70df3f6e-7d87-5cfb-807f-71ed340a7b41",
+            "slotName": "Repeated"
+          },
+          {
+            "key": "MeshRenderer.materials[2]",
+            "component": "MeshRenderer",
+            "field": "materials",
+            "index": 2,
+            "slotName": "Engine default",
+            "kind": "material",
+            "origin": "engine-default",
+            "status": "builtin"
+          }
+        ],
+        "truncated": false
+      },
+      "components": [
+        {
+          "name": "Entity",
+          "schema": {
+            "self": "entity"
+          },
+          "fields": {
+            "self": {
+              "type": "entity",
+              "default": null
+            }
+          },
+          "meta": {},
+          "values": {
+            "self": 0
+          },
+          "writable": false
+        },
+        {
+          "name": "GlobalTransform",
+          "schema": {
+            "world": "array<f32, 16>",
+            "presentation": "array<f32, 16>"
+          },
+          "fields": {
+            "world": {
+              "type": "array<f32, 16>",
+              "default": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              "arrayMeta": {
+                "elementType": "f32",
+                "length": 16
+              }
+            },
+            "presentation": {
+              "type": "array<f32, 16>",
+              "default": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              "arrayMeta": {
+                "elementType": "f32",
+                "length": 16
+              }
+            }
+          },
+          "meta": {},
+          "values": {
+            "world": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1
+            ],
+            "presentation": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1
+            ]
+          },
+          "writable": false
+        },
+        {
+          "name": "Transform",
+          "schema": {
+            "pos": "array<f32, 3>",
+            "quat": "array<f32, 4>",
+            "scale": "array<f32, 3>",
+            "shear": "array<f32, 3>"
+          },
+          "fields": {
+            "pos": {
+              "type": "array<f32, 3>",
+              "default": [
+                0,
+                0,
+                0
+              ],
+              "arrayMeta": {
+                "elementType": "f32",
+                "length": 3
+              }
+            },
+            "quat": {
+              "type": "array<f32, 4>",
+              "default": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "arrayMeta": {
+                "elementType": "f32",
+                "length": 4
+              }
+            },
+            "scale": {
+              "type": "array<f32, 3>",
+              "default": [
+                1,
+                1,
+                1
+              ],
+              "arrayMeta": {
+                "elementType": "f32",
+                "length": 3
+              }
+            },
+            "shear": {
+              "type": "array<f32, 3>",
+              "default": [
+                0,
+                0,
+                0
+              ],
+              "arrayMeta": {
+                "elementType": "f32",
+                "length": 3
+              }
+            }
+          },
+          "meta": {},
+          "values": {
+            "pos": [
+              0,
+              0,
+              0
+            ],
+            "quat": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "shear": [
+              0,
+              0,
+              0
+            ]
+          },
+          "writable": false
+        },
+        {
+          "name": "MeshFilter",
+          "schema": {
+            "assetHandle": "asset<mesh>"
+          },
+          "fields": {
+            "assetHandle": {
+              "type": "asset<mesh>"
+            }
+          },
+          "meta": {},
+          "values": {
+            "assetHandle": 5
+          },
+          "writable": false
+        },
+        {
+          "name": "MeshRenderer",
+          "schema": {
+            "lightingChannels": "f64",
+            "materials": "array<asset<material>>",
+            "conservativeSkinBounds": "bool",
+            "preparePipelines": "bool"
+          },
+          "fields": {
+            "lightingChannels": {
+              "type": "f64",
+              "default": 4294967295
+            },
+            "materials": {
+              "type": "array<asset<material>>",
+              "default": [],
+              "arrayMeta": {
+                "elementType": "asset<material>"
+              }
+            },
+            "conservativeSkinBounds": {
+              "type": "bool",
+              "default": false
+            },
+            "preparePipelines": {
+              "type": "bool",
+              "default": false
+            }
+          },
+          "meta": {},
+          "values": {
+            "lightingChannels": 4294967295,
+            "materials": [
+              4,
+              4,
+              0
+            ],
+            "conservativeSkinBounds": false,
+            "preparePipelines": false
+          },
+          "writable": false
+        }
+      ]
+    }
+  ]
+}

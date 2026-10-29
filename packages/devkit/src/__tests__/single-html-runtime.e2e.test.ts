@@ -49,12 +49,10 @@ const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'modu
 worker.onmessage = (event) => {
   if (event.data?.kind !== 'worker-ready') return;
   document.documentElement.dataset.workerReady = JSON.stringify(event.data);
-  document.documentElement.dataset.forgeaxFrameSubmitted = '1';
 };
 worker.postMessage({ run: true });
 document.documentElement.dataset.lazyValue = String(lazy.value);
 document.documentElement.dataset.forgeaxGameReady = 'true';
-document.documentElement.dataset.forgeaxFrameSubmitted = '1';
 `,
         ),
         writeFile(resolve(dist, 'lazy.js'), 'export const value = 42;\n'),

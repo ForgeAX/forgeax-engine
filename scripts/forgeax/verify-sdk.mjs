@@ -23,9 +23,12 @@ import {
   verifySdkViewRuntime,
 } from './sdk-lib.mjs';
 import { SDK_ARCHIVE_VERIFY_GROUPS } from './sdk-pr-preflight.mjs';
+import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
-import { createSdkVerifierProcess } from './verify-sdk-process.mjs';
+import { buildCacheEntries } from './sdk-template-cache.mjs';
+import { createSdkVerifierProcess, readSdkProjectDocument } from './verify-sdk-process.mjs';
+import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
 let sourcePackageManager;
 const processRunner = createSdkVerifierProcess(() => sourcePackageManager);
@@ -125,6 +128,7 @@ const tool = manifest.packages.find((entry) => entry.name === '@forgeax/view');
 if (
   !tool ||
   tool.role !== 'tool' ||
+  tool.root !== 'tools/view' ||
   manifest.packages.filter((entry) => entry.role === 'tool').length !== 1
 )
   throw new Error('sdk-view-tool-inventory');
@@ -138,8 +142,15 @@ if (
   JSON.stringify(['@forgeax/engine', '@forgeax/view'])
 )
   throw new Error('sdk-tool-runtime-inputs');
-for (const version of Object.values(toolInputs.dependencies))
-  if (version !== manifest.sdkVersion) throw new Error('sdk-tool-runtime-version');
+if (
+  toolInputs.dependencies['@forgeax/engine'] !== manifest.sdkVersion ||
+  toolInputs.dependencies['@forgeax/view'] !== 'file:../../tools/view'
+)
+  throw new Error('sdk-tool-runtime-version');
+const embeddedView = JSON.parse(
+  await readFile(resolve(sdkRoot, tool.root, 'package.json'), 'utf8'),
+);
+if (embeddedView.private !== true) throw new Error('sdk-view-tool-must-be-private');
 await readFile(resolve(sdkRoot, tool.root, 'LICENSE'));
 const archivedSkillIds = (await readdir(resolve(sdkRoot, 'skills'), { withFileTypes: true }))
   .filter((entry) => entry.isDirectory())
@@ -165,10 +176,10 @@ for (const entry of manifest.skills) {
     throw new Error(`sdk-skill-artifact-closure: ${entry.id}`);
 }
 try {
-  await access(resolve(sdkRoot, 'docs', 'guides'));
-  throw new Error('sdk-legacy-guide-surface');
+  await access(resolve(sdkRoot, 'docs'));
+  throw new Error('sdk-legacy-docs-surface');
 } catch (cause) {
-  if (cause instanceof Error && cause.message === 'sdk-legacy-guide-surface') throw cause;
+  if (cause instanceof Error && cause.message === 'sdk-legacy-docs-surface') throw cause;
 }
 const expectedTemplates = SDK_TEMPLATES.map(({ id, sourceRoot: root }) => ({ id, root }));
 if (JSON.stringify(manifest.templates) !== JSON.stringify(expectedTemplates))
@@ -303,8 +314,8 @@ for (const path of [
   'skills/forgeax-engine-assets/SKILL.md',
   'skills/forgeax-engine-cli/SKILL.md',
   'skills/forgeax-engine-rhi-debug/SKILL.md',
+  'skills/forgeax-engine-sdk/references/api-index.md',
   'skills/forgeax-engine-sdk/references/feature-catalog.md',
-  'skills/forgeax-engine-sdk/references/sdk-production.md',
   'templates/empty/AGENTS.md',
   'templates/empty/.gitignore',
   'templates/empty/forge.json',
@@ -385,6 +396,15 @@ const sourceBuildPnpm = (args) =>
 if (selected('source')) {
   await sdkStage('buildSourceSnapshot', async () => {
     await sourceBuildPnpm(['install', '--frozen-lockfile', '--ignore-scripts']);
+    await sdkStage('verify single-module source editing', () =>
+      verifySdkSourceEdit({ sdkRoot, output: resolve(unpackRoot, 'source-edit'), env: sourceEnv }),
+    );
+    // Keep the independent cold source-build proof after the seeded-package journey.
+    await execFileAsync(process.execPath, ['scripts/clean-build-outputs.mjs'], {
+      cwd: sourceRoot,
+      env: sourceEnv,
+      maxBuffer: 64 * 1024 * 1024,
+    });
     await sourceBuildPnpm(['build:engine']);
     await sourceBuildPnpm(['build:tools']);
     await sourceBuildPnpm(['build:app', 'preview']);
@@ -472,12 +492,21 @@ if (selected('project')) {
   }
   if (createdProjectEnvelope.value?.sdkUpdate?.status !== 'skipped')
     throw new Error('sdk-new-update-check-offline');
+  // The template ships its cooked Pack products; the project's first cook must
+  // reuse them instead of writing its own (checked after the first build).
+  const shippedBuildCache = await buildCacheEntries(project);
+  if (!shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')))
+    throw new Error('sdk-new-template-build-cache-missing');
+  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/api-index.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/sdk-production.md'));
+  await readFile(resolve(project, 'skills/forgeax-engine-sdk/SKILL.md'));
   const projectWorkspace = await readFile(resolve(project, 'pnpm-workspace.yaml'), 'utf8');
   if (!projectWorkspace.includes('trustLockfile: true'))
     throw new Error('sdk-game-lockfile-trust-missing');
-  if (!projectWorkspace.includes('verifyDepsBeforeRun: warn'))
+  if (
+    !projectWorkspace.includes('verifyDepsBeforeRun: install') ||
+    !projectWorkspace.includes('frozenLockfile: true')
+  )
     throw new Error('sdk-game-run-install-policy-missing');
   if (!projectWorkspace.includes('enableGlobalVirtualStore: false'))
     throw new Error('sdk-game-virtual-store-policy-missing');
@@ -547,8 +576,8 @@ if (selected('project')) {
     if (exists) throw new Error(`sdk-empty-source-layout-retired: ${retiredPath}`);
   }
   // Select the custom package identity before installation through the public
-  // CLI. Editing package.json afterwards genuinely invalidates pnpm's workspace
-  // state and requires an install; that warning is not an SDK bootstrap failure.
+  // CLI. A later package.json identity edit is reconciled once by the project's
+  // frozen `verifyDepsBeforeRun: install` policy; see sdk-project-identity.mjs.
   const interactiveLocalEnv = { ...offlineEnv, CI: '' };
   const renamedProjectDoctor = await execFileAsync(
     'pnpm',
@@ -561,6 +590,7 @@ if (selected('project')) {
   );
   if (renamedProjectDoctor.stderr.includes('node_modules are out of sync'))
     throw new Error('sdk-game-first-command-dependency-drift');
+  await verifyProjectIdentityReconcile(project, offlineEnv);
   const helpResult = await execFileAsync(
     'node',
     [resolve(sdkRoot, 'bin', 'forgeax.mjs'), 'help', 'dev'],
@@ -613,6 +643,11 @@ if (selected('project')) {
       maxBuffer: 128 * 1024 * 1024,
     },
   );
+  const cookedBuildCache = (await buildCacheEntries(project)).filter(
+    (entry) => !shippedBuildCache.includes(entry),
+  );
+  if (cookedBuildCache.length > 0)
+    throw new Error(`sdk-new-template-build-cache-miss: ${cookedBuildCache.join(', ')}`);
   const staticManifest = JSON.parse(
     await readFile(resolve(staticOutput, 'forgeax-dist.json'), 'utf8'),
   );
@@ -671,19 +706,8 @@ if (selected('project')) {
 
   // Resolve the public import from the installed candidate project, rather than
   // the verifier checkout (the package has an ESM-only public entry).
-  async function readProjectCatalog(path) {
-    const catalogRead = await execFileAsync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '--eval',
-        "import { readFile } from 'node:fs/promises'; import { decodeCatalogWire } from '@forgeax/engine/pack'; console.log(JSON.stringify(decodeCatalogWire(JSON.parse(await readFile(process.argv[1], 'utf8'))).unwrap()));",
-        path,
-      ],
-      { cwd: project },
-    );
-    return JSON.parse(catalogRead.stdout);
-  }
+  const readProjectCatalog = (path) =>
+    readSdkProjectDocument(execFileAsync, project, path, 'catalog');
   const builtCatalog = await readProjectCatalog(resolve(project, 'dist/pack-index.json'));
   const defaultSceneEntry = Array.isArray(builtCatalog)
     ? builtCatalog.find((entry) => entry.guid === defaultSceneGuid)
@@ -695,11 +719,10 @@ if (selected('project')) {
   ) {
     throw new Error('sdk-scriptable-pack-build-closure');
   }
-  const defaultScenePackage = JSON.parse(
-    await readFile(
-      resolve(project, 'dist', defaultSceneEntry.packageUrl.replace(/^\/+/, '')),
-      'utf8',
-    ),
+  const defaultScenePackage = await readSdkProjectDocument(
+    execFileAsync,
+    project,
+    resolve(project, 'dist', defaultSceneEntry.packageUrl.replace(/^\/+/, '')),
   );
   if (
     !Array.isArray(defaultScenePackage.assets) ||
@@ -1042,7 +1065,7 @@ if (selected('project')) {
       const runtime = await sdkStage('selectedBrowser.runtimeProbe', () =>
         page.evaluate(() => {
           const canvas = document.querySelector('canvas');
-          const frameId = Number(document.documentElement.dataset.forgeaxFrameSubmitted);
+          const frameId = canvas?.forgeaxFrameProgress?.submitted?.frameId;
           return {
             canvas: { width: canvas?.width ?? 0, height: canvas?.height ?? 0 },
             engineFrameId: Number.isSafeInteger(frameId) && frameId > 0 ? frameId : null,
@@ -1296,7 +1319,8 @@ if (selected('project')) {
                   fatal.getClientRects().length > 0,
                 text: fatal?.textContent?.slice(0, 4_000) ?? null,
               },
-              forgeaxFrameSubmitted: document.documentElement.dataset.forgeaxFrameSubmitted ?? null,
+              submittedFrameId:
+                document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null,
               renderer,
               ...(rendererError === undefined ? {} : { rendererError }),
             };
@@ -1374,7 +1398,9 @@ if (selected('project')) {
             ) {
               throw new Error(`sdk-selected-startup-failed: ${fatal.textContent?.slice(0, 4_000)}`);
             }
-            return Number(document.documentElement.dataset.forgeaxFrameSubmitted) > 0;
+            return (
+              (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > 0
+            );
           },
           undefined,
           { timeout: 120_000, polling: 100 },
@@ -1651,12 +1677,13 @@ if (selected('source')) {
   await sdkGpuStage('verifyPublicSourceViewTool', () =>
     execFileAsync(
       process.execPath,
-      [resolve(sourceRoot, 'tools/view-plugins/integration/verify-diagnostic-pages.mjs')],
+      [resolve(sourceRoot, 'tools/view/scripts/verify-diagnostic-pages-integration.mjs')],
       {
         streamOutput: true,
         cwd: sourceRoot,
         env: {
           ...sourceEnv,
+          FORGEAX_VIEW_ENGINE_SOURCE_ROOT: sourceRoot,
           FORGEAX_VIEW_TOOL_PACKAGE: resolve(sourceRoot, 'tools/view'),
           FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
           FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
@@ -1677,6 +1704,7 @@ if (selected('project')) {
         cwd: sdkRoot,
         env: {
           ...offlineEnv,
+          FORGEAX_INDEPENDENT_EVIDENCE_ROOT: resolve(dirname(archive), 'independent-run'),
           FORGEAX_INDEPENDENT_ENGINE_PACKAGE: resolve(
             sdkRoot,
             '.forgeax/cli-runtime/node_modules/@forgeax/engine',
@@ -1699,13 +1727,14 @@ if (selected('project')) {
         [
           resolve(
             import.meta.dirname,
-            '../../tools/view-plugins/integration/verify-diagnostic-pages.mjs',
+            '../../tools/view/scripts/verify-diagnostic-pages-integration.mjs',
           ),
         ],
         {
           cwd: sdkRoot,
           env: {
             ...offlineEnv,
+            FORGEAX_VIEW_ENGINE_SOURCE_ROOT: sourceRoot,
             FORGEAX_VIEW_TOOL_PACKAGE: resolve(
               sdkRoot,
               '.forgeax/cli-runtime/node_modules/@forgeax/view',

@@ -8,6 +8,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { pnpmCommand } from '../../lib/pnpm-command.mjs';
 import { cleanRetiredModelingSubmoduleCheckout } from '../prepare-pnpm-workspace.mjs';
+import { isRootRuntimeInstall } from '../workspace-install-scope.mjs';
 
 const script = resolve('scripts/ci/prepare-pnpm-workspace.mjs');
 
@@ -143,7 +144,12 @@ test('keeps the pinned View source and removes a stale uninitialized checkout', 
 });
 
 test('CI install entrypoints clean stale workspace sources first', () => {
-  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+  const workspaceCommands = (source) =>
+    source
+      .split('\n')
+      .filter((line) => !isRootRuntimeInstall(line))
+      .join('\n');
+  const workflow = workspaceCommands(readFileSync('.github/workflows/ci.yml', 'utf8'));
   const installs = workflow
     .split(/\r?\n/)
     .filter((line) => /\brun:\s.*\b(?:pnpm|bun) install --frozen-lockfile/.test(line));
@@ -152,10 +158,19 @@ test('CI install entrypoints clean stale workspace sources first', () => {
   assert.doesNotMatch(workflow, /pnpm install --frozen-lockfile/);
   assert.match(workflow, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);
   for (const path of ['sdk-pr-preflight.yml', 'bench.yml', 'ci-focus.yml']) {
-    const consumer = readFileSync(`.github/workflows/${path}`, 'utf8');
+    const consumer = workspaceCommands(readFileSync(`.github/workflows/${path}`, 'utf8'));
     assert.doesNotMatch(consumer, /pnpm install --frozen-lockfile/);
     assert.match(consumer, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);
   }
+  const nativeRayQuery = workspaceCommands(
+    readFileSync('.github/workflows/native-ray-query.yml', 'utf8'),
+  );
+  assert.doesNotMatch(nativeRayQuery, /pnpm install --frozen-lockfile/);
+  assert.equal(
+    (nativeRayQuery.match(/node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/g) ?? []).length,
+    2,
+    'both Native Ray Query workspaces must clean retired submodules before installing',
+  );
 });
 
 test('ordinary CI installs only the current platform and never executes root lifecycle hooks', async () => {

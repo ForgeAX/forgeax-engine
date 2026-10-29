@@ -355,10 +355,34 @@ describe('derived material interface contract matrix', () => {
     expect(shared.schema).toBe(admitted.schema);
     expect(shared.derivedInterface).toBe(admitted.derivedInterface);
     expect(next.stats()).toEqual({ admissions: 1, derivations: 0, projections: 1 });
+    // An equal mutable copy is never admitted by identity; it shares the
+    // already frozen schema and derivation of the same exact content.
     const copied = structuredClone(admitted.schema);
     const mutable = next.admit({ ownerId: 'receiver::copy', revision: 1, schema: copied });
     expect(mutable.schema).not.toBe(copied);
-    expect(next.stats()).toEqual({ admissions: 2, derivations: 1, projections: 2 });
+    expect(mutable.schema).toBe(admitted.schema);
+    expect(mutable.derivedInterface).toBe(admitted.derivedInterface);
+    expect(next.stats()).toEqual({ admissions: 2, derivations: 0, projections: 2 });
+    (copied[0] as { default: number }).default = 0.25;
+    expect(mutable.schema[0]).toMatchObject({ default: 0.5 });
+    const changed = next.admit({ ownerId: 'receiver::changed', revision: 1, schema: copied });
+    expect(changed.schema).not.toBe(admitted.schema);
+    expect(next.stats()).toEqual({ admissions: 3, derivations: 1, projections: 3 });
+    // A lossy JSON spelling (an undefined field) never selects shared content.
+    const plain = next.admit({
+      ownerId: 'receiver::plain',
+      revision: 1,
+      schema: [{ name: 'factor', type: 'f32' }],
+    });
+    const lossy = next.admit({
+      ownerId: 'receiver::lossy',
+      revision: 1,
+      // Runtime inputs can still carry an own undefined field.
+      schema: [{ name: 'factor', type: 'f32', default: undefined } as unknown as ParamSchemaEntry],
+    });
+    expect(lossy.schema).not.toBe(plain.schema);
+    expect(Object.hasOwn(lossy.schema[0] as object, 'default')).toBe(true);
+    expect(next.stats()).toEqual({ admissions: 5, derivations: 3, projections: 5 });
     expect(() =>
       next.admit({
         ownerId: 'receiver::material',

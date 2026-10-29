@@ -10,6 +10,7 @@ import {
   MeshFilter,
   MeshRenderer,
 } from '@forgeax/engine-render';
+import { encodeRenderPublication } from '@forgeax/engine-render/internal';
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
@@ -57,7 +58,15 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
       { component: Transform, data: { pos: [0, 2, 6] } },
       {
         component: Camera,
-        data: { aspect: 1, near: 0.1, far: 60, antialias: 0, bloom: 0, tonemap: 7 },
+        data: {
+          fov: Math.PI / 3,
+          aspect: 1,
+          near: 0.1,
+          far: 60,
+          antialias: 0,
+          bloom: 0,
+          tonemap: 7,
+        },
       },
     )
     .unwrap();
@@ -176,7 +185,7 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
               ),
             });
       writes.length = 0;
-      const receipt = required(renderer.draw({ publication: packet }));
+      const receipt = required(renderer.draw({ publication: encodeRenderPublication(packet) }));
       required(await receipt.completed);
       expect(receipt.presentation).toBe('ready');
       const channels = renderer

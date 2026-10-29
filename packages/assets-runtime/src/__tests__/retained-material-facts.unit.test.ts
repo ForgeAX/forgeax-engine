@@ -1,7 +1,7 @@
 import { createMaterialProgramSetDigest } from '@forgeax/engine-pack/material-cook';
 import { encodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import type { MaterialProgramAbi } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { cloneRetainedPackPayload } from '../internal/retained-material-facts.js';
 import { parseRetainedPackJson, readRetainedPackJson } from '../internal/retained-pack-json.js';
 import { createMaterialLoader } from '../material/loader.js';
@@ -48,6 +48,25 @@ function parsed(text = JSON.stringify(publication())) {
 }
 
 describe('retained material publication facts', () => {
+  it('preserves distinct extension content through the actual parsed-package admission path', async () => {
+    vi.resetModules();
+    const { parseRetainedPackJson: parseFresh } = await import('../internal/retained-pack-json.js');
+    const extension = {
+      prime: Array.from({ length: 12 }, (_, value) => ({ value })),
+      left: { a: { value: 0 }, 'foos19:abcdefghijklmnop': 7 },
+      right: { a: { value: 11 }, foo: 'abcdefghijklmnopn7,' },
+    };
+    // The extension is visited first. In the old package-local interner its
+    // children get ids 1..12, making the following two object keys collide.
+    const extended = { extension, ...abi };
+    const pack = parseFresh(JSON.stringify(publication([extended]))) as Publication;
+    const result = pack.assets[0]?.payload.cooked.programs[0]?.selections[0]?.abi as
+      | typeof extended
+      | undefined;
+    expect(result).toEqual(extended);
+    expect(result?.extension.right).not.toBe(result?.extension.left);
+  });
+
   it('retains shared program tables before freezing either material record', () => {
     const source = publication();
     const pack = parsed(JSON.stringify(encodeMaterialProgramWire(source)));
@@ -92,6 +111,38 @@ describe('retained material publication facts', () => {
     const b = pack.assets[1]?.payload.cooked.programs[0]?.selections[0]?.abi;
     expect(a).not.toBe(b);
     expect(b).toEqual(changed);
+  });
+
+  it('shares equal ABI structure across ABIs and separately parsed packages', () => {
+    const changed = { ...abi, alphaMask: { ...abi.alphaMask, cutoff: 'otherCutoff' } };
+    const first = parsed(JSON.stringify(publication([abi, changed])));
+    const second = parsed(JSON.stringify(publication([abi])));
+    const a = first.assets[0]?.payload.cooked.programs[0]?.selections[0]?.abi;
+    const b = first.assets[1]?.payload.cooked.programs[0]?.selections[0]?.abi;
+    const c = second.assets[0]?.payload.cooked.programs[0]?.selections[0]?.abi;
+    if (a === undefined || b === undefined || c === undefined) throw Error('Missing ABI');
+    expect(c).toBe(a);
+    expect(b).not.toBe(a);
+    expect(b.materialRow).toBe(a.materialRow);
+    expect(b.reflection).toBe(a.reflection);
+    expect(b.alphaMask).not.toBe(a.alphaMask);
+    expect(Object.isFrozen(b.alphaMask)).toBe(true);
+    expect(b).toEqual(changed);
+  });
+
+  it('keeps negative zero distinct from zero in shared ABI structure', () => {
+    const text = JSON.stringify(publication([abi])).replace(
+      '"generation":1',
+      '"generation":1,"extension":0',
+    );
+    const zero = parsed(text).assets[0]?.payload.cooked.programs[0]?.selections[0]?.abi;
+    const negative = parsed(text.replace('"extension":0', '"extension":-0')).assets[0]?.payload
+      .cooked.programs[0]?.selections[0]?.abi;
+    const again = parsed(text).assets[0]?.payload.cooked.programs[0]?.selections[0]?.abi;
+    expect(again).toBe(zero);
+    expect(negative).not.toBe(zero);
+    expect(Object.is((negative as { extension?: number }).extension, -0)).toBe(true);
+    expect(negative?.materialRow).toBe(zero?.materialRow);
   });
 
   it('retains numeric edge cases and invalid ABI data for the existing validator', () => {

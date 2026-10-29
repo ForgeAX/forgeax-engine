@@ -456,3 +456,67 @@ it('queues texture and sampler roots without visiting material consumers and ref
   capture.dispose();
   device.destroyTexture(texture);
 });
+
+it.each([
+  128, 1024,
+])('edits 8 captured rows without scanning N=%i entries or buffers', async (count) => {
+  const { device, source } = await acceptedCaptureFixture();
+  const card = source.layout.cards[0];
+  assert(card);
+  const sources = Array.from({ length: count }, (_, instanceId) => ({
+    ...source,
+    layout: { ...source.layout, cards: [card] },
+    instance: { ...source.instance, instanceId },
+  }));
+  const capture = (
+    await prepareSurfaceCapture(
+      device,
+      createShaderModule,
+      sources,
+      { kind: 'cards', resolution: 8 },
+      256 * 1024 * 1024,
+      8,
+    )
+  ).unwrap();
+  const uploads = vi.spyOn(device.queue, 'writeBuffer');
+  let bufferReads = 0,
+    entryReads = 0;
+  // Count real owner-array accesses, including manual indexed loops.
+  for (const read of capture.bufferReads) {
+    const buffer = read.buffer;
+    Object.defineProperty(read, 'buffer', {
+      get: () => {
+        bufferReads++;
+        return buffer;
+      },
+    });
+  }
+  for (const entry of capture.entries) {
+    const instanceId = entry.instanceId;
+    Object.defineProperty(entry, 'instanceId', {
+      get: () => {
+        entryReads++;
+        return instanceId;
+      },
+    });
+  }
+  const moved = Array.from(source.instance.transform);
+  moved[12] = 1;
+  for (let instanceId = count - 8; instanceId < count; instanceId++) {
+    capture.retransform(instanceId, moved).unwrap();
+    capture.rematerialize(instanceId, sources[instanceId] as SurfaceCaptureSource).unwrap();
+  }
+  for (let instanceId = count - 8; instanceId < count; instanceId++) {
+    expect(capture.entry(instanceId)?.instanceId).toBe(instanceId);
+    capture.remove(instanceId).unwrap();
+    expect(capture.entry(instanceId)).toBeUndefined();
+  }
+  expect(capture.entry(0)?.instanceId).toBe(0);
+  expect(uploads.mock.calls.length).toBeLessThan(128);
+  expect(uploads.mock.calls.reduce((bytes, call) => bytes + call[2].byteLength, 0)).toBeLessThan(
+    128 * 1024,
+  );
+  expect(entryReads).toBeLessThan(128);
+  expect(bufferReads).toBeLessThan(128);
+  capture.dispose();
+});

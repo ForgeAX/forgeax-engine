@@ -16,10 +16,10 @@ import {
   prepareTargetCaptureLighting,
 } from '../record/target-capture-lighting';
 import { POINTS_LINES_VIEW_BUFFER_SIZE, writePointsLinesViewUbo } from '../record/view-ubo';
-import type { ExtractedLights } from '../render-system-extract';
 import { getOrCreateSsaoFallbackTexture, resetSsaoResources } from '../ssao-buffers';
 import type { RenderTarget } from '../targets/contracts';
 import { createRenderTargetPhysical, destroyRenderTargetPhysical } from '../targets/physical';
+import type { ViewLights } from '../world/render-lights';
 import { earthAtmosphere } from './atmosphere-fixture';
 
 const lights = {
@@ -28,7 +28,9 @@ const lights = {
   spot: [],
   rect: [],
   pointShadow: [],
-} as unknown as ExtractedLights;
+  cascades: undefined,
+  shadowViews: [],
+} as unknown as ViewLights;
 
 function required<T>(value: T | null | undefined): T {
   if (value === null || value === undefined) throw new Error('required capture test value');
@@ -329,6 +331,9 @@ it('uses current Fog while retaining the captured atmosphere and sun', async () 
     density: 0.02,
     heightFalloff: 0.1,
     maxOpacity: 1,
+    mode: 'exp' as const,
+    near: 0,
+    far: 100,
   };
   f.state.environmentFrame = selectEnvironment({
     environments: [

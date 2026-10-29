@@ -2,6 +2,7 @@ import type { MaterialResource } from '../material-resource';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { GpuDrivenDrawSnapshot } from '../render-system-extract';
 import { TreeFrame } from '../scene/frame-tree-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame, MeshGeometry } from '../scene/mesh-frame';
 import { defaultMeshMaterial, effectiveMeshMaterials } from '../scene/mesh-materials';
 import { StableRangeAllocator } from '../stable-range-allocator';
@@ -15,6 +16,7 @@ import type {
   MeshBatchSource,
   SubmissionPlan,
 } from './batch-topology';
+import { rowMaterialSlot } from './row-materials';
 
 const geometryDraws = new WeakMap<
   MeshGeometry,
@@ -77,7 +79,13 @@ export function meshGeometryDraws(
 
 const meshExecutions = new WeakMap<
   MeshBatchSource,
-  WeakMap<MeshGeometry, readonly EligibleGpuDrivenDraw[]>
+  WeakMap<
+    MeshGeometry,
+    {
+      readonly materials: readonly MaterialResource[];
+      readonly draws: readonly EligibleGpuDrivenDraw[];
+    }
+  >
 >();
 /** Expand shared Mesh facts, without reading or copying source members. */
 function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly EligibleGpuDrivenDraw[] {
@@ -86,8 +94,6 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
     versions = new WeakMap();
     meshExecutions.set(source, versions);
   }
-  const cached = versions.get(mesh);
-  if (cached !== undefined) return cached;
   const template = source.draws[0];
   if (template === undefined) return [];
   const materials = effectiveMeshMaterials(
@@ -95,9 +101,15 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
     mesh,
     template.binding.geometry.deformation === 'skin' ? 'skinned' : 'mesh',
   );
-  const lods = mesh.lods?.map((level) => level.mesh);
+  const cached = versions.get(mesh);
+  if (cached?.materials === materials.materials) return cached.draws;
+  // Morphed members deform LOD0 vertices; their batch carries no LOD chain.
+  const morph = template.binding.morph;
+  const rowGroup = template.binding.rowGroup;
+  const rowClass = rowGroup?.text;
+  const lods = morph === undefined ? mesh.lods?.map((level) => level.mesh) : undefined;
   const lod =
-    mesh.lods === undefined
+    mesh.lods === undefined || morph !== undefined
       ? undefined
       : Object.freeze({
           coverages: Object.freeze([1, ...mesh.lods.map((level) => level.screenCoverage)]),
@@ -118,6 +130,10 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
         material: materials.materials[draw.materialSlot] ?? materials.material,
         geometry: draw.geometry,
         drawItemIndex,
+        ...(morph === undefined ? {} : { morph }),
+        ...(rowGroup !== undefined && rowMaterialSlot(source, draw.materialSlot)
+          ? { rowGroup }
+          : {}),
       }),
       key: Object.freeze({
         drawItemIndex,
@@ -130,15 +146,42 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
         materialSlot: draw.materialSlot,
         topology: draw.topology,
         ...(template.key.reflected ? { reflected: true } : {}),
+        ...(morph === undefined ? {} : { morph }),
         pipelineClass: draw.pipelineClass,
-        materialResourceClass: draw.materialResourceClass,
+        // One-entry overrides address only slot 0 per row; other slots are Mesh defaults.
+        ...(rowClass !== undefined && rowMaterialSlot(source, draw.materialSlot)
+          ? { rowMaterial: true as const, materialResourceClass: rowClass }
+          : { materialResourceClass: draw.materialResourceClass }),
       }),
       ...(lod === undefined ? {} : { lod }),
     });
   });
   const result = Object.freeze(draws);
-  versions.set(mesh, result);
+  versions.set(mesh, { materials: materials.materials, draws: result });
   return result;
+}
+
+/** Parameter versions keep execution bindings; resource replacement changes the join. */
+function materialBindingsChanged(
+  previous: MaterialFrame | undefined,
+  current: MaterialFrame | undefined,
+): boolean {
+  if (previous === current) return false;
+  if (previous === undefined || current === undefined) return true;
+  let changed = false;
+  current.changesSince(previous, (before, after) => {
+    if (before === undefined || after === undefined) changed = true;
+  });
+  return changed;
+}
+
+function querySources(source: SubmissionPlan): BatchSources {
+  // Raw callers supply live facts. Only the producer-owned fixed domain may
+  // retain its identity instead of capturing the actual task roster again.
+  if (BatchSources.isFixed(source.batches)) return source.batches;
+  let batches = new BatchSources();
+  for (const batch of source.batches) batches = batches.with(batch);
+  return batches;
 }
 
 interface ExecutionWindow {
@@ -171,6 +214,12 @@ export class MeshBatchProjection {
   // It deliberately cannot retain an unrelated MeshFrame's payload closure.
   private queriedMeshes = new WeakSet<MeshFrame>();
   private queriedWithoutMeshes = false;
+  /** Meshes of the last full or patched query; a mesh edit re-joins only its bindings. */
+  private meshes: MeshFrame | undefined;
+  private materials: MaterialFrame | undefined;
+  private meshKnown = false;
+  private readonly sourcesByMesh = new Map<string, Map<number, GpuDrivenBatch>>();
+  private readonly meshKeyBySource = new Map<number, string>();
   readonly windowCompactions = 0;
   windowRelocations = 0;
 
@@ -184,35 +233,79 @@ export class MeshBatchProjection {
     this.plan = undefined;
     this.queriedMeshes = new WeakSet();
     this.queriedWithoutMeshes = false;
+    this.meshes = undefined;
+    this.materials = undefined;
+    this.meshKnown = false;
+    this.sourcesByMesh.clear();
+    this.meshKeyBySource.clear();
     this.freeIds.length = 0;
     for (let id = this.generations.length - 1; id >= 0; id--) this.freeIds.push(id);
   }
 
   /** Enumerate tasks for a real executed view; source publication never calls this. */
-  query(source: SubmissionPlan, meshes: MeshFrame | undefined): SubmissionPlan {
-    // A raw caller supplies live facts, so capture its actual task roster on each
-    // query. Only the producer-owned source domain may take an identity shortcut.
-    let batches: BatchSources;
-    if (BatchSources.isFixed(source.batches)) batches = source.batches;
-    else {
-      batches = new BatchSources();
-      for (const batch of source.batches) batches = batches.with(batch);
-    }
+  query(
+    source: SubmissionPlan,
+    meshes: MeshFrame | undefined,
+    materials?: MaterialFrame,
+  ): SubmissionPlan {
+    const batches = querySources(source);
+    const rebindMaterials = materialBindingsChanged(this.materials, materials);
     if (
       this.plan !== undefined &&
       this.sourceRoot === batches &&
+      !rebindMaterials &&
       (meshes === undefined ? this.queriedWithoutMeshes : this.queriedMeshes.has(meshes))
-    )
+    ) {
+      this.materials = materials;
       return this.plan;
-    if (this.sourceRoot !== undefined && this.sourceRoot !== batches) {
-      batches.changesSince(this.sourceRoot, (before, after) => {
-        if (before !== undefined && after === undefined) this.remove(before.batchId);
-      });
     }
     // Each join supplies an actual selector/raster task, including tasks whose
     // GPU cull produces zero visible instances. No resource-version polling or
     // group repair runs from Mesh adoption, publication, or a skipped view.
-    for (const member of batches) this.update(member, meshes);
+    // A retained baseline re-joins only edited sources and sources whose Mesh
+    // changed; every other window and publication is unchanged by definition.
+    const baseline = this.sourceRoot;
+    const patch =
+      baseline !== undefined &&
+      this.meshKnown &&
+      !rebindMaterials &&
+      (meshes === undefined) === (this.meshes === undefined);
+    // A failed join leaves partial windows; the next query then rejoins all.
+    this.meshKnown = false;
+    if (patch) {
+      const touched = new Map<number, GpuDrivenBatch>();
+      if (baseline !== batches)
+        batches.changesSince(baseline, (before, after) => {
+          if (after !== undefined) touched.set(after.batchId, after);
+          else if (before !== undefined) {
+            this.remove(before.batchId);
+            this.unindex(before.batchId);
+          }
+        });
+      if (meshes !== undefined && this.meshes !== undefined && meshes !== this.meshes)
+        meshes.changesSince(this.meshes, (before, after) => {
+          const geometry = after ?? before;
+          if (geometry === undefined) return;
+          for (const member of this.sourcesByMesh
+            .get(`${geometry.worldId}:${geometry.handle}`)
+            ?.values() ?? [])
+            if (batches.get(member.batchId) === member) touched.set(member.batchId, member);
+        });
+      for (const member of touched.values()) this.update(member, meshes);
+    } else {
+      if (baseline !== undefined && baseline !== batches) {
+        batches.changesSince(baseline, (before, after) => {
+          if (before !== undefined && after === undefined) {
+            this.remove(before.batchId);
+            this.unindex(before.batchId);
+          }
+        });
+      }
+      for (const member of batches) this.update(member, meshes);
+    }
+    this.meshes = meshes;
+    this.materials = materials;
+    this.meshKnown = true;
     const previous = this.plan;
     const plan =
       previous?.batches === this.published && previous.sourceGroups === batches
@@ -232,6 +325,30 @@ export class MeshBatchProjection {
     return plan;
   }
 
+  private unindex(batchId: number): void {
+    const key = this.meshKeyBySource.get(batchId);
+    if (key === undefined) return;
+    this.meshKeyBySource.delete(batchId);
+    const sources = this.sourcesByMesh.get(key);
+    sources?.delete(batchId);
+    if (sources?.size === 0) this.sourcesByMesh.delete(key);
+  }
+
+  private index(member: GpuDrivenBatch): void {
+    const binding = member.binding;
+    if (binding === undefined) return;
+    const key = `${binding.worldId}:${binding.assetHandle}`;
+    const previous = this.meshKeyBySource.get(member.batchId);
+    if (previous !== undefined && previous !== key) this.unindex(member.batchId);
+    this.meshKeyBySource.set(member.batchId, key);
+    let sources = this.sourcesByMesh.get(key);
+    if (sources === undefined) {
+      sources = new Map();
+      this.sourcesByMesh.set(key, sources);
+    }
+    sources.set(member.batchId, member);
+  }
+
   private remove(batchId: number): void {
     const group = this.groups.get(batchId);
     if (group === undefined) return;
@@ -249,6 +366,7 @@ export class MeshBatchProjection {
   private update(member: GpuDrivenBatch, meshes: MeshFrame | undefined): void {
     const binding = member.binding;
     if (binding === undefined) throw new Error('Mesh membership requires its source binding');
+    this.index(member);
     const authored = binding.source;
     const mesh = meshes?.get(binding.worldId, binding.assetHandle);
     const draws =
@@ -333,12 +451,17 @@ export class MeshBatchProjection {
           window.levelCapacity > required * 4 ||
           window.levels !== levels
         ) {
-          const start = this.visibleRanges.allocate(required * levels);
+          // Growth reserves 1.5x of the outgrown window: amortized O(1) relocations.
+          const reserved =
+            window.levels === levels && window.levelCapacity < required
+              ? Math.max(required, Math.ceil(window.levelCapacity * 1.5))
+              : required;
+          const start = this.visibleRanges.allocate(reserved * levels);
           let indirectStart = window.indirectStart;
           try {
             if (window.levels !== levels) indirectStart = this.indirectRanges.allocate(levels);
           } catch (cause) {
-            this.visibleRanges.release(start, required * levels);
+            this.visibleRanges.release(start, reserved * levels);
             throw cause;
           }
           this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
@@ -346,7 +469,7 @@ export class MeshBatchProjection {
             this.indirectRanges.release(window.indirectStart, window.levels);
           window.visibleStart = start;
           window.indirectStart = indirectStart;
-          window.levelCapacity = required;
+          window.levelCapacity = reserved;
           window.levels = levels;
           window.published = undefined;
           this.windowRelocations++;

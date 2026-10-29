@@ -17,15 +17,27 @@ const material = {
 };
 
 it('selects the direct and scene program pair for the actual pass', () => {
-  expect(gpuDrivenMaterialProgramSelection(material, prepared, 'forward', undefined)).toEqual({
+  expect(
+    gpuDrivenMaterialProgramSelection(material, prepared, 'forward', undefined, {
+      logicalMaterialShaderId: '',
+      sceneIndexProgramKey: undefined,
+      materialShaderId: '',
+    }),
+  ).toEqual({
     logicalMaterialShaderId: 'game::surface',
     materialShaderId: 'game::surface-scene',
     sceneIndexProgramKey: 'game::surface-scene',
   });
   expect(
-    gpuDrivenMaterialProgramSelection(material, prepared, 'shadow', {
-      materialShaderId: 'game::shadow',
-    }),
+    gpuDrivenMaterialProgramSelection(
+      material,
+      prepared,
+      'shadow',
+      {
+        materialShaderId: 'game::shadow',
+      },
+      { logicalMaterialShaderId: '', sceneIndexProgramKey: undefined, materialShaderId: '' },
+    ),
   ).toEqual({
     logicalMaterialShaderId: 'game::surface',
     materialShaderId: 'game::shadow-scene',
@@ -43,6 +55,7 @@ it('does not reinterpret a direct shadow program when its publication has no sce
       prepared,
       'shadow',
       { materialShaderId: 'game::shadow' },
+      { logicalMaterialShaderId: '', sceneIndexProgramKey: undefined, materialShaderId: '' },
     ),
   ).toBeUndefined();
 });
@@ -80,7 +93,13 @@ it('retains an explicit scene pair even when its key equals the direct identity'
       Forward: { pass: 'forward' as const, specializationKey: 'game::surface' },
     },
   };
-  expect(gpuDrivenMaterialProgramSelection(same, prepared, 'forward', undefined)).toMatchObject({
+  expect(
+    gpuDrivenMaterialProgramSelection(same, prepared, 'forward', undefined, {
+      logicalMaterialShaderId: '',
+      sceneIndexProgramKey: undefined,
+      materialShaderId: '',
+    }),
+  ).toMatchObject({
     sceneIndexProgramKey: 'game::surface',
     materialShaderId: 'game::surface',
   });

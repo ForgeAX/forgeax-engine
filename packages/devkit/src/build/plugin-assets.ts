@@ -11,6 +11,7 @@ import {
   listPackSourcePaths,
   type ScanInventory,
   type ScriptablePackSourceDeclaration,
+  STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
   scanInventory,
 } from '@forgeax/engine-pack/scanner';
 import {
@@ -298,7 +299,11 @@ export async function discoverPluginAssets(
       facts.assetRoots.map((root) => resolve(facts.root, root)),
       {
         ignorePath: (path) => isPluginAssetSourceIgnoredPath(facts.root, path),
-        scriptablePack: { metadataOnly: true, sourceSnapshot: capturedSources },
+        scriptablePack: {
+          ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
+          metadataOnly: true,
+          sourceSnapshot: capturedSources,
+        },
       },
     );
     if (!scanned.ok) throw scanned.error;

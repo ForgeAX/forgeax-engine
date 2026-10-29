@@ -15,7 +15,7 @@ import {
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { bundleEngineArchive } from './engine-bundle.mjs';
 import { sdkLauncherSource } from './sdk-launcher.mjs';
@@ -25,6 +25,7 @@ import {
   detectPnpmStoreFormat,
   fetchWithRetry,
   filesUnder,
+  localSdkDiscoveryLinks,
   mapConcurrent,
   normalizeLicenseReport,
   normalizePackageArchive,
@@ -44,11 +45,13 @@ import {
   sdkTemplateResourceManifest,
   sha256,
   stable,
+  stageSdkCarrier,
   streamFile,
   writePackageArchive,
 } from './sdk-lib.mjs';
-import { archiveEngineSource } from './sdk-source.mjs';
+import { archiveEngineSource, seedSourcePackageBuilds } from './sdk-source.mjs';
 import { sdkStage } from './sdk-stage.mjs';
+import { seedTemplateBuildCache } from './sdk-template-cache.mjs';
 import { stageViewToolPackage } from './sdk-view.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -225,7 +228,6 @@ await mkdir(resolve(stage, 'store', 'pnpm'), { recursive: true });
 await mkdir(resolve(stage, 'templates'), { recursive: true });
 await mkdir(resolve(stage, 'skills'), { recursive: true });
 await mkdir(resolve(stage, 'schemas'), { recursive: true });
-await mkdir(resolve(stage, 'docs'), { recursive: true });
 await mkdir(resolve(stage, 'licenses'), { recursive: true });
 await mkdir(resolve(stage, 'toolchain', 'wasm'), { recursive: true });
 await mkdir(packageArchives, { recursive: true });
@@ -288,20 +290,11 @@ for (const profile of ['base-ssao', 'point-ssao']) {
       '--expose-gc',
       '--max-old-space-size=512',
       'scripts/forgeax/check-shader-publication.mjs',
-      `packages/vite-plugin-shader/dist/engine-inputs/${profile}/manifest.json`,
+      'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz',
+      profile,
     ]),
   );
 }
-// build:engine already emits the complete declaration graph, including DevKit.
-const { createMigrationRoster } = await import(
-  pathToFileURL(resolve(root, 'packages/devkit/dist/index.mjs')).href
-);
-const packageMigrationRoster = {
-  schemaVersion: '2.0.0',
-  operations: createMigrationRoster().map((entry) => entry.operation),
-  source: 'packages/devkit/src/tools/migration.ts',
-};
-
 const publicPackages = [];
 for (const entry of await readdir(resolve(root, 'packages'), { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
@@ -394,16 +387,7 @@ try {
   await cp(canonicalKitBackup, canonicalKitPackageRoot, { recursive: true });
   await rm(canonicalKitBackupRoot, { recursive: true, force: true });
 }
-const toolStage = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-view-stage-'));
-try {
-  const packageRoot = resolve(toolStage, 'package');
-  await stageViewToolPackage(viewRoot, packageRoot, version);
-  await writePackageArchive(toolStage, resolve(packageArchives, `forgeax-view-${version}.tgz`), {
-    releaseVersion: version,
-  });
-} finally {
-  await rm(toolStage, { recursive: true, force: true });
-}
+await stageViewToolPackage(viewRoot, resolve(stage, 'tools/view'), version);
 for (const path of (await filesUnder(packageArchives)).filter((entry) => entry.endsWith('.tgz'))) {
   const { stdout } = await run('tar', ['-xOf', path, 'package/package.json']);
   const manifest = JSON.parse(stdout);
@@ -430,6 +414,7 @@ for (const path of (await filesUnder(packageArchives)).filter((entry) => entry.e
   });
 }
 for (const entry of publicPackages) {
+  if (entry.role === 'tool') continue;
   const archiveEntry = tarballs.get(entry.name);
   if (archiveEntry === undefined) throw new Error(`sdk-package-archive-missing: ${entry.name}`);
   const destination = resolve(stage, 'packages', entry.directory);
@@ -472,6 +457,10 @@ async function normalizeTemplateLockfile(template) {
 
 const registry = createServer(async (request, response) => {
   const url = request.url ?? '/';
+  if (decodeURIComponent(url.split('?', 1)[0]).startsWith('/@forgeax/view')) {
+    response.writeHead(404).end();
+    return;
+  }
   if (url.startsWith('/tarballs/')) {
     const item = [...tarballs.values()].find((entry) => basename(entry.path) === basename(url));
     if (item === undefined) {
@@ -538,7 +527,7 @@ try {
         private: true,
         type: 'module',
         packageManager,
-        dependencies: { '@forgeax/engine': version, '@forgeax/view': version },
+        dependencies: { '@forgeax/engine': version, '@forgeax/view': 'file:../../tools/view' },
       },
       null,
       2,
@@ -553,6 +542,9 @@ try {
     [
       packageManager,
       'install',
+      // The producer writes this lockfile; the copied project policy freezes
+      // it only for consumers.
+      '--no-frozen-lockfile',
       '--ignore-scripts',
       '--child-concurrency=1',
       '--registry',
@@ -628,6 +620,9 @@ try {
       [
         packageManager,
         'install',
+        // This install generates the template lockfile (including its
+        // packageManagerDependencies); generated games then install it frozen.
+        '--no-frozen-lockfile',
         '--child-concurrency=1',
         '--registry',
         `http://127.0.0.1:${port}`,
@@ -644,7 +639,6 @@ try {
     // npm carrier can install online; the ZIP's immutable store supplies those same integrities
     // offline under the generated lockfile trust boundary and complete packaged store.
     await normalizeTemplateLockfile(template);
-    await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
   }
 } finally {
   await new Promise((accept, reject) =>
@@ -652,6 +646,33 @@ try {
   );
 }
 await copySdkTemplateResources(stage);
+// Every new project otherwise cooks the template's and Engine Content's Packs
+// on its first `dev start` / `project play`. Cook each installed template once
+// with the shipped Engine and ship its location-independent Pack products;
+// `project new` copies them into the project's own build cache.
+for (const sdkTemplate of SDK_TEMPLATES) {
+  const template = resolve(stage, sdkTemplate.sourceRoot);
+  const { FORGEAX_BUILD_CACHE_DIR: _sharedCache, ...seedEnv } = process.env;
+  await seedTemplateBuildCache(template, () =>
+    sdkStage(`seed ${sdkTemplate.id} template build cache`, () =>
+      execFileAsync(
+        process.execPath,
+        [
+          resolve(template, 'node_modules/@forgeax/engine/dist/bin/forgeax.mjs'),
+          'project',
+          'build',
+          '--json',
+        ],
+        {
+          cwd: template,
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...seedEnv, CI: 'true', FORGEAX_DISABLE_UPDATE_CHECK: '1' },
+        },
+      ),
+    ),
+  );
+  await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
+}
 await rm(pnpmMetadataCache, { recursive: true, force: true });
 const pnpmStoreFormat = await detectPnpmStoreFormat(resolve(stage, 'store', 'pnpm'));
 await rm(resolve(stage, 'store', 'pnpm', pnpmStoreFormat, 'projects'), {
@@ -677,10 +698,6 @@ await writeFile(
   resolve(stage, 'bin', 'forgeax.cmd'),
   '@echo off\r\nnode "%~dp0forgeax.mjs" %*\r\n',
 );
-await writeFile(
-  resolve(stage, 'docs', 'TOOL-MIGRATION-ROSTER.json'),
-  `${JSON.stringify(packageMigrationRoster, null, 2)}\n`,
-);
 
 await Promise.all([
   cp(
@@ -691,7 +708,6 @@ await Promise.all([
     resolve(root, 'schemas/forgeax-dist.schema.json'),
     resolve(stage, 'schemas', 'forgeax-dist.schema.json'),
   ),
-  cp(resolve(root, 'packages', 'devkit', 'README.md'), resolve(stage, 'docs', 'DEVKIT.md')),
   cp(resolve(root, 'LICENSE'), resolve(stage, 'licenses', 'ForgeaX-Apache-2.0.txt')),
   cp(
     resolve(root, 'packages', 'codec', 'pkg', 'basis_transcoder.wasm'),
@@ -722,6 +738,23 @@ for (const id of sdkSkillIds) {
   }
   await cp(resolve(root, 'skills', id), resolve(stage, 'skills', id), { recursive: true });
 }
+// Source-derived SDK discovery is generated into the distribution, not committed documentation.
+const { renderApiIndex } = await import('./sdk-api-index.mjs');
+const sdkReferenceRoot = resolve(stage, 'skills/forgeax-engine-sdk/references');
+await mkdir(sdkReferenceRoot, { recursive: true });
+await writeFile(resolve(sdkReferenceRoot, 'api-index.md'), renderApiIndex());
+const capabilityFacts = JSON.parse(
+  await readFile(resolve(root, 'schemas/engine-capabilities.json'), 'utf8'),
+);
+await writeFile(
+  resolve(sdkReferenceRoot, 'feature-catalog.md'),
+  '# SDK capabilities\n\nGeneration baseline commit: `' +
+    capabilityFacts.generationBaselineCommit +
+    '`\n\n| Name | Form |\n| --- | --- |\n' +
+    capabilityFacts.capabilities.map(({ name, form }) => `| ${name} | ${form} |`).join('\n') +
+    '\n',
+);
+
 // The unified `forgeax dev ...` surface owns live inspection. The historical
 // standalone relay scripts remain repository-only fixtures for old smoke lanes
 // but must not be shipped as runnable SDK skill entries.
@@ -756,6 +789,9 @@ await Promise.all(
   ),
 );
 await copySdkResources(sourceRoot, new Map([['preview-canonical-kit', canonicalKitRoot]]));
+await sdkStage('seed editable packages with release builds', () =>
+  seedSourcePackageBuilds({ repositoryRoot: root, sdkRoot: stage, sourceRoot }),
+);
 await writeFile(
   resolve(sourceRoot, '.forgeax-public-distribution'),
   'This marker selects the public SDK source install and build path.\n',
@@ -765,6 +801,17 @@ await Promise.all([
   cp(resolve(root, 'skills', 'forgeax-engine-sdk', 'SDK-AGENTS.md'), resolve(stage, 'AGENTS.md')),
   cp(resolve(root, 'skills', 'forgeax-engine-sdk', 'SDK-CLAUDE.md'), resolve(stage, 'CLAUDE.md')),
 ]);
+const discoveryRoot = 'skills/forgeax-engine-sdk/references/';
+for (const [file, prefix] of [
+  ['skills/forgeax-engine-sdk/SKILL.md', 'references/'],
+  ['README.md', discoveryRoot],
+  ['AGENTS.md', discoveryRoot],
+  ...SDK_TEMPLATES.map((template) => [`${template.sourceRoot}/AGENTS.md`, discoveryRoot]),
+]) {
+  const entry = resolve(stage, file);
+  await writeFile(entry, localSdkDiscoveryLinks(await readFile(entry, 'utf8'), prefix));
+}
+
 await writeFile(
   resolve(stage, 'package.json'),
   `${JSON.stringify(
@@ -793,13 +840,16 @@ function artifactSummary(prefix) {
   const rows = artifacts.filter((row) => row.path.startsWith(`${prefix}/`));
   return { fileCount: rows.length, byteCount: rows.reduce((sum, row) => sum + row.bytes, 0) };
 }
-const packageRows = publicPackages.map((item) => ({
-  name: item.name,
-  role: item.role,
-  version: item.version,
-  root: `packages/${item.directory}`,
-  ...artifactSummary(`packages/${item.directory}`),
-}));
+const packageRows = publicPackages.map((item) => {
+  const packageRoot = item.role === 'tool' ? 'tools/view' : `packages/${item.directory}`;
+  return {
+    name: item.name,
+    role: item.role,
+    version: item.version,
+    root: packageRoot,
+    ...artifactSummary(packageRoot),
+  };
+});
 const skillRows = sdkSkillIds.map((id) => ({
   id,
   root: `skills/${id}`,
@@ -864,19 +914,9 @@ const carrierArchive = resolve(npmRoot, `forgeax-engine-sdk-${version}.tgz`);
 try {
   await mkdir(carrierPackage, { recursive: true });
   const carrierSdkRoot = resolve(carrierPackage, 'sdk');
-  await cp(stage, carrierSdkRoot, {
-    recursive: true,
-    filter: (source) => source !== resolve(stage, 'store'),
-  });
-  // The ZIP is the offline product and keeps the normalized pnpm store. The
-  // npm carrier is the smaller online bootstrap surface; games install the
-  // exact locked packages from the registry when this store is absent.
-  const carrierManifestPath = resolve(carrierSdkRoot, 'sdk-manifest.json');
-  const carrierManifest = JSON.parse(await readFile(carrierManifestPath, 'utf8'));
-  carrierManifest.artifacts = carrierManifest.artifacts.filter(
-    ({ path }) => !path.startsWith('store/'),
-  );
-  await writeFile(carrierManifestPath, `${JSON.stringify(carrierManifest, null, 2)}\n`);
+  // Reuse the exact Engine archive instead of transporting its bytes twice.
+  // sdk install materializes the complete writable source baseline.
+  await stageSdkCarrier(stage, carrierSdkRoot, engineTarball.path);
   await writeFile(
     resolve(carrierPackage, 'package.json'),
     `${JSON.stringify(
@@ -894,6 +934,7 @@ try {
         keywords: ['forgeax', 'game-engine', 'game-sdk', 'webgpu'],
         engines: { node: '>=22.13.0' },
         files: ['README.md', 'sdk'],
+        dependencies: { '@forgeax/engine': version },
       },
       null,
       2,

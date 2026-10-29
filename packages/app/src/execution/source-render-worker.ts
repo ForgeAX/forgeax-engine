@@ -6,6 +6,7 @@ import {
   DynamicGeometryError,
   type GpuPassTimingObservation,
   type RenderFeature,
+  type RenderInspection,
   type RenderPublicationTargetOwner,
   type RenderSceneBounds,
   renderPublicationAssetTransfers,
@@ -15,6 +16,7 @@ import {
   captureMeshPipelinePreparation,
   createDynamicGeometrySourceHost,
 } from '@forgeax/engine-render/internal';
+import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import {
   type CaptureFrameOptions,
   createRhiDebugError,
@@ -22,7 +24,13 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import { err, ok } from '@forgeax/engine-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
-import type { EngineToHostMessage, ExecutionFrameMessage, ExecutionInitMessage } from './protocol';
+import { forwardGpuStub } from './gpu-stub';
+import type {
+  EngineToHostMessage,
+  ExecutionFrameMessage,
+  ExecutionInitMessage,
+  RetainedExecutionInit,
+} from './protocol';
 import {
   MESH_RESIDENCY_REQUEST_LIMIT,
   type RenderWorkerInput,
@@ -32,12 +40,27 @@ import { rendererInspectionFailure } from './renderer-inspection';
 import { SourceMeshResidency } from './source-mesh-residency';
 import type {
   ExecutionGeometryObservationResult,
+  ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
 } from './types';
 import { workerError } from './worker-error';
 import { shutdownWorker } from './worker-shutdown';
 
 type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
+type RenderReadyHostMessage = Extract<EngineToHostMessage, { readonly kind: 'render-ready' }>;
+
+function renderReadyLimits(
+  limits: Extract<RenderWorkerOutput, { readonly kind: 'ready' }>['limits'],
+): Pick<RenderReadyHostMessage, 'limits' | 'maxTextureDimension2D'> {
+  const maxStorageBuffersPerShaderStage = limits?.maxStorageBuffersPerShaderStage;
+  const maxTextureDimension2D = limits?.maxTextureDimension2D;
+  return {
+    ...(maxStorageBuffersPerShaderStage === undefined
+      ? {}
+      : { limits: { maxStorageBuffersPerShaderStage } }),
+    ...(maxTextureDimension2D === undefined ? {} : { maxTextureDimension2D }),
+  };
+}
 
 /** Sealed publications bounded by the same finite capacity as Host admission. */
 export class SourceRenderWorker {
@@ -56,9 +79,10 @@ export class SourceRenderWorker {
   private inspectionReady = false;
   private readonly inspectionRequests = new Map<
     number,
-    { finish(result: ExecutionRendererInspectionResult): void }
+    { finish(result: ExecutionRendererInspectionResult<Partial<RenderInspection>>): void }
   >();
   private disposal: Promise<void> | undefined;
+  private retirement: ReturnType<typeof shutdownWorker> | undefined;
   private readyWait: Promise<void> = Promise.resolve();
   private resolveReady: (() => void) | undefined;
   private replacementsWithoutFrame = 0;
@@ -94,13 +118,14 @@ export class SourceRenderWorker {
     | Parameters<typeof createDynamicGeometrySourceHost>[0]['capturePipelinePreparation']
     | undefined;
   private readonly publishedFrames = new Map<number, { frameId: number; fixedStep: number }>();
+  private capacityWaiters: (() => void)[] = [];
   private readonly meshResidency: SourceMeshResidency;
   readonly dynamicGeometry: ReturnType<typeof createDynamicGeometrySourceHost>;
   constructor(
     private readonly world: World,
     private readonly assets: AssetRegistry,
-    private readonly init: ExecutionInitMessage,
-    private readonly post: (message: EngineToHostMessage) => void,
+    private readonly init: RetainedExecutionInit,
+    private readonly post: (message: EngineToHostMessage, transfer?: Transferable[]) => void,
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
   ) {
@@ -178,7 +203,11 @@ export class SourceRenderWorker {
       this.preloadFailure = { kind: 'constructor', cause };
     }
   }
-  async start(canvas: OffscreenCanvas): Promise<void> {
+  async start(
+    canvas: OffscreenCanvas,
+    pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'],
+    backgroundPipelineLibrary?: ExecutionInitMessage['backgroundPipelineLibrary'],
+  ): Promise<void> {
     if (this.disposed) return;
     const epoch = this.epoch;
     const preloadFailure = this.preloadFailure;
@@ -190,8 +219,16 @@ export class SourceRenderWorker {
         name: 'forgeax-render',
       });
     this.worker = worker;
+    // Session closures outlive startup and must not capture the library.
+    this.startupPipelineLibrary =
+      pipelineLibrary === undefined ? undefined : ownPipelineLibrary(pipelineLibrary);
+    this.startupBackgroundPipelineLibrary =
+      backgroundPipelineLibrary === undefined
+        ? undefined
+        : ownPipelineLibrary(backgroundPipelineLibrary);
     await new Promise<void>((resolve, reject) => {
       let ready = false;
+      let failurePending = false;
       const failure = (
         cause: unknown,
         failure?: Extract<RenderWorkerOutput, { kind: 'failed' }>,
@@ -203,38 +240,63 @@ export class SourceRenderWorker {
           stage: failure?.stage ?? 'transport',
           publication: failure?.publication,
         };
-        if (this.worker !== worker) return;
+        if (this.worker !== worker || failurePending) return;
+        failurePending = true;
         const meshReleaseUnconfirmed = this.meshResidency.hasUnreleasedMeshes;
-        this.clear();
-        if (!ready) {
-          reject(Object.assign(new Error(typeof cause === 'string' ? cause : error.code), error));
-          return;
-        }
-        // A lost transport cannot attest that remote allocations were released.
-        // Keep the paired World faulted and use the existing fatal/rebuild path.
-        if (!recoverable || meshReleaseUnconfirmed || ++this.replacementsWithoutFrame > 1) {
-          this.post({
-            kind: 'fault',
-            source: 'runtime',
-            worldIdentity: this.world.identity,
-            ...error,
-            detail: {
-              cause: error.detail,
-              stage: detail.stage,
-              publication: detail.publication,
-              ...(meshReleaseUnconfirmed ? { meshReleaseUnconfirmed: true } : {}),
-              ...(failure?.renderer === undefined ? {} : { renderer: failure.renderer }),
-            },
-            partialWrite: false,
-            retryable: false,
+        const finish = (
+          unconfirmed: boolean,
+          retirementError?: ReturnType<typeof workerError>,
+        ): void => {
+          if (this.worker !== worker) return;
+          if (meshReleaseUnconfirmed && !unconfirmed) this.meshResidency.confirmRetirement();
+          this.clear();
+          if (!ready) {
+            reject(Object.assign(new Error(typeof cause === 'string' ? cause : error.code), error));
+            return;
+          }
+          if (this.disposed) return;
+          // Only the receiver's successful disposal attests GPU release. A
+          // lost transport, cleanup error or timeout retains the fatal path.
+          if (!recoverable || unconfirmed || ++this.replacementsWithoutFrame > 1) {
+            this.post({
+              kind: 'fault',
+              source: 'runtime',
+              worldIdentity: this.world.identity,
+              ...error,
+              detail: {
+                cause: error.detail,
+                stage: detail.stage,
+                publication: detail.publication,
+                ...(unconfirmed ? { meshReleaseUnconfirmed: true } : {}),
+                ...(retirementError === undefined ? {} : { retirement: retirementError }),
+                ...(failure?.renderer === undefined ? {} : { renderer: failure.renderer }),
+              },
+              partialWrite: false,
+              retryable: false,
+            });
+            return;
+          }
+          this.readyWait = new Promise((resolve) => {
+            this.resolveReady = resolve;
+          });
+          this.epoch++;
+          this.post({ kind: 'render-lost', epoch: this.epoch, detail: JSON.stringify(detail) });
+        };
+        if (
+          ready &&
+          recoverable &&
+          meshReleaseUnconfirmed &&
+          failure?.renderer?.state === 'device-lost'
+        ) {
+          this.inspectionReady = false;
+          this.releaseCapacityWaiters();
+          this.retirement = shutdownWorker(worker).then((result) => {
+            finish(!result.ok, result.ok ? undefined : workerError(result.error));
+            return result;
           });
           return;
         }
-        this.readyWait = new Promise((resolve) => {
-          this.resolveReady = resolve;
-        });
-        this.epoch++;
-        this.post({ kind: 'render-lost', epoch: this.epoch, detail: JSON.stringify(detail) });
+        finish(meshReleaseUnconfirmed);
       };
       if (this.init.startupTimeoutMs !== null) {
         this.deadline = setTimeout(
@@ -242,6 +304,7 @@ export class SourceRenderWorker {
           this.init.startupTimeoutMs,
         );
       }
+      const acceptsSceneMessages = (): boolean => !this.disposed && !failurePending;
       worker.onerror = (event) => failure(event.message);
       worker.onmessage = (event: MessageEvent<RenderWorkerOutput>) => {
         if (this.worker !== worker || this.epoch !== epoch) return;
@@ -250,7 +313,7 @@ export class SourceRenderWorker {
           this.meshResidency.receive(message);
           return;
         }
-        if (this.disposed) return;
+        if (!acceptsSceneMessages()) return;
         if (message.kind === 'geometry-observation-result') {
           if (
             message.identity.source === this.source &&
@@ -349,12 +412,13 @@ export class SourceRenderWorker {
             this.targets,
             message.limits,
             this.publicationCapacity,
+            (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
+            (handle) => this.dynamicGeometry.pendingMeshPreparation(this.world, handle),
           );
           ready = true;
           this.inspectionReady = true;
           this.resolveReady?.();
           this.resolveReady = undefined;
-          const maxStorageBuffersPerShaderStage = message.limits?.maxStorageBuffersPerShaderStage;
           this.post({
             kind: 'render-ready',
             epoch,
@@ -363,9 +427,7 @@ export class SourceRenderWorker {
               compute: message.capabilities.compute,
               storageBuffer: message.capabilities.storageBuffer,
             },
-            ...(maxStorageBuffersPerShaderStage === undefined
-              ? {}
-              : { limits: { maxStorageBuffersPerShaderStage } }),
+            ...renderReadyLimits(message.limits),
           });
           resolve();
         } else if (message.kind === 'submitted') {
@@ -386,7 +448,6 @@ export class SourceRenderWorker {
             failure(cause, undefined, false);
             return;
           }
-          this.post({ kind: 'render-submitted', epoch, frame: message.frame });
         } else if (message.kind === 'completed') {
           clearTimeout(this.deadline);
           const submitted = this.publishedFrames.get(message.revision);
@@ -400,6 +461,7 @@ export class SourceRenderWorker {
             return;
           }
           this.publishedFrames.delete(message.revision);
+          this.releaseCapacityWaiters();
           const proof = message.meshConsumption;
           if (proof !== undefined) {
             if (
@@ -441,7 +503,6 @@ export class SourceRenderWorker {
               observation: message.gpuPassTiming,
             };
           }
-          this.post({ kind: 'render-complete', epoch, frame: message.frame });
           if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
         }
       };
@@ -450,11 +511,16 @@ export class SourceRenderWorker {
         return;
       }
       this.initializationSent = true;
+      // Render notices go straight to the Host; the Host port precedes the session's first notice.
+      const hostChannel = new MessageChannel();
+      this.post({ kind: 'render-host-port', epoch, port: hostChannel.port2 }, [hostChannel.port2]);
       worker.postMessage(
         {
           kind: 'init',
+          hostPort: hostChannel.port1,
           worldIdentity: this.world.identity,
           ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
+          ...forwardGpuStub(this.init),
           ...(this.init.diagnostics?.shadowWorkload === true ? { shadowWorkload: true } : {}),
           ...(this.init.diagnostics?.gpuPassTiming === undefined
             ? {}
@@ -475,15 +541,19 @@ export class SourceRenderWorker {
             ? {}
             : { renderTaskYield: this.init.diagnostics.renderTaskYield }),
           renderPipelineCapacity: this.publicationCapacity,
-          ...(this.init.pipelineLibrary === undefined
-            ? {}
-            : { pipelineLibrary: this.init.pipelineLibrary }),
+          ...this.takeStartupPipelineLibrary(),
           ...(this.init.outputColorSpace === undefined
             ? {}
             : { outputColorSpace: this.init.outputColorSpace }),
           ...(this.init.dynamicGeometryMeshBudgetBytes === undefined
             ? {}
             : { dynamicGeometryMeshBudgetBytes: this.init.dynamicGeometryMeshBudgetBytes }),
+          ...(this.init.assetBudgetBytes === undefined
+            ? {}
+            : { assetBudgetBytes: this.init.assetBudgetBytes }),
+          ...(this.init.loadProgressScope === undefined
+            ? {}
+            : { loadProgressScope: this.init.loadProgressScope }),
           bootstrapUrl: this.init.bootstrapUrl,
           ...(this.init.bootstrapData === undefined
             ? {}
@@ -495,7 +565,7 @@ export class SourceRenderWorker {
             : { shaderManifestUrl: this.init.shaderManifestUrl }),
           ...(this.init.build === undefined ? {} : { build: this.init.build }),
         } satisfies RenderWorkerInput,
-        [canvas],
+        [canvas, hostChannel.port1],
       );
       // The same failure owner handles a GPU queue that never completes.
       this.armFrameDeadline = () => {
@@ -504,14 +574,57 @@ export class SourceRenderWorker {
     });
   }
   private armFrameDeadline: () => void = () => {};
-  async waitUntilReady(): Promise<boolean> {
-    await this.readyWait;
-    return !this.disposed;
+  private startupPipelineLibrary: ExecutionInitMessage['pipelineLibrary'];
+  private startupBackgroundPipelineLibrary: ExecutionInitMessage['backgroundPipelineLibrary'];
+  private takeStartupPipelineLibrary(): Pick<
+    ExecutionInitMessage,
+    'pipelineLibrary' | 'backgroundPipelineLibrary'
+  > {
+    const pipelineLibrary = this.startupPipelineLibrary;
+    const backgroundPipelineLibrary = this.startupBackgroundPipelineLibrary;
+    this.startupPipelineLibrary = undefined;
+    this.startupBackgroundPipelineLibrary = undefined;
+    return {
+      ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
+      ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
+    };
   }
   get hasPublicationCapacity(): boolean {
-    return this.publishedFrames.size < this.publicationCapacity;
+    return this.inspectionReady && this.publishedFrames.size < this.publicationCapacity;
   }
-  publish(frame: ExecutionFrameMessage, sampleTimeSeconds: number): void {
+  /**
+   * Host credit returns directly from the Render Worker, so a Host frame can
+   * arrive before this Engine has processed the matching completion. Resolve
+   * only when the current session is ready and has a publication slot. Loss
+   * clears the old queue; that is not capacity in the replacement session.
+   */
+  async waitForPublicationCapacity(): Promise<boolean> {
+    while (!this.disposed) {
+      const ready = this.readyWait;
+      await ready;
+      if (ready !== this.readyWait) continue;
+      if (!this.inspectionReady) return false;
+      if (this.hasPublicationCapacity) return true;
+      await new Promise<void>((resolve) => this.capacityWaiters.push(resolve));
+    }
+    return false;
+  }
+  private releaseCapacityWaiters(): void {
+    if (this.capacityWaiters.length === 0) return;
+    const waiters = this.capacityWaiters;
+    this.capacityWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+  /**
+   * `engineUpdateMs` / `engineCreditWaitMs` ride on the draw message for the
+   * Render Worker's always-on stall accounting; they do not affect drawing.
+   */
+  publish(
+    frame: ExecutionFrameMessage,
+    sampleTimeSeconds: number,
+    engineUpdateMs = 0,
+    engineCreditWaitMs = 0,
+  ): void {
     const publisher = this.publisher,
       worker = this.worker;
     if (publisher === undefined || worker === undefined)
@@ -536,12 +649,14 @@ export class SourceRenderWorker {
             frameId: frame.frameId,
             width: frame.canvasWidth,
             height: frame.canvasHeight,
-            publication: candidate.packet,
+            publication: candidate.message,
             sourceFixedStep,
+            engineUpdateMs,
+            engineCreditWaitMs,
           } satisfies RenderWorkerInput,
           [
-            ...renderPublicationTransfers(candidate.packet),
-            ...renderPublicationAssetTransfers(candidate.packet),
+            ...renderPublicationTransfers(candidate.message),
+            ...renderPublicationAssetTransfers(candidate.message),
           ],
         );
       } else {
@@ -553,13 +668,15 @@ export class SourceRenderWorker {
           frameId: frame.frameId,
           width: frame.canvasWidth,
           height: frame.canvasHeight,
-          publication: candidate.packet,
+          publication: candidate.message,
           sourceFixedStep,
+          engineUpdateMs,
+          engineCreditWaitMs,
         } satisfies RenderWorkerInput;
         candidate.observation.phase('transfer-list');
         const transfers = [
-          ...renderPublicationTransfers(candidate.packet),
-          ...renderPublicationAssetTransfers(candidate.packet),
+          ...renderPublicationTransfers(candidate.message),
+          ...renderPublicationAssetTransfers(candidate.message),
         ];
         candidate.observation.phase('send');
         Reflect.apply(postMessage, worker, [message, transfers]);
@@ -724,9 +841,9 @@ export class SourceRenderWorker {
     });
   }
   /** This read never consumes publication credit or starts another Renderer. */
-  inspectRenderer(
-    options: { readonly signal?: AbortSignal; readonly pipelineLibrary?: boolean } = {},
-  ): Promise<ExecutionRendererInspectionResult> {
+  inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
+    options: ExecutionRendererInspectionOptions<K> = {},
+  ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>> {
     const worker = this.worker,
       epoch = this.epoch,
       worldIdentity = this.world.identity;
@@ -737,7 +854,7 @@ export class SourceRenderWorker {
       return Promise.resolve(rendererInspectionFailure('request-limit'));
     const requestId = ++this.nextRequestId;
     return new Promise((resolve) => {
-      const finish = (result: ExecutionRendererInspectionResult) => {
+      const finish = (result: ExecutionRendererInspectionResult<Partial<RenderInspection>>) => {
         if (!this.inspectionRequests.has(requestId)) return;
         this.inspectionRequests.delete(requestId);
         clearTimeout(timer);
@@ -747,7 +864,12 @@ export class SourceRenderWorker {
           this.epoch === epoch &&
           this.world.identity === worldIdentity &&
           !this.disposed;
-        resolve(result.ok && !current ? rendererInspectionFailure('stale-session') : result);
+        // The child projects the requested fields before transport; the request owns K.
+        resolve(
+          (result.ok && !current
+            ? rendererInspectionFailure('stale-session')
+            : result) as ExecutionRendererInspectionResult<Pick<RenderInspection, K>>,
+        );
       };
       const cancel = () => finish(rendererInspectionFailure('cancelled'));
       // New inspection read bound follows existing child-read policy; caller abort may close sooner.
@@ -757,9 +879,19 @@ export class SourceRenderWorker {
       try {
         worker.postMessage({
           kind: 'inspect',
+          ...(options.fields === undefined ? {} : { fields: options.fields }),
           ...(options.pipelineLibrary === undefined
             ? {}
             : { pipelineLibrary: options.pipelineLibrary }),
+          ...(options.pipelineLibraryCollection === undefined
+            ? {}
+            : { pipelineLibraryCollection: options.pipelineLibraryCollection }),
+          ...(options.pipelineLibraryLimits === undefined
+            ? {}
+            : { pipelineLibraryLimits: options.pipelineLibraryLimits }),
+          ...(options.runtimeRequests === undefined
+            ? {}
+            : { runtimeRequests: options.runtimeRequests }),
           requestId,
           identity: { source: this.source, epoch },
           worldIdentity,
@@ -827,11 +959,19 @@ export class SourceRenderWorker {
     | undefined {
     return this.latestGpuPassTiming;
   }
-  async replace(epoch: number, canvas: OffscreenCanvas): Promise<void> {
+  async replace(
+    epoch: number,
+    canvas: OffscreenCanvas,
+    pipelineLibrary?: ExecutionInitMessage['pipelineLibrary'],
+    backgroundPipelineLibrary?: ExecutionInitMessage['backgroundPipelineLibrary'],
+  ): Promise<void> {
     if (epoch !== this.epoch || this.worker !== undefined || this.disposed) return;
-    await this.start(canvas);
+    await this.start(canvas, pipelineLibrary, backgroundPipelineLibrary);
   }
   private clear(): void {
+    this.retirement = undefined;
+    this.startupPipelineLibrary = undefined;
+    this.startupBackgroundPipelineLibrary = undefined;
     this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
     this.inspectionReady = false;
     this.deviceGeneration = undefined;
@@ -842,6 +982,7 @@ export class SourceRenderWorker {
       this.meshResidency.clear('Render Worker session ended');
     }
     this.publishedFrames.clear();
+    this.releaseCapacityWaiters();
     for (const request of this.inspectionRequests.values())
       request.finish(rendererInspectionFailure('session-ended'));
     for (const request of this.terrainRequests.values())
@@ -876,11 +1017,12 @@ export class SourceRenderWorker {
   dispose(): Promise<void> {
     if (this.disposal !== undefined) return this.disposal;
     this.disposed = true;
+    const retirement = this.retirement;
     this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
     this.inspectionReady = false;
     this.deviceGeneration = undefined;
     this.captureCandidatePipelines = undefined;
-    this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
+    if (retirement === undefined) this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
     for (const request of this.inspectionRequests.values())
       request.finish(rendererInspectionFailure('disposed'));
     this.resolveReady?.();
@@ -891,13 +1033,14 @@ export class SourceRenderWorker {
       try {
         // Keep mesh ACK delivery live until all receiver release fences finish.
         try {
-          await this.meshResidency.dispose();
+          if (retirement === undefined) await this.meshResidency.dispose();
+          else (await retirement).unwrap();
         } catch (cause) {
           failure = cause;
         }
         // Fence late frame/capture messages before waiting for the dedicated ACK.
         this.worker = undefined;
-        if (worker !== undefined) {
+        if (worker !== undefined && retirement === undefined) {
           try {
             if (this.initializationSent) (await shutdownWorker(worker)).unwrap();
             else worker.terminate();

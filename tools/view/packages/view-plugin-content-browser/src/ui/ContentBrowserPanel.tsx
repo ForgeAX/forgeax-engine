@@ -7,6 +7,8 @@ import {
   ArrowUpNarrowWide,
   CaseSensitive,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Copy,
   Filter,
@@ -50,7 +52,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
-import type { AssetBrowserReveal, PageHost } from '@forgeax/view-workspace-core/frontend-contract';
+import type { AssetBrowserReveal, ContentBrowserDetailTabs, PageHost } from '@forgeax/view-workspace-core/frontend-contract';
 import { VIEW_FILE_GET_SERVICE, VIEW_HTML_FILES_SERVICE, VIEW_PACK_SOURCES_SERVICE, VIEW_PACK_REVEAL_TOPIC, VIEW_PACK_REVEAL_ACK_SERVICE, VIEW_WORKSPACE_TAB_ID, workspaceUiFingerprint } from '@forgeax/view-workspace-core/contract';
 import { useTranslation } from '../i18n/useTranslation';
 import { CONTENT_BROWSER_ACTIONS } from '../schema.ts';
@@ -59,7 +61,6 @@ import { CBGrid } from './CBGrid';
 import { CBNavigationBar } from './CBNavigationBar';
 import { CBPreviewPanel } from './CBPreviewPanel';
 import { RuntimePacksPanel } from './RuntimePacksPanel';
-import { PackAuthoringPanel } from './PackAuthoringPanel';
 import {
   buildFamilyFilters,
   buildKindFilters,
@@ -84,6 +85,7 @@ import type {
 } from './types';
 
 const EMPTY_HTML_FILES: readonly string[] = [];
+const EMPTY_DETAIL_TABS = Object.freeze([]);
 
 type BrowserMenuItem =
   | { kind: 'title'; label: string; icon?: ReactNode }
@@ -146,19 +148,24 @@ export function ContentBrowserPanel({
   client,
   pageHost,
   revealPanel,
+  dismissUnpinnedEdge,
   addConversationReference,
   registerAssetReveal,
   assetReferences,
+  detailTabs,
 }: {
   client?: ViewWorkspaceClient;
   pageHost?: PageHost;
   revealPanel?: () => Promise<boolean>;
+  dismissUnpinnedEdge?: () => boolean | undefined;
   addConversationReference?: (reference: { title: string; text: string }) => Promise<void>;
   registerAssetReveal?: (handler: (input: AssetBrowserReveal) => Promise<boolean>) => () => void;
   assetReferences?: AssetReferenceService;
+  detailTabs?: ContentBrowserDetailTabs;
 }) {
   const writeClipboard = useClipboardAction();
   const { t } = useTranslation();
+  const detailContributions = useSyncExternalStore(detailTabs?.subscribe ?? (() => () => {}), detailTabs?.getSnapshot ?? (() => EMPTY_DETAIL_TABS), () => EMPTY_DETAIL_TABS);
   const [snapshot, setSnapshot] = useState<WorkspaceState>({});
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
@@ -235,7 +242,8 @@ export function ContentBrowserPanel({
   }, [connected, refresh, snapshot.projectPhase, snapshot.browserGeneration]);
   const [layout, setLayout] = useState<CBViewMode>('grid');
   const [thumbnailSize, setThumbnailSize] = useState(80);
-  const [detailPanelOpen, setDetailPanelOpen] = useState(false);
+  const [detailPanelOpen, setDetailPanelOpen] = useState(true);
+  const [detailPanelExpanded, setDetailPanelExpanded] = useState(false);
   const [query, setQuery] = useState('');
   const [revealFocus, setRevealFocus] = useState<string | null>(null);
   const revealEpoch = useRef(0);
@@ -331,7 +339,7 @@ export function ContentBrowserPanel({
     setVisibleAssetGuids(current => current.length === guids.length && current.every((guid, index) => guid === guids[index]) ? current : guids);
   }, []);
   const gridGuids = layout === 'column' ? [] : visibleAssetGuids;
-  const detailGuid = detailPanelOpen && previewItem?.type === 'asset' ? previewItem.guid : null;
+  const detailGuid = detailPanelOpen && detailPanelExpanded && previewItem?.type === 'asset' ? previewItem.guid : null;
   const visibleGuids = [...new Set([...gridGuids, ...(detailGuid ? [detailGuid] : [])])];
   const targetKey = JSON.stringify([snapshot.projectTarget?.targetId, snapshot.projectTarget?.generation, snapshot.browserGeneration, snapshot.catalogEpoch]);
   const requestKey = JSON.stringify([project?.id, targetKey, visibleGuids.map(guid => [guid, assetFacts.get(guid)])]);
@@ -549,7 +557,7 @@ export function ContentBrowserPanel({
     || (item.type === 'file' && item.isAssetPackage && !!project)
     || (item.type === 'file' && item.name.toLowerCase().endsWith('.html') && !!project && !!pageHost)
     || (!!client && !!project && !!assetToOpen(item));
-  const activateItem = (item: CBViewItem) => {
+  const activateItem = (item: CBViewItem, dismissOnOpen = false) => {
     setActionError('');
     if (item.type === 'folder') {
       navigate(item.path);
@@ -557,6 +565,7 @@ export function ContentBrowserPanel({
     }
     if (item.type === 'file' && item.name.toLowerCase().endsWith('.html') && project && pageHost) {
       pageHost.openResource({ requestId: crypto.randomUUID(), sequence: Date.now(), file: { path: item.diskPath, extension: '.html', projectId: project.id } });
+      if (dismissOnOpen) dismissUnpinnedEdge?.();
       return;
     }
     if (item.type === 'file' && item.isAssetPackage) {
@@ -571,6 +580,7 @@ export function ContentBrowserPanel({
     if (openingKeys.has(key)) return;
     setOpeningKeys((current) => new Set(current).add(key));
     void (assetReferences?.getState().scope ? assetReferences.open(guid) : client.openAsset(guid, { projectId: project.id, tabId: VIEW_WORKSPACE_TAB_ID }))
+      .then(() => { if (dismissOnOpen) dismissUnpinnedEdge?.(); })
       .catch((error: unknown) => setActionError(error instanceof Error ? error.message : String(error)))
       .finally(() => {
         setOpeningKeys((current) => {
@@ -843,9 +853,9 @@ export function ContentBrowserPanel({
                   loading={Boolean(previewItem && openingKeys.has(viewItemKey(previewItem)))}
                   title={t('contentBrowser.openHint')}
                   onClick={() => { if (previewItem) activateItem(previewItem); }}>{t('contentBrowser.menu.open')}</Button>
-                <Button ref={filterButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setFilter} className={activeFilterCount ? 'is-active' : undefined} leadingIcon={<Filter size={14} />} onClick={() => openToolbarMenu('filter')}>{filterLabel}</Button>
+                <Button ref={filterButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setFilter} className={activeFilterCount ? 'is-active' : undefined} leadingIcon={<Filter size={14} />} title={t('contentBrowser.filterByType')} aria-label={filterLabel} onClick={() => openToolbarMenu('filter')}>{filterLabel}</Button>
                 <SearchField className="cb-search-box" data-action={CONTENT_BROWSER_ACTIONS.search} value={query} onChange={(event) => { cancelReveal(); setQuery(event.target.value); }} onClear={() => { cancelReveal(); setQuery(''); }} placeholder={t('contentBrowser.searchPlaceholder')} label={t('contentBrowser.search')} />
-                <Button ref={sortButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setSort} leadingIcon={<ArrowUpDown size={14} />} onClick={() => openToolbarMenu('sort')}>{sortLabels[sortState.key]}</Button>
+                <Button ref={sortButtonRef} size="compact" variant="quiet" data-action={CONTENT_BROWSER_ACTIONS.setSort} leadingIcon={<ArrowUpDown size={14} />} title={t('contentBrowser.sortBy')} aria-label={`${t('contentBrowser.sortBy')}: ${sortLabels[sortState.key]}`} onClick={() => openToolbarMenu('sort')}>{sortLabels[sortState.key]}</Button>
               </Toolbar>
 
               {loading ? <div role="status">Loading assets...</div> : null}
@@ -870,7 +880,7 @@ export function ContentBrowserPanel({
                   sortState={sortState}
                   onSort={(key) => setSortState((current) => nextSortState(current, key))}
                   onSelect={selectItem}
-                  onActivate={activateItem}
+                  onActivate={(item) => activateItem(item, true)}
                   onContextMenu={(event, item) => showMenu(event, itemMenu(item))}
                   onBlankClick={() => { cancelReveal(); setSelectedIds(new Set()); }}
                 />
@@ -886,7 +896,7 @@ export function ContentBrowserPanel({
                   thumbnails={thumbnails}
                   onVisibleAssets={onVisibleAssets}
                   onSelect={selectItem}
-                  onActivate={activateItem}
+                  onActivate={(item) => activateItem(item, true)}
                   onContextMenu={(event, item) => showMenu(event, itemMenu(item))}
                   onTogglePackExpansion={togglePackExpansion}
                   onBlankClick={() => { cancelReveal(); setSelectedIds(new Set()); }}
@@ -902,24 +912,46 @@ export function ContentBrowserPanel({
               </footer>
             </div>
             {detailPanelOpen ? (
-              <CBPreviewPanel
-                previewItem={previewItem}
-                authoring={client && previewItem && previewItem.type !== 'folder' && /\.pack\.(ts|json)$/.test(previewItem.type === 'file' ? previewItem.diskPath : previewItem.packPath)
-                  ? <PackAuthoringPanel client={client} sourcePath={previewItem.type === 'file' ? previewItem.diskPath : previewItem.packPath} addConversationReference={addConversationReference} /> : undefined}
-                thumbnail={selectedThumbnail}
-                foldersInPath={folders}
-                diskFiles={labeledFiles}
-                projectLabel={projectLabel}
-                readPreview={readPreview}
-                onOpenAsset={activateItem}
-                onClose={() => setPreviewKey(null)}
-                onDrag={(delta) => {
-                  const next = previewWidth - delta;
-                  setPreviewWidth(next);
-                  splitRef.current?.style.setProperty('--cb-preview-w', `${Math.min(560, Math.max(180, next))}px`);
-                }}
-                onDragEnd={() => undefined}
-              />
+              <div className={`cb-preview-dock${detailPanelExpanded ? ' is-expanded' : ''}`}>
+                <button
+                  type="button"
+                  className="cb-preview-rail"
+                  data-action={CONTENT_BROWSER_ACTIONS.toggleDetailPanel}
+                  aria-expanded={detailPanelExpanded}
+                  aria-label={t(detailPanelExpanded ? 'contentBrowser.preview.collapse' : 'contentBrowser.preview.expand')}
+                  onClick={() => setDetailPanelExpanded((expanded) => !expanded)}
+                >
+                  {detailPanelExpanded ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+                </button>
+                {detailPanelExpanded ? (
+                  <div className="cb-preview-dock-content">
+                    <CBPreviewPanel
+                      previewItem={previewItem}
+                      detailTabs={client && detailTabs ? detailContributions.filter(contribution => {
+                        if (!previewItem || previewItem.type === 'folder') return false;
+                        const isFile = previewItem.type === 'file';
+                        const sourcePath = isFile ? previewItem.diskPath : previewItem.packPath;
+                        return contribution.matches({ kind: isFile ? 'file' : 'asset', path: sourcePath, ...(isFile ? {} : { assetKind: previewItem.kind }) });
+                      }).map(contribution => ({ contribution, sourcePath: previewItem!.type === 'file' ? previewItem!.diskPath : (previewItem as Extract<CBViewItem, { type: 'asset' }>).packPath })) : []}
+                      client={client}
+                      addConversationReference={addConversationReference}
+                      thumbnail={selectedThumbnail}
+                      foldersInPath={folders}
+                      diskFiles={labeledFiles}
+                      projectLabel={projectLabel}
+                      readPreview={readPreview}
+                      onOpenAsset={activateItem}
+                      onClose={() => setDetailPanelExpanded(false)}
+                      onDrag={(delta) => {
+                        const next = previewWidth - delta;
+                        setPreviewWidth(next);
+                        splitRef.current?.style.setProperty('--cb-preview-w', `${Math.min(560, Math.max(180, next))}px`);
+                      }}
+                      onDragEnd={() => undefined}
+                    />
+                  </div>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </section>
@@ -1041,7 +1073,10 @@ export function ContentBrowserPanel({
             label={t('contentBrowser.actions.detailPanel')}
             checked={detailPanelOpen}
             data-action={CONTENT_BROWSER_ACTIONS.toggleDetailPanel}
-            onCheckedChange={setDetailPanelOpen}
+            onCheckedChange={(checked) => {
+              setDetailPanelOpen(checked);
+              setDetailPanelExpanded(false);
+            }}
           />
           {client && project ? <Button variant="quiet" size="compact" aria-expanded={runtimeOpen} onClick={() => {
             setRuntimeOpen(!runtimeOpen);

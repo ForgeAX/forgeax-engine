@@ -114,7 +114,11 @@ struct Input { @location(0) position: vec3<f32>, @location(4) center: vec3<f32>,
         { semantic: 'center', location: 4, format: 'float32x3' },
         { semantic: 'heat', location: 10, format: 'float32x4' },
       ]);
-      expect(selection.abi?.skinPaletteAddress).toBeUndefined();
+      expect(
+        selection.abi?.vertexInputs.some(
+          (input) => input.semantic === 'skinIndex' || input.semantic === 'skinWeight',
+        ),
+      ).toBe(false);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -133,7 +137,11 @@ it('publishes the tracked Arc Nova core stream without requiring custom particle
   ).unwrap();
   for (const selection of record.programs.flatMap((program) => program.selections)) {
     expect(selection.address).toBe('direct');
-    expect(selection.abi?.skinPaletteAddress).toBeUndefined();
+    expect(
+      selection.abi?.vertexInputs.some(
+        (input) => input.semantic === 'skinIndex' || input.semantic === 'skinWeight',
+      ),
+    ).toBe(false);
     expect(selection.abi?.vertexInputs).toContainEqual({
       semantic: 'base_color',
       location: 4,
@@ -155,7 +163,7 @@ it('publishes the tracked Arc Nova core stream without requiring custom particle
 it.each([
   '',
   '@group(2) @binding(1) var<uniform> palette: array<vec4<f32>, 4>;',
-])('rejects declared skin indices with an absent or incorrectly strided joint palette: %s', async (palette) => {
+])('rejects incomplete Skin vertex semantics before palette admission: %s', async (palette) => {
   const result = await cook(
     'vs_main',
     'fs_main',
@@ -169,7 +177,28 @@ struct Input { @location(0) position: vec3<f32>, @location(4) skinIndex: vec4<u3
   expect(result.ok).toBe(false);
   if (!result.ok) {
     expect(result.error.code).toBe('shader-compile-failed');
-    expect(result.error.message).toContain('invalid reflected palette stride');
+    expect(result.error.message).toContain('incomplete reflected Skin vertex inputs');
+  }
+});
+
+it.each([
+  '',
+  '@group(2) @binding(1) var<uniform> palette: array<vec4<f32>, 4>;',
+])('rejects a complete Skin input pair without valid physical Skin task resources: %s', async (palette) => {
+  const result = await cook(
+    'vs_main',
+    'fs_main',
+    `#define_import_path test::entries
+${palette}
+struct Input { @location(0) position: vec3<f32>, @location(4) skinIndex: vec4<u32>, @location(5) skinWeight: vec4<f32> }
+@vertex fn vs_main(input: Input) -> @builtin(position) vec4<f32> { return vec4<f32>(input.position + vec3<f32>(input.skinIndex.xyz), 1.0) * input.skinWeight.x${palette ? ' + palette[0]' : ''}; }
+@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+`,
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.error.code).toBe('shader-compile-failed');
+    expect(result.error.message).toContain('invalid reflected Skin task resources');
   }
 });
 

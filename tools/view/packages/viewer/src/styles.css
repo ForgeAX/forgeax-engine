@@ -21,6 +21,32 @@ body {
   overflow: hidden;
 }
 
+#root[data-forgeax-codex-browser],
+#forgeax-view-root[data-forgeax-codex-browser] {
+  --fx-view-codex-gutter-width: 15px;
+  box-sizing: border-box;
+  padding-left: var(--fx-view-codex-gutter-width);
+  background: #f8f8f8;
+}
+
+html[data-theme="dark"] #root[data-forgeax-codex-browser],
+html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
+  background: #181818;
+}
+
+#root[data-forgeax-codex-browser]::before,
+#forgeax-view-root[data-forgeax-codex-browser]::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: calc(var(--fx-component-navigation-row-height) - var(--fx-border-width));
+  left: 0;
+  width: var(--fx-view-codex-gutter-width);
+  height: var(--fx-border-width);
+  background: var(--fx-color-border-default);
+  pointer-events: none;
+}
+
 /* ThemeProvider wrapper: restores the viewport height chain broken by an extra fx-ui shell. */
 .fx-view-root.fx-ui {
   position: relative;
@@ -133,6 +159,7 @@ body {
 }
 
 .fx-view-app {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -238,6 +265,59 @@ body {
   overflow: hidden;
 }
 
+.fx-view-shell-bottom {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 var(--fx-ref-space-32);
+  min-width: 0;
+  min-height: 0;
+  border-top: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  background: var(--fx-color-surface-canvas);
+}
+
+.fx-view-dockview-host.fx-view-shell-bottom__host {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  --fx-edge-drawer-z: 1000;
+}
+
+.fx-view-shell-bottom__host,
+.fx-view-shell-bottom__host * {
+  pointer-events: none !important;
+}
+
+.fx-view-shell-bottom__host .dv-groupview-edge > .dv-tabs-and-actions-container,
+.fx-view-shell-bottom__host .dv-groupview-edge .dv-tab,
+.fx-view-shell-bottom__host .dv-groupview-edge .dv-tab * {
+  pointer-events: auto !important;
+}
+
+.fx-view-shell-bottom__host .dv-groupview-edge > .dv-tabs-and-actions-container {
+  height: calc(var(--fx-component-navigation-row-height) - var(--fx-ref-space-6));
+  min-height: calc(var(--fx-component-navigation-row-height) - var(--fx-ref-space-6));
+}
+
+.fx-view-shell-bottom__drop-target {
+  position: absolute;
+  z-index: 1002;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--fx-ref-space-32);
+  display: none;
+  border-top: var(--fx-border-width) dashed var(--fx-color-brand-accent);
+  background: color-mix(in srgb, var(--fx-color-brand-accent) 8%, transparent);
+  pointer-events: none;
+}
+
+.fx-view-shell-bottom[data-drop-active='true'] .fx-view-shell-bottom__drop-target {
+  display: block;
+  pointer-events: auto;
+}
+
 .fx-view-project-restoring {
   flex: 1;
   display: flex;
@@ -339,7 +419,7 @@ body {
 }
 
 /* Hoisted edge strips: re-declare on the group so panel/tab surfaces never inherit Abyss literals. */
-.fx-view-workbench .dv-groupview-edge {
+.fx-view-dockview-host .dv-groupview-edge {
   --fx-dock-panel-background: var(--fx-color-surface-sidebar);
   --dv-color-abyss-dark: var(--fx-color-surface-sidebar);
   --dv-color-abyss: var(--fx-color-surface-inset);
@@ -506,7 +586,7 @@ body {
   > .dv-tabs-and-actions-container
   .dv-tabs-container
   > .dv-tab.dv-active-tab,
-.fx-view-workbench
+.fx-view-dockview-host
   .dv-groupview-edge.fx-edge-drawer-open.dv-active-group
   > .dv-tabs-and-actions-container
   .dv-tabs-container
@@ -519,7 +599,7 @@ body {
   > .dv-tabs-and-actions-container
   .dv-tabs-container
   > .dv-tab.dv-active-tab::before,
-.fx-view-workbench
+.fx-view-dockview-host
   .dv-groupview-edge.fx-edge-drawer-open.dv-active-group
   > .dv-tabs-and-actions-container
   .dv-tabs-container
@@ -543,7 +623,7 @@ body {
   width: auto;
 }
 
-.fx-view-workbench
+.fx-view-dockview-host
   .dv-groupview-edge.fx-edge-drawer-open.dv-active-group.dv-groupview-header-left
   > .dv-tabs-and-actions-container
   .dv-tabs-container.dv-tabs-container-vertical
@@ -564,7 +644,7 @@ body {
   );
 }
 
-.fx-view-workbench
+.fx-view-dockview-host
   .dv-groupview-edge.fx-edge-drawer-open.dv-active-group.dv-groupview-header-right
   > .dv-tabs-and-actions-container
   .dv-tabs-container.dv-tabs-container-vertical
@@ -585,18 +665,18 @@ body {
   );
 }
 
-/* Edge strips may hoist beside `.dv-dockview` — scope under workbench, not only the host. */
-.fx-view-workbench .dv-groupview-edge .dv-tabs-container.dv-tabs-container-vertical {
+/* Edge strips may hoist beside `.dv-dockview`, within their Dockview host. */
+.fx-view-dockview-host .dv-groupview-edge .dv-tabs-container.dv-tabs-container-vertical {
   text-orientation: sideways;
   padding-top: var(--fx-ref-space-6);
 }
 
-.fx-view-workbench .dv-groupview-edge .dv-default-tab .dv-default-tab-content {
+.fx-view-dockview-host .dv-groupview-edge .dv-default-tab .dv-default-tab-content {
   margin: 0;
   padding: var(--fx-ref-space-2) 0;
 }
 
-.fx-view-workbench
+.fx-view-dockview-host
   .dv-groupview-edge.dv-active-group:not(.fx-edge-drawer-open)
   > .dv-tabs-and-actions-container
   .dv-tabs-container
@@ -605,7 +685,7 @@ body {
   color: var(--dv-activegroup-hiddenpanel-tab-color);
 }
 
-.fx-view-workbench
+.fx-view-dockview-host
   .dv-groupview-edge.dv-inactive-group:not(.fx-edge-drawer-open)
   > .dv-tabs-and-actions-container
   .dv-tabs-container
@@ -614,42 +694,42 @@ body {
   color: var(--dv-inactivegroup-hiddenpanel-tab-color);
 }
 
-.fx-view-workbench .dv-groupview-edge.fx-edge-empty {
+.fx-view-dockview-host .dv-groupview-edge.fx-edge-empty {
   visibility: hidden;
   pointer-events: none;
 }
 
-.fx-view-workbench .dv-groupview-edge .dv-tabs-container.dv-tabs-container-vertical > .dv-tab {
+.fx-view-dockview-host .dv-groupview-edge .dv-tabs-container.dv-tabs-container-vertical > .dv-tab {
   min-height: 104px;
   padding: var(--fx-ref-space-10) var(--fx-ref-space-6);
   box-sizing: border-box;
 }
 
-.fx-view-workbench .dv-groupview-edge .dv-tabs-container:not(.dv-tabs-container-vertical) > .dv-tab {
+.fx-view-dockview-host .dv-groupview-edge .dv-tabs-container:not(.dv-tabs-container-vertical) > .dv-tab {
   min-width: 104px;
   padding: var(--fx-ref-space-6) var(--fx-ref-space-12);
   box-sizing: border-box;
 }
 
-.fx-view-workbench .dv-groupview-edge .dv-default-tab {
+.fx-view-dockview-host .dv-groupview-edge .dv-default-tab {
   padding: var(--fx-ref-space-4) var(--fx-ref-space-2);
   gap: var(--fx-ref-space-6);
   box-sizing: border-box;
 }
 
-.fx-view-workbench .dv-groupview-edge .dv-tabs-container-vertical .fx-dock-tab-icon {
+.fx-view-dockview-host .dv-groupview-edge .dv-tabs-container-vertical .fx-dock-tab-icon {
   writing-mode: horizontal-tb;
   margin-right: 0;
   margin-bottom: var(--fx-ref-space-6);
 }
 
-.fx-view-workbench .dv-default-tab-action.fx-edge-pin {
+.fx-view-dockview-host .dv-default-tab-action.fx-edge-pin {
   opacity: 0;
   pointer-events: none;
 }
 
-.fx-view-workbench .dv-groupview-edge .dv-tab:hover .dv-default-tab-action.fx-edge-pin,
-.fx-view-workbench .dv-groupview-edge .dv-default-tab-action.fx-edge-pin--on {
+.fx-view-dockview-host .dv-groupview-edge .dv-tab:hover .dv-default-tab-action.fx-edge-pin,
+.fx-view-dockview-host .dv-groupview-edge .dv-default-tab-action.fx-edge-pin--on {
   opacity: 1;
   pointer-events: auto;
 }
@@ -689,7 +769,7 @@ body {
 .fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-left.fx-edge-drawer-open > .dv-content-container,
 .fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-left {
   left: calc(var(--fx-edge-drawer-left) - 3px);
-  width: calc(var(--fx-edge-drawer-width, 300px) + 3px);
+  width: min(calc(var(--fx-edge-drawer-width, 300px) + 3px), var(--fx-edge-drawer-max-width));
   box-shadow: 4px 0 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
     1px 0 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
 }
@@ -697,7 +777,7 @@ body {
 .fx-view-dockview-host .dv-groupview-edge.dv-groupview-header-right.fx-edge-drawer-open > .dv-content-container,
 .fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-right {
   right: calc(var(--fx-edge-drawer-right) - 3px);
-  width: calc(var(--fx-edge-drawer-width, 300px) + 3px);
+  width: min(calc(var(--fx-edge-drawer-width, 300px) + 3px), var(--fx-edge-drawer-max-width));
   box-shadow: -4px 0 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
     -1px 0 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
 }

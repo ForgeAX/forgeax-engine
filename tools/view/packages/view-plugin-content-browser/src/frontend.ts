@@ -1,13 +1,13 @@
 import type { Context } from '@forgeax/engine-plugin';
 import type { AssetBrowserReveal, AssetBrowserService, FrontendConfig } from '@forgeax/view-workspace-core/frontend-contract';
-import { FRONTEND_PLUGIN_ID, FRONTEND_MODULE, PAGE_TYPE, PANEL_LAYOUT, SLOT, TITLE_I18N_KEY } from './identity.ts';
+import { FRONTEND_PLUGIN_ID, FRONTEND_MODULE, PANEL_LAYOUT, SLOT, TITLE_I18N_KEY } from './identity.ts';
 
 export const VIEW_CONTENT_BROWSER_FRONTEND_PLUGIN_ID = FRONTEND_PLUGIN_ID;
 export const VIEW_CONTENT_BROWSER_FRONTEND_MODULE = FRONTEND_MODULE;
 
 const viewContentBrowserFrontendPlugin = {
   name: VIEW_CONTENT_BROWSER_FRONTEND_PLUGIN_ID,
-  inject: ['viewOperationClient', 'viewScenePage'],
+  inject: ['viewOperationClient', 'contentBrowserDetailTabs'],
   provide: ['viewAssetBrowser'],
   async apply(ctx: Context, config: FrontendConfig = {}) {
     const document = config.document ?? globalThis.document;
@@ -23,6 +23,7 @@ const viewContentBrowserFrontendPlugin = {
       revealAsset: input => revealAsset?.(input) ?? Promise.resolve(false),
     };
     ctx.provide('viewAssetBrowser', assetBrowser);
+    const detailTabs = ctx.get('contentBrowserDetailTabs');
     const wrapper = document.createElement('div');
     wrapper.className = 'fx-view-content-browser-host';
     wrapper.dataset.forgeaxView = 'content-browser-root';
@@ -31,7 +32,7 @@ const viewContentBrowserFrontendPlugin = {
     wrapper.append(reactMount);
     const unclaim = panelHost.claim({
       id: SLOT,
-      pageType: PAGE_TYPE,
+      home: { kind: 'shell-bottom' },
       titleKey: TITLE_I18N_KEY,
       activity: { labelKey: TITLE_I18N_KEY, icon: 'boxes' },
       layout: PANEL_LAYOUT,
@@ -46,9 +47,11 @@ const viewContentBrowserFrontendPlugin = {
         panel: 'ContentBrowser',
         props: {
           client: workspaceClient,
+          detailTabs,
           assetReferences: ctx.get('viewAssetReferences', false),
           pageHost: config.pageHost ?? ctx.get('pageHost', false),
           revealPanel: () => panelHost.reveal?.(SLOT) ?? Promise.resolve(false),
+          dismissUnpinnedEdge: () => panelHost.dismissUnpinnedEdge?.(SLOT),
           registerAssetReveal: (handler: typeof revealAsset) => {
             revealAsset = handler;
             return () => { if (revealAsset === handler) revealAsset = undefined; };

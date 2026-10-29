@@ -9,8 +9,8 @@ import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../component
 import type { GeometryCommandCapture } from '../geometry-observation';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { Materials } from '../materials';
-import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
+import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it('keeps the published command source World distinct from its transport namespace', async () => {
@@ -91,11 +91,11 @@ it('keeps the published command source World distinct from its transport namespa
       world.update().unwrap();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
       const packet = structuredClone(candidate.packet, {
-        transfer: renderPublicationTransfers(candidate.packet),
+        transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
       const drawn = renderer.draw({
-        publication: packet,
+        publication: encodeRenderPublication(packet),
         ...(observe ? { geometryObservation: true as const } : {}),
         ...(includeIdentity ? { geometryObservationSourceWorldIdentity: world.identity } : {}),
       });
@@ -105,7 +105,9 @@ it('keeps the published command source World distinct from its transport namespa
       const completed = await receipt.completed;
       if (!completed.ok) throw completed.error;
       publisher.acknowledgeFeatures(packet.revision, []).unwrap();
-      publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+      publisher
+        .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
+        .unwrap();
       return { receipt, revision: packet.revision };
     };
     await submit(false);

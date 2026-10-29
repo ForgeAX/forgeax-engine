@@ -111,7 +111,7 @@ export function preparedWorld(assets?: AssetRegistry): World {
   const world = new World(assets === undefined ? {} : { assets });
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: Camera, data: { fov: 60, aspect: 1, near: 0.1, far: 100 } },
+    { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
   );
   return world;
 }

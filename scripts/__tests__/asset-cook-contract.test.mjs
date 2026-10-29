@@ -9,10 +9,8 @@ describe('asset cook contract sweep', () => {
     const root = mkdtempSync(join(tmpdir(), 'asset-cook-contract-'));
     mkdirSync(join(root, 'packages/assets-runtime/src'), { recursive: true });
     for (const fixture of [
-      'apps/hello/cube/assets/cube-mesh.pack.json',
       'apps/hello/room/assets/room.pack.json',
       'apps/hello/scene-nesting/assets/outer-scene.pack.json',
-      'packages/runtime/assets/builtin/cube.pack.json',
     ]) {
       mkdirSync(join(root, dirname(fixture)), { recursive: true });
     }
@@ -27,10 +25,8 @@ describe('asset cook contract sweep', () => {
       assets: [{ guid: 'g', kind: 'mesh', payload: {}, refs: [], artifacts: {} }],
     });
     for (const fixture of [
-      'apps/hello/cube/assets/cube-mesh.pack.json',
       'apps/hello/room/assets/room.pack.json',
       'apps/hello/scene-nesting/assets/outer-scene.pack.json',
-      'packages/runtime/assets/builtin/cube.pack.json',
     ])
       writeFileSync(join(root, fixture), pack);
 

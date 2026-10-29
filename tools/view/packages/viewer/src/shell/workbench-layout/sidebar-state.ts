@@ -1,4 +1,5 @@
 import {
+  WORKBENCH_EDGES,
   resolveTargetSides,
   stageFromTargetSides,
   targetSidesEqual,
@@ -27,12 +28,13 @@ export function resolveWorkbenchStage(
   width: number,
   height: number,
   current: WorkbenchSidebarState,
+  edges: readonly WorkbenchEdge[] = WORKBENCH_EDGES,
 ): { ignored: true } | { ignored: false; stage: WorkbenchStage; targetSides: readonly WorkbenchEdge[] } {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     return { ignored: true };
   }
 
-  const targetSides = resolveTargetSides(width, height, current.targetSides);
+  const targetSides = resolveTargetSides(width, height, current.targetSides, edges);
   const stage = stageFromTargetSides(targetSides);
 
   if (targetSidesEqual(targetSides, current.targetSides) && stage === current.stage) {

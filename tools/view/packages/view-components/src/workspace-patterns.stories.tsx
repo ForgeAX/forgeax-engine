@@ -20,6 +20,7 @@ import {
 } from './components';
 import { InspectorForm } from './InspectorForm';
 import { AssetReferenceField } from './AssetReferenceField';
+import { MaterialSlot } from './MaterialSlot';
 import { ClipboardProvider } from './clipboard';
 
 const meta = {
@@ -204,8 +205,30 @@ function NavigableAssetFields() {
     <output aria-live="polite">{action}</output></div>;
 }
 export const InspectorAssetNavigation: Story = {
-  parameters: { docs: { description: { story: 'Asset names are read-only and never navigate. Separate folder and external-link buttons locate the asset or open its viewer. Existing unsupported controls remain visible but disabled. Missing identities and unavailable viewers explain their disabled open action in a tooltip.' } } },
+  parameters: { docs: { description: { story: 'Asset names are read-only. Double-click the thumbnail or press Enter to open its viewer; folder and external-link buttons remain available. Missing identities and unavailable viewers explain their disabled open action in a tooltip.' } } },
   render: () => <NavigableAssetFields />,
+};
+
+function AssetPreviewFields() {
+  const [opened, setOpened] = useState('');
+  return <div style={{ width: '100%', maxWidth: 380, display: 'grid', gap: 8 }}>
+    {[
+      { name: 'Astral Bloom', kind: 'mesh', state: 'ready' as const, src: new URL('./story-assets/astral-bloom.png', import.meta.url).href },
+      { name: 'Fantasy Azure', kind: 'material', state: 'ready' as const, src: new URL('./story-assets/fantasy-azure.png', import.meta.url).href },
+      { name: 'Loading texture', kind: 'texture', state: 'loading' as const },
+      { name: 'Failed preview', kind: 'mesh', state: 'failed' as const },
+      { name: 'Unsupported preview', kind: 'audio', state: 'unsupported' as const },
+    ].map(({ name, kind, ...thumbnail }) => <AssetReferenceField key={name}
+      value={{ guid: name, name, kind }} thumbnail={thumbnail} onOpen={() => setOpened(name)} />)}
+    <AssetReferenceField value={{ guid: 'missing', name: 'Missing asset', missing: true }} />
+    <AssetReferenceField value={{ name: 'Unresolved handle', kind: 'mesh' }} />
+    <output aria-live="polite">{opened}</output>
+  </div>;
+}
+
+export const InspectorAssetThumbnails: Story = {
+  parameters: { docs: { description: { story: 'Engine-produced mesh and material PNGs use a fixed 64px thumbnail with contain sizing. Loading, failed, unsupported and missing references retain stable geometry. Double-click or Enter invokes the same open callback independently of preview availability; a single click and the asset name never navigate.' } } },
+  render: () => <AssetPreviewFields />,
 };
 
 function LayoutExample() {
@@ -278,4 +301,15 @@ export const AssetReferenceClipboard: Story = {
 export const AssetReferenceClipboardDenied: Story = {
   parameters: { docs: { description: { story: 'A denied platform clipboard write remains visible and can be dismissed.' } } },
   render: () => <ClipboardAssetReference denied />,
+};
+
+export const MaterialSlots: Story = {
+  parameters: { docs: { description: { story: 'Scene and Mesh share the same slot heading, index and read-only asset reference layout. Reference actions and thumbnail bytes are supplied by the consuming panel.' } } },
+  render: () => <div style={{ width: 320, maxWidth: '100%' }}>
+    {['Azure Flux', 'Violet Rift', 'Engine default'].map((name, index) => <MaterialSlot key={name} index={index} name={name} source="Mesh default">
+      <AssetReferenceField value={index === 2 ? { name, kind: 'material' } : { guid: name, name: `material/${name.toLowerCase().replaceAll(' ', '-')}`, kind: 'material' }}
+        thumbnail={index === 0 ? { state: 'ready', src: new URL('./story-assets/fantasy-azure.png', import.meta.url).href } : { state: 'unsupported' }}
+        onOpen={index < 2 ? () => {} : undefined} onBrowse={index < 2 ? () => {} : undefined} />
+    </MaterialSlot>)}
+  </div>,
 };

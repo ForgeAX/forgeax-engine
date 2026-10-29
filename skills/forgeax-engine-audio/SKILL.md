@@ -59,7 +59,7 @@ Attach `Transform` to spatial `AudioSource` entities and `AudioListener` to the 
 | Host | `createHostAudioConsumer()` and `WebAudioEngine` | Owns decode cache, `AudioBuffer`, nodes, buses, gesture resume, and `AudioContext` |
 | Kernel Worker | Nothing | Audio is never a Shared Kernel concern |
 
-`main-serial`, `engine-worker`, and `shared` use the same `audioPlugin()` and intent vocabulary. The App report projects Host state at `app.execution.report().audio`.
+`main-serial`, `engine-worker`, and `shared` use the same `audioPlugin()` and intent vocabulary. The App report projects Host state at `app.execution.report().audio`. Worker queries observe the last admitted Host snapshot; before feedback they report `unavailable` and a null active count. Do not diagnose autoplay from an unavailable observation. Host audio listens for the first gesture before lazy context creation; borrowed contexts retain caller ownership. Validate gesture ordering with trusted browser input, and qualify autoplay-policy behavior without a permissive autoplay launch override.
 
 ## Components and controls
 
@@ -82,6 +82,8 @@ Attach `Transform` to spatial `AudioSource` entities and `AudioListener` to the 
 Set Host cache budgets with `createHostAudioConsumer(engine, options)` when the defaults do not fit the project; units and rejection behavior are defined in `packages/audio-webaudio/README.md`. Bus settings apply even before the first context is created.
 
 Inspect decode or context-resume failure through `backend.getState().lastError` or `app.execution.report().audio.lastError`. Consume `.code`, `.expected`, `.hint`, and `.detail`; do not parse the message.
+
+For an inaudible sound, first prove that the intended actor actually triggers a playing edge and owns a valid clip. Then inspect Host context/error state, source lifetime, bus/mute/volume, emitter/listener poses and distance attenuation. Test an isolated source before overlapping gunfire, and compare listener orientations with the same source position. A loaded asset, active-source count or zero console errors does not prove audible output.
 
 ## Cleanup
 

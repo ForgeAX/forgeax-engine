@@ -123,6 +123,7 @@ export function mountUi(asset: UiAsset, options: MountOptions): UiResult<UiInsta
   shadow.append(style);
   const content = document.createElement('div');
   content.innerHTML = projected.value.html;
+  content.style.height = '100%';
   content.style.pointerEvents = 'none';
   shadow.append(content);
   const onClick = (event: Event) => {

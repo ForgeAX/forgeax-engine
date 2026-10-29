@@ -96,7 +96,7 @@ export function computeBounding2dState(time: number, mode: Bounding2dTest): Boun
   const angle = time;
   const direction: [number, number] = [-Math.cos(angle), -Math.sin(angle)];
   const origin: [number, number] = [Math.cos(angle) * 280, Math.sin(angle) * 280];
-  const ray = ray2.create(undefined, origin, direction, 620);
+  const ray = ray2.create(new Float32Array(5), origin, direction, 620);
   const boxHits: boolean[] = [];
   const circleHits: boolean[] = [];
   for (const volume of VOLUMES) {

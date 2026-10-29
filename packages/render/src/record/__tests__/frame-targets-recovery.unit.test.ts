@@ -49,7 +49,7 @@ describe('acquireSwapChainTarget recovery', () => {
 
     const result = acquireSwapChainTarget(internals, pipelineState);
 
-    expect(result).toMatchObject({ currentTexture: texture, targetW: 800, targetH: 600 });
+    expect(result).toMatchObject({ texture, targetW: 800, targetH: 600 });
     expect(resolveSurfaceDevice).toHaveBeenCalledWith(recorderDevice);
     expect(configure).toHaveBeenCalledWith(
       expect.objectContaining({ device: configuredDevice, format: 'bgra8unorm' }),

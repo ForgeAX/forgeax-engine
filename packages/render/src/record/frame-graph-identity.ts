@@ -25,6 +25,34 @@ export function frameGraphTopologyIdentity(
   };
 }
 
+/** Bounded before/after values of the dependencies a compile changed (diagnostic only). */
+export function frameGraphChangedValues(
+  previousKey: string | undefined,
+  nextKey: string,
+  dependencies: readonly string[],
+  limit = 4,
+  chars = 400,
+): readonly { readonly dependency: string; readonly before: string; readonly after: string }[] {
+  if (previousKey === undefined) return [];
+  try {
+    const previous = JSON.parse(previousKey) as Record<string, Record<string, unknown>>;
+    const next = JSON.parse(nextKey) as Record<string, Record<string, unknown>>;
+    const read = (key: Record<string, Record<string, unknown>>, dependency: string) => {
+      const value = dependency.startsWith('topology.')
+        ? key.topology?.[dependency.slice('topology.'.length)]
+        : (key as Record<string, unknown>)[dependency];
+      return (JSON.stringify(value) ?? 'undefined').slice(0, chars);
+    };
+    return dependencies.slice(0, limit).map((dependency) => ({
+      dependency,
+      before: read(previous, dependency),
+      after: read(next, dependency),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Compare detached canonical keys only on a miss; never inspect live authoring twice. */
 export function frameGraphChangedDependencies(
   previousKey: string | undefined,

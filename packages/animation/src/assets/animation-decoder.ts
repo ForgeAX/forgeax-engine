@@ -1,4 +1,8 @@
 import {
+  ANIMATION_CLIP_SAMPLES_ARTIFACT,
+  decodeAnimationClipSamples,
+} from '@forgeax/engine-pack/runtime';
+import {
   type AnimationChannel,
   type AnimationClip,
   type AnimationGraph,
@@ -184,8 +188,19 @@ export const animationClipContribution: AssetDecoderContribution<AnimationClip, 
     kind: { kind: 'animation-clip' } as AssetKind<AnimationClip, 'animation-clip'>,
     consumer: 'AnimationPlayer',
     decoder: {
-      async decode({ envelope }) {
-        const value: unknown = envelope.payload;
+      async decode({ envelope, artifacts }) {
+        let value: unknown = envelope.payload;
+        const samples = envelope.artifacts[ANIMATION_CLIP_SAMPLES_ARTIFACT];
+        if (samples !== undefined && value !== null && typeof value === 'object') {
+          const bytes = await artifacts.read(samples);
+          if (!bytes.ok) return bytes;
+          const resolved = decodeAnimationClipSamples(
+            value as Record<string, unknown>,
+            bytes.value,
+          );
+          if (!resolved.ok) return invalid(envelope.guid, resolved.error);
+          value = resolved.value;
+        }
         const clip =
           value !== null &&
           typeof value === 'object' &&

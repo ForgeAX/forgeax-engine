@@ -1,6 +1,8 @@
 # ForgeaX SDK: AI entry
 
-Read this first. The directory provides an immediately usable browser-game SDK and public Engine source snapshot; build Engine only when modifying it.
+Read this first. Both SDK transports extend the built Engine with editable source
+and that release's prebuilt module outputs. Rebuild only changed owners and bind
+the game to `source/engine/`; see [source iteration](README.md#bind-local-engine-source).
 
 Install through pnpm dlx @forgeax/engine sdk install <dir> from public npm.
 Private GitHub Releases are internal archives; consumers need no GitHub
@@ -14,7 +16,7 @@ Before creating or changing a game, read:
 2. [SDK skill](skills/forgeax-engine-sdk/SKILL.md): capability tour and need-to-skill-to-evidence selection.
 
 project init returns these two paths in value.onboarding.read and prints read lines
-in text mode. Consult the [feature catalog](skills/forgeax-engine-sdk/references/feature-catalog.md)
+in text mode. Consult the feature catalog
 only when the task needs broader discovery; select the smallest useful capability set.
 
 > [!IMPORTANT]
@@ -25,7 +27,7 @@ only when the task needs broader discovery; select the smallest useful capabilit
 
 ## Unattended Linux tests
 
-Before SDK initialization in a container, read [Linux unattended validation](skills/forgeax-engine-cli/references/linux-unattended.md).
+Before SDK initialization in a container, read Linux unattended validation.
 It covers writable history/pnpm lock directories, headless capture without Xvfb,
 virtual headed capture and non-root Chromium sandboxing. Preserve the first real
 failure; never shim installation into success. A static build with a blocked
@@ -97,16 +99,16 @@ to recover.
 | Path | Purpose |
 |:--|:--|
 | bin/forgeax | Standalone project-creation CLI. |
-| packages/name | Built public package with manifest/README at its root. |
+| packages/name | Built public package with manifest/README at its root; full ZIP only. |
 | templates/empty | Minimal project with a scene-owner Pack and an assets root. |
 | templates/game-3d | Feature-owned behavior Packs plus procedural atmosphere, PBR, meshes, and lighting. |
 | store/pnpm | Full-ZIP offline closure shared by both templates; omitted by npm carrier. |
 | skills | Engine task guides; SDK tour and audited feature catalog. sdk-manifest.json records file/byte closure. |
-| source/engine | Public source/contracts/rules/skills and prebuilt WASM. |
+| source/engine | Both transports: editable source, checked WASM and the release's prebuilt module outputs. |
 
 ## Project, assets, and tools
 
-Generated AGENTS owns project layout, source/Pack/Meta responsibilities, GUID loading, asset types, realms, testing, builds, delivery, and debugging. skills contains ordinary files; .agents/.claude/.cursor/.codebuddy/.workbuddy/.forgeax skill mounts are rebuildable discovery links:
+Generated AGENTS holds the hard rules, default commands and task routing; its routed game project guide and game delivery guide under skills/forgeax-engine-sdk/references own project layout, source/Pack/Meta responsibilities, GUID loading, asset types, realms, testing, builds, delivery, and debugging. skills contains ordinary files; .agents/.claude/.cursor/.codebuddy/.workbuddy/.forgeax skill mounts are rebuildable discovery links:
 
 ```bash
 pnpm exec forgeax project skill verify --json
@@ -134,10 +136,10 @@ pnpm exec forgeax project capture --headless true --backend software --require-u
 
 This uses source-development assets and browser compositor screenshots; retain adapter/error sidecar evidence.
 For cross-machine comparison, add --deterministic and pin game state in forgeaxCapture mode.
-App's actual frame-submitted event projects to
-document.documentElement.dataset.forgeaxFrameSubmitted and the Canvas
-forgeax:frame-submitted event. Capture waits for Engine submission and non-flat Canvas pixels,
-then the game's forgeaxCaptureReady checkpoint. Elapsed waiting is
+App retains submitted and completed facts on `canvas.forgeaxFrameProgress` and dispatches
+the Canvas `forgeax:frame-submitted` event as a future-only notification. Capture reads the
+snapshot and waits for non-flat Canvas pixels, then the game's forgeaxCaptureReady checkpoint.
+Elapsed waiting is
 only extra settling, not a deterministic frame or substitute for pixel evidence.
 Use a Node/Bun SDK command-client scenario for input, assertions, and multiple checkpoints in one session.
 Open browser once, drive native session.page, and call session.capture(name)
@@ -169,7 +171,7 @@ Use Playwright to reproduce and verify real output after repair; HTTP 200, ports
 
 The generated game's delivery-scope section owns local and release acceptance.
 For producing/verifying the SDK distribution itself, use the SDK skill's
-[production guide](skills/forgeax-engine-sdk/references/sdk-production.md).
+production guide.
 
 ## Modify Engine source
 

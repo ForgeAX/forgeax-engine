@@ -23,14 +23,15 @@
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/apps-shared": "workspace:*",
-    "@forgeax/engine-geometry": "workspace:*"
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
-    "vite": "8.0.16",
+    "vite": "8.3.5",
     "@forgeax/engine-devkit": "workspace:*"
   },
   "forgeax": {

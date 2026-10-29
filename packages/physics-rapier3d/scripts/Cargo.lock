@@ -85,6 +85,7 @@ name = "dimforge_rapier3d"
 version = "0.20.0"
 dependencies = [
  "bincode",
+ "glamx",
  "js-sys",
  "nalgebra",
  "palette",

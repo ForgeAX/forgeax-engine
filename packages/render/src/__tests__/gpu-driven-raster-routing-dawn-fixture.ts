@@ -12,9 +12,10 @@ import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
-import type { ExtractedFrame, ExtractedLights, RenderableSnapshot } from '../render-system-extract';
+import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import type { PersistentRenderScene } from '../scene/render-scene';
-import { createTemporalFrameTransaction } from '../temporal/frame';
+import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
+import type { ViewLights } from '../world/render-lights';
 import { admitPbrDawnFixture } from './gpu-driven-raster-class-dawn-fixture';
 
 /** Read real cooked Standard color through both live material-pass filters. */
@@ -132,6 +133,7 @@ export async function verifyRetainedRasterRouting(input: {
   };
   const state = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
+    temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
@@ -147,7 +149,7 @@ export async function verifyRetainedRasterRouting(input: {
       state,
       { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
       makeZeroCameraFallbackSnapshot(),
-      { cascadeCount: undefined, pointShadow: [], spot: [] } as unknown as ExtractedLights,
+      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
       1,
       1,
       undefined,

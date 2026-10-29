@@ -237,7 +237,7 @@ export function fromRotationMatrix(out: Quat, m: Mat3Like): Quat {
  * ```ts
  * // aim a camera at the origin
  * const q = quat.fromLookAt(quat.create(), [-2.5, 4.5, 9], [0, 0, 0], [0, 1, 0]);
- * world.set(cameraEntity, Transform, { pos: [-2.5, 4.5, 9], rot: q });
+ * world.set(cameraEntity, Transform, { pos: [-2.5, 4.5, 9], quat: q });
  * ```
  */
 export function fromLookAt(out: Quat, eye: Vec3Like, target: Vec3Like, up: Vec3Like): Quat {

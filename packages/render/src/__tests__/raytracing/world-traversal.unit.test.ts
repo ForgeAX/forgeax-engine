@@ -190,16 +190,48 @@ describe('world acceleration', () => {
     ];
     const first = { instanceId: 7, geometryId: 0, mask: 1, transform: translated(0) };
     const instances = [first, { instanceId: 9, geometryId: 1, mask: 1, transform: translated(2) }];
-    const update = (list = instances) => {
-      const encoder = d.createCommandEncoder().unwrap();
-      return world.update(encoder, geometries, list).unwrap();
-    };
-    // One BLAS = 48 B positions + 24 B uint32 indices; one TLAS instance = 64 B.
-    expect(update()).toEqual({ pending: 1, blasBuilt: 1, tlasBuilt: 1, bytesBuilt: 72 + 64 });
-    expect(update()).toEqual({ pending: 0, blasBuilt: 1, tlasBuilt: 1, bytesBuilt: 72 + 128 });
-    expect(update()).toEqual({ pending: 0, blasBuilt: 0, tlasBuilt: 0, bytesBuilt: 0 });
-    const moved = instances.map((i, k) => (k === 0 ? { ...i, transform: translated(1) } : i));
-    expect(update(moved)).toEqual({ pending: 0, blasBuilt: 0, tlasBuilt: 1, bytesBuilt: 128 });
+    for (const [k, instance] of instances.entries()) {
+      const geometry = geometries[k];
+      if (geometry === undefined) throw new Error('missing geometry');
+      world.set(instance, geometry).unwrap();
+    }
+    const update = () => world.update(d.createCommandEncoder().unwrap()).unwrap();
+    // One BLAS = 48 B positions + 24 B uint32 indices (+ 32 B face normals uploaded);
+    // one TLAS instance = 64 B of GPU build input; one table row = 16 B uploaded.
+    expect(update()).toEqual({
+      pending: 1,
+      blasBuilt: 1,
+      tlasBuilt: 1,
+      bytesBuilt: 72 + 64,
+      rowsWritten: 2,
+      bytesUploaded: 72 + 32 + 32,
+    });
+    expect(update()).toEqual({
+      pending: 0,
+      blasBuilt: 1,
+      tlasBuilt: 1,
+      bytesBuilt: 72 + 128,
+      rowsWritten: 2,
+      bytesUploaded: 72 + 32 + 32,
+    });
+    expect(update()).toEqual({
+      pending: 0,
+      blasBuilt: 0,
+      tlasBuilt: 0,
+      bytesBuilt: 0,
+      rowsWritten: 0,
+      bytesUploaded: 0,
+    });
+    // A move patches one record and one row; the GPU rebuild still consumes both records.
+    world.move(7, translated(1)).unwrap();
+    expect(update()).toEqual({
+      pending: 0,
+      blasBuilt: 0,
+      tlasBuilt: 1,
+      bytesBuilt: 128,
+      rowsWritten: 1,
+      bytesUploaded: 16,
+    });
     const layout = d
       .createBindGroupLayout({
         entries: [{ binding: 0, visibility: 4, accelerationStructure: {} }],
@@ -216,18 +248,17 @@ describe('world acceleration', () => {
       positions: box.positions,
       indices: new Uint16Array(39).map((_, k) => [0, 1, 2][k % 3] ?? 0),
     };
-    const exhausted = world.update(
-      d.createCommandEncoder().unwrap(),
-      [...geometries, large],
-      [...instances, { instanceId: 11, geometryId: 2, mask: 1, transform: translated(4) }],
+    const exhausted = world.set(
+      { instanceId: 11, geometryId: 2, mask: 1, transform: translated(4) },
+      large,
     );
     expect(exhausted.ok ? undefined : exhausted.error.code).toBe('ray-reference-limit');
-    const tooMany = world.update(
-      d.createCommandEncoder().unwrap(),
-      geometries,
-      Array.from({ length: 9 }, (_, k) => ({ ...first, instanceId: k })),
-    );
-    expect(tooMany.ok ? undefined : tooMany.error.code).toBe('ray-reference-limit');
+    expect([world.instances, world.geometries]).toEqual([2, 2]);
+    let tooMany: ReturnType<typeof world.set> | undefined;
+    for (let k = 0; k < 9 && tooMany?.ok !== false; k++)
+      tooMany = world.set({ ...first, instanceId: 100 + k }, { geometryId: 0, ...box });
+    expect(tooMany?.ok ? undefined : tooMany?.error.code).toBe('ray-reference-limit');
+    expect(world.instances).toBe(8);
     world.dispose();
   });
 });

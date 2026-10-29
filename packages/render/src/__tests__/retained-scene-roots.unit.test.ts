@@ -1,9 +1,16 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { box3 } from '@forgeax/engine-math';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, test, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
-import { FrameProjection } from '../scene/frame-list';
+import { setSceneRow } from '../scene/__tests__/scene-row-writes';
+import {
+  FrameProjection,
+  lodCandidateCountOf,
+  RetainedFrameProjection,
+  sparseRowsOf,
+} from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
@@ -201,11 +208,34 @@ test('old and new bounds remain independent across updates, geometry versions an
   const current = required(scene.slot(0, 2));
   expect(current.slot).toBe(old.slot);
   expect(scene.cullingWorldBoundsAt(current, meshes, materials)?.min[0]).toBe(9);
-  expect(scene.cullingWorldBoundsAt(old, meshes, materials)).toBe(oldBounds);
+  expect(scene.cullingWorldBoundsAt(old, meshes, materials)).toEqual(oldBounds);
   const wide = meshes.with(0, 1, createBoxGeometry(4, 4, 4).unwrap());
   expect(scene.cullingWorldBoundsAt(old, wide, materials)?.min[0]).toBe(-2);
   expect(oldBounds.min[0]).toBe(-1);
-  expect(scene.cullingWorldBoundsAt(old, meshes, materials)).toBe(oldBounds);
+  expect(scene.cullingWorldBoundsAt(old, meshes, materials)).toEqual(oldBounds);
+  // A captured older record never replaces the current row's RenderBounds column.
+  expect(scene.cullingWorldBoundsAt(current, meshes, materials)?.min[0]).toBe(9);
+});
+
+test('RenderBounds is a numeric slot column proven by row, geometry and material frame', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const materials = new MaterialFrame(undefined).with(material);
+  const scene = new RenderScene();
+  update(scene, source(1, 0, material));
+  const row = required(scene.slot(0, 1));
+  const meshes = new MeshFrame().with(0, 1, createBoxGeometry(2, 2, 2).unwrap());
+  const columns = (scene.sceneRows as unknown as { bounds: { radius: Float64Array } }).bounds;
+  expect(columns.radius).toBeInstanceOf(Float64Array);
+  const out = box3.create();
+  expect(scene.writeCullingWorldBoundsAt(row, out, meshes, materials)).toBe(true);
+  expect([...out]).toEqual([-1, -1, -1, 1, 1, 1]);
+  update(scene, source(1, 5, material));
+  const moved = required(scene.slot(0, 1));
+  expect(scene.writeCullingWorldBoundsAt(moved, out, meshes, materials)).toBe(true);
+  expect(out[0]).toBe(4);
+  // The previous record still derives its own bounds without disturbing the row.
+  expect(scene.cullingWorldBoundsAt(row, meshes, materials)?.min[0]).toBe(-1);
+  expect(scene.cullingWorldBoundsAt(moved, meshes, materials)?.min[0]).toBe(4);
 });
 
 test('exact address writes reject aliases atomically and immutable membership survives retirement', () => {
@@ -218,18 +248,18 @@ test('exact address writes reject aliases atomically and immutable membership su
     entityKey: 1,
     snapshot: source(1, 0, material),
   };
-  owner.set(1, record);
+  setSceneRow(owner, 1, record);
   const retained = owner.capture();
   for (const invalid of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
     expect(owner.get(invalid)).toBeUndefined();
     expect(retained.slotAt(invalid)).toBeUndefined();
     expect(retained.indexOfSlot(invalid)).toBeUndefined();
-    expect(() => owner.set(invalid, undefined)).toThrow(RangeError);
+    expect(() => setSceneRow(owner, invalid, undefined)).toThrow(RangeError);
     expect(owner.capture()).toBe(retained);
   }
-  expect(() => owner.set(2, record)).toThrow(RangeError);
+  expect(() => setSceneRow(owner, 2, record)).toThrow(RangeError);
   owner.clear();
-  expect(retained.lookup(0, 1)).toBe(record);
+  expect(retained.lookup(0, 1)).toMatchObject({ slot: 1, generation: 1, worldId: 0, entityKey: 1 });
   expect(owner.capture().length).toBe(0);
   const members = new FrameSet().with(1).with(2);
   expect([...members.without(1).with(3)]).toEqual([2, 3]);
@@ -294,4 +324,41 @@ test('lazy projection preserves exact Array.at boundaries without accidental dou
   );
   expect(undefinedValue.slice()).toEqual([undefined, 4]);
   expect([...undefinedValue]).toEqual([undefined, 4]);
+});
+
+test('temporal rows carry the Scene-maintained LOD count and sparse rows equal to walking them', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const materials = new MaterialFrame(undefined).with(material);
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  const rows: RenderableSnapshot[] = [];
+  for (let key = 1; key <= 12; key++) {
+    const row: RenderableSnapshot = {
+      ...source(key, key, material),
+      ...(key % 3 === 0 ? { lods: [{} as never] } : {}),
+      ...(key % 4 === 0 ? { capsuleShadowRequested: true } : {}),
+    } as RenderableSnapshot;
+    rows.push(row);
+    update(scene, row);
+  }
+  scene.commitSubmission(scene.captureSubmission(scene.materialize()));
+  update(scene, { ...(rows[2] as RenderableSnapshot), transform: rows[5]?.transform } as never);
+  const temporal = scene.materializeTemporal({ hits: 0, misses: 0 }, materials);
+  const walked = [...temporal];
+  // The count is read from the facts, not by walking the rows.
+  expect(temporal instanceof RetainedFrameProjection && temporal.facts !== undefined).toBe(true);
+  expect(lodCandidateCountOf(temporal)).toBe(
+    walked.filter((row) => (row.lods?.length ?? 0) > 0).length,
+  );
+  expect(lodCandidateCountOf(temporal)).toBe(4);
+  expect([...sparseRowsOf(temporal, 'capsule')]).toEqual(
+    walked.filter((row) => row.capsuleShadowRequested === true),
+  );
+  for (const row of sparseRowsOf(temporal, 'capsule')) expect(row.temporal).toBeDefined();
+  // Rows pending acceptance keep the walked count.
+  const unavailable = FrameSet.from([required(scene.slot(0, 3)).slot]);
+  const pending = scene.materializeTemporal({ hits: 0, misses: 0 }, materials, unavailable);
+  expect(lodCandidateCountOf(pending)).toBe(
+    [...pending].filter((row) => (row.lods?.length ?? 0) > 0).length,
+  );
 });

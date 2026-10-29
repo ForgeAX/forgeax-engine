@@ -80,14 +80,15 @@ export function decodeSsrReflectance(read) {
   return { ...read, values };
 }
 
-// The captured shader bindings identify the resources. Never pin transient
-// handle IDs or count an admitted graph as evidence of reflected pixels.
-export async function inspectSsrTape(tapePath) {
+function loadSsrTape(tapePath) {
   const bytes = new Uint8Array(readFileSync(tapePath));
   const decoded = decodeTape(bytes);
   if (!decoded.ok) throw decoded.error;
   const tape = decoded.value;
-  const model = buildFrameModel(tape);
+  return { bytes, tape, model: buildFrameModel(tape) };
+}
+
+function auditMaterialTextureSpecialization(model) {
   const materialTextureSpecialization = [];
   for (const entryPoint of ['fs_gbuffer', 'fs_main', 'fs_temporal']) {
     const draws = model.works.filter(w => w.pipeline.shaders.some(s => s.entryPoint === entryPoint)
@@ -108,498 +109,693 @@ export async function inspectSsrTape(tapePath) {
       }
     }
   }
-  const work = (entry) => {
-    const candidates = model.works.filter((w) =>
-      w.pipeline.shaders.some((s) => s.entryPoint === entry));
-    assert.equal(candidates.length, 1, `expected one ${entry} dispatch`);
-    return candidates[0];
-  };
-  const trace = work('ssr_trace');
-  const temporal = work('ssr_temporal');
-  const compositionWorks = model.works.filter((w) => w.pipeline.shaders.some((s) => s.entryPoint === 'fs_ssr_compose'));
-  assert.ok(compositionWorks.length > 0, 'no material composition draw');
-  const compose = compositionWorks.at(-1);
-  // The hardware roughness sampler consumes the resolved presentation
-  // pyramid in premultiplied-radiance form. Older captures stored straight
-  // RGB and premultiplied in this audit's manual footprint helper.
-  const compositionSource = compose.pipeline.shaders.find((s) => s.entryPoint === 'fs_ssr_compose')?.source ?? '';
-  const temporalSource = temporal.pipeline.shaders.find((s) => s.entryPoint === 'ssr_temporal')?.source ?? '';
+  return materialTextureSpecialization;
+}
+
+function singleWork(model, entry) {
+  const candidates = model.works.filter((w) =>
+    w.pipeline.shaders.some((s) => s.entryPoint === entry));
+  assert.equal(candidates.length, 1, `expected one ${entry} dispatch`);
+  return candidates[0];
+}
+
+function workBinding(w, slot) {
+  const b = w.bindings.find((b) => b.groupIndex === 0 && b.binding === slot);
+  assert.ok(b?.resourceId, `missing binding ${slot} at work ${w.workIndex}`);
+  return b.resourceId;
+}
+
+function textureForView(model, id) {
+  const resource = model.resources.find(r => r.resourceId === id);
+  assert.equal(resource?.kind, 'texture-view');
+  return resource.descriptor.sourceHandleId;
+}
+
+function shaderSource(w, entryPoint) {
+  return w.pipeline.shaders.find((s) => s.entryPoint === entryPoint)?.source ?? '';
+}
+
+// The hardware roughness sampler consumes the resolved presentation
+// pyramid in premultiplied-radiance form. Older captures stored straight
+// RGB and premultiplied in this audit's manual footprint helper.
+function isPresentationPremultiplied(compose, temporal) {
+  const compositionSource = shaderSource(compose, 'fs_ssr_compose');
+  const temporalSource = shaderSource(temporal, 'ssr_temporal');
   const resolvedStores = [...temporalSource.matchAll(/textureStore\(resolvedOutput[^\n]*/g)].map((match) => match[0]);
-  const presentationPremultiplied = compositionSource.includes('radianceSampler')
+  return compositionSource.includes('radianceSampler')
     && resolvedStores.some((store) => store.includes('*'));
-  // A hardware trilinear sample is evaluated in implementation-defined f32
-  // order before the final RGBA16F attachment conversion. Keep the legacy
-  // interval for manual footprints and use a bounded, explicit allowance for
-  // this one filtered path rather than hiding the raw formula error.
-  const formulaIntervalTolerance = presentationPremultiplied ? 0.01 : 0.005;
-  const fullscreenComposition = compose.pipeline.shaders.some(s => s.entryPoint === 'vs_ssr_compose');
-  if (fullscreenComposition) assert.equal(compositionWorks.length, 1, 'SSR must compose each pixel once');
-  const radianceBinding = fullscreenComposition ? 0 : 20;
-  const fallbackBinding = fullscreenComposition ? 1 : 21;
-  const receiverAdmission = fullscreenComposition && compose.bindings.some(b => b.groupIndex === 0 && b.binding === 5);
-  const binding = (w, slot) => {
-    const b = w.bindings.find((b) => b.groupIndex === 0 && b.binding === slot);
-    assert.ok(b?.resourceId, `missing binding ${slot} at work ${w.workIndex}`);
-    return b.resourceId;
-  };
-  assert.equal(binding(trace, 4), binding(temporal, 0));
-  if (receiverAdmission) assert.equal(binding(compose, 5), binding(trace, 5), 'composition must consume the trace shared View');
-  const hasHitReactivity = trace.bindings.some(b => b.groupIndex === 0 && b.binding === 8);
+}
+
+function assertSsrBindingFlow(model, works) {
+  const { trace, temporal, compose, compositionWorks, receiverAdmission, hasHitReactivity, radianceBinding } = works;
+  assert.equal(workBinding(trace, 4), workBinding(temporal, 0));
+  if (receiverAdmission) assert.equal(workBinding(compose, 5), workBinding(trace, 5), 'composition must consume the trace shared View');
   if (hasHitReactivity) {
-    assert.equal(binding(trace, 7), binding(temporal, 4), 'trace and history must share Standard source metadata');
-    assert.equal(binding(trace, 8), binding(temporal, 11), 'history must consume the trace-produced reactivity');
+    assert.equal(workBinding(trace, 7), workBinding(temporal, 4), 'trace and history must share Standard source metadata');
+    assert.equal(workBinding(trace, 8), workBinding(temporal, 11), 'history must consume the trace-produced reactivity');
   }
-  const textureForView = id => {
-    const resource = model.resources.find(r => r.resourceId === id);
-    assert.equal(resource?.kind, 'texture-view');
-    return resource.descriptor.sourceHandleId;
-  };
   for (const w of compositionWorks) {
     // Temporal writes mip zero; material sampling exposes the same physical
     // reflection texture's full pyramid through a different view.
-    assert.equal(textureForView(binding(temporal, 7)), textureForView(binding(w, radianceBinding)));
-    assert.equal(binding(trace, 2), w.attachments.colorViewHandleIds[0]);
+    assert.equal(textureForView(model, workBinding(temporal, 7)), textureForView(model, workBinding(w, radianceBinding)));
+    assert.equal(workBinding(trace, 2), w.attachments.colorViewHandleIds[0]);
     assert.equal(w.pipeline.descriptor.desc.fragment.targets[0].blend.color.dstFactor, 'one');
   }
+}
+
+/** The captured shader bindings identify the SSR trace, temporal and composition works. */
+function selectSsrWorks(model) {
+  const trace = singleWork(model, 'ssr_trace');
+  const temporal = singleWork(model, 'ssr_temporal');
+  const compositionWorks = model.works.filter((w) => w.pipeline.shaders.some((s) => s.entryPoint === 'fs_ssr_compose'));
+  assert.ok(compositionWorks.length > 0, 'no material composition draw');
+  const compose = compositionWorks.at(-1);
+  const presentationPremultiplied = isPresentationPremultiplied(compose, temporal);
+  const fullscreenComposition = compose.pipeline.shaders.some(s => s.entryPoint === 'vs_ssr_compose');
+  if (fullscreenComposition) assert.equal(compositionWorks.length, 1, 'SSR must compose each pixel once');
+  const works = {
+    trace,
+    temporal,
+    compositionWorks,
+    compose,
+    presentationPremultiplied,
+    // A hardware trilinear sample is evaluated in implementation-defined f32
+    // order before the final RGBA16F attachment conversion. Keep the legacy
+    // interval for manual footprints and use a bounded, explicit allowance for
+    // this one filtered path rather than hiding the raw formula error.
+    formulaIntervalTolerance: presentationPremultiplied ? 0.01 : 0.005,
+    fullscreenComposition,
+    radianceBinding: fullscreenComposition ? 0 : 20,
+    fallbackBinding: fullscreenComposition ? 1 : 21,
+    receiverAdmission: fullscreenComposition && compose.bindings.some(b => b.groupIndex === 0 && b.binding === 5),
+    hasHitReactivity: trace.bindings.some(b => b.groupIndex === 0 && b.binding === 8),
+  };
+  assertSsrBindingFlow(model, works);
+  return works;
+}
+
+async function readTraceOverride() {
+  const steps = process.env.SSR_TRACE_STEPS === undefined ? undefined : Number(process.env.SSR_TRACE_STEPS);
+  if (steps !== undefined) assert.ok(Number.isInteger(steps) && steps >= 1 && steps <= 2048);
+  const sourcePath = process.env.SSR_TRACE_SOURCE;
+  let source;
+  if (sourcePath !== undefined) {
+    const { compileShader } = await import('../../../../packages/shader-compiler/dist/index.mjs');
+    const result = await compileShader(readFileSync(resolve(sourcePath), 'utf8'), {
+      id: 'forgeax_ssr::trace',
+      imports: { 'forgeax_view::common': readFileSync(new URL('../../../../packages/shader/src/common.wgsl', import.meta.url), 'utf8') },
+    });
+    if (!result.ok) throw result.error;
+    source = result.value.wgsl;
+  }
+  return { steps, sourcePath, source, candidate: undefined };
+}
+
+/** Replays the recorded trace shader unless a counterfactual step count or source was requested. */
+function createTraceShaderModule(backend, tapePath, traceOverride, device, descriptor) {
+  const { steps, sourcePath, source } = traceOverride;
+  if ((steps === undefined && source === undefined) || !descriptor.code.includes('fn ssr_trace(')) return backend.rhiWebgpu.createShaderModule(device, descriptor);
+  const constant = /(const SSR_TRACE_MAX_COARSE_STEPS[_\d]*\s*:\s*u32\s*=\s*)\d+u?\s*;/;
+  const baseCode = source ?? descriptor.code;
+  assert.ok(constant.test(baseCode), 'The selected trace must expose its bounded coarse-step constant');
+  const code = steps === undefined ? baseCode
+    : baseCode.replace(constant, (_, prefix) => `${prefix}${steps}u;`);
+  const digest = createHash('sha256').update(code).digest('hex');
+  const path = resolve(dirname(tapePath), `ssr-trace-candidate-${digest}.wgsl`);
+  writeFileSync(path, code);
+  traceOverride.candidate = { traceSteps: steps, sourcePath: sourcePath === undefined ? undefined : resolve(sourcePath), digest, path };
+  return backend.rhiWebgpu.createShaderModule(device, { ...descriptor, code });
+}
+
+async function readSsrResource(replay, id, workIndex, subresource, uint32Words = []) {
+  const result = await replay.readResourceAtWork(id, workIndex, subresource);
+  if (!result.ok) throw result.error;
+  const r = result.value;
+  assert.equal(r.provenance.selectedWorkIndex, workIndex);
+  return decodeSsrReadback(r, uint32Words);
+}
+
+async function readSsrBinding(replay, works, w, slot) {
+  const request = bindingReadRequest(w, 0, slot);
+  if (!request.ok) throw request.error;
+  // The captured View stores lightingChannels: u32 at byte 76; the
+  // all-channel mask 0xffffffff is legal. Every floating lane stays finite.
+  const uint32Words = w === works.trace && slot === 5 ? [19] : [];
+  return readSsrResource(replay, request.value.resourceId, w.workIndex, request.value.subresource, uint32Words);
+}
+
+async function measureHitReactivity(replay, works, traced) {
+  if (!works.hasHitReactivity) return undefined;
+  const { trace, temporal } = works;
+  const mask = await readSsrBinding(replay, works, trace, 8);
+  assert.equal(mask.format, 'r32float');
+  assert.equal(mask.width, traced.width);
+  assert.equal(mask.height, traced.height);
+  assert.ok(mask.values.every(v => v >= 0 && v <= 1));
+  // Rejected moving occluders deliberately retain reactivity on a miss.
+  // Radiance admission is not the validity contract for this mask.
+  return { resourceId: workBinding(trace, 8), sourceResourceId: workBinding(trace, 7),
+    producerWorkIndex: trace.workIndex, consumerWorkIndex: temporal.workIndex,
+    width: mask.width, height: mask.height, positive: mask.values.filter(v => v > 0).length,
+    reactiveMisses: mask.values.filter((v, i) => v > 0 && traced.values[i * 4 + 3] <= 0).length,
+    maximum: mask.values.reduce((a, b) => Math.max(a, b), 0) };
+}
+
+function sha256Hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function exportTraceInputs(replay, works, capture) {
+  const { tapePath, bytes } = capture;
+  const inputs = { artifactDigest: sha256Hex(bytes), workIndex: works.trace.workIndex };
+  for (const [name, slot] of Object.entries({ depth: 0, normal: 1, color: 2, camera: 5, fallback: 6 })) {
+    const data = await readSsrBinding(replay, works, works.trace, slot);
+    const path = resolve(dirname(tapePath), `ssr-input-${name}.bin`);
+    writeFileSync(path, data.bytes);
+    inputs[name] = { path, format: data.format, width: data.width, height: data.height,
+      digest: sha256Hex(data.bytes) };
+  }
+  writeFileSync(resolve(dirname(tapePath), 'ssr-trace-inputs.json'), JSON.stringify(inputs, null, 2));
+}
+
+async function readReflectionPyramid(replay, model, works, resolved) {
+  const reflectionTexture = textureForView(model, workBinding(works.compose, works.radianceBinding));
+  const reflectionLevels = model.resources.find(r => r.resourceId === reflectionTexture).descriptor.desc.mipLevelCount ?? 1;
+  const pyramid = [resolved];
+  for (let level = 1; level < reflectionLevels; level++) {
+    pyramid.push(await readSsrResource(replay, reflectionTexture, works.compose.workIndex, { mipLevel: level, arrayLayer: 0 }));
+  }
+  return pyramid;
+}
+
+/** Manual trilinear footprint over the captured reflection pyramid. */
+function createReflectionSampler(pyramid, presentationPremultiplied) {
+  return (x, y, roughness, width, height, receiverBase, f32Reciprocal = false) => {
+    const lod = roughness * roughness * (pyramid.length - 1);
+    const bilinear = level => {
+      if (level === 0 && receiverBase !== undefined) return receiverBase;
+      const mip = pyramid[level];
+      // Trace, temporal and composition share the full-resolution pixel center.
+      const px = reflectionTexelCoordinate(x, width, mip.width, f32Reciprocal);
+      const py = reflectionTexelCoordinate(y, height, mip.height, f32Reciprocal);
+      const ix = Math.floor(px), iy = Math.floor(py), fx = px - ix, fy = py - iy;
+      const sum = [0, 0, 0, 0];
+      for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+        const p = (Math.max(0, Math.min(mip.height - 1, iy + dy)) * mip.width + Math.max(0, Math.min(mip.width - 1, ix + dx))) * 4;
+        const weight = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy), a = mip.values[p + 3];
+        for (let c = 0; c < 3; c++) sum[c] += mip.values[p + c] * (presentationPremultiplied ? 1 : a) * weight;
+        sum[3] += a * weight;
+      }
+      return sum;
+    };
+    const low = Math.floor(lod), fraction = lod - low;
+    const a = bilinear(low), b = bilinear(Math.min(low + 1, pyramid.length - 1));
+    const sample = a.map((v, c) => v * (1 - fraction) + b[c] * fraction);
+    return [...sample.slice(0, 3).map(v => v / Math.max(sample[3], 1e-6)), sample[3]];
+  };
+}
+
+async function logCompositionTimeline(replay, works, sceneId, base) {
+  const [x, y] = process.env.SSR_PIXEL.split(',').map(Number);
+  assert.ok(Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < base.width && y < base.height);
+  const timeline = [];
+  let previous = base.values.slice((y * base.width + x) * 4, (y * base.width + x) * 4 + 4);
+  for (const w of works.compositionWorks) {
+    const result = await replay.readResourceAtWork(sceneId, w.workIndex);
+    if (!result.ok) throw result.error;
+    const bytes = result.value.bytes;
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const pixel = [0, 1, 2, 3].map((c) => halfFloat.f16ToF32(data.getUint16(((y * base.width + x) * 4 + c) * 2, true)));
+    if (pixel.some((v, i) => v !== previous[i])) timeline.push({ workIndex: w.workIndex, before: previous, after: pixel });
+    previous = pixel;
+  }
+  console.log(JSON.stringify({ pixel: [x, y], compositionTimeline: timeline }));
+}
+
+async function measureTaaWork(replay, w, normal) {
+  const id = (slot) => w.bindings.find((b) => b.groupIndex === 1 && b.binding === slot)?.resourceId;
+  const p = await readSsrResource(replay, id(8), w.workIndex);
+  const integers = new Uint32Array(p.bytes.buffer, p.bytes.byteOffset, p.bytes.byteLength / 4);
+  const output = await readSsrResource(replay, w.attachments.colorViewHandleIds[0], w.workIndex);
+  const previous = await readSsrResource(replay, id(2), w.workIndex);
+  const deltas = [];
+  for (let pixel = 0; pixel < output.values.length; pixel += 4) {
+    if (normal.values[pixel + 0.5] < 0.999 || normal.values[pixel + 3] > 0.1) continue;
+    deltas.push(Math.max(...[0, 1, 2].map((c) => Math.abs(output.values[pixel + c] - previous.values[pixel + c]))));
+  }
+  deltas.sort((a, b) => a - b);
+  return { workIndex: w.workIndex, currentJitterUv: p.values.slice(0, 2),
+    historyValid: integers[2], frameIndex: integers[3], staticSmoothFloor: {
+      pixels: deltas.length, meanFrameDelta: deltas.reduce((sum, v) => sum + v, 0) / Math.max(1, deltas.length),
+      p95FrameDelta: deltas[Math.floor(deltas.length * 0.95)] ?? 0,
+    } };
+}
+
+function measureTemporalAccumulation(traced, resolved, sceneTemporal) {
+  let reflected = 0, accumulated = 0, reactiveReceivers = 0, invalidTemporalReceivers = 0;
+  for (let y = 0; y < traced.height; y++) for (let x = 0; x < traced.width; x++) {
+    const p = (y * traced.width + x) * 4;
+    if (traced.values[p + 3] <= 0) continue;
+    reflected++;
+    if ([0, 1, 2].some((c) => Math.abs(traced.values[p + c] - resolved.values[p + c]) > 0.001)) accumulated++;
+    const full = (y * sceneTemporal.width + x) * 4;
+    if (sceneTemporal.values[full + 3] >= 1) reactiveReceivers++;
+    if (sceneTemporal.values[full + 2] < 0) invalidTemporalReceivers++;
+  }
+  return { reflected, accumulated, reactiveReceivers, invalidTemporalReceivers };
+}
+
+async function readCapturedMaterial(replay, model, trace) {
+  const materialWork = model.works.find((w) => w.pipeline.shaders.some((s) => s.entryPoint === 'fs_gbuffer'));
+  const materialSource = materialWork.pipeline.shaders.find(s => s.entryPoint === 'fs_gbuffer').source;
+  const materialLocation = materialSource.match(/@location\((\d+)\)\s+albedo_metallic\s*:/);
+  assert.ok(materialLocation, 'captured G-buffer must expose albedo_metallic');
+  return decodeSsrReflectance(await readSsrResource(replay,
+    materialWork.attachments.colorViewHandleIds[Number(materialLocation[1])], trace.workIndex));
+}
+
+function exportComposeInputs(capture, works, readbacks) {
+  const { tapePath, bytes } = capture;
+  const { pyramid, fallback, materialResponse, normal, camera } = readbacks;
+  const exported = { artifactDigest: sha256Hex(bytes),
+    workIndex: works.compose.workIndex, shader: works.compose.pipeline.shaders.find(s => s.entryPoint === 'fs_ssr_compose').source,
+    textures: [] };
+  for (const [name, levels] of [['radiance', pyramid], ['fallback', [fallback]],
+    ['response', [materialResponse]], ['normal', [normal]]]) {
+    const entries = [];
+    for (const [level, data] of levels.entries()) {
+      const path = resolve(dirname(tapePath), `compose-${name}-${level}.bin`);
+      writeFileSync(path, data.bytes);
+      entries.push({ path, width: data.width, height: data.height, format: data.format,
+        bytesPerRow: data.bytesPerRow, digest: sha256Hex(data.bytes) });
+    }
+    exported.textures.push({ name, levels: entries });
+  }
+  const path = resolve(dirname(tapePath), 'compose-view.bin');
+  writeFileSync(path, camera.bytes);
+  exported.view = { path, digest: sha256Hex(camera.bytes) };
+  writeFileSync(resolve(dirname(tapePath), 'compose-inputs.json'), JSON.stringify(exported, null, 2));
+}
+
+function traceImagePrefix(traceOverride) {
+  return traceOverride.candidate === undefined ? '' : `trace-${traceOverride.steps ?? traceOverride.candidate.digest}-`;
+}
+
+function writeSsrImages(tapePath, traceOverride, { traced, resolved, base, composed }) {
+  for (const [name, resource] of [['trace', traced], ['resolved', resolved], ['base', base], ['composed', composed]]) {
+    const rgba = new Uint8Array(resource.width * resource.height * 4);
+    const confidence = new Uint8Array(rgba.length);
+    for (let p = 0; p < rgba.length; p += 4) {
+      for (let c = 0; c < 3; c++) rgba[p + c] = Math.round(Math.pow(Math.max(0, Math.min(1, resource.values[p + c])), 1 / 2.2) * 255);
+      rgba[p + 3] = 255;
+      confidence.set([0, 1, 2].map(() => Math.round(resource.values[p + 3] * 255)).concat(255), p);
+    }
+    const imagePrefix = traceImagePrefix(traceOverride);
+    writeFileSync(resolve(dirname(tapePath), `${imagePrefix}${name}.png`), encodePng(resource.width, resource.height, rgba));
+    if (name === 'trace') writeFileSync(resolve(dirname(tapePath), `${imagePrefix}confidence.png`), encodePng(resource.width, resource.height, confidence));
+  }
+}
+
+function runTileOracles({ traced, base, depth, normal, camera, fallback }) {
+  if (process.env.SSR_FIXTURE !== 'tiles') {
+    return { tileOracle: undefined, seamOracle: undefined, linearSeamOracle: undefined,
+      admittedSeamOracle: undefined, sourceFilteredSeamOracle: undefined };
+  }
+  return {
+    tileOracle: auditTileReflection({ traced, base, depth, normal, camera }),
+    seamOracle: auditTileSeams({ traced, base, depth, normal, camera }),
+    // Keep nearest-source evidence intact. Linear agreement measures filtered
+    // hit color, not subpixel geometric coverage at the source silhouette.
+    linearSeamOracle: auditTileSeams({ traced, base, depth, normal, camera, colorFilter: 'linear' }),
+    // View UBO [236..239] is the captured SSR authoring tail. Do not hide
+    // rough pavers when inspecting prefilter-independent hit geometry.
+    admittedSeamOracle: auditTileSeams({ traced, base, depth, normal, camera, colorFilter: 'linear', maxRoughness: camera.values[238] }),
+    sourceFilteredSeamOracle: auditTileSeams({ traced, base, depth, normal, camera, fallback, colorFilter: 'linear-admitted', maxRoughness: camera.values[238] }),
+  };
+}
+
+async function readSharedBrdfLut(replay, model, works) {
+  const luts = new Map();
+  for (const w of works.fullscreenComposition
+    ? model.works.filter(w => w.pipeline.shaders.some(s => s.entryPoint === 'fs_gbuffer'))
+    : works.compositionWorks) {
+    const source = w.pipeline.shaders.find((s) => s.stage === 'fragment').source;
+    const match = source.match(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var brdfLut(?:_\d+)?\s*:/);
+    assert.ok(match, 'no captured BRDF LUT binding');
+    const id = w.bindings.find((b) => b.groupIndex === Number(match[1]) && b.binding === Number(match[2])).resourceId;
+    if (!luts.has(id)) luts.set(id, await readSsrResource(replay, id, w.workIndex));
+  }
+  assert.equal(luts.size, 1, 'this fixture oracle requires one shared BRDF LUT');
+  const lut = luts.values().next().value;
+  assert.equal(lut.format, 'rg16float');
+  return lut;
+}
+
+function sampleLut(lut, u, v) {
+  const x = Math.max(0, Math.min(lut.width - 1, u * lut.width - 0.5));
+  const y = Math.max(0, Math.min(lut.height - 1, v * lut.height - 0.5));
+  const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const at = (a, b, c) => lut.values[(b * lut.width + a) * 2 + c];
+  return [0, 1].map((c) => (at(x0, y0, c) * (1 - fx) + at(Math.min(x0 + 1, lut.width - 1), y0, c) * fx) * (1 - fy)
+    + (at(x0, Math.min(y0 + 1, lut.height - 1), c) * (1 - fx) + at(Math.min(x0 + 1, lut.width - 1), Math.min(y0 + 1, lut.height - 1), c) * fx) * fy);
+}
+
+/** Returns the later draws that consume the composed texture after proving none overwrote it. */
+async function assertComposedSurvives(replay, model, compose, composed) {
+  const finalWork = model.works.at(-1);
+  assert.ok(finalWork.workIndex > compose.workIndex);
+  const consumers = model.works.filter((w) => w.workIndex > compose.workIndex &&
+    w.bindings.some((b) => b.resourceId === composed.resourceId));
+  assert.ok(consumers.length > 0, 'SSR composed texture never reaches a later draw');
+  const finalSource = await replay.readResourceAtWork(composed.resourceId, finalWork.workIndex);
+  if (!finalSource.ok) throw finalSource.error;
+  assert.deepEqual(finalSource.value.bytes, composed.bytes, 'a later pass overwrote the SSR contribution');
+  return consumers;
+}
+
+function alphaConfidence(r) {
+  const a = r.values.filter((_, i) => i % 4 === 3);
+  return { pixels: a.length, positive: a.filter((v) => v > 0).length,
+    maximum: a.reduce((maximum, value) => Math.max(maximum, value), 0) };
+}
+
+function normalize(v) {
+  const length = Math.hypot(...v);
+  return v.map((c) => c / length);
+}
+
+/** Captured readbacks are complete before the composition oracle starts. */
+async function readSsrReadbacks(replay, capture, works) {
+  const { model, tapePath } = capture;
+  const { trace, temporal, compose } = works;
+  const traced = await readSsrBinding(replay, works, trace, 4);
+  const hitReactivity = await measureHitReactivity(replay, works, traced);
+  if (process.env.SSR_EXPORT_TRACE_INPUTS === '1') await exportTraceInputs(replay, works, capture);
+  const resolved = await readSsrBinding(replay, works, temporal, 7);
+  const pyramid = await readReflectionPyramid(replay, model, works, resolved);
+  const sceneId = workBinding(trace, 2);
+  const base = await readSsrResource(replay, sceneId, temporal.workIndex);
+  const fallback = await readSsrResource(replay, workBinding(compose, works.fallbackBinding), temporal.workIndex);
+  const composed = await readSsrResource(replay, sceneId, compose.workIndex);
+  if (process.env.SSR_PIXEL !== undefined) await logCompositionTimeline(replay, works, sceneId, base);
+  const history = await readSsrBinding(replay, works, temporal, 5);
+  const temporalParams = await readSsrBinding(replay, works, temporal, 6);
+  const taaWorks = model.works.filter((w) => w.pipeline.shaders.some((s) =>
+    s.source.includes('fn fs_taa_resolve(')));
+  const sceneTemporal = await readSsrBinding(replay, works, temporal, 4);
+  const previousSsr = await readSsrBinding(replay, works, temporal, 3);
+  const normal = decodeSsrNormalRoughness(await readSsrBinding(replay, works, trace, 1));
+  const taaInputs = [];
+  for (const w of taaWorks) taaInputs.push(await measureTaaWork(replay, w, normal));
+  const accumulation = measureTemporalAccumulation(traced, resolved, sceneTemporal);
+  const depth = await readSsrBinding(replay, works, trace, 0);
+  const material = await readCapturedMaterial(replay, model, trace);
+  const materialResponse = works.fullscreenComposition ? await readSsrResource(replay, workBinding(compose, 2), compose.workIndex) : undefined;
+  const camera = await readSsrBinding(replay, works, trace, 5);
+  const readbacks = { traced, hitReactivity, resolved, pyramid, base, fallback, composed, history, temporalParams,
+    taaWorks, previousSsr, normal, taaInputs, accumulation, depth, material, materialResponse, camera };
+  if (process.env.SSR_EXPORT_COMPOSE_INPUTS === '1') exportComposeInputs(capture, works, readbacks);
+  writeSsrImages(tapePath, capture.traceOverride, readbacks);
+  return readbacks;
+}
+
+/** Fixture geometry and reflection inputs reconstructed for one full-resolution pixel. */
+function reconstructPixel(oracle, x, y) {
+  const { base, depth, camera, normal, resolved, inv } = oracle;
+  const p = (y * base.width + x) * 4;
+  const clip = [(x + 0.5) / base.width * 2 - 1, 1 - (y + 0.5) / base.height * 2, depth.values[y * base.width + x], 1];
+  const world = [0, 1, 2, 3].map((r) => clip.reduce((sum, value, i) => sum + inv[i * 4 + r] * value, 0));
+  const v = normalize([0, 1, 2].map((i) => camera.values[24 + i] - world[i] / world[3]));
+  const n = normalize(normal.values.slice(p, p + 3).map((c) => c * 2 - 1));
+  const receiverBase = { value: resolved.values.slice(p, p + 4), totalWeight: 1 };
+  const baseConfidence = receiverBase.value[3];
+  const nv = Math.max(0.001, n.reduce((sum, c, i) => sum + c * v[i], 0));
+  const authoredRoughness = normal.values[p + 3];
+  const roughness = Math.max(0.04, authoredRoughness);
+  const reflection = oracle.sampleReflection(x, y, roughness, base.width, base.height, receiverBase?.value,
+    oracle.presentationPremultiplied);
+  const [a, b] = sampleLut(oracle.lut, nv, roughness);
+  const limit = Math.max(0, Math.min(1, camera.values[238]));
+  const fade = Math.max(0, Math.min(1, (authoredRoughness - limit * 0.8) / Math.max(limit * 0.2, 1e-8)));
+  const currentReceiverConfidence = receiverBase?.totalWeight > 1e-6 && Number.isFinite(camera.values[239])
+    && camera.values[239] > 0.5 && authoredRoughness >= 0 && authoredRoughness < limit
+    ? 1 - fade * fade * (3 - 2 * fade) : 0;
+  return {
+    x, y, p, t: p, world, n, sourceNormal: n, agreement: 1, receiverBase, receiverWeight: 1, baseConfidence,
+    nv, authoredRoughness, roughness, reflection, a, b, currentReceiverConfidence,
+    effectiveConfidence: Math.min(reflection[3], oracle.receiverAdmission ? currentReceiverConfidence : baseConfidence),
+  };
+}
+
+// A counterfactual arithmetic witness, not a proposed composition rule:
+// removing the base-alpha cap also needs independent receiver admission.
+function recordUpperEdgeClipping(oracle, clipping, pixel) {
+  const { materialResponse, fallback, camera } = oracle;
+  const { x, y, p, n, world, roughness, receiverBase, reflection, baseConfidence } = pixel;
+  const outline = oracle.admittedSeamOracle?.outsideSilhouette.upperEdge;
+  if (outline === undefined || materialResponse === undefined || !(n[1] > 0.999) || !(Math.abs(world[1] / world[3] + 1.025) < 0.002)
+    || !(roughness < camera.values[238]) || !(receiverBase?.totalWeight > 0)) return;
+  const distance = Math.min(...outline.segments.map(segment => mirrorSegmentDistance([x + 0.5, y + 0.5], segment)));
+  if (!(distance <= clipping.bandReceiverPixels)) return;
+  const key = roughness.toFixed(3);
+  const group = clipping.roughnessGroups[key] ??= { pixels: 0, capped: 0, zeroBaseWithFilteredHit: 0, maximumRemovedHdr: 0 };
+  group.pixels++;
+  const removedConfidence = Math.max(0, reflection[3] - baseConfidence) * fallback.values[p + 3];
+  if (!(removedConfidence > 0.001)) return;
+  group.capped++;
+  if (baseConfidence <= 0.001) group.zeroBaseWithFilteredHit++;
+  const removedHdr = Math.max(...[0, 1, 2].map(c => Math.abs(removedConfidence
+    * (reflection[c] * materialResponse.values[p + c] - fallback.values[p + c]))));
+  group.maximumRemovedHdr = Math.max(group.maximumRemovedHdr, removedHdr);
+  if (removedHdr > clipping.maximumRemovedHdr) {
+    clipping.maximumRemovedHdr = removedHdr;
+    clipping.witness = { pixel: [x, y], roughness, distance,
+      baseConfidence, filtered: reflection, response: materialResponse.values.slice(p, p + 3),
+      fallback: fallback.values.slice(p, p + 4), removedConfidence, removedHdr };
+  }
+}
+
+/** Expected channel value from the f32-reciprocal texel coordinate, used only when exact coordinates disagree. */
+function alternateExpectation(oracle, pixel, c, expected, actual, coverage, response) {
+  if (!(reflectionFormulaError(expected, actual) > 0)) return expected;
+  const { x, y, p, roughness, baseConfidence, receiverWeight } = pixel;
+  const { base, fallback } = oracle;
+  const alternativeBase = pixel.receiverBase;
+  const alternative = oracle.sampleReflection(x, y, roughness, base.width, base.height, alternativeBase?.value, true);
+  const alternativeConfidence = Math.min(alternative[3], oracle.receiverAdmission
+    ? pixel.currentReceiverConfidence : (alternativeBase?.value[3] ?? baseConfidence));
+  return base.values[p + c] + alternativeConfidence * coverage * receiverWeight
+    * (alternative[c] * response - fallback.values[p + c]);
+}
+
+function auditChannelFormula(oracle, composition, pixel, c, delta) {
+  const { base, composed, fallback, material, depth, normal, resolved, materialResponse } = oracle;
+  const { x, y, p, t, nv, roughness, reflection, a, b, effectiveConfidence, receiverWeight, baseConfidence } = pixel;
+  // The carrier uses ordinary Standard dielectric/metallic surfaces:
+  // derive their F0 from captured albedo/metallic, not an authored copy.
+  const metallic = material.values[p + 3];
+  const f0 = 0.04 * (1 - metallic) + material.values[p + c] * metallic;
+  const fresnel = f0 + (Math.max(1 - roughness, f0) - f0) * (1 - nv) ** 5;
+  // Material composition rasterizes covered geometry. Filtered radiance
+  // beside a silhouette must not imply a sky draw.
+  const coverage = depth.values[y * base.width + x] < 1 ? fallback.values[p + 3] : 0;
+  // The fullscreen stage consumes the stored response, not a second
+  // BRDF evaluated from quantized G-buffer normals. Inspect its actual
+  // input to isolate composition from the material producer.
+  const response = materialResponse?.values[p + c] ?? (fresnel * a + b);
+  const expected = base.values[p + c] + effectiveConfidence * coverage * receiverWeight
+    * (reflection[c] * response - fallback.values[p + c]);
+  if (!((baseConfidence > 0 || delta > 0.005) && Number.isFinite(expected))) return;
+  const actual = composed.values[p + c];
+  const error = Math.abs(actual - expected);
+  const alternateExpected = alternateExpectation(oracle, pixel, c, expected, actual, coverage, response);
+  const intervalError = reflectionFormulaError(expected, actual, alternateExpected);
+  if (intervalError > composition.maxFormulaIntervalError) {
+    composition.maxFormulaIntervalError = intervalError;
+    composition.formulaIntervalWitness = { x, y, channel: c, expected, actual,
+      base: base.values[p + c], response, reflection, effectiveConfidence, coverage,
+      receiverWeight, roughness, fallback: fallback.values[p + c], intervalError, alternateExpected };
+  }
+  if (error > composition.maxFormulaError) {
+    composition.maxFormulaError = error;
+    composition.formulaWitness = { x, y, channel: c, expected, actual,
+      depth: depth.values[y * base.width + x], normal: normal.values.slice(p, p + 4),
+      material: material.values.slice(p, p + 4), response, reconstructedResponse: fresnel * a + b, coverage, nv, a, b,
+      radiance: reflection, baseRadiance: resolved.values.slice(t, t + 4), fallback: fallback.values.slice(p, p + 4) };
+  }
+}
+
+function recordReceiverCoverage(oracle, receiverCoverage, pixel, delta) {
+  const { x, y, p, t, receiverBase, agreement, baseConfidence, n, sourceNormal } = pixel;
+  const incompatible = receiverBase === undefined ? agreement < 0.9 : receiverBase.totalWeight === 0;
+  if (receiverBase !== undefined && agreement < 0.9 && baseConfidence > 0.01 && delta > 0.005) receiverCoverage.compatibleNeighborPixels++;
+  if (!(oracle.fallback.values[p + 3] > 0.5 && incompatible && oracle.resolved.values[t + 3] > 0.01)) return;
+  receiverCoverage.incompatiblePixels++;
+  if (delta > 0.005) {
+    receiverCoverage.contaminatedPixels++;
+    receiverCoverage.maximumDelta = Math.max(receiverCoverage.maximumDelta, delta);
+    if (receiverCoverage.witnesses.length < 8) receiverCoverage.witnesses.push({ pixel: [x,y], agreement, delta, normal: n, sourceNormal });
+  }
+}
+
+function auditCompositionPixel(oracle, composition, x, y) {
+  const { base, composed, fallback, resolved } = oracle;
+  const pixel = reconstructPixel(oracle, x, y);
+  const { p, t } = pixel;
+  recordUpperEdgeClipping(oracle, composition.upperEdgeMipClipping, pixel);
+  let delta = 0;
+  for (let c = 0; c < 3; c++) {
+    delta = Math.max(delta, Math.abs(composed.values[p + c] - base.values[p + c]));
+    auditChannelFormula(oracle, composition, pixel, c, delta);
+  }
+  if (delta > 1e-4) composition.changedPixels++;
+  recordReceiverCoverage(oracle, composition.receiverCoverage, pixel, delta);
+  if (delta > composition.maxDelta) {
+    composition.maxDelta = delta;
+    composition.witness = { x, y, base: base.values.slice(p, p + 4), fallback: fallback.values.slice(p, p + 4),
+      resolved: resolved.values.slice(t, t + 4), composed: composed.values.slice(p, p + 4) };
+  }
+}
+
+function auditComposition(oracle) {
+  const { base, resolved } = oracle;
+  const composition = {
+    changedPixels: 0, maxDelta: 0, maxFormulaError: 0, maxFormulaIntervalError: 0,
+    formulaIntervalWitness: undefined, formulaWitness: undefined, witness: undefined,
+    receiverCoverage: { incompatiblePixels: 0, contaminatedPixels: 0, compatibleNeighborPixels: 0, maximumDelta: 0, witnesses: [] },
+    upperEdgeMipClipping: { baseAlphaCapApplied: !oracle.receiverAdmission, bandReceiverPixels: 16, roughnessGroups: {}, witness: null, maximumRemovedHdr: 0 },
+  };
+  assert.equal(resolved.width, base.width, 'SSR must cover every scene pixel');
+  assert.equal(resolved.height, base.height, 'SSR must cover every scene row');
+  for (let y = 0; y < base.height; y++) {
+    for (let x = 0; x < base.width; x++) auditCompositionPixel(oracle, composition, x, y);
+  }
+  return composition;
+}
+
+function buildSsrReport(capture, works, readbacks, audit) {
+  const { tapePath, bytes, tape, traceOverride, materialTextureSpecialization } = capture;
+  const { trace, temporal, compose, compositionWorks } = works;
+  const { traced, resolved, temporalParams, taaWorks, previousSsr, taaInputs, accumulation, history } = readbacks;
+  const { candidate } = traceOverride;
+  const { composition } = audit;
+  return {
+    hitReactivity: readbacks.hitReactivity,
+    mode: candidate === undefined ? 'recorded-replay' : 'counterfactual-trace-replay',
+    oracleSourceDigest: sha256Hex(readFileSync(new URL('./audit-tile-reflection.mjs', import.meta.url))),
+    ...(candidate === undefined ? {} : { candidate }),
+    artifact: { kind: 'rhi-tape', path: resolve(tapePath), digest: `sha256:${sha256Hex(bytes)}` },
+    formatVersion: tape.header.formatVersion,
+    traceShaderSha256: sha256Hex(trace.pipeline.shaders.find(s => s.entryPoint === 'ssr_trace').source),
+    composeShaderSha256: sha256Hex(compose.pipeline.shaders.find(s => s.entryPoint === 'fs_ssr_compose').source),
+    materialTextureSpecialization,
+    works: [trace, temporal, ...compositionWorks].map((w) => ({ workIndex: w.workIndex, eventIndex: w.eventIndex,
+      entryPoints: w.pipeline.shaders.map((s) => s.entryPoint), bindings: w.bindings })),
+    trace: alphaConfidence(traced), resolved: alphaConfidence(resolved),
+    temporalCoordinates: { currentJitterUv: temporalParams.values.slice(4, 6),
+      previousJitterUv: temporalParams.values.slice(6, 8),
+      taaWorkIndices: taaWorks.map((w) => w.workIndex) },
+    temporalAccumulation: { ...accumulation,
+      ssrHistoryValid: new Uint32Array(temporalParams.bytes.buffer, temporalParams.bytes.byteOffset, 1)[0],
+      previousHistoryNonzero: previousSsr.values.filter((v, i) => i % 4 === 3 && v > 0).length, taaInputs },
+    ...audit.oracles,
+    outputConsumers: audit.consumers.map((w) => ({ workIndex: w.workIndex, eventIndex: w.eventIndex,
+      shaders: w.pipeline.shaders.map((s) => s.entryPoint), attachments: w.attachments })),
+    historyDepthMaximum: alphaConfidence(history).maximum,
+    composition: { changedPixels: composition.changedPixels, maxDelta: composition.maxDelta,
+      maxFormulaError: composition.maxFormulaError, maxFormulaIntervalError: composition.maxFormulaIntervalError,
+      formulaIntervalTolerance: works.formulaIntervalTolerance, formulaIntervalWitness: composition.formulaIntervalWitness,
+      formulaWitness: composition.formulaWitness, receiverCoverage: composition.receiverCoverage,
+      upperEdgeMipClipping: composition.upperEdgeMipClipping, oracle: works.presentationPremultiplied
+        ? 'ordinary Standard: captured G-buffer, View and material BRDF LUT with RGBA16F conversion plus bounded hardware-filter f32 interval'
+        : 'ordinary Standard: captured G-buffer, View and material BRDF LUT with RGBA16F conversion interval', witness: composition.witness },
+  };
+}
+
+function publishSsrReport(capture, report) {
+  const { tapePath, traceOverride } = capture;
+  writeFileSync(resolve(dirname(tapePath), traceOverride.candidate === undefined ? 'ssr-selected-work.json'
+    : `ssr-trace-${traceOverride.steps ?? traceOverride.candidate.digest}-work.json`), `${JSON.stringify(report, null, 2)}\n`);
+  const { tileOracle, seamOracle, linearSeamOracle, admittedSeamOracle, sourceFilteredSeamOracle } = report;
+  console.log(JSON.stringify({ artifact: report.artifact, mode: report.mode, candidate: report.candidate,
+    traceShaderSha256: report.traceShaderSha256, trace: report.trace,
+    resolved: report.resolved, tileOracle, seamOracle, linearSeamOracle, admittedSeamOracle, sourceFilteredSeamOracle, composition: report.composition, outputConsumers: report.outputConsumers }, null, 2));
+}
+
+function assertFirstFrameHistory(report) {
+  assert.equal(report.temporalAccumulation.ssrHistoryValid, 0, 'First-frame SSR must not reuse history');
+  assert.equal(report.temporalAccumulation.previousHistoryNonzero, 0, 'First-frame SSR history must be empty');
+  for (const input of report.temporalAccumulation.taaInputs) {
+    assert.equal(input.historyValid, 0, 'First-frame TAA must not reuse history');
+    assert.equal(input.frameIndex, 0, 'First-frame TAA must start at sample zero');
+  }
+}
+
+function assertWallOutline(seamOracle) {
+  assert.ok(seamOracle.receiverNormalMaxDeviation < 1e-5,
+    `Unmapped flat floor has a perturbed G-buffer normal: ${seamOracle.receiverNormalMaxDeviation}`);
+  const edge = seamOracle.groups['upper-edge'];
+  assert.ok(edge.eligible >= 100, 'Wall-outline acceptance requires enough camera-visible mirror rays');
+  assert.ok(edge.missed / edge.eligible < 0.02,
+    `SSR loses the finite wall-top outline: ${edge.missed}/${edge.eligible} visible rays missed`);
+}
+
+function assertSsrReport(report, readbacks) {
+  const { changedPixels, maxDelta, maxFormulaIntervalError, formulaIntervalTolerance, receiverCoverage } = report.composition;
+  const { reflected, invalidTemporalReceivers } = report.temporalAccumulation;
+  assert.ok(report.trace.positive > 0, 'SSR trace has no reflected hit pixels');
+  if (process.env.SSR_EXPECT_FIRST_FRAME === '1') assertFirstFrameHistory(report);
+  if (readbacks.taaWorks.length > 0) assert.ok(invalidTemporalReceivers / Math.max(1, reflected) < 0.02,
+    'TAA jitter invalidates motion coverage on visible SSR receivers');
+  assert.ok(report.resolved.positive > 0, 'SSR temporal resolve lost every hit');
+  assert.ok(changedPixels > 0 && maxDelta > 1e-3, 'SSR contributes no measurable scene delta');
+  assert.ok(maxFormulaIntervalError < formulaIntervalTolerance,
+    `SSR composition violates the reflection delta formula outside its admitted interval (${maxFormulaIntervalError} >= ${formulaIntervalTolerance})`);
+  if (process.env.SSR_EXPECT_RECEIVER_COVERAGE === '1') {
+    assert.equal(receiverCoverage.contaminatedPixels, 0,
+      `Half-resolution SSR leaks across differently-facing receivers: ${JSON.stringify(receiverCoverage)}`);
+  }
+  assert.ok(report.historyDepthMaximum > 1, 'history does not contain positive view distance');
+  if (report.seamOracle !== undefined) assertWallOutline(report.seamOracle);
+}
+
+async function auditSsrReplay(replay, capture, works) {
+  const readbacks = await readSsrReadbacks(replay, capture, works);
+  const oracles = runTileOracles(readbacks);
+  const lut = await readSharedBrdfLut(replay, capture.model, works);
+  const consumers = await assertComposedSurvives(replay, capture.model, works.compose, readbacks.composed);
+  const composition = auditComposition({
+    ...readbacks,
+    inv: readbacks.camera.values.slice(44, 60),
+    lut,
+    sampleReflection: createReflectionSampler(readbacks.pyramid, works.presentationPremultiplied),
+    presentationPremultiplied: works.presentationPremultiplied,
+    receiverAdmission: works.receiverAdmission,
+    admittedSeamOracle: oracles.admittedSeamOracle,
+  });
+  const report = buildSsrReport(capture, works, readbacks, { oracles, consumers, composition });
+  publishSsrReport(capture, report);
+  assertSsrReport(report, readbacks);
+  return report;
+}
+
+// The captured shader bindings identify the resources. Never pin transient
+// handle IDs or count an admitted graph as evidence of reflected pixels.
+export async function inspectSsrTape(tapePath) {
+  const { bytes, tape, model } = loadSsrTape(tapePath);
+  const materialTextureSpecialization = auditMaterialTextureSpecialization(model);
+  const works = selectSsrWorks(model);
   const backend = await bootstrapDawn('SSR selected-work audit', tape);
   try {
-    const traceSteps = process.env.SSR_TRACE_STEPS === undefined ? undefined : Number(process.env.SSR_TRACE_STEPS);
-    if (traceSteps !== undefined) assert.ok(Number.isInteger(traceSteps) && traceSteps >= 1 && traceSteps <= 2048);
-    const traceSourcePath = process.env.SSR_TRACE_SOURCE;
-    let traceSource;
-    if (traceSourcePath !== undefined) {
-      const { compileShader } = await import('../../../../packages/shader-compiler/dist/index.mjs');
-      const result = await compileShader(readFileSync(resolve(traceSourcePath), 'utf8'), {
-        id: 'forgeax_ssr::trace',
-        imports: { 'forgeax_view::common': readFileSync(new URL('../../../../packages/shader/src/common.wgsl', import.meta.url), 'utf8') },
-      });
-      if (!result.ok) throw result.error;
-      traceSource = result.value.wgsl;
-    }
-    let candidate;
+    const traceOverride = await readTraceOverride();
     const opened = await openReplay(tape, {
-      device: backend.freshDevice, createShaderModule: (device, descriptor) => {
-        if ((traceSteps === undefined && traceSource === undefined) || !descriptor.code.includes('fn ssr_trace(')) return backend.rhiWebgpu.createShaderModule(device, descriptor);
-        const constant = /(const SSR_TRACE_MAX_COARSE_STEPS[_\d]*\s*:\s*u32\s*=\s*)\d+u?\s*;/;
-        const baseCode = traceSource ?? descriptor.code;
-        assert.ok(constant.test(baseCode), 'The selected trace must expose its bounded coarse-step constant');
-        const code = traceSteps === undefined ? baseCode
-          : baseCode.replace(constant, (_, prefix) => `${prefix}${traceSteps}u;`);
-        const digest = createHash('sha256').update(code).digest('hex');
-        const path = resolve(dirname(tapePath), `ssr-trace-candidate-${digest}.wgsl`);
-        writeFileSync(path, code);
-        candidate = { traceSteps, sourcePath: traceSourcePath === undefined ? undefined : resolve(traceSourcePath), digest, path };
-        return backend.rhiWebgpu.createShaderModule(device, { ...descriptor, code });
-      },
+      device: backend.freshDevice,
+      createShaderModule: (device, descriptor) => createTraceShaderModule(backend, tapePath, traceOverride, device, descriptor),
     });
     if (!opened.ok) throw opened.error;
     const replay = opened.value;
     try {
-      const readId = async (id, workIndex, subresource, uint32Words = []) => {
-        const result = await replay.readResourceAtWork(id, workIndex, subresource);
-        if (!result.ok) throw result.error;
-        const r = result.value;
-        assert.equal(r.provenance.selectedWorkIndex, workIndex);
-        return decodeSsrReadback(r, uint32Words);
-      };
-      const read = (w, slot) => {
-        const request = bindingReadRequest(w, 0, slot);
-        if (!request.ok) throw request.error;
-        // The captured View stores lightingChannels: u32 at byte 76; the
-        // all-channel mask 0xffffffff is legal. Every floating lane stays finite.
-        const uint32Words = w === trace && slot === 5 ? [19] : [];
-        return readId(request.value.resourceId, w.workIndex, request.value.subresource, uint32Words);
-      };
-      const traced = await read(trace, 4);
-      let hitReactivity;
-      if (hasHitReactivity) {
-        const mask = await read(trace, 8);
-        assert.equal(mask.format, 'r32float');
-        assert.equal(mask.width, traced.width);
-        assert.equal(mask.height, traced.height);
-        assert.ok(mask.values.every(v => v >= 0 && v <= 1));
-        // Rejected moving occluders deliberately retain reactivity on a miss.
-        // Radiance admission is not the validity contract for this mask.
-        hitReactivity = { resourceId: binding(trace, 8), sourceResourceId: binding(trace, 7),
-          producerWorkIndex: trace.workIndex, consumerWorkIndex: temporal.workIndex,
-          width: mask.width, height: mask.height, positive: mask.values.filter(v => v > 0).length,
-          reactiveMisses: mask.values.filter((v, i) => v > 0 && traced.values[i * 4 + 3] <= 0).length,
-          maximum: mask.values.reduce((a, b) => Math.max(a, b), 0) };
-      }
-      if (process.env.SSR_EXPORT_TRACE_INPUTS === '1') {
-        const inputs = { artifactDigest: createHash('sha256').update(bytes).digest('hex'), workIndex: trace.workIndex };
-        for (const [name, slot] of Object.entries({ depth: 0, normal: 1, color: 2, camera: 5, fallback: 6 })) {
-          const data = await read(trace, slot);
-          const path = resolve(dirname(tapePath), `ssr-input-${name}.bin`);
-          writeFileSync(path, data.bytes);
-          inputs[name] = { path, format: data.format, width: data.width, height: data.height,
-            digest: createHash('sha256').update(data.bytes).digest('hex') };
-        }
-        writeFileSync(resolve(dirname(tapePath), 'ssr-trace-inputs.json'), JSON.stringify(inputs, null, 2));
-      }
-      const resolved = await read(temporal, 7);
-      const reflectionTexture = textureForView(binding(compose, radianceBinding));
-      const reflectionLevels = model.resources.find(r => r.resourceId === reflectionTexture).descriptor.desc.mipLevelCount ?? 1;
-      const pyramid = [resolved];
-      for (let level = 1; level < reflectionLevels; level++) {
-        pyramid.push(await readId(reflectionTexture, compose.workIndex, { mipLevel: level, arrayLayer: 0 }));
-      }
-      const sampleReflection = (x, y, roughness, width, height, receiverBase, f32Reciprocal = false) => {
-        const lod = roughness * roughness * (pyramid.length - 1);
-        const bilinear = level => {
-          if (level === 0 && receiverBase !== undefined) return receiverBase;
-          const mip = pyramid[level];
-          // Trace, temporal and composition share the full-resolution pixel center.
-          const px = reflectionTexelCoordinate(x, width, mip.width, f32Reciprocal);
-          const py = reflectionTexelCoordinate(y, height, mip.height, f32Reciprocal);
-          const ix = Math.floor(px), iy = Math.floor(py), fx = px - ix, fy = py - iy;
-          const sum = [0, 0, 0, 0];
-          for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
-            const p = (Math.max(0, Math.min(mip.height - 1, iy + dy)) * mip.width + Math.max(0, Math.min(mip.width - 1, ix + dx))) * 4;
-            const weight = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy), a = mip.values[p + 3];
-            for (let c = 0; c < 3; c++) sum[c] += mip.values[p + c] * (presentationPremultiplied ? 1 : a) * weight;
-            sum[3] += a * weight;
-          }
-          return sum;
-        };
-        const low = Math.floor(lod), fraction = lod - low;
-        const a = bilinear(low), b = bilinear(Math.min(low + 1, pyramid.length - 1));
-        const sample = a.map((v, c) => v * (1 - fraction) + b[c] * fraction);
-        return [...sample.slice(0, 3).map(v => v / Math.max(sample[3], 1e-6)), sample[3]];
-      };
-      const sceneId = binding(trace, 2);
-      const base = await readId(sceneId, temporal.workIndex);
-      const fallback = await readId(binding(compose, fallbackBinding), temporal.workIndex);
-      const composed = await readId(sceneId, compose.workIndex);
-      if (process.env.SSR_PIXEL !== undefined) {
-        const [x, y] = process.env.SSR_PIXEL.split(',').map(Number);
-        assert.ok(Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < base.width && y < base.height);
-        const timeline = [];
-        let previous = base.values.slice((y * base.width + x) * 4, (y * base.width + x) * 4 + 4);
-        for (const w of compositionWorks) {
-          const result = await replay.readResourceAtWork(sceneId, w.workIndex);
-          if (!result.ok) throw result.error;
-          const bytes = result.value.bytes;
-          const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-          const pixel = [0, 1, 2, 3].map((c) => halfFloat.f16ToF32(data.getUint16(((y * base.width + x) * 4 + c) * 2, true)));
-          if (pixel.some((v, i) => v !== previous[i])) timeline.push({ workIndex: w.workIndex, before: previous, after: pixel });
-          previous = pixel;
-        }
-        console.log(JSON.stringify({ pixel: [x, y], compositionTimeline: timeline }));
-      }
-      const history = await read(temporal, 5);
-      const temporalParams = await read(temporal, 6);
-      const taaWorks = model.works.filter((w) => w.pipeline.shaders.some((s) =>
-        s.source.includes('fn fs_taa_resolve(')));
-      const sceneTemporal = await read(temporal, 4);
-      const previousSsr = await read(temporal, 3);
-      const normal = decodeSsrNormalRoughness(await read(trace, 1));
-      const taaInputs = [];
-      for (const w of taaWorks) {
-        const id = (slot) => w.bindings.find((b) => b.groupIndex === 1 && b.binding === slot)?.resourceId;
-        const p = await readId(id(8), w.workIndex);
-        const integers = new Uint32Array(p.bytes.buffer, p.bytes.byteOffset, p.bytes.byteLength / 4);
-        const output = await readId(w.attachments.colorViewHandleIds[0], w.workIndex);
-        const previous = await readId(id(2), w.workIndex);
-        const deltas = [];
-        for (let pixel = 0; pixel < output.values.length; pixel += 4) {
-          if (normal.values[pixel + 0.5] < 0.999 || normal.values[pixel + 3] > 0.1) continue;
-          deltas.push(Math.max(...[0, 1, 2].map((c) => Math.abs(output.values[pixel + c] - previous.values[pixel + c]))));
-        }
-        deltas.sort((a, b) => a - b);
-        taaInputs.push({ workIndex: w.workIndex, currentJitterUv: p.values.slice(0, 2),
-          historyValid: integers[2], frameIndex: integers[3], staticSmoothFloor: {
-            pixels: deltas.length, meanFrameDelta: deltas.reduce((sum, v) => sum + v, 0) / Math.max(1, deltas.length),
-            p95FrameDelta: deltas[Math.floor(deltas.length * 0.95)] ?? 0,
-          } });
-      }
-      let reflected = 0, accumulated = 0, reactiveReceivers = 0, invalidTemporalReceivers = 0;
-      for (let y = 0; y < traced.height; y++) for (let x = 0; x < traced.width; x++) {
-        const p = (y * traced.width + x) * 4;
-        if (traced.values[p + 3] <= 0) continue;
-        reflected++;
-        if ([0, 1, 2].some((c) => Math.abs(traced.values[p + c] - resolved.values[p + c]) > 0.001)) accumulated++;
-        const full = (y * sceneTemporal.width + x) * 4;
-        if (sceneTemporal.values[full + 3] >= 1) reactiveReceivers++;
-        if (sceneTemporal.values[full + 2] < 0) invalidTemporalReceivers++;
-      }
-      const depth = await read(trace, 0);
-      const materialWork = model.works.find((w) => w.pipeline.shaders.some((s) => s.entryPoint === 'fs_gbuffer'));
-      const materialSource = materialWork.pipeline.shaders.find(s => s.entryPoint === 'fs_gbuffer').source;
-      const materialLocation = materialSource.match(/@location\((\d+)\)\s+albedo_metallic\s*:/);
-      assert.ok(materialLocation, 'captured G-buffer must expose albedo_metallic');
-      const material = decodeSsrReflectance(await readId(
-        materialWork.attachments.colorViewHandleIds[Number(materialLocation[1])], trace.workIndex));
-      const materialResponse = fullscreenComposition ? await readId(binding(compose, 2), compose.workIndex) : undefined;
-      const camera = await read(trace, 5);
-      if (process.env.SSR_EXPORT_COMPOSE_INPUTS === '1') {
-        const exported = { artifactDigest: createHash('sha256').update(bytes).digest('hex'),
-          workIndex: compose.workIndex, shader: compose.pipeline.shaders.find(s => s.entryPoint === 'fs_ssr_compose').source,
-          textures: [] };
-        for (const [name, levels] of [['radiance', pyramid], ['fallback', [fallback]],
-          ['response', [materialResponse]], ['normal', [normal]]]) {
-          const entries = [];
-          for (const [level, data] of levels.entries()) {
-            const path = resolve(dirname(tapePath), `compose-${name}-${level}.bin`);
-            writeFileSync(path, data.bytes);
-            entries.push({ path, width: data.width, height: data.height, format: data.format,
-              bytesPerRow: data.bytesPerRow, digest: createHash('sha256').update(data.bytes).digest('hex') });
-          }
-          exported.textures.push({ name, levels: entries });
-        }
-        const path = resolve(dirname(tapePath), 'compose-view.bin');
-        writeFileSync(path, camera.bytes);
-        exported.view = { path, digest: createHash('sha256').update(camera.bytes).digest('hex') };
-        writeFileSync(resolve(dirname(tapePath), 'compose-inputs.json'), JSON.stringify(exported, null, 2));
-      }
-      for (const [name, resource] of [['trace', traced], ['resolved', resolved], ['base', base], ['composed', composed]]) {
-        const rgba = new Uint8Array(resource.width * resource.height * 4);
-        const confidence = new Uint8Array(rgba.length);
-        for (let p = 0; p < rgba.length; p += 4) {
-          for (let c = 0; c < 3; c++) rgba[p + c] = Math.round(Math.pow(Math.max(0, Math.min(1, resource.values[p + c])), 1 / 2.2) * 255);
-          rgba[p + 3] = 255;
-          confidence.set([0, 1, 2].map(() => Math.round(resource.values[p + 3] * 255)).concat(255), p);
-        }
-        const imagePrefix = candidate === undefined ? '' : `trace-${traceSteps ?? candidate.digest}-`;
-        writeFileSync(resolve(dirname(tapePath), `${imagePrefix}${name}.png`), encodePng(resource.width, resource.height, rgba));
-        if (name === 'trace') writeFileSync(resolve(dirname(tapePath), `${imagePrefix}confidence.png`), encodePng(resource.width, resource.height, confidence));
-      }
-      const tileOracle = process.env.SSR_FIXTURE === 'tiles'
-        ? auditTileReflection({ traced, base, depth, normal, camera }) : undefined;
-      const seamOracle = process.env.SSR_FIXTURE === 'tiles'
-        ? auditTileSeams({ traced, base, depth, normal, camera }) : undefined;
-      // Keep nearest-source evidence intact. Linear agreement measures filtered
-      // hit color, not subpixel geometric coverage at the source silhouette.
-      const linearSeamOracle = process.env.SSR_FIXTURE === 'tiles'
-        ? auditTileSeams({ traced, base, depth, normal, camera, colorFilter: 'linear' }) : undefined;
-      // View UBO [236..239] is the captured SSR authoring tail. Do not hide
-      // rough pavers when inspecting prefilter-independent hit geometry.
-      const admittedSeamOracle = process.env.SSR_FIXTURE === 'tiles'
-        ? auditTileSeams({ traced, base, depth, normal, camera, colorFilter: 'linear', maxRoughness: camera.values[238] }) : undefined;
-      const sourceFilteredSeamOracle = process.env.SSR_FIXTURE === 'tiles'
-        ? auditTileSeams({ traced, base, depth, normal, camera, fallback, colorFilter: 'linear-admitted', maxRoughness: camera.values[238] }) : undefined;
-      const inv = camera.values.slice(44, 60);
-      const normalize = (v) => { const length = Math.hypot(...v); return v.map((c) => c / length); };
-      const luts = new Map();
-      for (const w of fullscreenComposition
-        ? model.works.filter(w => w.pipeline.shaders.some(s => s.entryPoint === 'fs_gbuffer'))
-        : compositionWorks) {
-        const source = w.pipeline.shaders.find((s) => s.stage === 'fragment').source;
-        const match = source.match(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var brdfLut(?:_\d+)?\s*:/);
-        assert.ok(match, 'no captured BRDF LUT binding');
-        const id = w.bindings.find((b) => b.groupIndex === Number(match[1]) && b.binding === Number(match[2])).resourceId;
-        if (!luts.has(id)) luts.set(id, await readId(id, w.workIndex));
-      }
-      assert.equal(luts.size, 1, 'this fixture oracle requires one shared BRDF LUT');
-      const lut = luts.values().next().value;
-      assert.equal(lut.format, 'rg16float');
-      const sampleLut = (u, v) => {
-        const x = Math.max(0, Math.min(lut.width - 1, u * lut.width - 0.5));
-        const y = Math.max(0, Math.min(lut.height - 1, v * lut.height - 0.5));
-        const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
-        const at = (a, b, c) => lut.values[(b * lut.width + a) * 2 + c];
-        return [0, 1].map((c) => (at(x0, y0, c) * (1 - fx) + at(Math.min(x0 + 1, lut.width - 1), y0, c) * fx) * (1 - fy)
-          + (at(x0, Math.min(y0 + 1, lut.height - 1), c) * (1 - fx) + at(Math.min(x0 + 1, lut.width - 1), Math.min(y0 + 1, lut.height - 1), c) * fx) * fy);
-      };
-      const finalWork = model.works.at(-1);
-      assert.ok(finalWork.workIndex > compose.workIndex);
-      const consumers = model.works.filter((w) => w.workIndex > compose.workIndex &&
-        w.bindings.some((b) => b.resourceId === composed.resourceId));
-      assert.ok(consumers.length > 0, 'SSR composed texture never reaches a later draw');
-      const finalSource = await replay.readResourceAtWork(composed.resourceId, finalWork.workIndex);
-      if (!finalSource.ok) throw finalSource.error;
-      assert.deepEqual(finalSource.value.bytes, composed.bytes, 'a later pass overwrote the SSR contribution');
-      const confidence = (r) => {
-        const a = r.values.filter((_, i) => i % 4 === 3);
-        return { pixels: a.length, positive: a.filter((v) => v > 0).length,
-          maximum: a.reduce((maximum, value) => Math.max(maximum, value), 0) };
-      };
-      let changedPixels = 0;
-      let maxDelta = 0;
-      let maxFormulaError = 0;
-      let maxFormulaIntervalError = 0;
-      let formulaIntervalWitness;
-      let formulaWitness;
-      let witness;
-      const receiverCoverage = { incompatiblePixels: 0, contaminatedPixels: 0, compatibleNeighborPixels: 0, maximumDelta: 0, witnesses: [] };
-      // A counterfactual arithmetic witness, not a proposed composition rule:
-      // removing the base-alpha cap also needs independent receiver admission.
-      const upperEdgeMipClipping = { baseAlphaCapApplied: !receiverAdmission, bandReceiverPixels: 16, roughnessGroups: {}, witness: null, maximumRemovedHdr: 0 };
-      assert.equal(resolved.width, base.width, 'SSR must cover every scene pixel');
-      assert.equal(resolved.height, base.height, 'SSR must cover every scene row');
-      for (let y = 0; y < base.height; y++) {
-        for (let x = 0; x < base.width; x++) {
-          const p = (y * base.width + x) * 4;
-          const t = p;
-          let delta = 0;
-          const clip = [(x + 0.5) / base.width * 2 - 1, 1 - (y + 0.5) / base.height * 2, depth.values[y * base.width + x], 1];
-          const world = [0, 1, 2, 3].map((r) => clip.reduce((sum, value, i) => sum + inv[i * 4 + r] * value, 0));
-          const v = normalize([0, 1, 2].map((i) => camera.values[24 + i] - world[i] / world[3]));
-          const n = normalize(normal.values.slice(p, p + 3).map((c) => c * 2 - 1));
-          const sourceNormal = n;
-          const agreement = 1;
-          const receiverBase = { value: resolved.values.slice(p, p + 4), totalWeight: 1 };
-          const receiverWeight = 1;
-          const baseConfidence = receiverBase.value[3];
-          const nv = Math.max(0.001, n.reduce((sum, c, i) => sum + c * v[i], 0));
-          const authoredRoughness = normal.values[p + 3];
-          const roughness = Math.max(0.04, authoredRoughness);
-          const reflection = sampleReflection(x, y, roughness, base.width, base.height, receiverBase?.value,
-            presentationPremultiplied);
-          const outline = admittedSeamOracle?.outsideSilhouette.upperEdge;
-          if (outline !== undefined && materialResponse !== undefined && n[1] > 0.999 && Math.abs(world[1] / world[3] + 1.025) < 0.002
-            && roughness < camera.values[238] && receiverBase?.totalWeight > 0) {
-            const distance = Math.min(...outline.segments.map(segment => mirrorSegmentDistance([x + 0.5, y + 0.5], segment)));
-            if (distance <= upperEdgeMipClipping.bandReceiverPixels) {
-              const key = roughness.toFixed(3);
-              const group = upperEdgeMipClipping.roughnessGroups[key] ??= { pixels: 0, capped: 0, zeroBaseWithFilteredHit: 0, maximumRemovedHdr: 0 };
-              group.pixels++;
-              const removedConfidence = Math.max(0, reflection[3] - baseConfidence) * fallback.values[p + 3];
-              if (removedConfidence > 0.001) {
-                group.capped++;
-                if (baseConfidence <= 0.001) group.zeroBaseWithFilteredHit++;
-                const removedHdr = Math.max(...[0, 1, 2].map(c => Math.abs(removedConfidence
-                  * (reflection[c] * materialResponse.values[p + c] - fallback.values[p + c]))));
-                group.maximumRemovedHdr = Math.max(group.maximumRemovedHdr, removedHdr);
-                if (removedHdr > upperEdgeMipClipping.maximumRemovedHdr) {
-                  upperEdgeMipClipping.maximumRemovedHdr = removedHdr;
-                  upperEdgeMipClipping.witness = { pixel: [x, y], roughness, distance,
-                    baseConfidence, filtered: reflection, response: materialResponse.values.slice(p, p + 3),
-                    fallback: fallback.values.slice(p, p + 4), removedConfidence, removedHdr };
-                }
-              }
-            }
-          }
-          const [a, b] = sampleLut(nv, roughness);
-          const limit = Math.max(0, Math.min(1, camera.values[238]));
-          const fade = Math.max(0, Math.min(1, (authoredRoughness - limit * 0.8) / Math.max(limit * 0.2, 1e-8)));
-          const currentReceiverConfidence = receiverBase?.totalWeight > 1e-6 && Number.isFinite(camera.values[239])
-            && camera.values[239] > 0.5 && authoredRoughness >= 0 && authoredRoughness < limit
-            ? 1 - fade * fade * (3 - 2 * fade) : 0;
-          const effectiveConfidence = Math.min(reflection[3], receiverAdmission ? currentReceiverConfidence : baseConfidence);
-          for (let c = 0; c < 3; c++) {
-            delta = Math.max(delta, Math.abs(composed.values[p + c] - base.values[p + c]));
-            // The carrier uses ordinary Standard dielectric/metallic surfaces:
-            // derive their F0 from captured albedo/metallic, not an authored copy.
-            const metallic = material.values[p + 3];
-            const f0 = 0.04 * (1 - metallic) + material.values[p + c] * metallic;
-            const fresnel = f0 + (Math.max(1 - roughness, f0) - f0) * (1 - nv) ** 5;
-            // Material composition rasterizes covered geometry. Filtered radiance
-            // beside a silhouette must not imply a sky draw.
-            const coverage = depth.values[y * base.width + x] < 1 ? fallback.values[p + 3] : 0;
-            // The fullscreen stage consumes the stored response, not a second
-            // BRDF evaluated from quantized G-buffer normals. Inspect its actual
-            // input to isolate composition from the material producer.
-            const response = materialResponse?.values[p + c] ?? (fresnel * a + b);
-            const expected = base.values[p + c] + effectiveConfidence * coverage * receiverWeight
-              * (reflection[c] * response - fallback.values[p + c]);
-            if ((baseConfidence > 0 || delta > 0.005) && Number.isFinite(expected)) {
-              const error = Math.abs(composed.values[p + c] - expected);
-              const exactCoordinateError = reflectionFormulaError(expected, composed.values[p + c]);
-              let alternateExpected = expected;
-              if (exactCoordinateError > 0) {
-                const alternativeBase = receiverBase;
-                const alternative = sampleReflection(x, y, roughness, base.width, base.height, alternativeBase?.value, true);
-                const alternativeConfidence = Math.min(alternative[3], receiverAdmission
-                  ? currentReceiverConfidence : (alternativeBase?.value[3] ?? baseConfidence));
-                alternateExpected = base.values[p + c] + alternativeConfidence * coverage * receiverWeight
-                  * (alternative[c] * response - fallback.values[p + c]);
-              }
-              const intervalError = reflectionFormulaError(expected, composed.values[p + c], alternateExpected);
-              if (intervalError > maxFormulaIntervalError) {
-                maxFormulaIntervalError = intervalError;
-                formulaIntervalWitness = { x, y, channel: c, expected, actual: composed.values[p + c],
-                  base: base.values[p + c], response, reflection, effectiveConfidence, coverage,
-                  receiverWeight, roughness, fallback: fallback.values[p + c], intervalError, alternateExpected };
-              }
-              if (error > maxFormulaError) {
-                maxFormulaError = error;
-                formulaWitness = { x, y, channel: c, expected, actual: composed.values[p + c],
-                  depth: depth.values[y * base.width + x], normal: normal.values.slice(p, p + 4),
-                  material: material.values.slice(p, p + 4), response, reconstructedResponse: fresnel * a + b, coverage, nv, a, b,
-                  radiance: reflection, baseRadiance: resolved.values.slice(t, t + 4), fallback: fallback.values.slice(p, p + 4) };
-              }
-            }
-          }
-          if (delta > 1e-4) changedPixels++;
-          const incompatible = receiverBase === undefined ? agreement < 0.9 : receiverBase.totalWeight === 0;
-          if (receiverBase !== undefined && agreement < 0.9 && baseConfidence > 0.01 && delta > 0.005) receiverCoverage.compatibleNeighborPixels++;
-          if (fallback.values[p + 3] > 0.5 && incompatible && resolved.values[t + 3] > 0.01) {
-            receiverCoverage.incompatiblePixels++;
-            if (delta > 0.005) {
-              receiverCoverage.contaminatedPixels++;
-              receiverCoverage.maximumDelta = Math.max(receiverCoverage.maximumDelta, delta);
-              if (receiverCoverage.witnesses.length < 8) receiverCoverage.witnesses.push({ pixel: [x,y], agreement, delta, normal: n, sourceNormal });
-            }
-          }
-          if (delta > maxDelta) {
-            maxDelta = delta;
-            witness = { x, y, base: base.values.slice(p, p + 4), fallback: fallback.values.slice(p, p + 4),
-              resolved: resolved.values.slice(t, t + 4), composed: composed.values.slice(p, p + 4) };
-          }
-        }
-      }
-      const report = {
-        hitReactivity,
-        mode: candidate === undefined ? 'recorded-replay' : 'counterfactual-trace-replay',
-        oracleSourceDigest: createHash('sha256').update(readFileSync(new URL('./audit-tile-reflection.mjs', import.meta.url))).digest('hex'),
-        ...(candidate === undefined ? {} : { candidate }),
-        artifact: { kind: 'rhi-tape', path: resolve(tapePath), digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}` },
-        formatVersion: tape.header.formatVersion,
-        traceShaderSha256: createHash('sha256').update(trace.pipeline.shaders.find(s => s.entryPoint === 'ssr_trace').source).digest('hex'),
-        composeShaderSha256: createHash('sha256').update(compose.pipeline.shaders.find(s => s.entryPoint === 'fs_ssr_compose').source).digest('hex'),
-        materialTextureSpecialization,
-        works: [trace, temporal, ...compositionWorks].map((w) => ({ workIndex: w.workIndex, eventIndex: w.eventIndex,
-          entryPoints: w.pipeline.shaders.map((s) => s.entryPoint), bindings: w.bindings })),
-        trace: confidence(traced), resolved: confidence(resolved),
-        temporalCoordinates: { currentJitterUv: temporalParams.values.slice(4, 6),
-          previousJitterUv: temporalParams.values.slice(6, 8),
-          taaWorkIndices: taaWorks.map((w) => w.workIndex) },
-        temporalAccumulation: { reflected, accumulated, reactiveReceivers, invalidTemporalReceivers,
-          ssrHistoryValid: new Uint32Array(temporalParams.bytes.buffer, temporalParams.bytes.byteOffset, 1)[0],
-          previousHistoryNonzero: previousSsr.values.filter((v, i) => i % 4 === 3 && v > 0).length, taaInputs },
-        tileOracle, seamOracle, linearSeamOracle, admittedSeamOracle, sourceFilteredSeamOracle,
-        outputConsumers: consumers.map((w) => ({ workIndex: w.workIndex, eventIndex: w.eventIndex,
-          shaders: w.pipeline.shaders.map((s) => s.entryPoint), attachments: w.attachments })),
-        historyDepthMaximum: confidence(history).maximum,
-        composition: { changedPixels, maxDelta, maxFormulaError, maxFormulaIntervalError, formulaIntervalTolerance, formulaIntervalWitness, formulaWitness, receiverCoverage, upperEdgeMipClipping, oracle: presentationPremultiplied
-          ? 'ordinary Standard: captured G-buffer, View and material BRDF LUT with RGBA16F conversion plus bounded hardware-filter f32 interval'
-          : 'ordinary Standard: captured G-buffer, View and material BRDF LUT with RGBA16F conversion interval', witness },
-      };
-      writeFileSync(resolve(dirname(tapePath), candidate === undefined ? 'ssr-selected-work.json'
-        : `ssr-trace-${traceSteps ?? candidate.digest}-work.json`), `${JSON.stringify(report, null, 2)}\n`);
-      console.log(JSON.stringify({ artifact: report.artifact, mode: report.mode, candidate: report.candidate,
-        traceShaderSha256: report.traceShaderSha256, trace: report.trace,
-        resolved: report.resolved, tileOracle, seamOracle, linearSeamOracle, admittedSeamOracle, sourceFilteredSeamOracle, composition: report.composition, outputConsumers: report.outputConsumers }, null, 2));
-      assert.ok(report.trace.positive > 0, 'SSR trace has no reflected hit pixels');
-      if (process.env.SSR_EXPECT_FIRST_FRAME === '1') {
-        assert.equal(report.temporalAccumulation.ssrHistoryValid, 0, 'First-frame SSR must not reuse history');
-        assert.equal(report.temporalAccumulation.previousHistoryNonzero, 0, 'First-frame SSR history must be empty');
-        for (const input of taaInputs) {
-          assert.equal(input.historyValid, 0, 'First-frame TAA must not reuse history');
-          assert.equal(input.frameIndex, 0, 'First-frame TAA must start at sample zero');
-        }
-      }
-      if (taaWorks.length > 0) assert.ok(invalidTemporalReceivers / Math.max(1, reflected) < 0.02,
-        'TAA jitter invalidates motion coverage on visible SSR receivers');
-      assert.ok(report.resolved.positive > 0, 'SSR temporal resolve lost every hit');
-      assert.ok(changedPixels > 0 && maxDelta > 1e-3, 'SSR contributes no measurable scene delta');
-      assert.ok(maxFormulaIntervalError < formulaIntervalTolerance,
-        `SSR composition violates the reflection delta formula outside its admitted interval (${maxFormulaIntervalError} >= ${formulaIntervalTolerance})`);
-      if (process.env.SSR_EXPECT_RECEIVER_COVERAGE === '1') {
-        assert.equal(receiverCoverage.contaminatedPixels, 0,
-          `Half-resolution SSR leaks across differently-facing receivers: ${JSON.stringify(receiverCoverage)}`);
-      }
-      assert.ok(report.historyDepthMaximum > 1, 'history does not contain positive view distance');
-      if (seamOracle !== undefined) {
-        assert.ok(seamOracle.receiverNormalMaxDeviation < 1e-5,
-          `Unmapped flat floor has a perturbed G-buffer normal: ${seamOracle.receiverNormalMaxDeviation}`);
-        const edge = seamOracle.groups['upper-edge'];
-        assert.ok(edge.eligible >= 100, 'Wall-outline acceptance requires enough camera-visible mirror rays');
-        assert.ok(edge.missed / edge.eligible < 0.02,
-          `SSR loses the finite wall-top outline: ${edge.missed}/${edge.eligible} visible rays missed`);
-      }
-      return report;
+      return await auditSsrReplay(replay, { tapePath, bytes, tape, model, traceOverride, materialTextureSpecialization }, works);
     } finally {
       (await replay.dispose()).unwrap();
     }

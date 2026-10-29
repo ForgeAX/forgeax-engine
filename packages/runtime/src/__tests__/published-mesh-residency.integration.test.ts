@@ -69,7 +69,7 @@ it('uses the public publication Renderer for preparation and exact submitted dra
   const draw = async () => {
     world.update(1 / 60).unwrap();
     const publication = publisher.prepare(0).unwrap();
-    const packet = structuredClone(publication.packet);
+    const packet = structuredClone(publication.message);
     publication.accept();
     const receipt = value(renderer.draw({ publication: packet }));
     value(await receipt.completed);

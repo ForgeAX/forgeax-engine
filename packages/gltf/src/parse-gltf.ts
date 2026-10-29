@@ -29,7 +29,14 @@ import {
 import { decodeColorAccessor } from './accessor/decode-color.js';
 import { checkExtensions, type GltfExtensionsJson } from './check-extensions.js';
 import { Base64DecodeError, dataUriBase64Payload, decodeBase64 } from './data-uri.js';
-import { err, type GltfError, gltfErr, ok, type Result } from './errors.js';
+import {
+  err,
+  type GltfError,
+  type GltfMorphInvalidDetail,
+  gltfErr,
+  ok,
+  type Result,
+} from './errors.js';
 import { type GltfImageIr, type GltfImageJson, parseGltfImages } from './extract-image-bytes.js';
 
 export type { GltfImageIr } from './extract-image-bytes.js';
@@ -566,32 +573,37 @@ function parsePunctualLights(
   return ok(lights);
 }
 
-async function parseGltfWithBin(
-  json: RootGltfJson,
+/** Accessor, buffer-view and buffer tables after compressed-geometry projection. */
+interface AccessorTables {
+  readonly accessors: readonly AccessorJson[];
+  readonly bufferViews: readonly BufferViewJson[];
+  readonly buffers: readonly Uint8Array[];
+}
+
+interface ProjectedGeometry extends AccessorTables {
+  readonly meshes: readonly MeshJson[];
+}
+
+type MorphTargetIr = NonNullable<GltfMeshIr['morphTargets']>[number];
+type MorphInvalidReason = GltfMorphInvalidDetail['reason'];
+type NodeJson = NonNullable<RootGltfJson['nodes']>[number];
+type GltfParseDiagnostics = {
+  nodeNames: string[];
+  unsupportedExtensions: string[];
+  matrixTrsCoexistNodes: number[];
+};
+
+/** Resolve buffers (data: URI / external / GLB BIN chunk). */
+async function resolveBuffers(
+  buffersJson: readonly BuffersJson[],
   ctx: ParseGltfInternalsContext,
-): Promise<Result<GltfDoc, GltfParseError>> {
-  const headerResult = parseGltfHeader(json, ctx.filePath);
-  if (!headerResult.ok) return err(headerResult.error);
-
-  const extResult = checkExtensions(json);
-  if (!extResult.ok) return err(extResult.error);
-  const unsupportedExtensions = extResult.value.unsupportedUsed;
-  const lodResult = parseGltfLodExtension(json);
-  if (!lodResult.ok) return err(lodResult.error);
-  const lightsResult = parsePunctualLights(json, ctx.filePath);
-  if (!lightsResult.ok) return err(lightsResult.error);
-
-  let meshesJson = json.meshes ?? [];
-
-  // Resolve buffers (data: URI / external / GLB BIN chunk).
-  const buffersJson = json.buffers ?? [];
+): Promise<Result<Uint8Array[], GltfParseError>> {
   const buffers: Uint8Array[] = [];
   for (let i = 0; i < buffersJson.length; i++) {
     const bufJson = buffersJson[i];
     if (bufJson === undefined) continue;
     try {
-      const bytes = await resolveBuffer(bufJson, ctx.externalLoader, ctx.binChunk);
-      buffers.push(bytes);
+      buffers.push(await resolveBuffer(bufJson, ctx.externalLoader, ctx.binChunk));
     } catch (e) {
       if (e instanceof Base64DecodeError) {
         return err(invalidBufferDataUriError(ctx.filePath, i, e));
@@ -604,427 +616,579 @@ async function parseGltfWithBin(
       );
     }
   }
+  return ok(buffers);
+}
 
-  let accessors = json.accessors ?? [];
-  const rawBufferViews = json.bufferViews ?? [];
+/** Decode EXT_meshopt buffer views, then KHR_draco primitives, into plain accessor tables. */
+async function projectCompressedGeometry(
+  json: RootGltfJson,
+  buffers: readonly Uint8Array[],
+  ctx: ParseGltfInternalsContext,
+): Promise<Result<ProjectedGeometry, GltfError>> {
+  const required = json.extensionsRequired ?? [];
   const projected = await projectMeshoptBufferViews(
-    rawBufferViews as readonly MeshoptBufferViewJson[],
+    (json.bufferViews ?? []) as readonly MeshoptBufferViewJson[],
     buffers,
-    json.extensionsRequired ?? [],
+    required,
     ctx.meshopt,
   );
   if (!projected.ok) return err(projected.error);
-  let bufferViews = projected.value.bufferViews;
-  buffers.splice(0, buffers.length, ...projected.value.buffers);
-  const draco = await projectDracoPrimitives(
-    meshesJson,
-    accessors,
-    bufferViews,
-    buffers,
-    json.extensionsRequired ?? [],
+  return projectDracoPrimitives(
+    json.meshes ?? [],
+    json.accessors ?? [],
+    projected.value.bufferViews,
+    projected.value.buffers,
+    required,
     ctx.draco,
   );
-  if (!draco.ok) return err(draco.error);
-  meshesJson = draco.value.meshes;
-  accessors = draco.value.accessors;
-  bufferViews = draco.value.bufferViews;
-  buffers.splice(0, buffers.length, ...draco.value.buffers);
+}
 
-  const meshes: GltfMeshIr[] = [];
-  for (let meshIndex = 0; meshIndex < meshesJson.length; meshIndex++) {
-    const meshJson = meshesJson[meshIndex];
-    if (meshJson === undefined) continue;
-    for (const prim of meshJson.primitives) {
-      if (prim === undefined) continue;
-      const positionAccessorIndex = prim.attributes?.POSITION;
-      if (positionAccessorIndex === undefined) {
-        return err(
-          gltfErr('gltf-accessor-type-mismatch', {
-            accessorIndex: -1,
-            reason: 'unknownComponentType',
-          }),
-        );
-      }
-      const positionAccessor = accessors[positionAccessorIndex];
-      if (positionAccessor === undefined) return err(unknownAccessor(positionAccessorIndex));
-      const positionDecoded = decodeAccessor({
-        accessorIndex: positionAccessorIndex,
-        accessor: positionAccessor,
-        bufferViews,
-        buffers,
-        role: 'attribute',
-      });
-      if (!positionDecoded.ok) return err(positionDecoded.error);
-      if (positionDecoded.value.kind !== 'f32') {
-        return err(unknownAccessor(positionAccessorIndex));
-      }
-      const positions = positionDecoded.value.data;
+function decodePositions(
+  prim: MeshPrimitiveJson,
+  tables: AccessorTables,
+): Result<{ readonly positions: Float32Array; readonly vertexCount: number }, GltfError> {
+  const positionAccessorIndex = prim.attributes?.POSITION;
+  if (positionAccessorIndex === undefined) {
+    return err(
+      gltfErr('gltf-accessor-type-mismatch', {
+        accessorIndex: -1,
+        reason: 'unknownComponentType',
+      }),
+    );
+  }
+  const positionAccessor = tables.accessors[positionAccessorIndex];
+  if (positionAccessor === undefined) return err(unknownAccessor(positionAccessorIndex));
+  const positionDecoded = decodeAccessor({
+    accessorIndex: positionAccessorIndex,
+    accessor: positionAccessor,
+    bufferViews: tables.bufferViews,
+    buffers: tables.buffers,
+    role: 'attribute',
+  });
+  if (!positionDecoded.ok) return err(positionDecoded.error);
+  if (positionDecoded.value.kind !== 'f32') {
+    return err(unknownAccessor(positionAccessorIndex));
+  }
+  return ok({ positions: positionDecoded.value.data, vertexCount: positionAccessor.count });
+}
 
-      const attrs = prim.attributes ?? {};
+function decodeColors0(
+  attrs: Readonly<Record<string, number>>,
+  positions: Float32Array,
+  tables: AccessorTables,
+): Result<Float32Array | undefined, GltfError> {
+  const colorIdx = attrs.COLOR_0;
+  if (colorIdx === undefined) return ok(undefined);
+  const colorAccessor = tables.accessors[colorIdx];
+  if (colorAccessor === undefined)
+    return err(
+      gltfErr('gltf-color-accessor-malformed', {
+        semantic: 'COLOR_0',
+        accessorIndex: colorIdx,
+        reason: 'reference',
+      }),
+    );
+  const decoded = decodeColorAccessor({
+    accessorIndex: colorIdx,
+    accessor: colorAccessor,
+    bufferViews: tables.bufferViews,
+    buffers: tables.buffers,
+    semantic: 'COLOR_0',
+  });
+  if (!decoded.ok) return err(decoded.error);
+  if (decoded.value.length !== (positions.length / 3) * 4) {
+    return err(
+      gltfErr('gltf-color-accessor-malformed', {
+        semantic: 'COLOR_0',
+        accessorIndex: colorIdx,
+        reason: 'count',
+      }),
+    );
+  }
+  return ok(decoded.value);
+}
 
-      let colors0: Float32Array | undefined;
-      const colorIdx = attrs.COLOR_0;
-      if (colorIdx !== undefined) {
-        const colorAccessor = accessors[colorIdx];
-        if (colorAccessor === undefined)
-          return err(
-            gltfErr('gltf-color-accessor-malformed', {
-              semantic: 'COLOR_0',
-              accessorIndex: colorIdx,
-              reason: 'reference',
-            }),
-          );
-        const decoded = decodeColorAccessor({
-          accessorIndex: colorIdx,
-          accessor: colorAccessor,
-          bufferViews,
-          buffers,
+/** Decode one optional per-vertex float attribute whose type and count must match the primitive. */
+function decodeVertexAttribute(
+  attrs: Readonly<Record<string, number>>,
+  semantic: string,
+  type: string,
+  vertexCount: number,
+  tables: AccessorTables,
+): Result<Float32Array | undefined, GltfError> {
+  const index = attrs[semantic];
+  if (index === undefined) return ok(undefined);
+  const accessor = tables.accessors[index];
+  if (accessor === undefined) return err(unknownAccessor(index));
+  if (accessor.type !== type || accessor.count !== vertexCount)
+    return err(gltfErr('gltf-accessor-type-mismatch', { accessorIndex: index, reason: 'layout' }));
+  return decodeAttributeAccessor(index, accessor, tables.bufferViews, tables.buffers);
+}
+
+function decodeUvSets(
+  attrs: Readonly<Record<string, number>>,
+  vertexCount: number,
+  tables: AccessorTables,
+): Result<{ -readonly [K in GltfUvSetField]?: Float32Array }, GltfError> {
+  const uvSets: { -readonly [K in GltfUvSetField]?: Float32Array } = {};
+  for (let set = 0; set < GLTF_UV_SET_COUNT; set++) {
+    const result = decodeVertexAttribute(attrs, `TEXCOORD_${set}`, 'VEC2', vertexCount, tables);
+    if (!result.ok) return result;
+    if (result.value !== undefined) uvSets[`texcoord${set}` as GltfUvSetField] = result.value;
+  }
+  return ok(uvSets);
+}
+
+function decodeMorphAttribute(
+  accessorIndex: number,
+  positions: Float32Array,
+  tables: AccessorTables,
+): Result<Float32Array, MorphInvalidReason> {
+  const targetAccessor = tables.accessors[accessorIndex];
+  if (targetAccessor === undefined) return err('attribute-length-mismatch');
+  const decoded = decodeAttributeAccessor(
+    accessorIndex,
+    targetAccessor,
+    tables.bufferViews,
+    tables.buffers,
+  );
+  if (!decoded.ok) {
+    return err(
+      decoded.error.code === 'gltf-accessor-type-mismatch'
+        ? 'sparse-or-unsupported-accessor'
+        : 'attribute-length-mismatch',
+    );
+  }
+  if (targetAccessor.type !== 'VEC3' || targetAccessor.componentType !== 5126)
+    return err('attribute-length-mismatch');
+  if (decoded.value.length !== positions.length) return err('attribute-length-mismatch');
+  return ok(decoded.value);
+}
+
+/** Morph tangents carry XYZ deltas; widen them to the XYZW tangent stride. */
+function widenMorphTangent(deltas: Float32Array, vertexCount: number): Float32Array {
+  const tangent = new Float32Array(vertexCount * 4);
+  for (let vertex = 0; vertex < vertexCount; vertex++)
+    tangent.set(deltas.subarray(vertex * 3, vertex * 3 + 3), vertex * 4);
+  return tangent;
+}
+
+function decodeMorphTarget(
+  target: Readonly<Record<string, number>>,
+  positions: Float32Array,
+  tables: AccessorTables,
+): Result<MorphTargetIr, MorphInvalidReason> {
+  const output: { position?: Float32Array; normal?: Float32Array; tangent?: Float32Array } = {};
+  for (const [key, accessorIndex] of Object.entries(target)) {
+    if (key !== 'POSITION' && key !== 'NORMAL' && key !== 'TANGENT') continue;
+    const decoded = decodeMorphAttribute(accessorIndex, positions, tables);
+    if (!decoded.ok) return decoded;
+    if (key === 'POSITION') output.position = decoded.value;
+    else if (key === 'NORMAL') output.normal = decoded.value;
+    else output.tangent = widenMorphTangent(decoded.value, positions.length / 3);
+  }
+  return ok(output);
+}
+
+function decodeMorphTargetList(
+  rawTargets: ReadonlyArray<Readonly<Record<string, number>>>,
+  attributeCount: number,
+  meshWeights: readonly number[] | undefined,
+  positions: Float32Array,
+  tables: AccessorTables,
+): Result<MorphTargetIr[], MorphInvalidReason> {
+  if (rawTargets.length > 8) return err('target-count-exceeded');
+  if (attributeCount > 8) return err('attribute-count-exceeded');
+  const morphTargets: MorphTargetIr[] = [];
+  for (const target of rawTargets) {
+    const decoded = decodeMorphTarget(target, positions, tables);
+    if (!decoded.ok) return decoded;
+    morphTargets.push(decoded.value);
+  }
+  if (meshWeights !== undefined && meshWeights.length !== rawTargets.length) {
+    return err('weights-length-mismatch');
+  }
+  return ok(morphTargets);
+}
+
+function decodeMorphTargets(
+  meshIndex: number,
+  meshJson: MeshJson,
+  prim: MeshPrimitiveJson,
+  positions: Float32Array,
+  tables: AccessorTables,
+): Result<MorphTargetIr[], GltfError> {
+  const rawTargets = prim.targets ?? [];
+  for (const target of rawTargets) {
+    const colorTarget = target.COLOR_0;
+    if (colorTarget !== undefined) {
+      return err(
+        gltfErr('gltf-color-accessor-unsupported', {
           semantic: 'COLOR_0',
-        });
-        if (!decoded.ok) return err(decoded.error);
-        if (decoded.value.length !== (positions.length / 3) * 4) {
-          return err(
-            gltfErr('gltf-color-accessor-malformed', {
-              semantic: 'COLOR_0',
-              accessorIndex: colorIdx,
-              reason: 'count',
-            }),
-          );
-        }
-        colors0 = decoded.value;
-      }
-
-      const vertexCount = positionAccessor.count;
-      function attribute(
-        semantic: string,
-        type: string,
-      ): Result<Float32Array | undefined, GltfError> {
-        const index = attrs[semantic];
-        if (index === undefined) return ok(undefined);
-        const accessor = accessors[index];
-        if (accessor === undefined) return err(unknownAccessor(index));
-        if (accessor.type !== type || accessor.count !== vertexCount)
-          return err(
-            gltfErr('gltf-accessor-type-mismatch', { accessorIndex: index, reason: 'layout' }),
-          );
-        return decodeAttributeAccessor(index, accessor, bufferViews, buffers);
-      }
-      const normal = attribute('NORMAL', 'VEC3');
-      if (!normal.ok) return normal;
-      const tangent = attribute('TANGENT', 'VEC4');
-      if (!tangent.ok) return tangent;
-      const uvSets: { -readonly [K in GltfUvSetField]?: Float32Array } = {};
-      for (let set = 0; set < GLTF_UV_SET_COUNT; set++) {
-        const result = attribute(`TEXCOORD_${set}`, 'VEC2');
-        if (!result.ok) return result;
-        if (result.value !== undefined) uvSets[`texcoord${set}` as GltfUvSetField] = result.value;
-      }
-      const normals = normal.value,
-        tangents = tangent.value;
-
-      const rawTargets = prim.targets ?? [];
-      for (const target of rawTargets) {
-        const colorTarget = target.COLOR_0;
-        if (colorTarget !== undefined) {
-          return err(
-            gltfErr('gltf-color-accessor-unsupported', {
-              semantic: 'COLOR_0',
-              accessorIndex: colorTarget,
-              reason: 'morph',
-            }),
-          );
-        }
-      }
-      const morphAttributeCount = rawTargets.reduce(
-        (count, target) =>
-          count +
-          (target.POSITION === undefined ? 0 : 1) +
-          (target.NORMAL === undefined ? 0 : 1) +
-          (target.TANGENT === undefined ? 0 : 1),
-        0,
-      );
-      const morphError = (
-        reason:
-          | 'target-count-exceeded'
-          | 'attribute-count-exceeded'
-          | 'attribute-length-mismatch'
-          | 'weights-length-mismatch'
-          | 'sparse-or-unsupported-accessor',
-      ) =>
-        err(
-          gltfErr('gltf-morph-invalid', {
-            meshIndex,
-            primitiveIndex: meshJson.primitives.indexOf(prim),
-            reason,
-            targetCount: rawTargets.length,
-            attributeCount: morphAttributeCount,
-            vertexCount: positions.length / 3,
-          }),
-        );
-      if (rawTargets.length > 8) return morphError('target-count-exceeded');
-      if (morphAttributeCount > 8) return morphError('attribute-count-exceeded');
-
-      const morphTargets: {
-        readonly position?: Float32Array;
-        readonly normal?: Float32Array;
-        readonly tangent?: Float32Array;
-      }[] = [];
-      for (const target of rawTargets) {
-        const output: {
-          position?: Float32Array;
-          normal?: Float32Array;
-          tangent?: Float32Array;
-        } = {};
-        for (const [key, accessorIndex] of Object.entries(target)) {
-          if (key !== 'POSITION' && key !== 'NORMAL' && key !== 'TANGENT') continue;
-          const targetAccessor = accessors[accessorIndex];
-          if (targetAccessor === undefined) return morphError('attribute-length-mismatch');
-          const decoded = decodeAttributeAccessor(
-            accessorIndex,
-            targetAccessor,
-            bufferViews,
-            buffers,
-          );
-          if (!decoded.ok) {
-            return morphError(
-              decoded.error.code === 'gltf-accessor-type-mismatch'
-                ? 'sparse-or-unsupported-accessor'
-                : 'attribute-length-mismatch',
-            );
-          }
-          const expected = positions.length;
-          if (targetAccessor.type !== 'VEC3' || targetAccessor.componentType !== 5126)
-            return morphError('attribute-length-mismatch');
-          if (decoded.value.length !== expected) return morphError('attribute-length-mismatch');
-          if (key === 'POSITION') output.position = decoded.value;
-          else if (key === 'NORMAL') output.normal = decoded.value;
-          else {
-            const tangent = new Float32Array((positions.length / 3) * 4);
-            for (let vertex = 0; vertex < positions.length / 3; vertex++)
-              tangent.set(decoded.value.subarray(vertex * 3, vertex * 3 + 3), vertex * 4);
-            output.tangent = tangent;
-          }
-        }
-        morphTargets.push(output);
-      }
-      const meshWeights = meshJson.weights;
-      if (meshWeights !== undefined && meshWeights.length !== rawTargets.length) {
-        return morphError('weights-length-mismatch');
-      }
-
-      // JOINTS_0 / WEIGHTS_0 (feat-20260611 M1 w1): paired skinning attributes.
-      // glTF 2.0 spec section 3.7.2.1 requires the pair to appear together for
-      // any skinned primitive; lone presence -> gltf-skin-attr-asymmetric.
-      // JOINTS_0 componentType: UBYTE(5121) widen->U16 via decodeAccessor
-      // role='joints' (D-3 width-convert at parse), or USHORT(5123) standard
-      // U16 path. WEIGHTS_0 componentType: FLOAT(5126) standard F32 path.
-      const jointsIdx = attrs.JOINTS_0;
-      const weightsIdx = attrs.WEIGHTS_0;
-      const hasJoints = jointsIdx !== undefined;
-      const hasWeights = weightsIdx !== undefined;
-      if (hasJoints !== hasWeights) {
-        const primitiveIndex = meshJson.primitives.indexOf(prim);
-        return err(
-          gltfErr('gltf-skin-attr-asymmetric', {
-            meshIndex,
-            primitiveIndex,
-            hasJoints,
-            hasWeights,
-          }),
-        );
-      }
-      let joints0: Uint16Array | undefined;
-      let weights0: Float32Array | undefined;
-      if (jointsIdx !== undefined && weightsIdx !== undefined) {
-        const jointsAccessor = accessors[jointsIdx];
-        if (jointsAccessor === undefined) return err(unknownAccessor(jointsIdx));
-        const jointsDecoded = decodeAccessor({
-          accessorIndex: jointsIdx,
-          accessor: jointsAccessor,
-          role: 'joints',
-          bufferViews,
-          buffers,
-        });
-        if (!jointsDecoded.ok) return err(jointsDecoded.error);
-        if (jointsDecoded.value.kind !== 'u16') return err(unknownAccessor(jointsIdx));
-        joints0 = jointsDecoded.value.data;
-
-        const weightsAccessor = accessors[weightsIdx];
-        if (weightsAccessor === undefined) return err(unknownAccessor(weightsIdx));
-        const weightsDecoded = decodeAttributeAccessor(
-          weightsIdx,
-          weightsAccessor,
-          bufferViews,
-          buffers,
-        );
-        if (!weightsDecoded.ok) return err(weightsDecoded.error);
-        weights0 = weightsDecoded.value;
-      }
-
-      // bug-20260612 hello-skin visual layered gate: glTF spec marks
-      // primitive.indices optional; undefined means non-indexed geometry.
-      // Leave indices undefined here; bridge.ts handles the non-indexed
-      // path by routing MeshAsset.indices to undefined.
-      let indices: Uint16Array | Uint32Array | undefined;
-      if (prim.indices !== undefined) {
-        const indexAccessor = accessors[prim.indices];
-        if (indexAccessor === undefined) return err(unknownAccessor(prim.indices));
-        const indexDecoded = decodeAccessor({
-          accessorIndex: prim.indices,
-          accessor: indexAccessor,
-          bufferViews,
-          buffers,
-          role: 'indices',
-        });
-        if (!indexDecoded.ok) return err(indexDecoded.error);
-        if (indexDecoded.value.kind === 'f32') return err(unknownAccessor(prim.indices));
-        indices = indexDecoded.value.data;
-      }
-
-      const meshIr: GltfMeshIr = {
-        ...(meshJson.name === undefined ? {} : { name: meshJson.name }),
-        positions,
-        ...(normals === undefined ? {} : { normals }),
-        ...uvSets,
-        ...(tangents === undefined ? {} : { tangents }),
-        ...(colors0 === undefined ? {} : { colors0 }),
-        ...(joints0 === undefined ? {} : { joints0 }),
-        ...(weights0 === undefined ? {} : { weights0 }),
-        ...(morphTargets.length === 0 ? {} : { morphTargets }),
-        ...(meshWeights === undefined ? {} : { morphWeights: new Float32Array(meshWeights) }),
-        ...(indices === undefined ? {} : { indices }),
-        materialIndex: prim.material ?? null,
-        meshIndex,
-      };
-      meshes.push(
-        normals === undefined && (prim.mode === undefined || prim.mode === 4)
-          ? withFlatNormals(meshIr)
-          : meshIr,
+          accessorIndex: colorTarget,
+          reason: 'morph',
+        }),
       );
     }
   }
-
-  // Textures, images, samplers (Tier-C: parse top-level arrays).
-  const texturesJson = json.textures ?? [];
-  const textures: GltfTextureIr[] = [];
-  for (const texJson of texturesJson) {
-    const texIr: GltfTextureIr = {
-      source: texJson.source ?? -1,
-      ...(texJson.sampler === undefined ? {} : { sampler: texJson.sampler }),
-      ...(texJson.name === undefined ? {} : { name: texJson.name }),
-    };
-    textures.push(texIr);
-  }
-
-  const parsedImages = await parseGltfImages(
-    json.images ?? [],
-    rawBufferViews,
-    buffers,
-    ctx.externalLoader,
+  const attributeCount = rawTargets.reduce(
+    (count, target) =>
+      count +
+      (target.POSITION === undefined ? 0 : 1) +
+      (target.NORMAL === undefined ? 0 : 1) +
+      (target.TANGENT === undefined ? 0 : 1),
+    0,
   );
-  if (!parsedImages.ok) return parsedImages;
-  const images = parsedImages.value;
+  const decoded = decodeMorphTargetList(
+    rawTargets,
+    attributeCount,
+    meshJson.weights,
+    positions,
+    tables,
+  );
+  if (decoded.ok) return decoded;
+  return err(
+    gltfErr('gltf-morph-invalid', {
+      meshIndex,
+      primitiveIndex: meshJson.primitives.indexOf(prim),
+      reason: decoded.error,
+      targetCount: rawTargets.length,
+      attributeCount,
+      vertexCount: positions.length / 3,
+    }),
+  );
+}
 
-  const samplersJson = json.samplers ?? [];
-  const samplers: GltfSamplerIr[] = [];
-  for (const sampJson of samplersJson) {
-    samplers.push({
-      ...(sampJson.magFilter === undefined ? {} : { magFilter: sampJson.magFilter }),
-      ...(sampJson.minFilter === undefined ? {} : { minFilter: sampJson.minFilter }),
-      wrapS: sampJson.wrapS ?? 10497, // REPEAT (glTF default)
-      wrapT: sampJson.wrapT ?? 10497,
-      ...(sampJson.name === undefined ? {} : { name: sampJson.name }),
-    });
+// JOINTS_0 / WEIGHTS_0 (feat-20260611 M1 w1): paired skinning attributes.
+// glTF 2.0 spec section 3.7.2.1 requires the pair to appear together for
+// any skinned primitive; lone presence -> gltf-skin-attr-asymmetric.
+// JOINTS_0 componentType: UBYTE(5121) widen->U16 via decodeAccessor
+// role='joints' (D-3 width-convert at parse), or USHORT(5123) standard
+// U16 path. WEIGHTS_0 componentType: FLOAT(5126) standard F32 path.
+function decodeSkinAttributes(
+  meshIndex: number,
+  meshJson: MeshJson,
+  prim: MeshPrimitiveJson,
+  tables: AccessorTables,
+): Result<{ readonly joints0?: Uint16Array; readonly weights0?: Float32Array }, GltfError> {
+  const jointsIdx = prim.attributes?.JOINTS_0;
+  const weightsIdx = prim.attributes?.WEIGHTS_0;
+  const hasJoints = jointsIdx !== undefined;
+  const hasWeights = weightsIdx !== undefined;
+  if (hasJoints !== hasWeights) {
+    return err(
+      gltfErr('gltf-skin-attr-asymmetric', {
+        meshIndex,
+        primitiveIndex: meshJson.primitives.indexOf(prim),
+        hasJoints,
+        hasWeights,
+      }),
+    );
   }
+  if (jointsIdx === undefined || weightsIdx === undefined) return ok({});
+  const joints0 = decodeJoints(jointsIdx, tables);
+  if (!joints0.ok) return joints0;
+  const weightsAccessor = tables.accessors[weightsIdx];
+  if (weightsAccessor === undefined) return err(unknownAccessor(weightsIdx));
+  const weights0 = decodeAttributeAccessor(
+    weightsIdx,
+    weightsAccessor,
+    tables.bufferViews,
+    tables.buffers,
+  );
+  if (!weights0.ok) return err(weights0.error);
+  return ok({ joints0: joints0.value, weights0: weights0.value });
+}
 
-  // Materials are normalized by the material parser owner before entering the IR.
+function decodeJoints(jointsIdx: number, tables: AccessorTables): Result<Uint16Array, GltfError> {
+  const jointsAccessor = tables.accessors[jointsIdx];
+  if (jointsAccessor === undefined) return err(unknownAccessor(jointsIdx));
+  const jointsDecoded = decodeAccessor({
+    accessorIndex: jointsIdx,
+    accessor: jointsAccessor,
+    role: 'joints',
+    bufferViews: tables.bufferViews,
+    buffers: tables.buffers,
+  });
+  if (!jointsDecoded.ok) return err(jointsDecoded.error);
+  if (jointsDecoded.value.kind !== 'u16') return err(unknownAccessor(jointsIdx));
+  return ok(jointsDecoded.value.data);
+}
+
+// bug-20260612 hello-skin visual layered gate: glTF spec marks
+// primitive.indices optional; undefined means non-indexed geometry.
+// Leave indices undefined here; bridge.ts handles the non-indexed
+// path by routing MeshAsset.indices to undefined.
+function decodeIndices(
+  prim: MeshPrimitiveJson,
+  tables: AccessorTables,
+): Result<Uint16Array | Uint32Array | undefined, GltfError> {
+  if (prim.indices === undefined) return ok(undefined);
+  const indexAccessor = tables.accessors[prim.indices];
+  if (indexAccessor === undefined) return err(unknownAccessor(prim.indices));
+  const indexDecoded = decodeAccessor({
+    accessorIndex: prim.indices,
+    accessor: indexAccessor,
+    bufferViews: tables.bufferViews,
+    buffers: tables.buffers,
+    role: 'indices',
+  });
+  if (!indexDecoded.ok) return err(indexDecoded.error);
+  if (indexDecoded.value.kind === 'f32') return err(unknownAccessor(prim.indices));
+  return ok(indexDecoded.value.data);
+}
+
+/** Decode one triangle-list primitive into its IR row; decoding order is the error precedence. */
+function parsePrimitive(
+  meshIndex: number,
+  meshJson: MeshJson,
+  prim: MeshPrimitiveJson,
+  tables: AccessorTables,
+): Result<GltfMeshIr, GltfError> {
+  const position = decodePositions(prim, tables);
+  if (!position.ok) return position;
+  const { positions, vertexCount } = position.value;
+  const attrs = prim.attributes ?? {};
+  const colors0 = decodeColors0(attrs, positions, tables);
+  if (!colors0.ok) return colors0;
+  const normal = decodeVertexAttribute(attrs, 'NORMAL', 'VEC3', vertexCount, tables);
+  if (!normal.ok) return normal;
+  const tangent = decodeVertexAttribute(attrs, 'TANGENT', 'VEC4', vertexCount, tables);
+  if (!tangent.ok) return tangent;
+  const uvSets = decodeUvSets(attrs, vertexCount, tables);
+  if (!uvSets.ok) return uvSets;
+  const morphTargets = decodeMorphTargets(meshIndex, meshJson, prim, positions, tables);
+  if (!morphTargets.ok) return morphTargets;
+  const skin = decodeSkinAttributes(meshIndex, meshJson, prim, tables);
+  if (!skin.ok) return skin;
+  const indices = decodeIndices(prim, tables);
+  if (!indices.ok) return indices;
+  const normals = normal.value;
+  const meshIr: GltfMeshIr = {
+    ...(meshJson.name === undefined ? {} : { name: meshJson.name }),
+    positions,
+    ...(normals === undefined ? {} : { normals }),
+    ...uvSets.value,
+    ...(tangent.value === undefined ? {} : { tangents: tangent.value }),
+    ...(colors0.value === undefined ? {} : { colors0: colors0.value }),
+    ...skin.value,
+    ...(morphTargets.value.length === 0 ? {} : { morphTargets: morphTargets.value }),
+    ...(meshJson.weights === undefined ? {} : { morphWeights: new Float32Array(meshJson.weights) }),
+    ...(indices.value === undefined ? {} : { indices: indices.value }),
+    materialIndex: prim.material ?? null,
+    meshIndex,
+  };
+  return ok(withTriangleNormals(meshIr, prim.mode));
+}
+
+/** Triangle lists (mode 4, the default) without authored normals get flat normals. */
+function withTriangleNormals(mesh: GltfMeshIr, mode: number | undefined): GltfMeshIr {
+  return mesh.normals === undefined && (mode === undefined || mode === 4)
+    ? withFlatNormals(mesh)
+    : mesh;
+}
+
+function parseMeshes(geometry: ProjectedGeometry): Result<GltfMeshIr[], GltfError> {
+  const meshes: GltfMeshIr[] = [];
+  for (let meshIndex = 0; meshIndex < geometry.meshes.length; meshIndex++) {
+    const meshJson = geometry.meshes[meshIndex];
+    if (meshJson === undefined) continue;
+    for (const prim of meshJson.primitives) {
+      if (prim === undefined) continue;
+      const mesh = parsePrimitive(meshIndex, meshJson, prim, geometry);
+      if (!mesh.ok) return mesh;
+      meshes.push(mesh.value);
+    }
+  }
+  return ok(meshes);
+}
+
+function parseTextures(texturesJson: NonNullable<RootGltfJson['textures']>): GltfTextureIr[] {
+  return texturesJson.map((texJson) => ({
+    source: texJson.source ?? -1,
+    ...(texJson.sampler === undefined ? {} : { sampler: texJson.sampler }),
+    ...(texJson.name === undefined ? {} : { name: texJson.name }),
+  }));
+}
+
+function parseSamplers(samplersJson: NonNullable<RootGltfJson['samplers']>): GltfSamplerIr[] {
+  return samplersJson.map((sampJson) => ({
+    ...(sampJson.magFilter === undefined ? {} : { magFilter: sampJson.magFilter }),
+    ...(sampJson.minFilter === undefined ? {} : { minFilter: sampJson.minFilter }),
+    wrapS: sampJson.wrapS ?? 10497, // REPEAT (glTF default)
+    wrapT: sampJson.wrapT ?? 10497,
+    ...(sampJson.name === undefined ? {} : { name: sampJson.name }),
+  }));
+}
+
+/** Materials are normalized by the material parser owner before entering the IR. */
+function parseMaterials(
+  materialsJson: readonly GltfMaterialJson[],
+  textures: readonly GltfTextureIr[],
+): Result<GltfMaterialIr[], GltfError> {
   const materials: GltfMaterialIr[] = [];
-  for (const material of json.materials ?? []) {
+  for (const material of materialsJson) {
     const parsedMaterial = parseMaterial(material, textures);
     if (!parsedMaterial.ok) return err(parsedMaterial.error);
     materials.push(parsedMaterial.value);
   }
+  return ok(materials);
+}
 
-  // Nodes + diagnostics.
-  const diagnostics = {
-    nodeNames: [] as string[],
-    unsupportedExtensions: [...unsupportedExtensions] as string[],
-    matrixTrsCoexistNodes: [] as number[],
-  };
+/** Textures, images, samplers and materials; empty top-level arrays project to undefined. */
+async function parseSurfaceInputs(
+  json: RootGltfJson,
+  buffers: readonly Uint8Array[],
+  ctx: ParseGltfInternalsContext,
+): Promise<
+  Result<Pick<GltfDoc, 'materials' | 'textures' | 'images' | 'samplers'>, GltfParseError>
+> {
+  const textures = parseTextures(json.textures ?? []);
+  const images = await parseGltfImages(
+    json.images ?? [],
+    json.bufferViews ?? [],
+    buffers,
+    ctx.externalLoader,
+  );
+  if (!images.ok) return images;
+  const samplers = parseSamplers(json.samplers ?? []);
+  const materials = parseMaterials(json.materials ?? [], textures);
+  if (!materials.ok) return materials;
+  return ok({
+    materials: materials.value,
+    textures: textures.length > 0 ? textures : undefined,
+    images: images.value.length > 0 ? images.value : undefined,
+    samplers: samplers.length > 0 ? samplers : undefined,
+  });
+}
+
+function parseNodeCamera(
+  cameras: RootGltfJson['cameras'],
+  cameraIndex: number | undefined,
+): Result<GltfCameraIr | null, GltfError> {
+  if (cameraIndex === undefined) return ok(null);
+  if (!Number.isSafeInteger(cameraIndex) || cameraIndex < 0)
+    return err(gltfErr('gltf-camera-invalid', { cameraIndex }));
+  return parseCamera(cameras?.[cameraIndex], cameraIndex);
+}
+
+function parseNodeInstancing(
+  nodeIndex: number,
+  nodeJson: NodeJson,
+  tables: AccessorTables,
+): Result<NodeInstancingIr | undefined, GltfError> {
+  const instancingExt = nodeJson.extensions?.EXT_mesh_gpu_instancing;
+  if (instancingExt === undefined) return ok(undefined);
+  return decodeNodeInstancing(
+    nodeIndex,
+    instancingExt.attributes ?? {},
+    tables.accessors,
+    tables.bufferViews,
+    tables.buffers,
+  );
+}
+
+function parseNode(
+  json: RootGltfJson,
+  nodeJson: NodeJson,
+  nodeIndex: number,
+  tables: AccessorTables,
+  diagnostics: GltfParseDiagnostics,
+): Result<GltfNodeIr, GltfError> {
+  const transform = decomposeNodeTransform(nodeJson, nodeIndex, diagnostics);
+  if (nodeJson.name !== undefined) diagnostics.nodeNames.push(nodeJson.name);
+  const instancing = parseNodeInstancing(nodeIndex, nodeJson, tables);
+  if (!instancing.ok) return err(instancing.error);
+  const nodeMorphWeights =
+    nodeJson.weights === undefined ? undefined : new Float32Array(nodeJson.weights);
+  const camera = parseNodeCamera(json.cameras, nodeJson.camera);
+  if (!camera.ok) return camera;
+  return ok({
+    ...(nodeJson.name === undefined ? {} : { name: nodeJson.name }),
+    transform,
+    meshIndex: nodeJson.mesh ?? null,
+    skinIndex: nodeJson.skin ?? null,
+    children: nodeJson.children ?? [],
+    camera: camera.value,
+    lightIndex: nodeJson.extensions?.KHR_lights_punctual?.light ?? null,
+    ...(instancing.value === undefined ? {} : { instancing: instancing.value }),
+    ...(nodeMorphWeights === undefined ? {} : { morphWeights: nodeMorphWeights }),
+  });
+}
+
+function parseNodes(
+  json: RootGltfJson,
+  tables: AccessorTables,
+  diagnostics: GltfParseDiagnostics,
+): Result<GltfNodeIr[], GltfError> {
   const nodes: GltfNodeIr[] = [];
   const nodesJson = json.nodes ?? [];
   for (let nodeIndex = 0; nodeIndex < nodesJson.length; nodeIndex++) {
     const nodeJson = nodesJson[nodeIndex];
     if (nodeJson === undefined) continue;
-    const transform = decomposeNodeTransform(nodeJson, nodeIndex, diagnostics);
-    if (nodeJson.name !== undefined) diagnostics.nodeNames.push(nodeJson.name);
-    const instancingExt = nodeJson.extensions?.EXT_mesh_gpu_instancing;
-    let instancing: NodeInstancingIr | undefined;
-    if (instancingExt !== undefined) {
-      const instancingResult = decodeNodeInstancing(
-        nodeIndex,
-        instancingExt.attributes ?? {},
-        accessors,
-        bufferViews,
-        buffers,
-      );
-      if (!instancingResult.ok) return err(instancingResult.error);
-      instancing = instancingResult.value;
-    }
-    const nodeMorphWeights =
-      nodeJson.weights === undefined ? undefined : new Float32Array(nodeJson.weights);
-    let cameraProjection: GltfCameraIr | null = null;
-    if (nodeJson.camera !== undefined) {
-      if (!Number.isSafeInteger(nodeJson.camera) || nodeJson.camera < 0)
-        return err(gltfErr('gltf-camera-invalid', { cameraIndex: nodeJson.camera }));
-      const camera = parseCamera(json.cameras?.[nodeJson.camera], nodeJson.camera);
-      if (!camera.ok) return camera;
-      cameraProjection = camera.value;
-    }
-    nodes.push({
-      ...(nodeJson.name === undefined ? {} : { name: nodeJson.name }),
-      transform,
-      meshIndex: nodeJson.mesh ?? null,
-      skinIndex: nodeJson.skin ?? null,
-      children: nodeJson.children ?? [],
-      camera: cameraProjection,
-      lightIndex: nodeJson.extensions?.KHR_lights_punctual?.light ?? null,
-      ...(instancing === undefined ? {} : { instancing }),
-      ...(nodeMorphWeights === undefined ? {} : { morphWeights: nodeMorphWeights }),
-    });
+    const node = parseNode(json, nodeJson, nodeIndex, tables, diagnostics);
+    if (!node.ok) return node;
+    nodes.push(node.value);
   }
+  return ok(nodes);
+}
 
-  // Scenes.
-  const scenesJson = json.scenes ?? [];
-  const scenes: GltfSceneIr[] = scenesJson.map((s) => ({
+async function parseGltfWithBin(
+  json: RootGltfJson,
+  ctx: ParseGltfInternalsContext,
+): Promise<Result<GltfDoc, GltfParseError>> {
+  const headerResult = parseGltfHeader(json, ctx.filePath);
+  if (!headerResult.ok) return err(headerResult.error);
+
+  const extResult = checkExtensions(json);
+  if (!extResult.ok) return err(extResult.error);
+  const lodResult = parseGltfLodExtension(json);
+  if (!lodResult.ok) return err(lodResult.error);
+  const lightsResult = parsePunctualLights(json, ctx.filePath);
+  if (!lightsResult.ok) return err(lightsResult.error);
+
+  const resolvedBuffers = await resolveBuffers(json.buffers ?? [], ctx);
+  if (!resolvedBuffers.ok) return resolvedBuffers;
+  const projected = await projectCompressedGeometry(json, resolvedBuffers.value, ctx);
+  if (!projected.ok) return err(projected.error);
+  const geometry = projected.value;
+  const meshes = parseMeshes(geometry);
+  if (!meshes.ok) return meshes;
+
+  const surfaces = await parseSurfaceInputs(json, geometry.buffers, ctx);
+  if (!surfaces.ok) return surfaces;
+
+  const diagnostics: GltfParseDiagnostics = {
+    nodeNames: [],
+    unsupportedExtensions: [...extResult.value.unsupportedUsed],
+    matrixTrsCoexistNodes: [],
+  };
+  const nodes = parseNodes(json, geometry, diagnostics);
+  if (!nodes.ok) return nodes;
+  const scenes: GltfSceneIr[] = (json.scenes ?? []).map((s) => ({
     ...(s.name === undefined ? {} : { name: s.name }),
     nodes: s.nodes ?? [],
   }));
-  const defaultSceneIndex = json.scene ?? 0;
 
-  // Skins (feat-20260523-skin-skeleton-animation M0).
-  const skinsJson = json.skins;
-  const skinResult = parseSkin(skinsJson, nodesJson, accessors, bufferViews, buffers);
+  // Skins and animations (feat-20260523-skin-skeleton-animation M0).
+  const nodesJson = json.nodes ?? [];
+  const { accessors, bufferViews, buffers } = geometry;
+  const skinResult = parseSkin(json.skins, nodesJson, accessors, bufferViews, buffers);
   if (!skinResult.ok) return err(skinResult.error);
-  const skeletons = skinResult.value;
-
-  // Animations (feat-20260523-skin-skeleton-animation M0).
-  const animationsJson = json.animations;
-  const animResult = parseAnimation(animationsJson, nodesJson, accessors, bufferViews, buffers);
+  const animResult = parseAnimation(json.animations, nodesJson, accessors, bufferViews, buffers);
   if (!animResult.ok) return err(animResult.error);
-  const animationClips = animResult.value;
 
   return ok({
-    meshes,
-    materials,
-    nodes,
+    meshes: meshes.value,
+    materials: surfaces.value.materials,
+    nodes: nodes.value,
     scenes,
-    skeletons,
-    animationClips,
-    textures: textures.length > 0 ? textures : undefined,
-    images: images.length > 0 ? images : undefined,
-    samplers: samplers.length > 0 ? samplers : undefined,
-    defaultSceneIndex,
+    skeletons: skinResult.value,
+    animationClips: animResult.value,
+    textures: surfaces.value.textures,
+    images: surfaces.value.images,
+    samplers: surfaces.value.samplers,
+    defaultSceneIndex: json.scene ?? 0,
     diagnostics: {
       nodeNames: diagnostics.nodeNames,
       unsupportedExtensions: diagnostics.unsupportedExtensions,

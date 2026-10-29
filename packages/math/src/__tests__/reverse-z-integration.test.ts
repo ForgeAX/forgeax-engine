@@ -30,7 +30,7 @@ describe('Reverse-Z camera consumers', () => {
           ? mat4.perspectiveReverseZ(mat4.create(), 1, 1, 0.1, Infinity)
           : mat4.orthographicReverseZ(mat4.create(), -1, 1, 1, -1, 0.1, 100);
       const result = ray.screenToRay(
-        ray.create(),
+        ray.create(new Float32Array(6)),
         50,
         50,
         100,

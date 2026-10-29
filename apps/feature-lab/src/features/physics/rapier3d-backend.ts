@@ -11,7 +11,7 @@ import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
 import physics3d from '@forgeax/engine/physics-rapier3d';
 import { defineFeature } from '../../lab/feature';
 import { spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
-import { waitForPhysicsWorld } from './support/live';
+import { waitForPhysicsWorld, waitUntil } from './support/live';
 import { vec3 } from './support/rapier3d';
 
 const FLOAT_HEIGHTS = [2.4, 3.8, 5.2] as const;
@@ -25,9 +25,17 @@ export default defineFeature({
   title: 'Rapier 3D: gravity drops a cube stack',
   catalog: '3D Rapier backend',
   kind: 'visual',
-  appOptions: { plugins: [physics3d] },
+  appOptions: {
+    plugins: [
+      {
+        async apply(ctx) {
+          await ctx.plugin(physics3d, { solverIterations: 2 });
+        },
+      },
+    ],
+  },
   summary:
-    'physics3d loads Rapier WASM, then three dynamic cuboids with Collider and RigidBody are simulated. The toggle flips PhysicsWorld.setGravity and teleports the cubes back into the air.',
+    'physics3d loads Rapier WASM with two solver iterations, then three dynamic cuboids with Collider and RigidBody are simulated. The toggle flips PhysicsWorld.setGravity and teleports the cubes back into the air.',
   expect:
     'ON: red, green and blue cubes fall and stack on the grey floor. OFF: gravity is zero and the three cubes hang still, spread out high in the air.',
   async setup({ world, frames, hud }) {
@@ -75,6 +83,11 @@ export default defineFeature({
         physics.teleport(cube, vec3(index === 1 ? 0.15 : 0, FLOAT_HEIGHTS[index] ?? 3, 0));
       });
     };
+    const synchronized = await waitUntil(frames, () =>
+      cubes.every((cube) => physics.hasBody(cube)),
+    );
+    if (synchronized === undefined)
+      throw new Error('Cube bodies were not synchronized before the first physics reset');
     reset(-9.81);
     return {
       toggle(on) {
@@ -83,6 +96,10 @@ export default defineFeature({
       checks() {
         const gravity = physics.getGravity();
         return [
+          {
+            name: 'configured global solver iterations = 2',
+            ok: physics.raw.integrationParameters.numSolverIterations === 2,
+          },
           {
             name: 'four native bodies (floor + 3 cubes)',
             ok: physics.getBodyCount() === 4,

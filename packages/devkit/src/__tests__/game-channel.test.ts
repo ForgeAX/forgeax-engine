@@ -112,6 +112,13 @@ it('connects isolated frontend/source ports through the generated App options an
         if (channel === undefined) throw new Error('generated host did not allocate a channel');
         expect(options.execution.bootstrapPort).toBe(channel.port2);
         expect(options.execution.workers.engine).toBe(engine);
+        // A cached fixed-name bootstrap must not pair one build's hashed imports with another's.
+        const bootstrapUrl = new URL(options.execution.bootstrap);
+        expect(bootstrapUrl.pathname).toBe(
+          dev ? '/execution-bootstrap.ts' : '/execution-bootstrap.js',
+        );
+        if (dev) expect(bootstrapUrl.searchParams.get('v')).toBeNull();
+        else expect(bootstrapUrl.searchParams.get('v')).toMatch(/^[0-9a-f]{16}$/);
         expect(controlMode.read()).toBe(dev ? 'touch' : 'pointer');
         const changed = vi.fn();
         const unsubscribeMode = controlMode.subscribe(changed);

@@ -5,6 +5,7 @@ import { registerPhysicsComponents } from './components.js';
 import { PhysicsError } from './errors.js';
 import { registerMobilityPhysicsConflict } from './mobility-conflict.js';
 import type { PhysicsWorld, PhysicsWorld2D } from './physics-world.js';
+import type { PhysicsOptions } from './solver-options.js';
 
 /**
  * Install the built-in physics component vocabulary without starting a
@@ -26,7 +27,7 @@ export function physicsComponentsPlugin(): Plugin {
 export interface PhysicsPluginBackend {
   readonly name: string;
   load(): Promise<unknown>;
-  create(native: unknown): PhysicsWorld | PhysicsWorld2D;
+  create(native: unknown, options: PhysicsOptions): PhysicsWorld | PhysicsWorld2D;
   registerSystems(world: World): () => void;
 }
 
@@ -37,12 +38,14 @@ declare module '@forgeax/engine-plugin' {
 }
 
 /** Share native lifetime and failure handling after the caller statically selects a backend. */
-export function definePhysicsPlugin(backend: PhysicsPluginBackend): Plugin {
+export function definePhysicsPlugin(
+  backend: PhysicsPluginBackend,
+): Plugin.Object<PhysicsOptions | undefined> {
   return {
     name: 'physics',
     inject: ['world'],
     provide: 'physics',
-    async apply(ctx) {
+    async apply(ctx, options = {}) {
       await ctx.plugin(scenePlugin());
       const world = ctx.world;
       let native: unknown;
@@ -59,7 +62,7 @@ export function definePhysicsPlugin(backend: PhysicsPluginBackend): Plugin {
           detail: { code: 'wasm-load-failed', reason },
         });
       }
-      const physics = backend.create(native);
+      const physics = backend.create(native, options);
       ctx.effect(() => registerPhysicsComponents(world), 'physics/components');
       ctx.effect(() => {
         world.insertResource('PhysicsWorld', physics);

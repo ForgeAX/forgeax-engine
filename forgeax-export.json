@@ -3,14 +3,14 @@
   "policy": "engine-public-source/1",
   "producerSha256": "f0477279820eb004765326424ea96058981a8f8086812327b039fde0dd415ca5",
   "release": {
-    "version": "0.5.0-dev.15786.48d34310b6ba",
+    "version": "0.5.0-dev.15787.dae620ebb07b",
     "channel": "next",
-    "candidateSha256": "e0461482456115187465f714da8e7a1a4a3d47707011476a01470991d2024be8"
+    "candidateSha256": "eb090764bcfefea0af0db0f3063288bba1f4bdc5cf08094baf48975e4f7e576a"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "48d34310b6ba7b43fc17495f759126cc1833588a"
+      "commit": "dae620ebb07b1698aa113a32790b6469c820750c"
     },
     {
       "root": "forgeax-engine-assets",
@@ -183,6 +183,7 @@
       "packages/pack/src/generated/schema-validators.cjs",
       "packages/path/README.md",
       "packages/physics/README.md",
+      "packages/physics-rapier2d/README.md",
       "packages/physics-rapier3d/README.md",
       "packages/platform/README.md",
       "packages/plugin/README.md",
@@ -7601,15 +7602,15 @@
     },
     {
       "path": "apps/feature-lab/src/features/physics/rapier2d-backend.ts",
-      "bytes": 3911,
+      "bytes": 4198,
       "executable": false,
-      "sha256": "b43c42e10ad4c2b95c2ce9361bba51a0006d76b8bad90a7cec79dc510682fa29"
+      "sha256": "0df71c6e8b52e77653d6c14e86bba8b9254d46d27754b29d2c8dd14146d8bfce"
     },
     {
       "path": "apps/feature-lab/src/features/physics/rapier3d-backend.ts",
-      "bytes": 3841,
+      "bytes": 4405,
       "executable": false,
-      "sha256": "ecca78b91000317aa7449e641016933da4980cf06e3726b12d0048e2013df892"
+      "sha256": "ad8c657459e7b76e960b1704e71f1e06f91437b15e6cb8c0397090ab7f4e68f1"
     },
     {
       "path": "apps/feature-lab/src/features/physics/rigid-body-types.ts",
@@ -32351,9 +32352,9 @@
     },
     {
       "path": "packages/devkit/src/__tests__/game-channel.test.ts",
-      "bytes": 11508,
+      "bytes": 11954,
       "executable": false,
-      "sha256": "7b851b3135936232a14106fc12f98a34706ad095b4e71b5e1cb2e0fc88f3f4ee"
+      "sha256": "91863b479d2da8ed5654042e006eddd49a1c049765efe098d329634d96681440"
     },
     {
       "path": "packages/devkit/src/__tests__/game-status-hud.e2e.test.ts",
@@ -33623,9 +33624,9 @@
     },
     {
       "path": "packages/devkit/src/host.ts",
-      "bytes": 155823,
+      "bytes": 156318,
       "executable": false,
-      "sha256": "18a91a442e287f934b12581eb02638380952e8245849a0bdca4c158e8635a739"
+      "sha256": "3dd28c0064d1b7d0763919684fa8e6864d46e2605918dfb35e053de608c51557"
     },
     {
       "path": "packages/devkit/src/host/__tests__/bootstrap-root-owner.test-d.ts",
@@ -41945,15 +41946,21 @@
     },
     {
       "path": "packages/physics-rapier2d/README.md",
-      "bytes": 2774,
+      "bytes": 3138,
       "executable": false,
-      "sha256": "99f05f5ae8fe52481b6d843d2a98598b244dccfc57ae26b6567a16d0e433d8a0"
+      "sha256": "72ff43f3dfee23406c095519a195f10c3b605537bd877985367f63b6ef3f3dd2"
     },
     {
       "path": "packages/physics-rapier2d/src/__tests__/character-pushing.integration.test.ts",
       "bytes": 2761,
       "executable": false,
       "sha256": "01fc482974ef06b537582093b2fbb232b55cf939df561f74bbe7614beb4afb62"
+    },
+    {
+      "path": "packages/physics-rapier2d/src/__tests__/solver-options.integration.test.ts",
+      "bytes": 3044,
+      "executable": false,
+      "sha256": "5f51a49bc596990ba024b9019f206d0d2d00bd14449621ff230c680cb4f19d55"
     },
     {
       "path": "packages/physics-rapier2d/src/__tests__/wasm-load.test.ts",
@@ -41981,9 +41988,9 @@
     },
     {
       "path": "packages/physics-rapier2d/src/rapier-physics-world-2d.ts",
-      "bytes": 52335,
+      "bytes": 52613,
       "executable": false,
-      "sha256": "3ff0498ed8e760abd42aaae362790bfafb77f7677e1787511a5f40c48a2f1dc8"
+      "sha256": "c4dda35cfbed7213f9a9832d489850bc7e12b7ece865141bd3f101b6e74fd7ba"
     },
     {
       "path": "packages/physics-rapier2d/src/wasm-browser.ts",
@@ -42185,9 +42192,9 @@
     },
     {
       "path": "packages/physics-rapier3d/README.md",
-      "bytes": 26956,
+      "bytes": 27320,
       "executable": false,
-      "sha256": "78581db3c5113243a16a3f9176a7a82436a4d5337d8165f380376459a4cf8fb5"
+      "sha256": "ec8f65a54ba11b7df06f62176c1388555a72b7dbab939236e0fa2d9135b731bd"
     },
     {
       "path": "packages/physics-rapier3d/scripts/bindings-2d.Cargo.toml",
@@ -42484,6 +42491,12 @@
       "sha256": "4e1f51822e77fd91304ea0e6ea06e3008c3999ef727bb30a59eea9e4c79cad97"
     },
     {
+      "path": "packages/physics-rapier3d/src/__tests__/solver-options.integration.test.ts",
+      "bytes": 3044,
+      "executable": false,
+      "sha256": "48cc92dc90ce8a1d2a621127737d68c86ee9de9edb27ee135a0759be8791f45c"
+    },
+    {
       "path": "packages/physics-rapier3d/src/__tests__/spatial-compound-groups.integration.test.ts",
       "bytes": 13610,
       "executable": false,
@@ -42665,9 +42678,9 @@
     },
     {
       "path": "packages/physics-rapier3d/src/rapier-physics-world-3d.ts",
-      "bytes": 162139,
+      "bytes": 162422,
       "executable": false,
-      "sha256": "834744f8f5e0932319f671ebd0748357d4009d0a311d21c489adeb04f3de6db3"
+      "sha256": "f05936696d77c7a76dfab762023ceba5c3fd21430035bfdbc4dce31d394ecc45"
     },
     {
       "path": "packages/physics-rapier3d/src/shared-collision-geometry.ts",
@@ -42725,9 +42738,9 @@
     },
     {
       "path": "packages/physics/README.md",
-      "bytes": 45081,
+      "bytes": 46323,
       "executable": false,
-      "sha256": "b44e5198adb385b25e549fcd14621cf6cb73a2d93e9e60a4b7bb9b3991721a0e"
+      "sha256": "cdcfec1f8f074b9fc7b91e28f557e6e6b29d184c33d740f7ee8060feee6269e9"
     },
     {
       "path": "packages/physics/README.zh-CN.md",
@@ -42772,6 +42785,18 @@
       "sha256": "c415feb089281b506f1339b23dab42b4f43d57c590363af5422f8fa08df38164"
     },
     {
+      "path": "packages/physics/src/__tests__/solver-options.test-d.ts",
+      "bytes": 694,
+      "executable": false,
+      "sha256": "bcd90204dbcf122307f58063f435070b7df62bbdac8f410181a8c2d915620ef5"
+    },
+    {
+      "path": "packages/physics/src/__tests__/solver-options.unit.test.ts",
+      "bytes": 961,
+      "executable": false,
+      "sha256": "0bff409c28894b8cf58d3da361de9c67f8319ccbec20e94dc2f6372962970568"
+    },
+    {
       "path": "packages/physics/src/collision-event.ts",
       "bytes": 1280,
       "executable": false,
@@ -42803,9 +42828,9 @@
     },
     {
       "path": "packages/physics/src/index.ts",
-      "bytes": 3126,
+      "bytes": 3211,
       "executable": false,
-      "sha256": "45166613b154dec60f0e3205b718806fb3bad2736f7c994f4124df33da6e9352"
+      "sha256": "8466a51da2fbbd310504b5bb6c452c34298bdde45689318440dbd0929a3197ee"
     },
     {
       "path": "packages/physics/src/managed-joints.ts",
@@ -42833,9 +42858,15 @@
     },
     {
       "path": "packages/physics/src/plugin-factory.ts",
-      "bytes": 2859,
+      "bytes": 3006,
       "executable": false,
-      "sha256": "00c8b8224df36956a584e2e3d39dd1ac36ed5aebf6205ecc8fce9d5d73225bc5"
+      "sha256": "f65d8d20311e7387dff00118c7a0e1f6f9876fb85a40346a35434af08289a825"
+    },
+    {
+      "path": "packages/physics/src/solver-options.ts",
+      "bytes": 807,
+      "executable": false,
+      "sha256": "0d2ec5ec741668c332161e052f76d1eee673aee7ec13f6d12501e7ef883ec844"
     },
     {
       "path": "packages/physics/src/system-set.ts",
@@ -45755,9 +45786,9 @@
     },
     {
       "path": "packages/render/src/__tests__/color-stage-device-lifetime.integration.test.ts",
-      "bytes": 5791,
+      "bytes": 7858,
       "executable": false,
-      "sha256": "0d9d83a1175957ab8942a4a32066248a3302dead7c1fd2253e06afcc59d82e93"
+      "sha256": "0a24e1be4bb2f3fc2243bb08fc3f05061ebf7751b396e1197061d0dab909e8e7"
     },
     {
       "path": "packages/render/src/__tests__/completed-pipeline-library-admission.browser.test.ts",
@@ -47999,9 +48030,9 @@
     },
     {
       "path": "packages/render/src/__tests__/material-prewarm-lifetime.unit.test.ts",
-      "bytes": 13751,
+      "bytes": 18061,
       "executable": false,
-      "sha256": "16cabc53bcd20e43a5cdad19ad1737974ada9e01b55936bb67bbaaa2ee128f6d"
+      "sha256": "fad609aed9a49ba0d656c7ae11abdd8e456f1be003a5b4987469ed3e69acd6ce"
     },
     {
       "path": "packages/render/src/__tests__/material-program-dispatch.unit.test.ts",
@@ -52121,9 +52152,9 @@
     },
     {
       "path": "packages/render/src/assembly/material-shader-policy.ts",
-      "bytes": 57266,
+      "bytes": 57662,
       "executable": false,
-      "sha256": "2ebc6c57dc64a4599a8e4d07cba1d3833816491c858908ef7640a87a8d97446e"
+      "sha256": "fc43148fd67f1df35053b8030ea67968e1b4a2c478defc654518daabd13c9c94"
     },
     {
       "path": "packages/render/src/assembly/material-shader-prewarm.ts",
@@ -54467,9 +54498,9 @@
     },
     {
       "path": "packages/render/src/pipeline/standard-output/color-transform.ts",
-      "bytes": 11488,
+      "bytes": 11589,
       "executable": false,
-      "sha256": "1b4d0dfaf53f2dc2500b5dce5b0f502adb611916ed56c36107cfddd992fb5417"
+      "sha256": "3c6bae8bafa043f8c7b4f2db5aacc2f9a4b700c4f0eb4f6b94bd7ebd03a320ce"
     },
     {
       "path": "packages/render/src/pipeline/standard-output/graph.ts",
@@ -67811,9 +67842,9 @@
     },
     {
       "path": "packages/types/README.md",
-      "bytes": 49258,
+      "bytes": 49822,
       "executable": false,
-      "sha256": "cd51d0ae7845b5ac3b18d3a0cc19532564ab5e51328e6209d9c56a4db313191b"
+      "sha256": "4d6eaeb2b5c1a6379983dd925e0913234d97a6a622b26c617302c2e68b341dba"
     },
     {
       "path": "packages/types/schema/material.schema.json",
@@ -68201,9 +68232,9 @@
     },
     {
       "path": "packages/types/src/__tests__/shader-source.unit.test.ts",
-      "bytes": 1486,
+      "bytes": 2094,
       "executable": false,
-      "sha256": "417504eddff70683bba20ae98eb4f0cf58cb3cb53e8a7c8b824e2a1e19b82186"
+      "sha256": "c4801a7405f738dddf83deacd4e87a64054f0bf86ff4dc48e51c5dc101d9ba37"
     },
     {
       "path": "packages/types/src/__tests__/source-override-error-code-owner.test-d.ts",
@@ -68669,9 +68700,9 @@
     },
     {
       "path": "packages/types/src/shader-source.ts",
-      "bytes": 2168,
+      "bytes": 2535,
       "executable": false,
-      "sha256": "94765e2eb51e8e8d815e280c9f23a06636343df3571c5e4f2a94557fbd6faa52"
+      "sha256": "502b52a74949e89015edbe1c2c40fc9774bc18c1a7e379ede4aa61032d6d1142"
     },
     {
       "path": "packages/types/src/shadow-capsules.ts",
@@ -75437,9 +75468,9 @@
     },
     {
       "path": "scripts/ci/dawn-file-seconds.json",
-      "bytes": 25445,
+      "bytes": 25537,
       "executable": false,
-      "sha256": "048e3be2bd48f44b594959503203a7d18adbba4394c77df39bbb54c02e028e51"
+      "sha256": "f497bb887cf788f3197742bf996ca4c9e4506a4a49fc797c497bb9fa53ff9c89"
     },
     {
       "path": "scripts/ci/dawn-gate-roster.mjs",
@@ -77897,9 +77928,9 @@
     },
     {
       "path": "skills/forgeax-engine-debug/SKILL.md",
-      "bytes": 73727,
+      "bytes": 73828,
       "executable": false,
-      "sha256": "b8a62da58efdc47bd4a29add5155b8c040e537717e8cedf30f0db927c5c48d06"
+      "sha256": "6649612d078f0e28453c516dca73ce7ed1b1f6438339ef052259181a19fbb2ff"
     },
     {
       "path": "skills/forgeax-engine-ecs/SKILL.md",
@@ -78089,15 +78120,15 @@
     },
     {
       "path": "skills/forgeax-engine-performance/SKILL.md",
-      "bytes": 8868,
+      "bytes": 18123,
       "executable": false,
-      "sha256": "eb72e82fc2895c0264cf519e9316cbed03fef0a8931115811794cf7f2c8e731f"
+      "sha256": "97b512bca0be04ea1291fda1d5e2d48d61ce3718fb191561cf15b0f45884ae40"
     },
     {
       "path": "skills/forgeax-engine-physics/SKILL.md",
-      "bytes": 14721,
+      "bytes": 15457,
       "executable": false,
-      "sha256": "162664aea1fdb667db083809ebc5843cdfb61b2d22c3fc71a6476a25034bc39b"
+      "sha256": "079c645368bb59b8dde4f4c43bd5cd98fe0b5b14af5bc4c18ba3e57e47c3c45c"
     },
     {
       "path": "skills/forgeax-engine-render-pipeline/SKILL.md",

@@ -743,6 +743,17 @@ export function devKitHostBridge(
   };
 }
 
+/**
+ * The bootstrap entry keeps a fixed file name while its hashed imports change per build;
+ * a build-keyed query stops a cached older bootstrap from pairing old imports with new ones.
+ */
+function executionBootstrapBuildPath(identity: SsrAdmissionIdentity | undefined): string {
+  const path = './execution-bootstrap.js';
+  return identity === undefined
+    ? path
+    : `${path}?v=${identity.buildSha256.slice('sha256:'.length, 'sha256:'.length + 16)}`;
+}
+
 /** The existing input fence identifies this generation, not a Git commit or final bundle. */
 function projectSsrIdentity(
   facts: ProjectFacts,
@@ -1625,7 +1636,7 @@ const appBootstrapPlugin = {
               // Development includes cold Vite compilation before the native Worker handshake.
               startupTimeoutMs: ${startupTimeout},
               bootstrap: new URL(
-                import.meta.env.DEV ? './execution-bootstrap.ts' : './execution-bootstrap.js',
+                import.meta.env.DEV ? './execution-bootstrap.ts' : ${JSON.stringify(executionBootstrapBuildPath(ssrIdentity))},
                 import.meta.url,
               ),
               assetCatalog: {

@@ -70,6 +70,7 @@ import {
   type PhysicsContactSnapshot,
   PhysicsError,
   type PhysicsMassProperties,
+  type PhysicsOptions,
   type PhysicsVector,
   type PhysicsWorld,
   preserveCenterOfMassVelocity,
@@ -80,6 +81,7 @@ import {
   validateAdditionalSolverIterations,
   validateManagedJoints,
   validateMassProperties,
+  validateSolverIterations,
 } from '@forgeax/engine-physics';
 import { ChildOf } from '@forgeax/engine-scene';
 import { err, ok, type Result, type RigidBodyType } from '@forgeax/engine-types';
@@ -250,10 +252,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   private disposed = false;
 
-  constructor(rapier: Rapier3DModule) {
+  constructor(rapier: Rapier3DModule, options: PhysicsOptions = {}) {
+    const solverIterations = validateSolverIterations(options.solverIterations);
     this.rapierModule = rapier;
     // biome-ignore lint/suspicious/noExplicitAny: Rapier World constructor is a class exported from a namespace module
     this.raw = new (rapier as any).World({ x: 0, y: -9.81, z: 0 }) as RapierWorld;
+    this.raw.integrationParameters.numSolverIterations = solverIterations;
     // biome-ignore lint/suspicious/noExplicitAny: Rapier EventQueue constructor comes from a namespace module
     this.eventQueue = new (rapier as any).EventQueue(true) as RapierEventQueue;
     this.currentGravity = { x: 0, y: -9.81, z: 0 };
@@ -4075,6 +4079,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   }
 }
 
-export function createRapier3DPhysicsWorld(rapier: Rapier3DModule): RapierPhysicsWorld3D {
-  return new RapierPhysicsWorld3D(rapier);
+export function createRapier3DPhysicsWorld(
+  rapier: Rapier3DModule,
+  options: PhysicsOptions = {},
+): RapierPhysicsWorld3D {
+  return new RapierPhysicsWorld3D(rapier, options);
 }

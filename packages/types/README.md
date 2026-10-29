@@ -12,6 +12,14 @@ The Pack v2 wire envelope still requires its `refs` array. Catalog retains this
 producer fact so Scene binding can distinguish World handles from reference
 indexes using the destination World's component schema.
 
+`ShaderSource` retains immutable source text without runtime fragmentation.
+`matches(text)` compares exact UTF-16 content across supplied fragments without
+joining or hashing, but can scan the complete text. The device reuses its source
+owner for unchanged labeled raw-string requests; unlabeled strings still require
+content hashing. Prefer `source.descriptor(label)` when an admitted owner already
+exists: it bypasses text matching and reuses the owner's lazy identity. Changed
+content invalidates the module and pending completion. `read()` returns full text.
+
 Material programs declare their resource interface with `program.bindings`.
 Omission selects `render-material`; WGSL identifiers never select an interface.
 The same declaration travels in `MaterialProgramAbi` across Pack and Worker publication.

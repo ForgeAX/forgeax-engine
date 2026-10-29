@@ -97,6 +97,7 @@ export { PairIsolationError } from './pair-isolation.js';
 export type { PhysicsWorld, PhysicsWorld2D, RaycastHit, RaycastHit2D } from './physics-world.js';
 export type { PhysicsPluginBackend } from './plugin-factory.js';
 export { definePhysicsPlugin, physicsComponentsPlugin } from './plugin-factory.js';
+export { type PhysicsOptions, validateSolverIterations } from './solver-options.js';
 export { PhysicsSet } from './system-set.js';
 export { createTerrainHeightfieldSync, type TerrainColliderOwner } from './terrain-heightfield.js';
 export type { PhysicsWasmHost } from './wasm-host.js';

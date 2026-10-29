@@ -93,14 +93,22 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
 
 type ShaderModuleAdapterMode = 'validated' | 'immediate';
 
-function resolveModuleSource(desc: {
-  readonly code: string;
-  readonly label?: string | undefined;
-}): Result<ShaderSource, RhiError> {
+function resolveModuleSource(
+  desc: {
+    readonly code: string;
+    readonly label?: string | undefined;
+  },
+  previous?: ShaderSource,
+): Result<ShaderSource, RhiError> {
   const sourceInput = shaderSourceForDescriptor(desc) ?? desc.code;
   let source: ShaderSource;
   try {
-    source = typeof sourceInput === 'string' ? new ShaderSource([sourceInput]) : sourceInput;
+    source =
+      typeof sourceInput === 'string'
+        ? previous?.matches(sourceInput)
+          ? previous
+          : new ShaderSource([sourceInput])
+        : sourceInput;
   } catch (cause) {
     if (cause instanceof RhiError) return err(cause);
     return err(
@@ -156,7 +164,12 @@ export function makeShaderDeviceAdapter(
   return {
     createShaderModule(desc): Result<ShaderModule, RhiError> {
       if (disposed) return err(makeRhiNotAvailableError(desc.label ?? 'retired shader owner'));
-      const resolved = resolveModuleSource(desc);
+      // The label's existing owner can validate borrowed text directly. Repeated
+      // draw and pending requests do not need another owner or SHA pass.
+      const resolved = resolveModuleSource(
+        desc,
+        desc.label === undefined ? undefined : sources.get(desc.label),
+      );
       if (!resolved.ok) return resolved;
       const source = resolved.value;
       const key = desc.label ?? source.identity;
@@ -168,7 +181,6 @@ export function makeShaderDeviceAdapter(
         pending.delete(key);
       }
       sources.set(key, source);
-      desc = source.descriptor(desc.label);
       requested.add(key);
       const cachedModule = moduleCache.get(key)?.deref();
       if (cachedModule !== undefined) return ok(cachedModule);
@@ -183,6 +195,7 @@ export function makeShaderDeviceAdapter(
       // and authored shaders. The public async factory still owns diagnostics;
       // pipeline creation remains the validation point for the fast path.
       if (mode === 'immediate' && immediateCreateShaderModule !== undefined) {
+        desc = source.descriptor(desc.label);
         const immediateResult = immediateCreateShaderModule(rhiDevice, desc);
         if (immediateResult.ok) {
           remember(key, immediateResult.value);
@@ -202,7 +215,7 @@ export function makeShaderDeviceAdapter(
         request = { epoch };
         pending.set(key, request);
         const operation = request;
-        const desc2 = desc;
+        const desc2 = source.descriptor(desc.label);
         const asyncResult: Promise<Result<ShaderModule, RhiError>> = asyncCreateShaderModule
           ? asyncCreateShaderModule(rhiDevice, desc2)
           : invokeDeviceCreateShaderModule(rhiDevice, desc2);

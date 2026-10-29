@@ -20,6 +20,18 @@ their scalar transport and do not infer support from the JS runtime. Both browse
 payloads are producer-owned, verified SDK inputs; do not substitute a separately
 compiled WASM into a published game. See the backend README's Patched WASM delivery.
 
+## Solver precision
+
+In a root plugin, configure the selected backend with
+`await ctx.plugin(physics3d, { solverIterations: 2 })` (or `physics2d`).
+`PhysicsOptions.solverIterations` is an integer [1,32], defaults to 4, and applies
+at activation; manual world constructors/factories accept the same options.
+Fewer iterations can soften contacts/joints, increase penetration or jitter and
+delay sleep. This changes solver convergence, not fixed cadence, CCD or rendering.
+`RigidBody.additionalSolverIterations` only adds work to its connected island.
+Do not advertise a native-step saving as a whole-game FPS gain; validate the actual
+workload and settling. Read the [owning contract](../../packages/physics/README.md#solver-precision).
+
 ## Core API and components
 
 | Name | Package | Form | Purpose |

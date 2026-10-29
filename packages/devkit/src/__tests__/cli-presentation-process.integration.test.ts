@@ -59,8 +59,15 @@ it('prints the compact tree from the forgeax process and the owner tree with --d
   expect(JSON.stringify(compact.value)).not.toContain('"path":"asset');
   expect(JSON.stringify(detail.value)).toContain('"path":"asset source create"');
   const summaries = JSON.stringify(compact.value);
-  expect(summaries).toContain('"Verify Pack authoring."');
-  expect(summaries).toContain('"Create Pack source with requestId and revision CAS semantics."');
+  expect(summaries).toContain(
+    '"Reads Pack identity, topology, inheritance, or current readiness without building or writing."',
+  );
+  expect(summaries).toContain(
+    '"Runs Pack source authoring with requestId and operation-owned write and identity semantics."',
+  );
+  expect(summaries).toContain(
+    '"Runs Pack source mutation with requestId and expectedRevision CAS; inspect the source revision first."',
+  );
 }, 60_000);
 
 it('marks only groups in a text tree for both --tree spellings', async () => {

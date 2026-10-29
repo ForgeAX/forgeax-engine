@@ -1378,19 +1378,19 @@ export function materialBindingResourcesCurrent(
   runtime?: Pick<RenderSystemRuntime, 'preparedMaterialTexture'>,
   material = entry.material,
 ): boolean {
-  return (
-    entry.preparedTextures.every((resource) => {
-      const current = runtime?.preparedMaterialTexture?.(material, resource.parameter);
-      return current?.textureView === resource.textureView && current?.sampler === resource.sampler;
-    }) &&
-    entry.materialResources.every(
-      (resource) =>
-        resource.revision === renderAssetRevision(world, resource.handle) &&
-        (resource.kind === 'sampler' ||
-          resource.view ===
-            store.getTextureGpuView(resource.handle as AssetHandle<'texture'>, world)),
+  for (const resource of entry.preparedTextures) {
+    const current = runtime?.preparedMaterialTexture?.(material, resource.parameter);
+    if (current?.textureView !== resource.textureView || current?.sampler !== resource.sampler)
+      return false;
+  }
+  for (const resource of entry.materialResources)
+    if (
+      resource.revision !== renderAssetRevision(world, resource.handle) ||
+      (resource.kind !== 'sampler' &&
+        resource.view !== store.getTextureGpuView(resource.handle as AssetHandle<'texture'>, world))
     )
-  );
+      return false;
+  return true;
 }
 
 /** @internal Exported only so buffer-generation invalidation stays regression-tested. */

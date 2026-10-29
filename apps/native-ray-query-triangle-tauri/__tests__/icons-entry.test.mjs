@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 test('real icon CLI enters through a native file path and preserves the owning manager', () => {
   const fixture = mkdtempSync(resolve(tmpdir(), 'forgeax tauri entry '));
   try {
-    const manager = resolve(fixture, 'owning manager.mjs');
+    const manager = resolve(fixture, 'pnpm.mjs');
     const receipt = resolve(fixture, 'receipt.json');
     writeFileSync(manager, `import {writeFileSync} from 'node:fs';writeFileSync(process.env.FORGEAX_ICON_ENTRY_RECEIPT,JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()}));`);
     const entry = fileURLToPath(new URL('../scripts/generate-icons.mjs', import.meta.url));

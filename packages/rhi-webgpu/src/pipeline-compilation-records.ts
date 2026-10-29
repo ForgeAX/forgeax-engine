@@ -3,24 +3,28 @@ import type { PipelineLibraryInspection } from '@forgeax/engine-rhi';
 type History = NonNullable<PipelineLibraryInspection['runtimeRequests']>;
 type PublicRequest = History['requests'][number];
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-export type CompilationRecord<P> = Mutable<Omit<PublicRequest, 'pipeline'>> & {
-  readonly program: P | undefined;
+export type CompilationRecord<P extends object> = Mutable<Omit<PublicRequest, 'pipeline'>> & {
+  readonly program: WeakRef<P> | undefined;
 };
 let nextLibraryId = 0;
 
 /** Runtime misses/demands only. Cache hits do not allocate; descriptors and WGSL
- * are never copied or hashed here. The existing library owns the Program. */
-export class PipelineCompilationRecords<P> {
+ * are never copied or hashed here. Weak references never make this history an additional GPU resource owner. */
+export class PipelineCompilationRecords<P extends object> {
   private readonly libraryId = ++nextLibraryId;
   private readonly rows: CompilationRecord<P>[] = [];
   private sequence = 0;
   private readonly capacity = 32;
 
   begin(
-    input: Omit<CompilationRecord<P>, 'sequence' | 'demandedAtMs' | 'completedAtMs' | 'outcome'>,
+    input: Omit<
+      CompilationRecord<P>,
+      'program' | 'sequence' | 'demandedAtMs' | 'completedAtMs' | 'outcome'
+    > & { readonly program: P | undefined },
   ): CompilationRecord<P> {
     const row: CompilationRecord<P> = {
       ...input,
+      program: input.program === undefined ? undefined : new WeakRef(input.program),
       sequence: ++this.sequence,
       demandedAtMs: performance.now(),
       completedAtMs: null,
@@ -42,7 +46,8 @@ export class PipelineCompilationRecords<P> {
     for (let sequence = first; sequence <= this.sequence; sequence++) {
       const row = this.rows[(sequence - 1) % this.capacity];
       if (row === undefined) continue;
-      const { program, ...metadata } = row;
+      const { program: reference, ...metadata } = row;
+      const program = reference?.deref();
       requests.push({
         ...metadata,
         pipeline: program === undefined ? null : pipeline(program, row),

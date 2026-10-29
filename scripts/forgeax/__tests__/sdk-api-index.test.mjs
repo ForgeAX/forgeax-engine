@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { API_INDEX_PATH, checkApiIndex, renderApiIndex } from '../sdk-api-index.mjs';
+import { checkApiIndex, renderApiIndex } from '../sdk-api-index.mjs';
 
 const root = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 
-test('committed API index matches the Engine sources', () => {
+test('generated API index validates Engine source signatures', () => {
   assert.deepEqual(checkApiIndex(), []);
 });
 
@@ -40,5 +41,18 @@ test('game onboarding links the API index', () => {
   for (const file of ['skills/forgeax-engine-sdk/SKILL.md', 'templates/AGENTS.md']) {
     assert.match(readFileSync(resolve(root, file), 'utf8'), /references\/api-index\.md/, file);
   }
-  assert.ok(API_INDEX_PATH.startsWith('skills/forgeax-engine-sdk/references/'));
+});
+
+test('an explicitly selected document must exist and match source generation', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'forgeax-api-index-'));
+  const file = resolve(directory, 'api-index.md');
+  try {
+    assert.match(checkApiIndex(file).join('\n'), /missing or stale/);
+    writeFileSync(file, renderApiIndex());
+    assert.deepEqual(checkApiIndex(file), []);
+    writeFileSync(file, '# Stale index');
+    assert.match(checkApiIndex(file).join('\n'), /missing or stale/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

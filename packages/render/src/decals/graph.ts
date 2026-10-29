@@ -5,7 +5,7 @@ import type {
   RenderGraphBuilder,
 } from '@forgeax/engine-render-graph';
 import type { BindGroup, BindGroupLayout, RenderPipeline } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-types';
+import { ok, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
@@ -234,7 +234,7 @@ export function addProjectedDecalPasses(
         if (source === undefined || factory === undefined)
           throw new ProjectedDecalInvalidError('shader', 'cooked decal projection shader');
         const module = factory
-          .createShaderModule({ code: source, label: 'forgeax::engine-decal-project' })
+          .createShaderModule(shaderSourceDescriptor(source, 'forgeax::engine-decal-project'))
           .unwrap();
         const layout = device
           .createBindGroupLayout({
@@ -376,7 +376,7 @@ export function addProjectedDecalPasses(
         if (source === undefined || factory === undefined)
           throw new ProjectedDecalInvalidError('shader', 'cooked decal composition shader');
         const module = factory
-          .createShaderModule({ code: source, label: 'forgeax::engine-decal-apply' })
+          .createShaderModule(shaderSourceDescriptor(source, 'forgeax::engine-decal-apply'))
           .unwrap();
         const layout = device
           .createBindGroupLayout({

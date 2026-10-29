@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { measureAllocations } from '../allocation_probe.mjs';
+import { measureAllocations, summarizeProbeProfile } from '../allocation_probe.mjs';
+import { heapNodes } from '../heap_profile.mjs';
 import {
   compareHeapProfiles,
   diffByteTables,
@@ -125,4 +126,34 @@ test('node allocation probe separates an allocating function from an allocation-
   assert.ok(allocating.bytesPerCall > 32, `allocating ${allocating.bytesPerCall}`);
   assert.ok(reused.bytesPerCall < 4, `reused ${reused.bytesPerCall}`);
   await assert.rejects(measureAllocations(() => 0, { calls: 0 }));
+});
+
+test('quarantines orphan sample identities only through explicit attribution handling', () => {
+  const profile = heap(1, 2);
+  profile.samples.push({ nodeId: 999, size: 64 });
+  assert.throws(() => heapNodes(profile), /Invalid heap sample/);
+  assert.equal(heapNodes(profile, { allowOrphanSamples: true }).length, 5);
+  profile.samples.push({ nodeId: 'invalid', size: 1 });
+  assert.throws(() => heapNodes(profile, { allowOrphanSamples: true }), /Invalid heap sample/);
+});
+
+test('includes an explicit target when an optimized marker disappears without counting inspector work', () => {
+  const url = 'file:///bench.mjs';
+  const profile = {
+    head: node(1, 0, frame('(root)'), [
+      node(2, 16, frame('__forgeaxAllocationProbe')),
+      node(3, 64, frame('snapshots', url)),
+      node(4, 1024, frame('post', 'node:inspector')),
+    ]),
+    samples: [
+      { nodeId: 2, size: 16, ordinal: 1 },
+      { nodeId: 3, size: 64, ordinal: 2 },
+      { nodeId: 4, size: 1024, ordinal: 3 },
+      { nodeId: 99, size: 8, ordinal: 4 },
+    ],
+  };
+  const report = summarizeProbeProfile(profile, { calls: 1, firstMeasuredOrdinal: 1, targetFrame: { url, functionName: 'snapshots' } });
+  assert.equal(report.attributedSampledBytes, 64);
+  assert.equal(report.unattributedSampledBytes, 8);
+  assert.equal(report.bytesPerCall, 72);
 });

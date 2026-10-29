@@ -10,12 +10,13 @@ adding a new package surface.
 > 你是 forgeax 引擎的**主用户**（AGENTS.md §Core rule）。本 rule 是**常驻路由**——按任务名挑一个 `forgeax-engine-*` skill load 其正文；它**不教 API**，API 教学在各 skill 正文。
 
 > [!IMPORTANT]
-> **不要预先 load 全 15 个 skill。** 上下文有限。任务来时按下表选 1 个 load；自然跨域才 load 第 2 个。skill 名字+description 已常驻。
+> Load the skill selected by the current task; add another only when evidence crosses an ownership boundary. Names and descriptions provide discovery without loading every skill.
 
 ## 任务 → skill 索引
 
 | 任务 | skill |
 |:--|:--|
+| Investigate consumer reports or conversation traces, establish Engine responsibility and improve supported paths | `forgeax-engine-evolve` |
 | 复杂或原因不明的渲染问题：黑屏/缺物体、光照/阴影、闪烁、后处理、浏览器/后端分歧 | **先读 `forgeax-engine-rhi-debug`**：真实失败帧 → work/binding/resource/像素证据 → owning subsystem；再按证据加载领域 skill |
 | WeChat Mini Game / official AI DevTools / simulator / login QR / native host | `forgeax-engine-wechat` |
 | Profile CPU/GPU costs, optimize preparation/material/shadow work, compare fixed workloads or contribute reusable performance tools | `forgeax-engine-performance` |
@@ -39,7 +40,7 @@ adding a new package surface.
 | Code-first GPU VFX source / WGSL hooks and imports / Pack v2 cook and GUID load / `ParticleEffectPlayer` / persistent GPU billboard or mesh output | `forgeax-engine-vfx`; add `forgeax-engine-assets` when changing shared Pack/catalog transport and `forgeax-engine-render-pipeline` when changing the generic RenderFeature graph seam |
 | inspector (JSON-RPC WS) / kubectl 式 CLI 子命令 | `forgeax-engine-cli` |
 | Saved Catmull-Rom paths / world-distance motion / camera rails / patrols / physics desired poses | `forgeax-engine-ecs` → `packages/path/README.md`; use `forgeax-engine-assets` for Pack/GUID delivery |
-| Graph/grid routes / static NavMesh baking and projection / local avoidance / physical character following | `forgeax-engine-navigation` |
+| Graph/grid routes / static NavMesh baking and projection / local avoidance / physical character following / wall overlap or obstacle avoidance | `forgeax-engine-navigation`; add `forgeax-engine-physics` when a solid body must collide |
 | RigidBody / Collider / PhysicsWorld (rapier 2D/3D) | `forgeax-engine-physics` |
 | AudioSource / AudioListener / bus 拓扑 | `forgeax-engine-audio` |
 | immediate-mode 调试可视化：line / sphere / aabb / frustum / arrow / axes | `forgeax-engine-debug-draw` |
@@ -49,7 +50,7 @@ adding a new package surface.
 | 状态机 / defineState / setNextState / 状态 scoped 实体 / OnEnter/OnExit | `forgeax-engine-state` |
 | 底层后端（贡献者）：opaque handle / capability / 双实现 | `forgeax-engine-rhi` |
 | 明确错误 / 测试 / CI 出错 — 症状索引与 owner 路由 | `forgeax-engine-debug`；复杂渲染问题优先上面的 RHI Debug 路径 |
-| Slow/flaky CI, changed-source focused reruns, or missing CI artifacts | `forgeax-engine-debug` → `scripts/ci/README.md` |
+| Slow/flaky CI, Browser test-work budgets or complete cost receipts, changed-source focused reruns, or missing CI artifacts | `forgeax-engine-debug` → `scripts/ci/README.md` |
 | RHI 录帧 / replay / 离线 per-draw inspect (capture→inspect→dispose) — 查 bindings+drawCall+RT PNG 定位渲染症状 | `forgeax-engine-rhi-debug` |
 
 聚合非 1:1 对包：`input` 折进 `app`,`pack` 折进 `assets`,`geometry` 折进 `material`。包名册全表：`AGENTS.md §Packages`。

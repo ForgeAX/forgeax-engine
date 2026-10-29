@@ -5,9 +5,8 @@
 // gather, which lets the guard band shrink from 2 to 1.25. Three.js
 // Lensflare (d3b629c0c2097cec664ad16369bb6eae3b10e335, MIT; see NOTICE)
 // supplies the mirrored ghost placement P * (1 - 2d).
-import { ok } from '@forgeax/engine-types';
 import { LENS_FLARE_GHOST_COUNT, type LensFlareSnapshot } from '../components/lens-flare';
-import type { RenderFeature, RenderFeatureFullscreenProgramDeclaration } from './types';
+import type { RenderFeatureFullscreenProgramDeclaration } from './types';
 
 export const LENS_FLARE_POST_PROCESS_ID = 'forgeax.lens-flare';
 export const LENS_FLARE_PREFILTER_ID = 'forgeax.lens-flare.prefilter';
@@ -153,32 +152,6 @@ export const LENS_FLARE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclara
     params: { byteSize: LENS_FLARE_PARAMS_BYTES, defaultValue: packLensFlareParams(undefined) },
   },
 ];
-
-/** Standard owns placement; the ordinary feature host owns shader preparation. */
-export function createLensFlareRenderFeature(): RenderFeature<readonly string[]> {
-  return {
-    identity: LENS_FLARE_POST_PROCESS_ID,
-    requiredCapabilities: ['rgba16floatRenderable'],
-    requiredFullscreenPostProcesses: LENS_FLARE_PROGRAMS.map((program) => ({
-      identity: program.name,
-      source: program.source,
-    })),
-    extract: (context) =>
-      ok(
-        context.views
-          .filter((view) => view.render && view.selectedCamera?.lensFlare !== undefined)
-          .map((view) => view.identity),
-      ),
-    plan: (views) =>
-      ok({
-        work: views.map((view) => ({
-          scope: { view },
-          resources: LENS_FLARE_PROGRAMS,
-          passes: [],
-        })),
-      }),
-  };
-}
 
 export function isLensFlarePostProcess(identity: string): boolean {
   return (

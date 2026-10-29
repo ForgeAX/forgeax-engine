@@ -18,7 +18,7 @@ omitted; the archive identity and owning UI Cargo lock are authoritative.
 ForgeaX uses `vello_gpu` with default features disabled and only `portable` enabled.
 It reuses the original scene, glyph, sparse-strip, layer allocation and filter
 scheduler. `src/portable.rs` projects the schedule and shader-ready bytes through
-the narrow [UI raster ABI](../rust/GPU-ABI.md). It imports no wgpu, WebGL, canvas,
+the narrow UI raster ABI. It imports no wgpu, WebGL, canvas,
 surface, device or command queue. `vello_common = 0.3.0`, `glifo = 0.4.0`,
 `peniko = 0.6.1` and `kurbo = 0.13.1` share the existing CPU UI release line.
 

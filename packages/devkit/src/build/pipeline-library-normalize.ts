@@ -1,22 +1,10 @@
 import { createHash } from 'node:crypto';
+import { pipelineDescriptorJson as identity } from '@forgeax/engine-types';
 import type { DevKitAppOptions } from '../plugin-build.js';
 
 type Manifest = NonNullable<DevKitAppOptions['pipelineLibrary']>;
 type Render = Manifest['renderPipelines'][number];
 type Compute = Manifest['computePipelines'][number];
-
-function identity(value: unknown): string {
-  return JSON.stringify(value, (_key, child: unknown) => {
-    if (typeof child === 'number' && !Number.isFinite(child))
-      throw new Error('Pipeline descriptor must contain finite values');
-    if (child === null || typeof child !== 'object' || Array.isArray(child)) return child;
-    return Object.fromEntries(
-      Object.keys(child)
-        .sort()
-        .map((key) => [key, (child as Record<string, unknown>)[key]]),
-    );
-  });
-}
 
 function semantic<T extends { label?: string }>(value: T): Omit<T, 'label'> {
   const { label: _label, ...rest } = value;

@@ -157,4 +157,14 @@ async function importAudio(ctx: ImportContext): Promise<ImportResult> {
 export const audioImporter: Importer = {
   key: 'audio',
   import: importAudio,
+  capabilities: {
+    sourceFormats: [
+      {
+        extensions: ['.wav', '.mp3', '.ogg', '.flac'],
+        kind: 'audio',
+        sourceKey: 'audio:audio',
+        importSettings: { playback: 'buffer' },
+      },
+    ],
+  },
 };

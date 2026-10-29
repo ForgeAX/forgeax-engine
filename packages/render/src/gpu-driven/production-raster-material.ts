@@ -16,7 +16,11 @@ import {
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
   STANDARD_TEXTURE_MASK_OVERRIDE,
 } from '@forgeax/engine-shader';
-import type { MaterialDynamicInputLayout, MaterialRenderState } from '@forgeax/engine-types';
+import type {
+  MaterialDynamicInputLayout,
+  MaterialRenderState,
+  ResultOk,
+} from '@forgeax/engine-types';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
 import { materialArtifactProgramIdentity } from '../assembly/material/artifact-program-identity';
 import type { MeshGpuHandles } from '../device/gpu-residency';
@@ -28,11 +32,12 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { materialColorTarget, materialDepthStencil } from '../material-render-state';
+import { materialVertexConstants } from '../material-stage-constants';
 import {
   createPbrSkinMeshBindGroupEntries,
   isCanonicalStandardPbrMaterialShader,
 } from '../pbr-pipeline';
-import { getOrCreateFromChainResult, packInstanceStorageBuffer } from '../record/mesh-ssbo';
+import { packInstanceStorageBuffer } from '../record/mesh-ssbo';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import type { SkinTaskBinding } from '../record/skin-tasks';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
@@ -471,7 +476,7 @@ export class MaterialAbiRasterAdapter {
     | {
         readonly transformBuffer: Buffer;
         readonly transformBytes: number;
-        readonly bindGroup: BindGroup;
+        readonly result: ResultOk<BindGroup>;
       }
     | undefined;
   private readonly pendingRetirements = new Set<Buffer>();
@@ -1761,13 +1766,14 @@ export class MaterialAbiRasterAdapter {
     const vertexLayout = deriveVertexBufferLayoutFromProjection(layoutProjection, {
       shaderUvSetCount: pipelineUvSetCount,
     })[0]!;
+    const vertexConstants = materialVertexConstants(constants);
     const pipeline = this.device.createRenderPipeline({
       label: `standard-pbr-gpu-driven.${key}`,
       layout: this.pipelineLayout,
       vertex: {
         module: program.module,
         entryPoint: selectedArtifact.vertexEntry ?? sceneEntry,
-        ...(constants === undefined ? {} : { constants }),
+        ...(vertexConstants === undefined ? {} : { constants: vertexConstants }),
         buffers: [
           {
             arrayStride: vertexLayout.arrayStride,
@@ -1816,8 +1822,10 @@ export class MaterialAbiRasterAdapter {
     this.pipelines.clear();
   }
 
-  private readonly skinMeshBindings = new WeakMap<object, unknown>();
-  private readonly skinMeshBindingCounts = { createBindGroup: 0, keys: [] as string[] };
+  private readonly skinMeshBindings = new WeakMap<
+    Buffer,
+    WeakMap<Buffer, WeakMap<Buffer, ResultOk<BindGroup>>>
+  >();
 
   /** Actual view task output is borrowed; neither a palette cache nor a pose revision. */
   sceneMeshBindGroup(
@@ -1834,19 +1842,28 @@ export class MaterialAbiRasterAdapter {
             hint: 'prepare Skin demand before binding this view for raster',
           }),
         );
-      this.skinMeshBindingCounts.keys.length = 0;
-      return getOrCreateFromChainResult(
-        this.skinMeshBindings,
-        [transformBuffer, task.data, task.auxiliary],
-        'skin-view',
-        () =>
-          this.device.createBindGroup({
-            label: 'standard-pbr-gpu-driven-skin-task-bg',
-            layout: this.meshLayout,
-            entries: createPbrSkinMeshBindGroupEntries(transformBuffer, transformBytes, task),
-          }),
-        this.skinMeshBindingCounts,
-      );
+      // Capture the same physical keys before any cache mutation or factory reads.
+      const data = task.data;
+      const auxiliary = task.auxiliary;
+      let dataBindings = this.skinMeshBindings.get(transformBuffer);
+      if (dataBindings === undefined) {
+        dataBindings = new WeakMap();
+        this.skinMeshBindings.set(transformBuffer, dataBindings);
+      }
+      let auxiliaryBindings = dataBindings.get(data);
+      if (auxiliaryBindings === undefined) {
+        auxiliaryBindings = new WeakMap();
+        dataBindings.set(data, auxiliaryBindings);
+      }
+      const cached = auxiliaryBindings.get(auxiliary);
+      if (cached !== undefined) return cached;
+      const created = this.device.createBindGroup({
+        label: 'standard-pbr-gpu-driven-skin-task-bg',
+        layout: this.meshLayout,
+        entries: createPbrSkinMeshBindGroupEntries(transformBuffer, transformBytes, task),
+      });
+      if (created.ok) auxiliaryBindings.set(auxiliary, Object.freeze(ok(created.value)));
+      return created;
     }
     const cached = this.sceneMeshBinding;
     if (
@@ -1854,14 +1871,18 @@ export class MaterialAbiRasterAdapter {
       cached.transformBuffer === transformBuffer &&
       cached.transformBytes === transformBytes
     )
-      return ok(cached.bindGroup);
+      return cached.result;
     const bindGroup = this.device.createBindGroup({
       label: 'standard-pbr-gpu-driven-scene-mesh-bg',
       layout: this.meshLayout,
       entries: [{ binding: 0, resource: bufferBinding(transformBuffer, 0, transformBytes) }],
     });
     if (!bindGroup.ok) return bindGroup;
-    this.sceneMeshBinding = { transformBuffer, transformBytes, bindGroup: bindGroup.value };
+    this.sceneMeshBinding = {
+      transformBuffer,
+      transformBytes,
+      result: Object.freeze(ok(bindGroup.value)),
+    };
     return ok(bindGroup.value);
   }
 

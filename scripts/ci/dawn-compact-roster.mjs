@@ -41,7 +41,6 @@ export const DAWN_COMPACT_TEST_FILES = Object.freeze([
   'packages/runtime/src/__tests__/fxaa-pixel-diff.dawn.test.ts',
   'packages/runtime/src/__tests__/video-extract-bindgroup.dawn.test.ts',
   'packages/runtime/src/__tests__/dawn/instances-shadow.dawn.test.ts',
-  'packages/runtime/src/__tests__/dawn/nested-discard-pixels.dawn.test.ts',
   'packages/runtime/src/__tests__/opaque-fog-flag.dawn.test.ts',
   'packages/runtime/src/__tests__/msaa-sprite-pixel-diff.dawn.test.ts',
   'packages/runtime/src/__tests__/transform-hierarchy-pixel-diff.dawn.test.ts',

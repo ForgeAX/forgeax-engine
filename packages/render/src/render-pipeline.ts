@@ -1,4 +1,3 @@
-import type { MaterialResource } from './material-resource';
 // @forgeax/engine-render - typed render-pipeline topology contract.
 //
 // `RenderPipeline` is the typed topology contribution used by the Standard host.
@@ -579,7 +578,7 @@ export interface GpuDrivenStandardPbrFrameResources {
     slot: number,
   ): { readonly group: BindGroup; readonly byteOffset: number } | undefined;
   /** Frame-global material slots keyed by shared binding and its physical resource class. */
-  readonly materialSlotIndicesByBinding: Map<MaterialResource, Map<string, number>>;
+  materialSlotIndicesByBinding: import('./record/fold-buckets').MaterialBindingSlots;
   /** The current pass selects material membership and attachment formats. */
   selectedMaterialSlots?: ReadonlySet<number>;
   colorFormats?: readonly TextureFormat[];

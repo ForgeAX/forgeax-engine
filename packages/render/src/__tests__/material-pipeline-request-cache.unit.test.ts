@@ -37,6 +37,7 @@ describe('material pipeline requests', () => {
   it('retains prepared layouts by artifact and generation before parsing their source', () => {
     let sourceReads = 0;
     const artifact = {
+      program: { identity: 'admitted-source-identity' },
       get source() {
         sourceReads++;
         return '';
@@ -65,7 +66,7 @@ describe('material pipeline requests', () => {
     const first = cache.getOrBuildPreparedMaterialPipelineLayout('forgeax::default-unlit');
     expect(cache.getOrBuildPreparedMaterialPipelineLayout('forgeax::default-unlit')).toBe(first);
     expect(builds).toBe(1);
-    expect(sourceReads).toBe(2); // Cold prepared and material layout reads only.
+    expect(sourceReads).toBe(0); // Layouts keep admitted identity, including the first cold selection.
     state = {
       preparedMaterialPipelineLayoutCache: new Map(),
       perShaderMaterialLayoutCache: new Map(),
@@ -74,6 +75,7 @@ describe('material pipeline requests', () => {
       first,
     );
     expect(builds).toBe(2);
+    expect(sourceReads).toBe(0);
   });
   it('normalizes freshly allocated constants and attachment arrays without hiding value edits', () => {
     const cache = new MaterialPipelineRequestCache<object>();

@@ -7,7 +7,8 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok, type RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderManifestEntry, ShaderRegistry } from '@forgeax/engine-shader';
-import type { ManifestEntry } from '@forgeax/engine-types';
+import { materialShaderSource } from '@forgeax/engine-shader';
+import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
@@ -23,6 +24,7 @@ import {
 } from '../pbr-pipeline';
 import type { RhiBackendPack } from './backend-contract';
 import { assembleStandardPbrArtifact } from './material/assembly';
+import type { SeedShaderModule } from './material-shader-policy';
 import {
   invokeDeviceCreateShaderModule,
   prepareLowLimitMaterialShaderEntry,
@@ -70,18 +72,19 @@ interface GpuDrivenPbrModuleInput {
   readonly extendedLightingShaderAvailable: boolean;
   readonly directionalPcssAvailable: boolean;
   readonly projectorAvailable: boolean;
-  readonly seedShaderModule: (label: string, module: ShaderModule) => void;
+  readonly seedShaderModule: SeedShaderModule;
   readonly admitsVariant: VariantPrewarmAdmission;
 }
 
 function createShader(
   input: Pick<GpuDrivenPbrModuleInput, 'device' | 'asyncCreateShaderModule'>,
-  code: string,
+  code: string | ShaderSource,
   label: string,
 ): Promise<Result<ShaderModule, RhiError>> {
+  const descriptor = typeof code === 'string' ? { code, label } : code.descriptor(label);
   return input.asyncCreateShaderModule
-    ? input.asyncCreateShaderModule(input.device, { code, label })
-    : Promise.resolve(invokeDeviceCreateShaderModule(input.device, { code, label }));
+    ? input.asyncCreateShaderModule(input.device, descriptor)
+    : Promise.resolve(invokeDeviceCreateShaderModule(input.device, descriptor));
 }
 
 export async function buildGpuDrivenPbrReadyModules(
@@ -98,7 +101,11 @@ export async function buildGpuDrivenPbrReadyModules(
     );
     if (!result.ok) throw result.error;
     pbrSkinModule = result.value;
-    input.seedShaderModule(`module-${SKIN_MATERIAL_SHADER_ID}`, pbrSkinModule);
+    input.seedShaderModule(
+      `module-${SKIN_MATERIAL_SHADER_ID}`,
+      pbrSkinModule,
+      input.pbrSkinEntry.wgsl,
+    );
   }
   if (
     input.storageBufferCapable &&
@@ -112,7 +119,7 @@ export async function buildGpuDrivenPbrReadyModules(
       'inspect the GPU-driven view compute WGSL and check device.features',
     );
     if (!result.ok) throw result.error;
-    input.seedShaderModule('gpu-driven-view', result.value);
+    input.seedShaderModule('gpu-driven-view', result.value, GPU_DRIVEN_VIEW_WGSL);
   }
   if (input.storageBufferCapable) {
     for (const [materialId, entry] of [
@@ -136,21 +143,21 @@ export async function buildGpuDrivenPbrReadyModules(
         const artifact = assembleStandardPbrArtifact(
           materialId,
           input.registry.materialProgram(
-            variant.composedWgsl,
+            materialShaderSource(variant),
             variant.entryPoints ?? variant.receipt?.entryPoints,
           ),
           color,
         );
         if (key === undefined || artifact === undefined) continue;
         const result = await runShimStep(
-          () => createShader(input, artifact.program.source, `gpu-driven-${key}`),
+          () => createShader(input, artifact.program.sourceReference, `gpu-driven-${key}`),
           'shader-compile-failed',
           'GPU-driven Standard PBR program compiled',
           'inspect the selected scene-index and vertex-color variant with its slot-3 ABI',
         );
         if (!result.ok) throw result.error;
         gpuDrivenPbrPrograms.set(key, { module: result.value, artifact });
-        input.seedShaderModule(`gpu-driven-${key}`, result.value);
+        input.seedShaderModule(`gpu-driven-${key}`, result.value, artifact.program.sourceReference);
         // The raster adapter resolves this same variant through the lazy
         // material label. Seed it so the first GPU-driven frame never waits on
         // a pending module, unless the adapter would compile a patched source.
@@ -160,7 +167,11 @@ export async function buildGpuDrivenPbrReadyModules(
           input.device.limits.maxSampledTexturesPerShaderStage,
         ).source;
         if (adapterSource === source)
-          input.seedShaderModule(`module-${materialId}#${variant.definesKey}`, result.value);
+          input.seedShaderModule(
+            `module-${materialId}#${variant.definesKey}`,
+            result.value,
+            artifact.program.sourceReference,
+          );
       }
     }
   }
@@ -193,15 +204,15 @@ export async function buildGpuDrivenPbrReadyModules(
       ),
       (variant, label) =>
         runShimStep(
-          () => createShader(input, variant.composedWgsl, label),
+          () => createShader(input, materialShaderSource(variant), label),
           'shader-compile-failed',
           `pbr-skin variant ${variant.definesKey || '<default>'} compiled`,
           'inspect the selected pbr-skin storage/cluster/color variant and device.features',
         ),
-      (label, module) => {
-        input.seedShaderModule(label, module);
+      (label, module, source) => {
+        input.seedShaderModule(label, module, source);
         if (label === `module-${SKIN_MATERIAL_SHADER_ID}#`)
-          input.seedShaderModule(`module-${SKIN_MATERIAL_SHADER_ID}`, module);
+          input.seedShaderModule(`module-${SKIN_MATERIAL_SHADER_ID}`, module, source);
       },
       input.admitsVariant,
     );

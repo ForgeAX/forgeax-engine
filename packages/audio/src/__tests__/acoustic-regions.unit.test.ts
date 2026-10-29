@@ -416,3 +416,46 @@ it('samples only selected playing voices when 1000 inactive assets share a regio
     assets.dispose();
   }
 });
+
+it('reuses accepted semantic region facts until declaration or pose changes, and rejects removed pose', () => {
+  const world = new World();
+  const backend = audio.createAudioIntentBackend({ emit() {} });
+  const region = world
+    .spawn(
+      { component: audio.AcousticRegion, data: { sourceBus: 'cached-room' } },
+      { component: GlobalTransform, data: { world: identity() } },
+    )
+    .unwrap();
+  const system = audio.createAcousticRegionSystem();
+  system.update(world, backend).unwrap();
+  const read = vi.spyOn(world, 'get');
+  try {
+    for (let frame = 0; frame < 3; frame++) system.update(world, backend).unwrap();
+    expect(
+      read.mock.calls.filter(([, component]) => component === audio.AcousticRegion),
+    ).toHaveLength(0);
+    world.set(region, audio.AcousticRegion, { sourceBus: 'edited-room' }).unwrap();
+    system.update(world, backend).unwrap();
+    expect(
+      read.mock.calls.filter(([, component]) => component === audio.AcousticRegion),
+    ).toHaveLength(1);
+    const moved = identity();
+    moved[12] = 3;
+    world.set(region, GlobalTransform, { world: moved }).unwrap();
+    system.update(world, backend).unwrap();
+    expect(
+      read.mock.calls.filter(([, component]) => component === audio.AcousticRegion),
+    ).toHaveLength(2);
+    world.removeComponent(region, GlobalTransform).unwrap();
+    expect(system.update(world, backend)).toMatchObject({
+      ok: false,
+      error: { code: 'control-failed' },
+    });
+    world
+      .addComponent(region, { component: GlobalTransform, data: { world: identity() } })
+      .unwrap();
+    expect(system.update(world, backend).ok).toBe(true);
+  } finally {
+    read.mockRestore();
+  }
+});

@@ -1,5 +1,9 @@
 # @forgeax/engine-image
 
+## Source registration
+
+`imageImporter.capabilities.sourceFormats` owns the single-output authoring contract consumed by DevKit. PNG/JPEG produce Texture, HDR produces Equirect, and Cube LUT, Basis/KTX2 and `.texture.json` produce Texture. The importer uses the same format declarations for output-kind admission. Existing sidecars retain their GUID, sourceKey and settings; registration does not decode or prove a successful cook.
+
 Texture source descriptors derive layout, format, color space and mip policy from `TextureAsset`, with source version and sibling path kept local. `PixelSurface` and its construction options derive image metadata from `DecodedImage`; Image owns mutable pixel bytes and painting operations.
 
 ## 3D density source contract

@@ -1,4 +1,5 @@
 import { componentDefinition, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 // @forgeax/engine-physics-rapier2d — RapierPhysicsWorld2D class and three-phase
 // tick systems (syncBackend / stepSimulation / writeback).
 //
@@ -35,10 +36,9 @@ import {
   RigidBodyTypeValue,
   registerPhysicsComponents,
   rigidBodyTypeFromF32,
-  snapshotCollider,
   validateAdditionalSolverIterations,
 } from '@forgeax/engine-physics';
-import { ChildOf, GlobalTransform } from '@forgeax/engine-scene';
+import { ChildOf, GlobalTransform, type Transform } from '@forgeax/engine-scene';
 import type { Rapier2DModule } from './wasm-loader';
 
 interface Rapier2DKinematicControllerState {
@@ -930,7 +930,7 @@ export function createRapier2DPhysicsWorld(rapier: Rapier2DModule): RapierPhysic
   return new RapierPhysicsWorld2D(rapier);
 }
 
-function hasResolvedWorldPose(world: Float32Array | undefined, base: number): boolean {
+function hasResolvedWorldPose(world: ArrayLike<number> | undefined, base: number): boolean {
   if (!world) return false;
   return (
     world[base] !== 1 ||
@@ -987,8 +987,8 @@ const PHYSICS_COLLISION_SYNC_2D = 'physicsCollisionSync2D' as const;
  * introduces no new dependency and replaces the closure-captured
  * `transformComponent` second parameter.
  */
-function resolveTransform(world: World): Component | undefined {
-  return world.components.resolve('Transform');
+function resolveTransform(world: World): typeof Transform | undefined {
+  return world.components.resolve('Transform') as typeof Transform | undefined;
 }
 
 /**
@@ -1007,7 +1007,9 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
   after: ['propagateTransformsFixed'],
   fn: (world) => {
     const transformComponent = resolveTransform(world);
-    const globalTransformComponent = world.components.resolve('GlobalTransform');
+    const globalTransformComponent = world.components.resolve('GlobalTransform') as
+      | typeof GlobalTransform
+      | undefined;
     if (transformComponent === undefined || globalTransformComponent === undefined) return;
     let pw: RapierPhysicsWorld2D;
     try {
@@ -1023,71 +1025,45 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
     if (!queryResult.ok) return;
 
     const activeEntities = new Set<number>();
-    for (const queryRow of queryResult.value) {
-      const rowView = queryRow as unknown as {
-        readonly entity: EntityHandle;
-        has(component: Component): boolean;
-        get(component: Component): Record<string, unknown>;
-      };
-      const colliderData = rowView.get(Collider) as unknown as ColliderData;
-      const transformData = rowView.get(transformComponent) as unknown as {
-        pos: Float32Array;
-        quat: Float32Array;
-        scale: Float32Array;
-      };
-      const globalTransformData = rowView.get(globalTransformComponent) as unknown as {
-        world: Float32Array;
-      };
-      const rigidBodyData = rowView.has(RigidBody)
-        ? (rowView.get(RigidBody) as unknown as {
-            type: number;
-            mass: number;
-            linearDamping: number;
-            angularDamping: number;
-            gravityScale: number;
-            ccdEnabled: number;
-            lockRotation?: boolean;
-            additionalSolverIterations: number;
-          })
-        : undefined;
-      const hasCharacterController = rowView.has(CharacterController);
-      const rbType =
-        rigidBodyData === undefined ? undefined : new Float32Array([rigidBodyData.type]);
-      const rbMass =
-        rigidBodyData === undefined ? undefined : new Float32Array([rigidBodyData.mass]);
-      const rbLinDamp =
-        rigidBodyData === undefined ? undefined : new Float32Array([rigidBodyData.linearDamping]);
-      const rbAngDamp =
-        rigidBodyData === undefined ? undefined : new Float32Array([rigidBodyData.angularDamping]);
-      const rbGravScale =
-        rigidBodyData === undefined ? undefined : new Float32Array([rigidBodyData.gravityScale]);
-      const rbCcd =
-        rigidBodyData === undefined ? undefined : new Uint32Array([rigidBodyData.ccdEnabled]);
-      const tfPos = transformData.pos;
-      const tfQuat = transformData.quat;
-      const tfScale = transformData.scale;
-      const tfWorld = globalTransformData.world;
-
-      // rb* views are intentionally NOT guarded here: a bare-Collider archetype
-      // has no RigidBody column, so they are legitimately undefined and the
-      // per-row rigidBody below falls back to a static default. Only the
-      // Transform columns are required; Collider is a required query term.
-      if (!tfPos || !tfQuat || !tfScale) {
-        continue;
-      }
-
-      {
-        const row = 0;
-        const entity = rowView.entity;
+    const read = world[worldRead];
+    for (const batch of queryResult.value.batches().unwrap()) {
+      const entities = batch.entities;
+      const selected = batch.kind === 'indexed' ? batch.rows : undefined;
+      const first = batch.kind === 'range' ? batch.start : 0;
+      const tfPos = batch.read(transformComponent, 'pos');
+      const tfQuat = batch.read(transformComponent, 'quat');
+      const tfScale = batch.read(transformComponent, 'scale');
+      const tfWorld = batch.read(globalTransformComponent, 'world');
+      const halfExtents = batch.read(Collider, 'halfExtents');
+      const colliderShape = batch.read(Collider, 'shape');
+      const colliderRadius = batch.read(Collider, 'radius');
+      const colliderHalfHeight = batch.read(Collider, 'halfHeight');
+      const colliderFriction = batch.read(Collider, 'friction');
+      const colliderRestitution = batch.read(Collider, 'restitution');
+      const colliderDensity = batch.read(Collider, 'density');
+      const colliderIsSensor = batch.read(Collider, 'isSensor');
+      const colliderCollisionGroups = batch.read(Collider, 'collisionGroups');
+      const colliderSolverGroups = batch.read(Collider, 'solverGroups');
+      const rbType = batch.read(RigidBody, 'type');
+      const rbMass = batch.read(RigidBody, 'mass');
+      const rbLinearDamping = batch.read(RigidBody, 'linearDamping');
+      const rbAngularDamping = batch.read(RigidBody, 'angularDamping');
+      const rbGravityScale = batch.read(RigidBody, 'gravityScale');
+      const rbCcdEnabled = batch.read(RigidBody, 'ccdEnabled');
+      const rbLockRotation = batch.read(RigidBody, 'lockRotation');
+      const rbAdditionalSolverIterations = batch.read(RigidBody, 'additionalSolverIterations');
+      for (let ordinal = 0; ordinal < batch.count; ordinal++) {
+        const row = selected === undefined ? first + ordinal : (selected[ordinal] as number);
+        const entity = entities[row] as EntityHandle;
         activeEntities.add(entity);
-
+        const hasCharacterController = world.hasComponent(entity, CharacterController);
         const localBase = row * 3;
         const quatBase = row * 4;
         const worldBase = row * 16;
         const useWorldPose = hasResolvedWorldPose(tfWorld, worldBase);
         if (useWorldPose && tfWorld) {
           for (let lane = 0; lane < 16; lane++) {
-            poseScratchWorld2D[lane] = tfWorld[worldBase + lane] ?? 0;
+            poseScratchWorld2D[lane] = tfWorld[worldBase + lane] as number;
           }
           mat4.decompose(
             poseScratchPosition2D,
@@ -1096,16 +1072,16 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
             poseScratchWorld2D,
           );
         } else {
-          poseScratchPosition2D[0] = tfPos[localBase] ?? 0;
-          poseScratchPosition2D[1] = tfPos[localBase + 1] ?? 0;
-          poseScratchPosition2D[2] = tfPos[localBase + 2] ?? 0;
-          poseScratchRotation2D[0] = tfQuat[quatBase] ?? 0;
-          poseScratchRotation2D[1] = tfQuat[quatBase + 1] ?? 0;
-          poseScratchRotation2D[2] = tfQuat[quatBase + 2] ?? 0;
-          poseScratchRotation2D[3] = tfQuat[quatBase + 3] ?? 1;
-          poseScratchScale2D[0] = tfScale[localBase] ?? 1;
-          poseScratchScale2D[1] = tfScale[localBase + 1] ?? 1;
-          poseScratchScale2D[2] = tfScale[localBase + 2] ?? 1;
+          poseScratchPosition2D[0] = tfPos[localBase] as number;
+          poseScratchPosition2D[1] = tfPos[localBase + 1] as number;
+          poseScratchPosition2D[2] = tfPos[localBase + 2] as number;
+          poseScratchRotation2D[0] = tfQuat[quatBase] as number;
+          poseScratchRotation2D[1] = tfQuat[quatBase + 1] as number;
+          poseScratchRotation2D[2] = tfQuat[quatBase + 2] as number;
+          poseScratchRotation2D[3] = tfQuat[quatBase + 3] as number;
+          poseScratchScale2D[0] = tfScale[localBase] as number;
+          poseScratchScale2D[1] = tfScale[localBase + 1] as number;
+          poseScratchScale2D[2] = tfScale[localBase + 2] as number;
         }
         const transform: PhysicsTransform2D = {
           position: { x: poseScratchPosition2D[0] ?? 0, y: poseScratchPosition2D[1] ?? 0 },
@@ -1126,28 +1102,45 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
           ccdEnabled: number;
           lockRotation?: boolean;
           additionalSolverIterations?: number;
-        } = rbType
-          ? {
-              type: rbType[row] as number,
-              mass: (rbMass?.[row] ?? 0) as number,
-              linearDamping: (rbLinDamp?.[row] ?? 0) as number,
-              angularDamping: (rbAngDamp?.[row] ?? 0) as number,
-              gravityScale: (rbGravScale?.[row] ?? 1) as number,
-              ccdEnabled: (rbCcd?.[row] ?? 0) as number,
-              lockRotation: Boolean(rigidBodyData?.lockRotation),
-              additionalSolverIterations: rigidBodyData?.additionalSolverIterations ?? 0,
-            }
-          : {
-              type: RigidBodyTypeValue.static,
-              mass: 0,
-              linearDamping: 0,
-              angularDamping: 0,
-              gravityScale: 1,
-              ccdEnabled: 0,
-              lockRotation: false,
-            };
+        } =
+          rbType !== undefined
+            ? {
+                type: rbType?.[row] as number,
+                mass: rbMass?.[row] as number,
+                linearDamping: rbLinearDamping?.[row] as number,
+                angularDamping: rbAngularDamping?.[row] as number,
+                gravityScale: rbGravityScale?.[row] as number,
+                ccdEnabled: rbCcdEnabled?.[row] as number,
+                lockRotation: rbLockRotation?.[row] === 1,
+                additionalSolverIterations: rbAdditionalSolverIterations?.[row] as number,
+              }
+            : {
+                type: RigidBodyTypeValue.static,
+                mass: 0,
+                linearDamping: 0,
+                angularDamping: 0,
+                gravityScale: 1,
+                ccdEnabled: 0,
+                lockRotation: false,
+              };
 
-        const collider = snapshotCollider(colliderData);
+        const collider: ColliderSnapshot = {
+          mesh: read.getFieldValue(entity, Collider, 'mesh') as ColliderData['mesh'],
+          halfExtents: [
+            halfExtents[localBase] as number,
+            halfExtents[localBase + 1] as number,
+            halfExtents[localBase + 2] as number,
+          ],
+          shape: colliderShape[row] as number,
+          radius: colliderRadius[row] as number,
+          halfHeight: colliderHalfHeight[row] as number,
+          friction: colliderFriction[row] as number,
+          restitution: colliderRestitution[row] as number,
+          density: colliderDensity[row] as number,
+          isSensor: colliderIsSensor[row] === 1,
+          collisionGroups: colliderCollisionGroups[row] as number,
+          solverGroups: colliderSolverGroups[row] as number,
+        };
 
         pw.ensureBody(entity, transform, rigidBody, collider);
 

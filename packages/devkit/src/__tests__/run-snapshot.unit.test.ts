@@ -518,7 +518,7 @@ it('copies a linked package payload without its repository fixtures', async () =
 });
 
 it('identifies changing inputs after exhausting stable snapshot retries', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'engine-snapshot-changing-tree-'));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'engine-snapshot-changing-tree-')));
   const project = join(directory, 'project');
   const output = join(directory, 'snapshot');
   try {
@@ -1447,6 +1447,31 @@ it.each([
             : 'project-workspace-package-mismatch',
       });
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('doctor ignores project output churn while retaining dependency proofs', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'doctor-project-output-'));
+  try {
+    const { project, engine } = await createStrictProject(directory);
+    const inspected = await inspectEngineWorkspace(engine);
+    if (!inspected.ok) throw inspected.error;
+    const output = join(project, '.assetlib/staging');
+    await mkdir(output, { recursive: true });
+    snapshotTreeMutation.path = join(project, 'package.json');
+    snapshotTreeMutation.directory = output;
+    snapshotTreeMutation.reads = 0;
+    await inspectRunDependencyClosure(
+      project,
+      { schemaVersion: '1.0.0', path: await realpath(engine) },
+      inspected.value.digest,
+      '11.7.0',
+    );
+    expect(snapshotTreeMutation.reads).toBeGreaterThan(0);
+  } finally {
+    snapshotTreeMutation.path = '';
+    snapshotTreeMutation.directory = '';
     await rm(directory, { recursive: true, force: true });
   }
 });

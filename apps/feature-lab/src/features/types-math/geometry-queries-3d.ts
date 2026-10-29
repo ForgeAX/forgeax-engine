@@ -11,13 +11,13 @@ export default defineFeature({
     'All checks pass: hits and misses, entry distances, barycentrics, and frustum culling match hand-computed values.',
   run(checks) {
     const unit = box3.create(-1, -1, -1, 1, 1, 1);
-    const r = ray.create(undefined, [0, 0, 5], [0, 0, -1]);
+    const r = ray.create(new Float32Array(6), [0, 0, 5], [0, 0, -1]);
     const hit = ray.rayAabbIntersects(r, unit);
     checks.ok('ray hits unit box', hit.hit);
     checks.near('entry distance 4', hit.tmin, 4);
     checks.ok(
       'parallel offset ray misses',
-      !ray.rayAabbIntersects(ray.create(undefined, [3, 0, 5], [0, 0, -1]), unit).hit,
+      !ray.rayAabbIntersects(ray.create(new Float32Array(6), [3, 0, 5], [0, 0, -1]), unit).hit,
     );
 
     const tri = ray.rayTriangleIntersects(r, [-1, -1, 0], [1, -1, 0], [0, 1, 0]);
@@ -52,7 +52,7 @@ export default defineFeature({
     );
     checks.ok('frustum culls sphere far left', !frustum.intersectsSphere(f, [-100, 0, 0], 1));
 
-    const center = ray.screenToRay(ray.create(), 50, 50, 100, 100, view, proj);
+    const center = ray.screenToRay(ray.create(new Float32Array(6)), 50, 50, 100, 100, view, proj);
     checks.near('center pixel ray points -Z', center[5] as number, -1, 1e-4);
     const screen = vec2.create();
     const projected = ray.worldToScreen(screen, [0, 0, 0], vp, 100, 100);

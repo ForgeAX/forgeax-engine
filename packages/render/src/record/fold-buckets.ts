@@ -89,6 +89,9 @@ export interface MaterialBinding {
   readonly entityKey?: number;
 }
 
+/** Canonical lookup of the slots in one accepted material table. */
+export type MaterialBindingSlots = ReadonlyMap<MaterialResource, ReadonlyMap<string, number>>;
+
 export interface MaterialSlotPlan<T extends object> {
   readonly slotIndices: readonly (readonly number[])[];
   readonly slots: readonly T[];
@@ -329,6 +332,7 @@ export function buildDispatchPlan(
   materialSlotIndices: readonly (readonly number[])[];
   materialSlots: readonly MaterialSnapshot[];
   materialBindings: readonly MaterialBinding[];
+  materialBindingSlots: MaterialBindingSlots;
   materialSlotCount: number;
 } {
   meshDraws?.beginMeshDrawFrame([...validated, ...shadowValidated].map((row) => row.source));
@@ -350,6 +354,7 @@ export function buildDispatchPlan(
       materialSlotIndices: [],
       materialSlots: [],
       materialBindings: [],
+      materialBindingSlots: EMPTY_BINDING_SLOTS,
       materialSlotCount: 0,
     };
   }
@@ -432,6 +437,7 @@ export function buildDispatchPlan(
     materialSlotIndices: materials.slotIndices,
     materialSlots: materials.slots,
     materialBindings: materials.bindings,
+    materialBindingSlots: materials.bindingSlots,
     materialSlotCount: materials.slotCount,
   };
 }
@@ -442,13 +448,16 @@ type SharedMaterialFrame = {
   readonly frame: MaterialFrame;
 };
 
+const EMPTY_BINDING_SLOTS: MaterialBindingSlots = new Map();
+
 type MeshDrawRoster = PersistentShadowCasterProjection['meshDraws'];
 
 /** The frame-local material UBO table, truncated in step with its rows. */
 interface MaterialTable {
   slotIndices: readonly (readonly number[])[];
-  slots: MaterialSnapshot[];
-  bindings: MaterialBinding[];
+  slots: readonly MaterialSnapshot[];
+  bindings: readonly MaterialBinding[];
+  bindingSlots: MaterialBindingSlots;
   slotCount: number;
 }
 
@@ -568,6 +577,7 @@ function buildMaterialTable(
     };
   });
   const table = {
+    bindingSlots: materialSlotsByClass(bindings),
     slotIndices: materialSlotPlan.slotIndices,
     slots,
     bindings,
@@ -578,7 +588,7 @@ function buildMaterialTable(
 }
 
 /** Slot index of each (material, resource class) pair already in the table. */
-function materialSlotsByClass(
+export function materialSlotsByClass(
   bindings: readonly MaterialBinding[],
 ): Map<MaterialResource, Map<string, number>> {
   const slots = new Map<MaterialResource, Map<string, number>>();
@@ -599,7 +609,9 @@ function appendSharedMaterialBindings(
   table: MaterialTable,
   sharedMaterials: SharedMaterialFrame,
 ): void {
-  const slots = materialSlotsByClass(table.bindings);
+  const slots = table.bindingSlots as Map<MaterialResource, Map<string, number>>;
+  const snapshots = table.slots as MaterialSnapshot[];
+  const bindings = table.bindings as MaterialBinding[];
   for (const binding of sharedMaterials.bindings) {
     let classes = slots.get(binding.material);
     if (classes?.has(binding.resourceClass)) continue;
@@ -615,8 +627,8 @@ function appendSharedMaterialBindings(
         hint: 'keep prepared World indices aligned with the frame resource scopes',
       });
     classes.set(binding.resourceClass, table.slots.length);
-    table.slots.push(acceptedMaterialSnapshot(binding.material, sharedMaterials));
-    table.bindings.push({
+    snapshots.push(acceptedMaterialSnapshot(binding.material, sharedMaterials));
+    bindings.push({
       material: binding.material,
       resourceClass: binding.resourceClass,
       world,
@@ -678,6 +690,7 @@ function truncateToDegradedCapacity(
     );
   materials.slots = materials.slots.slice(0, materials.slotCount);
   materials.bindings = materials.bindings.slice(0, materials.slotCount);
+  materials.bindingSlots = materialSlotsByClass(materials.bindings);
   return { primaryCount: retainedPrimaryCount, shadowCount: retainedShadowCount };
 }
 

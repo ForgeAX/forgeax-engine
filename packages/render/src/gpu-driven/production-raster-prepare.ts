@@ -365,6 +365,20 @@ export function groupForPartition(
   };
 }
 
+function filteredMaterialBindings(batches: readonly PreparedBatch[]) {
+  return Object.freeze(
+    batches.map(({ batch, materialBindingClass }) => {
+      const binding = batch.binding;
+      if (binding === undefined) throw new Error('Prepared batch has no shared material binding');
+      return Object.freeze({
+        material: binding.material,
+        worldId: binding.worldId,
+        resourceClass: materialBindingClass,
+      });
+    }),
+  );
+}
+
 export function assembleFilteredGroups(
   source: SubmissionPlan,
   batches: readonly PreparedBatch[],
@@ -401,9 +415,15 @@ export function assembleFilteredGroups(
     visibleCapacity,
   });
   const plan = fixedMembership ? fixedTaskPlan(captured) : captured;
+  const ownedBatches = Object.freeze([...batches]);
+  let materialBindings: ReturnType<typeof filteredMaterialBindings> | undefined;
   return {
     plan,
-    batches: Object.freeze([...batches]),
+    batches: ownedBatches,
+    get materialBindings() {
+      materialBindings ??= filteredMaterialBindings(ownedBatches);
+      return materialBindings;
+    },
     materialBatches: Object.freeze([...materialBatches.values()]),
     selection: new GpuDrawSelection(batches.map((batch) => batch.batch)),
   };
@@ -595,26 +615,6 @@ export function sameMaterialArtifact(
   );
 }
 
-export function shadowArtifactSignature(
-  artifact: MaterialShaderArtifact | undefined,
-): string | undefined {
-  if (artifact === undefined) return undefined;
-  return JSON.stringify([
-    artifact.material,
-    artifact.pass,
-    artifact.layoutIdentity,
-    artifact.receipt?.receiptIdentity ?? '',
-    artifact.receipt?.generation ?? 0,
-    artifact.variantSet ?? '',
-    materialArtifactProgramIdentity(artifact),
-    artifact.receipt?.sceneIndexEntry ?? '',
-    artifact.vertexEntry ?? artifact.receipt?.sceneIndexEntry ?? '',
-    artifact.fragmentEntry ?? '',
-    artifact.uvSetCount ?? -1,
-    artifact.reflectionFallbackOutputAvailable === true,
-  ]);
-}
-
 export class BatchPreparation {
   readonly batches = new Map<
     number,
@@ -646,4 +646,25 @@ export class BatchPreparation {
         readonly inputs?: PreparedAssemblyInputs;
       }
     | undefined;
+}
+
+/** Current artifact facts use the original canonical signature. */
+export function shadowArtifactSignature(
+  artifact: MaterialShaderArtifact | undefined,
+): string | undefined {
+  if (artifact === undefined) return undefined;
+  return JSON.stringify([
+    artifact.material,
+    artifact.pass,
+    artifact.layoutIdentity,
+    artifact.receipt?.receiptIdentity ?? '',
+    artifact.receipt?.generation ?? 0,
+    artifact.variantSet ?? '',
+    materialArtifactProgramIdentity(artifact),
+    artifact.receipt?.sceneIndexEntry ?? '',
+    artifact.vertexEntry ?? artifact.receipt?.sceneIndexEntry ?? '',
+    artifact.fragmentEntry ?? '',
+    artifact.uvSetCount ?? -1,
+    artifact.reflectionFallbackOutputAvailable === true,
+  ]);
 }

@@ -74,7 +74,7 @@ describe('material raster state', () => {
     'forward',
     'deferred',
     'shadow-caster',
-  ])('preserves bias through the %s material pipeline', (passKind) => {
+  ])('preserves bias and fragment-only overrides through the %s material pipeline', (passKind) => {
     const formats: GPUTextureFormat[] =
       passKind === 'shadow-caster' ? [] : ['rgba8unorm', 'rgba16float'];
     const createRenderPipeline = vi.fn((_descriptor: unknown) => ({ ok: true, value: {} }));
@@ -88,6 +88,8 @@ describe('material raster state', () => {
         vertexBuffers: [],
         colorFormat: 'rgba8unorm',
         colorFormats: formats,
+        constants: { '64000': 5, '64001': 0 },
+        vertexConstants: { '64000': 5 },
         depthFormat: 'depth32float',
         capabilities: {},
       } as unknown as PipelineBuilderContext,
@@ -104,8 +106,13 @@ describe('material raster state', () => {
       depthStencil: { depthBias: 2, depthBiasSlopeScale: 1, depthBiasClamp: -0.25 },
     });
     expect(descriptor).toMatchObject({
-      fragment: { targets: formats.map((format) => ({ format, writeMask: 5 })) },
+      fragment: {
+        constants: { '64000': 5, '64001': 0 },
+        targets: formats.map((format) => ({ format, writeMask: 5 })),
+      },
     });
+    expect(descriptor).toMatchObject({ vertex: { constants: { '64000': 5 } } });
+    expect(descriptor).not.toHaveProperty('vertex.constants.64001');
   });
 
   it('uses the same state for prepared pipelines and separates cache keys', () => {

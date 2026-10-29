@@ -4,7 +4,7 @@ import { afterEach, expect, it } from 'vitest';
 import { cdp, commands, page, userEvent } from 'vitest/browser';
 import { createBlitzUi, type UiWasmHost } from '../index.js';
 import { checkableHtml, checkableTrace } from './checkable-fixture.js';
-import { required, uiEvidenceDirectory } from './fixture.js';
+import { required, selectAllKeys, uiEvidenceDirectory } from './fixture.js';
 import { inputSubmitRasterCase } from './input-submit-fixture.js';
 
 const bytes = new Uint8Array(
@@ -286,7 +286,7 @@ it('keeps the current edit when a scripted focus target is not eligible', async 
       current.addEventListener(type, () => events.push(type));
     return { document, current, events };
   });
-  await userEvent.keyboard('{Control>}a{/Control}edited');
+  await userEvent.keyboard(`${selectAllKeys()}edited`);
   ui.input.text('edited');
   const results = traces.map(({ document, current, events }) => {
     const states: unknown[] = [];
@@ -346,7 +346,7 @@ it.each([
     }
     return () => ({ events, active: document.activeElement?.id ?? '' });
   });
-  await userEvent.keyboard('{Control>}a{/Control}');
+  await userEvent.keyboard(selectAllKeys());
   await cdp().send('Input.insertText', { text: 'edited' });
   ui.input.text('edited');
   await userEvent.keyboard('{Tab}');
@@ -1440,7 +1440,7 @@ it.each([
     );
     field.focus();
   }
-  await userEvent.keyboard('{Control>}a{/Control}');
+  await userEvent.keyboard(selectAllKeys());
   await cdp().send('Input.insertText', { text: '0.8' });
   expect(() => ui.input.text('0.8')).not.toThrow();
   expect(fields.map((field) => field.value)).toEqual(['0.5', '0.5']);
@@ -1567,7 +1567,7 @@ it('keeps the edited control usable when beforeinput switches its value mode', a
     );
   }
   await paint('01-number');
-  await userEvent.keyboard('{Control>}a{/Control}');
+  await userEvent.keyboard(selectAllKeys());
   await cdp().send('Input.insertText', { text: '0.8' });
   ui.input.text('0.8');
   expect(inputs).toEqual([0, 0]);

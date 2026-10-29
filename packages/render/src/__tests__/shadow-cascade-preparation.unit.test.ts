@@ -41,7 +41,9 @@ async function fixture() {
   Object.assign(f.context.runtime, { prepareMaterialShaderPipeline: prepare });
   const views = [0, 1, 2].map((index) => ({ identity: { kind: 'directional' as const, index } }));
   if (f.context.gpuDrivenShadowViews === undefined) throw Error('missing view pool');
-  Object.assign(f.context.gpuDrivenShadowViews, { inspect: () => views });
+  Object.assign(f.context.gpuDrivenShadowViews, {
+    activeIdentities: () => views.map((view) => view.identity),
+  });
   const maps = views.map(
     () => new Map(f.projections) as unknown as Map<number, GpuDrivenShadowBatchProjection>,
   );
@@ -211,9 +213,9 @@ it('keeps point reflection distinct from a coincident directional batch address'
   try {
     if (f.context.gpuDrivenShadowViews === undefined) throw Error('missing view pool');
     Object.assign(f.context.gpuDrivenShadowViews, {
-      inspect: () => [
-        { identity: { kind: 'directional', index: 0 } },
-        { identity: { kind: 'point', index: 0 } },
+      activeIdentities: () => [
+        { kind: 'directional', index: 0 },
+        { kind: 'point', index: 0 },
       ],
     });
     const projections = f.maps[0];

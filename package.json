@@ -12,6 +12,7 @@
   "overrides": {
     "body-parser": "^2.4.0",
     "fast-uri": "^3.1.9",
+    "qs": "^6.16.1",
     "zod": "^4.6.7"
   },
   "patchedDependencies": {
@@ -46,7 +47,7 @@
     "stage:desktop-runtime": "node scripts/stage-desktop-runtime.mjs",
     "skills:check": "node scripts/forgeax/check-engine-skills.mjs",
     "skills:api-index": "node scripts/forgeax/sdk-api-index.mjs",
-    "test:sdk:contracts": "node --test scripts/__tests__/sdk-source-contract.test.mjs packages/wgpu-wasm/scripts/__tests__/source-key.test.mjs scripts/forgeax/__tests__/sdk-carrier.test.mjs scripts/forgeax/__tests__/sdk-source.test.mjs scripts/forgeax/__tests__/engine-bundle.test.mjs scripts/forgeax/__tests__/release-policy.test.mjs scripts/forgeax/__tests__/release-promotion.test.mjs scripts/forgeax/__tests__/sdk-view.test.mjs scripts/forgeax/__tests__/pnpm-version.test.mjs scripts/forgeax/__tests__/verify-sdk-process.test.mjs scripts/forgeax/__tests__/sdk-gpu-admission.test.mjs scripts/forgeax/__tests__/sdk-live-progress.test.mjs scripts/forgeax/__tests__/sdk-api-index.test.mjs scripts/forgeax/__tests__/sdk-project-identity.test.mjs scripts/forgeax/__tests__/sdk-template-cache.test.mjs && vitest run --config scripts/forgeax/vitest.config.mjs",
+    "test:sdk:contracts": "node --test scripts/forgeax/__tests__/sdk-documentation-ownership.test.mjs scripts/__tests__/sdk-source-contract.test.mjs packages/wgpu-wasm/scripts/__tests__/source-key.test.mjs scripts/forgeax/__tests__/sdk-carrier.test.mjs scripts/forgeax/__tests__/sdk-source.test.mjs scripts/forgeax/__tests__/engine-bundle.test.mjs scripts/forgeax/__tests__/release-policy.test.mjs scripts/forgeax/__tests__/release-promotion.test.mjs scripts/forgeax/__tests__/sdk-view.test.mjs scripts/forgeax/__tests__/pnpm-version.test.mjs scripts/forgeax/__tests__/verify-sdk-process.test.mjs scripts/forgeax/__tests__/sdk-gpu-admission.test.mjs scripts/forgeax/__tests__/sdk-live-progress.test.mjs scripts/forgeax/__tests__/sdk-api-index.test.mjs scripts/forgeax/__tests__/sdk-project-identity.test.mjs scripts/forgeax/__tests__/sdk-template-cache.test.mjs && vitest run --config scripts/forgeax/vitest.config.mjs",
     "sdk:build": "node scripts/forgeax/build-sdk.mjs",
     "sdk:check:npm": "node scripts/forgeax/check-sdk-npm-consumer.mjs",
     "sdk:verify": "corepack pnpm exec node scripts/forgeax/verify-sdk.mjs",
@@ -87,6 +88,10 @@
     "check-engine-no-console-dep": "node packages/remote/scripts/check-engine-no-console-dep.mjs",
     "check-console-not-in-engine-bundle": "node packages/remote/scripts/check-console-not-in-engine-bundle.mjs",
     "grep:single-exit": "node packages/ecs/scripts/check-single-exit.mjs",
+    "check:foundation-allocations": "node scripts/ci/run-foundation-allocations.mjs",
+    "check:required-output": "node scripts/ci/check-required-output.mjs",
+    "check:no-reports": "node scripts/ci/check-no-reports.mjs",
+    "check:ecs-iteration": "node scripts/ci/check-engine-ecs-iteration.mjs",
     "grep:ecs-query-surface": "node scripts/forgeax/check-ecs-query-surface.mjs",
     "grep:asset-registry-instanced-removed": "node scripts/grep/check-asset-registry-instanced-removed.mjs",
     "grep:no-entity-array-literal": "node scripts/grep/check-no-entity-array-literal.mjs",
@@ -141,6 +146,7 @@
     "test:view": "node scripts/ci/run-view-integration.mjs"
   },
   "devDependencies": {
+    "@actions/glob": "0.7.0",
     "pngjs": "^7.0.0",
     "@biomejs/biome": "2.4.14",
     "@fast-check/vitest": "0.3.0",
@@ -186,7 +192,8 @@
     "vitest": "4.1.12",
     "wait-on": "^9.5.1",
     "@forgeax/engine-dawn-node": "workspace:*",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "yaml": "2.9.1"
   },
   "simple-git-hooks": {
     "pre-commit": "node scripts/check-workspaces-equivalence.mjs && node scripts/check-staged-lockfiles.mjs"

@@ -428,10 +428,10 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
     // multi-megabyte payload through console reporting can stall CI log transport.
     const tapePath = 'artifacts/wave1-rendering/wave1-shadow.rhitape';
     await commands.writeFile(tapePath, bytesToBase64(encoded.value.bytes), 'base64');
-    // Retain every render work's bound buffer and pipeline layout in the summary.
-    // biome-ignore lint/suspicious/noConsole: raw diagnostic evidence is intentional.
-    console.info(
-      '[wave1-shadow-diagnostic] capture',
+    // Keep full evidence in the artifact transport instead of console RPC.
+    const summaryPath = 'artifacts/wave1-rendering/wave1-shadow-summary.json';
+    await commands.writeFile(
+      summaryPath,
       JSON.stringify({
         tape: {
           path: tapePath,
@@ -453,7 +453,16 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
         bootstrapPipelines: bootstrapPipelineEvidence(decoded.value),
         renderWorks: evidence,
       }),
+      'utf8',
     );
+    // biome-ignore lint/suspicious/noConsole: bounded diagnostic receipt is intentional.
+    console.info('[wave1-shadow-diagnostic] capture', {
+      summaryPath,
+      tapePath,
+      digest: encoded.value.digest,
+      byteLength: encoded.value.bytes.byteLength,
+      renderWorks: evidence.length,
+    });
     expect(decoded.value.header.formatVersion).toBe(7);
     expect(evidence.some((work) => work.sourceKind === 'forward')).toBe(true);
 

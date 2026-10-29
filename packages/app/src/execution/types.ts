@@ -76,10 +76,10 @@ export interface ExecutionFault {
 export interface ExecutionAudioReport extends Omit<AudioState, 'lastError'> {
   readonly owner: 'host';
   readonly lastError: {
-    readonly code: string;
+    readonly code: NonNullable<AudioState['lastError']>['code'];
     readonly expected: string;
     readonly hint: string;
-    readonly detail: unknown;
+    readonly detail: NonNullable<AudioState['lastError']>['detail'];
   } | null;
 }
 
@@ -120,7 +120,7 @@ export type ExecutionRenderLimits = Readonly<{
 }>;
 
 export interface ExecutionReport {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 4;
   readonly workers: ExecutionSelection;
   readonly capabilities: ExecutionCapabilities;
   readonly engine: {
@@ -251,6 +251,12 @@ export interface ExecutionRendererInspectionOptions<
   K extends keyof RenderInspection = keyof RenderInspection,
 > {
   readonly pipelineLibrary?: boolean;
+  readonly pipelineLibraryCollection?: boolean;
+  readonly pipelineLibraryLimits?: NonNullable<
+    NonNullable<
+      Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
+    >['pipelineLibraryLimits']
+  >;
   /** Materialize the bounded runtime request history only for an explicit diagnostic read. */
   readonly runtimeRequests?: boolean;
   readonly signal?: AbortSignal;

@@ -18,9 +18,9 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 | Validate setup | `project check` | Node/pnpm, manifest, dependencies |
 | Unit/type checks | `pnpm test`, `pnpm typecheck` | `project test` runs the project test gate |
 | Assets | `asset verify`, `asset list`, `asset inspect <guid>` | GUIDs, sidecars, Packs, closure |
-| Start live game | `dev start [--headless true] [--backend auto]` | One persistent owner; headed by default |
+| Start live game | `dev start [--headless true] [--backend auto]` | Optional warm owner; headed by default |
 | Status | `dev status` | `phase`, `revision`, frame, unfinished eval; `stopped`/`unreachable` |
-| Accept runtime | `dev verify --revision <rev> [--require-ui]` | The acceptance gate; blocked means fail |
+| Accept runtime | `dev verify [--revision <rev>] [--require-ui]` | The acceptance gate; blocked means fail |
 | Scripted playthrough | `project play <script>` | Same gate on a real-input run in its own runtime |
 | Screenshot | `dev capture [--output <png>] [--checkpoint <name>]` | Open the PNG; a path is not evidence |
 | Look-dev loop | `dev look [--hide-ui true] [--viewports WxH,...] [--cameras '[…]']` | After each light/material/camera edit: waits for the edit, PNG + pixel report |
@@ -30,21 +30,22 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 | Production output | `project build`, `project preview` | Serves verified `dist/` over HTTP |
 | Release | `project package [--format web-zip\|single-html] [--output <file>]` | Only when release is requested |
 
-- Every observation returns `revision`; pass it to `verify`/`eval` so stale runtimes fail.
-  Disk edits invalidate the runtime; `dev reload` after dependency or Engine changes.
+- Observations return `revision`; pass it to `eval` (optionally `verify`) so stale
+  runtimes fail. Disk edits invalidate the runtime; `dev reload` after dependency or Engine changes.
+- Service upkeep is only `dev start`/`dev stop`; `look`/`capture`/`verify`/`eval` start
+  the owner on demand with the same results.
 - Errors keep `code`, `expected`, `hint`, `detail`; repair the named owner. When a result
   lists `omitted.fields`, add `--detail` only if a decision needs them.
-- `dev status` never replaces an unreachable owner; stop it before changing browser
-  options. `--backend auto` prefers hardware and reports any software fallback.
+- `dev status` only reports; `dev start` with other browser options replaces the owner.
+  `--backend auto` prefers hardware and reports any software fallback.
 - Playthrough scripts: wait for `html[data-forgeax-input="open"]` before the first input
   when the host publishes it, then write checkpoint names to
   `document.documentElement.dataset.forgeaxCaptureReady` for `capture(name)`; see
   [Browser compositor capture](#browser-compositor-capture).
 - Evidence comes from the owner browser only; hand over the `dev status` URL. Never drive
-  another browser tab for acceptance: it may be backgrounded (input gate stays closed), and
-  the owner refuses its live bridge by design (`live-bridge-not-owner` is expected).
-- Run long commands in the foreground and wait; if backgrounded, poll at most every 30 s.
-- Hard rendering failures only (never a default delivery step): `dev start --rhi-capture true`,
+  another tab for acceptance: it may be backgrounded, and its `live-bridge-not-owner` is expected.
+- Run `project play`/`dev verify` blocking in one call with a large exec yield; never poll.
+- Hard rendering failures only (never for delivery): `dev start --rhi-capture true`,
   reproduce, `rhi capture`, then [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md).
 
 > [!IMPORTANT]
@@ -70,7 +71,7 @@ annotations to platform independent View; hand off its actual View/project URL.
 Use platform simulation for MCP bridge regression and platform native for actual
 host behavior. Keep simulation and native evidence distinct.
 
-For Linux batch jobs without a monitor, first follow [Linux unattended validation](references/linux-unattended.md): writable XDG state, explicit headless versus Xvfb, and sandboxed non-root Chromium.
+For Linux batch jobs without a monitor, first follow Linux unattended validation: writable XDG state, explicit headless versus Xvfb, and sandboxed non-root Chromium.
 
 ## Persistent live control
 
@@ -100,21 +101,21 @@ superseded by a save during its compilation, a replaced World, or another
 eval or capture still running. `--ready-timeout-ms` bounds the wait (default
 120000; `0` returns the original error immediately). A result after waiting
 carries `waitedMs` beside the `revision` it ran against; a failure after
-waiting adds `detail.waitedMs`. A failed runtime whose inputs did not change
-or cannot be read, an evaluation past its caller wait (`live-eval-continuing`),
-and invalid arguments fail without waiting; a stopped owner returns
-`live-not-running`. A startup superseded by newer inputs reports
+waiting adds `detail.waitedMs`. A failed runtime with unchanged or unreadable
+inputs, an eval past its caller wait (`live-eval-continuing`) and invalid
+arguments fail without waiting; a stopped owner returns `live-not-running`. A startup superseded by newer inputs reports
 `live-startup-superseded: <cause>` in status `error` until its replacement is
-ready. A caller that disconnects is never admitted later. Waiting never
+ready. A disconnected caller is never admitted later. Waiting never
 re-targets a pinned identity: when the runtime of a `--revision` or `--ref`
 is replaced, the command returns `live-revision-stale` with the current
 revision. `eval`, `camera set`, `camera release` and `focus` are retried only
 when rejected before execution; observations without a pinned revision re-run
 against the replacement runtime. `dev start` against an owner that is still
-starting, waiting or reloading waits within the project startup budget.
+starting, waiting or reloading waits within the project startup budget; it
+replaces a dead, failed, stale or differently configured owner.
 
-`dev eval --revision <revision> --code 'return simulation.execution.report()'`
-requires a revision because arbitrary code can contain old entity handles.
+`dev eval --revision <revision> --code '…'` requires a revision because
+arbitrary code can hold old entity handles.
 Canceling its wait does not stop already-running code; reload/stop destroys
 its execution environment. Camera control is temporary: set/focus acquires
 an observation camera, get reports `control`, and release returns control to
@@ -189,7 +190,7 @@ browser behavior still needs observation. `plugin-startup-failed` fails even wit
 repair the named descendant and verify a fresh session. Keep original pinned-release,
 new-release, and post-fix evidence distinct when diagnosing across releases.
 Use the game's local-playable evidence table for completion and blocked-check handling.
-Run `dev verify --revision <current-revision> --json` (or `engine.run.verify`) for
+Run `dev verify --json` (or `engine.run.verify`; `--revision` pins one execution) for
 runtime acceptance; `dev capture` preserves observations and is not that gate.
 `project play <script> --json` applies the same runtime gate to the final frame of a
 scripted real-input playthrough in its own temporary runtime, with no revision.
@@ -250,7 +251,7 @@ sdk-manifest.json checks SDK identity. Private GitHub Releases are internal arch
 consumer download sources. The target must be empty; download, version, or copy failures clean staging.
 
 For project operations, composition, preview evidence, and optional service acceleration, read
-[`references/authoring-operations.md`](references/authoring-operations.md) when those tasks apply.
+`references/authoring-operations.md` when those tasks apply.
 
 Resource preview operations are Engine-owned host-realm plugins. Discover the exact request with
 `forgeax help asset preview --json`; `forgeax asset preview --kind material --guid <guid> --json`
@@ -260,7 +261,7 @@ AABB; texture preview uses an aspect-preserving unlit presentation. A Standard m
 carries `sampledTextureBudget` (`limit`, `required`, `transmission`, `conflicts`) at the portable
 16-texture limit; `transmission: "exceeded"` means refraction drops on 16-texture devices.
 `forgeax dev start` runs the source-development asset path. `forgeax project preview` verifies and
-serves built `dist/`; it does not start a source-development server.
+serves built `dist/`; it does not start a source-development server. Live control and next-frame RHI capture need the owning dev/run session for the same project. A static browser picture alone cannot accept those commands. Offline RHI summary/inspect retain their artifact identity; GPU replay/read additionally require the named native provider.
 
 ## Browser compositor capture
 
@@ -447,6 +448,7 @@ forgeax project build ./games/my-game \
 |:--|:--|
 | project | External game directory containing forge.json and its entry; project files own authored truth. |
 | --base | Hosting URL prefix passed to Vite, Pack index, and runtime resource URLs. |
+| --html-head | Project-relative HTML head fragment applied before Vite and distribution sealing; use for platform script integration instead of editing dist afterward. |
 | --out-dir | Dedicated derived directory, resolved relative to project and cleared before build. |
 | --json | Complete artifact/digest closure corresponding to forgeax-dist.json. |
 
@@ -756,6 +758,11 @@ forgeax dev eval queries the current instance; domain plugins own import, Cook, 
 - **world.query returns Result**: handle errors before iterating result.value; do not ignore descriptor conflicts or span capability errors.
 - **Browser instance unavailable**: inspect phase, bridgeConnected, and worldIdentity in forgeax dev status --root ./game --json; do not create a second temporary Page. Only Node/Dawn explicitly enables @forgeax/engine-remote/server.
 - **Retired standalone bin missing**: discover unified asset/debug/dev commands through forgeax help --tree.
+
+For a development Engine capability conflict, retain both resolved IDs and inspect
+physical package ownership and program-session queries. DevKit unifies Vite `v`
+cache versions automatically; repeatedly clearing its cache or patching installed
+SDK bytes does not repair conflicting package or session identities.
 
 ## Further reading
 

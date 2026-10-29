@@ -53,4 +53,17 @@ describe('shadow program publication observation', () => {
     expect(generation).not.toBe(replacement);
     expect(observe([])).not.toBe(generation);
   });
+
+  it('captures scalar facts independently of later edits to the same artifact', () => {
+    const observe = observer();
+    const caster = batch();
+    const first = observe([caster]);
+    const receipt = caster.artifact?.receipt as { generation: number };
+    receipt.generation += 1;
+    const changed = observe([caster]);
+    expect(changed).not.toBe(first);
+    expect(observe([caster])).toBe(changed);
+    receipt.generation -= 1;
+    expect(observe([caster])).not.toBe(changed);
+  });
 });

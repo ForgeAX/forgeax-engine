@@ -125,7 +125,10 @@ export function projectResidualDisplayRows(
 export function projectFramePresentation(input: {
   readonly renderables: FrameList<RenderableSnapshot>;
   /** Materials of GPU-executed bindings, standing for every row they draw. */
-  readonly coveredMaterials?: Iterable<readonly [worldId: number, material: MaterialResource]>;
+  readonly coveredBindings?: Iterable<{
+    readonly worldId: number;
+    readonly material: MaterialResource;
+  }>;
   readonly preparedWorlds: readonly RenderResourceScope[];
   readonly internals: RenderSystemInternals;
   readonly onPending?: (reason: FramePresentationPendingReason) => void;
@@ -147,7 +150,7 @@ export function projectFramePresentation(input: {
       }
     }
   }
-  for (const [worldId, material] of input.coveredMaterials ?? []) {
+  for (const { worldId, material } of input.coveredBindings ?? []) {
     if (pending(worldId, material)) {
       input.onPending?.({ code: 'material-residency', worldId });
       return 'pending';

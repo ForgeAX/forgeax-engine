@@ -133,7 +133,11 @@ import {
   type GpuGeometryCapture,
   gbufferGeometryProgram,
 } from './production-raster-geometry-capture';
-import { admittedRasterBatchCount, lodCoverageMayFade } from './production-raster-lod';
+import {
+  admittedRasterBatchCount,
+  lodCoverageMayFade,
+  lodViewCameraFromMatrix,
+} from './production-raster-lod';
 import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
@@ -171,7 +175,6 @@ import {
   shadowArtifactsChanged,
   shadowMaterialsChanged,
   shadowMeshesChanged,
-  shadowViewLod,
 } from './production-raster-shadow';
 import {
   observeShadowArtifacts,
@@ -205,6 +208,7 @@ import {
 import {
   type GpuDrivenLodSelectionInspection,
   type GpuDrivenLodSubmitIdentity,
+  type GpuDrivenShadowCameraCull,
   GpuDrivenView,
   type GpuDrivenViewGraphResources,
   selectGpuLodLane,
@@ -250,6 +254,10 @@ export type ShadowViewRequest = Omit<
   readonly staticLayer?: false;
 };
 
+type ShadowViewUpdateStorage = {
+  -readonly [Key in keyof ShadowViewUpdateInput]: ShadowViewUpdateInput[Key];
+};
+
 export interface GpuDrivenWorldLodSelectionInspection {
   readonly worldKey: number;
   readonly primitiveSlot: number;
@@ -270,13 +278,16 @@ export interface GpuDrivenMaterialBinding {
   readonly resourceClass: string;
 }
 
+const DIRECT_TOPOLOGY_SIGNATURE = () => 'direct';
+
 export interface PreparedGpuDrivenFrame {
   /** Shared resource requirements from the accepted geometry/probe partitions. */
   readonly materialBindings: readonly GpuDrivenMaterialBinding[];
   readonly shadowDirectRequired: boolean;
-  readonly topologySignature: string;
+  /** Read after current shadow preparation; this is not a captured signature value. */
+  readonly topologySignature: () => string;
   /** @internal Private stock-recorder identity; borrowed graph projections keep topologySignature. */
-  readonly _recordingTopologySignature?: string;
+  readonly _recordingTopologySignature?: () => string;
   /** Composition-local world indices mapped to the stable identities used by draw keys. */
   readonly worldKeys: readonly number[];
   /** Shared execution queried by each actual draw consumer. */
@@ -303,9 +314,13 @@ export interface PreparedGpuDrivenFrame {
     forceCompute?: boolean,
     cameraPyramid?: GraphTextureView,
   ) => Result<ShadowViewProjection | undefined, RenderGraphError>;
-  readonly updateShadowViews?: (views: readonly ShadowViewRequest[]) => Result<void, RhiError>;
+  readonly updateShadowViews?: (
+    views: readonly ShadowViewRequest[],
+    /** @internal Transfer fresh recorder requests; borrowed callers omit this. */
+    ownedRequests?: true,
+  ) => Result<void, RhiError>;
   readonly shadowViewPool?: ShadowViewStatePool;
-  readonly shadowBatchProjections?: ReadonlyMap<
+  readonly shadowBatchProjections?: () => ReadonlyMap<
     string,
     ReadonlyMap<number, GpuDrivenShadowBatchProjection>
   >;
@@ -531,6 +546,9 @@ function surfaceArtifactInspection(
  * Candidate order is the same address carried in rigid visibleItems.z. The
  * shared GPU Scene owns transforms; this projection carries identity only.
  */
+const EMPTY_MATERIAL_BINDING_SLOTS: GpuDrivenStandardPbrFrameResources['materialSlotIndicesByBinding'] =
+  new Map();
+
 const surfaceRowCache = new WeakMap<
   SubmissionPlan,
   { readonly bases: object; readonly layout: number; readonly rows: Uint32Array }
@@ -638,7 +656,7 @@ interface RetainedEncode {
   readonly key: PreparedRasterPass;
   readonly identities: readonly unknown[];
   readonly runs: RetainedPassEncode;
-  readonly facts: (owner: object, out: unknown[]) => void;
+  readonly facts: ReturnType<typeof runFacts>;
 }
 
 /** End of the contiguous stable-ID block starting at `start`. */
@@ -1102,13 +1120,13 @@ export class GpuDrivenProduction {
     const shadowViews = this.shadowViews;
     return ok({
       materialBindings: [],
-      topologySignature: 'direct',
+      topologySignature: DIRECT_TOPOLOGY_SIGNATURE,
       worldKeys: scene.worldKeys ?? [],
       selection: EMPTY_GPU_DRAW_SELECTION,
       shadowDirectRequired: true,
       standardPbrFrameResources: {
         prepareMaterialBinding: () => undefined,
-        materialSlotIndicesByBinding: new Map(),
+        materialSlotIndicesByBinding: EMPTY_MATERIAL_BINDING_SLOTS,
         sceneMaterialBuffer: scene.scene.materialBuffer,
       },
       ...(shadowViews === undefined ? {} : { shadowViewPool: shadowViews }),
@@ -1616,14 +1634,13 @@ export class GpuDrivenProduction {
     this.currentRasterFrame = frame;
     const { input, scene, materials, filtered, view, shadowViewPool, materialRaster, skinRaster } =
       frame;
-    const viewInspection = view.inspect();
     // The graph imports scene and view buffers live, so neither a replaced
     // material table nor grown view storage is a graph dependency: key the
     // raster graph on the view's pass-list generation only.
     const graphIdentity = this.rasterGraphIdentity.update(
       filtered,
       this.sceneIdentity(scene.scene),
-      { ...viewInspection, resourceGeneration: view.graphResourceGeneration },
+      view.graphResourceGeneration,
       frame.liveRasterBatches,
       materialRaster.visibleBindingIdentity,
       skinRaster?.visibleBindingIdentity,
@@ -1631,28 +1648,20 @@ export class GpuDrivenProduction {
     const discardSignature = frame.viewClippingLive ? '|view-clipping' : '';
     const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${discardSignature}`;
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${discardSignature}`;
-    const production = this;
+
     const surfaceSubmission = this.surfaceSubmission;
     const consumeSurfaceDynamicInput =
       surfaceSubmission === undefined
         ? undefined
         : this.surfaceFrames.consumer(input.surfaceDynamicInput);
     return {
-      materialBindings: filtered.batches.map(({ batch, materialBindingClass }) => {
-        const binding = batch.binding;
-        if (binding === undefined) throw new Error('Prepared batch has no shared material binding');
-        return {
-          material: binding.material,
-          worldId: binding.worldId,
-          resourceClass: materialBindingClass,
-        };
-      }),
-      get topologySignature() {
-        const shadow = production.shadowTopologySignature();
+      materialBindings: filtered.materialBindings,
+      topologySignature: () => {
+        const shadow = this.shadowTopologySignature();
         return shadow.length === 0 ? signature : `${signature}|shadow=${shadow}`;
       },
-      get _recordingTopologySignature() {
-        const shadow = production.shadowTopologySignature();
+      _recordingTopologySignature: () => {
+        const shadow = this.shadowTopologySignature();
         return shadow.length === 0 ? recordingSignature : `${recordingSignature}|shadow=${shadow}`;
       },
       worldKeys: scene.worldKeys ?? [],
@@ -1660,9 +1669,9 @@ export class GpuDrivenProduction {
       shadowDirectRequired: shadowDirectRequired(scene, input.batchExecutions),
       ...(surfaceSubmission === undefined ? {} : { surfaceSubmission }),
       standardPbrFrameResources: {
-        resourceGeneration: viewInspection.resourceGeneration,
+        resourceGeneration: view.currentResourceGeneration,
         prepareMaterialBinding: () => undefined,
-        materialSlotIndicesByBinding: new Map(),
+        materialSlotIndicesByBinding: EMPTY_MATERIAL_BINDING_SLOTS,
         sceneMaterialBuffer: scene.scene.materialBuffer,
         ...(surfaceSubmission === undefined ? {} : this.surfaceFrameResources(materialRaster)),
       },
@@ -1677,7 +1686,7 @@ export class GpuDrivenProduction {
         shadowViewPool._commitResourceReplacement(submittedGraphGeneration);
         this.committedViewClipping = frame.viewClipping;
         this.submissionState = 'submitted';
-        this.lastKnownGoodGeneration = view.inspect().resourceGeneration;
+        this.lastKnownGoodGeneration = view.currentResourceGeneration;
       },
       _abortResourceReplacement: () => {
         if (!this.finishMaterials(materials)) return;
@@ -1695,11 +1704,10 @@ export class GpuDrivenProduction {
           return ok(undefined);
         return shadowViewPool.project(graph, identity, forceCompute, cameraPyramid);
       },
-      updateShadowViews: (views) => this.updateFrameShadowViews(frame, views),
+      updateShadowViews: (views, ownedRequests) =>
+        this.updateFrameShadowViews(frame, views, ownedRequests),
       shadowViewPool,
-      get shadowBatchProjections() {
-        return production.shadowBatchProjections;
-      },
+      shadowBatchProjections: () => this.shadowBatchProjections,
       project: (
         graph,
         format,
@@ -1731,12 +1739,7 @@ export class GpuDrivenProduction {
    * resource generation (buffer capacity replacement) is a graph dependency.
    */
   private shadowTopologySignature(): string {
-    return (
-      this.shadowViews
-        ?.inspect()
-        .map((entry) => `${shadowViewIdentityKey(entry.identity)}:${entry.graphGeneration}`)
-        .join('|') ?? ''
-    );
+    return this.shadowViews?.topologySignature() ?? '';
   }
 
   private surfaceFrameResources(
@@ -1759,6 +1762,7 @@ export class GpuDrivenProduction {
   private updateFrameShadowViews(
     frame: PreparedRasterFrame,
     views: readonly ShadowViewRequest[],
+    ownedRequests = false,
   ): Result<void, RhiError> {
     const { shadowFiltered, input } = frame;
     if (shadowFiltered === undefined || views.length === 0) return this.disableShadowViews();
@@ -1773,6 +1777,7 @@ export class GpuDrivenProduction {
       input.materialFrame,
       input.shadowMaterials,
       input.profilePhase,
+      ownedRequests,
     );
   }
 
@@ -2001,7 +2006,7 @@ export class GpuDrivenProduction {
       if (!initialPipeline.ok) return initialPipeline;
     }
     const { artifact } = prepared;
-    return ok({
+    const rasterClass: ProjectedRasterClass = {
       orderDiagnosticState: prepared.renderState,
       artifact,
       mesh: prepared.mesh,
@@ -2012,7 +2017,8 @@ export class GpuDrivenProduction {
       deformation,
       clustered:
         artifact.program.group2 === 'cluster' || artifact.program.group2 === 'skin-cluster',
-    });
+    };
+    return ok(rasterClass);
   }
 
   private rasterPipelineShape(
@@ -2286,6 +2292,7 @@ export class GpuDrivenProduction {
     const { scene } = projected.frame;
     const indirect = call.resources.buffer(projected.indirect);
     const slotsByBinding = frameResources.materialSlotIndicesByBinding;
+    const skinTask = projected.frame.view.skinTaskBinding();
     const identities = [
       viewBindGroup,
       slotsByBinding.size === 0,
@@ -2298,20 +2305,26 @@ export class GpuDrivenProduction {
       sceneTransformBytes(scene),
       projected.frame.materialRaster.visibleBindingIdentity,
       projected.frame.skinRaster?.visibleBindingIdentity,
+      // Palette contents change without changing commands. Physical buffers,
+      // ranges and dynamic addresses are the actual Skin bundle inputs.
+      skinTask?.data,
+      skinTask?.auxiliary,
+      skinTask?.dataOffset,
+      skinTask?.auxiliaryOffset,
+      skinTask?.dataSize,
+      skinTask?.auxiliarySize,
     ];
     const runs = this.retainedEncodes.begin(
       bundlePass,
       identities,
       (slot) => materialOwner(frameResources.prepareMaterialBinding(slot)),
-      (cls) =>
-        classOwner(
-          selectRasterPipeline(
-            cls as ProjectedRasterClass,
-            fragmentEntryPoint,
-            coverageOnly,
-          )(colorFormats, formatKey),
-          this.resolveMeshGroup(projected, call, bindings, cls as ProjectedRasterClass),
-        ),
+      (cls) => {
+        const batch = cls as ProjectedRasterClass;
+        const pipelineFor = selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly);
+        const pipeline = pipelineFor(colorFormats, formatKey);
+        const mesh = this.resolveMeshGroup(projected, call, bindings, batch);
+        return classOwner(pipeline, mesh);
+      },
     );
     const facts = runFacts(
       (live) =>
@@ -2628,11 +2641,12 @@ export class GpuDrivenProduction {
       meshByBinding,
       sameInputs,
     );
-    const batchRows = runRecordProfilePhase(
-      profilePhase,
-      'record/gpu-driven-prepare/plan/rows',
-      () => assembly.assemble(),
-    );
+    const batchRows =
+      profilePhase === undefined
+        ? assembly.assemble()
+        : runRecordProfilePhase(profilePhase, 'record/gpu-driven-prepare/plan/rows', () =>
+            assembly.assemble(),
+          );
     // Native plans contain unique batch IDs, and the row loop retains every
     // admitted ID even for a rejected artifact. Equal cardinality therefore
     // proves there are no retired rows; only removals need a membership scan.
@@ -2671,11 +2685,12 @@ export class GpuDrivenProduction {
       return ok(previous.value);
     }
     this.gpuOwnedSnapshotsMaterialized = 0;
-    const value = runRecordProfilePhase(
-      profilePhase,
-      'record/gpu-driven-prepare/plan/admission',
-      () => assemblePreparedPlan(scene.plan, batchRows, scene.worldKeys),
-    );
+    const value =
+      profilePhase === undefined
+        ? assemblePreparedPlan(scene.plan, batchRows, scene.worldKeys)
+        : runRecordProfilePhase(profilePhase, 'record/gpu-driven-prepare/plan/admission', () =>
+            assemblePreparedPlan(scene.plan, batchRows, scene.worldKeys),
+          );
     preparation.cached = {
       plan: scene.plan,
       slotAt: scene.slotAt,
@@ -2706,6 +2721,7 @@ export class GpuDrivenProduction {
     directMaterials: import('../scene/material-dispatch').MaterialFrame | undefined,
     shadowMaterials: ShadowMaterialContent | undefined,
     profilePhase?: RecordProfileRunner,
+    ownedRequests = false,
   ): Result<void, RhiError> {
     if (views.length === 0) return this.disableShadowViews();
     this.observedShadowArtifacts = observeShadowArtifacts(
@@ -2737,6 +2753,7 @@ export class GpuDrivenProduction {
     if (!meshBinding.ok) return meshBinding;
     const pass: ShadowProjectionPass = {
       filtered,
+      ownedRequests,
       executions: batchExecutions,
       artifacts,
       diffs,
@@ -2759,11 +2776,14 @@ export class GpuDrivenProduction {
       preparedByBatch: undefined,
       next: new Map(),
     };
-    const classes = runRecordProfilePhase(
-      profilePhase,
-      'record/gpu-driven-prepare/shadow-views/caster-classes',
-      () => this.shadowCasterClasses.update(scene, shadowScene),
-    );
+    const classes =
+      profilePhase === undefined
+        ? this.shadowCasterClasses.update(scene, shadowScene)
+        : runRecordProfilePhase(
+            profilePhase,
+            'record/gpu-driven-prepare/shadow-views/caster-classes',
+            () => this.shadowCasterClasses.update(scene, shadowScene),
+          );
     const retained: ShadowViewIdentity[] = [];
     for (const requested of views) {
       const projected = this.projectRequestedShadowView(pass, requested, classes, retained);
@@ -2845,8 +2865,17 @@ export class GpuDrivenProduction {
 
   private projectShadowViewCache(
     pass: ShadowProjectionPass,
-    { cameraCull, staticLayer: _staticLayer, ...input }: ShadowViewRequest,
+    request: ShadowViewRequest,
   ): Result<ShadowViewUpdate['cache'], RhiError> {
+    if (pass.ownedRequests) {
+      const cameraCull = request.cameraCull;
+      return runRecordProfilePhase(
+        pass.profilePhase,
+        'record/gpu-driven-prepare/shadow-views/project-view',
+        () => this.projectShadowViewBatches(pass, request, cameraCull),
+      );
+    }
+    const { cameraCull, staticLayer: _staticLayer, ...input } = request;
     return runRecordProfilePhase(
       pass.profilePhase,
       'record/gpu-driven-prepare/shadow-views/project-view',
@@ -2969,35 +2998,71 @@ export class GpuDrivenProduction {
     input: ShadowViewCacheRequest,
     cameraCull: ShadowCameraCullDilation | undefined,
   ): Result<ShadowViewUpdate, RhiError> {
-    const viewLod = shadowViewLod(pass, input.matrix);
-    if (cameraCull !== undefined) pass.cullCamera ??= occlusionCamera(pass.camera);
-    const cullCamera = pass.cullCamera;
+    // The pool reads cameras only when compute consumes this frame's inputs.
+    let lodCamera: ReturnType<typeof lodViewCameraFromMatrix> | undefined;
+    let cull: Omit<GpuDrivenShadowCameraCull, 'lightViewProjection'> | undefined;
     const { directMaterials, shadowMaterials } = pass;
     return runRecordProfilePhase(
       pass.profilePhase,
       'record/gpu-driven-prepare/shadow-views/project-view/cache-update',
-      () =>
-        pass.pool.update(
-          {
-            ...input,
-            sourcePlan: pass.sourcePlan,
-            scene: pass.shadowScene,
-            inputReads: pass.inputReads,
-            skin: pass.scene.skin,
-            capsuleDirectional:
-              pass.capsuleShadowDirectional && input.identity.kind === 'directional',
-            ...(directMaterials === undefined || input.identity.layer === 'static'
-              ? {}
-              : { directMaterials }),
-            ...(shadowMaterials === undefined ? {} : { shadowMaterials }),
-            ...viewLod,
-            ...(cameraCull === undefined || cullCamera === undefined
-              ? {}
-              : { cameraCull: { ...cameraCull, camera: cullCamera } }),
-          },
-          pass.projectionSource,
-        ),
+      () => {
+        const readLodCamera = () => {
+          lodCamera ??=
+            input.matrix === undefined ? pass.camera : lodViewCameraFromMatrix(input.matrix);
+          return lodCamera;
+        };
+        const readCameraCull = () => {
+          if (cameraCull === undefined) return undefined;
+          if (cull === undefined) {
+            pass.cullCamera ??= occlusionCamera(pass.camera);
+            cull = { ...cameraCull, camera: pass.cullCamera };
+          }
+          return cull;
+        };
+        const update = pass.ownedRequests
+          ? this.consumeShadowViewRequest(pass, input, readLodCamera, readCameraCull)
+          : {
+              ...input,
+              sourcePlan: pass.sourcePlan,
+              scene: pass.shadowScene,
+              inputReads: pass.inputReads,
+              skin: pass.scene.skin,
+              capsuleDirectional:
+                pass.capsuleShadowDirectional && input.identity.kind === 'directional',
+              ...(directMaterials === undefined || input.identity.layer === 'static'
+                ? {}
+                : { directMaterials }),
+              ...(shadowMaterials === undefined ? {} : { shadowMaterials }),
+              lodCamera: readLodCamera,
+              cameraCull: readCameraCull,
+            };
+        return pass.pool.update(update, pass.projectionSource);
+      },
     );
+  }
+
+  /** Recorder-created requests transfer to this frame's pool read domain. */
+  private consumeShadowViewRequest(
+    pass: ShadowProjectionPass,
+    input: ShadowViewCacheRequest,
+    lodCamera: NonNullable<ShadowViewUpdateInput['lodCamera']>,
+    cameraCull: NonNullable<ShadowViewUpdateInput['cameraCull']>,
+  ): ShadowViewUpdateInput {
+    const update = input as ShadowViewUpdateStorage;
+    update.sourcePlan = pass.sourcePlan;
+    update.scene = pass.shadowScene;
+    update.inputReads = pass.inputReads;
+    update.skin = pass.scene.skin;
+    update.capsuleDirectional =
+      pass.capsuleShadowDirectional && input.identity.kind === 'directional';
+    if (pass.directMaterials === undefined || input.identity.layer === 'static')
+      delete update.directMaterials;
+    else update.directMaterials = pass.directMaterials;
+    if (pass.shadowMaterials === undefined) delete update.shadowMaterials;
+    else update.shadowMaterials = pass.shadowMaterials;
+    update.lodCamera = lodCamera;
+    update.cameraCull = cameraCull;
+    return update;
   }
 
   private shadowSkinMeshBinding(
@@ -3411,18 +3476,18 @@ export class GpuDrivenProduction {
    * GPU projection and must not publish last frame's channels.
    */
   private shadowLaneChannels(channels: GpuDrivenLaneSummary[]): void {
-    for (const entry of this.shadowViews?.inspect() ?? []) {
+    for (const entry of this.shadowViews?.activeIdentities() ?? []) {
       if (this.submissionState === 'idle' || channels.length >= 32) break;
-      if (entry.identity.layer !== undefined) continue;
+      if (entry.layer !== undefined) continue;
       let total = 0;
       let claimed = 0;
-      for (const identity of [entry.identity, { ...entry.identity, layer: 'static' as const }])
+      for (const identity of [entry, { ...entry, layer: 'static' as const }])
         for (const batch of this.shadowViews?.submission(identity)?.plan.batches ?? []) {
           total += batch.candidates.length;
           if (batch.visibleCapacity > 0) claimed += batch.candidates.length;
         }
       if (total === 0) continue;
-      this.pushShadowLaneChannels(channels, entry.identity, total, claimed);
+      this.pushShadowLaneChannels(channels, entry, total, claimed);
     }
   }
 

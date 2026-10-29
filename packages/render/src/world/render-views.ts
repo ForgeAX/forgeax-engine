@@ -1,5 +1,6 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { type Handle, toShared } from '@forgeax/engine-types';
+import { assertRenderShortSide, CAMERA_VIEW_DEFAULTS } from '../components/camera-view';
 import { stereoEyeViewport } from '../components/stereo-camera';
 import { CameraViewInvalidError } from '../errors/render';
 import type { CameraSnapshot } from '../render-contract';
@@ -25,6 +26,7 @@ export const RenderView = defineComponent('RenderView', {
   viewport: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 1, 1]) },
   order: 'i32',
   resolutionScale: { type: 'f32', default: 1 },
+  maxRenderShortSide: { type: 'u32', default: 0 },
   updateInterval: { type: 'u32', default: 1 },
   enabled: { type: 'bool', default: true },
   channels: { type: 'enum', default: ViewChannelsValue.all, labels: ViewChannelsValue },
@@ -47,6 +49,7 @@ type ViewFacts = {
   viewport: Float32Array;
   order: number;
   resolutionScale: number;
+  maxRenderShortSide: number;
   updateInterval: number;
   enabled: boolean;
   channels: number;
@@ -57,11 +60,22 @@ type ViewFacts = {
 
 const NO_TARGET = toShared<'RenderTarget'>(0);
 
+/** Explicit targets own their extent; display budgets combine using the stricter positive limit. */
+function displayShortSideLimit(
+  authored: number,
+  cap: number,
+  target: RenderTarget | undefined,
+): number {
+  if (cap === 0 || target !== undefined) return authored;
+  return authored === 0 ? cap : Math.min(cap, authored);
+}
+
 /** A capture view covers its whole target every frame. */
 const CAPTURE_VIEW = Object.freeze({
   viewport: new Float32Array([0, 0, 1, 1]),
   order: 0,
   resolutionScale: 1,
+  maxRenderShortSide: 0,
   updateInterval: 1,
   enabled: true,
 });
@@ -74,15 +88,23 @@ interface DeclaredView {
 
 export interface RenderViewSource {
   readonly cameras: readonly CameraSnapshot[];
+  /** Host-selected display budget; zero leaves implicit cameras on the primary path. */
+  readonly maxRenderShortSide?: number | undefined;
   /** Auxiliary RenderTarget cameras (non-planar); each becomes one capture view. */
   readonly captures: readonly CameraSnapshot[];
   attachment(camera: CameraSnapshot): string | undefined;
 }
 
 /** Throws the structured CameraView failure before any Render World write. */
-export function assertViewCameras(cameras: readonly CameraSnapshot[]): void {
+export function assertViewCameras(
+  cameras: readonly CameraSnapshot[],
+  implicitDisplay = false,
+): void {
   for (const camera of cameras)
-    if (camera.view !== undefined && camera.entityKey === undefined)
+    if (
+      (camera.view !== undefined || (implicitDisplay && camera.target === undefined)) &&
+      camera.entityKey === undefined
+    )
       throw new CameraViewInvalidError('entityKey', camera.entityKey, 'a camera entity identity');
 }
 
@@ -104,6 +126,7 @@ function sameFacts(current: Readonly<ViewFacts>, next: ViewFacts): boolean {
     a[3] === b[3] &&
     current.order === next.order &&
     current.resolutionScale === next.resolutionScale &&
+    current.maxRenderShortSide === next.maxRenderShortSide &&
     current.updateInterval === next.updateInterval &&
     current.enabled === next.enabled &&
     current.channels === next.channels &&
@@ -140,6 +163,7 @@ export class RenderViews {
     viewport: new Float32Array(4),
     order: 0,
     resolutionScale: 1,
+    maxRenderShortSide: 0,
     updateInterval: 1,
     enabled: true,
     channels: 0,
@@ -165,7 +189,8 @@ export class RenderViews {
 
   /** Reconcile the view entities with this frame's cameras inside `RenderPrepare`. */
   sync(source: RenderViewSource): void {
-    assertViewCameras(source.cameras);
+    assertRenderShortSide(source.maxRenderShortSide ?? 0);
+    assertViewCameras(source.cameras, (source.maxRenderShortSide ?? 0) > 0);
     this.pending = source;
     const ran = this.world.run(RenderPrepare);
     this.pending = undefined;
@@ -193,15 +218,16 @@ export class RenderViews {
     this.pending = undefined;
     const frame = ++this.syncs;
     let declaredNow = 0;
+    const cap = source.maxRenderShortSide ?? 0;
     for (const camera of source.cameras) {
-      if (camera.view === undefined) continue;
+      if (camera.view === undefined && (cap === 0 || camera.target !== undefined)) continue;
       const attachment = source.attachment(camera) ?? '';
       if (camera.stereo === undefined) {
-        this.write(camera, ViewEyeValue.mono, attachment, frame, false);
+        this.write(camera, ViewEyeValue.mono, attachment, frame, false, cap);
         declaredNow += 1;
       } else {
-        this.write(camera, ViewEyeValue.left, attachment, frame, false);
-        this.write(camera, ViewEyeValue.right, attachment, frame, false);
+        this.write(camera, ViewEyeValue.left, attachment, frame, false, cap);
+        this.write(camera, ViewEyeValue.right, attachment, frame, false, cap);
         declaredNow += 2;
       }
     }
@@ -227,13 +253,14 @@ export class RenderViews {
     attachment: string,
     frame: number,
     capture: boolean,
+    cap = 0,
   ): void {
     const world = this.world;
     const facts = this.facts;
     facts.capture = capture;
     facts.camera = camera.entityKey as number;
     facts.eye = eye;
-    const authored = capture ? CAPTURE_VIEW : (camera.view as NonNullable<CameraSnapshot['view']>);
+    const authored = capture ? CAPTURE_VIEW : (camera.view ?? CAMERA_VIEW_DEFAULTS);
     if (camera.stereo === undefined || capture) facts.viewport.set(authored.viewport);
     else
       stereoEyeViewport(
@@ -244,6 +271,11 @@ export class RenderViews {
       );
     facts.order = authored.order;
     facts.resolutionScale = authored.resolutionScale;
+    facts.maxRenderShortSide = displayShortSideLimit(
+      authored.maxRenderShortSide,
+      cap,
+      camera.target,
+    );
     facts.updateInterval = authored.updateInterval;
     facts.enabled = authored.enabled;
     facts.channels = capture ? ViewChannelsValue.all : eyeChannels(camera, eye);

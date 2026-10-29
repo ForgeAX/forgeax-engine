@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderSource } from '@forgeax/engine-types';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  declaredFragmentEntry,
   declaresStandardOpaqueEntry,
   type ForwardFragmentEntryInput,
+  materialProgramSource,
   STANDARD_OPAQUE_FRAGMENT_ENTRY,
   selectForwardFragmentEntry,
 } from '../standard-opaque-entry';
@@ -46,6 +50,26 @@ describe('selectForwardFragmentEntry', () => {
 });
 
 describe('declaresStandardOpaqueEntry', () => {
+  it('keeps ordinary entry queries and repeated opaque queries off the source body', () => {
+    const registry = new ShaderRegistry({ manifestUrl: undefined });
+    registry.installMaterialArtifact('test::opaque', {
+      source: '@fragment fn fs_opaque() {}',
+      paramSchema: [],
+    });
+    const lookup = registry.findMaterialArtifact('test::opaque');
+    const read = vi.spyOn(ShaderSource.prototype, 'read');
+    try {
+      expect(declaredFragmentEntry('fs_main', materialProgramSource(lookup))).toBe('fs_main');
+      expect(read).not.toHaveBeenCalled();
+      expect(declaredFragmentEntry('fs_opaque', materialProgramSource(lookup))).toBe('fs_opaque');
+      read.mockClear();
+      expect(declaredFragmentEntry('fs_opaque', materialProgramSource(lookup))).toBe('fs_opaque');
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('requires a declared fs_opaque function', () => {
     expect(declaresStandardOpaqueEntry('@fragment\nfn fs_opaque(in : VsOut) {}')).toBe(true);
     expect(declaresStandardOpaqueEntry('@fragment\nfn fs_main(in : VsOut) {}')).toBe(false);

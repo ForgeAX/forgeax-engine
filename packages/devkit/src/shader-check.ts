@@ -1,6 +1,13 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import {
+  collectMaterialSources,
+  compileShader,
+  materialShaderSourceRoots,
+  reachableShaderImportIds,
+} from '@forgeax/engine-shader-compiler';
 import { build as viteBuild } from 'vite';
 import { createViteConfig } from './host.js';
 import { commandError, readProjectFacts } from './project.js';
@@ -14,9 +21,53 @@ export async function shaderCheckCommand(
   const target = options.path === undefined ? undefined : resolve(facts.value.root, options.path);
   if (target !== undefined) {
     try {
-      await readFile(target);
+      const source = await readFile(target, 'utf8');
+      const engineRoots = materialShaderSourceRoots();
+      const sources = await collectMaterialSources(
+        [
+          ...facts.value.assetRoots.map((root) => resolve(facts.value.root, root)),
+          dirname(target),
+          ...engineRoots,
+        ],
+        engineRoots,
+      );
+      const records = [...sources.engine, ...sources.project].filter(
+        (record) => record.path !== target,
+      );
+      const imports = Object.fromEntries(records.map((record) => [record.moduleId, record.source]));
+      const reachable = reachableShaderImportIds(source, imports);
+      const dependencies = records.filter((record) => reachable.has(record.moduleId));
+      for (const moduleId of reachable) {
+        const matches = dependencies.filter((record) => record.moduleId === moduleId);
+        if (matches.length > 1)
+          return {
+            ok: false,
+            error: {
+              code: 'shader-module-id-duplicate',
+              expected: 'one source per imported module identity',
+              hint: 'Remove the duplicate source from the selected dependency closure.',
+              detail: { moduleId, paths: matches.map((record) => record.path) },
+            },
+          };
+      }
+      const compiled = await compileShader(source, {
+        id: target,
+        imports: Object.fromEntries(dependencies.map((record) => [record.moduleId, record.source])),
+      });
+      if (!compiled.ok)
+        return { ok: false, error: commandError(compiled.error, 'shader-check-failed') };
+      return {
+        ok: true,
+        value: {
+          root: facts.value.root,
+          path: target,
+          scope: 'source',
+          sourceDigest: `sha256:${createHash('sha256').update(source).digest('hex')}`,
+          dependencies: dependencies.map((record) => record.path).sort(),
+        },
+      };
     } catch (cause) {
-      return { ok: false, error: commandError(cause, 'shader-source-unreadable') };
+      return { ok: false, error: commandError(cause, 'shader-check-failed') };
     }
   }
   const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-shader-check-'));
@@ -24,9 +75,6 @@ export async function shaderCheckCommand(
   try {
     process.chdir(facts.value.root);
     const config = await createViteConfig(facts.value, 'build');
-    // The project build compiles only reachable shaders; the named file joins
-    // as an extra entry so an unreferenced module still reaches the compiler.
-    const input = config.build?.rollupOptions?.input;
     await viteBuild({
       ...config,
       build: {
@@ -34,17 +82,9 @@ export async function shaderCheckCommand(
         outDir: temporary,
         emptyOutDir: true,
         write: true,
-        ...(target === undefined || typeof input !== 'object' || Array.isArray(input)
-          ? {}
-          : {
-              rollupOptions: {
-                ...config.build?.rollupOptions,
-                input: { ...input, 'shader-check': target },
-              },
-            }),
       },
     });
-    return { ok: true, value: { root: facts.value.root, path: target ?? null } };
+    return { ok: true, value: { root: facts.value.root, path: null, scope: 'project' } };
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'shader-check-failed') };
   } finally {

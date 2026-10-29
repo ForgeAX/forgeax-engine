@@ -140,7 +140,10 @@ const fixtures = vi.hoisted(() => {
   };
 });
 
-vi.mock('node:child_process', () => ({ spawn: fixtures.spawn }));
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  spawn: fixtures.spawn,
+}));
 vi.mock('../browser-capture.js', () => ({ createBrowserCapture: fixtures.createBrowserCapture }));
 vi.mock('../live-project-inputs.js', () => ({
   readLiveProjectInputs: fixtures.readLiveProjectInputs,
@@ -308,8 +311,8 @@ describe('live DevKit borrowed carrier boundary', () => {
       });
       const verify = (args: object = { revision }) => request(port, '/verify', 'POST', args);
       expect(await verify({})).toMatchObject({
-        ok: false,
-        error: { code: 'live-revision-required' },
+        ok: true,
+        value: { revision, verified: 'runtime' },
       });
       expect(await verify({ revision, timeoutMs: -1 })).toMatchObject({
         ok: false,
@@ -925,6 +928,61 @@ function reconnectingBridge(
   };
 }
 
+describe('live observation diagnostics', () => {
+  it('retains structured Worker failures through camera checks and live operations', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-observation-error-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.page.evaluate.mockResolvedValue(2);
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
+    const failure = {
+      code: 'app-not-started',
+      expected: 'a running App in the selected execution realm',
+      hint: 'Inspect the owning execution before retrying observation.',
+      detail: { realm: 'worker', state: 'stopped', worldIdentity: 'observation-world' },
+    };
+    const bridge = new WebSocket(ownerBridgeUrl(port));
+    bridge.on('message', (raw) => {
+      const message = JSON.parse(String(raw));
+      const result =
+        message.type === 'status'
+          ? { ok: true as const, value: { worldIdentity: 'observation-world' } }
+          : { ok: false as const, error: failure };
+      bridge.send(
+        JSON.stringify({
+          type: 'result',
+          id: message.id,
+          payload: serializeBridgeResult(structuredClone(result)),
+        }),
+      );
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        bridge.once('open', resolve);
+        bridge.once('error', reject);
+      });
+      await vi.waitFor(async () => {
+        expect(await request(port, '/status', 'GET')).toMatchObject({
+          ok: true,
+          value: { phase: 'ready' },
+        });
+      });
+      for (const path of ['/capture', '/camera/get']) {
+        expect(await request(port, path, 'POST')).toEqual({ ok: false, error: failure });
+      }
+      expect(fixtures.session.capture).not.toHaveBeenCalled();
+    } finally {
+      bridge.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('live readiness waiting', () => {
   it('runs commands against the rebuilt runtime instead of rejecting transient states', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-ready-wait-'));
@@ -1180,6 +1238,73 @@ describe('live readiness waiting guards', () => {
       await rm(root, { recursive: true, force: true });
     }
   }
+
+  it('reopens a page whose bridge stays lost instead of waiting out the budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-bridge-lost-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.page.evaluate.mockResolvedValue('2');
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+    });
+    // Each opened page connects once; a lost page never reconnects on its own.
+    const sockets: WebSocket[] = [];
+    const connectPage = () => {
+      const socket = new WebSocket(ownerBridgeUrl(port));
+      sockets.push(socket);
+      socket.on('message', (raw) => {
+        const message = JSON.parse(String(raw));
+        if (message.type !== 'status' && message.type !== 'eval') return;
+        socket.send(
+          JSON.stringify({
+            type: 'result',
+            id: message.id,
+            payload: { ok: true, value: { worldIdentity: 'reopened-world' } },
+          }),
+        );
+      });
+      socket.on('error', () => {});
+    };
+    const opened = () => fixtures.browser.open.mock.calls.length;
+    let connectedPages = 0;
+    const pages = setInterval(() => {
+      if (opened() > connectedPages) {
+        connectedPages = opened();
+        connectPage();
+      }
+    }, 20);
+    const ready = async () => {
+      let revision = '';
+      await vi.waitFor(async () => {
+        const status = (await request(port, '/status', 'GET')) as {
+          value: { phase: string; revision: string };
+        };
+        expect(status.value.phase).toBe('ready');
+        revision = status.value.revision;
+      });
+      return revision;
+    };
+    try {
+      await ready();
+      expect(opened()).toBe(1);
+      for (const socket of sockets) socket.terminate();
+      const startedAt = Date.now();
+      const found = (await request(port, '/find', 'POST', { name: 'Player' })) as {
+        ok: boolean;
+        value: { waitedMs: number };
+      };
+      expect(found).toMatchObject({ ok: true, value: { waitedMs: expect.any(Number) } });
+      expect(opened()).toBe(2);
+      expect(Date.now() - startedAt).toBeLessThan(20_000);
+    } finally {
+      clearInterval(pages);
+      for (const socket of sockets) socket.terminate();
+      fixtures.page.evaluate.mockResolvedValue(undefined);
+      await request(port, '/stop', 'POST').catch(() => undefined);
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 40_000);
 
   it('never re-runs an admitted mutation after its instance changed', async () => {
     await withLiveOwner(async (fixture) => {

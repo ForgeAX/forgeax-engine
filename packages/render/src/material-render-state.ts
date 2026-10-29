@@ -1,5 +1,10 @@
 import type { MaterialRenderState } from '@forgeax/engine-types';
 
+/** Serialize current state at the existing signature boundary. */
+export function renderStateSignature(state: object): string {
+  return JSON.stringify(state);
+}
+
 /** Affine model parity, independent of translation and nonuniform scale magnitude. */
 export function isReflectedTransform(world: Float32Array): boolean {
   const a = world[0] ?? 0,
@@ -29,7 +34,7 @@ export function reflectedRenderState(
   const frontFace = state.frontFace === 'cw' ? 'ccw' : 'cw';
   let mirrored = reflectedStates.get(state);
   if (mirrored === undefined || !sameReflection(state, mirrored, frontFace)) {
-    mirrored = { ...state, frontFace };
+    mirrored = Object.freeze({ ...state, frontFace });
     reflectedStates.set(state, mirrored);
   }
   return mirrored;

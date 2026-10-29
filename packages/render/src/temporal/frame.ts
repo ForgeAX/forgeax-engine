@@ -51,7 +51,7 @@ export interface TemporalFrameTransactionInspection {
 
 export interface TemporalFrameTransaction {
   stage(input: TemporalFrameInput): void;
-  commit(submit: TemporalSubmitResult): Result<TemporalFrame, TemporalFrameSubmitError>;
+  commit(submit: TemporalSubmitResult): Result<void, TemporalFrameSubmitError>;
   snapshot(): TemporalFrame;
   /** The last frame a submission accepted, or undefined before the first and after a reset. */
   accepted(): TemporalFrame | undefined;
@@ -119,13 +119,15 @@ export function createTemporalFrameTransaction(options: {
       if (shouldReset) historyEpoch += 1;
       const next: TemporalFrame = {
         frameId: staged.frameId,
-        currentViewProjection: new Float32Array(staged.currentViewProjection),
+        // stage() already detached these private inputs. Commit transfers
+        // them to accepted history; public results still use copyFrame().
+        currentViewProjection: staged.currentViewProjection,
         previousViewProjection:
           accepted === undefined || shouldReset
             ? undefined
             : new Float32Array(accepted.currentViewProjection),
-        jitter: [staged.jitter[0], staged.jitter[1]],
-        viewport: { ...staged.viewport },
+        jitter: staged.jitter,
+        viewport: staged.viewport,
         currentCameraPosition: staged.cameraPosition ?? [0, 0, 0],
         previousCameraPosition:
           accepted === undefined || shouldReset ? undefined : accepted.currentCameraPosition,
@@ -137,7 +139,7 @@ export function createTemporalFrameTransaction(options: {
       staged = undefined;
       pendingResetReason = undefined;
       lastFailure = undefined;
-      return ok(copyFrame(next));
+      return ok(undefined);
     },
     snapshot() {
       if (accepted === undefined)

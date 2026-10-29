@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runGroups } from '../lib/run-bounded-groups.mjs';
 import { readMemoryPressureDiagnostics } from '../lib/runner-resources.mjs';
+import { readBrowserCosts, summarizeBrowserCosts } from './browser-cost-report.mjs';
 import hostFiles from './browser-host-files.json' with { type: 'json' };
 import { browserProcessCacheDir } from './browser-process-cache.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
@@ -101,6 +102,11 @@ const shortRendererBootstrapBrowserFiles = new Set([
 const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run 40654473789 crossed the unchanged 120 s render/reference/replay case
+  // beside a 111 s lighting-channel group on the same eight-CPU affinity set.
+  'packages/three/src/__tests__/render.browser.test.ts',
+  // The complete capture passed alone on Linux after mixed group 86 stalled.
+  'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
   // Run 39457755532 exceeded 300 s beside a 237 s GPU neighbor. The complete
   // 24-case owner later took 280.693 s alone (run 39554721730), so its cases are
   // partitioned across two processes that keep the original deadlines.
@@ -124,6 +130,7 @@ const exclusiveRunnerBrowserFiles = new Set([
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
 ]);
 const browserProcessIsolatedFiles = new Set([
+  'packages/three/src/__tests__/render.browser.test.ts',
   ...threeShadowBrowserFiles,
   ...threeMaterialOutputBrowserFiles,
   'packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts',
@@ -176,6 +183,7 @@ const browserProcessIsolatedFiles = new Set([
   'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
   'packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts',
   'packages/runtime/src/__tests__/wave1-rendering-recovery.browser.test.ts',
+  'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
   'packages/app/__tests__/render-worker-environment.browser.test.ts',
 ]);
 const renderingGroupSize = 4;
@@ -549,10 +557,17 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
     '--project=browser',
     '--passWithNoTests=false',
     `--maxWorkers=${maxWorkers}`,
+    ...(process.env.FORGEAX_BROWSER_COST_REPORT === '1'
+      ? [
+          '--reporter=default',
+          `--reporter=${path.join(rootDir, 'scripts/ci/browser-cost-reporter.mjs')}`,
+        ]
+      : []),
     ...group,
   ];
   const environment = withBrowserHeapLimit({
     ...process.env,
+    FORGEAX_BROWSER_COST_COORDINATOR: '1',
     FORGEAX_BROWSER_ENTITY_VISIBILITY: '0',
     FORGEAX_BROWSER_CROSS_ORIGIN_ISOLATED: group.some(
       (file) =>
@@ -578,7 +593,14 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
   if (result.pid !== undefined && result.cleanup?.kind !== 'failed') {
     rmSync(browserProcessCacheDir(rootDir, result.pid), { recursive: true, force: true });
   }
-  if (result.status === 0) return;
+  if (result.status === 0)
+    return {
+      elapsedMs: result.elapsedMs,
+      files:
+        process.env.FORGEAX_BROWSER_COST_REPORT === '1'
+          ? readBrowserCosts(result.output, group)
+          : [],
+    };
   if (result.signal === 'SIGKILL') {
     process.stderr.write(
       `[vitest] browser group ${groupIndex} memory-pressure=${JSON.stringify(readMemoryPressureDiagnostics())}\n`,
@@ -655,22 +677,31 @@ async function main() {
   const selectedIndexes = groups
     .map((_group, index) => index)
     .filter((index) => shardAssignment[index] === options.shardIndex);
-  await runGroups({
-    groups: selectedIndexes,
-    concurrency: options.groupConcurrency,
-    order: browserGroupRunOrder(groups, selectedIndexes, options.groupConcurrency),
-    isExclusive: (index) => browserGroupRequiresExclusiveRunner(groups[index]),
-    runGroupImpl: async (index) => {
-      if (!browserGroupIsHostOnly(groups[index])) await prepareShaders();
-      await runGroup({
-        cliPath,
-        group: groups[index],
-        groupIndex: index + 1,
-        groupCount: groups.length,
-        maxWorkers: options.maxWorkers,
-      });
-    },
-  });
+  const observations = [];
+  let complete = false;
+  try {
+    await runGroups({
+      groups: selectedIndexes,
+      concurrency: options.groupConcurrency,
+      order: browserGroupRunOrder(groups, selectedIndexes, options.groupConcurrency),
+      isExclusive: (index) => browserGroupRequiresExclusiveRunner(groups[index]),
+      runGroupImpl: async (index) => {
+        if (!browserGroupIsHostOnly(groups[index])) await prepareShaders();
+        const observation = await runGroup({
+          cliPath,
+          group: groups[index],
+          groupIndex: index + 1,
+          groupCount: groups.length,
+          maxWorkers: options.maxWorkers,
+        });
+        observations.push(observation);
+      },
+    });
+    complete = true;
+  } finally {
+    if (process.env.FORGEAX_BROWSER_COST_REPORT === '1')
+      summarizeBrowserCosts(observations, { shard: options.shardIndex, complete });
+  }
   process.stdout.write(
     `[vitest] split browser passed: groups=${groups.length}, selected=${selectedGroups.length}, files=${files.length}, shard=${options.shardIndex + 1}/${options.shardCount}, strategy=${options.shardStrategy}, groupConcurrency=${options.groupConcurrency}\n`,
   );

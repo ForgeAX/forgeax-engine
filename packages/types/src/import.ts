@@ -396,6 +396,13 @@ export type ImportProductFinalizeResult =
 
 /** Optional producer capability exposed to the generic import runner. */
 export interface ImporterCapabilities {
+  /** Producer-owned single-output source formats admitted by asset add. */
+  readonly sourceFormats?: readonly {
+    readonly extensions: readonly string[];
+    readonly kind: ImportSubAsset['kind'];
+    readonly sourceKey: string;
+    readonly importSettings: Readonly<Record<string, unknown>>;
+  }[];
   readonly decodeImage?: ImportContext['decodeImage'];
   /** Producer-owned Catalog visibility for declarations before materialization. */
   readonly catalog?: {

@@ -45,12 +45,23 @@ export interface SourceTransferOptions extends ProjectCommandOptions {
   readonly cloneIdentities?: boolean;
   readonly expectedRevision?: string;
 }
-function conflict(path: string, reason: string): never {
+function conflict(
+  path: string,
+  reason: string,
+  versions?: { readonly sourceVersion: string; readonly targetVersion: string },
+): never {
   throw {
     code: 'pack-source-revision-conflict',
     expected: 'one validated author closure with consistent identities and locked dependencies',
-    hint: 'repair the reported conflict or explicitly clone identities into an unused directory',
-    detail: { path, reason },
+    hint:
+      versions === undefined
+        ? 'Repair detail.reason at detail.path; clone only when intentionally creating independent asset identities.'
+        : 'Align the producer and consumer dependency versions and lock evidence before retrying; cloning asset identity does not resolve SDK incompatibility.',
+    detail: {
+      path,
+      reason,
+      ...(versions === undefined ? {} : { kind: 'dependency-version', ...versions }),
+    },
   };
 }
 /** Source mutations reject symlink ancestors instead of writing outside the selected project. */
@@ -188,7 +199,10 @@ async function dependencyCandidate(
         'local SDK dependencies need matching target integrity; new dependencies require registry versions',
       );
     if (current && current.version !== entry.version)
-      conflict(name, `locked version conflict: ${current.version} versus ${entry.version}`);
+      conflict(name, 'locked dependency versions differ', {
+        sourceVersion: entry.version,
+        targetVersion: current.version,
+      });
     if (!current) {
       changed = true;
       const version = entry.version.split('(')[0] ?? entry.version;

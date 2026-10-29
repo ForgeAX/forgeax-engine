@@ -70,7 +70,11 @@ function captureViewUbo(light: DirectionalLightSnapshot): { payload: Float32Arra
   let captured: Float32Array | undefined;
   const queue = {
     writeBuffer: (_buf: Buffer, _off: number, data: ArrayBufferView | ArrayBuffer) => {
-      captured = new Float32Array((data as ArrayBufferView).buffer ?? (data as ArrayBuffer));
+      // Match writeBuffer's synchronous consumption; uploaded bytes are not a retained view.
+      const bytes = ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : new Uint8Array(data);
+      captured = new Float32Array(bytes.slice().buffer);
       return ok(undefined);
     },
   } as unknown as RhiQueue;

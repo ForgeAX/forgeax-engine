@@ -297,8 +297,8 @@ async function pixels(
   );
   expect(offsets).toHaveLength(commandCount);
   const signature = stockRecording
-    ? (frame._recordingTopologySignature ?? frame.topologySignature)
-    : frame.topologySignature;
+    ? (frame._recordingTopologySignature?.() ?? frame.topologySignature())
+    : frame.topologySignature();
   if (retained?.run !== undefined && retained.signature === signature)
     return retained.run(frame, commands, commandCount, offsets);
   await retained?.dispose?.();
@@ -976,7 +976,7 @@ it('reuses one compiled raster across binding order, unused keys and live split/
       const count = f.production.inspect().indirectDrawCount;
       expect(f.production.inspect().batchCount).toBe(sequence === 2 || sequence === 5 ? 1 : 2);
       expect(count).toBe(sequence === 2 || sequence === 5 ? 2 : 4);
-      signatures.push(frame.topologySignature);
+      signatures.push(frame.topologySignature());
       const value = await pixels(f, frame, commands, count, retained);
       baseline ??= value;
       expect(value).toEqual(baseline);
@@ -1195,14 +1195,14 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
           .unwrap();
       }
       const pool = defined(frame.shadowViewPool);
-      if (compute === undefined || computeSignature !== frame.topologySignature) {
+      if (compute === undefined || computeSignature !== frame.topologySignature()) {
         await compute?.retire();
         const graph = new RenderGraphBuilder<{ encoder: RhiCommandEncoder }>();
         for (const { identity } of views) pool.project(graph, identity, true).unwrap();
         compute = graph
           .compile({ device: f.device, surfaceSize: { width: 32, height: 16 } })
           .unwrap();
-        computeSignature = frame.topologySignature;
+        computeSignature = frame.topologySignature();
         computeBuilds++;
       }
       const encoder = f.device.createCommandEncoder().unwrap();
@@ -1212,7 +1212,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
           rasterCounts[viewIndex] = (rasterCounts[viewIndex] ?? 0) + 1;
           const submitted = defined(pool.submission(identity));
           const projections = defined(
-            frame.shadowBatchProjections?.get(shadowViewIdentityKey(identity)),
+            frame.shadowBatchProjections?.()?.get(shadowViewIdentityKey(identity)),
           );
           const batches = [];
           for (const batch of submitted.plan.batches) {

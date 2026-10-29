@@ -16,6 +16,7 @@ import {
   captureMeshPipelinePreparation,
   createDynamicGeometrySourceHost,
 } from '@forgeax/engine-render/internal';
+import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import {
   type CaptureFrameOptions,
   createRhiDebugError,
@@ -219,8 +220,12 @@ export class SourceRenderWorker {
       });
     this.worker = worker;
     // Session closures outlive startup and must not capture the library.
-    this.startupPipelineLibrary = pipelineLibrary;
-    this.startupBackgroundPipelineLibrary = backgroundPipelineLibrary;
+    this.startupPipelineLibrary =
+      pipelineLibrary === undefined ? undefined : ownPipelineLibrary(pipelineLibrary);
+    this.startupBackgroundPipelineLibrary =
+      backgroundPipelineLibrary === undefined
+        ? undefined
+        : ownPipelineLibrary(backgroundPipelineLibrary);
     await new Promise<void>((resolve, reject) => {
       let ready = false;
       let failurePending = false;
@@ -878,6 +883,12 @@ export class SourceRenderWorker {
           ...(options.pipelineLibrary === undefined
             ? {}
             : { pipelineLibrary: options.pipelineLibrary }),
+          ...(options.pipelineLibraryCollection === undefined
+            ? {}
+            : { pipelineLibraryCollection: options.pipelineLibraryCollection }),
+          ...(options.pipelineLibraryLimits === undefined
+            ? {}
+            : { pipelineLibraryLimits: options.pipelineLibraryLimits }),
           ...(options.runtimeRequests === undefined
             ? {}
             : { runtimeRequests: options.runtimeRequests }),

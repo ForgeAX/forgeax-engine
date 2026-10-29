@@ -9,20 +9,13 @@ import { createServer as createNetServer } from 'node:net';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
-import { audioImporter } from '@forgeax/engine-audio-webaudio/audio-importer';
-import { fbxImporter } from '@forgeax/engine-fbx';
-import { fontImporter } from '@forgeax/engine-font/font-importer';
-import { gltfImporter } from '@forgeax/engine-gltf/node-importer';
 import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
 import { createHostAssembly, type HostAssembly } from '@forgeax/engine-host/protocol';
 import { attachHostWebSocketServer, createHostTransport } from '@forgeax/engine-host/transport';
-import { imageImporter } from '@forgeax/engine-image/image-importer';
 import {
   createScriptablePackProductCache,
   createStandardAssetOutputProducerRegistry,
-  iesImporter,
 } from '@forgeax/engine-import';
-import { objImporter, stlImporter, svgImporter } from '@forgeax/engine-mesh-io';
 import { encodeCatalogWire } from '@forgeax/engine-pack';
 import type { PackError } from '@forgeax/engine-pack/errors';
 import {
@@ -46,7 +39,6 @@ import {
   type LoadProgressLabels,
   resolveLoadProgressLabels,
 } from '@forgeax/engine-types';
-import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
@@ -117,6 +109,7 @@ import {
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
+import { DEFAULT_IMPORTERS } from './importers.js';
 import { LIVE_BRIDGE_OWNER_PARAM } from './live-bridge-url.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
@@ -171,18 +164,7 @@ export async function disposeDevKitHosts(): Promise<void> {
   for (const host of hosts) await host.dispose();
 }
 
-export const DEFAULT_IMPORTERS: readonly Importer[] = [
-  audioImporter,
-  imageImporter,
-  fbxImporter,
-  gltfImporter,
-  objImporter,
-  stlImporter,
-  svgImporter,
-  fontImporter,
-  iesImporter,
-  createUiImporter(),
-];
+export { DEFAULT_IMPORTERS } from './importers.js';
 
 export function ignoreDevKitCatalogPath(path: string): boolean {
   const normalized = path.replace(/\\/g, '/');
@@ -2176,15 +2158,34 @@ if (query.has('forgeax-tool-replay')) {
 `;
 }
 
+async function readBuildHtmlHead(
+  facts: ProjectFacts,
+  target: BuildOptions['target'],
+  htmlHead: BuildOptions['htmlHead'],
+): Promise<string> {
+  if (htmlHead === undefined) return '';
+  if (target === 'wechat')
+    throw {
+      code: 'build-html-unsupported',
+      expected: 'an HTML presentation target',
+      hint: 'Use browser or tauri for an HTML head fragment.',
+      detail: { target: target },
+    };
+  return readFile(resolve(facts.root, htmlHead), 'utf8');
+}
+
 function htmlSource(
   title: string,
   startupScreen = true,
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
   versions?: HostVersions,
+  head = '',
 ): string {
-  return hostStartupDocument(title, labels, versions).replace(
-    '  </body>',
-    `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
+  return hostStartupDocument(title, labels, versions)
+    .replace('  </head>', `${head}\n  </head>`)
+    .replace(
+      '  </body>',
+      `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
     <script>
       (() => {
         // This inert marker keeps generated pages inspectable by older hosts
@@ -2201,7 +2202,7 @@ function htmlSource(
       }
     </script>
   </body>`,
-  );
+    );
 }
 
 export async function materializeViteDevPort(port: number): Promise<number> {
@@ -2238,6 +2239,7 @@ export async function buildProject(
         ...(options.target === undefined ? {} : { target: options.target }),
         ...(options.animation === undefined ? {} : { animation: options.animation }),
         ...(options.sourcemap === undefined ? {} : { sourcemap: options.sourcemap }),
+        ...(options.htmlHead === undefined ? {} : { htmlHead: options.htmlHead }),
         ...(options.materialProfile === undefined
           ? {}
           : { materialProfile: options.materialProfile }),
@@ -2983,6 +2985,7 @@ export async function createViteConfig(
     readonly bootstrapRoot?: BootstrapRoot;
     readonly outDir?: string;
     readonly sourcemap?: BuildOptions['sourcemap'];
+    readonly htmlHead?: BuildOptions['htmlHead'];
     readonly server?: ProjectPortOptions;
     readonly host?: DevKitHostBinding;
     readonly sessionGeneration?: number;
@@ -3000,6 +3003,7 @@ export async function createViteConfig(
   } = {},
 ): Promise<InlineConfig> {
   assertMaterialProfileTarget(options.materialProfile, options.target);
+  const htmlHead = await readBuildHtmlHead(facts, options.target, options.htmlHead);
   const animation =
     options.animation === undefined
       ? environmentAnimationPlayback()
@@ -3125,6 +3129,7 @@ export async function createViteConfig(
           bootstrapRoot === 'project-bootstrap',
           resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
           await hostVersions(facts),
+          htmlHead,
         ),
       ),
       writeFile(

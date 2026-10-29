@@ -2811,10 +2811,10 @@ index a32b339..df84f74 100644
 +    }
 +}
 diff --git a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs
-index 83b1e19..de82046 100644
+index 83b1e19..7079a1a 100644
 --- a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs
 +++ b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs
-@@ -254,6 +254,112 @@ fn handle_penetration_at_start_time<D, SM1, SM2>(
+@@ -254,6 +254,173 @@ fn handle_penetration_at_start_time<D, SM1, SM2>(
      sum_linear_thickness: Real,
      max_angular_thickness: Real,
  ) -> Option<ShapeCastHit>
@@ -2866,6 +2866,19 @@ index 83b1e19..de82046 100644
 +    {
 +        return false;
 +    }
++    penetration_speed_bound(motion1, g1, motion2, g2)
++        .is_some_and(|speed| penetration_motion_is_within(speed, end_time, thickness))
++}
++
++/// Upper bound of the relative speed of any pair of contact points, or `None`
++/// when the inputs are too uncertain to bound.
++#[cfg(all(feature = "dim3", feature = "f32"))]
++fn penetration_speed_bound(
++    motion1: &NonlinearRigidMotion,
++    g1: &dyn Shape,
++    motion2: &NonlinearRigidMotion,
++    g2: &dyn Shape,
++) -> Option<Real> {
 +    let mut speed = 0.0;
 +    for (motion, shape) in [(motion1, g1), (motion2, g2)] {
 +        if !motion.start.translation.is_finite()
@@ -2873,25 +2886,34 @@ index 83b1e19..de82046 100644
 +            || !motion.linvel.is_finite()
 +            || !motion.angvel.is_finite()
 +        {
-+            return false;
++            return None;
 +        }
 +        let norm2 = motion.start.rotation.length_squared();
 +        if !norm2.is_finite() || (norm2 - 1.0).abs() > 1.0e-4 {
-+            return false;
++            return None;
 +        }
 +        speed += penetration_motion_length(motion.linvel);
 +        let angular = penetration_motion_length(motion.angvel);
 +        if angular != 0.0 {
 +            let sphere = shape.compute_local_bounding_sphere();
 +            if !sphere.center.is_finite() || !sphere.radius.is_finite() || sphere.radius < 0.0 {
-+                return false;
++                return None;
 +            }
 +            let radius =
 +                penetration_motion_length(sphere.center - motion.local_center) + sphere.radius;
 +            speed += angular * radius;
 +        }
 +    }
-+    let motion = speed * end_time;
++    Some(speed)
++}
++
++/// Whether `speed` over `duration` stays below the penetration loop's acceptance threshold.
++#[cfg(all(feature = "dim3", feature = "f32"))]
++fn penetration_motion_is_within(speed: Real, duration: Real, thickness: Real) -> bool {
++    if !(duration > 0.0 && duration.is_finite()) || !(thickness > 0.0 && thickness.is_finite()) {
++        return false;
++    }
++    let motion = speed * duration;
 +    // Every contact-point normal speed is bounded by the sum of both linear
 +    // speeds and angular speeds times their COM-relative enclosing radii.
 +    // The penetration loop's threshold is at least `thickness`. Keep a fourfold
@@ -2924,10 +2946,79 @@ index 83b1e19..de82046 100644
 +    sum_linear_thickness: Real,
 +    max_angular_thickness: Real,
 +) -> Option<ShapeCastHit>
++where
++    D: ?Sized + QueryDispatcher,
++    SM1: ?Sized + SupportMap,
++    SM2: ?Sized + SupportMap,
++{
++    scan_penetration_contacts(
++        dispatcher,
++        motion1,
++        sm1,
++        g1,
++        motion2,
++        sm2,
++        g2,
++        start_time,
++        end_time,
++        sum_linear_thickness,
++        max_angular_thickness,
++        true,
++    )
++}
++
++/// The original penetration scan. With `skip_bounded_tail`, it stops as soon as the
++/// remaining motion provably cannot satisfy the acceptance test of any later sample;
++/// every skipped sample would have been rejected, so the result is unchanged.
++#[allow(clippy::too_many_arguments)]
++fn scan_penetration_contacts<D, SM1, SM2>(
++    dispatcher: &D,
++    motion1: &NonlinearRigidMotion,
++    sm1: &SM1,
++    g1: &dyn Shape,
++    motion2: &NonlinearRigidMotion,
++    sm2: &SM2,
++    g2: &dyn Shape,
++    start_time: Real,
++    end_time: Real,
++    sum_linear_thickness: Real,
++    max_angular_thickness: Real,
++    skip_bounded_tail: bool,
++) -> Option<ShapeCastHit>
  where
      D: ?Sized + QueryDispatcher,
      SM1: ?Sized + SupportMap,
-@@ -501,3 +607,155 @@ where
+@@ -306,9 +473,29 @@ where
+ 
+     let mut next_time = start_time;
+ 
++    // A sample at `next_time` is accepted only if
++    // `normal_vel * (end_time - next_time) > ccd_threshold >= sum_linear_thickness`.
++    // `normal_vel` never exceeds the speed bound, and with a positive increment the
++    // remaining duration only shrinks, so once the bound fails for one sample it
++    // fails for every later sample.
++    #[cfg(all(feature = "dim3", feature = "f32"))]
++    let tail_speed = if skip_bounded_tail && time_increment > 0.0 {
++        penetration_speed_bound(motion1, g1, motion2, g2)
++    } else {
++        None
++    };
++    #[cfg(not(all(feature = "dim3", feature = "f32")))]
++    let _ = skip_bounded_tail;
++
+     // TODO: looping until we reach π sounds enough for most purposes.
+     //       Is there a practical case where we need to loop until we reach 2π ?
+     while next_time < end_time {
++        #[cfg(all(feature = "dim3", feature = "f32"))]
++        if let Some(speed) = tail_speed {
++            if penetration_motion_is_within(speed, end_time - next_time, sum_linear_thickness) {
++                return None;
++            }
++        }
+         // dbg!("A");
+         let pos1_at_next_time = motion1.position_at_time(next_time);
+         let pos2_at_next_time = motion2.position_at_time(next_time);
+@@ -501,3 +688,222 @@ where
  
      (range, niter)
  }
@@ -3081,6 +3172,73 @@ index 83b1e19..de82046 100644
 +        assert!(!penetration_motion_is_bounded(
 +            &a, &shape, &b, &shape, 0.0, 0.01, 0.2
 +        ));
++    }
++
++    fn same_hit(a: &Option<ShapeCastHit>, b: &Option<ShapeCastHit>) -> bool {
++        match (a, b) {
++            (None, None) => true,
++            (Some(a), Some(b)) => {
++                let bits = |h: &ShapeCastHit| {
++                    let mut v = [h.time_of_impact.to_bits(); 13];
++                    for (i, p) in [h.witness1, h.witness2, h.normal1, h.normal2].into_iter().enumerate() {
++                        for (j, x) in p.to_array().into_iter().enumerate() {
++                            v[1 + i * 3 + j] = x.to_bits();
++                        }
++                    }
++                    v
++                };
++                bits(a) == bits(b) && core::mem::discriminant(&a.status) == core::mem::discriminant(&b.status)
++            }
++            _ => false,
++        }
++    }
++
++    #[test]
++    fn bounded_tail_skip_matches_the_full_penetration_scan() {
++        use crate::shape::ConvexPolyhedron;
++        let cuboid = Cuboid::new(Vector::new(0.25, 0.05, 0.15));
++        let hull = ConvexPolyhedron::from_convex_hull(&[
++            Vector::new(-0.2, -0.1, -0.1), Vector::new(0.3, -0.1, -0.05), Vector::new(0.0, 0.2, 0.0),
++            Vector::new(-0.1, 0.0, 0.25), Vector::new(0.1, -0.05, -0.3), Vector::new(0.15, 0.15, 0.2),
++        ]).unwrap();
++        let shapes: [&dyn Shape; 2] = [&cuboid, &hull];
++        let (mut skipped_some, mut hits, mut cases) = (false, 0, 0);
++        for (i, g2) in shapes.iter().enumerate() {
++            for k in 0..240u32 {
++                let f = |n: u32| ((k.wrapping_mul(2654435761).wrapping_add(n * 40503) >> 7) % 2001) as Real / 1000.0 - 1.0;
++                let scale = [0.02, 0.3, 3.0, 30.0][(k % 4) as usize];
++                let a = NonlinearRigidMotion::new(
++                    Pose::from_parts(Vector::new(f(1), f(2), f(3)) * 0.1, crate::math::Rotation::from_scaled_axis(Vector::new(f(4), f(5), f(6)))),
++                    Vector::new(f(7), f(8), f(9)) * 0.05,
++                    Vector::new(f(10), f(11), f(12)) * scale,
++                    Vector::new(f(13), f(14), f(15)) * scale * 2.0,
++                );
++                let b = if k % 3 == 0 { fixed() } else {
++                    NonlinearRigidMotion::new(Pose::from_translation(Vector::new(f(16), f(17), f(18)) * 0.05), Vector::ZERO,
++                        Vector::new(f(19), f(20), f(21)) * scale * 0.5, Vector::new(f(22), f(23), f(24)) * scale)
++                };
++                let start = [0.0, 0.0, 0.004, 0.01][(k % 4) as usize];
++                let end = [1.0 / 60.0, 0.05, 0.1][(k % 3) as usize];
++                let thickness = cuboid.ccd_thickness() + g2.ccd_thickness();
++                let angular = cuboid.ccd_angular_thickness().max(g2.ccd_angular_thickness());
++                let sm2 = g2.as_support_map().unwrap();
++                let run = |skip| scan_penetration_contacts(
++                    &DefaultQueryDispatcher, &a, &cuboid, &cuboid, &b, sm2, *g2, start, end, thickness, angular, skip,
++                );
++                let (fast, full) = (run(true), run(false));
++                assert!(same_hit(&fast, &full), "shape {i} case {k}: {fast:?} != {full:?}");
++                cases += 1;
++                hits += fast.is_some() as usize;
++                if let Some(speed) = penetration_speed_bound(&a, &cuboid, &b, *g2) {
++                    // The cut applies before the last full-interval sample.
++                    skipped_some |= !penetration_motion_is_within(speed, end - start, thickness)
++                        && penetration_motion_is_within(speed, (end - start) * 0.5, thickness);
++                }
++            }
++        }
++        assert_eq!(cases, 480);
++        assert!(hits > 0, "the cases must include accepted penetrations");
++        assert!(skipped_some, "the cases must exercise a mid-scan skip");
 +    }
 +}
 diff --git a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
@@ -4333,7 +4491,7 @@ index ed97962..07e40bb 100644
      ///
      /// This is the most common way to construct a `TriMesh`. The mesh is created with
 diff --git a/src/shape/voxels/voxels.rs b/src/shape/voxels/voxels.rs
-index 892b9f5..b99daad 100644
+index 892b9f5..ddd9f77 100644
 --- a/src/shape/voxels/voxels.rs
 +++ b/src/shape/voxels/voxels.rs
 @@ -589,8 +589,11 @@ impl Voxels {
@@ -4398,7 +4556,7 @@ index 892b9f5..b99daad 100644
      /// Computes a voxel shape from a set of world-space points.
      ///
      /// This constructor converts continuous world-space coordinates into discrete grid coordinates
-@@ -938,6 +982,41 @@ impl Voxels {
+@@ -938,6 +982,44 @@ impl Voxels {
              })
      }
  
@@ -4423,6 +4581,9 @@ index 892b9f5..b99daad 100644
 +            };
 +            for voxel in chunk.voxels() {
 +                let min = voxel.grid_coords;
++                // Voxels are yielded in ascending x. A cuboid starting at or beyond
++                // `maxs.x` is never visited, and only earlier starts affect `visited`.
++                if min.x >= maxs.x { break; }
 +                if visited[index(min)] { continue; }
 +                let mut max = min + IVector::ONE;
 +                let available = |p: IVector| !visited[index(p)] && !chunk.states[index(p)].is_empty();
@@ -4440,7 +4601,7 @@ index 892b9f5..b99daad 100644
      fn voxel_to_chunk_key(voxel_key: IVector) -> IVector {
          fn div_floor(a: Int, b: usize) -> Int {
              let sign = (a < 0) as Int;
-@@ -1026,3 +1105,58 @@ impl Voxels {
+@@ -1026,3 +1108,87 @@ impl Voxels {
          (ivect_to_vect(key) + Vector::splat(0.5)) * self.voxel_size
      }
  }
@@ -4497,6 +4658,35 @@ index 892b9f5..b99daad 100644
 +            [IVector::new(0, -1, -5), IVector::new(1, 2, 5)],
 +            [IVector::new(30, 0, 0), IVector::new(31, 1, 1)],
 +        ] { let _ = assert_partition(&voxels, min, max); }
++    }
++
++    #[test]
++    fn range_query_visits_the_range_independent_decomposition_in_order() {
++        // Each chunk's greedy decomposition does not depend on the query range.
++        // A sub-range must visit exactly the intersecting cuboids of a whole-grid
++        // query, in the same order, so stopping a chunk scan early is unobservable.
++        let mut regions = Vec::new();
++        for x in -13..14i32 { for y in -6..7i32 { for z in -11..12i32 {
++            if (x * 7 + y * 3 + z * 5).rem_euclid(13) > 2 || (y < -2 && x % 3 != 0) {
++                let min = IVector::new(x, y, z);
++                regions.push([min, min + IVector::ONE]);
++            }
++        } } }
++        regions.push([IVector::new(-5, -6, -4), IVector::new(6, -1, 7)]);
++        let voxels = Voxels::from_regions(Vector::new(0.25, 0.1, 0.25), &regions);
++        let mut all = Vec::new();
++        voxels.map_cuboids_intersecting_range(IVector::splat(-64), IVector::splat(64), |lo, hi| all.push((lo, hi)));
++        assert!(!all.is_empty());
++        for x0 in [-14, -9, -8, -3, 0, 1, 7, 8, 12] { for y0 in [-7, -2, 0, 3] { for z0 in [-12, -8, -1, 5, 9] {
++            for size in [IVector::ONE, IVector::new(2, 3, 1), IVector::new(5, 2, 9), IVector::new(9, 9, 9)] {
++                let (min, max) = (IVector::new(x0, y0, z0), IVector::new(x0, y0, z0) + size);
++                let mut actual = Vec::new();
++                voxels.map_cuboids_intersecting_range(min, max, |lo, hi| actual.push((lo, hi)));
++                let expected: Vec<_> = all.iter().copied()
++                    .filter(|(lo, hi)| lo.cmplt(max).all() && hi.cmpgt(min).all()).collect();
++                assert_eq!(actual, expected, "range {min:?}..{max:?}");
++            }
++        } } }
 +    }
 +}
 diff --git a/src/shape/voxels/voxels_neighborhood.rs b/src/shape/voxels/voxels_neighborhood.rs

@@ -1,4 +1,5 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 // feat-20260623 M2 w11+w12 — SceneInstance to SceneAsset POD collection + pack
 // serialization (plan-strategy D-1: pure-data collector).
 //
@@ -284,11 +285,16 @@ function collectKeyedSceneAsset(
       for (const row of queryResult.value) {
         const stateResult = worldGetSceneInstanceState(world, row.entity);
         if (!stateResult.ok) continue;
-        const rowValue = row.get(SceneInstance) as unknown as { mapping: ArrayLike<number> };
+        const mapping = readRenderArrayView(
+          world,
+          row.entity,
+          SceneInstance,
+          'mapping',
+        ) as Uint32Array;
         stateInfos.push({
           root: row.entity as number,
           state: stateResult.value as unknown as CollectorSceneState,
-          mapping: Uint32Array.from(rowValue.mapping as ArrayLike<number>),
+          mapping: mapping,
         });
       }
     }

@@ -85,7 +85,7 @@ describe('skinned shadow caster', () => {
     expect(shader).toContain('out.color = in.color;');
     expect(record).toContain('runtime.demandSkinTask?.(entry.source)');
     expect(record).toContain('geometrySkinBindGroup(');
-    expect(builder).toContain('buffers: [...ctx.vertexBuffers]');
+    expect(builder).toContain('buffers: ctx.vertexBuffers');
   });
 
   it('keeps the optional scene-material binding out of the WebGL2 shadow singleton', () => {

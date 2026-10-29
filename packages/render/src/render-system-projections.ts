@@ -1,11 +1,11 @@
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
-import { mat4 } from '@forgeax/engine-math';
+import { mat4, vec3 } from '@forgeax/engine-math';
 import type { LodOcclusionInspectionRow, LodOcclusionWorldInspection } from './inspection-types';
 import type { RenderResourceScope } from './publication/resource-scope';
 import { lodLevelHistogram } from './record/cpu-lod';
 import { worldEntityKey } from './record/frame-snapshot';
-import { computeProjectionMatrix, computeViewMatrix } from './record/helpers';
+import { computeViewProjectionMatrix } from './record/helpers';
 import type { CameraSnapshot, DrawOwnerOptions } from './render-contract';
 import type { RenderableSnapshot } from './render-system-extract';
 import type { FrameList } from './scene/frame-list';
@@ -196,13 +196,9 @@ export function featureCameraSelection(camera: CameraSnapshot | undefined) {
     selectedCamera: camera,
     selectedView: {
       position: new Float32Array(camera.position),
-      right: new Float32Array([camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0]),
-      up: new Float32Array([camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0]),
-      viewProjection: mat4.multiply(
-        mat4.create(),
-        computeProjectionMatrix(camera),
-        computeViewMatrix(camera),
-      ),
+      right: vec3.create(camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0),
+      up: vec3.create(camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0),
+      viewProjection: computeViewProjectionMatrix(camera, mat4.create()),
     },
   };
 }

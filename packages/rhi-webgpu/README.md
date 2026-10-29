@@ -49,6 +49,14 @@ runtime failures remain distinguishable.
 
 Real-GPU integration is in [`src/__tests__/dawn-real-gpu.dawn.test.ts`](./src/__tests__/dawn-real-gpu.dawn.test.ts) (4 describes, 4 codes triggered).
 
+## Command encoder ownership
+
+Command, render-pass and compute-pass encoder methods share their class prototype.
+Call them on the encoder receiver, as with native WebGPU; a retained method callback
+needs its receiver bound by its caller. Each command encoder still owns independent
+raw state, finish/pass guards and acceleration-structure context. Sharing methods
+does not reuse or reset a finished encoder or alter descriptor forwarding.
+
 ## Timestamp write contract
 
 Timestamp capture uses the WebGPU pass descriptor `timestampWrites` field on
@@ -252,8 +260,7 @@ before renderer readiness, including a replacement device. `renderer.inspect()` 
 counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.
 Worker execution uses `await execution.inspectRenderer({pipelineLibrary:true})`.
 `inspect().pending` lists every currently recorded scheduled or native pipeline
-compilation, plus `unidentified` requests whose dependencies or capacity prevented
-recording. Each row carries the runtime/startup/background origin, queued/compiling
+compilation, plus `unidentified` requests whose dependencies could not be recorded. Each row carries the runtime/startup/background origin, queued/compiling
 stage, elapsed milliseconds, complete recipe, bind-group layouts and shader-source
 SHA-256 digests. Its semantic identity excludes labels and device-local module
 numbers, so screenshots can identify an exact state variant across devices.
@@ -283,7 +290,7 @@ Recording adds only bounded metadata and references to the existing Program on a
 runtime miss/demand; completed cache hits and undemanded warmup do not record.
 Recording does not copy descriptors/WGSL, hash sources, schedule GPU work or alter
 compilation concurrency. Complete recipes and cached identities are read only by
-the explicit inspection. Disposal clears this history with its device owner.
+the explicit inspection. Disposal clears this history with its device owner. Its Program references are weak; a released recipe appears as null rather than extending GPU lifetime.
 The tuple `(libraryId, sequence)` identifies a request on that renderer realm;
 the semantic pipeline identity identifies the recipe across devices. `overwritten`
 is cumulative ring eviction, not a count of current-incident losses. A null pipeline
@@ -314,8 +321,37 @@ replacement device after readiness. First readiness therefore does not imply tha
 the entire background library is warm, including after recovery.
 The cumulative `warmup.elapsedMs` reports preparation wall time, including failed attempts.
 Export refuses in-flight compilation so pending requirements cannot silently disappear.
-Collection is bounded to 4096 entries per dependency class and 64 MiB of UTF-16 shader
-source. Unrecordable native dependencies or overflow make export fail explicitly.
+Registration never drops resource identity because of cumulative source bytes or
+entry counts. Records follow live native handles and their dependency owners through
+weak content indices; there is no additional strong device reuse cache. Renderer
+rosters retain their completed warmup graph for their generation, pending requests
+retain dependencies until settlement, and command/bundle owners retain them through
+execution and queue completion. Disposal clears the device indices. Collected
+content keys are removed without requiring deterministic GC timing.
+
+Source bodies belong to immutable CPU fragment owners. Managed factory descriptors
+carry that owner through the existing code/label seam; a completed source hit does
+not expand or hash WGSL. Explicit raw-text calls remain a cold input path.
+
+`export(limits?)` exports the retained live graph selected at invocation, not an
+implicit history of released resources. A route collector uses `collect()` to retain the current and subsequent graph, then
+disposes the returned scope after export. This diagnostic holding is explicit and
+ends on device disposal. Unknown native dependencies and in-flight work still fail
+strictly. Output, transient allocation and input safety are finite action policies:
+`PIPELINE_LIBRARY_LIMITS` defaults to 512 MiB conservative JSON output, 4 GiB logical
+transient allocation and 65,536 entries. These are not live-resource capacities.
+`temporaryBytes` includes source expansion, cloning/encoding and Worker transport;
+the estimate is not a process-memory cap. Estimation precedes source expansion and
+cloning, including JSON escaping and descriptors. A failure returns `limit-exceeded`
+with `detail.kind='pipeline-library-limit'`, operation, limit, requested and maximum;
+it changes no resource or preparation state and may be retried with another policy.
+`prepare(manifest,{inputLimits})` declares its independent finite read policy. Default
+export/read policies are compatible; a complete export must fit its declared matching
+read policy. Increasing export limits never silently increases input permissions.
+
+The optional internal `prepare` owner is a generation/roster object. Retention ends
+with that owner; an ordinary successful `prepare()` does not grant permanent holding.
+The portable manifest stays version 1 and contains full WGSL only when serialized.
 
 The manifest version/backend and all dependency references are checked before native
 creation. Native validation still enforces the current device's features and limits;
@@ -324,3 +360,15 @@ supported device/profile family and refresh it when content changes. Exact sourc
 keys prevent stale reuse but cannot predict unvisited gameplay. Browser/driver caches
 may persist compiled code across launches; WebGPU does not expose persistence or guarantee
 zero driver compilation at the next launch. Library warmup moves that work before play.
+
+Managed Render selections admit an immutable final state during cold CPU preparation.
+The optional internal `selectRender` / `selectCompute` seam binds that state to the
+current native modules and layout. It queries the same device Program as raw requests
+and warmup; ready and pending hits do not materialize or canonicalize a complete
+native descriptor. Compute projection is applied before selection. Raw descriptors
+remain a cold path, and absent optional selection support uses the existing factory.
+
+`findRenderState` can borrow the state already admitted by warmup using a lazy
+field projection and stage/layout dependencies. The material path uses the same
+projection for equality and a true cold miss. The scan runs only on a local selection
+miss; it does not create a parallel device index or hash complete state again.

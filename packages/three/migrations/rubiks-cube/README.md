@@ -61,7 +61,7 @@ limitation; it does not patch the game's logic. The project's full solver and ev
 exhaustively tested by this gate.
 
 This sample does not establish complete r184 compatibility. See
-[the package-wide contract](../../COMPATIBILITY.md) for all remaining obligations.
+the package-wide contract for all remaining obligations.
 
 ## Measured result
 

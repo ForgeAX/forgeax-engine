@@ -1,4 +1,5 @@
 import { type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
   FRAME_START_SCAN_SYSTEM_NAME,
   INPUT_SNAPSHOT_RESOURCE_KEY,
@@ -79,7 +80,9 @@ export function createAppObservation(
   const observationSystem = 'app-observation-camera-ownership';
   const firstCameraEntity = (): EntityHandle | undefined => {
     const cameras = world.query({ with: [Camera, Transform] }).unwrap();
-    for (const row of cameras) return row.entity as EntityHandle;
+    for (const span of cameras.spans().unwrap()) {
+      if (span.length > 0) return span.entities[0] as EntityHandle;
+    }
     return undefined;
   };
   const resolveGameCameraEntity = (): EntityHandle | undefined => {
@@ -385,13 +388,18 @@ export function createAppObservation(
       const bound = Math.max(1, Math.min(100, limit));
       const query = world.query({ read: [Name, GlobalTransform] }).unwrap();
       for (const row of query) {
-        const value = row.get(Name).value;
+        const entity = row.entity;
+        const value = world.get(row.entity, Name).unwrap().value;
         if (name !== undefined && !value.toLowerCase().includes(name.toLowerCase())) continue;
         if (matches.length === bound) return { matches, truncated: true };
         matches.push({
           entity: row.entity,
           name: value,
-          position: Array.from(row.get(GlobalTransform).world).slice(12, 15),
+          position: [
+            world[worldRead].getArrayElement(entity, GlobalTransform, 'world', 12) as number,
+            world[worldRead].getArrayElement(entity, GlobalTransform, 'world', 13) as number,
+            world[worldRead].getArrayElement(entity, GlobalTransform, 'world', 14) as number,
+          ],
         });
       }
       return { matches, truncated: false };
@@ -418,7 +426,7 @@ export function createAppObservation(
       if (candidate.name !== undefined) {
         if (entity !== undefined) throw new TypeError('focus expects either name or entity');
         for (const row of world.query({ read: [Name], with: [Transform] }).unwrap()) {
-          if (row.get(Name).value !== candidate.name) continue;
+          if (world.get(row.entity, Name).unwrap().value !== candidate.name) continue;
           if (entity !== undefined)
             throw new Error(
               'live-target-ambiguous: multiple entities have this name; use find and an exact reference',

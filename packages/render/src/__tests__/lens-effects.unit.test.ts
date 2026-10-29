@@ -1,9 +1,10 @@
 import { World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import { withBuiltinRenderFeatures } from '../assembly/render-feature-post-processes';
 import { Camera, LensEffects, resolveLensEffects } from '../components';
 import { createRenderFeatureHost } from '../features/host';
-import { createLensEffectsRenderFeature, packLensEffectsParams } from '../features/lens-effects';
+import { packLensEffectsParams } from '../features/lens-effects';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 import { setActiveCamera } from '../systems/active-camera';
@@ -78,7 +79,7 @@ describe('camera LensEffects', () => {
   });
 
   it('creates no resources for disabled cameras and packs a deterministic frame seed', () => {
-    const host = createRenderFeatureHost([createLensEffectsRenderFeature()]).unwrap();
+    const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
     try {
       const frame = host.runFrame([
         {

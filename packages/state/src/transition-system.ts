@@ -50,9 +50,13 @@ function scopeDespawn(
 ): void {
   const query = world.query({ read: [scopedComponent] }).unwrap();
   const despawns: EntityHandle[] = [];
-  for (const row of query) {
-    const scoped = row.get(scopedComponent);
-    if (scoped.mode === mode && scoped.value === value) despawns.push(row.entity);
+  for (const span of query.spans().unwrap()) {
+    const scoped = span.get(scopedComponent);
+    const entities = span.entities;
+    for (let index = 0; index < span.length; index++) {
+      if (scoped.mode[index] === mode && scoped.value[index] === value)
+        despawns.push(entities[index] as EntityHandle);
+    }
   }
   // SceneInstance is resolved by name through the global registry so the state
   // package stays free of a runtime dependency (layering: state -> ecs only).

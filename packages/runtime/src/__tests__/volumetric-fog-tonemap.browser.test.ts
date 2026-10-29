@@ -20,6 +20,7 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { collectWebGpuValidationErrors } from './webgpu-validation.fixture';
 
@@ -159,7 +160,7 @@ it.each([
         }));
       const blue = meanBlue(context.getImageData(0, 0, SIZE, SIZE).data);
       const inspection = renderer.inspect().volumetricFog;
-      await save(`${renderPath}-${stage}.rhitape`, captured.bytes);
+      await save(`${renderPath}-${stage}.rhitape`, compactTape(captured).bytes);
       await save(
         `${renderPath}-${stage}.png`,
         new Uint8Array(await (await surface.convertToBlob()).arrayBuffer()),

@@ -1556,6 +1556,7 @@ export type {
   PipelineLibrary,
   PipelineLibraryCompute,
   PipelineLibraryInspection,
+  PipelineLibraryLimits,
   PipelineLibraryManifest,
   PipelineLibraryPrepareOptions,
   PipelineLibraryRender,
@@ -2525,5 +2526,13 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
+export { PIPELINE_LIBRARY_LIMITS } from './pipeline-library';
+export {
+  checkPipelineLibraryAllocation,
+  pipelineLibraryLimit,
+  pipelineLibraryLimits,
+} from './pipeline-library-limits';
+export { ownPipelineLibrary } from './pipeline-library-source';
+export { PipelineRecipeState, pipelineDescriptorState } from './pipeline-recipe-state';
 export { createQueueCompletionHold, type QueueCompletionHold } from './queue-completion-hold';
 export { textureCopyOrigin, textureReadbackLayout } from './texture-copy-layout';

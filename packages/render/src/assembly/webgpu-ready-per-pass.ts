@@ -11,9 +11,6 @@ interface ReadyPerPassResourceInputs {
   readonly skyboxRotationBuffer: PerPassResources['skyboxRotationBuffer'];
   readonly skyboxModule?: PerPassResources['skyboxModule'];
   readonly shadowSampler: PerPassResources['shadowSampler'];
-  readonly shadowLightSpaceMatrix: PerPassResources['shadowLightSpaceMatrix'];
-  readonly shadowCsmLightViewProj: PerPassResources['shadowCsmLightViewProj'];
-  readonly shadowCsmSelection: PerPassResources['shadowCsmSelection'];
   readonly bloomHorizontalPipeline: PerPassResources['bloomHorizontalPipeline'];
   readonly bloomVerticalPipeline: PerPassResources['bloomVerticalPipeline'];
   readonly bloomCompositePipeline: PerPassResources['bloomCompositePipeline'];
@@ -54,9 +51,6 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     shadowMapSize: 0,
     shadowCascadeCount: 0,
     shadowSampler: input.shadowSampler,
-    shadowLightSpaceMatrix: input.shadowLightSpaceMatrix,
-    shadowCsmLightViewProj: input.shadowCsmLightViewProj,
-    shadowCsmSelection: input.shadowCsmSelection,
     bloomHorizontalPipeline: input.bloomHorizontalPipeline,
     bloomVerticalPipeline: input.bloomVerticalPipeline,
     bloomCompositePipeline: input.bloomCompositePipeline,

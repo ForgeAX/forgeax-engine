@@ -2597,9 +2597,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       drawObservation,
       markPresentedRenderable,
       gpuOwned,
-      get gpuSelection() {
-        return gpuSelection;
-      },
+      readGpuSelection: () => gpuSelection,
     };
   }
 
@@ -2724,7 +2722,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
     return {
       presentedDraws: draws.presentedDraws,
       drawObservation: draws.drawObservation,
-      gpuSelection: draws.gpuSelection,
+      gpuSelection: draws.readGpuSelection(),
       bloomAdmitted,
     };
   }
@@ -2845,7 +2843,7 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
         renderables,
         ...(gpuOwned === undefined
           ? {}
-          : { coveredMaterials: draws.gpuSelection.coveredMaterials() }),
+          : { coveredBindings: draws.gpuSelection.coveredBindings() }),
         preparedWorlds,
         internals,
         onPending: (reason) => {

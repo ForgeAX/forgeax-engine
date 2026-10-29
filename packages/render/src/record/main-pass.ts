@@ -8,7 +8,7 @@ import {
   type TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, type PassKind, type PassSelector } from '@forgeax/engine-types';
-import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
+import { meshSsboBuffer, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import {
   createHdrpSkinUnifiedBindGroup,
   createHdrpUnifiedBindGroup,
@@ -36,6 +36,7 @@ import {
   FORWARD_PASS_SELECTOR,
   matchPass,
 } from '../systems/pass-selector';
+import { materialSlotsByClass } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
 import { recordGeometryDraws } from './main-pass-geometry';
@@ -52,15 +53,29 @@ import {
   materialMatchesPass,
 } from './material-pass-selection';
 import { materialUniformSlot } from './material-uniforms';
-import { getOrCreateFromChainResult } from './mesh-ssbo';
+import {
+  bindGroupByteRangeLeaf4,
+  bindGroupSkinRangeLeaf6,
+  getOrCreateFromChainResult,
+  rememberBindGroup,
+} from './mesh-ssbo';
 import { reflectionProbeMaterial } from './reflection-probe-material';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { buildMatchedMaterialHandlesByRenderable, filterDispatchBySelector } from './shadow-pass';
+import type { SkinTaskBinding } from './skin-tasks';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
 
 /** Chain key standing in for the SSAO view when group(2) binds the fallback. */
 const NO_SSAO_VIEW = {};
+/** Compose a variant from the current binding facts. */
+export function gpuDrivenMeshVariantKey(bytes: number): string {
+  return `gpu-driven-hdrp:${bytes}`;
+}
+
+export function gpuDrivenSkinVariantKey(task: SkinTaskBinding, bytes: number): string {
+  return `gpu-driven-hdrp-skin:${bytes}:${task.dataSize}:${task.auxiliarySize}`;
+}
 
 export type MainPassOptions = {
   readonly bundleDescriptor?: RenderBundleEncoderDescriptor;
@@ -102,19 +117,20 @@ export function selectGpuMaterialSlots(
   if (selector === undefined && mode === undefined && excludeSelector === undefined)
     return undefined;
   const selected = new Set<number>();
+  let candidate:
+    | { snapshot: MaterialSnapshot; passes: ReturnType<typeof materialPasses> }
+    | undefined;
   for (let slot = 0; slot < materials.length; slot++) {
     const snapshot = materials[slot];
     if (snapshot === undefined || (mode !== undefined && !matchesRecordMode(snapshot, mode)))
       continue;
-    if (
-      materialMatchesPass(
-        { snapshot, passes: materialPasses(snapshot) },
-        selector,
-        mode,
-        excludeSelector,
-      )
-    )
-      selected.add(slot);
+    const passes = materialPasses(snapshot);
+    if (candidate === undefined) candidate = { snapshot, passes };
+    else {
+      candidate.snapshot = snapshot;
+      candidate.passes = passes;
+    }
+    if (materialMatchesPass(candidate, selector, mode, excludeSelector)) selected.add(slot);
   }
   return selected;
 }
@@ -238,6 +254,7 @@ type MaterialSelectionContext = Pick<
 >;
 
 type MainPassMaterialSelection = ReadonlyMap<number, ReadonlySet<number>> | null;
+const EMPTY_MATERIAL_SELECTION: ReadonlyMap<number, ReadonlySet<number>> = new Map();
 type MainPassRecordMode = MainPassOptions['recordMode'];
 
 /** One finalized record frame owns its selections; nothing enters retained frameState. */
@@ -300,7 +317,7 @@ export function createMainPassMaterialSelectionOwner(
       if (
         c.dispatch !== dispatch ||
         c.validatedOrdered !== validatedOrdered ||
-        c.materialSlots !== materialSlots ||
+        (validatedOrdered.length > 0 && c.materialSlots !== materialSlots) ||
         c.materialSlotIndices !== materialSlotIndices ||
         selectorIndex < 0 ||
         excludeIndex < 0
@@ -363,6 +380,15 @@ export function matchedMaterialsForRecordMode(
     if (handles !== undefined) filtered.set(entry.renderableIndex, handles);
   }
   return filtered;
+}
+
+/** Native Scene Pass rows include all CPU geometry and hidden pipeline preparation. */
+export function hasMainPassCpuWork(c: _InternalRenderPipelineContext): boolean {
+  return (
+    c.scenePassWork === undefined ||
+    c.validatedOrdered.length > 0 ||
+    (c.pipelinePreparationEntries?.length ?? 0) > 0
+  );
 }
 
 /**
@@ -442,6 +468,12 @@ export function encodeMainPass(
   // land after the opaque geometry it is meant to overdraw.
   if (hasGpuMaterials && options?.gpuDriven !== undefined)
     encodeGpuDrivenBatches(c, pass, options, options.gpuDriven, passKind);
+
+  // Native Scene Pass work already fixed its CPU roster. GPU-only work has
+  // just encoded; no CPU geometry/sprite context or loop is consumed below.
+  // Hidden preparation still enters the existing resolver, and raw helper
+  // callers retain their original recording/profile callback observations.
+  if (!hasMainPassCpuWork(c)) return gpuDrivenStandardPbrFrameResources;
 
   // A preparation-only lane (hidden transparent PSOs, no validated rows) has
   // no frame view group and records no draws; binding null with dynamic
@@ -611,7 +643,7 @@ function resolveHdrpSsaoBindGroup(
   if (c.hdrpClusterBindGroup === null || ssaoView === undefined || hdrpBuffers === null)
     return null;
   const { runtime } = c;
-  const meshBuffer = meshSsboBufferBinding(c.pipelineState.meshStorageBuffer, 0).buffer;
+  const meshBuffer = meshSsboBuffer(c.pipelineState.meshStorageBuffer, 0);
   const cached = getOrCreateFromChainResult(
     c.frameState.meshBindGroupCache,
     [meshBuffer, hdrpBuffers, ssaoView],
@@ -647,47 +679,67 @@ function publishGpuDrivenClusterGroups(
   const ssaoView = c.hdrpSsaoBlurredView;
   const ssao: SsaoBindOptions =
     ssaoView === undefined ? { enabled: false } : { enabled: true, ssaoBlurredView: ssaoView };
-  const lighting = [hdrpBuffers, ssaoView ?? NO_SSAO_VIEW];
-  const cachedGroup = (
-    handles: readonly object[],
-    variant: string,
-    create: () => BindGroup | null,
-  ): BindGroup | undefined => {
-    const result = getOrCreateFromChainResult(
+  resources.clusterBindGroupForMesh = (meshBuffer, bindingBytes) => {
+    const leaf = bindGroupByteRangeLeaf4(
       frameState.meshBindGroupCache,
-      handles,
-      variant,
-      () => {
-        const created = create();
-        return created === null ? err(undefined) : ok(created);
-      },
-      bindGroupCounts,
+      meshBuffer,
+      hdrpBuffers.unifiedBindGroupLayout,
+      hdrpBuffers,
+      ssaoView ?? NO_SSAO_VIEW,
     );
-    return result.ok ? result.value : undefined;
+    const cached = leaf.get(bindingBytes);
+    if (cached !== undefined) return cached;
+    const created = createHdrpUnifiedBindGroup(
+      runtime,
+      hdrpBuffers,
+      meshBuffer,
+      ssao,
+      bindingBytes,
+    );
+    return created === null
+      ? undefined
+      : rememberBindGroup(
+          leaf,
+          bindingBytes,
+          created,
+          bindGroupCounts,
+          gpuDrivenMeshVariantKey(bindingBytes),
+        );
   };
-  resources.clusterBindGroupForMesh = (meshBuffer, bindingBytes) =>
-    cachedGroup(
-      [meshBuffer, hdrpBuffers.unifiedBindGroupLayout, ...lighting],
-      `gpu-driven-hdrp:${bindingBytes}`,
-      () => createHdrpUnifiedBindGroup(runtime, hdrpBuffers, meshBuffer, ssao, bindingBytes),
-    );
   resources.clusterBindGroupForSkin = (meshBuffer, meshBindingBytes, task) => {
     const skinLayout = pipelineState.hdrpSkinMeshBindGroupLayout;
     if (skinLayout === null) return undefined;
-    return cachedGroup(
-      [meshBuffer, task.data, task.auxiliary, skinLayout, ...lighting],
-      `gpu-driven-hdrp-skin:${meshBindingBytes}:${task.dataSize}:${task.auxiliarySize}`,
-      () =>
-        createHdrpSkinUnifiedBindGroup(
-          runtime,
-          hdrpBuffers,
-          skinLayout,
-          meshBuffer,
-          task,
-          ssao,
-          meshBindingBytes,
-        ),
+    const leaf = bindGroupSkinRangeLeaf6(
+      frameState.meshBindGroupCache,
+      meshBuffer,
+      task.data,
+      task.auxiliary,
+      skinLayout,
+      hdrpBuffers,
+      ssaoView ?? NO_SSAO_VIEW,
+      meshBindingBytes,
+      task.dataSize,
     );
+    const cached = leaf.get(task.auxiliarySize);
+    if (cached !== undefined) return cached;
+    const created = createHdrpSkinUnifiedBindGroup(
+      runtime,
+      hdrpBuffers,
+      skinLayout,
+      meshBuffer,
+      task,
+      ssao,
+      meshBindingBytes,
+    );
+    return created === null
+      ? undefined
+      : rememberBindGroup(
+          leaf,
+          task.auxiliarySize,
+          created,
+          bindGroupCounts,
+          gpuDrivenSkinVariantKey(task, meshBindingBytes),
+        );
   };
 }
 
@@ -760,10 +812,14 @@ function mainPassRecordContext(
     recordMode === 'translucent-before-transmission' ||
     recordMode === 'oit-accumulate' ||
     recordMode === 'oit-residual';
+  const translucentFog = blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0;
+  const splitLdrSprite = blendedRecordMode ? false : c.splitLdrSprite;
+  if ((c.translucentFog === true) === translucentFog && c.splitLdrSprite === splitLdrSprite)
+    return c;
   return {
     ...c,
-    translucentFog: blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0,
-    splitLdrSprite: blendedRecordMode ? false : c.splitLdrSprite,
+    translucentFog,
+    splitLdrSprite,
   };
 }
 
@@ -1018,24 +1074,10 @@ function publishGpuDrivenMaterialSlots(
   else resources.bundleDescriptor = options.bundleDescriptor;
   if (selectedGpuMaterialSlots === undefined) delete resources.selectedMaterialSlots;
   else resources.selectedMaterialSlots = selectedGpuMaterialSlots;
-  // Rebuilt for every pass: keep each material's class map and refill it in
-  // place, then drop materials this pass no longer binds. The GPU-driven
-  // encoder only reads this table during the pass.
-  const bindings = resources.materialSlotIndicesByBinding;
-  for (const classes of bindings.values()) classes.clear();
-  for (let slot = 0; slot < c.materialSlots.length; slot++) {
-    const binding = c.materialBindings[slot];
-    if (binding === undefined) continue;
-    const resource = binding.material;
-    let classes = bindings.get(resource);
-    if (classes === undefined) {
-      classes = new Map();
-      bindings.set(resource, classes);
-    }
-    classes.set(binding.resourceClass, slot);
-  }
-  for (const resource of bindings.keys())
-    if (bindings.get(resource)?.size === 0) bindings.delete(resource);
+  // The accepted table owns this index. Raw helper callers build their own
+  // table here, observing their current borrowed binding rows on each call.
+  resources.materialSlotIndicesByBinding =
+    c.materialBindingSlots ?? materialSlotsByClass(c.materialBindings);
 }
 
 /** Prepare a batch's exact physical material binding only when it is recorded. */
@@ -1054,10 +1096,10 @@ function publishMaterialBindingPreparer(
       return undefined;
     return {
       group: resolveMaterialBindGroup(slot, material, binding.entityKey, binding.world ?? world),
-      byteOffset: meshSsboBufferBinding(
+      byteOffset: meshSsboByteOffset(
         pipelineState.materialUniformBuffer,
         materialUniformSlot(runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
-      ).byteOffset,
+      ),
     };
   };
 }
@@ -1121,7 +1163,7 @@ export function selectMainPassMaterials(
   recordMode: MainPassOptions['recordMode'],
   excludeSelector?: PassSelector,
 ): ReadonlyMap<number, ReadonlySet<number>> | null {
-  if (c.validatedOrdered.length === 0) return new Map();
+  if (c.validatedOrdered.length === 0) return EMPTY_MATERIAL_SELECTION;
   return c.mainPassMaterialSelection === undefined
     ? selectMainPassMaterialsUncached(c, selector, recordMode, excludeSelector)
     : c.mainPassMaterialSelection.resolve(c, selector, recordMode, excludeSelector);

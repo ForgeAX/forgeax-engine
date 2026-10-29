@@ -31,12 +31,13 @@ export async function workerPolicyFixture(data?: string) {
     values,
     sealedValues,
     async dispose() {
-      if (result.ok) {
-        (await result.value.dispose()).unwrap();
-        result.value.canvas?.remove();
+      try {
+        if (result.ok) (await result.value.dispose()).unwrap();
+      } finally {
+        if (result.ok) result.value.canvas?.remove();
+        channel.port1.close();
+        canvas.remove();
       }
-      channel.port1.close();
-      canvas.remove();
     },
   };
 }

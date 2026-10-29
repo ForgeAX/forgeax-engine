@@ -14,6 +14,8 @@ export function deriveMotionBlurExecutionReceipt(
   frameState: RenderFrameState,
   plans: readonly RenderFeaturePlannedFrame[],
 ): MotionBlurExecutionReceipt | undefined {
+  const planned = plans.find((candidate) => candidate.featureIdentity === 'forgeax.motion-blur');
+  if (planned === undefined) return undefined;
   const graph = frameState.compiledFrameGraph?.graph ?? null;
   const deviceGeneration = internals.deviceScope?.generation;
   if (graph === null || deviceGeneration === undefined) return undefined;
@@ -24,9 +26,7 @@ export function deriveMotionBlurExecutionReceipt(
   if (summaryGraphPass?.kind !== 'compute' || reconstructGraphPass?.kind !== 'compute') {
     return undefined;
   }
-  const planned = plans.find((candidate) => candidate.featureIdentity === 'forgeax.motion-blur');
-  const execution =
-    planned === undefined ? undefined : getRenderFeaturePlanExecutionProjection(planned);
+  const execution = getRenderFeaturePlanExecutionProjection(planned);
   if (execution === undefined || execution.featureIdentity !== 'forgeax.motion-blur') {
     return undefined;
   }

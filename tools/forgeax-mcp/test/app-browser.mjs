@@ -68,7 +68,15 @@ async function cli(command, args = {}) {
     },
   );
   if (command === 'backend start') backendStarts.push({ probePid: execution.child.pid, startedAt });
-  const { stdout } = await execution;
+  let stdout;
+  try {
+    ({ stdout } = await execution);
+  } catch (error) {
+    records.push({ cli: command, ms: Date.now() - startedAt, failed: true,
+      code: error.code, signal: error.signal, killed: error.killed,
+      stderr: String(error.stderr ?? '').replace(/([?&](?:token|frontendTicket|forgeaxWorkspaceToken)=)[^&\s"'<>]+/g, '$1[redacted]').slice(-8000) });
+    throw error;
+  }
   records.push({ cli: command, ms: Date.now() - startedAt });
   const result = JSON.parse(stdout);
   assert.equal(result.ok, true, JSON.stringify(result.error));
@@ -383,7 +391,9 @@ try {
   // Backend retirement deliberately produces connection failures. Observe the
   // replacement independently once its native Host has connected.
   replacingBackend = true;
+  const restartResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/restart', { timeout: 60000 });
   await page.getByRole('button', { name: 'Restart backend', exact: true }).click();
+  assert.equal((await restartResponse).status(), 200, 'Backend restart request must succeed; inspect failed CLI records');
   await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
   await view.locator(`iframe[data-forgeax-mcp-preview]:not([data-forgeax-mcp-preview="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
   await view.getByRole('status', { name: /ForgeaX Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });

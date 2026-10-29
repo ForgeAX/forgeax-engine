@@ -315,6 +315,46 @@ it('observes explicit host dependencies and asset membership in the accepted com
   expect(await readLiveProjectInputs(root, paths)).not.toBe(changed);
 });
 
+it('ignores test sources outside the accepted compiler scope', async () => {
+  const root = await fixture();
+  await mkdir(join(root, 'assets/player/__tests__'), { recursive: true });
+  const runtime = join(root, 'assets/player/player.ts');
+  const suite = join(root, 'assets/player/__tests__/player.test.ts');
+  const sibling = join(root, 'assets/player/player.spec.ts');
+  await writeFile(runtime, 'export const speed = 1;');
+  await writeFile(suite, "it('moves', () => {});");
+  await writeFile(sibling, "it('stops', () => {});");
+  const paths = [runtime];
+  const before = await readLiveProjectInputs(root, paths);
+  await writeFile(suite, "it('moves faster', () => {});");
+  await writeFile(sibling, "it('stops sooner', () => {});");
+  await writeFile(join(root, 'assets/player/__tests__/new.test.ts'), "it('new', () => {});");
+  expect(await readLiveProjectInputs(root, paths)).toBe(before);
+  await writeFile(runtime, 'export const speed = 20;');
+  expect(await readLiveProjectInputs(root, paths)).not.toBe(before);
+});
+
+it('tracks a test-named file that the compiler read', async () => {
+  const root = await fixture();
+  await mkdir(join(root, 'assets/__tests__'), { recursive: true });
+  const shared = join(root, 'assets/__tests__/fixture.ts');
+  await writeFile(shared, 'export const value = 1;');
+  const paths = [shared];
+  const before = await readLiveProjectInputs(root, paths);
+  await writeFile(shared, 'export const value = 20;');
+  expect(await readLiveProjectInputs(root, paths)).not.toBe(before);
+});
+
+it('keeps test sources in the conservative scope before the compiler reports one', async () => {
+  const root = await fixture();
+  await mkdir(join(root, 'assets/__tests__'), { recursive: true });
+  const suite = join(root, 'assets/__tests__/starter.test.ts');
+  await writeFile(suite, "it('starts', () => {});");
+  const before = await readLiveProjectInputs(root);
+  await writeFile(suite, "it('starts later', () => {});");
+  expect(await readLiveProjectInputs(root)).not.toBe(before);
+});
+
 it('rejects unreadable asset members after accepting the compiler scope', async () => {
   const root = await fixture();
   await mkdir(join(root, 'assets'));

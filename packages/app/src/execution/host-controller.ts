@@ -707,12 +707,10 @@ export async function createWorkerExecutionApp(
     frameSentAt = performance.now();
     armFrameAdmission(frame.worldIdentity, frame.frameId);
     const musicFeedbackStarted = performance.now();
-    const audioState = audio.state(),
-      musicState = audioState.music;
+    const audioState = executionAudioReport(audio.state());
     session.post({
       ...frame,
-      ...(musicState ? { musicState } : {}),
-      ...(audioState.preparation ? { audioPreparation: audioState.preparation } : {}),
+      audioState,
       ...(rejectedAudioPublications.size
         ? { rejectedAudioPublications: [...rejectedAudioPublications.values()] }
         : {}),

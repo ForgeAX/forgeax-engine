@@ -113,6 +113,18 @@ export default defineConfig({
           typecheck: { enabled: false },
         },
       },
+      {
+        test: {
+          name: '@forgeax/hello-fxaa',
+          environment: 'node',
+          include: [
+            'apps/hello/fxaa/src/__tests__/*.unit.test.ts',
+            'apps/hello/fxaa/src/__tests__/dark-gradient-backend.test.ts',
+            'apps/hello/fxaa/src/__tests__/dark-gradient-fixture.test.mjs',
+          ],
+          typecheck: { enabled: false },
+        },
+      },
       'scripts',
       // K-3 naming anchor (marker; passWithNoTests means `--project unit`
       // does not produce a failure signal, it only acts as the SSOT

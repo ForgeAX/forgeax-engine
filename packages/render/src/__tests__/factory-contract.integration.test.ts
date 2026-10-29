@@ -10,6 +10,7 @@ import {
   type PipelineLibrary,
   type PipelineLibraryInspection,
   type PipelineLibraryManifest,
+  type PipelineLibraryPrepareOptions,
   RhiError,
   type RhiWebgpuRuntimeCause,
   type ShaderModule,
@@ -45,6 +46,7 @@ import {
   TONEMAP_ACES_FILMIC,
   TONEMAP_NONE,
 } from '../components/camera';
+import { DeviceScope } from '../device/device-scope';
 import { TemporalFrameSubmitError } from '../errors/render';
 import type { RenderFeaturePlanContext, RenderFeatureWork } from '../features/plan';
 import type { RenderFeature } from '../features/types';
@@ -220,6 +222,40 @@ function createGenericPostProbeFeature(): RenderFeature<undefined> {
 }
 
 describe('factory contract', () => {
+  it('releases runtime Feature shader owners after duplicate install, failure and uninstall', async () => {
+    const children = vi.spyOn(DeviceScope.prototype, 'createChild');
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { rhi },
+      { shaderManifestUrl: manifestUrl() },
+    );
+    const feature: RenderFeature<unknown> = {
+      identity: 'test::temporary-shaders',
+      requiredFullscreenPostProcesses: [{ identity: 'test::effect', source: '// owned feature' }],
+      extract: () => ok(undefined),
+      plan: () => ok({ work: [] }),
+    };
+    const warmups = () =>
+      children.mock.results
+        .filter(
+          (result) => result.type === 'return' && result.value.owner === 'render-feature-shaders',
+        )
+        .map((result) => result.value as DeviceScope);
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect((await renderer.installRenderFeature(feature)).ok).toBe(true);
+      expect((await renderer.installRenderFeature(feature)).ok).toBe(true);
+      expect(warmups().map((scope) => scope.isAlive())).toEqual([false, true]);
+      expect((await renderer.installRenderFeature({ ...feature })).ok).toBe(false);
+      expect(warmups().map((scope) => scope.isAlive())).toEqual([false, true, false]);
+      expect((await renderer.uninstallRenderFeature(feature)).ok).toBe(true);
+      expect(warmups().every((scope) => !scope.isAlive())).toBe(true);
+    } finally {
+      await renderer.dispose();
+      children.mockRestore();
+    }
+  });
+
   it.each([
     'webgpu',
     'wgpu-webgl2',
@@ -404,16 +440,21 @@ describe('factory contract', () => {
       shaders: [{ code: '// background' }],
     };
     for (const outcome of ['pending', 'failed', 'done'] as const) {
+      const releaseCollection = vi.fn();
+      const collect = vi.fn(() => ({ dispose: releaseCollection }));
       const fence = deferred<void>();
-      const prepare = vi.fn(async (manifest: PipelineLibraryManifest) => {
-        if (manifest !== background) return ok(inspection);
-        await fence.promise;
-        if (outcome === 'done') return ok(inspection);
-        return err(
-          new RhiError({ code: 'rhi-descriptor-invalid', expected: 'background', hint: 'test' }),
-        );
-      });
+      const prepare = vi.fn(
+        async (_manifest: PipelineLibraryManifest, options?: PipelineLibraryPrepareOptions) => {
+          if (options?.background !== true) return ok(inspection);
+          await fence.promise;
+          if (outcome === 'done') return ok(inspection);
+          return err(
+            new RhiError({ code: 'rhi-descriptor-invalid', expected: 'background', hint: 'test' }),
+          );
+        },
+      );
       const library = {
+        collect,
         prepare,
         inspect: () => inspection,
         export: () => ok(empty),
@@ -440,9 +481,24 @@ describe('factory contract', () => {
       try {
         // Readiness never waits for the still-pending background lane.
         expect((await renderer.initialization).ok).toBe(true);
+        expect(
+          renderer.inspect({ pipelineLibraryCollection: true }).pipelineLibraryCollecting,
+        ).toBe(true);
+        expect(collect).toHaveBeenCalledOnce();
+        renderer.inspect({ pipelineLibraryCollection: false });
+        expect(releaseCollection).toHaveBeenCalledOnce();
+        renderer.inspect({ pipelineLibraryCollection: true });
+
         expect(prepare).toHaveBeenCalledTimes(2);
-        expect(prepare.mock.calls[0]?.[0]).toBe(empty);
-        expect(prepare).toHaveBeenLastCalledWith(background, { background: true });
+        expect(prepare.mock.calls[0]?.[0]).toEqual(empty);
+        expect(prepare).toHaveBeenLastCalledWith(
+          background,
+          expect.objectContaining({
+            background: true,
+            owner: expect.any(Object),
+            sources: expect.any(Array),
+          }),
+        );
         expect(renderer.inspect().backgroundPipelineLibraryState).toBe('running');
         if (outcome === 'failed') {
           fence.resolve();
@@ -459,6 +515,7 @@ describe('factory contract', () => {
       } finally {
         fence.resolve();
         await renderer.dispose();
+        expect(releaseCollection).toHaveBeenCalledTimes(2);
         warn.mockRestore();
       }
     }
@@ -538,7 +595,14 @@ describe('factory contract', () => {
     );
     try {
       expect((await renderer.initialization).ok).toBe(true);
-      expect(firstLibrary.prepare).toHaveBeenLastCalledWith(background, { background: true });
+      expect(firstLibrary.prepare).toHaveBeenLastCalledWith(
+        background,
+        expect.objectContaining({
+          background: true,
+          owner: expect.any(Object),
+          sources: expect.any(Array),
+        }),
+      );
       await vi.waitFor(() =>
         expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
       );
@@ -549,10 +613,15 @@ describe('factory contract', () => {
       expect((await renderer.recover()).ok).toBe(true);
       // The replacement device starts with an empty library: the same manifest
       // runs again on its background lane instead of compiling on first use.
-      expect(replacementLibrary.prepare.mock.calls[0]?.[0]).toBe(empty);
-      expect(replacementLibrary.prepare).toHaveBeenLastCalledWith(background, {
-        background: true,
-      });
+      expect(replacementLibrary.prepare.mock.calls[0]?.[0]).toEqual(empty);
+      expect(replacementLibrary.prepare).toHaveBeenLastCalledWith(
+        background,
+        expect.objectContaining({
+          background: true,
+          owner: expect.any(Object),
+          sources: expect.any(Array),
+        }),
+      );
       await vi.waitFor(() =>
         expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
       );

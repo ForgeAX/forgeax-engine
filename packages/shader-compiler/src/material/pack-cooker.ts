@@ -92,7 +92,7 @@ async function collectWgslFiles(root: string): Promise<readonly string[]> {
   }
 }
 
-function packagedShaderRoots(): readonly string[] {
+export function materialShaderSourceRoots(): readonly string[] {
   const roots: string[] = [];
   for (const [packageName, relativePath, workspacePath] of [
     ['@forgeax/engine-shader', 'src', 'packages/shader/src'],
@@ -354,7 +354,7 @@ export function createMaterialPackCooker(
     key: 'material',
     concurrency: 'parallel',
     async cacheIdentity() {
-      const packagedRoots = packagedShaderRoots();
+      const packagedRoots = materialShaderSourceRoots();
       const sources = await collectMaterialSources([...roots, ...packagedRoots], packagedRoots);
       const sourceRecords = [...sources.engine, ...sources.project];
       // Package slots stay fixed even when their install paths change. Empty
@@ -412,7 +412,7 @@ export function createMaterialPackCooker(
         ...input,
         source: normalizeMaterialAsset(input.source),
       };
-      const packagedRoots = packagedShaderRoots();
+      const packagedRoots = materialShaderSourceRoots();
       const sourceRoots = [
         ...roots,
         ...(input.sourcePath === undefined ? [] : [dirname(resolve(input.sourcePath))]),

@@ -64,7 +64,7 @@ export function gpuDrivenMaterialProgramSelection(
   prepared: PreparedGpuDrivenDraw,
   pass: 'forward' | 'shadow',
   shadowEntry: { readonly materialShaderId?: string | undefined } | undefined,
-  out?: MaterialProgramSelection,
+  out: MaterialProgramSelection,
 ) {
   const logicalMaterialShaderId = material.materialShaderId ?? prepared.identity.material;
   const sceneIndexProgramKeys = material.materialSceneIndexProgramKeys;
@@ -88,13 +88,10 @@ export function gpuDrivenMaterialProgramSelection(
     pass === 'shadow'
       ? (sceneIndexProgramKey ?? shadowEntry?.materialShaderId ?? logicalMaterialShaderId)
       : (sceneIndexProgramKey ?? logicalMaterialShaderId);
-  if (out !== undefined) {
-    out.logicalMaterialShaderId = logicalMaterialShaderId;
-    out.sceneIndexProgramKey = sceneIndexProgramKey;
-    out.materialShaderId = materialShaderId;
-    return out;
-  }
-  return { logicalMaterialShaderId, sceneIndexProgramKey, materialShaderId };
+  out.logicalMaterialShaderId = logicalMaterialShaderId;
+  out.sceneIndexProgramKey = sceneIndexProgramKey;
+  out.materialShaderId = materialShaderId;
+  return out;
 }
 
 export interface GpuDrivenMaterialProgramIndex {

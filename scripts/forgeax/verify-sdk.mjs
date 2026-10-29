@@ -316,7 +316,6 @@ for (const path of [
   'skills/forgeax-engine-rhi-debug/SKILL.md',
   'skills/forgeax-engine-sdk/references/api-index.md',
   'skills/forgeax-engine-sdk/references/feature-catalog.md',
-  'skills/forgeax-engine-sdk/references/sdk-production.md',
   'templates/empty/AGENTS.md',
   'templates/empty/.gitignore',
   'templates/empty/forge.json',
@@ -500,7 +499,7 @@ if (selected('project')) {
     throw new Error('sdk-new-template-build-cache-missing');
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/api-index.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/sdk-production.md'));
+  await readFile(resolve(project, 'skills/forgeax-engine-sdk/SKILL.md'));
   const projectWorkspace = await readFile(resolve(project, 'pnpm-workspace.yaml'), 'utf8');
   if (!projectWorkspace.includes('trustLockfile: true'))
     throw new Error('sdk-game-lockfile-trust-missing');

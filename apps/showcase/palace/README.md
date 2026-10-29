@@ -48,6 +48,6 @@ pnpm package -- --output release/palace-web.zip --json
 
 Ordinary SceneAsset parent keys group architectural subjects such as `taihedian` and `corner-tower-376-435`; material parts such as `taihedian/roof` remain addressable. Edit the source and let the normal asset pipeline publish its projection. No private SDK path or local binding is required in this workspace.
 
-See [source attribution and uncertainties](docs/sources.md), [known issues](docs/feedback.md) and [authoring intent](docs/authoring-plan.md). Museum photographs are research references, not shipped textures. OpenStreetMap-derived data remains under ODbL; preserve its attribution when distributing the example.
+See source attribution and uncertainties, known issues and authoring intent. Museum photographs are research references, not shipped textures. OpenStreetMap-derived data remains under ODbL; preserve its attribution when distributing the example.
 
 Texture inputs and editable plaque SVGs live in `forgeax-engine-assets/demo-assets/palace`. Local sidecars retain their GUIDs and resolve those sources directly; no copied texture cache is an authoring authority.

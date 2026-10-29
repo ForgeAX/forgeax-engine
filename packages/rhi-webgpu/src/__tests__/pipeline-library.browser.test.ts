@@ -94,3 +94,69 @@ it('preserves a real completed native request before the first history inspectio
     raw.destroy();
   }
 });
+
+it('prepares and dispatches projected compute after legal source inputs exceed the former device total', async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('WebGPU adapter unavailable');
+  const raw = await adapter.requestDevice();
+  const library = new WebGpuPipelineLibrary(raw);
+  const errors: string[] = [];
+  raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
+  const compute =
+    '@group(0) @binding(0) var<storage,read_write> value:array<u32>; @compute @workgroup_size(1) fn cs(){value[0]=91u;}';
+  const held = library.createShaderModule({ code: `/*${'a'.repeat(30 * 1024 * 1024)}*/` });
+  const original = `/*${'b'.repeat(3 * 1024 * 1024)}*/\n${compute}`;
+  const storage = raw.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readback = raw.createBuffer({
+    size: 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const prepared = await library.prepare({
+      version: 1,
+      backend: 'webgpu',
+      shaders: [{ code: original }, { code: compute }],
+      bindGroupLayouts: [],
+      pipelineLayouts: [],
+      renderPipelines: [],
+      computePipelines: [{ layout: 'auto', compute: { module: 0, entryPoint: 'cs' } }],
+      computeEntryModules: [{ module: 0, entryPoint: 'cs', specializedModule: 1 }],
+    });
+    expect(prepared.ok).toBe(true);
+    const module = library.createShaderModule({ code: original });
+    const pipeline = await library.createComputePipelineAsync({
+      layout: 'auto',
+      compute: { module, entryPoint: 'cs' },
+    });
+    expect(library.inspect().asynchronousCreations).toBe(1);
+    const encoder = raw.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(
+      0,
+      raw.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: storage } }],
+      }),
+    );
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    encoder.copyBufferToBuffer(storage, 0, readback, 0, 4);
+    raw.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    expect(new Uint32Array(readback.getMappedRange())[0]).toBe(91);
+    readback.unmap();
+    expect(errors).toEqual([]);
+    // Keep the earlier runtime object alive through dispatch: this is a
+    // cumulative-device regression, not two independent empty devices.
+    expect(held).toBeDefined();
+  } finally {
+    storage.destroy();
+    readback.destroy();
+    library.dispose();
+    raw.destroy();
+  }
+}, 120_000);

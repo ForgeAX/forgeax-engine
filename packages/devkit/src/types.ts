@@ -78,6 +78,8 @@ export interface NewOptions extends ProjectCommandOptions {
 }
 
 export interface BuildOptions extends ProjectCommandOptions {
+  /** Project-relative HTML head fragment included before distribution sealing. */
+  readonly htmlHead?: string;
   /** Validation-only storage-capable WebGPU raster programs; omitted publishes portable variants. */
   readonly materialProfile?: 'webgpu-storage';
   readonly target?: 'browser' | 'wechat' | 'tauri';

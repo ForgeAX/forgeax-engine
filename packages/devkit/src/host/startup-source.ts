@@ -106,7 +106,36 @@ export function hostStartupScript(
       ((host) => {
         const document = host?.document ?? globalThis.document;
         const window = host?.events ?? globalThis.window;
-        const currentCanvas = () => host?.surface?.() ?? document.querySelector('#app');
+        const findCanvas = (root) => {
+          const preferred = root?.querySelector?.('canvas#app') ?? root?.querySelector?.('#app');
+          if (preferred !== null && preferred !== undefined) return preferred;
+          let fallback = root?.querySelector?.('canvas');
+          const descendants = root?.querySelectorAll?.('*');
+          if (descendants === null || descendants === undefined) return fallback;
+          for (const element of descendants) {
+            const nested = findCanvas(element.shadowRoot);
+            if (nested?.id === 'app') return nested;
+            fallback ??= nested;
+          }
+          return fallback;
+        };
+        let cachedCanvas;
+        const currentCanvas = () => {
+          const surface = host?.surface?.();
+          if (surface !== null && surface !== undefined) return surface;
+          if (cachedCanvas !== null && cachedCanvas !== undefined && cachedCanvas.isConnected !== false)
+            return cachedCanvas;
+          cachedCanvas = findCanvas(document);
+          return cachedCanvas;
+        };
+        const eventCanvas = (event) => {
+          if (typeof event?.composedPath === 'function') {
+            for (const node of event.composedPath()) {
+              if (node?.nodeType === 1 && node.tagName === 'CANVAS') return node;
+            }
+          }
+          return event?.target;
+        };
         const isElement = (node) => host === undefined ? node instanceof HTMLElement : node?.nodeType === 1;
         const isNode = (node) => host === undefined ? node instanceof Node : node !== null && typeof node === 'object';
         const startupEnabled = ${startupEnabled};
@@ -409,7 +438,7 @@ export function hostStartupScript(
               timer = setStartupTimeout(tick, 1000);
             } else count += 1;
           };
-          const onReceipt = event => { if (event.target === currentCanvas()) completed(event.detail); };
+          const onReceipt = event => { if (eventCanvas(event) === currentCanvas()) completed(event.detail); };
           const visibilityChanged = () => reset();
           const pageHidden = event => { if (event.persisted) reset(); else destroy(); };
           const destroy = () => {
@@ -677,7 +706,8 @@ export function hostStartupScript(
         };
         const onSubmitted = (event) => {
           if (phase === 'entered' || phase === 'failed' || phase === 'destroyed') return;
-          if (event?.target !== currentCanvas()) return;
+          const canvas = eventCanvas(event);
+          if (canvas !== currentCanvas()) return;
           const detail = event?.detail;
           if (
             detail !== null &&
@@ -692,13 +722,13 @@ export function hostStartupScript(
             if (
               latestSubmitted !== undefined &&
               (detail.deviceGeneration !== latestSubmitted.deviceGeneration ||
-                event.target !== latestSubmitted.canvas)
+                canvas !== latestSubmitted.canvas)
             ) {
               if (phase === 'fading') prepare();
               else submittedFrames = new Set();
             }
             latestSubmitted = {
-              canvas: event.target,
+              canvas,
               frameId: detail.frameId,
               deviceGeneration: detail.deviceGeneration,
               worldIdentity: detail.worldIdentity,
@@ -709,7 +739,7 @@ export function hostStartupScript(
           }
         };
         const onCompleted = (event) => {
-          if (event?.target === currentCanvas()) enter(event?.detail);
+          if (eventCanvas(event) === currentCanvas()) enter(event?.detail);
         };
         const onVisibilityChange = () => {
           frameRate.visibilityChanged();

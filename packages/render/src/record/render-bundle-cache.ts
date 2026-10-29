@@ -41,13 +41,7 @@ export function sceneRenderBundleCache(
   state.renderBundleCaches ??= { frameNumber: -1, passes: new Map() };
   const retained = state.renderBundleCaches;
   const caches = retained.passes;
-  // Prune at the first lookup of each frame. No retired graph keeps this map.
-  if (retained.frameNumber !== state.frameNumber) {
-    for (const [key, entry] of caches) {
-      if (entry.frameNumber !== retained.frameNumber) caches.delete(key);
-    }
-    retained.frameNumber = state.frameNumber;
-  }
+  pruneSceneRenderBundleCaches(state, retained);
   const cached = caches.get(name);
   if (cached?.cache.matches(descriptor)) {
     cached.frameNumber = state.frameNumber;
@@ -56,6 +50,25 @@ export function sceneRenderBundleCache(
   const cache = new RenderBundleCache(descriptor);
   caches.set(name, { cache, frameNumber: state.frameNumber });
   return cache;
+}
+
+function pruneSceneRenderBundleCaches(
+  state: SceneRenderBundleState,
+  retained: NonNullable<SceneRenderBundleState['renderBundleCaches']>,
+): void {
+  if (retained.frameNumber === state.frameNumber) return;
+  for (const key of retained.passes.keys()) {
+    if (retained.passes.get(key)?.frameNumber !== retained.frameNumber) retained.passes.delete(key);
+  }
+  retained.frameNumber = state.frameNumber;
+}
+
+/** Native GPU recording already owns its bundles; retire the superseded CPU command cache. */
+export function retireSceneRenderBundleCache(state: SceneRenderBundleState, name: string): void {
+  const retained = state.renderBundleCaches;
+  if (retained === undefined) return;
+  pruneSceneRenderBundleCaches(state, retained);
+  retained.passes.delete(name);
 }
 
 interface Segment {

@@ -33,6 +33,50 @@ describe('publishBrowserFrameSubmitted in a browser', () => {
     expect((received[0] as CustomEvent).detail.receipt).toBe(receipt);
   });
 
+  it('composes submitted and completed receipts from a canvas in an open shadow root', () => {
+    const host = document.createElement('div');
+    const shadow = host.attachShadow({ mode: 'open' });
+    const canvas = document.createElement('canvas');
+    shadow.append(canvas);
+    document.body.append(host);
+    const received: Array<{ type: string; composed: boolean; canvasInPath: boolean }> = [];
+    const observe = (event: Event) => {
+      received.push({
+        type: event.type,
+        composed: event.composed,
+        canvasInPath: event.composedPath().includes(canvas),
+      });
+    };
+    window.addEventListener(FORGEAX_FRAME_SUBMITTED_EVENT, observe, { capture: true });
+    window.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, observe, { capture: true });
+
+    try {
+      publishBrowserFrameSubmitted(canvas, { frameId: 13, deviceGeneration: 4 });
+      publishBrowserFrameCompleted(canvas, {
+        frameId: 13,
+        deviceGeneration: 4,
+        presentation: 'ready',
+      });
+
+      expect(received).toEqual([
+        {
+          type: FORGEAX_FRAME_SUBMITTED_EVENT,
+          composed: true,
+          canvasInPath: true,
+        },
+        {
+          type: FORGEAX_FRAME_COMPLETED_EVENT,
+          composed: true,
+          canvasInPath: true,
+        },
+      ]);
+    } finally {
+      window.removeEventListener(FORGEAX_FRAME_SUBMITTED_EVENT, observe, { capture: true });
+      window.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, observe, { capture: true });
+      host.remove();
+    }
+  });
+
   it('keeps documentElement attributes unchanged while dispatching frame progress', () => {
     const canvas = document.createElement('canvas');
     const received: Event[] = [];

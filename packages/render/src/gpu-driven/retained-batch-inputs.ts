@@ -1,5 +1,6 @@
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuSceneResourceFrame, GpuSceneResourcePins } from '../gpu-scene';
+import { renderStateSignature } from '../material-render-state';
 import type { BatchExecution } from './batch-execution';
 import type { GpuDrivenBatch } from './batch-topology';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
@@ -81,9 +82,8 @@ export function samePreparedAssemblyInputs(
     inputs.meshes[1] !== meshes[1]
   )
     return false;
-  for (const [mesh, epoch] of inputs.meshEpochs) if (mesh.contentEpoch !== epoch) return false;
-  for (const [state, serialized] of inputs.states)
-    if (JSON.stringify(state) !== serialized) return false;
+  for (const entry of inputs.meshEpochs) if (entry[0].contentEpoch !== entry[1]) return false;
+  for (const entry of inputs.states) if (renderStateSignature(entry[0]) !== entry[1]) return false;
   if (inputs.materials === materials) return true;
   if (inputs.fixedRows !== true) return false;
   for (const rows of inputs.lodRows ?? [])

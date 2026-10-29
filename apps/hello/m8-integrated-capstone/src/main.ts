@@ -79,7 +79,7 @@ const content = { ready: false, revision: 0, bytes: 0, title: '', markers: 0 };
 const renderMode = { value: 'standard' };
 const fault = { code: 'none' };
 const recovery = { value: 0 };
-const audioCounters = { starts: 0, previousActive: 0 };
+const audioCounters: { starts: number; previousActive: number | null } = { starts: 0, previousActive: 0 };
 let clipHandle = 0 as unknown as AssetHandle<'audio'>;
 let rearmAudio = false;
 let collisionSeen = false;
@@ -161,10 +161,12 @@ world.addSystem(Update, {
     }
 
     const audioState = audio.getState();
-    if (audioState.activeSourceCount > audioCounters.previousActive) {
-      audioCounters.starts += audioState.activeSourceCount - audioCounters.previousActive;
+    const active = audioState.activeSourceCount;
+    const previous = audioCounters.previousActive;
+    if (active !== null && previous !== null && active > previous) {
+      audioCounters.starts += active - previous;
     }
-    audioCounters.previousActive = audioState.activeSourceCount;
+    audioCounters.previousActive = active;
     const contacts = world.get(scene.actor, CollidingEntities);
     collisionSeen ||= contacts.ok && contacts.value.entities.length > 0;
     if (phase.value === 'boot' && content.ready) setNextState(world, Phase, 'playing');

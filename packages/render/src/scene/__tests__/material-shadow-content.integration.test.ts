@@ -80,7 +80,38 @@ it('uses the real cooked entry read sets, including old and new shared material 
   expect(after.get(material)?.snapshot).toBe(material.snapshot);
 });
 
-it('captures only shader-read texture versions during shared preparation', async () => {
+it('witnesses fixed numeric materials without losing scope or selected-snapshot changes', () => {
+  const first = new World(),
+    second = new World();
+  const resource = new MaterialResource(opaque);
+  const frame = new MaterialFrame(undefined).with(resource);
+  const capture = (
+    materials: MaterialFrame,
+    scope = worldRenderResources(first),
+    selected = resource.snapshot,
+  ) => {
+    const content = new ShadowMaterialContent(materials);
+    content.add(resource, selected, scope);
+    return content;
+  };
+  const before = capture(frame);
+  expect(capture(frame).same(before)).toBe(true);
+  expect(capture(frame, worldRenderResources(second)).same(before)).toBe(false);
+  expect(capture(frame, worldRenderResources(first), alpha).same(before)).toBe(false);
+  resource.adopt(change(opaque, 'roughness', 0.9));
+  const unread = capture(frame.with(resource));
+  expect(unread.same(before)).toBe(true);
+  resource.adopt(alpha);
+  const masked = capture(frame.with(resource));
+  expect(masked.same(before)).toBe(false);
+  resource.adopt(change(alpha, 'alphaCutoff', 0.9));
+  expect(capture(frame.with(resource)).same(masked)).toBe(false);
+});
+
+it.each([
+  false,
+  true,
+])('captures shader-read texture versions with a fixed frame (%s)', async (withFrame) => {
   const assets = new AssetRegistry(),
     world = new World({ assets });
   const texture = () =>
@@ -104,7 +135,9 @@ it('captures only shader-read texture versions during shared preparation', async
     ]),
   });
   const capture = () => {
-    const content = new ShadowMaterialContent();
+    const content = new ShadowMaterialContent(
+      withFrame ? new MaterialFrame(undefined).with(material) : undefined,
+    );
     content.add(material, material.snapshot, worldRenderResources(world));
     return content;
   };

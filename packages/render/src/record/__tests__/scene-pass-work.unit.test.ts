@@ -148,7 +148,7 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
   const camera = { ...makeZeroCameraFallbackSnapshot(), fov: Math.PI / 2 };
   const taaCamera = { ...camera, antialias: 'taa' as const };
   const bounds = new Float32Array([5.009, -0.1, -5.0001, 5.011, 0.1, -4.9999]);
-  const projection = computeProjectionMatrix(camera);
+  const projection = computeProjectionMatrix(camera, mat4.create());
   const planes = frustum.fromViewProjection(frustum.create(), projection);
   const temporal = createTemporalView({ antialias: 'taa', width: 64, height: 64, frameIndex: 1 });
   assert(temporal.currentJitterUv);
@@ -473,14 +473,21 @@ it('records the captured material mode and clears already resolved GPU exclusion
     { bindings: [], worlds: f.worlds, frame },
     f.scene,
   );
-  const context = scenePassContext(
-    {
-      materialSlots: plan.materialSlots,
-      scenePassWork: prepared.finish(plan),
-      gpuDrivenSelection: f.gpu,
-    } as never,
-    pass,
-  );
+  const marker = Symbol('frame-owned-field');
+  const source = {
+    materialSlots: plan.materialSlots,
+    scenePassWork: prepared.finish(plan),
+    gpuDrivenSelection: f.gpu,
+    [marker]: {},
+  };
+  const context = scenePassContext(source as never, pass);
+  const sibling = scenePassContext(source as never, pass);
+  expect(context).not.toBe(source);
+  expect(sibling).not.toBe(context);
+  expect(Reflect.get(context, marker)).toBe(source[marker]);
+  expect(source.gpuDrivenSelection).toBe(f.gpu);
+  context.hdrpSsaoBlurredView = {} as never;
+  expect(sibling.hdrpSsaoBlurredView).toBeUndefined();
   expect(context.validatedOrdered.map((row) => row.source.entityKey)).toEqual([0]);
   expect(selectMainPassMaterials(context, pass.selector, 'opaque')?.size).toBe(1);
   expect(context.gpuDrivenSelection).toBeUndefined();

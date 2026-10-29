@@ -90,8 +90,8 @@ describe('TemporalView v1', () => {
     });
     const resolved =
       reason === 'first-frame'
-        ? resolveTemporalReset(undefined, next)
-        : resolveTemporalReset(previous, next);
+        ? resolveTemporalReset(undefined, next.input)
+        : resolveTemporalReset(previous.input, next.input);
     expect(resolved).toBe(expected satisfies TemporalResetReason);
   });
 

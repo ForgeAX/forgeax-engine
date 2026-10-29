@@ -15,7 +15,10 @@ import {
   decodeTape,
   encodeTape,
   openReplay,
+  type ReplaySession,
   replayDeviceRequest,
+  type WorkEntry,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
@@ -24,6 +27,7 @@ import { expect, it, onTestFailed } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 async function save(name: string, bytes: Uint8Array) {
@@ -36,6 +40,28 @@ async function save(name: string, bytes: Uint8Array) {
 // Exercise every source transport on the UV-sensitive quad. Publication also
 // owns the ordinary mesh path; repeating that path for both canvas classes adds
 // no new upload, resize, recovery or replay boundary.
+async function readCanvasReplay(
+  replay: ReplaySession,
+  work: WorkEntry,
+  last: WorkEntry | undefined,
+  resourceId: string,
+) {
+  if (last === undefined) throw new Error('Missing presented draw');
+  const output = workOutputs(last).find((entry) => entry.role === 'color');
+  if (output === undefined) throw new Error('Missing replay surface output');
+  const reads = (
+    await replay.readAtWorks([
+      { resourceId, workIndex: work.workIndex },
+      { ...output.request, workIndex: last.workIndex },
+    ])
+  ).unwrap();
+  const source = reads[0],
+    presented = reads[1];
+  if (source === undefined || presented === undefined)
+    throw new Error('Missing canvas replay readbacks');
+  return [source.unwrap(), presented.unwrap()] as const;
+}
+
 it.each([
   'html-quad',
   'offscreen-quad',
@@ -257,7 +283,7 @@ it.each([
     await draw();
     (await recorder.frameBoundary()).unwrap();
     const uploadTape = (await pendingUpload).unwrap();
-    await save(`${kind}-upload.rhitape`, uploadTape.bytes);
+    await save(`${kind}-upload.rhitape`, compactTape(uploadTape).bytes);
     expect(
       decodeTape(uploadTape.bytes)
         .unwrap()
@@ -279,7 +305,7 @@ it.each([
     (await recorder.frameBoundary()).unwrap();
     await draw();
     (await recorder.frameBoundary()).unwrap();
-    await save(`${kind}-resized.rhitape`, (await resizeCapture).unwrap().bytes);
+    await save(`${kind}-resized.rhitape`, compactTape((await resizeCapture).unwrap()).bytes);
     const resized = await pixels('resized');
     await save(
       `${kind}-resize-samples.json`,
@@ -305,7 +331,7 @@ it.each([
     await draw();
     (await recorder.frameBoundary()).unwrap();
     const captured = (await pending).unwrap();
-    await save(`${kind}-recovered.rhitape`, captured.bytes);
+    await save(`${kind}-recovered.rhitape`, compactTape(captured).bytes);
     const tape = decodeTape(captured.bytes).unwrap(),
       model = buildFrameModel(tape);
     const textureResources = model.resources.filter((row) => {
@@ -364,9 +390,12 @@ it.each([
       // Pipeline and binding facts already belong to the captured frame model.
       // Replay only the source texture and presented pixels asserted below.
       observe('replay-readback-and-artifacts');
-      const sourcePixels = (
-        await replay.readResourceAtWork(textureResource.resourceId, work.workIndex)
-      ).unwrap();
+      const [sourcePixels, presented] = await readCanvasReplay(
+        replay,
+        work,
+        model.works.at(-1),
+        textureResource.resourceId,
+      );
       expect(sourcePixels.bytes.length).toBe(96 * 48 * 4);
       // Both UV conventions survive upload, resize, recovery and publication.
       color([...sourcePixels.bytes.slice(0, 3)], quad ? [255, 255, 0] : [0, 255, 255]);
@@ -376,10 +405,6 @@ it.each([
       );
       // Canvas and native publication must preserve straight alpha for UI edges.
       color([...sourcePixels.bytes.slice(90 * 4, 90 * 4 + 4)], [255, 255, 255, 128]);
-      const last = model.works.at(-1);
-      if (last === undefined) throw new Error('Missing presented draw');
-      const presented = (await replay.inspectWork(last.workIndex, ['pixels'])).unwrap().attachment;
-      if (presented === undefined) throw new Error('Missing replay surface pixels');
       expect(presented.width).toBe(128);
       expect(presented.height).toBe(128);
       const screen = new Uint8ClampedArray(presented.bytes);
@@ -424,14 +449,22 @@ it.each([
     }
     const omitted = new Set(canvasDraws.map((row) => row.eventIndex));
     const falsified = decodeTape(
-      encodeTape({
-        ...tape,
-        events: tape.events.map((event, index) =>
-          omitted.has(index) && event.kind === 'drawIndexed' ? { ...event, indexCount: 0 } : event,
-        ),
-      }).unwrap(),
+      encodeTape(
+        {
+          ...tape,
+          events: tape.events.map((event, index) =>
+            omitted.has(index) && event.kind === 'drawIndexed'
+              ? { ...event, indexCount: 0 }
+              : event,
+          ),
+        },
+        { compression: 'gzip' },
+      ).unwrap(),
     ).unwrap();
-    await save(`${kind}-missing-models.rhitape`, encodeTape(falsified).unwrap());
+    await save(
+      `${kind}-missing-models.rhitape`,
+      encodeTape(falsified, { compression: 'gzip' }).unwrap(),
+    );
     observe('falsifier-device-and-open');
     const controlAdapter = (await webgpu.rhi.requestAdapter()).unwrap();
     const controlDevice = (

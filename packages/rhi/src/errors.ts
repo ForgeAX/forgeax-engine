@@ -363,7 +363,16 @@ export interface RhiTextureFormatCapabilityUnavailableDetail {
  * The other 15 paths leave `.detail = undefined` (charter proposition 4
  * baseline).
  */
+export interface RhiPipelineLibraryLimitDetail {
+  readonly kind: 'pipeline-library-limit';
+  readonly operation: 'export' | 'input';
+  readonly limit: 'outputBytes' | 'temporaryBytes' | 'entries';
+  readonly requested: number;
+  readonly maximum: number;
+}
+
 export type RhiErrorDetail =
+  | RhiPipelineLibraryLimitDetail
   | RhiShaderCompileDetail
   | RhiAssetNotRegisteredDetail
   | RhiWebgpuRuntimeDetail

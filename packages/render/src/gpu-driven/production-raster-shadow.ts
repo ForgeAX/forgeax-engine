@@ -18,7 +18,6 @@ import type { GpuDrivenBatch, GpuDrivenBatchBinding, SubmissionPlan } from './ba
 import type { BatchExecutions } from './material-artifacts';
 import { PreparedRasterBundleCache } from './prepared-raster-bundle';
 import type { GpuDrivenShadowBatchProjection, ShadowViewRequest } from './production-raster';
-import { lodViewCameraFromMatrix } from './production-raster-lod';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import { type FilteredProductionPlan, sameMaterialArtifact } from './production-raster-prepare';
 import { type ShadowArtifactObservations, shadowMaterialKey } from './production-raster-support';
@@ -53,6 +52,8 @@ export interface ShadowProjectionSource extends ShadowViewBindings {
 
 /** The shared facts of one `updateShadowViews` call and its per-call caches. */
 export interface ShadowProjectionPass {
+  /** Only fresh private recorder requests can transfer into the pool read domain. */
+  readonly ownedRequests: boolean;
   readonly filtered: FilteredProductionPlan;
   readonly executions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>;
   readonly artifacts: ShadowArtifactObservations;
@@ -164,14 +165,6 @@ export function restrictShadowCasterChannels(
     );
   }
   return { ...requested, candidatePrimitiveIndices: new ShadowSlotSelection(slots, allowed) };
-}
-
-/**
- * A light view ranks casters by their footprint in its own projection; a view
- * without a matrix follows the main camera.
- */
-export function shadowViewLod(pass: ShadowProjectionPass, matrix: Float32Array | undefined) {
-  return { lodCamera: matrix === undefined ? pass.camera : lodViewCameraFromMatrix(matrix) };
 }
 
 export function preparedShadowRows(

@@ -2,19 +2,23 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+/** Wait for the submitted prefix associated with the consumed generated asset. */
+export async function waitForRuntimeVaseRender(page) {
+  const before = await page.evaluate(
+    () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
+  );
+  await page.waitForFunction(
+    (previousFrameId) => {
+      const completed = document.querySelector('canvas')?.forgeaxFrameProgress?.completed;
+      return (completed?.frameId ?? 0) >= previousFrameId + 2 && completed?.presentation === 'ready';
+    },
+    before,
+    { timeout: 60_000 },
+  );
+}
+
 /** Shared by Preview and the generated DevKit project's main/Worker browser gates. */
 export async function probeRuntimeVase(page, read, evidenceDir, capture = options => page.screenshot(options)) {
-  const settleRender = async () => {
-    const before = await page.evaluate(
-      () => document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0,
-    );
-    await page.waitForFunction(
-      (previousFrameId) =>
-        (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) >= previousFrameId + 2,
-      before,
-      { timeout: 60_000 },
-    );
-  };
   const panel = page.getByRole('region', { name: 'Runtime vase' });
   await panel.waitFor({ timeout: 120_000 });
   const status = panel.locator('[data-ui-part="vase-status"]');
@@ -35,7 +39,7 @@ export async function probeRuntimeVase(page, read, evidenceDir, capture = option
   });
   await page.locator('#forgeax-loading').waitFor({ state: 'hidden', timeout: 60_000 });
   await mkdir(evidenceDir, { recursive: true });
-  await settleRender();
+  await waitForRuntimeVaseRender(page);
   await capture({ path: join(evidenceDir, 'vase-initial.png') });
   await panel.getByLabel('Height', { exact: true }).fill('3.5');
   await panel.getByLabel('Radius', { exact: true }).fill('1.1');
@@ -47,7 +51,7 @@ export async function probeRuntimeVase(page, read, evidenceDir, capture = option
   assert.equal(updated.entity, initial.entity);
   assert.ok(Math.abs(updated.aabb[4] - 3.5) < 0.001);
   assert.ok(updated.vertexCount < initial.vertexCount);
-  await settleRender();
+  await waitForRuntimeVaseRender(page);
   await capture({ path: join(evidenceDir, 'vase-updated.png') });
   // Bypass HTML's minimum solely to prove the producer rejects invalid input.
   const height = panel.getByLabel('Height', { exact: true });
@@ -67,5 +71,6 @@ export async function probeRuntimeVase(page, read, evidenceDir, capture = option
   assert.equal(recovered.guid, initial.guid);
   assert.equal(recovered.entity, initial.entity);
   assert.ok(Math.abs(recovered.aabb[4] - 2.4) < 0.001);
+  await waitForRuntimeVaseRender(page);
   return { initial, updated, rejected, recovered };
 }

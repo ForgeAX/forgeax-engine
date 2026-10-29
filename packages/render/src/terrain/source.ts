@@ -1,6 +1,7 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type AssetChange, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import { GlobalTransform, readPresentationWorldMatrix, Transform } from '@forgeax/engine-scene';
 import {
@@ -253,12 +254,16 @@ export function extractTerrainSources(
       hidden?.add(row.entity);
       if (!retainHidden) continue;
     }
-    const terrain = row.get(Terrain),
-      transform = readPresentationWorldMatrix(world, row.entity);
+    const read = world[worldRead];
+    const terrainAsset = read.getFieldValue(row.entity, Terrain, 'asset') as AssetHandle<'terrain'>;
+    const lod0Diameter = read.getFieldValue(row.entity, Terrain, 'lod0Diameter') as number;
+    const forcedLod = read.getFieldValue(row.entity, Terrain, 'forcedLod') as number;
+    const transform = readPresentationWorldMatrix(world, row.entity);
     if (transform === undefined) continue;
-    const layer = row.has(Layer) ? (row.get(Layer)?.value ?? 0) : 0;
-    const shadow = row.has(ShadowParticipation) ? row.get(ShadowParticipation) : undefined;
-    const value = runtimeAssets(world.assets).resolveAsset<TerrainAsset>(terrain.asset);
+    const layer = read.getFieldValue(row.entity, Layer, 'value') ?? 0;
+    const cast = read.getFieldValue(row.entity, ShadowParticipation, 'cast');
+    const receive = read.getFieldValue(row.entity, ShadowParticipation, 'receive');
+    const value = runtimeAssets(world.assets).resolveAsset<TerrainAsset>(terrainAsset);
     if (!value.ok || value.value.kind !== 'terrain')
       terrainSourceError('terrain-query-unavailable', 'asset', 'one loaded TerrainAsset');
     const asset = value.value as TerrainAsset;
@@ -270,10 +275,10 @@ export function extractTerrainSources(
         'finite GPU world bounds, translation with exact identity rotation and unit scale',
       );
     if (
-      !Number.isFinite(terrain.lod0Diameter) ||
-      terrain.lod0Diameter <= 0 ||
-      !Number.isFinite(terrain.forcedLod) ||
-      terrain.forcedLod > Math.log2(asset.subsectionVertices) - 1
+      !Number.isFinite(lod0Diameter) ||
+      lod0Diameter <= 0 ||
+      !Number.isFinite(forcedLod) ||
+      forcedLod > Math.log2(asset.subsectionVertices) - 1
     )
       terrainSourceError(
         'terrain-input-invalid',
@@ -290,7 +295,7 @@ export function extractTerrainSources(
     const [minHeight, maxHeight] = terrainHeightBounds(...asset.heightRange);
     renderables.push({
       layer,
-      ...(shadow?.cast === false ? { shadowCaster: false as const } : {}),
+      ...(cast === 0 ? { shadowCaster: false as const } : {}),
       assetHandle: Number(grids[0]),
       transform: { world: new Float32Array(matrix) },
       material: rootMaterial,
@@ -299,7 +304,7 @@ export function extractTerrainSources(
       worldId,
       entityKey: row.entity,
       ...(authorVisible ? {} : { authorVisible: false }),
-      ...(shadow?.receive === false ? { shadowReceiver: false } : {}),
+      ...(receive === 0 ? { shadowReceiver: false } : {}),
       localAabb: new Float32Array([
         0,
         minHeight,
@@ -315,9 +320,9 @@ export function extractTerrainSources(
         ),
       ]),
       terrain: {
-        handle: terrain.asset,
-        lod0Diameter: terrain.lod0Diameter,
-        forcedLod: terrain.forcedLod,
+        handle: terrainAsset,
+        lod0Diameter: lod0Diameter,
+        forcedLod: forcedLod,
         layer,
       },
     });

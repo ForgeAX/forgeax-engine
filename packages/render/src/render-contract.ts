@@ -427,33 +427,33 @@ export interface RenderPipelineContext {
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface VolumetricFogShaderSources {
-  readonly inject: string;
-  readonly temporal: string;
-  readonly integrate: string;
-  readonly composite: string;
+  readonly inject: string | import('@forgeax/engine-types').ShaderSource;
+  readonly temporal: string | import('@forgeax/engine-types').ShaderSource;
+  readonly integrate: string | import('@forgeax/engine-types').ShaderSource;
+  readonly composite: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface DepthPyramidShaderSources {
-  readonly seed: string;
-  readonly reduce: string;
+  readonly seed: string | import('@forgeax/engine-types').ShaderSource;
+  readonly reduce: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface SsrShaderSources {
-  readonly trace: string;
-  readonly temporal: string;
-  readonly compose: string;
+  readonly trace: string | import('@forgeax/engine-types').ShaderSource;
+  readonly temporal: string | import('@forgeax/engine-types').ShaderSource;
+  readonly compose: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable analytic-atmosphere entry-point sources emitted by the shader manifest. */
 export interface AtmosphereShaderSources {
-  readonly luts: string;
-  readonly compose: string;
-  readonly ibl: string;
-  readonly prefilter: string;
-  readonly cube: string;
-  readonly background: string;
+  readonly luts: string | import('@forgeax/engine-types').ShaderSource;
+  readonly compose: string | import('@forgeax/engine-types').ShaderSource;
+  readonly ibl: string | import('@forgeax/engine-types').ShaderSource;
+  readonly prefilter: string | import('@forgeax/engine-types').ShaderSource;
+  readonly cube: string | import('@forgeax/engine-types').ShaderSource;
+  readonly background: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /**
@@ -650,6 +650,9 @@ export interface Renderer {
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
   inspect(options?: {
     readonly pipelineLibrary?: boolean;
+    /** Start/stop an explicit diagnostic route retention scope. */
+    readonly pipelineLibraryCollection?: boolean;
+    readonly pipelineLibraryLimits?: import('@forgeax/engine-rhi').PipelineLibraryLimits;
     readonly runtimeRequests?: boolean;
   }): RenderInspection;
   /** Opt-in diagnostic; caller holds this receipt until readback finishes. */
@@ -1060,6 +1063,9 @@ export interface RenderInspection {
   readonly backgroundPipelineLibraryState?: 'running' | 'done' | 'failed';
   /** Included only by an explicit inspect({pipelineLibrary:true}) export request. */
   readonly pipelineLibraryManifest?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /** Finite action policy used by the accompanying complete export. */
+  readonly pipelineLibraryCollecting?: boolean;
+  readonly pipelineLibraryPolicy?: Required<import('@forgeax/engine-rhi').PipelineLibraryLimits>;
   readonly views?: readonly import('./inspection-types').CameraViewInspection[];
   readonly state: RendererState;
   /** Bounded detached facts for the current or last recovery attempt. */
@@ -1446,6 +1452,8 @@ export type RenderPhaseSkipReason =
 
 /** First-version options bag (intentionally empty; reserved for v0.1). */
 export interface RendererOptions {
+  /** Fixed display-scene short-axis cap in pixels; default 0 (uncapped). Canvas, UI and explicit RenderTargets retain their sizes. */
+  readonly maxRenderShortSide?: number;
   /** Default-off receipt-owned CPU shadow workload; no additional GPU operations. */
   readonly shadowWorkload?: boolean;
   /**

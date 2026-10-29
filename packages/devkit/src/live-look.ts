@@ -134,6 +134,52 @@ function recentRendererError(error: CaptureRendererError | null): CaptureRendere
   return error !== null && error.framesAgo <= RENDERER_ERROR_RECENT_FRAMES ? error : null;
 }
 
+/** Default wait for a starting game to clear its startup overlay (the capture budget starts after it). */
+export const LOOK_STARTUP_WAIT_MS = 120_000;
+
+/**
+ * A fresh revision shows its startup overlay until the game's first presentation,
+ * which a loaded or software-GPU machine can take minutes to reach. The look is
+ * of the game, so wait for the generated host to remove it, on a budget of its
+ * own: never capture the loading screen, and say so plainly when it outlasts it.
+ */
+async function awaitStartupOverlayGone(driver: LookDriver, waitMs: number): Promise<void> {
+  const realm = driver.execution.realm;
+  try {
+    await realm.waitForFunction(
+      () => document.querySelector('#forgeax-loading')?.checkVisibility() !== true,
+      undefined,
+      // Playwright reads 0 as no limit; an exhausted budget must fail at once instead.
+      { timeout: Math.max(1, waitMs) },
+    );
+  } catch (error) {
+    // Only an exhausted budget means "still starting"; a closed page or an
+    // unsupported predicate must surface as itself so the owner can react.
+    if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
+    const progress = await Promise.race([
+      realm.evaluate(() => {
+        const text = (id: string) => document.querySelector(id)?.textContent?.trim() ?? '';
+        return [text('#forgeax-loading-status'), text('#forgeax-loading-meta')]
+          .filter((part) => part !== '')
+          .join(' ');
+      }),
+      // A page with a stuck main thread must not hold the capture slot past the budget.
+      new Promise<string>((done) => setTimeout(() => done(''), 2_000).unref()),
+    ]).catch(() => '');
+    throw Object.assign(new Error('live-not-ready: the game is still starting'), {
+      code: 'live-not-ready',
+      hint:
+        `The game is still starting after ${Math.round(waitMs / 1000)} s` +
+        `${progress === '' ? '' : ` (${progress})`}; look again once it has loaded.`,
+      detail: {
+        reason: error.message.split('\n')[0],
+        // The owner must not repeat a look that already waited the whole startup budget.
+        startupWaited: true,
+      },
+    });
+  }
+}
+
 async function captureView(
   driver: LookDriver,
   name: string,
@@ -141,13 +187,6 @@ async function captureView(
   deadline: number,
   hideUi: boolean,
 ): Promise<{ readonly view: LookView; readonly rendererError: CaptureRendererError | null }> {
-  // A fresh revision fades its startup overlay over the first frames; the look
-  // is of the game, so wait until the generated host removes it.
-  await driver.execution.realm.waitForFunction(
-    () => document.querySelector('#forgeax-loading')?.checkVisibility() !== true,
-    undefined,
-    { timeout: Math.max(1, deadline - Date.now()) },
-  );
   // Two submissions: the first may predate a resize or camera change. A
   // stalled frame loop still yields the image, flagged as possibly stale.
   const fresh = await driver
@@ -233,9 +272,11 @@ export async function lookAtLive(
   driver: LookDriver,
   request: LookRequest,
   timeoutMs = 60_000,
+  startupWaitMs = LOOK_STARTUP_WAIT_MS,
 ): Promise<LookResult> {
   await assertLookAdmissible(driver, request);
   await mkdir(driver.outputDir, { recursive: true });
+  await awaitStartupOverlayGone(driver, startupWaitMs);
   const deadline = Date.now() + timeoutMs;
   const page = driver.execution.ownerPage;
   // Headed native windows (viewport null) are only captured at their own size.

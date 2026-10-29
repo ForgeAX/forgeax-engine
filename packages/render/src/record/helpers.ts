@@ -214,20 +214,41 @@ export function isLitMaterialSnapshot(material: MaterialSnapshot): boolean {
   return isStandardPbrMaterialShader(material.materialShaderId);
 }
 
-export function computeViewMatrix(camera: CameraSnapshot): Mat4 {
+export function computeViewMatrix(camera: CameraSnapshot, out: Mat4): Mat4 {
   // feat-20260601 D-3: view = invert(camera world mat4). The camera's resolved
   // world mat4 (propagateTransforms output) is read straight off the snapshot;
   // no recompose from decomposed TRS.
-  const cameraFromWorld = mat4.create();
-  mat4.invert(cameraFromWorld, camera.world);
-  return cameraFromWorld;
+  return mat4.invert(out, camera.world);
 }
 
-export function computeProjectionMatrix(camera: CameraSnapshot): Mat4 {
+export function computeProjectionMatrix(camera: CameraSnapshot, out: Mat4): Mat4 {
   if (camera.captureProjection !== undefined) {
-    const projection = mat4.create();
-    projection.set(camera.captureProjection);
+    const projection = out;
+    const captured = camera.captureProjection;
+    projection.set(captured);
+    projection.fill(0, captured.length);
     return projection;
   }
-  return cameraLensProjection(camera);
+  return cameraLensProjection(camera, out);
+}
+
+function createViewProjectionScratch() {
+  return { projection: mat4.create(), view: mat4.create() };
+}
+let viewProjectionScratch: ReturnType<typeof createViewProjectionScratch> | undefined;
+let buildingViewProjection = false;
+
+/** Write the camera product while keeping its intermediate matrices private. */
+export function computeViewProjectionMatrix(camera: CameraSnapshot, out: Mat4): Mat4 {
+  const wasBuilding = buildingViewProjection;
+  buildingViewProjection = true;
+  try {
+    viewProjectionScratch ??= createViewProjectionScratch();
+    const scratch = wasBuilding ? createViewProjectionScratch() : viewProjectionScratch;
+    const projection = computeProjectionMatrix(camera, scratch.projection);
+    const view = computeViewMatrix(camera, scratch.view);
+    return mat4.multiply(out, projection, view);
+  } finally {
+    buildingViewProjection = wasBuilding;
+  }
 }

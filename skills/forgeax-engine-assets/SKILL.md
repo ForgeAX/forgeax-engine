@@ -20,10 +20,13 @@ Choose the owner by when the content is known, not by how it is computed:
   seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), never
   `Math.random()` or `Date.now()`. Runtime generation takes a gameplay seed so
   playthroughs and tests reproduce.
-- Factories and `meshFromInterleaved` emit the vec4 `tangent` Standard materials need;
-  `createMeshBuilder` input needs `tangent: computeTangentVec4(...)`.
+- Use `createMeshBuilder` for custom geometry; it derives packed layout and bounds and completes omitted triangle surface channels. Factories and `meshFromInterleaved` also emit the vec4 tangent stock materials need. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
+- Attribute presence maps such as `DEFAULT_VERTEX_ATTRIBUTE_MAP` describe layout; empty lane placeholders do not supply nonempty runtime geometry. Use builder output or `unpackInterleavedVertexAttributes` with the canonical layout projection for existing packed vertices. Retain channel cardinality and submesh validation; do not copy handwritten stride tables.
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
-- Compiled recipes: [procedural props and runtime meshes](../forgeax-engine-sdk/references/effects/procedural-props.md).
+- Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
+- Compiled recipes: procedural props and runtime meshes.
+
+When authorized to adapt a copied author source to a different SDK, retain immutable originals and work outside active asset roots. Update real dependencies and APIs, regenerate locks with the package manager, compile and cook against the target SDK, then export/import the verified source closure with its identities and provenance. A locked-version rejection is not proof that adaptation is unsupported; changing only version labels or cloning GUIDs is not a migration.
 
 ## Collected pipeline recipes
 
@@ -305,12 +308,12 @@ artifact when an engine resource is missing.
 
 | Task | Load |
 |:--|:--|
-| Catalog subscription, refs, package identity, compression | [`catalog-and-import.md`](references/catalog-and-import.md#catalogsource-subscribe-before-enumerating) |
-| Custom importers, sidecars, source resolution, byte decode | [`catalog-and-import.md`](references/catalog-and-import.md#register-a-custom-host-importer) |
-| Mesh UV contracts and structured recovery | [`runtime-and-mesh.md`](references/runtime-and-mesh.md#multi-uv-import-gltf-and-fbx-texcoord_0-through-7) |
+| Catalog subscription, refs, package identity, compression | `catalog-and-import.md` |
+| Custom importers, sidecars, source resolution, byte decode | `catalog-and-import.md` |
+| Mesh UV contracts and structured recovery | `runtime-and-mesh.md` |
 | Lightmap UV validation across LODs, baked-data identity and staleness | [import lightmap UVs](../../packages/import/README.md#lightmap-uv-validation) and [render bake data](../../packages/render/README.md#baked-lighting-identity-and-staleness) |
-| Runtime load, VFX, handles, video, nested scenes | [`runtime-and-mesh.md`](references/runtime-and-mesh.md#runtime-api-quick-reference) |
-| Scene writeback, new kinds, custom loaders, evidence | [`scene-and-custom-kinds.md`](references/scene-and-custom-kinds.md#scene-save-and-writeback) |
+| Runtime load, VFX, handles, video, nested scenes | `runtime-and-mesh.md` |
+| Scene writeback, new kinds, custom loaders, evidence | `scene-and-custom-kinds.md` |
 
 ## Plugin assets
 

@@ -58,7 +58,7 @@ scope and observer overhead before accepting a rendering performance budget.
 
 ## Color-lighting parity handoff
 
-For backend or native readback failures, start with the [color-lighting parity status index](../../apps/parity/color-lighting/status-index.md), then inspect the [parity README](../../apps/parity/color-lighting/README.md) and the named `CaseReport` evidence. Preserve backend identity, native format, frame, size, and raw hash; capability loss is incomplete evidence, not a fallback pass.
+For backend or native readback failures, start with the color-lighting parity status index, then inspect the [parity README](../../apps/parity/color-lighting/README.md) and the named `CaseReport` evidence. Preserve backend identity, native format, frame, size, and raw hash; capability loss is incomplete evidence, not a fallback pass.
 
 ## Mental model
 
@@ -98,16 +98,22 @@ reject fixture re-baselining. Separate producer Naga CPU results from physical
 
 ```mermaid
 flowchart TD
-  CR["createRenderer(canvas, opts?)"] -->|opts.rhi injection| NULL["rhi-null: headless no-op"]
+  CR["createRenderer(canvas, opts?)"] -->|opts.rhi injection| INJECTED["Explicit backend: no automatic fallback"]
   CR -->|navigator.gpu present| WG["rhi-webgpu: thin browser adapter"]
   STUB["installWebGpuStub: no-op navigator.gpu"] -.->|optional, per realm| WG
   CR -->|otherwise| WP["rhi-wgpu: thin TS shell"]
+  WG -->|environment admission failure, once| WP
   WG --> RHI["engine-rhi: interface authority"]
   WP --> WASM["wgpu-wasm: one WASM artifact, wgpu 30 + naga 30"]
   WP --> RHI
   WASM --> NAGA["engine-naga: TS shell, excluded from runtime engine-shader"]
-  NULL --> RHI
+  INJECTED --> RHI
 ```
+
+For a startup failure, inspect both structured backend causes and the host
+capabilities using the [Runtime diagnosis contract](../../packages/runtime/README.md#browser-backend-selection-and-diagnosis).
+Verify native WebGPU and WebGL2 with completed frames and pixel readback in the
+actual WebView; browser initialization alone does not establish device support.
 
 ## Usage skeleton
 
@@ -283,6 +289,23 @@ on `err.code === 'video-upload-unsupported'` (`packages/runtime/src/errors.ts`).
 | Dawn cannot decode video | No HTMLVideoElement/VideoFrame realm; zero-copy and video pixel acceptance require browser e2e. GPUTexture import and the `texture_external` layout do run on Dawn. |
 | RHI Debug | The recorder snapshots each imported frame into a recorded rgba8 texture view, so tapes replay without media objects. |
 | No audio track handling | RHI does not own video audio; that work is separate. |
+
+## Pipeline library ownership
+
+`device.pipelineLibrary` remains optional. On supporting devices, resource identity
+survives cumulative registration growth. Actual handles, active requests, command
+and bundle owners retain dependencies; Renderer rosters retain prewarm results for
+their generation. The device content index adds no strong reuse cache or source-body
+quota. Source/state changes remain distinct; labels never authorize equivalence.
+
+`export(limits?)` and `prepare(manifest,{inputLimits})` have independent finite action
+policies, with compatible defaults in `PIPELINE_LIBRARY_LIMITS`. Limits cover output,
+escaping, temporary materialization and transport, not process memory. An export
+failure preserves readiness and recovery and may be retried; unknown dependencies
+and pending compilation still fail explicitly. Renderer/Worker inspection forwards
+`pipelineLibraryLimits` and returns the actual `pipelineLibraryPolicy`. Consult the
+[owning contract](../../packages/rhi-webgpu/README.md#device-pipeline-library) before
+changing these bounds. A retained-live-graph export does not prove whole-route coverage.
 
 ## Resource release: destroyBuffer / destroyTexture
 

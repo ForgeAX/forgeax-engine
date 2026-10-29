@@ -1,0 +1,1697 @@
+{
+  "generationBaselineCommit": "11d914eddf3c0c6db8ce64fd48dd39638addc02e",
+  "capabilities": [
+    {
+      "name": "Renderer extract/prepare/record",
+      "form": "built-in"
+    },
+    {
+      "name": "`createRenderer` assembly",
+      "form": "built-in"
+    },
+    {
+      "name": "Standard render pipeline",
+      "form": "built-in"
+    },
+    {
+      "name": "Standard Deferred lighting",
+      "form": "opt-in"
+    },
+    {
+      "name": "URP/HDRP parity asset configuration",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Typed RenderGraph",
+      "form": "built-in"
+    },
+    {
+      "name": "RenderGraph dependencies and barriers",
+      "form": "built-in"
+    },
+    {
+      "name": "RenderGraph last-known-good",
+      "form": "built-in"
+    },
+    {
+      "name": "RenderFeature injection",
+      "form": "opt-in"
+    },
+    {
+      "name": "RenderFeature submission receipt",
+      "form": "development"
+    },
+    {
+      "name": "Frame-varying occlusion query sets",
+      "form": "built-in"
+    },
+    {
+      "name": "Custom RenderPipeline",
+      "form": "opt-in"
+    },
+    {
+      "name": "Custom fullscreen post-processing",
+      "form": "opt-in"
+    },
+    {
+      "name": "Unified color-domain contract",
+      "form": "built-in"
+    },
+    {
+      "name": "Persistent Render Scene",
+      "form": "built-in"
+    },
+    {
+      "name": "Multi-World composition",
+      "form": "built-in"
+    },
+    {
+      "name": "Multi-camera CameraView composition",
+      "form": "built-in"
+    },
+    {
+      "name": "Non-XR stereo output",
+      "form": "opt-in"
+    },
+    {
+      "name": "Reverse-Z depth",
+      "form": "built-in"
+    },
+    {
+      "name": "Render bundle reuse",
+      "form": "built-in"
+    },
+    {
+      "name": "Frame observation",
+      "form": "development"
+    },
+    {
+      "name": "Semantic scene-data target",
+      "form": "built-in"
+    },
+    {
+      "name": "Renderer health and recovery",
+      "form": "built-in"
+    },
+    {
+      "name": "Perspective camera",
+      "form": "built-in"
+    },
+    {
+      "name": "Orthographic camera",
+      "form": "built-in"
+    },
+    {
+      "name": "Offscreen RenderTarget",
+      "form": "opt-in"
+    },
+    {
+      "name": "CubeCamera capture",
+      "form": "opt-in"
+    },
+    {
+      "name": "ReflectionProbe IBL",
+      "form": "opt-in"
+    },
+    {
+      "name": "Planar reflection capture",
+      "form": "opt-in"
+    },
+    {
+      "name": "Public clipping planes",
+      "form": "opt-in"
+    },
+    {
+      "name": "Selection outline",
+      "form": "opt-in"
+    },
+    {
+      "name": "Hierarchical visibility",
+      "form": "built-in"
+    },
+    {
+      "name": "Frustum culling",
+      "form": "built-in"
+    },
+    {
+      "name": "Adjacent LOD coverage blending",
+      "form": "built-in"
+    },
+    {
+      "name": "Layer and sort keys",
+      "form": "built-in"
+    },
+    {
+      "name": "Transparent material sorting",
+      "form": "built-in"
+    },
+    {
+      "name": "GPU Instancing",
+      "form": "built-in"
+    },
+    {
+      "name": "Multiple submeshes/materials",
+      "form": "built-in"
+    },
+    {
+      "name": "Mixed primitive topology",
+      "form": "built-in"
+    },
+    {
+      "name": "Shadow participation",
+      "form": "built-in"
+    },
+    {
+      "name": "Standard PBR",
+      "form": "built-in"
+    },
+    {
+      "name": "Unlit shading",
+      "form": "built-in"
+    },
+    {
+      "name": "Directional Light",
+      "form": "built-in"
+    },
+    {
+      "name": "Point Light",
+      "form": "built-in"
+    },
+    {
+      "name": "Spot Light",
+      "form": "built-in"
+    },
+    {
+      "name": "IES light profiles",
+      "form": "opt-in"
+    },
+    {
+      "name": "Multiple-light PBR",
+      "form": "built-in"
+    },
+    {
+      "name": "Standard clustered lighting",
+      "form": "opt-in"
+    },
+    {
+      "name": "Directional CSM/PCSS",
+      "form": "built-in"
+    },
+    {
+      "name": "Directional contact shadows",
+      "form": "opt-in"
+    },
+    {
+      "name": "Point cube shadow",
+      "form": "opt-in"
+    },
+    {
+      "name": "Spot shadow atlas",
+      "form": "opt-in"
+    },
+    {
+      "name": "Shadow caster opt-out",
+      "form": "built-in"
+    },
+    {
+      "name": "Incremental shadow cache",
+      "form": "built-in"
+    },
+    {
+      "name": "Capsule shadows",
+      "form": "opt-in"
+    },
+    {
+      "name": "Baked lighting identity",
+      "form": "built-in"
+    },
+    {
+      "name": "Custom ShadowCaster pass",
+      "form": "opt-in"
+    },
+    {
+      "name": "Skylight IBL",
+      "form": "opt-in"
+    },
+    {
+      "name": "Cubemap Skybox",
+      "form": "opt-in"
+    },
+    {
+      "name": "Gradient Sky",
+      "form": "opt-in"
+    },
+    {
+      "name": "Analytic Sky",
+      "form": "opt-in"
+    },
+    {
+      "name": "Environment generation/LKG",
+      "form": "built-in"
+    },
+    {
+      "name": "Scene Fog",
+      "form": "opt-in"
+    },
+    {
+      "name": "Volumetric Fog",
+      "form": "opt-in"
+    },
+    {
+      "name": "Fog inspection/LKG",
+      "form": "built-in"
+    },
+    {
+      "name": "HDR scene color",
+      "form": "opt-in"
+    },
+    {
+      "name": "Tone Mapping",
+      "form": "opt-in"
+    },
+    {
+      "name": "Bloom",
+      "form": "opt-in"
+    },
+    {
+      "name": "Screen-space ambient occlusion",
+      "form": "opt-in"
+    },
+    {
+      "name": "Screen-space reflections",
+      "form": "opt-in"
+    },
+    {
+      "name": "FXAA",
+      "form": "opt-in"
+    },
+    {
+      "name": "SMAA 1x",
+      "form": "opt-in"
+    },
+    {
+      "name": "Lens effects",
+      "form": "opt-in"
+    },
+    {
+      "name": "BarrelDistortion",
+      "form": "opt-in"
+    },
+    {
+      "name": "MSAA",
+      "form": "opt-in"
+    },
+    {
+      "name": "TAA",
+      "form": "opt-in"
+    },
+    {
+      "name": "TAAU dynamic resolution",
+      "form": "opt-in"
+    },
+    {
+      "name": "Camera Depth of Field",
+      "form": "opt-in"
+    },
+    {
+      "name": "TAA history reset",
+      "form": "built-in"
+    },
+    {
+      "name": "TAAU GPU-driven coverage",
+      "form": "built-in"
+    },
+    {
+      "name": "TAA inspection/recovery",
+      "form": "built-in"
+    },
+    {
+      "name": "Motion Blur",
+      "form": "opt-in"
+    },
+    {
+      "name": "HDRP SSAO",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Auto exposure",
+      "form": "opt-in"
+    },
+    {
+      "name": "3D LUT color grading",
+      "form": "opt-in"
+    },
+    {
+      "name": "Single MaterialAsset path",
+      "form": "built-in"
+    },
+    {
+      "name": "Pass-based MaterialAsset",
+      "form": "built-in"
+    },
+    {
+      "name": "Material inheritance",
+      "form": "built-in"
+    },
+    {
+      "name": "Material texture transform",
+      "form": "built-in"
+    },
+    {
+      "name": "Material render state",
+      "form": "built-in"
+    },
+    {
+      "name": "Material color writes and polygon depth offset",
+      "form": "built-in"
+    },
+    {
+      "name": "Public material MRT",
+      "form": "opt-in"
+    },
+    {
+      "name": "Independent Standard scalar maps",
+      "form": "opt-in"
+    },
+    {
+      "name": "Standard normal and bump mapping",
+      "form": "opt-in"
+    },
+    {
+      "name": "Alpha Hash coverage",
+      "form": "opt-in"
+    },
+    {
+      "name": "Material `paramSchema` derivation",
+      "form": "built-in"
+    },
+    {
+      "name": "Material reflection gate",
+      "form": "build-time"
+    },
+    {
+      "name": "Runtime Shader Registry",
+      "form": "built-in"
+    },
+    {
+      "name": "Built-in WGSL modules",
+      "form": "built-in"
+    },
+    {
+      "name": "WGSL `#import` composition",
+      "form": "build-time"
+    },
+    {
+      "name": "Shader variants",
+      "form": "build-time"
+    },
+    {
+      "name": "Naga validation/reflection",
+      "form": "build-time"
+    },
+    {
+      "name": "Vite Shader plugin",
+      "form": "build-time"
+    },
+    {
+      "name": "Custom Material Shader",
+      "form": "opt-in"
+    },
+    {
+      "name": "Transmission/refraction material",
+      "form": "opt-in"
+    },
+    {
+      "name": "Runtime CanvasTexture",
+      "form": "opt-in"
+    },
+    {
+      "name": "Standard height vertex displacement",
+      "form": "opt-in"
+    },
+    {
+      "name": "Mesh decals",
+      "form": "opt-in"
+    },
+    {
+      "name": "Projected decals",
+      "form": "opt-in"
+    },
+    {
+      "name": "3D Procedural Geometry",
+      "form": "built-in"
+    },
+    {
+      "name": "2D Procedural Geometry",
+      "form": "built-in"
+    },
+    {
+      "name": "Edge conversion factories",
+      "form": "built-in"
+    },
+    {
+      "name": "Tangent generation",
+      "form": "built-in"
+    },
+    {
+      "name": "Canonical vertex layout",
+      "form": "built-in"
+    },
+    {
+      "name": "GPU normal matrix and compact mesh payloads",
+      "form": "built-in"
+    },
+    {
+      "name": "Binary morph targets (mesh-bin v5)",
+      "form": "built-in"
+    },
+    {
+      "name": "Points/Lines rendering",
+      "form": "opt-in"
+    },
+    {
+      "name": "Mesh vertex color",
+      "form": "built-in"
+    },
+    {
+      "name": "Multiple UV sets",
+      "form": "built-in"
+    },
+    {
+      "name": "Scene hierarchy",
+      "form": "built-in"
+    },
+    {
+      "name": "Three.js compatibility",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Mobility",
+      "form": "built-in"
+    },
+    {
+      "name": "O(D) moving-object propagation",
+      "form": "built-in"
+    },
+    {
+      "name": "SceneAsset instantiation",
+      "form": "built-in"
+    },
+    {
+      "name": "Nested Scene mounts",
+      "form": "built-in"
+    },
+    {
+      "name": "Renderer-independent Skin",
+      "form": "built-in"
+    },
+    {
+      "name": "GPU skin palette",
+      "form": "built-in"
+    },
+    {
+      "name": "AnimationClip playback",
+      "form": "built-in"
+    },
+    {
+      "name": "Stable animation target id",
+      "form": "built-in"
+    },
+    {
+      "name": "Spring bone secondary motion",
+      "form": "opt-in"
+    },
+    {
+      "name": "Managed physical skeleton blend",
+      "form": "opt-in"
+    },
+    {
+      "name": "Object property animation",
+      "form": "opt-in"
+    },
+    {
+      "name": "Inverse kinematics",
+      "form": "opt-in"
+    },
+    {
+      "name": "Spline IK",
+      "form": "opt-in"
+    },
+    {
+      "name": "Skeleton retargeting",
+      "form": "opt-in"
+    },
+    {
+      "name": "Animation timeline and root motion",
+      "form": "opt-in"
+    },
+    {
+      "name": "AnimationGraph",
+      "form": "built-in"
+    },
+    {
+      "name": "Code-driven animation blending",
+      "form": "opt-in"
+    },
+    {
+      "name": "Morph/BlendShape GPU deformation",
+      "form": "opt-in"
+    },
+    {
+      "name": "Sprite",
+      "form": "built-in"
+    },
+    {
+      "name": "Sprite Atlas",
+      "form": "built-in"
+    },
+    {
+      "name": "Sprite Instances",
+      "form": "built-in"
+    },
+    {
+      "name": "Sprite Lit",
+      "form": "built-in"
+    },
+    {
+      "name": "Continuous and dashed line paths",
+      "form": "built-in"
+    },
+    {
+      "name": "Tilemap",
+      "form": "built-in"
+    },
+    {
+      "name": "Tile flip/rotation bits",
+      "form": "built-in"
+    },
+    {
+      "name": "Tilemap object semantics",
+      "form": "built-in"
+    },
+    {
+      "name": "World-space MSDF Text",
+      "form": "built-in"
+    },
+    {
+      "name": "Video Texture",
+      "form": "opt-in"
+    },
+    {
+      "name": "Prepared UiAsset",
+      "form": "host-side"
+    },
+    {
+      "name": "UI authoring validation",
+      "form": "build-time"
+    },
+    {
+      "name": "UI preview evidence",
+      "form": "development"
+    },
+    {
+      "name": "Spec-aligned RHI",
+      "form": "built-in"
+    },
+    {
+      "name": "Opaque GPU handles",
+      "form": "built-in"
+    },
+    {
+      "name": "RHI capability model",
+      "form": "built-in"
+    },
+    {
+      "name": "Browser WebGPU backend",
+      "form": "built-in"
+    },
+    {
+      "name": "WebGPU CPU diagnostics",
+      "form": "development"
+    },
+    {
+      "name": "wgpu WASM backend",
+      "form": "built-in"
+    },
+    {
+      "name": "WebGL2 downlevel lane",
+      "form": "opt-in"
+    },
+    {
+      "name": "RhiNull",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Native wgpu/Ray Query spike",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Native wgpu source pin",
+      "form": "build-time"
+    },
+    {
+      "name": "Compute pass",
+      "form": "built-in"
+    },
+    {
+      "name": "Indirect drawing",
+      "form": "opt-in"
+    },
+    {
+      "name": "Timestamp query",
+      "form": "opt-in"
+    },
+    {
+      "name": "GPU Scene tables",
+      "form": "built-in"
+    },
+    {
+      "name": "GPU view culling",
+      "form": "built-in"
+    },
+    {
+      "name": "GPU draw compaction",
+      "form": "built-in"
+    },
+    {
+      "name": "GPU-driven custom Surface ABI",
+      "form": "opt-in"
+    },
+    {
+      "name": "CPU capability fallback",
+      "form": "built-in"
+    },
+    {
+      "name": "Deferred membership timing",
+      "form": "development"
+    },
+    {
+      "name": "Code-first VFX source",
+      "form": "opt-in"
+    },
+    {
+      "name": "VFX compiler/cooker",
+      "form": "build-time"
+    },
+    {
+      "name": "VFX ECS player",
+      "form": "opt-in"
+    },
+    {
+      "name": "Persistent GPU simulation",
+      "form": "opt-in"
+    },
+    {
+      "name": "Managed scene SDF collision",
+      "form": "development"
+    },
+    {
+      "name": "VFX indirect rendering",
+      "form": "opt-in"
+    },
+    {
+      "name": "VFX submission observation",
+      "form": "development"
+    },
+    {
+      "name": "Billboard particles",
+      "form": "opt-in"
+    },
+    {
+      "name": "Mesh particles",
+      "form": "opt-in"
+    },
+    {
+      "name": "Ribbon particles",
+      "form": "opt-in"
+    },
+    {
+      "name": "Trail particles",
+      "form": "opt-in"
+    },
+    {
+      "name": "Beam particles",
+      "form": "opt-in"
+    },
+    {
+      "name": "VFX fixed-bounds culling",
+      "form": "opt-in"
+    },
+    {
+      "name": "VFX capability refusal",
+      "form": "built-in"
+    },
+    {
+      "name": "VFX inspection/LKG",
+      "form": "development"
+    },
+    {
+      "name": "POD/Result SSOT",
+      "form": "built-in"
+    },
+    {
+      "name": "Typed Handle",
+      "form": "built-in"
+    },
+    {
+      "name": "Format-independent asset POD",
+      "form": "built-in"
+    },
+    {
+      "name": "Out-param math",
+      "form": "built-in"
+    },
+    {
+      "name": "WebGPU/WebGL/Reverse-Z projections",
+      "form": "built-in"
+    },
+    {
+      "name": "3D geometry queries",
+      "form": "built-in"
+    },
+    {
+      "name": "2D geometry queries",
+      "form": "built-in"
+    },
+    {
+      "name": "Color conversion",
+      "form": "built-in"
+    },
+    {
+      "name": "World state authority",
+      "form": "built-in"
+    },
+    {
+      "name": "Schema-defined component",
+      "form": "built-in"
+    },
+    {
+      "name": "Archetype SoA storage",
+      "form": "built-in"
+    },
+    {
+      "name": "Sparse tag component",
+      "form": "built-in"
+    },
+    {
+      "name": "Query row",
+      "form": "built-in"
+    },
+    {
+      "name": "QuerySpan",
+      "form": "built-in"
+    },
+    {
+      "name": "Update schedule",
+      "form": "built-in"
+    },
+    {
+      "name": "FixedUpdate schedule",
+      "form": "built-in"
+    },
+    {
+      "name": "Deferred commands",
+      "form": "built-in"
+    },
+    {
+      "name": "ECS Resource",
+      "form": "built-in"
+    },
+    {
+      "name": "Relationship reverse index",
+      "form": "built-in"
+    },
+    {
+      "name": "Bounded change projection",
+      "form": "built-in"
+    },
+    {
+      "name": "Externalization/remap",
+      "form": "built-in"
+    },
+    {
+      "name": "Shared numeric kernels",
+      "form": "opt-in"
+    },
+    {
+      "name": "World inspection",
+      "form": "development"
+    },
+    {
+      "name": "World-local ComponentCatalog lease",
+      "form": "built-in"
+    },
+    {
+      "name": "UniqueRef/SharedRef write barrier",
+      "form": "built-in"
+    },
+    {
+      "name": "World poison",
+      "form": "built-in"
+    },
+    {
+      "name": "Saved paths and world-distance following",
+      "form": "opt-in"
+    },
+    {
+      "name": "Graph/grid navigation and path following",
+      "form": "opt-in"
+    },
+    {
+      "name": "Static NavMesh and physical character navigation",
+      "form": "opt-in"
+    },
+    {
+      "name": "Typed StateToken",
+      "form": "built-in"
+    },
+    {
+      "name": "Deferred state transition",
+      "form": "built-in"
+    },
+    {
+      "name": "State-scoped entities",
+      "form": "built-in"
+    },
+    {
+      "name": "OnEnter/OnExit hooks",
+      "form": "built-in"
+    },
+    {
+      "name": "`inState` condition",
+      "form": "built-in"
+    },
+    {
+      "name": "App Host adapter",
+      "form": "built-in"
+    },
+    {
+      "name": "Canvas assembly",
+      "form": "built-in"
+    },
+    {
+      "name": "Injected assembly",
+      "form": "built-in"
+    },
+    {
+      "name": "Start/stop/pause/resume",
+      "form": "built-in"
+    },
+    {
+      "name": "Main-serial tier",
+      "form": "built-in"
+    },
+    {
+      "name": "Engine-worker tier",
+      "form": "opt-in"
+    },
+    {
+      "name": "Shared tier",
+      "form": "opt-in"
+    },
+    {
+      "name": "Auto tier selection",
+      "form": "built-in"
+    },
+    {
+      "name": "One-credit Worker frame pacing",
+      "form": "opt-in"
+    },
+    {
+      "name": "Execution report",
+      "form": "built-in"
+    },
+    {
+      "name": "Load progress and timeline",
+      "form": "built-in"
+    },
+    {
+      "name": "Explicit Worker World rebuild",
+      "form": "opt-in"
+    },
+    {
+      "name": "Surface handoff",
+      "form": "built-in"
+    },
+    {
+      "name": "Draw source routing",
+      "form": "built-in"
+    },
+    {
+      "name": "Renderer feature passthrough",
+      "form": "built-in"
+    },
+    {
+      "name": "Optional CPU profiler passthrough",
+      "form": "opt-in"
+    },
+    {
+      "name": "Tool Preview Host",
+      "form": "development"
+    },
+    {
+      "name": "Frozen InputSnapshot",
+      "form": "built-in"
+    },
+    {
+      "name": "Keyboard input",
+      "form": "host-side"
+    },
+    {
+      "name": "Mouse input",
+      "form": "host-side"
+    },
+    {
+      "name": "Gamepad input",
+      "form": "host-side"
+    },
+    {
+      "name": "Gamepad feedback",
+      "form": "host-side"
+    },
+    {
+      "name": "Multi-pointer input",
+      "form": "host-side"
+    },
+    {
+      "name": "Pointer Lock",
+      "form": "host-side"
+    },
+    {
+      "name": "Action mapping",
+      "form": "built-in"
+    },
+    {
+      "name": "Virtual axis/joystick",
+      "form": "built-in"
+    },
+    {
+      "name": "Gesture recognition",
+      "form": "built-in"
+    },
+    {
+      "name": "Input capability probe",
+      "form": "built-in"
+    },
+    {
+      "name": "Cordis Context/Fiber",
+      "form": "built-in"
+    },
+    {
+      "name": "Static plugin programs",
+      "form": "build-time"
+    },
+    {
+      "name": "Plugin realm placement",
+      "form": "built-in"
+    },
+    {
+      "name": "`forge.json` manifest",
+      "form": "built-in"
+    },
+    {
+      "name": "Realm bootstrap",
+      "form": "built-in"
+    },
+    {
+      "name": "DSH federation bridge",
+      "form": "opt-in"
+    },
+    {
+      "name": "DSH Engine panel",
+      "form": "opt-in"
+    },
+    {
+      "name": "Physics ECS interface",
+      "form": "built-in"
+    },
+    {
+      "name": "2D Rapier backend",
+      "form": "opt-in"
+    },
+    {
+      "name": "3D Rapier backend",
+      "form": "opt-in"
+    },
+    {
+      "name": "Three-phase physics tick",
+      "form": "built-in"
+    },
+    {
+      "name": "Rigid body types",
+      "form": "built-in"
+    },
+    {
+      "name": "Collider shapes",
+      "form": "built-in"
+    },
+    {
+      "name": "Voxel collision and editing",
+      "form": "opt-in"
+    },
+    {
+      "name": "Current contact queries",
+      "form": "opt-in"
+    },
+    {
+      "name": "Collision pairs/events",
+      "form": "built-in"
+    },
+    {
+      "name": "Physics raycast",
+      "form": "built-in"
+    },
+    {
+      "name": "Teleport",
+      "form": "built-in"
+    },
+    {
+      "name": "`moveAndSlide` KCC",
+      "form": "built-in"
+    },
+    {
+      "name": "Physics readiness",
+      "form": "built-in"
+    },
+    {
+      "name": "Realm-neutral AudioSource",
+      "form": "built-in"
+    },
+    {
+      "name": "AudioListener",
+      "form": "built-in"
+    },
+    {
+      "name": "Host Web Audio backend",
+      "form": "host-side"
+    },
+    {
+      "name": "Audio decode cache",
+      "form": "host-side"
+    },
+    {
+      "name": "Clip start and seek",
+      "form": "built-in"
+    },
+    {
+      "name": "Configurable audio buses",
+      "form": "host-side"
+    },
+    {
+      "name": "Long audio windows",
+      "form": "host-side"
+    },
+    {
+      "name": "3D spatial audio",
+      "form": "host-side"
+    },
+    {
+      "name": "Acoustic regions",
+      "form": "opt-in"
+    },
+    {
+      "name": "Audio entity epoch fencing",
+      "form": "host-side"
+    },
+    {
+      "name": "Quantized layered music",
+      "form": "host-side"
+    },
+    {
+      "name": "Audio cleanup",
+      "form": "host-side"
+    },
+    {
+      "name": "Host-neutral NetEndpoint",
+      "form": "built-in"
+    },
+    {
+      "name": "NetSession",
+      "form": "built-in"
+    },
+    {
+      "name": "Replication profile",
+      "form": "opt-in"
+    },
+    {
+      "name": "Authority replication",
+      "form": "opt-in"
+    },
+    {
+      "name": "Per-session replication visibility",
+      "form": "opt-in"
+    },
+    {
+      "name": "Replica atomic validation",
+      "form": "opt-in"
+    },
+    {
+      "name": "Browser WebSocket client",
+      "form": "opt-in"
+    },
+    {
+      "name": "Node WebSocket client/listener",
+      "form": "opt-in"
+    },
+    {
+      "name": "Memory fault transport",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Provider-neutral Activity",
+      "form": "built-in"
+    },
+    {
+      "name": "Intelligence MessagePort bridge",
+      "form": "opt-in"
+    },
+    {
+      "name": "Deterministic fake provider",
+      "form": "test-experimental"
+    },
+    {
+      "name": "DSH Activity provider",
+      "form": "host-side"
+    },
+    {
+      "name": "NpcBrain ECS binding",
+      "form": "built-in"
+    },
+    {
+      "name": "Host-injected NPC adapter",
+      "form": "opt-in"
+    },
+    {
+      "name": "External Meta sidecar",
+      "form": "build-time"
+    },
+    {
+      "name": "Pack source / transport",
+      "form": "build-time"
+    },
+    {
+      "name": "AssetGuid",
+      "form": "built-in"
+    },
+    {
+      "name": "SourceKey identity reuse",
+      "form": "build-time"
+    },
+    {
+      "name": "Pack scanner",
+      "form": "build-time"
+    },
+    {
+      "name": "ScriptablePack / Pack",
+      "form": "build-time"
+    },
+    {
+      "name": "ScriptablePack executor",
+      "form": "build-time"
+    },
+    {
+      "name": "Asset output producers",
+      "form": "build-time"
+    },
+    {
+      "name": "Native cooker registry",
+      "form": "build-time"
+    },
+    {
+      "name": "Producer facts/receipts",
+      "form": "build-time"
+    },
+    {
+      "name": "AssetEnvelope refs",
+      "form": "built-in"
+    },
+    {
+      "name": "Asset kind/runtime decoder matrix",
+      "form": "built-in"
+    },
+    {
+      "name": "AssetEvidence",
+      "form": "development"
+    },
+    {
+      "name": "Asset authority audit",
+      "form": "development"
+    },
+    {
+      "name": "Pack index",
+      "form": "build-time"
+    },
+    {
+      "name": "Catalog authority",
+      "form": "build-time"
+    },
+    {
+      "name": "Catalog delta",
+      "form": "development"
+    },
+    {
+      "name": "Hot content-catalog refresh",
+      "form": "development"
+    },
+    {
+      "name": "CatalogSource lifecycle",
+      "form": "built-in"
+    },
+    {
+      "name": "Catalog replica admission",
+      "form": "built-in"
+    },
+    {
+      "name": "Runtime Pack generation",
+      "form": "opt-in"
+    },
+    {
+      "name": "Cook source snapshot",
+      "form": "build-time"
+    },
+    {
+      "name": "Runtime binding SSOT",
+      "form": "development"
+    },
+    {
+      "name": "ImporterRegistry",
+      "form": "build-time"
+    },
+    {
+      "name": "Meta-driven import",
+      "form": "build-time"
+    },
+    {
+      "name": "Lazy import transport",
+      "form": "development"
+    },
+    {
+      "name": "Import cycle/timeout detection",
+      "form": "build-time"
+    },
+    {
+      "name": "Vite Pack plugin",
+      "form": "build-time"
+    },
+    {
+      "name": "Development Pack routes",
+      "form": "development"
+    },
+    {
+      "name": "DDC v2",
+      "form": "build-time"
+    },
+    {
+      "name": "DDC lifecycle/CAS",
+      "form": "build-time"
+    },
+    {
+      "name": "AssetRegistry",
+      "form": "built-in"
+    },
+    {
+      "name": "Runtime asset editing",
+      "form": "built-in"
+    },
+    {
+      "name": "`AssetRegistry.load`",
+      "form": "built-in"
+    },
+    {
+      "name": "Asset decoder ownership",
+      "form": "built-in"
+    },
+    {
+      "name": "Recursive ref loading",
+      "form": "built-in"
+    },
+    {
+      "name": "Primitive mesh factories",
+      "form": "built-in"
+    },
+    {
+      "name": "Engine Content library",
+      "form": "opt-in"
+    },
+    {
+      "name": "World asset references",
+      "form": "built-in"
+    },
+    {
+      "name": "Scene instantiate transaction",
+      "form": "built-in"
+    },
+    {
+      "name": "Runtime publication preparation",
+      "form": "built-in"
+    },
+    {
+      "name": "Transient package read retry",
+      "form": "built-in"
+    },
+    {
+      "name": "DynamicTextureStore",
+      "form": "built-in"
+    },
+    {
+      "name": "Runtime PNG/JPEG decode",
+      "form": "built-in"
+    },
+    {
+      "name": "Image importer",
+      "form": "build-time"
+    },
+    {
+      "name": "2D-array/3D TextureAsset",
+      "form": "built-in"
+    },
+    {
+      "name": "Texture compression policy",
+      "form": "build-time"
+    },
+    {
+      "name": "Offline mip chain",
+      "form": "build-time"
+    },
+    {
+      "name": "HDR RGBE import",
+      "form": "build-time"
+    },
+    {
+      "name": "Zstd runtime decode",
+      "form": "built-in"
+    },
+    {
+      "name": "KTX2/Basis transcode",
+      "form": "built-in"
+    },
+    {
+      "name": "Build-time Zstd encode",
+      "form": "build-time"
+    },
+    {
+      "name": "glTF/GLB parse",
+      "form": "build-time"
+    },
+    {
+      "name": "glTF importer",
+      "form": "build-time"
+    },
+    {
+      "name": "glTF scene load",
+      "form": "built-in"
+    },
+    {
+      "name": "glTF skin/animation",
+      "form": "opt-in"
+    },
+    {
+      "name": "FBX WASM parser",
+      "form": "build-time"
+    },
+    {
+      "name": "FBX importer",
+      "form": "build-time"
+    },
+    {
+      "name": "FBX material mapping",
+      "form": "build-time"
+    },
+    {
+      "name": "Font MSDF bake",
+      "form": "build-time"
+    },
+    {
+      "name": "Lightmap UV validation",
+      "form": "build-time"
+    },
+    {
+      "name": "Font runtime load",
+      "form": "built-in"
+    },
+    {
+      "name": "Audio asset load",
+      "form": "built-in"
+    },
+    {
+      "name": "Particle-effect asset",
+      "form": "built-in"
+    },
+    {
+      "name": "`forgeax` CLI front door",
+      "form": "development"
+    },
+    {
+      "name": "Project lifecycle commands",
+      "form": "development"
+    },
+    {
+      "name": "Unified live game iteration",
+      "form": "development"
+    },
+    {
+      "name": "Bounded asset discovery and verification",
+      "form": "development"
+    },
+    {
+      "name": "Browser compositor capture",
+      "form": "development"
+    },
+    {
+      "name": "Borrowed browser Page capture",
+      "form": "development"
+    },
+    {
+      "name": "Persistent playthrough capture",
+      "form": "development"
+    },
+    {
+      "name": "Scripted gameplay verification",
+      "form": "development"
+    },
+    {
+      "name": "Single-HTML offline delivery",
+      "form": "development"
+    },
+    {
+      "name": "Player Asset Bundles",
+      "form": "build-time"
+    },
+    {
+      "name": "Asset authoring commands",
+      "form": "development"
+    },
+    {
+      "name": "Pack live parameters and drafts",
+      "form": "development"
+    },
+    {
+      "name": "Asset/format producers",
+      "form": "build-time"
+    },
+    {
+      "name": "Shader check",
+      "form": "build-time"
+    },
+    {
+      "name": "Plugin asset authoring",
+      "form": "development"
+    },
+    {
+      "name": "Resident Host Pack selection",
+      "form": "development"
+    },
+    {
+      "name": "Realm dispatch",
+      "form": "development"
+    },
+    {
+      "name": "ToolContribution",
+      "form": "built-in"
+    },
+    {
+      "name": "Bound Preview host",
+      "form": "built-in"
+    },
+    {
+      "name": "Lexical ToolRun terminal",
+      "form": "built-in"
+    },
+    {
+      "name": "Optional tool service contract",
+      "form": "opt-in"
+    },
+    {
+      "name": "Project preview",
+      "form": "development"
+    },
+    {
+      "name": "Engine workspace provider",
+      "form": "development"
+    },
+    {
+      "name": "Workspace selection outline",
+      "form": "development"
+    },
+    {
+      "name": "Current-project Editor Play",
+      "form": "development"
+    },
+    {
+      "name": "Cached asset thumbnails",
+      "form": "development"
+    },
+    {
+      "name": "Material preview",
+      "form": "development"
+    },
+    {
+      "name": "Mesh preview",
+      "form": "development"
+    },
+    {
+      "name": "Texture preview",
+      "form": "development"
+    },
+    {
+      "name": "VFX preview",
+      "form": "development"
+    },
+    {
+      "name": "Preview lexical session",
+      "form": "development"
+    },
+    {
+      "name": "Preview evidence artifacts",
+      "form": "development"
+    },
+    {
+      "name": "GPU pass timing",
+      "form": "development"
+    },
+    {
+      "name": "Bounded CPU Profiler",
+      "form": "development"
+    },
+    {
+      "name": "GPU-driven prepare profiling",
+      "form": "development"
+    },
+    {
+      "name": "Profile validation/model",
+      "form": "development"
+    },
+    {
+      "name": "Profile comparison",
+      "form": "development"
+    },
+    {
+      "name": "Profiler CLI",
+      "form": "development"
+    },
+    {
+      "name": "Live Engine eval",
+      "form": "development"
+    },
+    {
+      "name": "Remote introspection",
+      "form": "development"
+    },
+    {
+      "name": "In-process Remote",
+      "form": "development"
+    },
+    {
+      "name": "Node WebSocket JSON-RPC",
+      "form": "development"
+    },
+    {
+      "name": "Browser loopback relay",
+      "form": "development"
+    },
+    {
+      "name": "Remote full-access boundary",
+      "form": "development"
+    },
+    {
+      "name": "RHI frame tape",
+      "form": "development"
+    },
+    {
+      "name": "Deterministic RHI replay",
+      "form": "development"
+    },
+    {
+      "name": "Per-draw inspect",
+      "form": "development"
+    },
+    {
+      "name": "RHI debug viewer",
+      "form": "development"
+    },
+    {
+      "name": "Vite RHI-debug routes",
+      "form": "development"
+    },
+    {
+      "name": "Immediate-mode Debug Draw",
+      "form": "development"
+    },
+    {
+      "name": "Screen-to-entity picking",
+      "form": "built-in"
+    },
+    {
+      "name": "Vertex-level picking",
+      "form": "built-in"
+    },
+    {
+      "name": "Exact triangle picking",
+      "form": "built-in"
+    },
+    {
+      "name": "Tile-cell picking",
+      "form": "built-in"
+    },
+    {
+      "name": "SDK archive build",
+      "form": "build-time"
+    },
+    {
+      "name": "SDK source mode",
+      "form": "build-time"
+    },
+    {
+      "name": "SDK ZIP offline bootstrap",
+      "form": "build-time"
+    },
+    {
+      "name": "SDK npm carrier bootstrap",
+      "form": "build-time"
+    },
+    {
+      "name": "`game-3d` starter",
+      "form": "development"
+    },
+    {
+      "name": "SDK agent onboarding",
+      "form": "development"
+    },
+    {
+      "name": "SDK update discovery",
+      "form": "development"
+    },
+    {
+      "name": "Verified Candidate / Promotion",
+      "form": "build-time"
+    },
+    {
+      "name": "Concurrent focused npm publish",
+      "form": "build-time"
+    },
+    {
+      "name": "Maintenance CLI",
+      "form": "development"
+    }
+  ]
+}

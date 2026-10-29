@@ -23,6 +23,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -102,7 +103,7 @@ export async function verifyAdaptiveDrs(
     const receipt = await draw();
     value(await recorder.frameBoundary());
     const recorded = value(await pending);
-    await save(`${name}.rhitape`, recorded.bytes);
+    await save(`${name}.rhitape`, compactTape(recorded).bytes);
     const observation = value(
       await renderer.observe(receipt, { include: ['final-display'] }),
     ).observations?.find((o) => o.domain === 'final-display');
@@ -208,14 +209,17 @@ export async function verifyAdaptiveDrs(
     }
     // Falsifier: a missing output draw must change the captured picture.
     const missing = value(
-      encodeTape({
-        ...tape,
-        events: tape.events.map((event, index) =>
-          index === output.eventIndex && event.kind === 'draw'
-            ? { ...event, vertexCount: 0 }
-            : event,
-        ),
-      }),
+      encodeTape(
+        {
+          ...tape,
+          events: tape.events.map((event, index) =>
+            index === output.eventIndex && event.kind === 'draw'
+              ? { ...event, vertexCount: 0 }
+              : event,
+          ),
+        },
+        { compression: 'gzip' },
+      ),
     );
     const falsifier = value(
       await openReplay(value(decodeTape(missing)), {

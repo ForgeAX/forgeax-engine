@@ -34,6 +34,21 @@ const contracts = new WeakMap<
     readonly reads: readonly ShaderBindingReads[] | undefined;
   }[]
 >();
+/** Structural reads belong to the accepted Pass contract, not a frame probe. */
+function shadowResourceBindings(snapshot: MaterialSnapshot) {
+  const passes = shadowPasses(snapshot);
+  const layout = derive(snapshot.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
+  const bindings = new Set<number>();
+  let unknown = false;
+  for (const pass of passes) {
+    if (pass.reads === undefined) unknown = true;
+    else for (const read of pass.reads) if (read.group === 1) bindings.add(read.binding);
+  }
+  const resources = layout.resourceBindings.filter(
+    (binding) => unknown || bindings.has(binding.binding),
+  );
+  return resources;
+}
 function shadowPasses(snapshot: MaterialSnapshot) {
   let contract = contracts.get(snapshot);
   if (contract !== undefined) return contract;
@@ -182,8 +197,8 @@ interface ShadowMaterialState {
  */
 export class ShadowMaterialContent {
   private readonly entries = new Map<
-    MaterialResource,
-    Map<RenderResourceScope, ShadowMaterialState>
+    RenderResourceScope,
+    Map<MaterialResource, ShadowMaterialState>
   >();
 
   constructor(private readonly materials?: MaterialFrame) {}
@@ -194,20 +209,23 @@ export class ShadowMaterialContent {
     scope: RenderResourceScope,
     preparedMaterialTexture?: RenderSystemRuntime['preparedMaterialTexture'],
   ): void {
-    let scopes = this.entries.get(resource);
-    if (scopes?.has(scope)) return;
+    let materials = this.entries.get(scope);
+    if (materials?.has(resource)) return;
     const passes = shadowPasses(snapshot);
     if (passes.length === 0) return;
-    const layout = derive(snapshot.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
-    const bindings = new Set<number>();
-    let unknown = false;
-    for (const pass of passes) {
-      if (pass.reads === undefined) unknown = true;
-      else for (const read of pass.reads) if (read.group === 1) bindings.add(read.binding);
+    const bindings = shadowResourceBindings(snapshot);
+    // The owned fixed MaterialFrame already captures these immutable numeric
+    // values. Keep scope membership without recording the same dependency twice.
+    if (
+      bindings.length === 0 &&
+      snapshot.immutableValues === true &&
+      this.materials?.get(resource)?.snapshot === snapshot
+    ) {
+      if (materials === undefined) this.entries.set(scope, new Map());
+      return;
     }
     const resources: unknown[] = [];
-    for (const binding of layout.resourceBindings) {
-      if (!unknown && !bindings.has(binding.binding)) continue;
+    for (const binding of bindings) {
       const name = binding.parameter ?? binding.name;
       const prepared = preparedMaterialTexture?.(snapshot, name);
       if (prepared !== undefined) {
@@ -224,11 +242,11 @@ export class ShadowMaterialContent {
       if (snapshot.textureSources?.has(name) || snapshot.videoTextureFields?.has(name))
         resources.push({});
     }
-    if (scopes === undefined) {
-      scopes = new Map();
-      this.entries.set(resource, scopes);
+    if (materials === undefined) {
+      materials = new Map();
+      this.entries.set(scope, materials);
     }
-    scopes.set(scope, { snapshot, resources });
+    materials.set(resource, { snapshot, resources });
   }
 
   same(previous: ShadowMaterialContent | undefined): boolean {
@@ -241,13 +259,13 @@ export class ShadowMaterialContent {
       return false;
     // Runs for every shadow cache probe each frame: key iteration plus lookup
     // and indexed resource loops allocate no entry tuples or callbacks.
-    for (const material of this.entries.keys()) {
-      const scopes = this.entries.get(material) as Map<RenderResourceScope, ShadowMaterialState>;
-      const old = previous.entries.get(material);
-      if (old === undefined || old.size !== scopes.size) return false;
-      for (const scope of scopes.keys()) {
-        const state = scopes.get(scope) as ShadowMaterialState;
-        const before = old.get(scope);
+    for (const scope of this.entries.keys()) {
+      const materials = this.entries.get(scope) as Map<MaterialResource, ShadowMaterialState>;
+      const old = previous.entries.get(scope);
+      if (old === undefined || old.size !== materials.size) return false;
+      for (const material of materials.keys()) {
+        const state = materials.get(material) as ShadowMaterialState;
+        const before = old.get(material);
         if (
           before === undefined ||
           !sameShadowMaterial(before.snapshot, state.snapshot) ||

@@ -27,6 +27,7 @@ import {
   RenderPublicationTargetOwner,
 } from '@forgeax/engine-render';
 import { fullscreenRenderFeatureDeclaration } from '@forgeax/engine-render/internal';
+import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
 import {
@@ -37,6 +38,7 @@ import {
   type RendererHostAssembly,
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import {
+  AudioError,
   addLoadWork,
   beginLoadTimeline,
   beginLoadWork,
@@ -125,8 +127,7 @@ interface WorkerRealm {
   assetAssembly: AssetRuntimeAssembly | undefined;
   readonly pendingAudioIntents: AudioIntentQueue;
   audioBackend: ReturnType<typeof createAudioIntentBackend> | undefined;
-  musicState?: import('@forgeax/engine-audio').MusicState;
-  audioPreparation?: import('@forgeax/engine-audio').AudioPreparationReceipt;
+  audioState?: import('@forgeax/engine-audio').AudioState;
   feedback: ReturnType<typeof createGamepadFeedback>;
   kernelPool: KernelPool | undefined;
   pluginContext: Context | undefined;
@@ -563,13 +564,7 @@ function createRealmAudioBackend(
     emit: (intent) => {
       candidate.pendingAudioIntents.push(intent);
     },
-    state: () => ({
-      contextState: 'suspended',
-      activeSourceCount: 0,
-      lastError: null,
-      ...(candidate.musicState ? { music: candidate.musicState } : {}),
-      ...(candidate.audioPreparation ? { preparation: candidate.audioPreparation } : {}),
-    }),
+    state: () => candidate.audioState,
   });
 }
 
@@ -869,7 +864,20 @@ async function startAdoptedRenderWorker(
   if (candidate.init.diagnostics?.rhiCapture === true) candidate.rhiCapture = renderWorker;
 }
 
+function ownRealmPipelineInputs(startup: ExecutionInitMessage): ExecutionInitMessage {
+  return {
+    ...startup,
+    ...(startup.pipelineLibrary === undefined
+      ? {}
+      : { pipelineLibrary: ownPipelineLibrary(startup.pipelineLibrary) }),
+    ...(startup.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: ownPipelineLibrary(startup.backgroundPipelineLibrary) }),
+  };
+}
+
 async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
+  startup = ownRealmPipelineInputs(startup);
   // Realm-owned facts exclude the library forwarded to the renderer for this start.
   const { pipelineLibrary, backgroundPipelineLibrary, ...init } = startup;
   const endImport = beginLoadTimeline('boot', 'bootstrap-import');
@@ -1073,10 +1081,20 @@ function admitSourcePublication(activeRealm: WorkerRealm, message: ExecutionFram
 }
 
 function applyHostFrameState(activeRealm: WorkerRealm, message: ExecutionFrameMessage): void {
-  if (message.musicState) activeRealm.musicState = message.musicState;
-  else delete activeRealm.musicState;
-  if (message.audioPreparation) activeRealm.audioPreparation = message.audioPreparation;
-  else delete activeRealm.audioPreparation;
+  if (message.audioState) {
+    const { owner: _owner, lastError, ...state } = message.audioState;
+    activeRealm.audioState = {
+      ...state,
+      lastError: lastError
+        ? new AudioError({
+            code: lastError.code,
+            expected: lastError.expected,
+            hint: lastError.hint,
+            ...(lastError.detail === undefined ? {} : { detail: lastError.detail }),
+          })
+        : null,
+    };
+  } else delete activeRealm.audioState;
   for (const asset of message.rejectedAudioPublications ?? [])
     activeRealm.audioBackend?.rejectPublication(asset);
   currentSample = message.inputSample;

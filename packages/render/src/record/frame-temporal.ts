@@ -34,7 +34,7 @@ import {
   type resolveSubmittedBarrelMapping,
 } from './barrel-distortion-frame';
 import type { RenderFrameState } from './frame-snapshot';
-import { computeProjectionMatrix, computeViewMatrix } from './helpers';
+import { computeViewProjectionMatrix } from './helpers';
 import type { RenderSystemInternals } from './render-context';
 
 export interface FrameClockSample {
@@ -123,32 +123,32 @@ function temporalCandidateFor(
   environmentSignature: string,
   fogSignature: string,
   currentUnjitteredViewProjection: Float32Array,
-): TemporalView {
-  return createTemporalView({
+): TemporalView['input'] {
+  return {
     antialias: camera.antialias,
     width: Math.max(1, targetW),
     height: Math.max(1, targetH),
+    internalWidth: renderExtent?.internalWidth ?? Math.max(1, targetW),
+    internalHeight: renderExtent?.internalHeight ?? Math.max(1, targetH),
     frameIndex: frameState.temporalView.frameIndex,
+    historyVersion: camera.historyVersion ?? 0,
     viewIdentity: `camera:${camera.entityKey ?? 0}`,
     environmentSignature,
     fogSignature,
     deviceGeneration: internals.deviceScope?.generation ?? 0,
-    ...(renderExtent === undefined
-      ? {}
-      : {
-          internalWidth: renderExtent.internalWidth,
-          internalHeight: renderExtent.internalHeight,
-        }),
-    ...(camera.historyVersion === undefined ? {} : { historyVersion: camera.historyVersion }),
-    ...(clock.elapsedSeconds === undefined ? {} : { sampleTimeSeconds: clock.elapsedSeconds }),
+    cameraCut: false,
     historyValid: false,
     currentUnjitteredViewProjection,
+    previousUnjitteredViewProjection: undefined,
     currentCameraPosition: [
       camera.position[0] ?? 0,
       camera.position[1] ?? 0,
       camera.position[2] ?? 0,
-    ] as const,
-  });
+    ],
+    previousCameraPosition: undefined,
+    sampleTimeSeconds: clock.elapsedSeconds,
+    resetReason: undefined,
+  };
 }
 
 function clockResetReason(
@@ -211,11 +211,7 @@ export function resolveFrameTemporal(
           clock.deltaSeconds,
         );
   const intervalValid = isMotionBlurIntervalValid(deltaSeconds);
-  const currentUnjitteredViewProjection = mat4.multiply(
-    mat4.create(),
-    computeProjectionMatrix(camera),
-    computeViewMatrix(camera),
-  );
+  const currentUnjitteredViewProjection = computeViewProjectionMatrix(camera, mat4.create());
   const candidate = temporalCandidateFor(
     internals,
     frameState,
@@ -230,7 +226,7 @@ export function resolveFrameTemporal(
   );
   const resetReason =
     temporalDemand && environmentReady
-      ? (resolveTemporalReset(previous, candidate) ??
+      ? (resolveTemporalReset(previous?.input, candidate) ??
         clockResetReason(
           temporalReset,
           motionBlurDemand,
@@ -240,8 +236,8 @@ export function resolveFrameTemporal(
       : undefined;
   const reusable = resetReason === undefined ? previous : undefined;
   const view = createTemporalView({
-    ...candidate.input,
-    frameIndex: resetReason === undefined ? candidate.input.frameIndex : 0,
+    ...candidate,
+    frameIndex: resetReason === undefined ? candidate.frameIndex : 0,
     // Motion Blur needs a finite positive pair before it can read the
     // baseline. TAA-only frames retain their existing temporal contract and
     // do not depend on the simulation clock being present in a test host.

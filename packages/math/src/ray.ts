@@ -48,12 +48,12 @@ export type RayLike = ArrayLike<number>;
 /**
  * Create a Ray. Defaults to origin=(0,0,0), direction=(0,0,-1) normalized.
  *
- * When `out` is not provided, a new Float32Array is allocated.
+ * The caller must supply the output storage; this function never allocates it.
  * When `origin` / `direction` are provided, direction is normalized
  * (zero-length direction falls back to (0,0,0) per gl-matrix style).
  */
-export function create(out?: Float32Array, origin?: Vec3Like, direction?: Vec3Like): Ray {
-  const r = out ?? new Float32Array(6);
+export function create(out: Float32Array, origin?: Vec3Like, direction?: Vec3Like): Ray {
+  const r = out;
   if (origin) {
     r[0] = origin[0] as number;
     r[1] = origin[1] as number;

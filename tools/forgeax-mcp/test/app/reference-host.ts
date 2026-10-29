@@ -28,7 +28,12 @@ bridge.oninitialized = async () => {
 };
 for (const id of ['reopen', 'restart'])
   document.querySelector(`#${id}`)!.addEventListener('click', async () => {
-    const result = id === 'restart' ? await (await fetch('/restart', { method: 'POST' })).json() : await open();
+    let result;
+    if (id === 'restart') {
+      const response = await fetch('/restart', { method: 'POST' });
+      if (!response.ok) throw new Error(`Backend restart failed: HTTP ${response.status}`);
+      result = await response.json();
+    } else result = await open();
     await bridge.sendToolResult(result);
     document.querySelector('#opened')!.textContent = result.structuredContent.url;
   });

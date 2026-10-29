@@ -25,6 +25,7 @@ import {
   detectPnpmStoreFormat,
   fetchWithRetry,
   filesUnder,
+  localSdkDiscoveryLinks,
   mapConcurrent,
   normalizeLicenseReport,
   normalizePackageArchive,
@@ -737,6 +738,23 @@ for (const id of sdkSkillIds) {
   }
   await cp(resolve(root, 'skills', id), resolve(stage, 'skills', id), { recursive: true });
 }
+// Source-derived SDK discovery is generated into the distribution, not committed documentation.
+const { renderApiIndex } = await import('./sdk-api-index.mjs');
+const sdkReferenceRoot = resolve(stage, 'skills/forgeax-engine-sdk/references');
+await mkdir(sdkReferenceRoot, { recursive: true });
+await writeFile(resolve(sdkReferenceRoot, 'api-index.md'), renderApiIndex());
+const capabilityFacts = JSON.parse(
+  await readFile(resolve(root, 'schemas/engine-capabilities.json'), 'utf8'),
+);
+await writeFile(
+  resolve(sdkReferenceRoot, 'feature-catalog.md'),
+  '# SDK capabilities\n\nGeneration baseline commit: `' +
+    capabilityFacts.generationBaselineCommit +
+    '`\n\n| Name | Form |\n| --- | --- |\n' +
+    capabilityFacts.capabilities.map(({ name, form }) => `| ${name} | ${form} |`).join('\n') +
+    '\n',
+);
+
 // The unified `forgeax dev ...` surface owns live inspection. The historical
 // standalone relay scripts remain repository-only fixtures for old smoke lanes
 // but must not be shipped as runnable SDK skill entries.
@@ -783,6 +801,17 @@ await Promise.all([
   cp(resolve(root, 'skills', 'forgeax-engine-sdk', 'SDK-AGENTS.md'), resolve(stage, 'AGENTS.md')),
   cp(resolve(root, 'skills', 'forgeax-engine-sdk', 'SDK-CLAUDE.md'), resolve(stage, 'CLAUDE.md')),
 ]);
+const discoveryRoot = 'skills/forgeax-engine-sdk/references/';
+for (const [file, prefix] of [
+  ['skills/forgeax-engine-sdk/SKILL.md', 'references/'],
+  ['README.md', discoveryRoot],
+  ['AGENTS.md', discoveryRoot],
+  ...SDK_TEMPLATES.map((template) => [`${template.sourceRoot}/AGENTS.md`, discoveryRoot]),
+]) {
+  const entry = resolve(stage, file);
+  await writeFile(entry, localSdkDiscoveryLinks(await readFile(entry, 'utf8'), prefix));
+}
+
 await writeFile(
   resolve(stage, 'package.json'),
   `${JSON.stringify(

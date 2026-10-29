@@ -7,7 +7,7 @@ import {
   summarizeFrame,
   type V7Tape,
 } from '@forgeax/engine-rhi-debug';
-import { expect } from 'vitest';
+import { assert, expect } from 'vitest';
 import { oitAccumulation } from '../../../render/src/oit/weight';
 import {
   OIT_PROBES,
@@ -145,12 +145,21 @@ export async function inspectOitTape(input: {
     expect(inspectedComposite.bindings?.map((binding) => binding.resourceId)).toEqual(
       expect.arrayContaining([accumId, weightId]),
     );
-    const read = async (id: string, workIndex: number) =>
-      (await replay.readResourceAtWork(id, workIndex, { mipLevel: 0, arrayLayer: 0 })).unwrap();
-    const accum = await read(accumId, lastAccumulate.workIndex);
-    const weight = await read(weightId, lastAccumulate.workIndex);
-    const sceneBefore = await read(sceneId, lastAccumulate.workIndex);
-    const sceneAfter = await read(sceneId, compositeWork.workIndex);
+    const reads = (
+      await replay.readAtWorks(
+        [
+          { resourceId: accumId, workIndex: lastAccumulate.workIndex },
+          { resourceId: weightId, workIndex: lastAccumulate.workIndex },
+          { resourceId: sceneId, workIndex: lastAccumulate.workIndex },
+          { resourceId: sceneId, workIndex: compositeWork.workIndex },
+        ].map((request) => ({ ...request, subresource: { mipLevel: 0, arrayLayer: 0 } })),
+      )
+    ).unwrap();
+    const [accum, weight, sceneBefore, sceneAfter] = reads.map((result) => result.unwrap());
+    assert(accum);
+    assert(weight);
+    assert(sceneBefore);
+    assert(sceneAfter);
     expect(accum.format).toBe('rgba16float');
     expect(weight.format).toBe('r16float');
 

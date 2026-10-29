@@ -14,6 +14,7 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 export const CONTACT_SHADOW_SIZE = 128;
@@ -185,7 +186,7 @@ export async function verifyContactShadow(
       );
       if (pending !== undefined && capture !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
-        await options.capture?.((await pending).unwrap(), capture);
+        await options.capture?.(compactTape((await pending).unwrap()), capture);
       }
       if (!last) continue;
       const observation = unwrap(

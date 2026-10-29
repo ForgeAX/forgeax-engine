@@ -3413,11 +3413,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       return this.hasBody(entity) ? previous : undefined;
     }
 
-    let descriptor = readPhysicsSyncDescriptor(
-      row,
-      state.transformComponent,
-      state.globalTransformComponent,
-    );
+    let descriptor = readPhysicsSyncDescriptor(row, state, previous);
     if (descriptor === undefined) {
       this.removeEntity(entity);
       return;

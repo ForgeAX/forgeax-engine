@@ -10,7 +10,7 @@ import {
   ShaderRegistry,
   type ShaderRegistryDevice,
 } from '@forgeax/engine-shader';
-import { ParamSchemaProjectionOwner } from '@forgeax/engine-types';
+import { ParamSchemaProjectionOwner, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { deviceOptionsForAdapter } from '../assembly/device-feature-admission';
 import {
@@ -135,6 +135,7 @@ fn cloud_direct_solar_factorX() -> f32 {
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('forgeax::default-standard-pbr', {
       source: 'coverage-off',
+      sourceReference: expect.any(ShaderSource),
       paramSchema: [],
     });
   });
@@ -183,6 +184,7 @@ fn cloud_direct_solar_factorX() -> f32 {
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('hello-multi-uv::multi-uv-demo', {
       source: 'multi-uv=true storage=false',
+      sourceReference: expect.any(ShaderSource),
       paramSchema: [],
     });
     expect(resolveMaterialShaderVariantSet(undefined, entry.variants, 'wgpu-webgl2', false)).toBe(
@@ -1115,7 +1117,7 @@ describe('material shader color-domain contract', () => {
       resolve(import.meta.dirname, '../assembly/material/layout-cache.ts'),
       'utf8',
     );
-    expect(source).toContain('isCanonicalStandardPbrMaterialShader(materialShaderId)');
+    expect(source).toContain('isStandardPbrMaterialShader(materialShaderId)');
     expect(source).toContain('requiresStandardMapLayout');
   });
 

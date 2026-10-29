@@ -1,5 +1,7 @@
 # @forgeax/engine-import
 
+The IES importer declares `.ies` single-output registration through `capabilities.sourceFormats`. DevKit uses that declaration to author an `ies-profile` sidecar; native import still validates the LM-63 input and owns the cooked output.
+
 A registered importer may emit ordinary engine asset kinds such as `texture` or
 `mesh`. Catalog projection records the declared schema and GUID; it does not grant
 the importer ownership of the runtime kind. The existing domain decoder validates
@@ -594,6 +596,21 @@ Successful source-package publication projects Catalog revisions from the head
 accepted by its DDC commit. It does not reread a later writer's head or repeat
 the complete entry validation; stale-owner recovery and transport rollback
 retain their existing fences.
+
+`source-package-ddc-failed` covers staging and publication failures as well as
+invalid bytes. Read `detail.ddcError` for the DDC owner's structured code,
+expected evidence and recovery actions; the outer hint retains that owner's
+guidance. Host-only paths and exact recovery targets are omitted from this
+projection. A non-current CAS outcome is recorded in `detail.ddcCommitResult`.
+
+| Evidence | Producer recovery |
+|:--|:--|
+| `ddc-lease-expired` or a stale/lost commit | Inspect the active publication and retry with a fresh lease; the entry may still be valid. |
+| `ddc-entry-conflict` | Preserve the verified entry and investigate the competing publication. |
+| `ddc-entry-invalid` or `ddc-entry-incomplete` | Inspect the named entry, preserve last-known-good and cold-cook through the producer. |
+
+An outer DDC failure alone is not evidence of cache corruption. Do not delete
+the complete project cache to recover a publication ownership failure.
 
 ### Source-format LOD adapters
 

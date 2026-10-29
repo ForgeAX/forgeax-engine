@@ -92,7 +92,7 @@ function rasterShadowPassResources(
       : { gpuDrivenShadowPreparationArtifacts: shadowArtifacts }),
     gpuDrivenShadowViews: raster.shadowViewPool,
     shadowDirectRequired: raster.shadowDirectRequired,
-    gpuDrivenShadowBatchProjections: raster.shadowBatchProjections,
+    gpuDrivenShadowBatchProjections: raster.shadowBatchProjections?.(),
   };
 }
 

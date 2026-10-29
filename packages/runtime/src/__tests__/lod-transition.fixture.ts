@@ -18,6 +18,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RendererHostAssembly } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
 export function value<T>(
@@ -171,7 +172,7 @@ export async function verifyLodTransition(
       }
     if (pending) {
       const encoded = (await pending).unwrap();
-      options.save?.(`${name}.rhitape`, encoded.bytes);
+      options.save?.(`${name}.rhitape`, compactTape(encoded).bytes);
       const model = buildFrameModel(decodeTape(encoded.bytes).unwrap());
       options.save?.(
         `${name}-frame.json`,

@@ -47,6 +47,8 @@ bodies; a symbolic geometry token is not a Mesh payload and fails as
 Empty meshes retain zero vertices and finite zero bounds; an empty index array
 on a nonempty mesh selects vertex-only geometry.
 
+Attribute presence maps such as `DEFAULT_VERTEX_ATTRIBUTE_MAP` are layout declarations, not populated runtime mesh channels. A nonempty raw `MeshAsset` must supply complete finite channels matching its packed vertices. Prefer `createMeshBuilder` for custom authored data; for an existing canonical packed stream, use `unpackInterleavedVertexAttributes` with its layout projection instead of maintaining a second deinterleaver. Zero-vertex geometry still declares a valid triangle-list submesh and material slot; `submeshes: []` remains invalid.
+
 `unpackInterleavedVertexAttributes` copies the complete attribute set into one
 owned backing buffer with nonoverlapping typed views. Respect each view's byte
 offset and length. Transferring that buffer transfers every lane together;
@@ -61,6 +63,13 @@ canonical position/normal/UV/tangent data and indexed submeshes, then call
 the interleaved vertex layout, index width, submesh ranges, and AABB from the
 same attribute-layout and bounds owners used by procedural factories; callers
 do not maintain a second stride, bounds, or layout table.
+
+All indexed submeshes address the same accumulated vertex stream.
+`appendIndices` retains raw values; appending vertices does not rebase them.
+For two separate three-vertex batches, indices `[0, 1, 2]` select the first
+batch and `[3, 4, 5]` select the second. Reusing `[0, 1, 2]` intentionally
+shares the first batch. `indexOffset` selects a range in the index buffer;
+it is not a vertex base, and `vertexCount` does not move that base.
 
 When the mesh has `triangle-list` or `triangle-strip` submeshes, `build()` also
 completes the surface stream that stock materials read; line and point
@@ -568,7 +577,7 @@ identity is checked by the capture consumer before GPU allocation. This preparat
 has CPU/codec/cooker tests; representative GPU capture and residency acceptance
 belongs to the ongoing software-representation iteration.
 
-Measured examples, pinned source references and RHI replay evidence: [advanced modeling report](docs/advanced-modeling.md).
+Measured examples, pinned source references and RHI replay evidence: advanced modeling report.
 
 ### Mesh publication boundary
 

@@ -40,6 +40,9 @@ describe('Node material program compilation', () => {
       import { createMaterialPackCooker } from ${JSON.stringify(entry)};
       import { standardSurfaceParameters } from ${JSON.stringify(types)};
       getCiphers();
+      const encode = (value) => JSON.stringify(value, (_, entry) => ArrayBuffer.isView(entry)
+        ? { type: entry.constructor.name, bytes: Buffer.from(entry.buffer, entry.byteOffset, entry.byteLength).toString('base64') }
+        : entry);
       const workers = new Set();
       const post = Worker.prototype.postMessage;
       Worker.prototype.postMessage = function (...args) {
@@ -60,6 +63,7 @@ describe('Node material program compilation', () => {
       const result = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
       const firstWorkers = workers.size;
       const next = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
+      const expectedBytes = encode(next);
       const stableWorkers = firstWorkers === workers.size;
       const concurrent = await Promise.all(Array.from({ length: 4 }, () =>
         createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input)));
@@ -82,32 +86,46 @@ describe('Node material program compilation', () => {
         catch { workerFailure = true; }
         finally { Worker.prototype.postMessage = post; }
         const recovered = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
-        if (JSON.stringify(recovered) !== JSON.stringify(next)) throw new Error('worker recovery changed output');
+        if (encode(recovered) !== expectedBytes) throw new Error('worker recovery changed output');
       }
-      const bytes = JSON.stringify(result, (_, value) => ArrayBuffer.isView(value)
-        ? { type: value.constructor.name, bytes: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64') }
-        : value);
+      const bytes = encode(result);
       console.log(JSON.stringify({
         digest: createHash('sha256').update(bytes).digest('hex'),
         programs: result.payload.cooked.programs.length,
         stableWorkers,
         totalWorkers,
         workerFailure,
-        concurrentEqual: concurrent.every((draft) => JSON.stringify(draft) === JSON.stringify(next)),
+        concurrentEqual: concurrent.every((draft) => encode(draft) === expectedBytes),
         diagnostic,
         firstWorkers,
-        repeatedResult: JSON.stringify(result) === JSON.stringify(next),
+        repeatedResult: bytes === expectedBytes,
       }));
     `;
-    const outputs = await Promise.all(
-      ['1', '2'].map(async (workers) => {
+    const outputs = [];
+    // Isolate the two complete native runtimes; each route still exercises four concurrent cooks.
+    for (const workers of ['1', '2']) {
+      const started = Date.now();
+      try {
         const result = await run(process.execPath, ['--input-type=module', '--eval', script], {
           env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: workers },
           timeout: 45_000,
         });
-        return JSON.parse(result.stdout);
-      }),
-    );
+        outputs.push(JSON.parse(result.stdout));
+      } catch (cause) {
+        const failure = cause as {
+          killed?: boolean;
+          signal?: string;
+          stdout?: string;
+          stderr?: string;
+        };
+        throw new Error(
+          `Material parity route ${workers} failed after ${Date.now() - started}ms; ` +
+            `killed=${failure.killed}; signal=${failure.signal}; ` +
+            `stdout=${failure.stdout?.slice(-2000)}; stderr=${failure.stderr?.slice(-4000)}`,
+          { cause },
+        );
+      }
+    }
     expect(outputs[0]?.programs).toBeGreaterThan(1);
     expect(outputs[1]?.digest).toBe(outputs[0]?.digest);
     expect(outputs[1]?.programs).toBe(outputs[0]?.programs);

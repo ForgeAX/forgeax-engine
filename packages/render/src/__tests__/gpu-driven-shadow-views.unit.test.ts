@@ -27,6 +27,7 @@ import { FrameProjection } from '../scene/frame-list';
 import { TreeFrame } from '../scene/frame-tree-list';
 import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import { RenderScene } from '../scene/render-scene';
+import { SkinInputs } from '../scene/skin-inputs';
 import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
 import { updateShadowView } from './helpers/gpu-input-read-domain';
 
@@ -158,6 +159,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
     pool,
     input,
     identity,
+    projection,
     dispose: () => {
       pool.dispose();
       scene.scene.dispose();
@@ -166,6 +168,183 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
 }
 
 describe('GPU-driven shadow view owner contract', () => {
+  it('refreshes active Skin depth from current data even when retired root addresses are reused', async () => {
+    const f = await lodShadowFixture();
+    const skin = new SkinInputs(f.input.scene.inputs.arena);
+    const source = skin.source();
+    const topology = new BatchTopology();
+    const value = preparedPbrSnapshot(snapshot(1));
+    topology.apply(
+      f.projection.apply([
+        updateSnapshot({
+          ...value,
+          gpuDrivenDraws: (value.gpuDrivenDraws ?? []).map((draw) => ({
+            ...draw,
+            geometry: { ...draw.geometry, deformation: 'skin' },
+            ...(draw.prepared === undefined
+              ? {}
+              : {
+                  prepared: {
+                    ...draw.prepared,
+                    identity: { ...draw.prepared.identity, deformation: 'skin' },
+                  },
+                }),
+          })),
+        }),
+      ]),
+    );
+    const plan = topology.query(topology.sourcePlan(), undefined);
+    const prepared = value.gpuDrivenDraws?.[0]?.prepared;
+    if (prepared === undefined) throw new Error('Missing prepared Skin fixture');
+    const sourcePlan = {
+      ...plan,
+      batches: plan.batches.map((batch) => ({
+        ...batch,
+        prepared: { ...prepared, identity: { ...prepared.identity, deformation: 'skin' as const } },
+      })),
+    };
+    expect(sourcePlan.batches.length).toBeGreaterThan(0);
+    const matrix = mat4.identity(mat4.create());
+    skin.setJoint(source, 7, matrix);
+    const capture = () => ({
+      slots: f.projection.slotsSnapshot(),
+      current: skin.capture(),
+      previous: undefined,
+    });
+    let frame = capture();
+    const update = () =>
+      updateShadowView(f.pool, { ...f.input, sourcePlan, skin: frame }, sourcePlan).unwrap();
+    try {
+      expect(update().cache).toBe('invalidated');
+      f.pool._commitResourceReplacement();
+      expect(update().cache).toBe('invalidated');
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      expect(f.pool.project(graph, f.identity).unwrap().passNames.length).toBeGreaterThan(0);
+      const root = frame.current.inputRoot();
+      frame.current.release();
+      matrix[12] = 1;
+      skin.setJoint(source, 7, matrix);
+      frame = capture();
+      // A physical root/address is not a content identity once its leases end.
+      expect(frame.current.inputRoot()).toBe(root);
+      expect(update().cache).toBe('invalidated');
+      f.pool._commitResourceReplacement();
+      expect(update().cache).toBe('invalidated');
+      const replacement = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      expect(
+        f.pool.project(replacement, f.identity, true).unwrap().passNames.length,
+      ).toBeGreaterThan(0);
+      f.pool._commitResourceReplacement();
+      skin.setJoint(source, 7, matrix);
+      frame.current.release();
+      frame = capture();
+      expect(update().cache).toBe('invalidated');
+      const unknown = {
+        ...frame,
+        current: { root: frame.current.root, jointCapacity: 0 } as typeof frame.current,
+      };
+      expect(
+        updateShadowView(f.pool, { ...f.input, sourcePlan, skin: unknown }, sourcePlan).unwrap()
+          .cache,
+      ).toBe('invalidated');
+      f.pool._commitResourceReplacement();
+      expect(update().cache).toBe('invalidated');
+    } finally {
+      frame.current.release();
+      skin.dispose();
+      f.dispose();
+    }
+  });
+
+  it('derives keys from current identity values, including mutable Terrain receiver fields', () => {
+    const identity: {
+      kind: 'directional';
+      index: number;
+      face?: number;
+      layer?: 'static';
+      terrainReceiver?: { worldId: number; entityKey: number };
+    } = { kind: 'directional', index: 0 };
+    const base = shadowViewIdentityKey(identity);
+    expect(shadowViewIdentityKey(identity)).toBe(base);
+    identity.layer = 'static';
+    expect(shadowViewIdentityKey(identity)).not.toBe(base);
+    delete identity.layer;
+    expect(shadowViewIdentityKey(identity)).toBe(base);
+    identity.terrainReceiver = { worldId: 1, entityKey: 2 };
+    const terrain = shadowViewIdentityKey(identity);
+    identity.terrainReceiver.entityKey = 3;
+    expect(shadowViewIdentityKey(identity)).not.toBe(terrain);
+    identity.terrainReceiver.worldId = 2;
+    expect(shadowViewIdentityKey(identity)).toBe(shadowViewIdentityKey({ ...identity }));
+    identity.face = 5;
+    identity.index = 99;
+    expect(shadowViewIdentityKey(identity)).toBe(shadowViewIdentityKey({ ...identity }));
+  });
+
+  it('reads the owner submission directly and retains older values across transitions', async () => {
+    const f = await lodShadowFixture();
+    try {
+      const first = f.pool.submission(f.identity);
+      expect(first).toBeDefined();
+      const repeated = f.pool.submission(f.identity);
+      expect(repeated).toEqual(first);
+      expect(repeated).toBe(first);
+      expect(Object.isFrozen(first?.identity)).toBe(true);
+      if (first === undefined) throw new Error('Missing submission');
+      const borrowed = { ...structuredClone(first.identity) };
+      expect(shadowViewIdentityKey(borrowed)).toBe(shadowViewIdentityKey(f.identity));
+      borrowed.index++;
+      expect(shadowViewIdentityKey(borrowed)).not.toBe(shadowViewIdentityKey(f.identity));
+      const topology = f.pool.topologySignature();
+      expect(f.pool.activeIdentities()).toEqual([f.identity]);
+      updateShadowView(f.pool, f.input).unwrap();
+      const hit = f.pool.submission(f.identity);
+      expect(hit?.cache).toBe('hit');
+      expect(hit).not.toBe(first);
+      expect(first?.cache).toBe('invalidated');
+      expect(f.pool.submission(f.identity)).toBe(hit);
+      expect(f.pool.topologySignature()).toBe(topology);
+      f.pool.retain([]);
+      expect(f.pool.submission(f.identity)).toBeUndefined();
+      expect(f.pool.topologySignature()).toBe('');
+      expect(f.pool.activeIdentities()).toEqual([]);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('refreshes topology signatures for resource generations and equal-sized roster changes', async () => {
+    const f = await lodShadowFixture();
+    try {
+      const original = f.pool.topologySignature();
+      expect(f.pool.topologySignature()).toBe(original);
+      const view = f.pool.submission(f.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      const generation = view.graphResourceGeneration;
+      const observed = vi.spyOn(view, 'graphResourceGeneration', 'get');
+      observed.mockReturnValue(generation + 1);
+      const resized = f.pool.topologySignature();
+      expect(resized).not.toBe(original);
+      expect(f.pool.topologySignature()).toBe(resized);
+      observed.mockRestore();
+      expect(f.pool.topologySignature()).toBe(original);
+      const other = { ...f.identity, index: 1 };
+      updateShadowView(f.pool, { ...f.input, identity: other }).unwrap();
+      f.pool.retain([other]);
+      const replaced = f.pool.topologySignature();
+      expect(replaced).not.toBe(resized);
+      expect(replaced).toContain(shadowViewIdentityKey(other));
+      expect(replaced).not.toContain(`${shadowViewIdentityKey(f.identity)}:`);
+      expect(f.pool.topologySignature()).toBe(replaced);
+      f.pool.retain([]);
+      expect(f.pool.topologySignature()).toBe('');
+      updateShadowView(f.pool, f.input).unwrap();
+      expect(f.pool.topologySignature()).not.toBe('');
+    } finally {
+      f.dispose();
+    }
+  });
+
   it.each([
     'outside',
     'partial',

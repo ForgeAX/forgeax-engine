@@ -54,8 +54,8 @@ shipping one tarball does not eagerly import every capability into a game.
 Install the stable channel with `pnpm add --save-exact @forgeax/engine`.
 Test builds require `pnpm add --save-exact @forgeax/engine@rc`; development builds
 require `pnpm add --save-exact @forgeax/engine@next`.
-Release producers and hotfix maintainers follow [RELEASING.md](RELEASING.md).
-The [single-package release report](reports/engine-single-package-release-2026-10-10.md)
+Release producers and hotfix maintainers follow RELEASING.md.
+The single-package release report
 records the 0.4.0 source, publication and consumer evidence.
 
 The facade build stages the complete forwarding inventory before publishing each

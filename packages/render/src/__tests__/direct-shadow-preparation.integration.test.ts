@@ -170,6 +170,12 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
         throw new Error(`missing GPU preparation: ${JSON.stringify(errors)}`);
       return result.value;
     };
+    const encodedIndirectDraws = () => {
+      const production = prepare.mock.contexts.at(-1);
+      if (!(production instanceof GpuDrivenProduction)) throw new Error('missing production owner');
+      // Witness actual encoding, independent of how the accepted table is indexed.
+      return production.inspect().encodedIndirectDraws;
+    };
     world.update(1 / 60).unwrap();
     publishInput(0.25, 1);
     expect(draw('automatic').ok, JSON.stringify(errors)).toBe(true);
@@ -178,9 +184,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(typeof preparedFrame().standardPbrFrameResources.prepareMaterialBinding).toBe(
       'function',
     );
-    expect(
-      preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size,
-    ).toBeGreaterThan(0);
+    expect(encodedIndirectDraws()).toBeGreaterThan(0);
     expect(consume).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
 
@@ -269,9 +273,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(typeof preparedFrame().standardPbrFrameResources.prepareMaterialBinding).toBe(
       'function',
     );
-    expect(
-      preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size,
-    ).toBeGreaterThan(0);
+    expect(encodedIndirectDraws()).toBeGreaterThan(0);
     expect(consume).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
   } finally {

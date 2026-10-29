@@ -1,5 +1,6 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
   type RhiCommandEncoder,
   type RhiDevice,
@@ -149,24 +150,17 @@ function adoptPublicationAssets(
 
 /** Membership-only probe: does any camera declare a composed CameraView or StereoCamera? */
 function declaresComposedViews(world: World): boolean {
-  return [CameraView, StereoCamera].some(
-    (composed) =>
-      world
-        .query({ with: [Camera, composed] })
-        .unwrap()
-        [Symbol.iterator]()
-        .next().done === false,
-  );
+  for (const composed of [CameraView, StereoCamera]) {
+    const query = world.query({ with: [Camera, composed] }).unwrap();
+    for (const span of query.spans().unwrap()) if (span.length > 0) return true;
+  }
+  return false;
 }
 
 function hasCubeCamera(world: World): boolean {
-  return (
-    world
-      .query({ with: [CubeCamera] })
-      .unwrap()
-      [Symbol.iterator]()
-      .next().done === false
-  );
+  const query = world.query({ with: [CubeCamera] }).unwrap();
+  for (const span of query.spans().unwrap()) if (span.length > 0) return true;
+  return false;
 }
 
 function cameraAttachmentId(
@@ -208,8 +202,14 @@ function sharedCaptureDemand(
 
 /** Membership-only probe: does any non-composed Camera name a RenderTarget? */
 function declaresTargetCamera(world: World): boolean {
-  for (const row of world.query({ read: [Camera], without: [CameraView, StereoCamera] }).unwrap())
-    if (row.get(Camera).target !== 0) return true;
+  const query = world.query({ with: [Camera], without: [CameraView, StereoCamera] }).unwrap();
+  const reader = world[worldRead];
+  for (const span of query.spans().unwrap()) {
+    const entities = span.entities;
+    for (let index = 0; index < span.length; index++)
+      if (reader.getFieldValue(entities[index] as EntityHandle, Camera, 'target') !== 0)
+        return true;
+  }
   return false;
 }
 
@@ -361,7 +361,11 @@ function primaryObservationViews(
  * submission. Each view is a Render World entity ({@link RenderView}); its
  * private recording state is the entity's {@link ViewRecorder}.
  */
-export function createCameraViews(internals: RenderSystemInternals, primary: RenderSystem) {
+export function createCameraViews(
+  internals: RenderSystemInternals,
+  primary: RenderSystem,
+  maxRenderShortSide = 0,
+) {
   const renderWorld = internals.renderWorld ?? createRenderWorld();
   const views = new RenderViews(renderWorld);
   // Every view's field splits the per-frame GI budgets through this one owner.
@@ -1097,17 +1101,22 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
         // composed view is declared. This admission probe reads membership only.
         const declaresViews =
           publication === undefined && world !== undefined && declaresComposedViews(world);
+        const cap =
+          Math.min(internals.canvas.width, internals.canvas.height) > maxRenderShortSide
+            ? maxRenderShortSide
+            : 0;
         const cameras =
           publication?.frame.cameras ??
-          (!declaresViews || world === undefined
+          ((!declaresViews && cap === 0) || world === undefined
             ? []
             : selectCameraRoles(world, opts.cameraEntityKey).display);
         const wasActive = active();
         const captures = captureCameras(publication, world, opts.cameraEntityKey);
-        if (captures.length > 0 || cameras.some((camera) => camera.view !== undefined))
+        if (captures.length > 0 || cap > 0 || cameras.some((camera) => camera.view !== undefined))
           adoptOwner(publication?.resources.identity ?? world?.identity);
         views.sync({
           cameras,
+          maxRenderShortSide: cap,
           captures,
           attachment: (camera) => cameraAttachmentId(camera, world, worlds),
         });

@@ -4,6 +4,8 @@
  * The role is the producer-owned identity. Source path and sourceIndex are
  * locators only and must not be folded into this key.
  */
+export function deriveImageSourceKey(role: 'texture' | 'equirect'): string;
+export function deriveImageSourceKey(role: string): string | undefined;
 export function deriveImageSourceKey(role: string): string | undefined {
   const normalizedRole = role.trim();
   if (normalizedRole.length === 0) return undefined;

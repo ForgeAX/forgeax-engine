@@ -1,4 +1,4 @@
-import type { AudioIntent, MusicState } from '@forgeax/engine-audio';
+import type { AudioIntent } from '@forgeax/engine-audio';
 import type { SharedSpanBinding } from '@forgeax/engine-ecs/shared';
 import type { GamepadFeedbackIntent, InputBackendSample } from '@forgeax/engine-input';
 import type { RenderError, RenderPublicationIdentity } from '@forgeax/engine-render';
@@ -15,8 +15,7 @@ import type {
 
 export interface ExecutionFrameMessage {
   readonly kind: 'frame';
-  readonly musicState?: MusicState;
-  readonly audioPreparation?: import('@forgeax/engine-audio').AudioPreparationReceipt;
+  readonly audioState?: import('./types').ExecutionAudioReport;
   readonly rejectedAudioPublications?: readonly import('@forgeax/engine-audio').AudioClipIdentity[];
   readonly worldIdentity: string;
   readonly frameId: number;

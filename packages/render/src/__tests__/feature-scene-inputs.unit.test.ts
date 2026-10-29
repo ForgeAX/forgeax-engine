@@ -147,8 +147,8 @@ describe('Renderer scene inputs', () => {
     expect(work.physical.sampledDepth).toBe(true);
     const actual = mat4.multiply(
       mat4.create(),
-      computeProjectionMatrix(work.faceCamera),
-      computeViewMatrix(work.faceCamera),
+      computeProjectionMatrix(work.faceCamera, mat4.create()),
+      computeViewMatrix(work.faceCamera, mat4.create()),
     );
     actual.forEach((value, index) => {
       expect(value).toBeCloseTo(input.camera.viewProjection[index] ?? 0);

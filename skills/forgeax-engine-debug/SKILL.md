@@ -12,6 +12,19 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For a Dawn lane reaching its job deadline, refresh placement costs only from
+complete successful children and owners through the [CI guide](../../scripts/ci/README.md).
+Retain four jobs, every native owner and its assertions; interrupted tails do
+not establish costs. For material-parity timeouts, inspect binary comparison
+overhead before changing compiler concurrency or deadlines. Keep exact byte and
+metadata equality, concurrent cooks, diagnostics and crash recovery.
+
+For Bun portability source-scan timeouts, compare visible CPUs with the admitted
+cgroup CPU/memory budget. The canary uses `resolve-vitest-workers.mjs` through the
+existing runner CPU-affinity owner; preserve its complete Math/ECS roster,
+source-scan negative controls and original deadlines. See the
+[CI recovery route](../../scripts/ci/README.md#failure-recovery).
+
 For SDK bootstrap or publication failures, compare the actual Node, npm and pnpm
 versions with `.nvmrc`, `.npm-version` and `.pnpm-version` in the
 [CI guide](../../scripts/ci/README.md). PR, Candidate and Promotion use the same
@@ -28,10 +41,19 @@ run their native `node:test` owner in `primary-pnpm`; the Render Vitest project
 must retain its source tests and exclude only those benchmark contracts.
 See [CI reproduction](../../scripts/ci/README.md).
 
+For native UI control failures, inspect the paired snapshots in `artifacts/ui-*/` before assigning a layout cause. Verify the UI WASM provenance and browser version, and use the Host platform's native edit modifier. Reproduce the exact file through CI Focus Browser with the `ci` profile; preserve geometry, pixel and lifecycle assertions. See [failure recovery](../../scripts/ci/README.md#failure-recovery).
+
 For a Browser measured-roster coverage failure, refresh missing file costs from
 completed successful exact-child observations through [Browser gates](../../scripts/ci/README.md#browser-gates).
 Keep the 85% floor, inherited costs and retained cases; skipped or interrupted
 work does not establish a measured cost.
+
+For opposite native-UI geometry failures on different runners, compare their
+actual Chrome versions before changing the portable owner again. Host reuse and
+cached installation must both satisfy the existing
+[Browser version policy](../../scripts/ci/README.md#browser-gates). Preserve the
+original native assertions; repair stale toolchain admission rather than
+alternating implementations or retrying until a compatible runner is selected.
 
 For Three browser group timeouts, compare each complete native/reference/replay
 journey with its planner weight. Shadow/filter mutations, manual-update replay, loading, material-output,
@@ -89,6 +111,11 @@ frames and preserve metric producer failures through the required aggregate.
 For Bevy input tails that stop before release, use the existing ready-receipt
 frame driver; RAF callbacks are not completed App frames. Preserve authored
 simulation horizons when reducing ECS fixture submissions.
+
+For native template movement timeouts after Runtime Vase regeneration, inspect
+the producer/recovery render boundary before changing input waits. The shared
+probe requires its original submitted prefix to complete ready, including
+recovery; CPU adoption and submitted-only frames do not qualify the picture.
 For Bloom device-loss recovery with an empty pre-loss graph, inspect completed
 `ready` receipts before triggering the crash. Submitted warming frames and HUD
 pixels do not establish a rendered scene. Follow the Bloom recovery gate in the
@@ -108,6 +135,16 @@ reflog before pruning; preserve unrelated repositories and changed commits.
 For a Dawn overall job cancellation with passing groups, compare complete group
 costs, ordinary-file backfill and lane headroom in `dawn-gate-roster.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
 while preserving the full roster, native process isolation and existing deadlines.
+Check serial Dawn's Mesa worker count against the admitted heavy CPU budget;
+CI and Dawn Focus use eight workers, while concurrent Browser processes retain
+four each. Preserve capacity admission and the single native Vitest worker.
+For Bevy Skybox's missing Chrome Beta after a passing Dawn smoke, repair the
+fleet's browser preparation through the shared installation action. Its composite
+smoke retains the real WebGL2 journey; see [failure recovery](../../scripts/ci/README.md#failure-recovery).
+For guide-form input scroll-width mismatches, compare native client widths and
+outer rectangles before assigning layout overflow. Follow the UI owner's
+[control parity contract](../../packages/ui-blitz/README.md#ownership-and-observable-behavior);
+retain ancestor extents, external geometry and the complete input journey.
 Check newly discovered files against the same cost table: its largest-file
 fallback can reserve minutes for a short new test. Admit costs only from complete
 successful children, retain process overhead and larger inherited forecasts, and
@@ -271,6 +308,9 @@ observations; final-head CI must still pass after a placement refresh.
 Refresh only `dawn-file-seconds.json` placement forecasts. An interrupted
 owner contributes no completion sample. Keep the four-lane sequencer and original
 native deadlines; a cost refresh alone is not proof of a faster complete gate.
+When the admitted worker-count policy changes, replace stale placement costs
+with complete receipts from the current policy. Keep the prior estimate for any
+interrupted owner, and require the complete final-head CI gate after recalculating.
 For a cold Preview capture interrupted by Vite `full-reload`, inspect optimizer
 logs for late dependencies. A literal dynamic import remains eligible for Vite
 pretransform even with `@vite-ignore`; Node-only transports must load only on
@@ -314,6 +354,19 @@ For Snake late-join `ACK retry budget exhausted`, follow
 [multiplayer startup and baseline ACK admission](../../scripts/ci/README.md#multiplayer-startup-and-baseline-ack-admission).
 Keep initial polling with the World receive system and reproduce delayed Host
 activation on the real browser path without expanding the game ACK budget.
+
+## Cold compiler and graphics admission
+
+For clearcoat publication timeouts in `declared-standard-material.integration.test.ts`,
+use the existing exclusive coverage file owner in
+[CI operations](../../scripts/ci/README.md). Keep all material/compiler assertions
+and original test deadlines; verify the file has one owner and no competing
+instrumented child before changing runtime code.
+
+For a Three render/reference/replay timeout, retain its complete fresh Browser
+process and exclusive runner admission. Verify the native, reference and replay
+journeys at their existing frame counts and deadlines; do not relax pixel or
+capture assertions to absorb competing graphics work.
 
 ## Rendering: RHI Debug first
 
@@ -794,36 +847,36 @@ change. Localized ordinary README files remain permitted.
 | Symptom | Likely cause | Reference |
 |:--|:--|:--|
 | CPU profiling needed on a Linux/CI host without a GPU; `requestAdapter()` returns null or only a software adapter | No usable GPU; software WebGPU would spend the measured CPU on emulation. | [WebGPU stub](../forgeax-engine-rhi/SKILL.md#webgpu-stub-cpu-diagnostics-without-gpu-work) |
-| Textured demo shows a white square without texture or lighting gradient | Texture paramValues contain unresolved GUID strings instead of Handles. | [White textures](references/assets-and-ci.md#white-textures) |
-| spawn-data-unknown-field or invisible/gray entities | Misspelled/stale data field, such as MeshRenderer.material instead of materials. | [Spawn fields](references/assets-and-ci.md#misspelled-spawn-data-fields) |
-| register MaterialAsset reports shader not registered | Stale shader identifier in pack.json. | [Shader identifiers](references/assets-and-ci.md#stale-shader-identifiers) |
-| CI fails despite all assertions passing | Unhandled rejection during teardown sets exit 1. | [Exit status](references/assets-and-ci.md#passing-assertions-with-exit-1) |
-| Fresh worktree alone fails with ENOENT/unresolved package | Submodule initialization or build missing. | [Worktree setup](references/assets-and-ci.md#fresh-worktree-environment-failures) |
-| Texture disappears after warm HMR | vite-plugin-pack DDC loses sourcePath or writes to source tree. | [Pack HMR](references/assets-and-ci.md#vite-plugin-pack-ddc-hot-reload) |
-| Windows-only failures or CRLF diffs | Missing LF attributes or path-separator handling. | [Windows](references/assets-and-ci.md#windows-compatibility) |
-| Upside-down cubemap | Redundant V-flip in skybox.wgsl. | [Skybox V-flip](references/lighting-and-materials.md#skybox-v-flip) |
-| All CSM shadows fully lit despite valid matrices and running cascades | Negative viewZ compared to positive splitPlanes selects the near cascade; distant projections leave the tile and return 1.0. | [CSM depth sign](references/lighting-and-materials.md#csm-shadows-fully-lit) |
-| Meshes do not cast shadows although castShadow is enabled | Hand-authored materials omit ShadowCaster and never enter the shadow depth pass. | [ShadowCaster](references/lighting-and-materials.md#missing-directional-shadows-castshadow-and-shadowcaster) |
-| Standard material black during cold startup or without IBL | Asynchronous Skylight cubemap is the only ambient source. | [Ambient readiness](references/lighting-and-materials.md#ambient-black-until-ibl-loads) |
-| Multi-mesh glTF nodes bind every mesh's materials | Bridge fails to filter by meshIndex. | [glTF materials](references/lighting-and-materials.md#gltf-bridge-mixes-mesh-materials) |
+| Textured demo shows a white square without texture or lighting gradient | Texture paramValues contain unresolved GUID strings instead of Handles. | White textures |
+| spawn-data-unknown-field or invisible/gray entities | Misspelled/stale data field, such as MeshRenderer.material instead of materials. | Spawn fields |
+| register MaterialAsset reports shader not registered | Stale shader identifier in pack.json. | Shader identifiers |
+| CI fails despite all assertions passing | Unhandled rejection during teardown sets exit 1. | Exit status |
+| Fresh worktree alone fails with ENOENT/unresolved package | Submodule initialization or build missing. | Worktree setup |
+| Texture disappears after warm HMR | vite-plugin-pack DDC loses sourcePath or writes to source tree. | Pack HMR |
+| Windows-only failures or CRLF diffs | Missing LF attributes or path-separator handling. | Windows |
+| Upside-down cubemap | Redundant V-flip in skybox.wgsl. | Skybox V-flip |
+| All CSM shadows fully lit despite valid matrices and running cascades | Negative viewZ compared to positive splitPlanes selects the near cascade; distant projections leave the tile and return 1.0. | CSM depth sign |
+| Meshes do not cast shadows although castShadow is enabled | Hand-authored materials omit ShadowCaster and never enter the shadow depth pass. | ShadowCaster |
+| Standard material black during cold startup or without IBL | Asynchronous Skylight cubemap is the only ambient source. | Ambient readiness |
+| Multi-mesh glTF nodes bind every mesh's materials | Bridge fails to filter by meshIndex. | glTF materials |
 | One mesh missing while the rest of the frame renders; onError `rhi-descriptor-invalid` names a missing `@location(N)` | The material's vertex stage reads an attribute the mesh layout lacks; the renderer skips that draw instead of creating an invalid pipeline. Author the attribute (MeshBuilder completes normal/uv/tangent for triangle lists) or use a material that does not read it. | `packages/render/src/vertex-input-guard.ts` |
-| pbr-skin pipeline fails with missing binding/vertex slot 5 | Skin shader reuses standard PBR layout; JOINTS_0/WEIGHTS_0 are not uploaded. | [Skin pipeline](references/skinning-and-fbx.md#pbr-skin-pipeline-build-fail) |
-| Browser skin black but Dawn passes; VBO 768 instead of 1152 bytes | Break in parser, bridge, mesh-loader, render-data, pipeline context, or extraction. | [Attribute chain](references/skinning-and-fbx.md#skin-vertex-attribute-chain) |
-| hello-skin dev Fox black with asset-not-imported while smoke passes | Missing build/submodule or sibling using the port. | [Fox dev loading](references/skinning-and-fbx.md#fox-development-loading-asset-not-imported) |
-| Skin remains in bind pose while clip/world matrices advance | Palette allocator/dynamic-offset/extract wiring, MAX_JOINTS overflow, or async instantiation before SkinAsset registration. Skin.joints.length=0 and JointCountMismatchError identify the latter; e5e68b35 added SceneAsset.skinGuids and fail-fast skin-asset-unresolved. | [Static skin](references/skinning-and-fbx.md#skin-entity-stays-static) |
-| Distorted/flipped FBX skin animation in historical SDK implementation | Removed binding.cc misread Euler degrees as quaternions and sampled one axis; ufbx bridge.c uses ufbx_evaluate_transform. | [Historical FBX deformation](references/skinning-and-fbx.md#historical-fbx-skin-deformation) |
-| FBX parity snapshot fails | bridge.c drift in axis conversion, material classification, node filtering, or animation extraction. | [FBX parity](references/skinning-and-fbx.md#fbx-parity-snapshot-differences) |
-| FBX WASM ENOENT | Contributor checkout lacks generated pkg payloads. | [FBX WASM](references/skinning-and-fbx.md#missing-fbx-wasm-payload) |
-| FBX WASM initializes in browser but fails in Node | ENVIRONMENT flags or Node version mismatch. | [Node WASM](references/skinning-and-fbx.md#fbx-node-wasm-initialization-failure) |
-| SkinPaletteOverflowError needs=16384 cap=16320 at first frame | MAX_JOINTS=256 exceeds the pbr-skin group-2 binding-1 capacity established by PR #361. | [Palette overflow](references/skinning-and-fbx.md#skinpaletteoverflowerror-needs-16384-b-exceeds-16320-b) |
-| Edge adapter-unavailable and black output | Browser settings disable hardware GL. | [Edge configuration](references/backends-and-ci.md#edge-webgpu-disabled) |
-| Startup/release reports only WebGPU, adapter-unavailable, or object Object | Flattened diagnostics or only one backend channel observed; insufficient to declare the machine unsupported. | [Capability diagnosis](references/backends-and-ci.md#webgpu-messages-do-not-decide-whole-machine-support) |
-| WebGL2 fallback validation panic: storage/uniform mismatch or VIEW_FORMATS | Missing capability gates in variant keys, graph viewFormats, or texture reinterpretation. | [Fallback gates](references/backends-and-ci.md#wgpu-wasm-webgl2-fallback-cap-gates) |
-| WebKit reports mesh SSBO ceiling 0 B and black scene | Downlevel defaults report maxStorageBufferBindingSize=0, incorrectly consumed as a real ceiling. | [SSBO ceiling](references/webkit-and-lifetimes.md#webkit-mesh-ssbo-ceiling-0) |
-| WebKit black/GPU loss after submit without onError | wgpu error-sink failures never reach JS. | [Submit errors](references/webkit-and-lifetimes.md#webkit-black-output-after-submit) |
-| WebKit probe panics Surface does not exist while hello-triangle works | Probe main returns after a finite loop without retaining Renderer; GC finalizes the WASM Surface. | [Probe lifetime](references/webkit-and-lifetimes.md#webkit-probe-renderer-gc-finalize) |
+| pbr-skin pipeline fails with missing binding/vertex slot 5 | Skin shader reuses standard PBR layout; JOINTS_0/WEIGHTS_0 are not uploaded. | Skin pipeline |
+| Browser skin black but Dawn passes; VBO 768 instead of 1152 bytes | Break in parser, bridge, mesh-loader, render-data, pipeline context, or extraction. | Attribute chain |
+| hello-skin dev Fox black with asset-not-imported while smoke passes | Missing build/submodule or sibling using the port. | Fox dev loading |
+| Skin remains in bind pose while clip/world matrices advance | Palette allocator/dynamic-offset/extract wiring, MAX_JOINTS overflow, or async instantiation before SkinAsset registration. Skin.joints.length=0 and JointCountMismatchError identify the latter; e5e68b35 added SceneAsset.skinGuids and fail-fast skin-asset-unresolved. | Static skin |
+| Distorted/flipped FBX skin animation in historical SDK implementation | Removed binding.cc misread Euler degrees as quaternions and sampled one axis; ufbx bridge.c uses ufbx_evaluate_transform. | Historical FBX deformation |
+| FBX parity snapshot fails | bridge.c drift in axis conversion, material classification, node filtering, or animation extraction. | FBX parity |
+| FBX WASM ENOENT | Contributor checkout lacks generated pkg payloads. | FBX WASM |
+| FBX WASM initializes in browser but fails in Node | ENVIRONMENT flags or Node version mismatch. | Node WASM |
+| SkinPaletteOverflowError needs=16384 cap=16320 at first frame | MAX_JOINTS=256 exceeds the pbr-skin group-2 binding-1 capacity established by PR #361. | Palette overflow |
+| Edge adapter-unavailable and black output | Browser settings disable hardware GL. | Edge configuration |
+| Startup/release reports only WebGPU, adapter-unavailable, or object Object | Flattened diagnostics or only one backend channel observed; insufficient to declare the machine unsupported. | Capability diagnosis |
+| WebGL2 fallback validation panic: storage/uniform mismatch or VIEW_FORMATS | Missing capability gates in variant keys, graph viewFormats, or texture reinterpretation. | Fallback gates |
+| WebKit reports mesh SSBO ceiling 0 B and black scene | Downlevel defaults report maxStorageBufferBindingSize=0, incorrectly consumed as a real ceiling. | SSBO ceiling |
+| WebKit black/GPU loss after submit without onError | wgpu error-sink failures never reach JS. | Submit errors |
+| WebKit probe panics Surface does not exist while hello-triangle works | Probe main returns after a finite loop without retaining Renderer; GC finalizes the WASM Surface. | Probe lifetime |
 | CI job, cache or skip behavior differs from old troubleshooting notes | Workflow layout has changed; verify the failing commit before applying historical advice | [CI operating guide](../../scripts/ci/README.md) |
-| GPU buffer/texture/cubemap counts grow throughout long sessions | Missing symmetric release in store eviction, instance buffers, transient resize, or handle-keyed WeakMaps. | [Resource growth](references/webkit-and-lifetimes.md#monotonic-gpu-resource-growth) |
+| GPU buffer/texture/cubemap counts grow throughout long sessions | Missing symmetric release in store eviction, instance buffers, transient resize, or handle-keyed WeakMaps. | Resource growth |
 
 Open the relevant linked recipe; verify its hypothesis against the current
 failing frame or process. Package contracts remain the design authority.

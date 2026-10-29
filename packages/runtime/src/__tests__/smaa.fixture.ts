@@ -22,7 +22,9 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 
 function value<T>(
   result:
@@ -149,7 +151,7 @@ export async function verifySmaa(
     (await recorder.frameBoundary()).unwrap();
     const smaa = await observe('smaa');
     (await recorder.frameBoundary()).unwrap();
-    await save('initial.rhitape', (await initialCapture).unwrap().bytes);
+    await save('initial.rhitape', compactTape((await initialCapture).unwrap()).bytes);
     expect(mse(none, smaa)).toBeGreaterThan(0.00001);
     expect(renderer.inspect().perFramePassNames.filter((name) => name.startsWith('smaa-'))).toEqual(
       ['smaa-area-upload', 'smaa-search-upload', 'smaa-edges', 'smaa-weights', 'smaa-blend'],
@@ -201,7 +203,7 @@ export async function verifySmaa(
     const live = await observe('captured');
     (await recorder.frameBoundary()).unwrap();
     const captured = (await pending).unwrap();
-    await save('smaa.rhitape', captured.bytes);
+    await save('smaa.rhitape', compactTape(captured).bytes);
     const tape = decodeTape(captured.bytes).unwrap();
     const model = buildFrameModel(tape);
     for (const work of model.works.filter((work) =>
@@ -244,21 +246,18 @@ export async function verifySmaa(
     ).unwrap();
     const reports: unknown[] = [];
     try {
-      for (const work of [edges, weights, blend]) {
-        const inspection = (
-          await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
-        ).unwrap();
+      for (const inspection of await inspectReplayWorks(replay, [edges, weights, blend])) {
         const attachment = inspection.attachment;
         if (attachment === undefined) throw new Error('missing SMAA stage readback');
         expect(attachment.bytes.some((b) => b > 0)).toBe(true);
-        await save(`work-${work.workIndex}.${attachment.format}`, attachment.bytes);
+        await save(`work-${inspection.workIndex}.${attachment.format}`, attachment.bytes);
         reports.push({
-          workIndex: work.workIndex,
-          eventIndex: work.eventIndex,
+          workIndex: inspection.workIndex,
+          eventIndex: inspection.eventIndex,
           format: attachment.format,
           bindings: inspection.bindings,
         });
-        if (work === blend) {
+        if (inspection.workIndex === blend.workIndex) {
           const replayPixels = floats(attachment.bytes, 128, 128, 128 * 8);
           const maxError = Math.max(...replayPixels.map((p, i) => Math.abs(p - (live[i] ?? NaN))));
           expect(maxError).toBeLessThanOrEqual(0.002);
@@ -269,14 +268,17 @@ export async function verifySmaa(
       (await replay.dispose()).unwrap();
     }
     // Remove the actual weight producer. The cleared weight buffer must restore the unfiltered image.
-    const missing = encodeTape({
-      ...tape,
-      events: tape.events.map((event, index) =>
-        index === weights.eventIndex && event.kind === 'draw'
-          ? { ...event, vertexCount: 0 }
-          : event,
-      ),
-    }).unwrap();
+    const missing = encodeTape(
+      {
+        ...tape,
+        events: tape.events.map((event, index) =>
+          index === weights.eventIndex && event.kind === 'draw'
+            ? { ...event, vertexCount: 0 }
+            : event,
+        ),
+      },
+      { compression: 'gzip' },
+    ).unwrap();
     const falsifier = (
       await openReplay(decodeTape(missing).unwrap(), {
         device,

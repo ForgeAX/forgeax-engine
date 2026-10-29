@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveStandardRenderFeatureTargets } from '../features/targets';
+import {
+  createRenderFeatureTarget,
+  logicalRenderFeatureTargets,
+  resolveStandardRenderFeatureTargets,
+} from '../features/targets';
 
 function targets(
   tonemap: 'none' | 'aces-filmic',
@@ -16,6 +20,102 @@ function targets(
 }
 
 describe('urp render feature targets', () => {
+  it('keeps a logical row on its immutable target owner across independent rosters', () => {
+    const input = {
+      name: 'color',
+      kind: 'scene-color' as const,
+      format: 'rgba16float' as const,
+      sampleCount: 1 as const,
+    };
+    const target = createRenderFeatureTarget(input);
+    const first = logicalRenderFeatureTargets([target])[0];
+    input.name = 'replacement';
+    expect(logicalRenderFeatureTargets([target])[0]).toBe(first);
+    expect(first?.name).toBe('color');
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.keys(target)).toEqual(['name', 'kind', 'format', 'sampleCount']);
+    const replacement = createRenderFeatureTarget(input);
+    expect(logicalRenderFeatureTargets([replacement])[0]?.name).toBe('replacement');
+    expect(logicalRenderFeatureTargets([replacement])[0]).not.toBe(first);
+    const equivalent = createRenderFeatureTarget({ ...target });
+    expect(logicalRenderFeatureTargets([equivalent])[0]).toEqual(first);
+    expect(logicalRenderFeatureTargets([equivalent])[0]).not.toBe(first);
+    const copied = { ...target };
+    expect(logicalRenderFeatureTargets([copied])[0]).toEqual(first);
+    expect(logicalRenderFeatureTargets([copied])[0]).not.toBe(first);
+  });
+
+  it('does not forward an owned projection through a borrowed proxy', () => {
+    const target = createRenderFeatureTarget({
+      name: 'color',
+      kind: 'scene-color',
+      format: 'rgba16float',
+      sampleCount: 1,
+    });
+    const fault = new Error('Borrowed format read failed');
+    const borrowed = new Proxy(target, {
+      get(owner, key, receiver) {
+        if (key === 'format') throw fault;
+        return Reflect.get(owner, key, receiver);
+      },
+    });
+    expect(() => logicalRenderFeatureTargets([borrowed])).toThrow(fault);
+  });
+
+  it('projects current attachment facts and preserves detached rosters', () => {
+    const input = {
+      tonemap: 'none',
+      antialias: 'none',
+      storageBuffer: true,
+      multisample: true,
+      colorAttachmentFormat: 'bgra8unorm-srgb' as const,
+      cloudHistory: false,
+    };
+    const first = resolveStandardRenderFeatureTargets(input);
+    expect(resolveStandardRenderFeatureTargets({ ...input })).toEqual(first);
+    const logical = logicalRenderFeatureTargets(first);
+    expect(logicalRenderFeatureTargets(first)).toEqual(logical);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(first.every(Object.isFrozen)).toBe(true);
+    input.antialias = 'msaa';
+    const msaa = resolveStandardRenderFeatureTargets(input);
+    expect(msaa).not.toBe(first);
+    expect(msaa[0]?.sampleCount).toBe(4);
+    expect(logicalRenderFeatureTargets(msaa)[0]?.sampleCount).toBe(4);
+    expect(logical[0]?.sampleCount).toBe(1);
+    expect(first[0]?.sampleCount).toBe(1);
+    input.multisample = false;
+    const noMsaa = resolveStandardRenderFeatureTargets(input);
+    expect(noMsaa[0]?.sampleCount).toBe(1);
+    input.cloudHistory = true;
+    const cloud = resolveStandardRenderFeatureTargets(input);
+    expect(cloud).toHaveLength(first.length + 6);
+    expect(first).toHaveLength(7);
+    expect(resolveStandardRenderFeatureTargets(input)).toEqual(cloud);
+  });
+
+  it('keeps borrowed target getters and in-place edits observable', () => {
+    let format: 'rgba16float' | 'bgra8unorm-srgb' = 'rgba16float';
+    let reads = 0;
+    const borrowed = [
+      {
+        name: 'color',
+        kind: 'scene-color' as const,
+        sampleCount: 1 as const,
+        get format() {
+          reads++;
+          return format;
+        },
+      },
+    ] as unknown as Parameters<typeof logicalRenderFeatureTargets>[0];
+    const first = logicalRenderFeatureTargets(borrowed);
+    format = 'bgra8unorm-srgb';
+    const second = logicalRenderFeatureTargets(borrowed);
+    expect(reads).toBe(2);
+    expect(first[0]?.format).toBe('rgba16float');
+    expect(second[0]?.format).toBe('bgra8unorm-srgb');
+  });
+
   it('keeps the storage-buffer no-tonemap no-FXAA path in a linear target', () => {
     expect(targets('none', 'none', true)?.[0]).toMatchObject({
       kind: 'scene-color',

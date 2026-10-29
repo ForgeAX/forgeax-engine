@@ -320,6 +320,14 @@ export type PackErrorCode = keyof typeof PACK_ERROR_HINTS;
  *
  * Structurally parallel to RhiErrorDetail / MetricErrorDetail.
  */
+export interface PackSchemaDiagnostic {
+  readonly instancePath: string;
+  readonly message: string;
+  readonly keyword?: string;
+  readonly schemaPath?: string;
+  readonly params?: Readonly<Record<string, unknown>>;
+}
+
 export type PackErrorDetail =
   | {
       readonly code: 'pack-module-not-found';
@@ -330,13 +338,13 @@ export type PackErrorDetail =
       /** Absolute or relative path to the malformed .meta.json file. */
       readonly path: string;
       /** ajv validation errors produced by validateMeta(). */
-      readonly ajvErrors: readonly { readonly instancePath: string; readonly message: string }[];
+      readonly ajvErrors: readonly PackSchemaDiagnostic[];
     }
   | {
       /** Absolute or relative path to the malformed .pack.json file. */
       readonly path: string;
       /** ajv validation errors produced by validatePack(). */
-      readonly ajvErrors: readonly { readonly instancePath: string; readonly message: string }[];
+      readonly ajvErrors: readonly PackSchemaDiagnostic[];
       /**
        * Optional human-readable reason category. Set to a fixed literal for
        * the runtime instantiate-path SceneEntity field-name typo route:
@@ -399,7 +407,7 @@ export type PackErrorDetail =
       /** GUID of the offending material asset. */
       readonly guid: string;
       /** ajv validation errors for the material payload. */
-      readonly errors: readonly { readonly instancePath: string; readonly message: string }[];
+      readonly errors: readonly PackSchemaDiagnostic[];
     }
   // === 4 new variants (feat-20260608-scene-nesting-ecs-fication M1 / w8;
   // plan-strategy D-8 literals locked; AC-04 / AC-05 / AC-06 / AC-07) ===
@@ -450,7 +458,7 @@ export const PACK_ERROR_HINTS = {
   'pack-module-not-found':
     'correct the import relative to detail.sourcePath, or install the named package in the project, then rebuild',
   'pack-malformed-meta':
-    'check guid is a valid RFC 4122 UUID; validate with: ajv validate -s schema/meta.schema.json -d <file>',
+    'repair detail.path using detail.ajvErrors (instancePath, keyword and params); validate the complete sidecar against meta.schema.json',
   'pack-malformed-pack':
     'check all asset guid and refs[] fields are 36-char dash-form UUIDs; validate with pack.schema.json',
   'pack-guid-malformed':

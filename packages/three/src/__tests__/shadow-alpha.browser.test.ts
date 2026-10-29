@@ -1,8 +1,16 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect, it } from 'vitest';
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  browserRendererFixture,
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  verifyReplay,
+} from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
+
+const rendererFor = browserRendererFixture();
 
 it.each([
   'basic',
@@ -10,9 +18,7 @@ it.each([
 ] as const)('preserves %s caster map coverage independently of surface opacity', {
   timeout: 180000,
 }, async (kind) => {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
-  const renderer = new THREE.WebGPURenderer({ canvas });
+  const renderer = rendererFor();
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.BasicShadowMap;
   const scene = new THREE.Scene();
@@ -107,7 +113,6 @@ it.each([
     material.shadowSide = null;
     expect(await measure('default-shadow-side')).toEqual(back);
   } finally {
-    await renderer.dispose();
     cube.geometry.dispose();
     ground.geometry.dispose();
     for (const resource of [material, floorMaterial, texture, alphaMap]) resource.dispose();

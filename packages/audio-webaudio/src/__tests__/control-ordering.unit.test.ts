@@ -51,7 +51,7 @@ function platform(state: 'running' | 'suspended' = 'running') {
       loop: false,
     }),
     decodeAudioData: () => pending,
-    resume: async () => {
+    resume: async (): Promise<void> => {
       throw new Error('gesture refused');
     },
     close: async () => {},
@@ -63,7 +63,7 @@ function platform(state: 'running' | 'suspended' = 'running') {
       return ctx;
     }),
   );
-  return { gains, document, resolveDecode };
+  return { gains, document, resolveDecode, ctx };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -153,5 +153,29 @@ test('R2-A2: host audio state preserves the backend resume failure', async () =>
     expect(consumer.state().lastError?.code).toBe('context-suspended');
   } finally {
     consumer.dispose();
+  }
+});
+
+test('rearms a later gesture after a synchronous native resume refusal', async () => {
+  const p = platform('suspended');
+  const resume = vi
+    .spyOn(p.ctx, 'resume')
+    .mockImplementationOnce(() => {
+      throw new Error('native refusal');
+    })
+    .mockImplementationOnce(async () => {
+      p.ctx.state = 'running';
+    });
+  const engine = new WebAudioEngine();
+  try {
+    p.document.dispatchEvent(new Event('click'));
+    await flush();
+    expect(engine.getState().lastError?.code).toBe('context-suspended');
+    p.document.dispatchEvent(new Event('click'));
+    await flush();
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(engine.getState().contextState).toBe('running');
+  } finally {
+    engine.destroy();
   }
 });

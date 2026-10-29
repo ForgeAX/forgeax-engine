@@ -124,6 +124,17 @@ describe('GPU VFX public host', () => {
     });
     expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
 
+    const beforeFirstPlayback = host.feature.plan(
+      { worlds: [], frameNumber: 0 } as never,
+      { targets: [], caps: {}, frame: { frameNumber: 0 }, generation: 1 } as never,
+    );
+    expect(beforeFirstPlayback).toMatchObject({
+      ok: true,
+      value: { work: [{ scope: 'frame', resources: [], passes: [] }] },
+    });
+    host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 0 } as never);
+    expect(host.feature.inspect()).toMatchObject({ frameNumber: 0, dispatches: 0 });
+
     const intent = await cookedTick({
       player: world.spawn().unwrap(),
       delta: 1 / 60,
@@ -266,10 +277,7 @@ describe('GPU VFX public host', () => {
     expect(emptyPlan).toMatchObject({
       ok: true,
       value: {
-        work: [
-          { scope: 'frame', passes: [] },
-          { scope: { view: 'main' }, passes: [] },
-        ],
+        work: [{ scope: 'frame', passes: [], resources: [] }],
       },
     });
     host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 2 } as never);

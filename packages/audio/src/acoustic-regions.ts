@@ -6,7 +6,7 @@ import {
   type ShapeOf,
   type World,
 } from '@forgeax/engine-ecs';
-import { createStateProjection } from '@forgeax/engine-ecs/projection';
+import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { type AudioError, ok, type Result } from '@forgeax/engine-types';
@@ -220,14 +220,27 @@ function collectRegions(
   world: World,
   cached: ReadonlyMap<number, Region>,
   next: Map<number, Region>,
+  projection: StateProjection,
 ): Result<void, AudioError> {
   const query = world.query({ read: [AcousticRegion], optional: [GlobalTransform] });
   if (!query.ok) return acousticFailure('region query unavailable');
   for (const row of query.value) {
-    const data = row.get(AcousticRegion);
+    const previous = cached.get(row.entity);
+    if (
+      previous !== undefined &&
+      row.has(GlobalTransform) &&
+      !projection.changed(row.entity, AcousticRegion) &&
+      !projection.changed(row.entity, GlobalTransform)
+    ) {
+      if (next.size >= 128) return acousticFailure('at most 128 enabled regions per World');
+      next.set(row.entity, previous);
+      continue;
+    }
+    const data = world.get(row.entity, AcousticRegion).unwrap();
     if (!data.enabled) continue;
     if (next.size >= 128) return acousticFailure('at most 128 enabled regions per World');
-    const matrix = row.get(GlobalTransform)?.world;
+    const transform = world.get(row.entity, GlobalTransform);
+    const matrix = transform.ok ? transform.value.world : undefined;
     if (!isFiniteAffine(matrix))
       return acousticFailure('region requires a finite affine propagated Transform');
     if (!isValidRegionDeclaration(data, matrix))
@@ -321,8 +334,8 @@ function validateRouteRequests(requests: readonly RouteRequest[]): Result<void, 
 function firstListenerMatrix(world: World): Float32Array | undefined {
   const listeners = world.query({ read: [GlobalTransform], with: [AudioListener] });
   if (listeners.ok)
-    for (const row of listeners.value) {
-      return row.get(GlobalTransform).world;
+    for (const span of listeners.value.spans().unwrap()) {
+      if (span.length > 0) return span.get(GlobalTransform).world.slice(0, 16);
     }
   return undefined;
 }
@@ -333,6 +346,7 @@ export function createAcousticRegionSystem() {
   const previous = new Map<number, string>();
   let environment = '[]';
   let sources: PlayingSources | undefined;
+  let regionProjection: { world: World; projection: StateProjection } | undefined;
   return {
     reset(backend: AudioBackend): void {
       for (const entity of previous.keys()) backend.setAcousticRoutes(entity, FALLBACK);
@@ -341,14 +355,33 @@ export function createAcousticRegionSystem() {
       regions.clear();
       environment = '[]';
       sources = undefined;
+      regionProjection = undefined;
     },
     update(world: World, backend: AudioBackend): Result<void, AudioError> {
-      const next = new Map<number, Region>();
-      const collected = collectRegions(world, regions, next);
+      if (regionProjection?.world !== world) {
+        regions.clear();
+        regionProjection = {
+          world,
+          projection: createStateProjection(
+            world,
+            [AcousticRegion, GlobalTransform, Disabled],
+            [AcousticRegion],
+          ),
+        };
+      }
+      const changes = regionProjection.projection.isCurrent()
+        ? undefined
+        : regionProjection.projection.read();
+      const next = changes === undefined ? regions : new Map<number, Region>();
+      const collected =
+        changes === undefined
+          ? ok(undefined)
+          : collectRegions(world, regions, next, regionProjection.projection);
       if (!collected.ok) return collected;
       const ordered = [...next.values()].sort((a, b) => a.entity - b.entity);
       if (!ordered.length && !previous.size && environment === '[]') {
         regions = next;
+        changes?.accept();
         return ok(undefined);
       }
       if (sources?.world !== world) sources = createPlayingSources(world);
@@ -375,6 +408,7 @@ export function createAcousticRegionSystem() {
         environment = envFingerprint;
       }
       for (const id of previous.keys()) if (!alive.has(id)) previous.delete(id);
+      changes?.accept();
       return ok(undefined);
     },
   };

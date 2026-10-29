@@ -50,11 +50,19 @@ export function materialMatchesPass(
   if (mode !== undefined && !matchesRecordMode(material.snapshot, mode)) return false;
   if (mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color')
     return true;
-  return (
-    (selector === undefined || material.passes.some((pass) => matchPass(pass.tags, selector))) &&
-    (excludeSelector === undefined ||
-      !material.passes.some((pass) => matchPass(pass.tags, excludeSelector)))
-  );
+  if (selector !== undefined) {
+    let selected = false;
+    for (const pass of material.passes) {
+      if (matchPass(pass.tags, selector)) {
+        selected = true;
+        break;
+      }
+    }
+    if (!selected) return false;
+  }
+  if (excludeSelector !== undefined)
+    for (const pass of material.passes) if (matchPass(pass.tags, excludeSelector)) return false;
+  return true;
 }
 
 /** Resolve the fixed material table already uploaded for this draw. */

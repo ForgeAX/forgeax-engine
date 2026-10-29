@@ -39,6 +39,39 @@ async function file(text: string) {
 }
 
 describe('live Pack generation isolation in the actual Worker', () => {
+  it('builds spatial and fixed temporal resolution cameras through pure render schema imports', async () => {
+    const path = await file(
+      source(
+        `return ok({ 'scene/main': { kind: 'scene', entities: {
+          sun: { components: { DirectionalLight: {} } },
+          spatial: { components: { CameraView: { resolutionScale: 0.5 } } },
+          temporal: { components: { Camera: { antialias: ANTIALIAS_TAA },
+            DynamicResolution: { minScale: 0.5, maxScale: 0.5 } } }
+        } } });`,
+        "import { CameraView, DynamicResolution, ANTIALIAS_TAA } from '@forgeax/engine/render';",
+      ).replace(
+        '  build(context)',
+        '  sceneComponents: [CameraView, DynamicResolution],\n  build(context)',
+      ),
+    );
+    const definition = (await loadScriptablePack(path)).unwrap();
+    expect(definition.sceneComponents?.map((component) => component.name)).toEqual([
+      'CameraView',
+      'DynamicResolution',
+    ]);
+    const built = await executePackBuild(definition, {
+      packageId: definition.packageId,
+      values: resolvePackParameterValues(definition, {}).unwrap(),
+      readByGuid: vi.fn(),
+    });
+    expect(built.unwrap()['scene/main']).toMatchObject({
+      entities: {
+        spatial: { components: { CameraView: { resolutionScale: 0.5 } } },
+        temporal: { components: { DynamicResolution: { minScale: 0.5, maxScale: 0.5 } } },
+      },
+    });
+  });
+
   it('cold-builds the Game3D scene with its schema imports and live defaults', async () => {
     const path = fileURLToPath(
       new URL('../../../../templates/game-3d/assets/scene.pack.ts', import.meta.url),

@@ -13,7 +13,8 @@
 // - charter P3 (explicit failure: grep gate fails-fast on drift)
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -28,89 +29,49 @@ function grepCount(pattern: string, file: string): number {
     .filter((line) => expression.test(line)).length;
 }
 
-function grepCountImportGltfErrorFromTypes(): number {
+function hasLegacyTypesImport(source: string): boolean {
+  return source.split(/\r?\n/).some((line) => {
+    let offset = 0;
+    return ['import', 'GltfError', 'from', '@forgeax/engine-types'].every((part) => {
+      const match = line.indexOf(part, offset);
+      if (match < 0) return false;
+      offset = match + part.length;
+      return true;
+    });
+  });
+}
+
+function grepCountImportGltfErrorFromTypes(root = REPO_ROOT): number {
+  let candidates: string;
   try {
-    // Search tracked source paths so coverage runs do not recursively walk
-    // generated or ignored trees on a busy CI runner. The migration contract
-    // is about repository source, which is exactly the tracked worktree set.
-    const out = execFileSync(
+    // Git owns the tracked-file boundary. A fixed-string prefilter avoids
+    // parsing irrelevant report lines. Ordered literal matching preserves the
+    // import.*GltfError.*from.*types predicate without regex backtracking.
+    candidates = execFileSync(
       'git',
       [
         'grep',
         '--no-color',
-        '-E',
+        '-F',
         '-l',
+        '-z',
         '-e',
-        'import.*GltfError.*from.*@forgeax/engine-types',
+        'GltfError',
         '--',
         'packages',
         'apps',
         ':(exclude)packages/gltf/src/__tests__/gltf-error-migration.test.ts',
       ],
-      { encoding: 'utf-8' },
+      { cwd: root, encoding: 'utf8' },
     );
-    return out.trim().split('\n').filter(Boolean).length;
   } catch (cause: unknown) {
     if ((cause as { status?: number }).status === 1) return 0;
-    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
-      try {
-        const out = execFileSync(
-          'rg',
-          [
-            '--files-with-matches',
-            '--glob',
-            '*.ts',
-            '--glob',
-            '!**/node_modules/**',
-            '--glob',
-            '!**/dist/**',
-            '--glob',
-            '!**/gltf-error-migration.test.ts',
-            '--regexp',
-            'import.*GltfError.*from.*@forgeax/engine-types',
-            resolve(REPO_ROOT, 'packages'),
-            resolve(REPO_ROOT, 'apps'),
-          ],
-          { encoding: 'utf-8' },
-        );
-        return out.trim().split('\n').filter(Boolean).length;
-      } catch (fallbackCause: unknown) {
-        if ((fallbackCause as { status?: number }).status === 1) return 0;
-        if ((fallbackCause as NodeJS.ErrnoException).code === 'ENOENT') {
-          try {
-            const out = execFileSync(
-              'grep',
-              [
-                '-R',
-                '-l',
-                '-E',
-                '--include=*.ts',
-                '--exclude-dir=node_modules',
-                '--exclude-dir=dist',
-                'import.*GltfError.*from.*@forgeax/engine-types',
-                resolve(REPO_ROOT, 'packages'),
-                resolve(REPO_ROOT, 'apps'),
-              ],
-              { encoding: 'utf-8' },
-            );
-            return out
-              .trim()
-              .split('\n')
-              .filter(
-                (file) =>
-                  file &&
-                  !file.endsWith('/packages/gltf/src/__tests__/gltf-error-migration.test.ts'),
-              ).length;
-          } catch (grepCause: unknown) {
-            if ((grepCause as { status?: number }).status === 1) return 0;
-            throw grepCause;
-          }
-        }
-        throw fallbackCause;
-      }
-    }
     throw cause;
   }
+  return candidates
+    .split('\0')
+    .filter((file) => file && hasLegacyTypesImport(readFileSync(resolve(root, file), 'utf8')))
+    .length;
 }
 
 describe('M1 GltfErrorCode migration grep gate (AC-28)', () => {
@@ -133,4 +94,56 @@ describe('M1 GltfErrorCode migration grep gate (AC-28)', () => {
     const count = grepCountImportGltfErrorFromTypes();
     expect(count).toBe(0);
   });
+});
+
+it('retains the tracked packages/apps boundary and exact per-file import predicate', () => {
+  const root = mkdtempSync(resolve(tmpdir(), 'forgeax-gltf-migration-gate-'));
+  try {
+    execFileSync('git', ['init', '--quiet'], { cwd: root });
+    mkdirSync(resolve(root, 'packages/probe'), { recursive: true });
+    mkdirSync(resolve(root, 'apps/probe'), { recursive: true });
+    // Large lines stay cheap whether the prefilter accepts or rejects them.
+    writeFileSync(resolve(root, 'packages/probe/report.json'), 'import '.repeat(1024 * 1024));
+    writeFileSync(
+      resolve(root, 'packages/probe/candidate.txt'),
+      `import ${'from '.repeat(1024 * 1024)}GltfError`,
+    );
+    writeFileSync(
+      resolve(root, 'packages/probe/a.ts'),
+      'import type { GltfError } from "@forgeax/engine-types";\n',
+    );
+    writeFileSync(
+      resolve(root, 'apps/probe/b.txt'),
+      'import { GltfErrorCode } from "@forgeax/engine-types";\n',
+    );
+    execFileSync('git', ['add', 'packages', 'apps'], { cwd: root });
+    writeFileSync(
+      resolve(root, 'packages/probe/untracked.ts'),
+      'import { GltfError } from "@forgeax/engine-types";\n',
+    );
+    expect(grepCountImportGltfErrorFromTypes(root)).toBe(2);
+    writeFileSync(
+      resolve(root, 'packages/probe/a.ts'),
+      'import type { GltfError } from "@forgeax/engine-gltf";\n',
+    );
+    expect(grepCountImportGltfErrorFromTypes(root)).toBe(1);
+    writeFileSync(resolve(root, 'apps/probe/b.txt'), 'GltfErrorCode is owned by gltf.\n');
+    expect(grepCountImportGltfErrorFromTypes(root)).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it('preserves the old import predicate without backtracking on report lines', () => {
+  const parts = ['import', 'GltfError', 'from', '@forgeax/engine-types'];
+  for (let a = 0; a < 4; a++)
+    for (let b = 0; b < 4; b++)
+      for (let c = 0; c < 4; c++)
+        for (let d = 0; d < 4; d++) {
+          const source = [parts[a], parts[b], parts[c], parts[d]].join(' x ');
+          expect(hasLegacyTypesImport(source)).toBe(
+            /import.*GltfError.*from.*@forgeax\/engine-types/.test(source),
+          );
+        }
+  expect(hasLegacyTypesImport('import GltfError\nfrom @forgeax/engine-types')).toBe(false);
 });

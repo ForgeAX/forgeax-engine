@@ -16,7 +16,9 @@ const waiting = new Promise((resolve) => {
 const sessionPath = join(root, '.forgeax/dev-session.json');
 let delayed = false;
 fs.writeFile = async (...args) => {
-  if (!delayed && args[0] === sessionPath) {
+  // Session publication is atomic (temporary file, then rename), so hold the
+  // first write that targets the session record or its temporary sibling.
+  if (!delayed && String(args[0]).startsWith(sessionPath)) {
     delayed = true;
     entered();
     await waiting;

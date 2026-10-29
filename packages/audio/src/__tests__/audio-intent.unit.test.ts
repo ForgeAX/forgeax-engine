@@ -12,6 +12,14 @@ const PLAY_OPTIONS = {
 };
 
 describe('AudioIntent producer', () => {
+  it('does not invent Host state without feedback', () => {
+    const backend = createAudioIntentBackend({ emit() {} });
+    expect(backend.getState()).toMatchObject({
+      contextState: 'unavailable',
+      activeSourceCount: null,
+    });
+    expect(backend.getActiveSourceCount()).toBeNull();
+  });
   it('publishes the admitted bus values independently of author objects', () => {
     const emit = vi.fn();
     const backend = createAudioIntentBackend({ emit });

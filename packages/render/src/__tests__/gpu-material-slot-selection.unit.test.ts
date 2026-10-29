@@ -39,3 +39,33 @@ it('selects shared slots by accepted Passes, including exclusion and medium rout
   expect(selectGpuMaterialSlots(next, forward, 'opaque')).toEqual(new Set([1]));
   expect(selectGpuMaterialSlots(slots, forward, 'opaque')).toEqual(new Set([0, 1]));
 });
+
+it('keeps invocation-local material facts when a mode read reenters selection', () => {
+  const forward = { LightMode: ['Forward'] };
+  const inner = [material(['ShadowCaster']), material(['Forward'])];
+  const current = material(['Forward']);
+  let nested = false,
+    reads = 0;
+  Object.defineProperty(current, 'transparent', {
+    get() {
+      reads++;
+      if (!nested) {
+        nested = true;
+        try {
+          expect(selectGpuMaterialSlots(inner, forward, 'opaque')).toEqual(new Set([1]));
+        } finally {
+          nested = false;
+        }
+      }
+      return false;
+    },
+  });
+  expect(
+    selectGpuMaterialSlots(
+      [material(['Forward']), current, material(['ShadowCaster'])],
+      forward,
+      'opaque',
+    ),
+  ).toEqual(new Set([0, 1]));
+  expect(reads).toBeGreaterThan(0);
+});

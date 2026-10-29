@@ -1,5 +1,5 @@
 import type { World as EcsWorld } from '@forgeax/engine-ecs';
-import { World } from '@forgeax/engine-ecs';
+import { FixedUpdate, World } from '@forgeax/engine-ecs';
 import {
   Collider,
   ColliderShapeValue,
@@ -9,7 +9,7 @@ import {
 } from '@forgeax/engine-physics';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it, vi } from 'vitest';
-import { registerPhysicsSystems } from '../physics-sync.js';
+import { PhysicsWriteback, registerPhysicsSystems } from '../physics-sync.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d';
 import { loadRapier3D } from '../wasm-loader';
 
@@ -70,6 +70,44 @@ function countTransformWrites(world: EcsWorld) {
 }
 
 describe('active-body physics writeback', () => {
+  it('compares native poses without decoding an entire Transform component', async () => {
+    const RAPIER = await loadOrSkip();
+    if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');
+    const world = prepareWorld();
+    const pw = createRapier3DPhysicsWorld(RAPIER);
+    world.insertResource('PhysicsWorld', pw);
+    registerPhysicsSystems(world);
+    const entity = spawnDynamic(world, [0, 50, 0], 1);
+    try {
+      tick(world);
+      let decodedTransforms = 0;
+      world.removeSystem(FixedUpdate, PhysicsWriteback.name).unwrap();
+      world
+        .addSystem(FixedUpdate, {
+          ...PhysicsWriteback,
+          fn: (world, ...args) => {
+            const get = vi.spyOn(world, 'get');
+            try {
+              return PhysicsWriteback.fn(world, ...args);
+            } finally {
+              decodedTransforms += get.mock.calls.filter((call) => call[1] === Transform).length;
+              get.mockRestore();
+            }
+          },
+        })
+        .unwrap();
+      tick(world, 5);
+      expect(decodedTransforms).toBe(0);
+      expect(transformPos(world, entity)[1]).toBeLessThan(50);
+      expect(pw.writebackDynamicBodies().find((row) => row.entity === entity)?.pos.y).toBeCloseTo(
+        transformPos(world, entity)[1] as number,
+        5,
+      );
+    } finally {
+      pw.dispose();
+    }
+  });
+
   it('writes back only awake dynamic bodies, independent of the sleeping population', async () => {
     const RAPIER = await loadOrSkip();
     if (!RAPIER) return;

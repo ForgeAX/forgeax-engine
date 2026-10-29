@@ -206,5 +206,5 @@ construction, query p95 below 50 ms, and 1000-agent full-World update p95 below 
 Set `FORGEAX_NAVIGATION_BENCH_OUTPUT` to an absolute JSON path in an existing
 output directory to retain independent runs. Receipts include resolved runtime
 module URLs and SHA256; the source hash alone does not identify rebuilt upstream
-owners such as ECS. See [validation evidence](VALIDATION.md) for observed budgets
+owners such as ECS. See validation evidence for observed budgets
 and the remaining full-delivery gates.

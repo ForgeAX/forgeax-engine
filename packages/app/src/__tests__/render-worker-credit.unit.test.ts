@@ -10,6 +10,7 @@ import {
 import { renderPublicationTiming } from '@forgeax/engine-render/internal';
 import { Transform } from '@forgeax/engine-scene';
 import { DEFAULT_UNLIT_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderSource } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
 import type {
   EngineToHostMessage,
@@ -226,6 +227,49 @@ it.each([
   }
 });
 
+it('cancels pending mesh preparation without faulting the World after confirmed Worker retirement', async () => {
+  const messages: EngineToHostMessage[] = [];
+  const f = await programTransportFixture((message) => messages.push(message));
+  try {
+    const pending = f.prepare().catch((unexpected) => ({ unexpected }));
+    await f.waitRequest(0);
+    f.worker.emit({
+      kind: 'failed',
+      stage: 'draw',
+      recoverable: true,
+      renderer: { state: 'device-lost' },
+      error: { code: 'device-operation-failed', expected: 'live device', hint: 'replace' },
+    });
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 })),
+    );
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: 'dynamic-geometry-gpu-not-ready' },
+    });
+    expect(f.source.dynamicGeometry.dynamicGeometryFault(f.world)).toBeUndefined();
+    await f.source.replace(2, f.canvas);
+    const replacement = CreditWorker.current;
+    const prepared = f.prepare();
+    await vi.waitFor(() =>
+      expect(replacement.controls.some((message) => message.kind === 'mesh-prepare')).toBe(true),
+    );
+    const request = replacement.controls.find((message) => message.kind === 'mesh-prepare');
+    if (request?.kind !== 'mesh-prepare') throw new Error('Missing replacement preparation');
+    replacement.emit({
+      kind: 'mesh-ready',
+      requestId: request.requestId,
+      identity: replacement.init?.identity,
+      result: { ok: true, deviceGeneration: 7 },
+    });
+    expect((await prepared).ok).toBe(true);
+    expect(f.source.dynamicGeometry.dynamicGeometryFault(f.world)).toBeUndefined();
+    expect(messages.some((message) => message.kind === 'fault')).toBe(false);
+  } finally {
+    await f.source.dispose();
+  }
+});
+
 it('sends first candidate programs until valid preparation ACK, then reuses publication program knowledge', async () => {
   const f = await programTransportFixture();
   try {
@@ -238,8 +282,15 @@ it('sends first candidate programs until valid preparation ACK, then reuses publ
     expect(b.input.pipelinePreparation?.programs).toEqual(programs);
     f.ready(a.requestId);
     expect((await first).ok).toBe(true);
+    const read = vi.spyOn(ShaderSource.prototype, 'read');
     const next = f.prepare();
-    const c = await f.waitRequest(2);
+    let c: Awaited<ReturnType<typeof f.waitRequest>>;
+    try {
+      c = await f.waitRequest(2);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
     expect(c.input.pipelinePreparation?.programs).toEqual([]);
     expect(f.worker.packets).toHaveLength(0);
     f.ready(b.requestId);
@@ -923,8 +974,10 @@ it('forwards the startup pipeline libraries only with the start that supplies th
     );
     try {
       await source.start(canvas, pipelineLibrary, backgroundPipelineLibrary);
-      expect(CreditWorker.current.init?.pipelineLibrary).toBe(pipelineLibrary);
-      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toBe(backgroundPipelineLibrary);
+      expect(CreditWorker.current.init?.pipelineLibrary).toEqual(pipelineLibrary);
+      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toEqual(
+        backgroundPipelineLibrary,
+      );
       const lost = CreditWorker.current;
       lost.emit({
         kind: 'failed',
@@ -936,8 +989,8 @@ it('forwards the startup pipeline libraries only with the start that supplies th
       const background = resupplied === undefined ? undefined : backgroundPipelineLibrary;
       await source.replace(2, canvas, resupplied, background);
       expect(CreditWorker.current).not.toBe(lost);
-      expect(CreditWorker.current.init?.pipelineLibrary).toBe(resupplied);
-      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toBe(background);
+      expect(CreditWorker.current.init?.pipelineLibrary).toEqual(resupplied);
+      expect(CreditWorker.current.init?.backgroundPipelineLibrary).toEqual(background);
     } finally {
       await source.dispose();
     }

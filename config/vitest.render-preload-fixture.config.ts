@@ -55,6 +55,7 @@ export default defineConfig({
         },
         test: {
           name: 'browser',
+          setupFiles: ['config/browser-work-guard.mjs'],
           include: ['packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts'],
           exclude: [
             '**/node_modules/**',

@@ -21,7 +21,7 @@ export function cameraLensProjection(
     | 'orthoBottom'
     | 'projectionOffset'
   >,
-  out: Mat4 = mat4.create(),
+  out: Mat4,
 ): Mat4 {
   if (camera.projection === 'orthographic') {
     mat4.orthographicReverseZ(
@@ -58,8 +58,16 @@ export function jitterCameraProjection(
     out.set(projection);
     return out;
   }
-  const shift = mat4.identity(mat4.create());
-  shift[12] = jitterUv[0] * 2;
-  shift[13] = jitterUv[1] * -2;
-  return mat4.multiply(out, shift, projection);
+  // Clip translation changes only x/y. Preserve the f32 shift used by the
+  // matrix path, and read each column before writing so out may alias input.
+  const x = Math.fround(jitterUv[0] * 2);
+  const y = Math.fround(jitterUv[1] * -2);
+  for (let column = 0; column < 16; column += 4) {
+    const w = projection[column + 3] ?? 0;
+    out[column] = (projection[column] ?? 0) + x * w;
+    out[column + 1] = (projection[column + 1] ?? 0) + y * w;
+    out[column + 2] = projection[column + 2] ?? 0;
+    out[column + 3] = w;
+  }
+  return out;
 }

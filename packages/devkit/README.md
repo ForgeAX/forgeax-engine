@@ -6,6 +6,17 @@ Fiber through the existing workspace provider and browser command transport.
 exact preview ownership; reads do not enter the ordered mutation queue. Source
 generation only composes the owner, never implements geometry or rotation math.
 Transparent thumbnails retain their canonical sphere and existing cache policy.
+## Source-scoped diagnostics and platform HTML
+
+`forgeax asset import` derives single-output image and audio formats from each importer. HDR declares an Equirect identity; LUT/container images and buffered audio use their producer-owned topology and defaults. Repeating the command preserves authored GUIDs and settings. Successful registration is not a cook or native decode receipt.
+
+Source authoring gateways scan `forge.json#assetRoots`. Unrelated staging is outside that inventory; malformed active declarations and global identity collisions still reject mutations. Error envelopes preserve owner codes and schema fields through Pack and the bundler. Source operations advertise writes and only require revision CAS where the owner enforces it.
+
+`forgeax asset shader check --path assets/example.wgsl --json` compiles that source and its imported module closure, reports its digest and dependency paths, and does not build game code. Omit `--path` for the whole project build check. A raw Surface requiring generated material parameters still needs its material cook; a named-source success is not material or GPU acceptance.
+
+For browser/Tauri platform integrations, author an HTML head fragment and pass `forgeax project build --html-head platform-head.html --json`. Use inline content or absolute platform URLs; local relative files resolve from the generated host, not the fragment. DevKit includes it before Vite emits and `forgeax-dist.json` seals the output. Do not inject scripts into a sealed `dist/index.html`. Integration tools must forward this build input; Engine does not rewrite their post-build hooks. WeChat has no HTML carrier and rejects this option.
+
+Doctor validates the installed dependency closure, package-manager evidence and Engine binding without traversing mutable project output. Starting a run still captures and rechecks the complete project input tree.
 
 ## Pack authoring sessions
 
@@ -44,6 +55,12 @@ If a bound preview's first draft open rejects a legacy TS declaration, its next
 source event retries declaration parsing. A repaired literal declaration opens
 the draft and publishes its fields to the existing preview without generation
 or page replacement. Still-unsupported source retains ordinary hot reload.
+
+Engine capability admission compares canonical real paths and ignores Vite
+`v` cache parameters. Actual resolved and served URLs retain those versions
+so Vite preserves native module identity across Worker/bootstrap imports. Other
+query parameters and different resolved files remain distinct; conflicting
+Engine capabilities still fail instead of silently replacing a module.
 
 ## CLI producer lifetime
 
@@ -406,6 +423,11 @@ relative paths resolve against the project. `--checkpoint` waits for an exact
 game-provided ready marker; it is not an image label and is unnecessary for
 ordinary screenshots. The frame number confirms a submission before capture,
 not the exact frame represented by the PNG.
+Realm-owned observation failures retain their `code`, `expected`, `hint` and
+`detail` through the live bridge and capture camera check. Read those fields
+before changing lifecycle state; a ready status does not turn a failed observation
+into an accepted image. Ordinary capture can preserve a loading or flat image;
+use `dev verify` for strict runtime acceptance.
 
 `dev verify --revision <revision> --json` is the runtime verification gate over
 that same owner. `engine.run.verify` exposes it through the ordinary ToolApi.
@@ -533,6 +555,8 @@ the project root, public URL base, and dedicated output directory; DevKit owns
 the generated host, asset cooking, shader compilation, Pack index, and
 `forgeax-dist.json` closure.
 
+### WeChat mini-game
+
 `forgeax project build --target wechat --appid wx…` selects the native WeChat
 Host while retaining the same `forge.json` engine/frontend roots, producer
 inventory, cooked assets and shader variants. The output opens directly as a
@@ -552,6 +576,17 @@ class fields. This setting makes no claim about the device's browser version.
 The generated common project config disables `es6`, `enhance` and `minified`:
 Vite owns syntax lowering and minification, including native glue. Official
 compilation and real native startup remain separate admission checks.
+
+The WeChat Host defaults the scene's shorter render axis to at most 720 pixels,
+preserving aspect ratio and never enlarging a smaller native viewport. Canvas,
+screen UI and input stay native. This is a fixed target quality profile, not
+frame-time-driven resolution adjustment. The build-plugin option
+`wechat: { maxRenderShortSide: 0 }` selects native scene resolution; another
+unsigned pixel value selects a different fixed budget. DevKit forwards this to
+`RendererOptions.maxRenderShortSide`; it does not rewrite scene Packs or camera
+components. Browser/desktop Hosts do not consume the WeChat option. Authored
+CameraViews keep the stricter positive cap and explicit RenderTargets keep their
+descriptor dimensions. See the [Renderer resolution contract](../render/README.md#multi-camera-viewports-and-composition).
 The same Vite package resolution selects native glue, WASM and provenance, so
 `project engine use-local` keeps each native publication together even when the
 consumer still has an older SDK installed.
@@ -1171,7 +1206,7 @@ native compiler is needed for this Browser capture route.
 The command starts the source-development host on an ephemeral loopback port, creates an Xvfb display
 for a headed capture when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
 and non-flat **canvas** pixels, then takes a Playwright **page screenshot**.
-Explicit `--headless true` bypasses Xvfb/X11 entirely. See [Linux unattended validation](../../skills/forgeax-engine-cli/references/linux-unattended.md) for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
+Explicit `--headless true` bypasses Xvfb/X11 entirely. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
 composites the WebGPU canvas with normal DOM and open ShadowRoot UI;
 `canvas.toDataURL()` cannot provide that proof. `--wait-ms` is an additional settle interval after the
 first non-flat canvas frame, not a guess for CPU startup time.
@@ -1862,7 +1897,7 @@ and resolution checks remain the publication authority.
 An absent asset root is empty; an unreadable member of an existing asset root
 fails live input reconciliation and must be repaired before observations resume.
 
-The [input-boundary measurement report](docs/plugin-input-boundary-performance.md)
+The input-boundary measurement report
 includes fixed-workload before/after samples, correctness gates and remaining
 browser and memory qualification limits.
 
@@ -2535,7 +2570,13 @@ Backend stop retains its 15-second process-retirement bound. A timed-out stop
 names the existing backend log; daemon diagnostics trace native disposal, and
 the SDK View consumer preserves that log and observed status. A surviving
 claim is a failed stop even if an independent game remains healthy.
-On Windows, package operations reuse the owning pnpm entry and native executables run directly, preserving argument bytes without requiring another PATH shim. Vite capability identities canonicalize physical module paths before comparison; portable program chunk names exclude filesystem path text, and their imports stay relative within the archive. Native concurrent publication accepts an existing identical program only after validating its complete module contents.
+On Windows, package operations reuse the owning pnpm entry and native executables run directly, preserving argument bytes without requiring another PATH shim. Portable program chunk names exclude filesystem path text, and their imports stay relative within the archive. Native concurrent publication accepts an existing identical program only after validating its complete module contents.
+
+Development Engine capability resolution ignores Vite's `v` cache parameter when
+checking identity, then reuses the first selected delivery URL for that capability.
+Physical package copies and other query parameters remain distinct. Runtime import
+tables use Vite's root-relative URL for project-local modules and `/@fs/` for admitted
+external modules, so static and Pack imports share native module tokens.
 
 ## Operation naming and live discovery
 
@@ -2567,6 +2608,11 @@ The command uses the existing revision-fenced live inspection channel and writes
 recipes plus an adjacent `.receipt.json` containing source revision, digest, size, frame
 and compilation counters. Missing coverage and failed exports are explicit. Export
 outside a performance timing window because shader text serialization is diagnostic work.
+`dev pipelines export --limits '{"outputBytes":536870912,"temporaryBytes":4294967296,"entries":65536}'`
+changes only that action's finite policy; the receipt records the actual Renderer
+policy. Failure publishes no partial graph and may be retried. Export describes the
+retained live graph; whole-route collection must hold its dependencies throughout
+the route. A final device cache snapshot is not historical coverage.
 
 Read that JSON in the project's build-root plugin and provide it as
 `devkitAppOptions.pipelineLibrary`. The generated host emits a separate URL asset, loads

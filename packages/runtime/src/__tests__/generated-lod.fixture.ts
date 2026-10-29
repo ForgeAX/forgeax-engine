@@ -24,6 +24,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -192,7 +193,7 @@ export async function verifyGeneratedLods(
         pictures.push(pixels);
         await save(`lod${level}.rgba16f`, image.bytes);
         const encoded = renderValue(await pending);
-        await save(`lod${level}.rhitape`, encoded.bytes);
+        await save(`lod${level}.rhitape`, compactTape(encoded).bytes);
         const tape = renderValue(decodeTape(encoded.bytes));
         const model = buildFrameModel(tape);
         const geometry = model.works.filter((work) => work.indexBuffer !== null);

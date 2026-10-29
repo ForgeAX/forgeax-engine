@@ -83,3 +83,66 @@ it('retains exactly equal draw layout across new plans but rejects same-count me
     false,
   );
 });
+
+it('publishes independent owned maps while preserving ordered values', () => {
+  const a = {},
+    b = {};
+  const first = publishReadonlyMap(
+    new Map([
+      [1, a],
+      [2, b],
+    ]),
+  );
+  expect(
+    publishReadonlyMap(
+      new Map([
+        [1, a],
+        [2, b],
+      ]),
+    ),
+  ).not.toBe(first);
+  const reordered = publishReadonlyMap(
+    new Map([
+      [2, b],
+      [1, a],
+    ]),
+  );
+  expect(reordered).not.toBe(first);
+  expect([...reordered.keys()]).toEqual([2, 1]);
+  const changed = publishReadonlyMap(
+    new Map([
+      [1, b],
+      [2, b],
+    ]),
+  );
+  expect(changed).not.toBe(first);
+  expect(first.get(1)).toBe(a);
+  const borrowed = new Map([
+    [1, a],
+    [2, b],
+  ]);
+  const wrapped = publishReadonlyMap(new Map(borrowed));
+  expect(wrapped).not.toBe(borrowed);
+  expect(Reflect.get(wrapped, 'set')).toBeUndefined();
+});
+
+it('distinguishes missing keys from undefined values and preserves detached readers', () => {
+  const first = publishReadonlyMap(new Map([[1, undefined]]));
+  const changed = publishReadonlyMap(new Map([[2, undefined]]));
+  expect(changed).not.toBe(first);
+  const { get, has, keys, entries } = first;
+  expect(get(1)).toBeUndefined();
+  expect(has(1)).toBe(true);
+  expect(has(2)).toBe(false);
+  expect([...keys()]).toEqual([1]);
+  expect([...entries()]).toEqual([[1, undefined]]);
+  const nan = publishReadonlyMap(new Map([[1, Number.NaN]]));
+  const repeated = publishReadonlyMap(new Map([[1, Number.NaN]]));
+  expect(repeated).not.toBe(nan);
+  expect(Number.isNaN(repeated.get(1))).toBe(true);
+  expect(Number.isNaN(nan.get(1))).toBe(true);
+  const positive = publishReadonlyMap(new Map([[1, 0]]));
+  const negative = publishReadonlyMap(new Map([[1, -0]]));
+  expect(Object.is(negative.get(1), -0)).toBe(true);
+  expect(Object.is(positive.get(1), 0)).toBe(true);
+});

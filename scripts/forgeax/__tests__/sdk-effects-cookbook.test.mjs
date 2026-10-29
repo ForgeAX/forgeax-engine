@@ -16,7 +16,10 @@ import { expect, test } from 'vitest';
 
 const root = resolve(import.meta.dirname, '../../..');
 const template = join(root, 'templates/empty');
-const references = join(root, 'skills/forgeax-engine-sdk/references');
+const documentationRoot = resolve(
+  process.env.FORGEAX_ENGINE_DOCS_ROOT ?? join(root, '.forgeax-harness/docs/engine'),
+);
+const references = join(documentationRoot, 'skills/forgeax-engine-sdk/references');
 const topicDir = join(references, 'effects');
 const topicFiles = readdirSync(topicDir)
   .filter((name) => name.endsWith('.md'))

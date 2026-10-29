@@ -9,6 +9,7 @@ import {
   RhiError,
   type RhiQueue,
   type RhiRenderPassEncoder,
+  type TextureView,
 } from '@forgeax/engine-rhi';
 import {
   type MaterialShaderArtifact,
@@ -31,7 +32,6 @@ import { sameMaterialArtifact } from '../gpu-driven/production-raster-prepare';
 import {
   type ShadowDirtyRect,
   type ShadowViewIdentity,
-  type ShadowViewInspection,
   shadowViewIdentityKey,
 } from '../gpu-driven/shadow-views';
 import type { GpuDrivenView } from '../gpu-driven/view-gpu';
@@ -173,7 +173,6 @@ function ensureTypedShadowViewBg(
   const ltcLambertTextureView = pipelineState.ltcLambertTextureView;
   const ltcGgxTextureView = pipelineState.ltcGgxTextureView;
   const extendedLightingCacheKeys: object[] = [];
-  const extendedLightingEntries: BindGroupEntry[] = [];
   if (extendedLighting) {
     if (
       iesProfileTextureView === undefined ||
@@ -191,36 +190,6 @@ function ensureTypedShadowViewBg(
       ltcLambertTextureView,
       ltcGgxTextureView,
       cookieMatrixBuffer,
-    );
-    extendedLightingEntries.push(
-      { binding: 24, resource: { kind: 'textureView', value: cookieTextureView } },
-      {
-        binding: 9,
-        resource: { kind: 'sampler', value: pipelineState.defaultSampler },
-      },
-      {
-        binding: 11,
-        resource: { kind: 'textureView', value: iesProfileTextureView },
-      },
-      {
-        binding: 12,
-        resource: { kind: 'textureView', value: cookieTextureView },
-      },
-      {
-        binding: 13,
-        resource: { kind: 'textureView', value: ltcLambertTextureView },
-      },
-      {
-        binding: 14,
-        resource: { kind: 'textureView', value: ltcGgxTextureView },
-      },
-      {
-        binding: 15,
-        resource: {
-          kind: 'buffer',
-          value: { buffer: cookieMatrixBuffer, size: COOKIE_MATRIX_BYTES },
-        },
-      },
     );
   }
   const projectorAvailable = pipelineState.projectorAvailable !== false;
@@ -248,6 +217,44 @@ function ensureTypedShadowViewBg(
       ],
       variant,
       () => {
+        // These entries are only consumed on an actual cache miss. The fixed
+        // resources above have already passed extended-lighting admission.
+        const extendedLightingEntries: BindGroupEntry[] = [];
+        if (extendedLighting) {
+          extendedLightingEntries.push(
+            {
+              binding: 24,
+              resource: { kind: 'textureView', value: cookieTextureView as TextureView },
+            },
+            {
+              binding: 9,
+              resource: { kind: 'sampler', value: pipelineState.defaultSampler },
+            },
+            {
+              binding: 11,
+              resource: { kind: 'textureView', value: iesProfileTextureView as TextureView },
+            },
+            {
+              binding: 12,
+              resource: { kind: 'textureView', value: cookieTextureView as TextureView },
+            },
+            {
+              binding: 13,
+              resource: { kind: 'textureView', value: ltcLambertTextureView as TextureView },
+            },
+            {
+              binding: 14,
+              resource: { kind: 'textureView', value: ltcGgxTextureView as TextureView },
+            },
+            {
+              binding: 15,
+              resource: {
+                kind: 'buffer',
+                value: { buffer: cookieMatrixBuffer as Buffer, size: COOKIE_MATRIX_BYTES },
+              },
+            },
+          );
+        }
         const created = runtime.device.createBindGroup({
           label: variant,
           layout: pipelineState.viewBindGroupLayout,
@@ -2013,7 +2020,7 @@ function sameShadowPipelineRequest(
 /** Prepare retained visible GPU batches, sharing equal successful requests across views. */
 function prepareGpuDrivenShadowViewPipelines(
   c: _InternalRenderPipelineContext,
-  views: readonly ShadowViewInspection[],
+  views: readonly ShadowViewIdentity[],
   rendererRecording: boolean,
   requiredView?: (
     frame: import('../render-pipeline').RenderPipelineFrame,
@@ -2031,15 +2038,13 @@ function prepareGpuDrivenShadowViewPipelines(
   for (const view of c.runtime.prepareMaterialShaderPipeline === undefined ? [] : views) {
     // The same compiled graph proves retained depth will bypass this raster.
     // Explicit hidden preparation below remains independent of view reuse.
-    if (rendererRecording && requiredView?.(c, view.identity) === false) continue;
-    const projections = c.gpuDrivenShadowBatchProjections?.get(
-      shadowViewIdentityKey(view.identity),
-    );
-    const submission = c.gpuDrivenShadowViews?.submission(view.identity);
+    if (rendererRecording && requiredView?.(c, view) === false) continue;
+    const projections = c.gpuDrivenShadowBatchProjections?.get(shadowViewIdentityKey(view));
+    const submission = c.gpuDrivenShadowViews?.submission(view);
     for (const batch of submission?.plan.batches ?? []) {
       const projection = projections?.get(batch.batchId);
       if (projection === undefined) continue;
-      const reflected = view.identity.kind === 'point';
+      const reflected = view.kind === 'point';
       if (
         sameShadowPipelineRequest(
           preparedBatches?.get(batch.batchId),
@@ -2092,13 +2097,13 @@ export function prepareShadowMaterialPipelines(
   let preparedHiddenDraws: Map<ValidatedRenderable, Set<number>> | undefined;
   // Only actual declared shadow view kinds participate. Hidden rows stay outside
   // the scene/culling lists, but their accepted receipt owns the future native PSO.
-  const views = c.gpuDrivenShadowViews?.inspect() ?? [];
+  const views = c.gpuDrivenShadowViews?.activeIdentities() ?? [];
   // The light projection roster exists before the first visible GPU batch.
   // Hidden candidates must consume these exact planned views as well: using
   // only submitted GPU views would miss a new caster's first shadow PSO.
   const reflections =
     c.shadowViewPlanesByView === undefined
-      ? new Set(views.map((view) => view.identity.kind === 'point'))
+      ? new Set(views.map((view) => view.kind === 'point'))
       : new Set([...c.shadowViewPlanesByView.keys()].map((key) => key.startsWith('point:')));
   prepareGpuDrivenShadowViewPipelines(c, views, rendererRecording, requiredView);
   if (

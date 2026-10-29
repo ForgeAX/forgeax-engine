@@ -25,7 +25,6 @@
   "files": [
     "dist",
     "README.md",
-    "RELEASING.md",
     "LICENSE"
   ],
   "scripts": {

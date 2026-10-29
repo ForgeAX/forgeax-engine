@@ -2026,7 +2026,7 @@ export class GpuDrivenView {
       skinJointCapacity > this.skinJointCapacity;
     const suppressionWords = Math.max(
       1,
-      Math.ceil(scene.inspect().capacity / 32),
+      Math.ceil(scene.rowCapacity / 32),
       suppressedPrimitives?.length ?? 0,
     );
     const structureGrows =
@@ -2335,7 +2335,7 @@ export class GpuDrivenView {
     this.sceneMaterial = scene.materialBuffer;
     this.sceneMaterialBytes = scene.materialByteLength;
     this.sceneRef = scene;
-    this.sceneCapacity = scene.inspect().capacity;
+    this.sceneCapacity = scene.rowCapacity;
     this.sceneTransformBytes = scene.transformByteLength;
   }
 

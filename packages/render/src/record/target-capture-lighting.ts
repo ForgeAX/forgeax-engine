@@ -12,7 +12,6 @@ import { resetSsaoResources } from '../ssao-buffers';
 import { renderLightsFor, type ViewLights } from '../world/render-lights';
 import { prepareFrameLighting, writeHdrpClusterAndSsaoBuffers } from './frame-lighting';
 import type { RenderFrameState } from './frame-snapshot';
-import { computeViewMatrix } from './helpers';
 import { createPointsLinesViewBuffer } from './points-lines-view-buffer';
 import type { PipelineState, RenderSystemInternals } from './render-context';
 import type { CubeCaptureGraphState } from './target-capture-graph';
@@ -178,24 +177,11 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
     camera: work.faceCamera,
   });
   const cascades = captureLights.cascades;
-  const matrices = new Float32Array(64);
-  for (let i = 0; i < 4; i++) {
-    const matrix = cascades?.lightViewProj?.[i];
-    if (matrix !== undefined) matrices.set(matrix, i * 16);
-  }
   const capturePipeline = {
     ...pipeline,
     perPassResources: {
       ...pipeline.perPassResources,
       shadowCascadeCount: cascades?.cascadeCount ?? 0,
-      shadowCsmLightViewProj: cascades?.lightViewProj === undefined ? null : matrices,
-      shadowCsmSelection:
-        cascades === undefined
-          ? null
-          : {
-              viewMatrix: new Float32Array(computeViewMatrix(work.faceCamera)),
-              splitPlanes: new Float32Array(cascades.splitPlanes),
-            },
     },
     viewUniformBuffer: view.viewBuffer,
     get pointsLinesViewBuffer() {

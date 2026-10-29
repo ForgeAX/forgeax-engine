@@ -6,6 +6,7 @@ fixes the resolved headless dependency graph. Upstream licenses remain unchanged
 
 | Repair | Regression |
 | --- | --- |
+| Horizontal text-entry inputs expose their content clip on the inline client axis, retain block padding, and share editor offsets across CSSOM, caret reveal and painting. Textareas and ordinary scrollers retain their client boxes | Engine input client/scroll regressions, programmatic editor scrolling, and unchanged guide keyboard journey against Chrome 157; CSSWG [13502](https://github.com/w3c/csswg-drafts/issues/13502) |
 | Native checkbox ticks, full-size radio rings and 8px range tracks follow measured Chromium geometry and colors; range painting retains the shared 16px layout/hit geometry | Engine native control pixel regressions and unchanged profile Chromium/CPU/WebGPU differential with captured-frame replay |
 | Native single-select intrinsic height uses the normal font strut independently of authored line-height; explicit height still wins | Engine native line-height matrix and same-font Chromium control geometry |
 | Cyclic percentage widths contribute against zero during form-control min-content measurement; auto controls retain their cols/size intrinsic widths | Engine input/textarea Grid regression and unchanged profile equal-column Chromium comparison |

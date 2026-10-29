@@ -26,6 +26,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -221,7 +222,7 @@ export async function verifyAdvancedModeling(
       const receipt = await draw();
       (await recorder.frameBoundary()).unwrap();
       const captured = (await pending).unwrap();
-      await save(`${item.name}.rhitape`, captured.bytes);
+      await save(`${item.name}.rhitape`, compactTape(captured).bytes);
       const observed = renderValue(
         await renderer.observe(receipt, { include: ['linear-hdr'] }),
       ).observations?.find((v) => v.domain === 'linear-hdr');
@@ -314,14 +315,17 @@ export async function verifyAdvancedModeling(
       }
       if (item.name === 'solid-control') expect(luminance - holeCenter).toBeGreaterThan(0.1);
       // A separately encoded missing-draw tape must lose the visible geometry.
-      const missing = encodeTape({
-        ...tape,
-        events: tape.events.map((event, i) =>
-          i === geometry.eventIndex && event.kind === 'drawIndexed'
-            ? { ...event, indexCount: 0 }
-            : event,
-        ),
-      }).unwrap();
+      const missing = encodeTape(
+        {
+          ...tape,
+          events: tape.events.map((event, i) =>
+            i === geometry.eventIndex && event.kind === 'drawIndexed'
+              ? { ...event, indexCount: 0 }
+              : event,
+          ),
+        },
+        { compression: 'gzip' },
+      ).unwrap();
       const bad = (
         await openReplay(decodeTape(missing).unwrap(), {
           device,

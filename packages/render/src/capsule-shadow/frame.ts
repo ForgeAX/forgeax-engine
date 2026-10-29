@@ -126,9 +126,9 @@ export function buildCapsuleShadowFrame(
   const tilesX = Math.ceil(width / CAPSULE_TILE_SIZE);
   const tilesY = Math.ceil(height / CAPSULE_TILE_SIZE);
   const tileTotal = tilesX * tilesY;
-  const projection = computeProjectionMatrix(camera);
+  const projection = computeProjectionMatrix(camera, mat4.create());
   const viewProjection = mat4.create();
-  mat4.multiply(viewProjection, projection, computeViewMatrix(camera));
+  mat4.multiply(viewProjection, projection, computeViewMatrix(camera, mat4.create()));
   const rects = new Int32Array(kept * 4);
   const counts = new Uint16Array(tileTotal);
   const spread = Math.tan(coneHalfAngle);

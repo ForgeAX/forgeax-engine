@@ -6,6 +6,7 @@ describe('backend selection', () => {
   it('uses an explicitly injected backend without probing global state', async () => {
     const result = await loadBackendPack({ rhi });
     expect(result.ok).toBe(true);
+    expect(result.kind).toBe('injected');
     if (result.ok) expect(result.value.rhi).toBe(rhi);
   });
 

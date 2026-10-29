@@ -17,6 +17,9 @@ reset policy and consumes ordinary camera transactions for pan/dolly.
 
 The consuming View plugin and accepted browser/native evidence are documented
 in the paired material preview design.
+## Audio observation contract
+
+Execution report schema version 4 admits unavailable Host audio observation (`contextState: 'unavailable'`, `activeSourceCount: null`). Running/suspended/closed observations carry a non-negative count. Worker frame feedback carries the complete serialized Host audio snapshot, replacing separate preparation/music mirrors. The Worker reconstructs structured AudioError fields; its observations refer to the last admitted frame. Report consumers must select schema version 4 rather than treating unknown state as silence.
 
 ## Optional Pack author preview capabilities
 
@@ -611,8 +614,8 @@ execution: { bootstrap, workers: { engine: false } }
 > placement, and move renderer setup into `configureRenderer`.
 
 Measured responsiveness, baseline costs and recovery evidence are documented in
-[Render Worker validation](render-worker-validation.md). The
-[Laya source comparison](render-worker-comparison.md) distinguishes native command
+Render Worker validation. The
+Laya source comparison distinguishes native command
 consumption from the browser GPU receipt boundary.
 
 An enabled Render Worker keeps World, asset loading, gameplay, input consumption, and audio
@@ -1620,7 +1623,16 @@ complete WeChat project/RHI/UI/Worker target is qualified. See
 
 ## Renderer inspection through public App eval
 
-A startup `pipelineLibrary` remains owned by the Host and the active Renderer.
+`inspectRenderer({pipelineLibraryCollection:true})` starts an explicit route retention
+scope on the current Renderer generation; `false` releases it. Inspection reports
+`pipelineLibraryCollecting`. A device change or disposal ends the scope, so collectors
+must verify that it is still active before declaring a full current-device route.
+The option is diagnostic and is not enabled during ordinary play.
+
+Startup/background libraries retain compact realm-local source owners; transport
+borrows the portable full-text representation and each receiving realm owns its
+fragments. No cross-Worker string sharing is assumed. A startup `pipelineLibrary`
+remains owned by the Host and the active Renderer.
 With a Render Worker, the Engine Worker forwards it during initialization and
 retains only the remaining startup facts. The Host resupplies the library for
 Renderer replacement and World rebuild, so releasing the Engine Worker's copy
@@ -1628,7 +1640,13 @@ does not remove recovery input. A failed or disposed child startup releases its
 one-shot forwarding field as well.
 
 `app.remoteEval` executes in the selected Engine realm. Its `execution` root
-exposes `inspectRenderer({ signal?, fields?, pipelineLibrary?, runtimeRequests? })` (type `ExecutionRendererInspectionContext`):
+exposes `inspectRenderer({ signal?, fields?, pipelineLibrary?, pipelineLibraryLimits?, runtimeRequests? })` (type `ExecutionRendererInspectionContext`):
+
+`pipelineLibraryLimits` travels through the existing inspection request to the
+single export action, including independent Render Workers. Its failure retains the
+structured cause and does not change ordinary drawing or device recovery. A complete
+export includes `pipelineLibraryPolicy` so a consumer can declare a matching finite
+input policy.
 
 `runtimeRequests:true` selects cached bounded demand history and omits the legacy
 full pending recipe list, avoiding uncached Shader hashing in this incident read.
@@ -1659,6 +1677,12 @@ Local frontend consumers use the actual `app.renderer.inspect()` directly.
 Inspection is neither a hardware-completion nor a pixel/presentation proof.
 
 ## Capture completion and issued receipts
+
+Ordinary Render Worker frames await their existing receipt observation promise.
+Timing or snapshot observations join that barrier when enabled. Retirement may
+drain only the current physical completion after the prior FIFO prefix has
+already completed successfully; early observation/prefix failures still drain
+both promises before closing video frames or retiring the receipt.
 
 `rhiCapture.captureFrame()` artifacts include `submittedFrame`. The App awaits the issued receipt completion for the recorded generation before publishing a capture. Missing submissions or retired generations remain unavailable; a prior `lastReceipt` never certifies a new capture.
 

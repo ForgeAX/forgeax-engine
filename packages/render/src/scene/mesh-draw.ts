@@ -54,29 +54,23 @@ export function meshDrawSnapshot(
     return cached;
   }
   const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
-  const result: RenderableSnapshot = {
-    ...current,
-    ...materials,
-    ...(source.gpuDrivenDraws !== undefined
-      ? {
-          gpuDrivenDraws: meshGeometryDraws(
-            mesh,
-            materials.materials,
-            source.skinBinding === undefined ? 'rigid' : 'skin',
-          ),
-        }
-      : {}),
-    // Morphed rows keep their weight-expanded producer bounds.
-    ...(source.morph !== undefined
-      ? source.localAabb === undefined
-        ? {}
-        : { localAabb: source.localAabb }
-      : mesh.bounds === undefined
-        ? {}
-        : { localAabb: mesh.bounds }),
-    ...(mesh.lods === undefined ? {} : { lods: mesh.lods }),
-    ...(mesh.lodHysteresis === undefined ? {} : { lodHysteresis: mesh.lodHysteresis }),
-  };
+  // The rest object is fresh and unescaped; publish it after projecting shared geometry.
+  // Borrowed getter inputs can select the source itself, preserving their second spread/read.
+  const result: { -readonly [Key in keyof RenderableSnapshot]: RenderableSnapshot[Key] } =
+    materials === source ? { ...current, ...materials } : Object.assign(current, materials);
+  if (source.gpuDrivenDraws !== undefined) {
+    result.gpuDrivenDraws = meshGeometryDraws(
+      mesh,
+      materials.materials,
+      source.skinBinding === undefined ? 'rigid' : 'skin',
+    );
+  }
+  // Morphed rows keep their weight-expanded producer bounds.
+  if (source.morph !== undefined) {
+    if (source.localAabb !== undefined) result.localAabb = source.localAabb;
+  } else if (mesh.bounds !== undefined) result.localAabb = mesh.bounds;
+  if (mesh.lods !== undefined) result.lods = mesh.lods;
+  if (mesh.lodHysteresis !== undefined) result.lodHysteresis = mesh.lodHysteresis;
   instances.set(source, result);
   return result;
 }

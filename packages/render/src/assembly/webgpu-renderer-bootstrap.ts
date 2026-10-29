@@ -20,7 +20,7 @@ type WebGPURendererFactory = (
 ) => Promise<RendererAssemblyImplementation>;
 
 /** Acquire the selected backend and build one renderer generation. */
-export async function tryCreateWebGPURenderer(
+export async function tryCreateRendererFromBackend(
   canvas: RhiCanvasTarget,
   options: RendererOptions | undefined,
   pack: RhiBackendPack,

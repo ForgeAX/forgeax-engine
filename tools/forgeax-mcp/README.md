@@ -16,13 +16,16 @@ fall back to private Broker access.
 
 ## Dependency floors
 
-The workspace's npm/Bun and pnpm overrides require Zod 4.6.7, body-parser 2.4.0
-and fast-uri 3.1.9 within their existing major versions. The SDK's Express
+The workspace's npm/Bun and pnpm overrides require Zod 4.6.7, body-parser 2.4.0,
+qs 6.16.1 and fast-uri 3.1.9 within their existing major versions. The SDK's Express
 dependency accepts the patched body-parser minor; its older locked copy can
 crash on trailing compressed request bytes
 ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)).
 The SDK's Ajv resolver also accepts the patched fast-uri version, which preserves
 scheme, host and relative-reference identity during normalization.
+Express also accepts qs 6.16.1, which fixes comma-array serialization throwing
+on elements with a non-callable own `toString`
+([GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw)).
 Regenerate both workspace lockfiles when changing these policies. Keep normal
 compressed request handling enabled.
 
@@ -142,6 +145,11 @@ node --test tools/forgeax-mcp/__tests__/app/*.test.mjs
 node tools/forgeax-mcp/test/local-plugin.mjs
 node tools/forgeax-mcp/test/app-browser.mjs "$ENGINE/templates/game-3d" /absolute/path/to/evidence
 ```
+
+The restart probe checks its HTTP result before awaiting a replacement URL,
+within the existing 60-second bound. Failed CLI records retain the command,
+elapsed time, exit code/signal and redacted stderr. A control failure must not
+be hidden by parsing an HTTP error body as JSON or by a later URL timeout.
 
 The browser gate creates its own disposable game-3d copy and backend, exercises the installed stdio package, nested SDK bridges, real Scene and repeated Play rendering (at least 60 completed frames each), Stop during preparation, theme, guide HTML preview and teardown. Its carrier enforces `frame-src 'none'` to reject URL navigation while admitting isolated srcdoc delivery. Its reference-host image is separate from native Codex evidence. It never stops another project's backend.
 

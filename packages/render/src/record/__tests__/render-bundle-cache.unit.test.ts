@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   RenderBundleCache,
   type RenderBundleCounters,
+  retireSceneRenderBundleCache,
   type SceneRenderBundleState,
   sceneRenderBundleCache,
 } from '../render-bundle-cache';
@@ -1028,6 +1029,23 @@ describe('view-owned scene command retention', () => {
     state.frameNumber = 2;
     sceneRenderBundleCache(state, 'main', descriptor);
     expect(state.renderBundleCaches?.passes.has('removed')).toBe(false);
+  });
+
+  it('retires CPU commands during GPU-only frames and admits fresh CPU work later', () => {
+    const state: SceneRenderBundleState = { frameNumber: 0 };
+    const descriptor = { colorFormats: [] };
+    retireSceneRenderBundleCache(state, 'main');
+    expect(state.renderBundleCaches).toBeUndefined();
+    const old = sceneRenderBundleCache(state, 'main', descriptor);
+    sceneRenderBundleCache(state, 'removed', descriptor);
+    state.frameNumber = 1;
+    retireSceneRenderBundleCache(state, 'main');
+    state.frameNumber = 2;
+    retireSceneRenderBundleCache(state, 'main');
+    expect(state.renderBundleCaches?.passes.size).toBe(0);
+    const current = sceneRenderBundleCache(state, 'main', descriptor);
+    expect(current).not.toBe(old);
+    expect(sceneRenderBundleCache(state, 'main', descriptor)).toBe(current);
   });
 
   it('compares iterable color attachments and retains a consumed replacement descriptor', () => {

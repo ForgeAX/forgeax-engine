@@ -128,6 +128,7 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'renderPipelineCapacity',
   'renderTaskYield',
   'loadingLabels',
+  'wechat',
 ]);
 
 const LOADING_LABEL_KEYS = new Set(['lang', 'loading', 'elapsed', 'slow', 'reload']);
@@ -155,6 +156,24 @@ function validateLoadingLabels(value: unknown): void {
     );
 }
 
+function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
+  if (wechat !== undefined) {
+    if (
+      typeof wechat !== 'object' ||
+      wechat === null ||
+      Array.isArray(wechat) ||
+      Object.keys(wechat).some((key) => key !== 'maxRenderShortSide') ||
+      (wechat.maxRenderShortSide !== undefined &&
+        (!Number.isInteger(wechat.maxRenderShortSide) ||
+          wechat.maxRenderShortSide < 0 ||
+          wechat.maxRenderShortSide > 0xffff_ffff))
+    )
+      throw new TypeError(
+        'devkitAppOptions.wechat must contain only an unsigned maxRenderShortSide pixel budget',
+      );
+  }
+}
+
 /** Admit a closed data-only projection; World and Render retain their policies. */
 function projectAppOptions(value: unknown): DevKitAppOptions {
   if (value === undefined) return {};
@@ -170,6 +189,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
     throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
   validateRenderTaskYield(options.renderTaskYield);
+  validateWechatOptions(options.wechat);
   if (options.time !== undefined) {
     const time = options.time;
     if (

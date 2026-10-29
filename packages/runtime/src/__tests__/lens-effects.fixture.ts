@@ -25,6 +25,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { compactTape } from './compact-tape.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -155,7 +156,7 @@ export async function verifyLensEffects(
       const live = await readLive(receipt);
       (await recorder.frameBoundary()).unwrap();
       const capture = (await pending).unwrap();
-      await save(`${name}.rhitape`, capture.bytes);
+      await save(`${name}.rhitape`, compactTape(capture).bytes);
       await save(`${name}-live.f32`, new Uint8Array(new Float32Array(live.pixels).buffer));
       await options.screenshot?.(name);
       images.set(name, live.pixels);
@@ -287,14 +288,17 @@ export async function verifyLensEffects(
         const replayed = await replayPixels(capture.bytes, 'live');
         const difference = delta(live.pixels, replayed);
         expect(difference).toBeLessThanOrEqual(0.005);
-        const missingDraw = encodeTape({
-          ...tape,
-          events: tape.events.map((event, index) =>
-            index === lens.eventIndex && event.kind === 'draw'
-              ? { ...event, vertexCount: 0 }
-              : event,
-          ),
-        }).unwrap();
+        const missingDraw = encodeTape(
+          {
+            ...tape,
+            events: tape.events.map((event, index) =>
+              index === lens.eventIndex && event.kind === 'draw'
+                ? { ...event, vertexCount: 0 }
+                : event,
+            ),
+          },
+          { compression: 'gzip' },
+        ).unwrap();
         const falsified = delta(live.pixels, await replayPixels(missingDraw, 'missing-draw'));
         expect(falsified).toBeGreaterThan(0.2);
         await save(`${name}-missing-draw.rhitape`, missingDraw);

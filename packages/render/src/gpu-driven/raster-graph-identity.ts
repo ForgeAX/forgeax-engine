@@ -1,9 +1,3 @@
-import type { GpuDrivenViewInspection } from './view-gpu';
-
-type ViewResources = Pick<
-  GpuDrivenViewInspection,
-  'resourceGeneration' | 'candidateCapacity' | 'batchCapacity' | 'indirectCapacity'
->;
 interface RasterClass {
   readonly classKey: string;
   readonly recordingClassKey: string;
@@ -11,7 +5,7 @@ interface RasterClass {
 interface Publication {
   source: object;
   readonly sceneIdentity: number;
-  readonly resources: ViewResources;
+  readonly graphGeneration: number;
   readonly rawClasses: readonly string[];
   readonly recordingClasses: readonly string[];
   rigidBindings: object;
@@ -34,7 +28,7 @@ export class RasterGraphIdentity {
   update(
     source: object,
     sceneIdentity: number,
-    resources: ViewResources,
+    graphGeneration: number,
     batches: readonly RasterClass[],
     rigidBindings: object,
     skinBindings: object | undefined,
@@ -45,7 +39,7 @@ export class RasterGraphIdentity {
     const sameResources =
       old !== undefined &&
       old.sceneIdentity === sceneIdentity &&
-      old.resources.resourceGeneration === resources.resourceGeneration;
+      old.graphGeneration === graphGeneration;
     if (sameResources && old.source === source) {
       old.rigidBindings = rigidBindings;
       old.skinBindings = skinBindings;
@@ -53,8 +47,7 @@ export class RasterGraphIdentity {
     }
     if (old !== undefined) {
       if (old.sceneIdentity !== sceneIdentity) this.count('sceneIdentity');
-      if (old.resources.resourceGeneration !== resources.resourceGeneration)
-        this.count('resourceGeneration');
+      if (old.graphGeneration !== graphGeneration) this.count('resourceGeneration');
     }
     const raw = new Set<string>(),
       recording = new Set<string>();
@@ -88,12 +81,7 @@ export class RasterGraphIdentity {
     this.current = {
       source,
       sceneIdentity,
-      resources: {
-        resourceGeneration: resources.resourceGeneration,
-        candidateCapacity: resources.candidateCapacity,
-        batchCapacity: resources.batchCapacity,
-        indirectCapacity: resources.indirectCapacity,
-      },
+      graphGeneration,
       rawClasses,
       recordingClasses,
       rigidBindings,

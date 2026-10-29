@@ -30,6 +30,39 @@ function keys(reports: readonly RenderFeatureHiddenEntityReport[] | undefined) {
 }
 
 describe('Feature frame projections preserve renderer inputs', () => {
+  it('keeps escaped frame summaries independent across view changes', () => {
+    const world = new World();
+    const host = createRenderFeatureHost([]).unwrap();
+    const inputReports = [report(world, 9)];
+    const first = host.runFrame([view('frame', [world], inputReports), view('view:"', [world])]);
+    first.onAborted();
+    inputReports.push(report(world, 10));
+    const second = host.runFrame([view('other', [world])]);
+    try {
+      expect([...first.views.keys()]).toEqual(['frame', 'view:"']);
+      expect([...second.views.keys()]).toEqual(['other']);
+      expect(first.views.get('frame')?.hiddenEntityReports).toEqual([inputReports[0]]);
+      expect(first.frame.hiddenEntityReports).toEqual([]);
+      expect(Object.isFrozen(first.frame.hiddenEntityReports)).toBe(true);
+      expect(first.views.get('view:"')?.hiddenEntityReports).toBe(first.frame.hiddenEntityReports);
+      expect(second.frame.hiddenEntityReports).toEqual([]);
+    } finally {
+      second.onAborted();
+      host.dispose();
+    }
+  });
+
+  it('rejects duplicate view identities before publishing a batch', () => {
+    const host = createRenderFeatureHost([]).unwrap();
+    try {
+      expect(() => host.runFrame([view('frame', []), view('frame', [])])).toThrow(
+        'duplicate render view identity',
+      );
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('retains and deduplicates each view input without leaking sibling visibility', () => {
     const world = new World();
     const left = report(world, 9);
@@ -108,6 +141,8 @@ describe('Feature frame projections preserve renderer inputs', () => {
     try {
       expect(batch.frame.errors).toEqual([]);
       for (const projected of batch.views.values()) {
+        expect(projected.postProcessIdentities).toBe(batch.frame.postProcessIdentities);
+        expect(Object.isFrozen(projected.postProcessIdentities)).toBe(true);
         expect(projected.fullscreenEffects.has(first.identity)).toBe(true);
         expect(projected.fullscreenEffects.has(second.identity)).toBe(true);
         expect(projected.postProcessIdentities).toEqual([first.identity, second.identity]);

@@ -708,7 +708,7 @@ export type ShadowViewInvalidationReason =
   | 'submit-aborted'
   /** A shadow material program or layout publication was replaced. */
   | 'artifact-changed'
-  /** The view draws an actual Skin task whose pose is produced per frame. */
+  /** Selected Skin content changed, or its current frame has no canonical content revision. */
   | 'skin-task-demand'
   /** The camera clipping that shadow casters honor changed. */
   | 'view-clipping-changed'

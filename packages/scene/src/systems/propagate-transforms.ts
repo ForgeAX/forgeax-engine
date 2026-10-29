@@ -238,11 +238,19 @@ function validateTransformPairs(world: World, scratch: Scratch): Result<void, Sc
   if (missingGlobal === undefined || missingTransform === undefined) {
     return pairError(0 as EntityHandle, 'valid Transform and GlobalTransform pair queries');
   }
-  for (const row of missingGlobal) {
-    return pairError(row.entity, 'each Transform entity to carry a GlobalTransform pair');
+  for (const span of missingGlobal.spans().unwrap()) {
+    if (span.length > 0)
+      return pairError(
+        span.entities[0] as EntityHandle,
+        'each Transform entity to carry a GlobalTransform pair',
+      );
   }
-  for (const row of missingTransform) {
-    return pairError(row.entity, 'each GlobalTransform entity to carry a Transform pair');
+  for (const span of missingTransform.spans().unwrap()) {
+    if (span.length > 0)
+      return pairError(
+        span.entities[0] as EntityHandle,
+        'each GlobalTransform entity to carry a Transform pair',
+      );
   }
   return ok(undefined);
 }

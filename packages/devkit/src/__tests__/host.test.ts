@@ -201,6 +201,7 @@ describe('standalone host', () => {
                     backgroundPipelineLibrary,
                     time,
                     renderTaskYield: 'features',
+                    wechat: { maxRenderShortSide: 480 },
                   },
                 },
               },
@@ -211,6 +212,8 @@ describe('standalone host', () => {
           const config = await createViteConfig(facts.value, command);
           try {
             const source = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
+            // A WeChat quality profile must not change the browser/desktop host.
+            expect(source).not.toContain('maxRenderShortSide:');
             // The page realm reads the catalog through its one installed source.
             expect(source).not.toContain('configurePackIndex(');
             assertDynamicGeometryMeshBudgetOverrides(source, budget);

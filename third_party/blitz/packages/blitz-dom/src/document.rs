@@ -2918,14 +2918,13 @@ impl BaseDocument {
             return;
         };
 
-        let content_box_width = node.final_layout().content_box_width();
-        let content_box_height = node.final_layout().content_box_height();
+        let viewport = node.text_input_viewport_size();
 
         if let Some(text_input) = node
             .element_data_mut()
             .and_then(|el| el.text_input_data_mut())
         {
-            text_input.clamp_scroll_offset(content_box_width, content_box_height);
+            text_input.clamp_scroll_offset(viewport.width, viewport.height);
         }
     }
 

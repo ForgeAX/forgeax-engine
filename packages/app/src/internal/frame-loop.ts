@@ -761,7 +761,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           makeAppError(
             'app-already-running',
             'state must be "idle" or "paused" to start',
-            'call stop() first or check getState() before retrying',
+            'audit start() call sites; the App is already running',
             {},
           ),
         );
@@ -796,7 +796,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           makeAppError(
             'app-not-started',
             'state must be "running" to stop',
-            'check getState() before calling stop(); idle handles cannot stop',
+            'call start() before stop(); idle handles cannot stop',
             {},
           ),
         );

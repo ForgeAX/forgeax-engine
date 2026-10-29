@@ -10,7 +10,7 @@ import {
   submitFrameRecordings,
 } from '../assembly/frame-recording';
 import { Camera } from '../components/camera';
-import { CameraView, cameraViewExtent } from '../components/camera-view';
+import { CAMERA_VIEW_DEFAULTS, CameraView, cameraViewExtent } from '../components/camera-view';
 import { PlanarReflection } from '../components/planar-reflection';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { createRenderFeatureHost } from '../features/host';
@@ -364,6 +364,43 @@ it('keeps a subpixel viewport inside the physical surface and rejects invalid fi
   expect(() => cameraViewExtent({ ...config, updateInterval: 0 }, 100, 100)).toThrow(
     'updateInterval',
   );
+});
+
+it.each([
+  [3203, 1440, 1602, 720],
+  [1440, 3203, 720, 1602],
+  [1920, 1080, 1280, 720],
+  [800, 600, 800, 600],
+])('caps the short render side without scaling the %i x %i output', (width, height, renderWidth, renderHeight) => {
+  const view = { ...CAMERA_VIEW_DEFAULTS, maxRenderShortSide: 720 };
+  expect(cameraViewExtent(view, width, height)).toEqual({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    renderWidth,
+    renderHeight,
+  });
+});
+
+it('combines the short-side cap with the viewport and the stricter authored scale', () => {
+  const view = { ...CAMERA_VIEW_DEFAULTS, maxRenderShortSide: 720 };
+  expect(
+    cameraViewExtent({ ...view, viewport: new Float32Array([0, 0, 0.5, 1]) }, 3200, 1440),
+  ).toMatchObject({ width: 1600, height: 1440, renderWidth: 800, renderHeight: 720 });
+  expect(cameraViewExtent({ ...view, resolutionScale: 0.25 }, 3200, 1440)).toMatchObject({
+    renderWidth: 800,
+    renderHeight: 360,
+  });
+  expect(cameraViewExtent({ ...view, maxRenderShortSide: 0 }, 3200, 1440)).toMatchObject({
+    renderWidth: 3200,
+    renderHeight: 1440,
+  });
+  for (const maxRenderShortSide of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() => cameraViewExtent({ ...view, maxRenderShortSide }, 3200, 1440)).toThrow(
+      'maxRenderShortSide',
+    );
+  }
 });
 
 it('publishes CameraView through the installed render component vocabulary', async () => {

@@ -126,6 +126,13 @@ binding keys, plus the walk clip and guide UI. Those are requirements of this ru
 a rule that every game must keep the same content. If the game changes that contract, change the
 owning runtime code and author sources together.
 
+## Runtime service ownership
+
+Player and camera plugins resolve their World once when the injected plugin
+activates. Frame systems, player service callbacks and cleanup use that same
+World. Cordis still owns dependency replacement and system retirement; frame
+updates do not repeatedly resolve services through Context.
+
 ## Procedural sky and PBR reflections
 
 `assets/environment.pack.ts` generates an ordinary linear HDR `EquirectAsset`

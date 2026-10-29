@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { chromium } from 'playwright';
 import { createServer, normalizePath, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
 import { executionWorkerEntries, runtimeDependencyEntries } from '../execution-workers.js';
@@ -202,3 +203,110 @@ it('scans browser runtime exports without admitting Node-only dependency entries
   expect(entries).not.toContain(normalizePath(join(importRoot, 'dist/index.mjs')));
   expect(entries).not.toContain(normalizePath(join(ddcRoot, 'dist/index.mjs')));
 });
+
+it.each([
+  true,
+  false,
+])('shares Engine tokens across bootstrap and plugin imports after restarting Vite (versioned: %s)', async (versioned) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'runtime facade versions-')));
+  const engine = join(root, 'node_modules/@forgeax/engine');
+  const entry = join(engine, 'dist/scene.mjs');
+  let server: ViteDevServer | undefined;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    await mkdir(join(engine, 'dist'), { recursive: true });
+    await writeFile(join(root, 'package.json'), '{"name":"consumer","type":"module"}');
+    await writeFile(
+      join(engine, 'package.json'),
+      JSON.stringify({
+        name: '@forgeax/engine',
+        version: '1.0.0',
+        type: 'module',
+        exports: { './package.json': './package.json', './scene': './dist/scene.mjs' },
+      }),
+    );
+    await writeFile(entry, 'export const token = {};');
+    await writeFile(join(root, 'index.html'), '<script type="module" src="/main.js"></script>');
+    await writeFile(
+      join(root, 'game.pack.js'),
+      `
+      import { token } from '@forgeax/engine/scene';
+      import table, { loadImport } from 'virtual:forgeax/pack-program-imports';
+      export async function verify() {
+        const delivered = await import(table['@forgeax/engine/scene'].url);
+        const lazy = await loadImport('@forgeax/engine/scene');
+        return token === delivered.token && token === lazy.token;
+      }
+    `,
+    );
+    await writeFile(
+      join(root, 'worker.js'),
+      `
+      import { verify } from './game.pack.js?forgeax-plugin-runtime';
+      postMessage(await verify());
+    `,
+    );
+    await writeFile(
+      join(root, 'main.js'),
+      `
+      import { verify } from './game.pack.js?forgeax-plugin-runtime';
+      const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+      const workerResult = new Promise(resolve => worker.onmessage = event => resolve(event.data));
+      globalThis.result = [await verify(), await workerResult];
+      worker.terminate();
+    `,
+    );
+    browser = await chromium.launch({
+      ...(process.env.FORGEAX_CHROME_CHANNEL !== undefined
+        ? { channel: process.env.FORGEAX_CHROME_CHANNEL }
+        : {}),
+      headless: true,
+      chromiumSandbox: true,
+    });
+    for (let run = 0; run < 2; run += 1) {
+      let resolutions = 0;
+      server = await createServer({
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        optimizeDeps: { noDiscovery: true, include: [] },
+        server: { host: '127.0.0.1', port: 0, hmr: false, ws: false },
+        plugins: [
+          executionWorkerEntries(['@forgeax/engine/scene']),
+          {
+            name: 'fixture:vite-facade-cache-versions',
+            enforce: 'pre',
+            resolveId(id) {
+              if (id === '@forgeax/engine/scene') {
+                resolutions += 1;
+                return entry + (versioned ? `?v=${run}-${resolutions % 2}` : '');
+              }
+              return null;
+            },
+          },
+        ],
+      });
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address === 'string') throw new Error('missing Vite listener');
+      const page = await browser.newPage();
+      const failures: string[] = [];
+      page.on('pageerror', (error) => failures.push(error.message));
+      try {
+        await page.goto(`http://127.0.0.1:${address.port}`);
+        await page.waitForFunction(() => 'result' in globalThis, undefined, { timeout: 5000 });
+        expect(await page.evaluate('globalThis.result')).toEqual([true, true]);
+        expect(failures).toEqual([]);
+        expect(resolutions).toBeGreaterThan(1);
+      } finally {
+        await page.close();
+      }
+      await server.close();
+      server = undefined;
+    }
+  } finally {
+    await browser?.close();
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);

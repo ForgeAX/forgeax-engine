@@ -72,9 +72,10 @@ if (!stepped.ok) console.error(stepped.error.code, stepped.error.hint);
 ```
 
 The normal data path is `world.query(descriptor)` with a row iterator or a
-packed `QuerySpan`. Success-path row access is direct and allocation-free;
-expected boundary failures use the shared `Result` carrier from
-`@forgeax/engine-types`.
+packed `QuerySpan`. Row traversal reuses a borrowed facade; `row.get` constructs
+a component object and selected array views. Numeric columns avoid that
+materialization. Expected boundary failures use the shared `Result` carrier
+from `@forgeax/engine-types`.
 
 ## Components and schema
 
@@ -235,8 +236,74 @@ for components declared by the canonical ECS entry.
 
 ## Queries and projections
 
+The physical-row batch contract
+includes the implemented read-only slice, examples and admission evidence.
+
 Queries are the only public data-plane API. A row is the flexible path; a span
 is the packed numeric path and includes entity handles for owner-side identity.
+Engine owners select spans for numeric batches and identity-only scans, resolving
+columns and entity windows outside the inner loop. Use the existing `world-read`
+capability for a numeric field or fixed-array element. Managed strings and
+complete authoring declarations retain semantic reads when the owner needs them. Sparse/optional read-only
+queries can use physical batches; they cannot use spans.
+`pnpm check:ecs-iteration` rejects component snapshot traversal and facade
+escape in Engine implementation; comments and owner allowlists cannot waive it. Identity-only
+`row.entity`/`row.has` loops are admitted, including sparse membership filtering;
+they reuse one facade per traversal. Apps and templates keep the
+ordinary gameplay API. See the [CI policy](../../scripts/ci/README.md#engine-ecs-iteration-gate).
+
+### Physical numeric batches
+
+`query.batches()` prepares a cached `Result<Iterable<QueryBatch>, QueryBatchUnavailableError>`.
+This first slice accepts read-only, non-temporal descriptors, including sparse
+`with`/`without` predicates and optional data. Write, changed and added descriptors
+return explicit `write-access` / `temporal-filter` reasons; their existing rows,
+spans and projection APIs retain their semantics.
+
+```ts
+const active = world.query({ read: [Position], optional: [Tint], with: [Active] }).unwrap();
+const batches = active.batches().unwrap();
+for (const batch of batches) {
+  const x = batch.read(Position, 'x');
+  if (batch.kind === 'indexed') {
+    const { rows, count } = batch;
+    for (let i = 0; i < count; i++) consume(x[rows[i] as number] as number);
+  } else {
+    for (let row = batch.start; row < batch.end; row++) consume(x[row] as number);
+  }
+}
+```
+
+| Fact | Access |
+| --- | --- |
+| Dense table range | Physical rows in `[start, end)` |
+| Sparse selection | Physical `rows[0..count)`; trailing capacity is not selected |
+| Required numeric field | `batch.read(Position, 'x')`, original column with no copy/subarray |
+| Optional numeric field | `batch.read(Tint, 'alpha')`, column or `undefined` per batch; zero is present |
+| Entity identity | `batch.entities[physicalRow]` |
+| Fixed array element | `column[physicalRow * batch.stride(Component, field) + element]` |
+
+Resolve columns, identities and row indices outside the entity loop. Inline
+numeric scalars, booleans/enums as raw codes, entity references, fixed numeric
+arrays and fixed buffers are eligible. Managed payload fields are rejected;
+read columns and index arrays expose no mutation methods or backing buffer.
+
+Batches borrow live storage until advance/close/structure change. Column access
+rejects expired batches and structural invalidation; iteration fences poisoned
+Worlds and active derived writes. A raw array access cannot run a per-entity
+structure check: defer structural changes while a batch is borrowed. Nested
+iteration on the same Query is rejected. Repeated close calls cannot invalidate
+a later row, span or batch iterator.
+
+The Query retains one reusable validation lease; iteration and batch objects
+still have overhead proportional to traversal and batch count. This is low allocation, not a zero-allocation
+promise. Dense spans or known-entity numeric probes may remain better for their
+workload; benchmark the best eligible API instead of migrating every loop.
+Run [`bench/query-batches.mjs`](bench/query-batches.mjs) after the ECS build to
+compare actual API CPU, sampled allocation and signed retained-heap deltas.
+
+### Query storage and observation
+
 Raw `Table`, `Archetype`, `Column`, and `FieldView` values are package-private.
 Variable-array columns retain their count-column key from table creation and
 carry it through growth. Semantic reads, writes and release still observe the
@@ -258,7 +325,7 @@ the accessed table's grown columns; row counts come directly from that table.
 Structural mutation still invalidates active iterators; `changed` and `added` observations
 remain independent between Query instances.
 
-The [storage matching allocation comparison](reports/query-storage-matching-20261017/README.md)
+The storage matching allocation comparison
 records a source-qualified environment extraction fixture and its raw profiles.
 
 The row iterator reuses its borrowed row facade. Read each entity/value during
@@ -615,3 +682,5 @@ instance transforms, remains World-owned regardless of its size.
 Managed buffer slots are typed columns (size class, chunk, offset, logical length); the pool retains no view per slot and materializes a transient byte view only on request, so a small per-entity array costs no live object. Entity records (generation, archetype, row) are likewise typed columns rather than one object per entity. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
 
 Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only buffer sources and numeric-array inputs widen.
+
+Package history is maintained in the Harness changelog.

@@ -144,12 +144,8 @@ export class GpuDrawSelection {
    * Materials of executed bindings by World; their readiness covers every
    * owned draw. A row-material batch's members share its texture bindings.
    */
-  *coveredMaterials(): Generator<readonly [worldId: number, material: MaterialResource]> {
-    for (const owned of this.#byBinding.values())
-      for (const batch of owned) {
-        const binding = batch.binding as GpuDrivenBatchBinding;
-        yield [binding.worldId, binding.material];
-      }
+  coveredBindings(): Iterable<GpuDrivenBatchBinding> {
+    return this.#byBinding.keys();
   }
 
   private batches(source: RenderableSnapshot, draw: GpuDrivenDrawSnapshot, compactIndex: number) {

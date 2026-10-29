@@ -162,7 +162,7 @@ export class IndirectPassBindings {
     this.run?.materials.set(slot, { group, offset });
   }
 
-  /** Skin task offsets are per-frame facts; such runs are never replayed. */
+  /** Current pass identities already witness Skin buffers, ranges and offsets. */
   observeRunClass(
     rasterClass: ProjectedRasterClass,
     pipeline: RenderPipeline,
@@ -170,7 +170,6 @@ export class IndirectPassBindings {
   ): void {
     const run = this.run;
     if (run === undefined) return;
-    if (rasterClass.deformation === 'skin') run.draws = Number.NaN;
     run.classes.set(rasterClass, { pipeline, mesh });
   }
 

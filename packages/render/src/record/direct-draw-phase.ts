@@ -198,7 +198,9 @@ function sortedEntry(entry: DispatchEntry, all: boolean): boolean {
 }
 
 function sameTokens(left: readonly unknown[], right: readonly unknown[]): boolean {
-  return left.length === right.length && left.every((token, index) => token === right[index]);
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
 }
 
 function sameIndices(
@@ -281,7 +283,7 @@ export class DirectDrawPhase {
   private batches: FrameList<GpuDrivenBatch> | undefined;
   private unbatched: ReadonlySet<number> | undefined;
   private draws: PersistentGpuDrivenState['draws'];
-  private selection: readonly unknown[] = [];
+  private readonly selection: unknown[] = [];
   private materials: MaterialFrame | undefined;
   private visibility: ((source: RenderableSnapshot) => boolean) | undefined;
   private admission: CameraAdmission | undefined;
@@ -354,9 +356,7 @@ export class DirectDrawPhase {
     const batches = input.scene.plan.batches;
     const previous = this.batches;
     // Asset scopes are part of every batch's answer; resident tables diff per binding.
-    const selection = [...input.selection, ...input.worlds];
-    const sameSelection = sameTokens(this.selection, selection);
-    this.selection = selection;
+    const sameSelection = this.observeSelection(input);
     this.batches = batches;
     const gpu = input.gpu;
     const previousGpu = this.gpu;
@@ -403,6 +403,32 @@ export class DirectDrawPhase {
         this.know(batchId, undefined);
         this.judge(batchId, undefined, input, dirty);
       }
+  }
+
+  /** Keep one private token snapshot, observing each borrowed iterator once. */
+  private observeSelection(input: DirectDrawInput): boolean {
+    const tokens = this.selection;
+    const previousLength = tokens.length;
+    let same = true;
+    let index = 0;
+    try {
+      for (const token of input.selection) {
+        if (tokens[index] !== token) same = false;
+        tokens[index++] = token;
+      }
+      for (const world of input.worlds) {
+        if (tokens[index] !== world) same = false;
+        tokens[index++] = world;
+      }
+    } catch (cause) {
+      // A throwing iterator must not let a partial snapshot prove reuse.
+      tokens.length = 0;
+      this.batches = undefined;
+      throw cause;
+    }
+    if (previousLength !== index) same = false;
+    tokens.length = index;
+    return same;
   }
 
   /** A replaced resident table re-selects only bindings whose geometry changed. */

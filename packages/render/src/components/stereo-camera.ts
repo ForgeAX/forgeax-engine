@@ -134,7 +134,7 @@ export function stereoEyeViewport(
   viewport: ArrayLike<number>,
   stereo: StereoCameraSnapshot,
   eye: StereoEye,
-  out: Float32Array = new Float32Array(4),
+  out: Float32Array,
 ): Float32Array {
   const x = viewport[0] ?? 0,
     y = viewport[1] ?? 0,

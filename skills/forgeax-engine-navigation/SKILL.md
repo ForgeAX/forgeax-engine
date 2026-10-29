@@ -18,6 +18,8 @@ description: >-
 | Runtime navigation edits | `assets.update` / `replace` revises polygon/settings content; actual queries and motor steps adopt once per changed active version; old routes cancel before motion even when sourceDigest stays unchanged |
 | Pause / cancel / replacement | Idle/following toggles; empty setNavigationPath; `setNavigationMesh(world, handle).unwrap()` followed by explicit retarget |
 
+A route supplies movement intent. `navigationPlugin` point following writes Transform directly and performs no collision resolution. For a solid actor, use the physical-character entry and size its collider and baked clearance from the actor's complete footprint, including scale and turning. Custom grid queries must enforce the same body clearance; a free centre cell does not prove the body fits. Geometry edits require updated collision geometry and navigation content through their owners; updating a rendered mesh alone updates neither.
+
 Use the [Navigation contract](../../packages/navigation/README.md) for capsule scale,
 KCC offset, fixed ordering, asset freshness and limits. Observe actual displacement
 and blocked state; a congested local solver is not a traffic scheduler. Physical

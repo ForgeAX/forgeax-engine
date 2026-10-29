@@ -28,6 +28,11 @@ closure from the owning producer before decoding a complete publication. Native
 plugin references remain deferred; unused Meta declarations are not cooked.
 Production uses the emitted static Catalog and has no development import route.
 
+The shared Runtime Vase browser probe keeps generation, rejection and recovery
+on the same runtime identity. Its screenshots and subsequent native gameplay
+wait for ready completed frames after each accepted generation, including
+recovery; producer inspection and submission alone do not establish rendering.
+
 ## Shortest path
 
 Open the dev host, then use the browser global `__forgeaxUiAuthoring` from automation:

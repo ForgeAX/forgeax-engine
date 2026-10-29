@@ -98,17 +98,21 @@ describe('circle2', () => {
 
 describe('ray2', () => {
   it('intersects AABBs from outside, from inside, and with parallel axes', () => {
-    const ray = ray2.create(undefined, [-5, 0], [2, 0], 20);
+    const ray = ray2.create(new Float32Array(5), [-5, 0], [2, 0], 20);
     const box = box2.create(-1, -1, 1, 1);
     expect(ray2.rayAabbIntersects(ray, box)).toEqual({ hit: true, t: 4 });
-    expect(ray2.rayAabbIntersects(ray2.create(undefined, [0, 0], [1, 0], 0), box)).toEqual({
+    expect(
+      ray2.rayAabbIntersects(ray2.create(new Float32Array(5), [0, 0], [1, 0], 0), box),
+    ).toEqual({
       hit: true,
       t: 0,
     });
-    expect(ray2.rayAabbIntersects(ray2.create(undefined, [-5, 2], [1, 0], 20), box).hit).toBe(
-      false,
-    );
-    expect(ray2.rayAabbIntersects(ray2.create(undefined, [0, 0], [0, 1], 20), box)).toEqual({
+    expect(
+      ray2.rayAabbIntersects(ray2.create(new Float32Array(5), [-5, 2], [1, 0], 20), box).hit,
+    ).toBe(false);
+    expect(
+      ray2.rayAabbIntersects(ray2.create(new Float32Array(5), [0, 0], [0, 1], 20), box),
+    ).toEqual({
       hit: true,
       t: 0,
     });
@@ -116,22 +120,27 @@ describe('ray2', () => {
 
   it('intersects circles and respects the finite maximum distance', () => {
     const hit = ray2.rayCircleIntersects(
-      ray2.create(undefined, [-5, 0], [2, 0], 20),
+      ray2.create(new Float32Array(5), [-5, 0], [2, 0], 20),
       circle2.create(0, 0, 1),
     );
     expect(hit.hit).toBe(true);
     expect(hit.t).toBeCloseTo(4, 6);
     expect(
-      ray2.rayCircleIntersects(ray2.create(undefined, [-5, 0], [1, 0], 3), circle2.create(0, 0, 1))
-        .hit,
+      ray2.rayCircleIntersects(
+        ray2.create(new Float32Array(5), [-5, 0], [1, 0], 3),
+        circle2.create(0, 0, 1),
+      ).hit,
     ).toBe(false);
     expect(
-      ray2.rayCircleIntersects(ray2.create(undefined, [0, 0], [1, 0], 0), circle2.create(0, 0, 1)),
+      ray2.rayCircleIntersects(
+        ray2.create(new Float32Array(5), [0, 0], [1, 0], 0),
+        circle2.create(0, 0, 1),
+      ),
     ).toEqual({ hit: true, t: 0 });
   });
 
   it('sweeps AABBs and circles through matching target volumes', () => {
-    const ray = ray2.create(undefined, [0, 0], [0, 2], 20);
+    const ray = ray2.create(new Float32Array(5), [0, 0], [0, 2], 20);
     const movingBox = box2.create(-1, -1, 1, 1);
     const targetBox = box2.create(-1, 4, 1, 6);
     expect(ray2.aabbCastIntersects(ray, movingBox, targetBox)).toEqual({ hit: true, t: 3 });

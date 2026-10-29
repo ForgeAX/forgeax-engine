@@ -40,6 +40,22 @@ export default defineFeature({
         checks.equal('runtime history has a fixed capacity', history?.capacity, 32);
         checks.equal('new device has no runtime demands', history?.requests.length, 0);
 
+        const library = device.pipelineLibrary;
+        if (library !== undefined) {
+          const refused = library.export({ outputBytes: 1 });
+          checks.equal(
+            'small export policy refuses this action',
+            refused.ok ? 'ok' : refused.error.code,
+            'limit-exceeded',
+          );
+          checks.ok('export can retry with its default policy', library.export().ok);
+          checks.equal(
+            'refused export preserves device readiness',
+            library.inspect().state,
+            'active',
+          );
+        }
+
         const src = device.createBuffer({
           size: 16,
           usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,

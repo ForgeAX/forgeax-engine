@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { isGlobalWorkspaceInstall } from '../workspace-install-scope.mjs';
 
 const action = readFileSync('.github/actions/prepare-view-checkout/action.yml', 'utf8');
 const scalar = (source, name) =>
@@ -73,13 +74,7 @@ function missingViewSources(workflow) {
             .slice(3)
             .trim()
             .replace(/^['"]|['"]$/g, '');
-        if (
-          rootDirectory(cwd) &&
-          /^(?:pnpm|bun)\s+(?:install|i)\b/.test(command) &&
-          !/\s(?:--dir|--cwd|--prefix)\s/.test(command) &&
-          !ready
-        )
-          failures.push(name);
+        if (rootDirectory(cwd) && isGlobalWorkspaceInstall(command) && !ready) failures.push(name);
       }
     }
   }
@@ -271,5 +266,19 @@ test('the shared action resolves the parent gitlink, authenticates the exact chi
         resolve(temporary).startsWith(`${resolve(tmpdir())}/`),
     );
     rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('only frozen root-only installs without lifecycle scripts avoid View preparation', () => {
+  const rootInstall = 'pnpm install --frozen-lockfile --ignore-scripts --filter forgeax-engine';
+  assert.deepEqual(missingViewSources(workflow(`${checkout}      - run: ${rootInstall}\n`)), []);
+  for (const command of [
+    rootInstall.replace('--ignore-scripts ', ''),
+    rootInstall.replace('forgeax-engine', 'forgeax-engine...'),
+    `${rootInstall} && pnpm install --frozen-lockfile`,
+  ]) {
+    assert.deepEqual(missingViewSources(workflow(`${checkout}      - run: ${command}\n`)), [
+      'consumer',
+    ]);
   }
 });

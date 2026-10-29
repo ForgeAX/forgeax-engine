@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 3
+      "const": 4
     },
     "capabilities": {
       "type": "object",
@@ -222,11 +222,15 @@
           "enum": [
             "running",
             "suspended",
-            "closed"
+            "closed",
+            "unavailable"
           ]
         },
         "activeSourceCount": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
         },
         "lastError": {
@@ -246,7 +250,16 @@
               "properties": {
                 "code": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "enum": [
+                    "stream-failed",
+                    "control-failed",
+                    "context-creation-failed",
+                    "decode-failed",
+                    "context-suspended",
+                    "invalid-clip-handle",
+                    "bus-not-found"
+                  ]
                 },
                 "expected": {
                   "type": "string",
@@ -293,8 +306,89 @@
               "minimum": 0
             }
           }
+        },
+        "preparation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requestId",
+            "status",
+            "sourceCount"
+          ],
+          "properties": {
+            "requestId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "enum": [
+                "pending",
+                "ready",
+                "rejected"
+              ]
+            },
+            "sourceCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failure": {
+              "type": "object",
+              "required": [
+                "code",
+                "expected",
+                "hint"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "stream-failed",
+                    "control-failed",
+                    "context-creation-failed",
+                    "decode-failed",
+                    "context-suspended",
+                    "invalid-clip-handle",
+                    "bus-not-found"
+                  ]
+                },
+                "expected": {
+                  "type": "string"
+                },
+                "hint": {
+                  "type": "string"
+                },
+                "detail": {}
+              },
+              "additionalProperties": false
+            }
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "contextState": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "activeSourceCount": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "activeSourceCount": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
     },
     "render": {
       "type": "object",

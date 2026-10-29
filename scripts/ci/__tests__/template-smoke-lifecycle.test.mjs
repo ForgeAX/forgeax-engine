@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { serializeBrowserConsoleValue } from '../../../apps/preview/scripts/serialize-browser-console-value.mjs';
+import { waitForRuntimeVaseRender } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
 
 const source = readFileSync(
   new URL('../../../apps/preview/scripts/smoke-templates.mjs', import.meta.url),
@@ -915,4 +916,42 @@ test('Preview closing evidence is bounded, separate and cannot hide an owned cle
     assert.equal(scope.page, undefined);
     assert.equal(scope.browserServer, undefined);
   }
+});
+
+test('Runtime Vase render readiness rejects submitted-only, pending and earlier completed frames', async () => {
+  const canvas = {
+    forgeaxFrameProgress: {
+      submitted: { frameId: 10 },
+      completed: { frameId: 8, presentation: 'ready' },
+    },
+  };
+  const context = { document: { querySelector: () => canvas } };
+  const evaluate = (fn, argument) =>
+    runInNewContext(`(${fn.toString()})(argument)`, { ...context, argument });
+  let waits = 0;
+  await waitForRuntimeVaseRender({
+    evaluate: async (fn) => evaluate(fn),
+    waitForFunction: async (fn, origin, options) => {
+      waits++;
+      assert.equal(origin, 10);
+      assert.equal(options.timeout, 60_000);
+      canvas.forgeaxFrameProgress.submitted.frameId = 100;
+      assert.equal(
+        evaluate(fn, origin),
+        false,
+        'submission alone cannot admit the generated picture',
+      );
+      canvas.forgeaxFrameProgress.completed = { frameId: 12, presentation: 'pending' };
+      assert.equal(
+        evaluate(fn, origin),
+        false,
+        'a completed preparation barrier is not a ready picture',
+      );
+      canvas.forgeaxFrameProgress.completed = { frameId: 11, presentation: 'ready' };
+      assert.equal(evaluate(fn, origin), false, 'the original two-frame prefix remains required');
+      canvas.forgeaxFrameProgress.completed = { frameId: 12, presentation: 'ready' };
+      assert.equal(evaluate(fn, origin), true);
+    },
+  });
+  assert.equal(waits, 1);
 });

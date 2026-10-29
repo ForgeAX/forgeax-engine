@@ -23,7 +23,9 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -160,7 +162,7 @@ export async function verifyOutline(
     (await recorder.frameBoundary()).unwrap();
     const both = await observe('all');
     (await recorder.frameBoundary()).unwrap();
-    await save('outline-csm-initial.rhitape', (await initialCapture).unwrap().bytes);
+    await save('outline-csm-initial.rhitape', compactTape((await initialCapture).unwrap()).bytes);
     expect(both.counts.visible).toBeGreaterThan(30);
     expect(both.counts.hidden).toBeGreaterThan(30);
     expect(
@@ -225,7 +227,7 @@ export async function verifyOutline(
     (await recorder.frameBoundary()).unwrap();
     const restored = await observe('restored');
     (await recorder.frameBoundary()).unwrap();
-    await save('restored.rhitape', (await restoreCapture).unwrap().bytes);
+    await save('restored.rhitape', compactTape((await restoreCapture).unwrap()).bytes);
     expect(restored.counts.visible).toBeGreaterThan(20);
     for (const aa of [0, 1, 2, 3]) {
       world.set(camera, Camera, { antialias: aa }).unwrap();
@@ -246,7 +248,7 @@ export async function verifyOutline(
       const directionalShadow = renderer.inspect().directionalShadow;
       (await recorder.frameBoundary()).unwrap();
       const cached = (await cachedCapture).unwrap();
-      await save(`outline-csm-aa-${aa}.rhitape`, cached.bytes);
+      await save(`outline-csm-aa-${aa}.rhitape`, compactTape(cached).bytes);
       const cachedTape = decodeTape(cached.bytes).unwrap();
       const cachedModel = buildFrameModel(cachedTape);
       const creates = [
@@ -329,7 +331,7 @@ export async function verifyOutline(
     const live = await observe('captured');
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
-    await save('outline.rhitape', capture.bytes);
+    await save('outline.rhitape', compactTape(capture).bytes);
     const tape = decodeTape(capture.bytes).unwrap();
     const model = buildFrameModel(tape);
     await save('frame-model.json', new TextEncoder().encode(JSON.stringify(model, null, 2)));
@@ -345,18 +347,24 @@ export async function verifyOutline(
       await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
     ).unwrap();
     try {
-      for (const [stage, marker] of [
+      const stages = [
         ['depth', 'let bits = bitcast<u32>(z)'],
         ['classify', 'let selected = bitcast<f32>'],
         ['horizontal', 'p + vec2<i32>(x, 0)'],
-      ] as const) {
+      ].map(([stage, marker]) => {
         const stageWork = model.works.find((item) =>
-          item.pipeline.shaders.some((shader) => shader.source?.includes(marker)),
+          item.pipeline.shaders.some((shader) => shader.source?.includes(marker ?? '')),
         );
         if (stageWork === undefined) throw new Error(`missing Outline ${stage} work`);
-        const inspected = (
-          await replay.inspectWork(stageWork.workIndex, ['pipeline', 'bindings', 'pixels'])
-        ).unwrap();
+        return { stage, work: stageWork };
+      });
+      const inspections = await inspectReplayWorks(replay, [
+        ...stages.map((stage) => stage.work),
+        work,
+      ]);
+      for (const [index, { stage, work: stageWork }] of stages.entries()) {
+        const inspected = inspections[index];
+        if (inspected === undefined) throw new Error(`missing ${stage} inspection`);
         if (inspected.attachment === undefined) throw new Error(`missing ${stage} attachment`);
         const bytes = inspected.attachment.bytes;
         const values = Array.from(
@@ -377,9 +385,8 @@ export async function verifyOutline(
           bindings: inspected.bindings,
         });
       }
-      const inspection = (
-        await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
-      ).unwrap();
+      const inspection = inspections.at(-1);
+      if (inspection === undefined) throw new Error('missing outline composite inspection');
       const attachment = inspection.attachment;
       if (attachment === undefined) throw new Error('missing outline replay pixels');
       expect(attachment.format).toBe('rgba16float');
@@ -411,12 +418,15 @@ export async function verifyOutline(
       (await replay.dispose()).unwrap();
     }
     // Removing the actual composite draw must remove the outline from the replay result.
-    const missing = encodeTape({
-      ...tape,
-      events: tape.events.map((event, index) =>
-        index === work.eventIndex && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
-      ),
-    }).unwrap();
+    const missing = encodeTape(
+      {
+        ...tape,
+        events: tape.events.map((event, index) =>
+          index === work.eventIndex && event.kind === 'draw' ? { ...event, vertexCount: 0 } : event,
+        ),
+      },
+      { compression: 'gzip' },
+    ).unwrap();
     const falsifier = (
       await openReplay(decodeTape(missing).unwrap(), {
         device,

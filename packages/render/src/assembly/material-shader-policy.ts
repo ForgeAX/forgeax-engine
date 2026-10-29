@@ -1,3 +1,4 @@
+import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
 
 // Material shader policy and async adapter.
@@ -11,6 +12,7 @@ import {
   findVariantByKey,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
+  materialShaderSource,
   materialShaderUvSetCount,
   materialShaderVertexInputRequired,
   type RegisteredMaterialShaderEntry,
@@ -34,6 +36,7 @@ import { RENDER_FEATURE_VERTEX_LAYOUTS } from '../features/prepared-graphics';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
 import type { RhiErrorListenerRegistry } from '../lifecycle';
 import { assertStorageBufferCap } from '../light-buffer-layout';
+import { materialVertexConstants } from '../material-stage-constants';
 import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
 import { colorFormatsForPassKind, type PipelineSpec, passKindPolicyTable } from '../pipeline-spec';
 import {
@@ -67,6 +70,8 @@ import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from './shader-prewarm-policy'
  * shaders. Externally still typed as ShaderCatalogDevice (see callers in
  * ShaderCatalog).
  */
+export type SeedShaderModule = ShaderDeviceAdapterInternal['seedModule'];
+
 export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
   /**
    * feat-20260609 R3-fixup: seed the adapter's moduleCache with an
@@ -74,7 +79,7 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
    * shadow_caster pre-bake so the lazy PSO build hit on
    * `module-forgeax::default-shadow-caster` returns OK on frame 1.
    */
-  seedModule(label: string, module: ShaderModule): void;
+  seedModule(label: string, module: ShaderModule, source: string | ShaderSource): void;
   /**
    * Whether this generation drew with the module: a pipeline requested the
    * label and it compiled. Seeding alone (boot prewarm) does not count, so a
@@ -82,9 +87,33 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
    */
   hasModule(label: string): boolean;
   invalidateModule(label: string): void;
+  /** Retire the explicit generation warmup roster and pending callbacks. */
+  dispose(): void;
 }
 
 type ShaderModuleAdapterMode = 'validated' | 'immediate';
+
+function resolveModuleSource(desc: {
+  readonly code: string;
+  readonly label?: string | undefined;
+}): Result<ShaderSource, RhiError> {
+  const sourceInput = shaderSourceForDescriptor(desc) ?? desc.code;
+  let source: ShaderSource;
+  try {
+    source =
+      typeof sourceInput === 'string' ? ShaderSource.fromText(sourceInput, new Map()) : sourceInput;
+  } catch (cause) {
+    if (cause instanceof RhiError) return err(cause);
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'source admission before GPU module creation',
+        hint: cause instanceof Error ? cause.message : String(cause),
+      }),
+    );
+  }
+  return ok(source);
+}
 
 export function makeShaderDeviceAdapter(
   rhiDevice: RhiDevice,
@@ -103,7 +132,23 @@ export function makeShaderDeviceAdapter(
     | undefined,
   mode: ShaderModuleAdapterMode = 'validated',
 ): ShaderDeviceAdapterInternal {
-  const moduleCache = new Map<string, ShaderModule>();
+  const moduleCache = new Map<string, WeakRef<ShaderModule>>();
+  let disposed = false;
+  const sources = new Map<string, ShaderSource>();
+  const release = new FinalizationRegistry<{ key: string; ref: WeakRef<ShaderModule> }>(
+    ({ key, ref }) => {
+      if (moduleCache.get(key) !== ref) return;
+      moduleCache.delete(key);
+      sources.delete(key);
+      requested.delete(key);
+      epochs.delete(key);
+    },
+  );
+  const remember = (key: string, module: ShaderModule) => {
+    const ref = new WeakRef(module);
+    moduleCache.set(key, ref);
+    release.register(module, { key, ref });
+  };
   const errorCache = new Map<string, RhiError>();
   const pending = new Map<string, { readonly epoch: number; error?: RhiError }>();
   const epochs = new Map<string, number>();
@@ -111,9 +156,22 @@ export function makeShaderDeviceAdapter(
 
   return {
     createShaderModule(desc): Result<ShaderModule, RhiError> {
-      const key = desc.label ?? desc.code;
+      if (disposed) return err(makeRhiNotAvailableError(desc.label ?? 'retired shader owner'));
+      const resolved = resolveModuleSource(desc);
+      if (!resolved.ok) return resolved;
+      const source = resolved.value;
+      const key = desc.label ?? source.identity;
+      const previous = sources.get(key);
+      if (previous !== undefined && previous.identity !== source.identity) {
+        epochs.set(key, (epochs.get(key) ?? 0) + 1);
+        moduleCache.delete(key);
+        errorCache.delete(key);
+        pending.delete(key);
+      }
+      sources.set(key, source);
+      desc = source.descriptor(desc.label);
       requested.add(key);
-      const cachedModule = moduleCache.get(key);
+      const cachedModule = moduleCache.get(key)?.deref();
       if (cachedModule !== undefined) return ok(cachedModule);
       const cachedError = errorCache.get(key);
       if (cachedError !== undefined) return err(cachedError);
@@ -126,12 +184,9 @@ export function makeShaderDeviceAdapter(
       // and authored shaders. The public async factory still owns diagnostics;
       // pipeline creation remains the validation point for the fast path.
       if (mode === 'immediate' && immediateCreateShaderModule !== undefined) {
-        const immediateResult = immediateCreateShaderModule(rhiDevice, {
-          code: desc.code,
-          ...(desc.label === undefined ? {} : { label: desc.label }),
-        });
+        const immediateResult = immediateCreateShaderModule(rhiDevice, desc);
         if (immediateResult.ok) {
-          moduleCache.set(key, immediateResult.value);
+          remember(key, immediateResult.value);
           return immediateResult;
         }
         errorCache.set(key, immediateResult.error);
@@ -148,15 +203,14 @@ export function makeShaderDeviceAdapter(
         request = { epoch };
         pending.set(key, request);
         const operation = request;
-        const desc2: { code: string; label?: string | undefined } = { code: desc.code };
-        if (desc.label !== undefined) desc2.label = desc.label;
+        const desc2 = desc;
         const asyncResult: Promise<Result<ShaderModule, RhiError>> = asyncCreateShaderModule
           ? asyncCreateShaderModule(rhiDevice, desc2)
           : invokeDeviceCreateShaderModule(rhiDevice, desc2);
         void asyncResult.then((result) => {
           if (pending.get(key) !== operation || (epochs.get(key) ?? 0) !== operation.epoch) return;
           if (result.ok) {
-            moduleCache.set(key, result.value);
+            remember(key, result.value);
           } else {
             errorCache.set(key, result.error);
           }
@@ -171,17 +225,35 @@ export function makeShaderDeviceAdapter(
       request.error ??= makeRhiNotAvailableError(key);
       return err(request.error);
     },
-    seedModule(label: string, module: ShaderModule): void {
-      moduleCache.set(label, module);
+    seedModule(label: string, module: ShaderModule, sourceInput: string | ShaderSource): void {
+      if (disposed) return;
+      const source =
+        typeof sourceInput === 'string'
+          ? ShaderSource.fromText(sourceInput, new Map())
+          : sourceInput;
+      sources.set(label, source);
+      errorCache.delete(label);
+      pending.delete(label);
+      remember(label, module);
     },
     hasModule(label: string): boolean {
-      return requested.has(label) && moduleCache.has(label);
+      return requested.has(label) && moduleCache.get(label)?.deref() !== undefined;
     },
     invalidateModule(label: string): void {
       epochs.set(label, (epochs.get(label) ?? 0) + 1);
       moduleCache.delete(label);
+      sources.delete(label);
       errorCache.delete(label);
       pending.delete(label);
+    },
+    dispose(): void {
+      disposed = true;
+      moduleCache.clear();
+      sources.clear();
+      pending.clear();
+      errorCache.clear();
+      requested.clear();
+      epochs.clear();
     },
   };
 }
@@ -417,7 +489,8 @@ export async function prepareMaterialShaders(
         hint: 'regenerate the shader manifest with the complete variant Cartesian product',
       });
     }
-    const wgsl = chosen?.composedWgsl ?? msEntry.composedWgsl;
+    const selected = chosen ?? msEntry;
+    const wgsl = selected.composedWgsl;
     if (wgsl.length > 0) {
       const existing = registry.findMaterialArtifact(msEntry.identifier);
       if (existing.ok) continue;
@@ -437,6 +510,7 @@ export async function prepareMaterialShaders(
         msEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(msEntry.identifier, {
         source: wgsl,
+        sourceReference: materialShaderSource(selected),
         ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema,
         ...(chosen?.receipt === undefined && msEntry.receipt === undefined
@@ -475,6 +549,7 @@ export async function prepareMaterialShaders(
       const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(shadowCasterIdentifier, {
         source: manifestEntry.composedWgsl,
+        sourceReference: materialShaderSource(manifestEntry),
         ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
         ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
@@ -772,10 +847,17 @@ export function stripCloudShadowBindingsForLowLimit(source: string): string {
 export function prepareLowLimitMaterialShaderEntry<T extends { readonly source: string }>(
   entry: T,
   sampledTextureLimit: number | undefined,
-): T {
+): Omit<T, 'program' | 'sourceReference'> {
   if ((sampledTextureLimit ?? 0) >= STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES) return entry;
-  const source = stripCloudShadowBindingsForLowLimit(entry.source);
-  return source === entry.source ? entry : ({ ...entry, source } as T);
+  const original = entry.source;
+  const source = stripCloudShadowBindingsForLowLimit(original);
+  if (source === original) return entry;
+  const {
+    program: _program,
+    sourceReference: _reference,
+    ...facts
+  } = entry as T & { program?: unknown; sourceReference?: unknown };
+  return { ...facts, source };
 }
 
 export function allowsUnlitPreparedFallback(
@@ -1096,9 +1178,11 @@ export function manifestVariantShaderEntry(
     const variant = findVariantByKey(manifestEntry, variantSet);
     if (!variant) return entry;
     return {
-      source: variant.composedWgsl,
+      get source() {
+        return variant.composedWgsl;
+      },
       program: registry.materialProgram(
-        variant.composedWgsl,
+        materialShaderSource(variant),
         variant.entryPoints ?? variant.receipt?.entryPoints,
       ),
       paramSchema: entry.paramSchema,
@@ -1117,6 +1201,7 @@ export function materialPipelineShaderSpec(
   fragmentEntry: string | undefined,
   constants: Readonly<Record<string, number>> | undefined,
 ): PipelineSpec['shader'] {
+  const vertexConstants = materialVertexConstants(constants);
   return {
     id,
     passKind,
@@ -1124,6 +1209,7 @@ export function materialPipelineShaderSpec(
     ...(vertexEntry === undefined ? {} : { vertexEntry }),
     ...(fragmentEntry === undefined ? {} : { fragmentEntry }),
     ...(constants === undefined ? {} : { constants }),
+    ...(vertexConstants === constants ? {} : { vertexConstants }),
   };
 }
 

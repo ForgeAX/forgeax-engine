@@ -1,0 +1,63 @@
+{
+  "packages/runtime/src/__tests__/gradient-sky.browser.test.ts": {
+    "deviceRequests": 1,
+    "minimumCases": 7
+  },
+  "packages/runtime/src/__tests__/shadow-contact-column.browser.test.ts": {
+    "deviceRequests": 1,
+    "minimumCases": 4
+  },
+  "packages/runtime/src/__tests__/shadow-contact-centimeter-1024.browser.test.ts": {
+    "deviceRequests": 1,
+    "minimumCases": 4
+  },
+  "packages/runtime/src/__tests__/shadow-contact-centimeter-2048.browser.test.ts": {
+    "deviceRequests": 1,
+    "minimumCases": 4
+  },
+  "packages/three/src/__tests__/features-0.browser.test.ts": {
+    "deviceRequests": 27,
+    "minimumCases": 8
+  },
+  "packages/three/src/__tests__/features-1.browser.test.ts": {
+    "deviceRequests": 24,
+    "minimumCases": 7
+  },
+  "packages/three/src/__tests__/features-2.browser.test.ts": {
+    "deviceRequests": 24,
+    "minimumCases": 7
+  },
+  "packages/three/src/__tests__/features-3.browser.test.ts": {
+    "deviceRequests": 24,
+    "minimumCases": 7
+  },
+  "packages/three/src/__tests__/material-output-0.browser.test.ts": {
+    "deviceRequests": 31,
+    "minimumCases": 12
+  },
+  "packages/three/src/__tests__/material-output-1.browser.test.ts": {
+    "deviceRequests": 31,
+    "minimumCases": 12
+  },
+  "packages/three/src/__tests__/shadow-updates.browser.test.ts": {
+    "deviceRequests": 19,
+    "minimumCases": 5
+  },
+  "packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts": {
+    "deviceRequests": 20,
+    "minimumDeviceRequests": 11,
+    "minimumCases": 11
+  },
+  "packages/render/src/__tests__/white-balance.browser.test.ts": {
+    "deviceRequests": 2,
+    "minimumDeviceRequests": 2,
+    "minimumCases": 1,
+    "submissions": 40
+  },
+  "packages/render/src/__tests__/texture-generations.browser.test.ts": {
+    "deviceRequests": 2,
+    "minimumDeviceRequests": 2,
+    "minimumCases": 1,
+    "submissions": 40
+  }
+}

@@ -135,6 +135,12 @@ export type RenderWorkerInput =
   | {
       readonly kind: 'inspect';
       readonly pipelineLibrary?: boolean;
+      readonly pipelineLibraryCollection?: boolean;
+      readonly pipelineLibraryLimits?: NonNullable<
+        NonNullable<
+          Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
+        >['pipelineLibraryLimits']
+      >;
       readonly runtimeRequests?: boolean;
       readonly fields?: readonly (keyof RenderInspection)[];
       readonly requestId: number;

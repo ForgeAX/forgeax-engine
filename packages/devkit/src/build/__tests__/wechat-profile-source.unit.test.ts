@@ -2,6 +2,15 @@ import { expect, it } from 'vitest';
 import type { ProjectFacts } from '../../types.js';
 import { wechatHostSource } from '../wechat.js';
 
+it('selects the scene budget in the WeChat host rather than the shared game scene', () => {
+  const facts = { name: 'Game' } as ProjectFacts;
+  expect(wechatHostSource(facts, '/native')).toContain('maxRenderShortSide: 720,');
+  for (const maxRenderShortSide of [0, 480, 1080])
+    expect(wechatHostSource(facts, '/native', false, { wechat: { maxRenderShortSide } })).toContain(
+      `maxRenderShortSide: ${maxRenderShortSide},`,
+    );
+});
+
 it('adds bounded CPU profiling only to an explicit WeChat diagnostic build', () => {
   const facts = { name: 'Game' } as ProjectFacts;
   const ordinary = wechatHostSource(facts, '/native');

@@ -57,6 +57,7 @@ import {
 } from './dark-gradient-fixture';
 import { createDarkGradientTexture, darkGradientQuad } from '../scripts/dark-gradient-scene.mjs';
 import { runMipmapPipelineProbe } from './mipmap-pipeline-probe';
+import { createDarkGradientSampler, type DarkGradientPhase } from './dark-gradient-sampler';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
@@ -132,9 +133,8 @@ function publishDarkGradientObservation(
   frameCount: number,
   phase: 'none' | 'fxaa',
   backendHint: DarkGradientBackend | undefined,
-  app: { readonly renderer: Pick<Renderer, 'inspect'> },
+  inspection: ReturnType<Renderer['inspect']>,
 ): void {
-  const inspection = app.renderer.inspect();
   const actualBackendKind = inspection.capabilities.backendKind;
   const backendId = backendHint ?? 'browser-webgpu';
   const resolvedBackend = resolveDarkGradientBrowserBackend(actualBackendKind, backendHint);
@@ -211,23 +211,6 @@ function publishDarkGradientObservation(
     ...host.__forgeaxDarkGradientObservations,
     [phase]: Object.freeze(result),
   });
-}
-
-function publishSubmittedDarkGradientObservation(
-  lane: DarkGradientLane | undefined,
-  frameId: number,
-  backendHint: DarkGradientBackend | undefined,
-  app: { readonly renderer: Pick<Renderer, 'inspect'> },
-): void {
-  if (lane === undefined) return;
-  const phase: 'none' | 'fxaa' | undefined =
-    frameId === DARK_GRADIENT_FIXTURE.frameCount
-      ? 'none'
-      : frameId === DARK_GRADIENT_FIXTURE.frameCount * 2
-        ? 'fxaa'
-        : undefined;
-  if (phase === undefined) return;
-  publishDarkGradientObservation(lane, frameId, phase, backendHint, app);
 }
 
 function publishDarkGradientRuntimeEvent(
@@ -313,6 +296,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+  const darkGradientSampler = createDarkGradientSampler(DARK_GRADIENT_FIXTURE.frameCount);
   const assets = app.assets;
   if (assets === undefined) throw new Error('Demo requires the host AssetRegistry');
   const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
@@ -335,15 +319,31 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         presentationProof: inspection.output.presentationProof ?? null,
       };
       if (event.kind === 'frame-submitted') {
-        publishSubmittedDarkGradientObservation(
-          darkGradientLane,
-          event.frameId,
-          darkGradientBackendHint,
-          app,
-        );
+        const phase = inspection.observation.antialias;
+        if (phase === 'none' || phase === 'fxaa') {
+          void darkGradientSampler.complete(phase, event.receipt).then((sampled) => {
+            if (!sampled.ok) {
+              publishDarkGradientRuntimeEvent({
+                rendererError: projectRendererError(sampled.error),
+                frameId: event.frameId,
+                deviceGeneration: event.deviceGeneration,
+              });
+            } else if (sampled.value) {
+              publishDarkGradientObservation(
+                darkGradientLane,
+                DARK_GRADIENT_FIXTURE.frameCount,
+                phase,
+                darkGradientBackendHint,
+                inspection,
+              );
+            }
+          }).catch((error: unknown) => console.error('[fxaa] sample completion failed:', error));
+        }
         publishDarkGradientRuntimeEvent({
           ...base,
           lastSuccessfulLifecyclePhase: 'frame-submitted',
+          presentation: event.receipt.presentation,
+          presentationPendingReason: event.receipt.presentationPendingReason ?? null,
           frameId: event.frameId,
           deviceGeneration: event.deviceGeneration,
         });
@@ -383,7 +383,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
 
   const world = app.world;
-  let darkGradientFrameCount = 0;
 
   // Step 3: register the 5 standard components.
 
@@ -530,26 +529,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       after: ['fxaa-space-toggle'],
       queries: [],
       fn: () => {
-        darkGradientFrameCount += 1;
-        if (darkGradientFrameCount === DARK_GRADIENT_FIXTURE.frameCount) {
+        const phase: DarkGradientPhase = currentAntialias === ANTIALIAS_FXAA ? 'fxaa' : 'none';
+        const engineFrameId = app.renderer.inspect().observation.frameId + 1;
+        if (darkGradientSampler.arm(phase, engineFrameId)) {
           const host = globalThis as typeof globalThis & {
             __forgeaxDarkGradientArmCapture?: (request: {
-              readonly phase: 'none' | 'fxaa';
+              readonly phase: DarkGradientPhase;
               readonly engineFrameId: number;
-              readonly observationId?: string;
             }) => void;
           };
-          host.__forgeaxDarkGradientArmCapture?.({ phase: 'none', engineFrameId: darkGradientFrameCount });
-        }
-        if (darkGradientFrameCount === DARK_GRADIENT_FIXTURE.frameCount * 2) {
-          const host = globalThis as typeof globalThis & {
-            __forgeaxDarkGradientArmCapture?: (request: {
-              readonly phase: 'none' | 'fxaa';
-              readonly engineFrameId: number;
-              readonly observationId?: string;
-            }) => void;
-          };
-          host.__forgeaxDarkGradientArmCapture?.({ phase: 'fxaa', engineFrameId: darkGradientFrameCount });
+          host.__forgeaxDarkGradientArmCapture?.({ phase, engineFrameId });
         }
       },
     });

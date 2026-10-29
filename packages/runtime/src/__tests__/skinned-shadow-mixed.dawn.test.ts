@@ -16,8 +16,8 @@ import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/eng
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
-import { drawPublished } from './draw-published';
 
 const WIDTH = 384;
 const HEIGHT = 256;
@@ -37,6 +37,8 @@ const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 type MixedCapture = {
   readonly pixels: Uint8Array;
   readonly errors: readonly unknown[];
+  /** Idle, unchanged idle, moved joint, restored joint; opaque control only. */
+  readonly checkpoints: readonly Uint8Array[];
 };
 
 function staticMaterial(world: World): AssetHandle<'material'> {
@@ -185,7 +187,7 @@ function spawnMixedScene(
   castShadow: boolean,
   maskedSkin: boolean,
   omitSkin: boolean,
-): void {
+) {
   const staticMat = staticMaterial(world);
   const skinMat = skinnedMaterial(world, maskedSkin);
   const floorMat = floorMaterial(world);
@@ -261,6 +263,7 @@ function spawnMixedScene(
       },
     );
   spawnStaticCaster(3);
+  return joint;
 }
 
 async function readPixels(device: GPUDevice, texture: GPUTexture): Promise<Uint8Array> {
@@ -280,6 +283,22 @@ async function readPixels(device: GPUDevice, texture: GPUTexture): Promise<Uint8
   buffer.unmap();
   buffer.destroy();
   return pixels;
+}
+
+function assertSkinShadowRefresh(renderer: Renderer, frame: number): void {
+  if (frame !== 19 && frame !== 20) return;
+  const views = renderer
+    .inspect()
+    .renderScene.gpuDriven.shadowViews.filter(
+      (view) => view.identity.layer !== 'static' && view.candidateCount > 0,
+    );
+  expect(views.length).toBeGreaterThan(0);
+  expect(
+    views.every(
+      (view) => view.cache === 'invalidated' && view.invalidationReason === 'skin-task-demand',
+    ),
+    JSON.stringify(views),
+  ).toBe(true);
 }
 
 /**
@@ -356,25 +375,37 @@ async function renderMixedPair(maskedSkin = false): Promise<{
     });
     const renderWorld = async (castShadow: boolean, omitSkin = false): Promise<MixedCapture> => {
       const world = new World();
-      spawnMixedScene(world, castShadow, maskedSkin, omitSkin);
+      const joint = spawnMixedScene(world, castShadow, maskedSkin, omitSkin);
       const attached = activeRenderer.attach(world);
       if (!attached.ok) throw attached.error;
-      // The first frame warms the static and skinned PSOs; the second frame is
-      // the asserted mixed command stream after both cache entries exist.
-      for (let frame = 0; frame < 2; frame += 1) {
-        const receipt = await drawPublished(activeRenderer, world);
-        expect(receipt.ok, `mixed ${castShadow ? 'shadow' : 'baseline'} draw`).toBe(true);
-        if (!receipt.ok) throw receipt.error;
-        const completed = await receipt.value.completed;
+      const checkpoints: Uint8Array[] = [];
+      // The opaque pair also qualifies retained depth and pose invalidation
+      // through 60 completed frames. The clipping control keeps its own scope.
+      for (let frame = 0; frame < (maskedSkin ? 2 : 60); frame += 1) {
+        if (frame === 20 || frame === 40)
+          world.set(joint, Transform, identityTransform([frame === 20 ? 1.5 : 0, 7, 5])).unwrap();
+        world.update(1 / 60).unwrap();
+        const receipt = await drawReadyFrame(activeRenderer, {
+          leases: [attached.value],
+          camera: { lease: attached.value },
+          environment: { lease: attached.value },
+        });
+        expect(receipt.presentation).toBe('ready');
+        const completed = await receipt.completed;
         expect(completed.ok, 'Queue::submit completion').toBe(true);
         if (!completed.ok) throw completed.error;
+        if (castShadow && !maskedSkin) assertSkinShadowRefresh(activeRenderer, frame);
+        if (!maskedSkin && (frame === 9 || frame === 19 || frame === 39 || frame === 59)) {
+          if (device === undefined || target === undefined) throw new Error('Missing Dawn target');
+          checkpoints.push(await readPixels(device, target));
+        }
       }
       if (device === undefined || target === undefined)
         throw new Error('Dawn target not initialized');
       await device.queue.onSubmittedWorkDone();
       const pixels = await readPixels(device, target);
       attached.value.dispose();
-      return { pixels, errors: [...errors] };
+      return { pixels, errors: [...errors], checkpoints };
     };
     const shadow = await renderWorld(true);
     // Remove only the clipped skin for the mask control; retain neighboring
@@ -442,5 +473,31 @@ describe('mixed static/skinned shadow pipeline (Dawn)', () => {
     for (const [x0, x1] of regions) {
       expect(regionDiff(shadow.pixels, baseline.pixels, x0, x1)).toBeGreaterThan(0);
     }
+    expect(shadow.checkpoints).toHaveLength(4);
+    expect(baseline.checkpoints).toHaveLength(4);
+    for (const capture of [shadow, baseline]) {
+      expect(capture.checkpoints[1]).toEqual(capture.checkpoints[0]);
+      expect(capture.checkpoints[3]).toEqual(capture.checkpoints[0]);
+    }
+    // Below the casters, subtract the matching unshadowed pose: changing color
+    // geometry alone cannot satisfy this actual receiver-shadow falsifier.
+    let movedShadowPixels = 0;
+    for (let y = Math.ceil(HEIGHT * 0.67); y < HEIGHT; y++)
+      for (let x = Math.floor(WIDTH / 3); x < Math.floor((2 * WIDTH) / 3); x++) {
+        const at = y * BYTES_PER_ROW + x * 4;
+        for (let channel = 0; channel < 3; channel++) {
+          const initial =
+            (shadow.checkpoints[0]?.[at + channel] ?? 0) -
+            (baseline.checkpoints[0]?.[at + channel] ?? 0);
+          const moved =
+            (shadow.checkpoints[2]?.[at + channel] ?? 0) -
+            (baseline.checkpoints[2]?.[at + channel] ?? 0);
+          if (Math.abs(initial - moved) > 2) {
+            movedShadowPixels++;
+            break;
+          }
+        }
+      }
+    expect(movedShadowPixels).toBeGreaterThan(0);
   }, 120000);
 });

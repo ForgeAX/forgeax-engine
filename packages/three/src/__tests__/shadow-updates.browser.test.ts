@@ -4,7 +4,16 @@ import OriginalRenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import { DirectionalLight, PointLight, RenderTarget, SpotLight } from 'three/src/Three.Core.js';
 import { expect, it } from 'vitest';
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  browserRendererFixture,
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  SIZE,
+  verifyReplay,
+} from './render.fixture';
+
+const rendererFor = browserRendererFixture();
 
 it.each([
   { kind: 'directional', variance: false },
@@ -40,13 +49,12 @@ it.each([
   };
   const native = make(false),
     reference = make(true);
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
-  document.body.append(canvas);
-  const renderer = new THREE.WebGPURenderer({ canvas });
+  const renderer = rendererFor();
   const original = new OriginalRenderer();
   renderer.shadowMap.enabled = original.shadowMap.enabled = true;
-  if (variance) renderer.shadowMap.type = original.shadowMap.type = THREE.VSMShadowMap;
+  renderer.shadowMap.type = original.shadowMap.type = variance
+    ? THREE.VSMShadowMap
+    : THREE.PCFShadowMap;
   original.setSize(SIZE, SIZE);
   const target = new RenderTarget(SIZE, SIZE);
   original.setOutputRenderTarget(target);
@@ -112,11 +120,9 @@ it.each([
     for (const f of [native, reference]) f.sun.shadow.autoUpdate = true;
     await frame('automatic');
   } finally {
-    await renderer.dispose();
     original.dispose();
     target.dispose();
     native.material.dispose();
     reference.material.dispose();
-    canvas.remove();
   }
 });

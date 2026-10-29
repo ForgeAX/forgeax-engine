@@ -596,6 +596,7 @@ async function boot(identity, reload) {
     pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
     backgroundPipelineLibrary: ${JSON.stringify(appOptions.backgroundPipelineLibrary)},
     standardProfile: ${JSON.stringify(appOptions.standardProfile)},
+    maxRenderShortSide: ${JSON.stringify(appOptions.wechat?.maxRenderShortSide ?? 720)},
     ${cpuProfile ? 'profiler,' : ''}
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
   }, { ...forgeaxBundlerAdapter(), shaderManifestUrl: 'https://forgeax.package/shaders/manifest.json', readShaderManifest: async url => (await fetcher(url)).text() }));

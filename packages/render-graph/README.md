@@ -199,7 +199,7 @@ cover first skip, write, later skip and first execution after rebuild.
 
 `resources.textureViewExtent(view)` returns the declared view’s compiled pixel width and height, including its base mip. It applies the same graph ownership and exact pass-access checks as `textureView(view)` and derives from existing allocation facts, including imported surface extents; consumers do not keep a second size catalogue.
 
-`execute(frame)` resolves imported handles for that frame and encodes passes in declaration order. `inspect()` returns a frozen projection of pass kinds, accesses, dependencies, resource origin, derived usage, lifetime bounds, and (for graph-created resources) `resourceAllocation`.
+`execute(frame)` resolves imported handles for that frame and encodes passes in declaration order. Execution walks the sealed dense Pass array by index. A compute Pass with no dynamic begin descriptor reuses its graph-owned label descriptor; explicit begin and timing instrumentation still resolve on each execution. `inspect()` returns a frozen projection of pass kinds, accesses, dependencies, resource origin, derived usage, lifetime bounds, and (for graph-created resources) `resourceAllocation`.
 
 `inspect().resourceAllocation` is the single compiled-graph logical ledger:
 `liveBytes` are graph-created handles currently live, and

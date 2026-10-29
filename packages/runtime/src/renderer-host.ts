@@ -8,9 +8,11 @@ import {
   constructRendererHost,
   EngineEnvironmentError,
 } from '@forgeax/engine-render/internal/construct-renderer';
+import { RhiError, type RhiErrorCode } from '@forgeax/engine-rhi';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { err } from '@forgeax/engine-types';
 import { installDefaultAssetDecoders } from './asset-contributions';
-import { loadBackendPack } from './backend-selection';
+import { type BackendPackSelection, loadBackendPack } from './backend-selection';
 import { postSpawnResolveJoints } from './scene-instances/index';
 
 export type {
@@ -18,9 +20,8 @@ export type {
   RendererHostAssembly,
 } from '@forgeax/engine-render/internal/construct-renderer';
 
-const FALLBACK_ERROR_CODES = new Set([
+const FALLBACK_ERROR_CODES = new Set<RhiErrorCode>([
   'adapter-unavailable',
-  'request-adapter-threw',
   'feature-not-enabled',
   'limit-exceeded',
   'rhi-not-available',
@@ -28,36 +29,73 @@ const FALLBACK_ERROR_CODES = new Set([
   'oom',
 ]);
 
-function canFallbackToWgpu(error: unknown): boolean {
+function canFallbackToWgpu(error: unknown): error is EngineEnvironmentError {
   if (!(error instanceof EngineEnvironmentError)) return false;
-  const webgpuError = error.detail.webgpuError;
-  if (webgpuError === undefined || typeof webgpuError !== 'object') return false;
-  if (!('code' in webgpuError)) return false;
-  const code = webgpuError.code;
-  return typeof code === 'string' && FALLBACK_ERROR_CODES.has(code);
+  const cause = error.detail.webgpuError;
+  if (!(cause instanceof RhiError)) return false;
+  if (FALLBACK_ERROR_CODES.has(cause.code)) return true;
+  if (cause.code !== 'webgpu-runtime-error') return false;
+  const detail = cause.detail;
+  if (detail === undefined || !('error' in detail)) return false;
+  const nested = detail.error;
+  return (
+    nested !== null &&
+    typeof nested === 'object' &&
+    'code' in nested &&
+    nested.code === 'request-adapter-threw'
+  );
 }
 
-/** Assemble renderer plus asset services in the Runtime-owned backend host. */
+/** Assemble one selected backend and assign environment causes to that channel. */
+async function attemptRendererHost(
+  backend: BackendPackSelection,
+  canvas: unknown,
+  options: RendererOptions | undefined,
+  bundler: BundlerOptions | undefined,
+): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
+  if (!backend.ok) {
+    return err(
+      new EngineEnvironmentError('backend initialization failed', {
+        wgpuError: backend.error,
+      }),
+    );
+  }
+  const result = await constructRendererHost(canvas, options, bundler, backend.value);
+  if (
+    !result.ok &&
+    backend.kind === 'wgpu-webgl2' &&
+    result.error instanceof EngineEnvironmentError
+  ) {
+    return err(
+      new EngineEnvironmentError(result.error.reason, {
+        wgpuError: result.error.detail.wgpuError ?? result.error.detail.webgpuError,
+      }),
+    );
+  }
+  return result;
+}
+
+/** Runtime alone owns the native-first, at-most-once backend attempt policy. */
 export async function constructRuntimeRendererHost(
   canvas: unknown,
   options?: RendererOptions,
   bundler?: BundlerOptions,
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
   const first = await loadBackendPack(options);
-  if (!first.ok) throw first.error;
-  const constructed = await constructRendererHost(canvas, options, bundler, first.value);
-  if (constructed.ok) installDefaultAssetDecoders(constructed.value.assets);
-  if (
-    constructed.ok ||
-    options?.rhi !== undefined ||
-    typeof globalThis === 'undefined' ||
-    !canFallbackToWgpu(constructed.error)
-  ) {
-    return constructed;
+  let result = await attemptRendererHost(first, canvas, options, bundler);
+  if (first.kind === 'webgpu' && !result.ok && canFallbackToWgpu(result.error)) {
+    const primary = result.error.detail.webgpuError;
+    const fallback = await loadBackendPack(options, 'wgpu-webgl2');
+    result = await attemptRendererHost(fallback, canvas, options, bundler);
+    if (!result.ok && result.error instanceof EngineEnvironmentError) {
+      result = err(
+        new EngineEnvironmentError(result.error.reason, {
+          webgpuError: primary,
+          wgpuError: result.error.detail.wgpuError,
+        }),
+      );
+    }
   }
-  const fallback = await loadBackendPack(options, true);
-  if (!fallback.ok) return constructed;
-  const result = await constructRendererHost(canvas, options, bundler, fallback.value);
   if (result.ok) installDefaultAssetDecoders(result.value.assets);
   return result;
 }

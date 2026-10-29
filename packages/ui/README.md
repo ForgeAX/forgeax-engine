@@ -1,5 +1,7 @@
 # `@forgeax/engine-ui`
 
+`createUiImporter().capabilities.sourceFormats` declares `.ui.html` registration and one UI output. Registration preserves identity; import still requires the matching `.ui.css` companion and validates the complete UI source.
+
 UI is an asset plus a small behavior island. The asset package owns the stable HTML/CSS payload; game code supplies dynamic text, template clones, input and lifecycle.
 
 > [!IMPORTANT]

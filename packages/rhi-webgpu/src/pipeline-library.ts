@@ -1,23 +1,45 @@
 import {
+  type ComputePipeline,
+  checkPipelineLibraryAllocation,
   err,
   ok,
+  ownPipelineLibrary,
+  type PipelineLayout,
   type PipelineLibrary,
   type PipelineLibraryCompute,
   type PipelineLibraryInspection,
+  type PipelineLibraryLimits,
   type PipelineLibraryManifest,
   type PipelineLibraryPrepareOptions,
   type PipelineLibraryRender,
+  PipelineRecipeState,
+  pipelineDescriptorState,
+  pipelineLibraryLimit,
+  pipelineLibraryLimits,
+  type RenderPipeline,
   type Result,
   RhiError,
+  type ShaderModule,
 } from '@forgeax/engine-rhi';
-import { addLoadWork, beginLoadTimeline, sha256 } from '@forgeax/engine-types';
+import {
+  addLoadWork,
+  beginLoadTimeline,
+  pipelineDescriptorJson,
+  snapshotPipelineDescriptor as pod,
+  ShaderSource,
+  sha256,
+  shaderSourceForDescriptor,
+} from '@forgeax/engine-types';
 import { type CompilationRecord, PipelineCompilationRecords } from './pipeline-compilation-records';
+import { PipelineResourceIndex, pipelineResource } from './pipeline-resource-index';
 
 type Recipe = PipelineLibraryRender | PipelineLibraryCompute;
 type NativePipeline = GPURenderPipeline | GPUComputePipeline;
 interface Program {
+  readonly dependencies: readonly object[];
   readonly localIdentity: number;
   readonly recipe: Recipe;
+  readonly state: PipelineRecipeState;
   readonly kind: 'render' | 'compute';
   handle?: NativePipeline;
   ready: boolean;
@@ -30,8 +52,6 @@ interface Program {
   preload?: number;
   runtimeRequest?: CompilationRecord<Program>;
 }
-const MAX_ENTRIES = 4096;
-const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 /**
  * Native async compilation runs on the browser's GPU-process task pool. Four
  * outstanding requests left most cores idle (1,121 game recipes took ~32 s on a
@@ -76,36 +96,9 @@ function entry<T>(rows: readonly T[], index: number): T {
   return value;
 }
 
-/** Snapshot WebIDL dictionaries/iterables; never stringify opaque GPU handles. */
-function pod(value: unknown, depth = 0): unknown {
-  if (depth > 24) throw new Error('Pipeline descriptor nesting exceeds 24');
-  if (
-    value === undefined ||
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean'
-  )
-    return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value !== 'object')
-    throw new Error('Pipeline descriptor must contain finite POD values');
-  if (Symbol.iterator in value)
-    return Array.from(value as Iterable<unknown>, (v) => pod(v, depth + 1));
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null)
-    throw new Error('Unknown native pipeline dependency');
-  const result: Record<string, unknown> = Object.create(null);
-  for (const key of Object.keys(value).sort()) {
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype')
-      throw new Error('Invalid descriptor key');
-    const child = pod((value as Record<string, unknown>)[key], depth + 1);
-    if (child !== undefined) result[key] = child;
-  }
-  return result;
-}
 function identity(value: object): string {
   const { label: _label, ...semantic } = value as Record<string, unknown>;
-  return JSON.stringify(pod(semantic));
+  return pipelineDescriptorJson(semantic);
 }
 /** One native preparation request and its load progress item. */
 type WarmRequest = {
@@ -152,23 +145,29 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private closed = false;
   private shaderInfo = new WeakMap<GPUShaderModule, Promise<GPUCompilationInfo>>();
   private readonly shaderIds = new WeakMap<object, number>();
-  private readonly shaderByCode = new Map<string, number>();
-  private readonly shaders: {
+  private readonly shaders = new PipelineResourceIndex<{
     descriptor: GPUShaderModuleDescriptor;
+    source: ShaderSource;
     handle: GPUShaderModule;
     sourceDigest?: string;
-  }[] = [];
+    projections?: Map<string, { id: number; record: object }>;
+  }>();
   private readonly groupIds = new WeakMap<object, number>();
-  private readonly groupKeys = new Map<string, number>();
-  private readonly groups: {
+  private readonly groups = new PipelineResourceIndex<{
     descriptor: GPUBindGroupLayoutDescriptor;
     handle: GPUBindGroupLayout;
-  }[] = [];
+  }>();
   private readonly layoutIds = new WeakMap<object, number>();
-  private readonly layoutKeys = new Map<string, number>();
-  private readonly layouts: { groups: number[]; handle: GPUPipelineLayout }[] = [];
-  private readonly programs = new Map<string, Program>();
-  private readonly computeEntryModules = new Map<number, Map<string, number>>();
+  private readonly layouts = new PipelineResourceIndex<{
+    groups: number[];
+    dependencies: readonly object[];
+    handle: GPUPipelineLayout;
+  }>();
+  private readonly programs = new PipelineResourceIndex<Program>();
+  private nextProgram = 0;
+  // Renderer generation/roster owners explicitly retain their preparation graph.
+  private retained = new WeakMap<object, readonly object[]>();
+  private readonly collectors = new Set<Set<object>>();
   private readonly counts = {
     shaderHits: 0,
     pipelineHits: 0,
@@ -201,31 +200,49 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private active(): void {
     if (this.closed) throw new Error('Pipeline library device is disposed');
   }
+  collect(): { dispose(): void } {
+    this.active();
+    const records = new Set<object>([
+      ...this.shaders.values(),
+      ...this.groups.values(),
+      ...this.layouts.values(),
+      ...this.programs.values(),
+    ]);
+    this.collectors.add(records);
+    return {
+      dispose: () => {
+        this.collectors.delete(records);
+        records.clear();
+      },
+    };
+  }
+  private collectRecord(record: object): void {
+    for (const collector of this.collectors) collector.add(record);
+  }
+  findShaderModule(descriptor: object): GPUShaderModule | undefined {
+    this.active();
+    const source = shaderSourceForDescriptor(descriptor);
+    const handle = source === undefined ? undefined : this.shaders.find(source.identity)?.handle;
+    if (handle !== undefined) this.counts.shaderHits++;
+    return handle;
+  }
   createShaderModule(descriptor: GPUShaderModuleDescriptor): GPUShaderModule {
     this.active();
-    const id = this.shaderByCode.get(descriptor.code);
-    if (id !== undefined) {
+    const source =
+      shaderSourceForDescriptor(descriptor) ?? ShaderSource.fromText(descriptor.code, new Map());
+    const known = this.shaders.find(source.identity);
+    if (known !== undefined) {
       this.counts.shaderHits++;
-      return entry(this.shaders, id).handle;
+      return known.handle;
     }
     const endShader = beginLoadTimeline('shader', descriptor.label ?? 'shader');
     const handle = this.device.createShaderModule(descriptor);
-    endShader(descriptor.code.length);
-    const bytes = descriptor.code.length * 2;
-    if (this.shaders.length >= MAX_ENTRIES || this.counts.sourceBytes + bytes > MAX_SOURCE_BYTES) {
-      this.counts.overflow++;
-      return handle;
-    }
-    this.shaderIds.set(handle, this.shaders.length);
-    this.shaderByCode.set(descriptor.code, this.shaders.length);
-    this.shaders.push({
-      descriptor: {
-        code: descriptor.code,
-        ...(descriptor.label === undefined ? {} : { label: descriptor.label }),
-      },
-      handle,
-    });
-    this.counts.sourceBytes += bytes;
+    endShader(source.length);
+    const record = { source, descriptor: source.descriptor(descriptor.label), handle };
+    const id = this.shaders.add(source.identity, record);
+    this.shaderIds.set(handle, id);
+    this.shaders.own(handle, record);
+    this.collectRecord(record);
     return handle;
   }
   // forgeax-async-whitelist: dom-native - native shader diagnostic completion; adapter owns Result.
@@ -251,16 +268,13 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       entries: Array.from(descriptor.entries).sort((a, b) => a.binding - b.binding),
     }) as GPUBindGroupLayoutDescriptor;
     const key = identity(snapshot),
-      known = this.groupKeys.get(key);
-    if (known !== undefined) return entry(this.groups, known).handle;
+      known = this.groups.find(key);
+    if (known !== undefined) return known.handle;
     const handle = this.device.createBindGroupLayout(snapshot);
-    if (this.groups.length >= MAX_ENTRIES) {
-      this.counts.overflow++;
-      return handle;
-    }
-    this.groupIds.set(handle, this.groups.length);
-    this.groupKeys.set(key, this.groups.length);
-    this.groups.push({ descriptor: snapshot, handle });
+    const record = { descriptor: snapshot, handle };
+    this.groupIds.set(handle, this.groups.add(key, record));
+    this.groups.own(handle, record);
+    this.collectRecord(record);
     return handle;
   }
   createPipelineLayout(descriptor: GPUPipelineLayoutDescriptor): GPUPipelineLayout {
@@ -275,16 +289,17 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       return this.device.createPipelineLayout(descriptor);
     }
     const key = JSON.stringify(groups),
-      known = this.layoutKeys.get(key);
-    if (known !== undefined) return entry(this.layouts, known).handle;
+      known = this.layouts.find(key);
+    if (known !== undefined) return known.handle;
     const handle = this.device.createPipelineLayout(descriptor);
-    if (this.layouts.length >= MAX_ENTRIES) {
-      this.counts.overflow++;
-      return handle;
-    }
-    this.layoutIds.set(handle, this.layouts.length);
-    this.layoutKeys.set(key, this.layouts.length);
-    this.layouts.push({ groups: groups as number[], handle });
+    const record = {
+      groups: groups as number[],
+      dependencies: (groups as number[]).map((id) => pipelineResource(this.groups, id)),
+      handle,
+    };
+    this.layoutIds.set(handle, this.layouts.add(key, record));
+    this.layouts.own(handle, record);
+    this.collectRecord(record);
     return handle;
   }
   private program(
@@ -296,11 +311,14 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const stage = (input: GPUProgrammableStage) => {
       const module = this.shaderIds.get(input.module);
       if (module === undefined) throw new Error('Unknown shader module');
+      dependencies.push(pipelineResource(this.shaders, module));
       return { ...input, module };
     };
+    const dependencies: object[] = [];
     let recipe: Recipe;
     try {
       if (layout === undefined) throw new Error('Unknown pipeline layout');
+      if (layout !== 'auto') dependencies.push(pipelineResource(this.layouts, layout));
       recipe = pod(
         'vertex' in descriptor
           ? {
@@ -317,17 +335,158 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       this.counts.unrecordable++;
       return undefined;
     }
-    const key = `${kind}:${identity(recipe)}`;
-    let program = this.programs.get(key);
+    const state = pipelineDescriptorState(kind, recipe as unknown as Record<string, unknown>);
+    const key = this.programKey(state, layout as number | 'auto', recipe);
+    let program = this.programs.find(key);
     if (program === undefined) {
-      if (this.programs.size >= MAX_ENTRIES) {
-        this.counts.overflow++;
-        return undefined;
-      }
-      program = { localIdentity: this.programs.size + 1, kind, recipe, ready: false };
-      this.programs.set(key, program);
+      program = {
+        dependencies,
+        state,
+        localIdentity: ++this.nextProgram,
+        kind,
+        recipe,
+        ready: false,
+      };
+      this.programs.add(key, program);
+      this.collectRecord(program);
     }
     return program;
+  }
+  findRenderState(
+    dependencies: {
+      layout: PipelineLayout | 'auto';
+      vertex: ShaderModule;
+      fragment?: ShaderModule;
+    },
+    matches: (state: PipelineRecipeState) => boolean,
+  ): PipelineRecipeState | undefined {
+    this.active();
+    const layout =
+      dependencies.layout === 'auto' ? 'auto' : this.layoutIds.get(dependencies.layout);
+    const vertex = this.shaderIds.get(dependencies.vertex);
+    const fragment =
+      dependencies.fragment === undefined ? undefined : this.shaderIds.get(dependencies.fragment);
+    if (
+      layout === undefined ||
+      vertex === undefined ||
+      (dependencies.fragment !== undefined && fragment === undefined)
+    )
+      return undefined;
+    for (const program of this.programs.values()) {
+      if (program.kind !== 'render' || !('vertex' in program.recipe)) continue;
+      const recipe = program.recipe;
+      if (
+        recipe.layout === layout &&
+        recipe.vertex.module === vertex &&
+        recipe.fragment?.module === fragment &&
+        matches(program.state)
+      )
+        return program.state;
+    }
+    return undefined;
+  }
+  private programKey(
+    state: PipelineRecipeState,
+    layout: number | 'auto',
+    stages: {
+      vertex?: { module: number };
+      fragment?: { module: number };
+      compute?: { module: number };
+    },
+  ): string {
+    return `${state.kind}:${layout}:${stages.vertex?.module ?? '-'}:${stages.fragment?.module ?? '-'}:${stages.compute?.module ?? '-'}:${state.key}`;
+  }
+  private select(
+    state: PipelineRecipeState,
+    layout: PipelineLayout | 'auto',
+    stages: { vertex?: ShaderModule; fragment?: ShaderModule; compute?: ShaderModule },
+    completed: boolean,
+  ): NativePipeline | Promise<NativePipeline> | undefined {
+    this.active();
+    if (!PipelineRecipeState.is(state)) throw new Error('Unadmitted pipeline state');
+    const layoutId = layout === 'auto' ? 'auto' : this.layoutIds.get(layout);
+    if (layoutId === undefined) return undefined;
+    const ids: {
+      vertex?: { module: number };
+      fragment?: { module: number };
+      compute?: { module: number };
+    } = {};
+    for (const stage of ['vertex', 'fragment', 'compute'] as const) {
+      const handle = stages[stage];
+      if (handle === undefined) continue;
+      let id = this.shaderIds.get(handle);
+      if (id === undefined) return undefined;
+      if (stage === 'compute') {
+        const entryPoint = (state.value.compute as { entryPoint?: string } | undefined)?.entryPoint;
+        if (entryPoint !== undefined)
+          id = pipelineResource(this.shaders, id).projections?.get(entryPoint)?.id ?? id;
+      }
+      ids[stage] = { module: id };
+    }
+    const program = this.programs.find(this.programKey(state, layoutId, ids));
+    if (program === undefined) return undefined;
+    if ((!completed || program.ready) && program.handle !== undefined) {
+      this.counts.pipelineHits++;
+      return program.handle;
+    }
+    if (completed && program.pending !== undefined) {
+      if (program.runtimeRequest === undefined)
+        program.runtimeRequest = this.recordRuntimeRequest(
+          program,
+          state.kind,
+          program.recipe,
+          'async',
+        );
+      this.counts.pipelineHits++;
+      return program.pending;
+    }
+    return undefined;
+  }
+  // forgeax-async-whitelist: dom-native - shares the existing record's native completion.
+  selectRender(
+    state: PipelineRecipeState,
+    dependencies: {
+      layout: PipelineLayout | 'auto';
+      vertex: ShaderModule;
+      fragment?: ShaderModule;
+    },
+    completed: boolean,
+  ):
+    | Result<RenderPipeline | undefined, RhiError>
+    | Promise<Result<RenderPipeline | undefined, RhiError>> {
+    try {
+      if (state.kind !== 'render') throw new Error('Expected render state');
+      const result = this.select(state, dependencies.layout, dependencies, completed);
+      return result instanceof Promise
+        ? result.then(
+            (value) => ok(value as unknown as RenderPipeline),
+            (cause) => err(failure(cause)),
+          )
+        : ok(result as unknown as RenderPipeline | undefined);
+    } catch (cause) {
+      return err(failure(cause));
+    }
+  }
+  // forgeax-async-whitelist: dom-native - shares the existing record's native completion.
+  selectCompute(
+    state: PipelineRecipeState,
+    dependencies: { layout: PipelineLayout | 'auto'; compute: ShaderModule },
+    completed: boolean,
+  ):
+    | Result<ComputePipeline | undefined, RhiError>
+    | Promise<Result<ComputePipeline | undefined, RhiError>> {
+    try {
+      if (state.kind !== 'compute') throw new Error('Expected compute state');
+      const result = this.select(state, dependencies.layout, dependencies, completed);
+      return result instanceof Promise
+        ? result.then(
+            (value) => ok(value as unknown as ComputePipeline),
+            (cause) => err(failure(cause)),
+          )
+        : ok(result as unknown as ComputePipeline | undefined);
+    } catch (cause) {
+      return err(failure(cause));
+    }
   }
   createRenderPipeline(descriptor: GPURenderPipelineDescriptor): GPURenderPipeline {
     return this.createSync('render', descriptor) as GPURenderPipeline;
@@ -342,12 +501,15 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const specialized =
       id === undefined || descriptor.compute.entryPoint === undefined
         ? undefined
-        : this.computeEntryModules.get(id)?.get(descriptor.compute.entryPoint);
+        : pipelineResource(this.shaders, id).projections?.get(descriptor.compute.entryPoint)?.id;
     return specialized === undefined
       ? descriptor
       : {
           ...descriptor,
-          compute: { ...descriptor.compute, module: entry(this.shaders, specialized).handle },
+          compute: {
+            ...descriptor.compute,
+            module: pipelineResource(this.shaders, specialized).handle,
+          },
         };
   }
   private createSync(
@@ -372,7 +534,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           ? this.device.createRenderPipeline(descriptor as GPURenderPipelineDescriptor)
           : this.device.createComputePipeline(descriptor as GPUComputePipelineDescriptor);
       endPipeline();
-      if (program !== undefined) program.handle = handle;
+      if (program !== undefined) {
+        program.handle = handle;
+        this.programs.own(handle, program);
+      }
       this.compilationRecords.finish(record, 'returned');
       // A synchronous handle is usable, but it is never compilation-completion evidence.
       return handle;
@@ -455,6 +620,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         this.active();
         if (program !== undefined) {
           program.handle = handle;
+          this.programs.own(handle, program);
           program.ready = true;
         }
         this.counts.compilationCompleted++;
@@ -493,6 +659,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       renderPipelines: [...this.programs.values()].filter((p) => p.kind === 'render').length,
       computePipelines: [...this.programs.values()].filter((p) => p.kind === 'compute').length,
       ...this.counts,
+      sourceBytes: [...this.shaders.values()].reduce((sum, row) => sum + row.source.length * 2, 0),
       ...(options?.runtimeRequests === true
         ? {
             runtimeRequests: this.compilationRecords.inspect((program) =>
@@ -520,7 +687,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         ? [recipe.vertex.module, ...(recipe.fragment === undefined ? [] : [recipe.fragment.module])]
         : [recipe.compute.module];
     const shaders = [...new Set(modules)].map((module) => {
-      const source = entry(this.shaders, module);
+      const source = pipelineResource(this.shaders, module);
       return {
         module,
         label: source.descriptor.label ?? null,
@@ -530,7 +697,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const bindGroupLayouts =
       recipe.layout === 'auto'
         ? 'auto'
-        : entry(this.layouts, recipe.layout).groups.map((id) => entry(this.groups, id).descriptor);
+        : pipelineResource(this.layouts, recipe.layout).groups.map(
+            (id) => pipelineResource(this.groups, id).descriptor,
+          );
     return {
       localIdentity: program.localIdentity,
       identity: program.semanticIdentity ?? null,
@@ -553,7 +722,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private recordRuntimeRequest(
     program: Program | undefined,
     kind: 'render' | 'compute',
-    descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
+    descriptor: { readonly label?: string },
     mode: 'sync' | 'async',
   ): CompilationRecord<Program> {
     const now = performance.now();
@@ -588,19 +757,21 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         ? [recipe.vertex.module, ...(recipe.fragment === undefined ? [] : [recipe.fragment.module])]
         : [recipe.compute.module];
     const digest = (module: number): string => {
-      const source = entry(this.shaders, module);
-      source.sourceDigest ??= `sha256:${sha256(source.descriptor.code)}`;
+      const source = pipelineResource(this.shaders, module);
+      source.sourceDigest ??= `sha256:${source.source.identity}`;
       return source.sourceDigest;
     };
     const shaders = [...new Set(modules)].map((module) => ({
       module,
-      label: entry(this.shaders, module).descriptor.label ?? null,
+      label: pipelineResource(this.shaders, module).descriptor.label ?? null,
       sourceDigest: digest(module),
     }));
     const bindGroupLayouts =
       recipe.layout === 'auto'
         ? ('auto' as const)
-        : entry(this.layouts, recipe.layout).groups.map((id) => entry(this.groups, id).descriptor);
+        : pipelineResource(this.layouts, recipe.layout).groups.map(
+            (id) => pipelineResource(this.groups, id).descriptor,
+          );
     const stage = <T extends { module: number }>(value: T) => ({
       ...value,
       module: digest(value.module),
@@ -640,10 +811,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       bindGroupLayouts: pod(bindGroupLayouts) as typeof bindGroupLayouts,
     };
   }
-  export(): Result<PipelineLibraryManifest, RhiError> {
+  export(limits?: PipelineLibraryLimits): Result<PipelineLibraryManifest, RhiError> {
     try {
       this.active();
-      if (this.counts.overflow || this.counts.unrecordable)
+      if (this.counts.unrecordable)
         throw new Error(
           'Incomplete pipeline library: inspect overflow and unrecordable counts before exporting',
         );
@@ -670,7 +841,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       });
       const layout = (id: number | 'auto') => {
         if (id === 'auto') return id;
-        for (const group of entry(this.layouts, id).groups) intern(groupIds, group);
+        for (const group of pipelineResource(this.layouts, id).groups) intern(groupIds, group);
         return intern(layoutIds, id);
       };
       const renderPipelines = used
@@ -690,27 +861,31 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           const d = p.recipe as PipelineLibraryCompute;
           return { ...d, layout: layout(d.layout), compute: stage(d.compute) };
         });
-      const computeEntryModules = [...this.computeEntryModules].flatMap(([module, entries]) =>
-        [...entries].map(([entryPoint, specializedModule]) => ({
-          module: intern(shaderIds, module),
+      const computeEntryModules = [...this.shaders.values()].flatMap((source) =>
+        [...(source.projections ?? [])].map(([entryPoint, specialized]) => ({
+          module: intern(shaderIds, this.shaderIds.get(source.handle) as number),
           entryPoint,
-          specializedModule: intern(shaderIds, specializedModule),
+          specializedModule: intern(shaderIds, specialized.id),
         })),
       );
-      return ok(
-        structuredClone({
-          version: 1,
-          backend: 'webgpu',
-          shaders: [...shaderIds.keys()].map((id) => entry(this.shaders, id).descriptor),
-          bindGroupLayouts: [...groupIds.keys()].map((id) => entry(this.groups, id).descriptor),
-          pipelineLayouts: [...layoutIds.keys()].map((id) =>
-            entry(this.layouts, id).groups.map((group) => intern(groupIds, group)),
-          ),
-          renderPipelines,
-          computePipelines,
-          ...(computeEntryModules.length === 0 ? {} : { computeEntryModules }),
-        }),
-      );
+      const manifest: PipelineLibraryManifest = {
+        version: 1,
+        backend: 'webgpu',
+        shaders: [...shaderIds.keys()].map((id) => pipelineResource(this.shaders, id).descriptor),
+        bindGroupLayouts: [...groupIds.keys()].map(
+          (id) => pipelineResource(this.groups, id).descriptor,
+        ),
+        pipelineLayouts: [...layoutIds.keys()].map((id) =>
+          pipelineResource(this.layouts, id).groups.map((group) => intern(groupIds, group)),
+        ),
+        renderPipelines,
+        computePipelines,
+        ...(computeEntryModules.length === 0 ? {} : { computeEntryModules }),
+      };
+      checkPipelineLibraryAllocation(manifest, 'export', limits);
+      // Matching declared input policy is checked without cloning the graph.
+      validateManifest(manifest, limits, false);
+      return ok(structuredClone(manifest));
     } catch (cause) {
       return err(failure(cause));
     }
@@ -741,30 +916,20 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       this.active();
       const concurrency = warmupConcurrency(options);
       if (background) await backgroundTurn();
-      const manifest = validateManifest(input);
+      const manifest = ownPipelineLibrary(
+        validateManifest(input, options.inputLimits),
+        options.inputLimits,
+      );
+      const descriptors = this.prepareShaderDescriptors(manifest, options.sources);
       if (
         typeof this.device.createRenderPipelineAsync !== 'function' ||
         typeof this.device.createComputePipelineAsync !== 'function'
       )
         throw new Error('Native asynchronous pipeline compilation is unavailable');
       const shaders = background
-        ? await this.backgroundShaders(manifest.shaders, concurrency)
-        : manifest.shaders.map((d) => this.createShaderModule(d));
-      for (const projection of manifest.computeEntryModules ?? []) {
-        const module = this.shaderIds.get(entry(shaders, projection.module));
-        const specializedModule = this.shaderIds.get(entry(shaders, projection.specializedModule));
-        if (module === undefined || specializedModule === undefined)
-          throw new Error('Compute entry projection exceeds shader capacity');
-        let entries = this.computeEntryModules.get(module);
-        if (entries === undefined) {
-          entries = new Map();
-          this.computeEntryModules.set(module, entries);
-        }
-        const previous = entries.get(projection.entryPoint);
-        if (previous !== undefined && previous !== specializedModule)
-          throw new Error('Conflicting compute entry projection');
-        entries.set(projection.entryPoint, specializedModule);
-      }
+        ? await this.backgroundShaders(descriptors, concurrency)
+        : descriptors.map((d) => this.createShaderModule(d));
+      this.installComputeEntryProjections(manifest, shaders);
       const groups: GPUBindGroupLayout[] = [];
       for (const descriptor of manifest.bindGroupLayouts) {
         if (background) await backgroundTurn();
@@ -783,6 +948,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         ...s,
         module: entry(shaders, s.module),
       });
+      const retained: object[] = [...shaders, ...groups, ...layouts];
       const requests = interleaveManifestOrder<WarmRequest>(
         manifest.renderPipelines.map(({ fragment, ...d }) => ({
           label: d.label ?? 'render',
@@ -795,6 +961,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
               ...(fragment === undefined ? {} : { fragment: stage(fragment) }),
             },
             background,
+            retained,
           ),
         })),
         manifest.computePipelines.map((d) => ({
@@ -807,9 +974,11 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
               compute: stage(d.compute),
             }),
             background,
+            retained,
           ),
         })),
       );
+      if (options.owner !== undefined) this.retained.set(options.owner, retained);
       // Every library recipe has an owner before native requests are issued.
       // A runtime request can then distinguish an absent recipe from a later
       // entry of an in-progress background warmup without guessing from labels.
@@ -833,20 +1002,71 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     }
   }
 
+  private prepareShaderDescriptors(
+    manifest: PipelineLibraryManifest,
+    sources: PipelineLibraryPrepareOptions['sources'],
+  ): readonly GPUShaderModuleDescriptor[] {
+    if (sources !== undefined) {
+      if (sources.length !== manifest.shaders.length)
+        throw new Error('Pipeline source count mismatch');
+      for (let i = 0; i < manifest.shaders.length; i++) {
+        const source = entry(sources, i),
+          descriptor = entry(manifest.shaders, i);
+        if (!ShaderSource.is(source)) throw new Error('Unadmitted pipeline source reference');
+        if (
+          source.identity !==
+          (shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code])).identity
+        )
+          throw new Error('Pipeline source identity mismatch');
+      }
+    }
+    return sources === undefined
+      ? manifest.shaders
+      : sources.map((source, i) => source.descriptor(entry(manifest.shaders, i).label));
+  }
+
+  private installComputeEntryProjections(
+    manifest: PipelineLibraryManifest,
+    shaders: readonly GPUShaderModule[],
+  ): void {
+    for (const projection of manifest.computeEntryModules ?? []) {
+      const module = this.shaderIds.get(entry(shaders, projection.module));
+      const specializedModule = this.shaderIds.get(entry(shaders, projection.specializedModule));
+      if (module === undefined || specializedModule === undefined)
+        throw new Error('Compute entry projection exceeds shader capacity');
+      const original = pipelineResource(this.shaders, module);
+      if (original.projections === undefined) original.projections = new Map();
+      const entries = original.projections;
+      const previous = entries.get(projection.entryPoint);
+      if (previous !== undefined && previous.id !== specializedModule)
+        throw new Error('Conflicting compute entry projection');
+      entries.set(projection.entryPoint, {
+        id: specializedModule,
+        record: pipelineResource(this.shaders, specializedModule),
+      });
+    }
+  }
+
   private indexWarmRequest(
     kind: 'render' | 'compute',
     descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
     background: boolean,
+    retained: object[],
   ): WarmRequest['run'] {
     const program = this.program(kind, descriptor);
-    if (program !== undefined) program.preload = (program.preload ?? 0) | (background ? 2 : 1);
-    return () =>
-      this.createAsync(
+    if (program !== undefined) {
+      program.preload = (program.preload ?? 0) | (background ? 2 : 1);
+      retained.push(program);
+    }
+    return () => {
+      void program;
+      return this.createAsync(
         kind,
         descriptor,
         false,
         background ? 'background-warmup' : 'startup-warmup',
       );
+    };
   }
 
   private async backgroundShaders(
@@ -914,21 +1134,37 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     this.closed = true;
     this.compilationRecords.clear();
     this.programs.clear();
-    this.computeEntryModules.clear();
+    this.retained = new WeakMap();
+    for (const records of this.collectors) records.clear();
+    this.collectors.clear();
     this.shaderInfo = new WeakMap();
-    this.shaderByCode.clear();
-    this.groupKeys.clear();
-    this.layoutKeys.clear();
-    this.shaders.length = 0;
-    this.groups.length = 0;
-    this.layouts.length = 0;
+    this.shaders.clear();
+    this.groups.clear();
+    this.layouts.clear();
     this.counts.sourceBytes = 0;
   }
 }
 
 /** Validate the entire dependency graph before the first native creation. */
-function validateManifest(input: PipelineLibraryManifest): PipelineLibraryManifest {
-  const m = pod(input) as PipelineLibraryManifest;
+function validateManifest(
+  input: PipelineLibraryManifest,
+  policy?: PipelineLibraryLimits,
+  snapshot = true,
+): PipelineLibraryManifest {
+  const limits = pipelineLibraryLimits(policy);
+  checkPipelineLibraryAllocation(input, 'input', policy);
+  const m = (
+    snapshot
+      ? {
+          ...(pod({ ...input, shaders: [] }) as PipelineLibraryManifest),
+          shaders: input.shaders.map(
+            (descriptor) =>
+              shaderSourceForDescriptor(descriptor)?.descriptor(descriptor.label) ??
+              (pod(descriptor) as GPUShaderModuleDescriptor),
+          ),
+        }
+      : input
+  ) as PipelineLibraryManifest;
   if (m?.version !== 1 || m.backend !== 'webgpu')
     throw new Error('Unsupported pipeline library version/backend');
   for (const rows of [
@@ -938,9 +1174,9 @@ function validateManifest(input: PipelineLibraryManifest): PipelineLibraryManife
     m.renderPipelines,
     m.computePipelines,
   ])
-    if (!Array.isArray(rows) || rows.length > MAX_ENTRIES)
+    if (!Array.isArray(rows) || rows.length > limits.entries)
       throw new Error('Invalid pipeline library population');
-  if (m.renderPipelines.length + m.computePipelines.length > MAX_ENTRIES)
+  if (m.renderPipelines.length + m.computePipelines.length > limits.entries)
     throw new Error('Pipeline library population exceeds device capacity');
   const ref = (id: unknown, rows: readonly unknown[]) => {
     if (!Number.isInteger(id) || (id as number) < 0 || (id as number) >= rows.length)
@@ -951,7 +1187,7 @@ function validateManifest(input: PipelineLibraryManifest): PipelineLibraryManife
     if (typeof s.code !== 'string') throw new Error('Missing shader source');
     bytes += s.code.length * 2;
   }
-  if (bytes > MAX_SOURCE_BYTES) throw new Error('Pipeline library source capacity exceeded');
+  pipelineLibraryLimit('input', 'outputBytes', bytes, limits.outputBytes);
   for (const g of m.bindGroupLayouts)
     if (!Array.isArray(g.entries)) throw new Error('Missing bind group layout entries');
   for (const ids of m.pipelineLayouts) {
@@ -973,7 +1209,7 @@ function validateManifest(input: PipelineLibraryManifest): PipelineLibraryManife
     ref(p.compute?.module, m.shaders);
   }
   if (m.computeEntryModules !== undefined) {
-    if (!Array.isArray(m.computeEntryModules) || m.computeEntryModules.length > MAX_ENTRIES)
+    if (!Array.isArray(m.computeEntryModules) || m.computeEntryModules.length > limits.entries)
       throw new Error('Invalid compute entry projection population');
     const seen = new Set<string>();
     for (const p of m.computeEntryModules) {

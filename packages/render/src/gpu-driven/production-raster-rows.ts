@@ -2,6 +2,7 @@ import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import type { GpuSceneResourceFrame } from '../gpu-scene';
+import { renderStateSignature } from '../material-render-state';
 import type { MeshGeometry } from '../scene/mesh-frame';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { BatchExecution } from './batch-execution';
@@ -273,7 +274,7 @@ export class BatchRowAssembly {
     if (state === undefined) return 'undefined';
     let serialized = this.serializedStates.get(state);
     if (serialized === undefined) {
-      serialized = JSON.stringify(state);
+      serialized = renderStateSignature(state);
       this.serializedStates.set(state, serialized);
     }
     return serialized;

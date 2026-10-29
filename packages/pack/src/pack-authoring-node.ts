@@ -322,7 +322,15 @@ function scanFailure(operation: PackAuthoringOperation, cause: unknown): PackAut
     typeof value.hint === 'string'
       ? value.hint
       : 'repair the first source or package diagnostic, then retry',
-    { requestId: operation.requestId, cause: value.detail ?? String(cause) },
+    {
+      requestId: operation.requestId,
+      cause: {
+        ...(typeof value.code === 'string' ? { code: value.code } : {}),
+        ...(typeof value.expected === 'string' ? { expected: value.expected } : {}),
+        ...(typeof value.hint === 'string' ? { hint: value.hint } : {}),
+        detail: value.detail ?? { reason: String(cause) },
+      },
+    },
   );
 }
 

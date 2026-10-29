@@ -19,7 +19,9 @@ import {
   encodeTape,
   type FrameModel,
   openReplay,
+  type ReplaySession,
   replayDeviceRequest,
+  type WorkEntry,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -27,6 +29,7 @@ import { ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -57,6 +60,49 @@ function visibleSurfaceViewIds(model: FrameModel): ReadonlySet<string> {
   );
 }
 
+async function visibleSurfaceReadbacks(
+  replay: ReplaySession,
+  model: FrameModel,
+  geometry: WorkEntry,
+  lane: string,
+) {
+  const resource = geometry.attachments?.colorViewHandleIds[6];
+  if (resource === undefined) throw new Error('missing visible surface attachment');
+  const contextResource = geometry.attachments?.colorViewHandleIds[4];
+  if (contextResource === undefined) throw new Error('missing lighting context attachment');
+  const shadingResource = geometry.attachments?.colorViewHandleIds[1];
+  if (shadingResource === undefined) throw new Error('missing shading normal attachment');
+  const temporalResource = model.resources.find(
+    (resource) =>
+      resource.lifecycle.state === 'live' &&
+      (resource.descriptor as { desc?: { label?: string } } | null)?.desc?.label ===
+        'standard-scene-temporal',
+  );
+  if (temporalResource === undefined) throw new Error('missing captured temporal resource');
+  const lastWork = model.works.at(-1);
+  if (lastWork === undefined) throw new Error('missing frame work');
+  const binding = geometry.bindings.find((entry) => entry.groupIndex === 3 && entry.binding === 7);
+  if (lane === 'automatic' && binding?.resourceId == null)
+    throw new Error('missing GPU Scene receiver address binding');
+  const reads = (
+    await replay.readAtWorks([
+      { resourceId: resource, workIndex: geometry.workIndex },
+      { resourceId: contextResource, workIndex: geometry.workIndex },
+      { resourceId: shadingResource, workIndex: geometry.workIndex },
+      { resourceId: temporalResource.resourceId, workIndex: lastWork.workIndex },
+      ...(lane === 'automatic' && binding?.resourceId != null
+        ? [{ resourceId: binding.resourceId, workIndex: geometry.workIndex }]
+        : []),
+    ])
+  ).unwrap();
+  const [read, contextRead, shadingRead, temporalRead, addressRead] = reads.map((result) =>
+    result.unwrap(),
+  );
+  if (!read || !contextRead || !shadingRead || !temporalRead)
+    throw new Error('missing batched visible-surface readback');
+  return { read, contextRead, shadingRead, temporalRead, addressRead, binding };
+}
+
 /** A real disocclusion must populate the receiver attachment in the late phase. */
 async function verifyRevealedSurfaceReplay(bytes: Uint8Array, expected: Uint8Array, save: Save) {
   const tape = decodeTape(bytes).unwrap();
@@ -74,22 +120,25 @@ async function verifyRevealedSurfaceReplay(bytes: Uint8Array, expected: Uint8Arr
   if (earlyWork === undefined || lateWork === undefined || identity === undefined || !late)
     throw new Error('missing early/late receiver work');
   const removed = new Set(late.workIndices.map((index) => model.works[index]?.eventIndex));
-  const falsified = encodeTape({
-    ...tape,
-    events: tape.events.map((event, index) =>
-      removed.has(index) && event.kind === 'drawIndexedIndirect'
-        ? {
-            kind: 'drawIndexed' as const,
-            passHandleId: event.passHandleId,
-            indexCount: 0,
-            instanceCount: 0,
-            firstIndex: 0,
-            baseVertex: 0,
-            firstInstance: 0,
-          }
-        : event,
-    ),
-  }).unwrap();
+  const falsified = encodeTape(
+    {
+      ...tape,
+      events: tape.events.map((event, index) =>
+        removed.has(index) && event.kind === 'drawIndexedIndirect'
+          ? {
+              kind: 'drawIndexed' as const,
+              passHandleId: event.passHandleId,
+              indexCount: 0,
+              instanceCount: 0,
+              firstIndex: 0,
+              baseVertex: 0,
+              firstInstance: 0,
+            }
+          : event,
+      ),
+    },
+    { compression: 'gzip' },
+  ).unwrap();
   await save('occlusion-reveal-missing-late.rhitape', falsified);
   for (const [name, input] of [
     ['occlusion-reveal', bytes],
@@ -108,8 +157,16 @@ async function verifyRevealedSurfaceReplay(bytes: Uint8Array, expected: Uint8Arr
       await openReplay(decoded, { device, createShaderModule: webgpu.createShaderModule })
     ).unwrap();
     try {
-      const before = (await replay.readResourceAtWork(identity, earlyWork)).unwrap().bytes;
-      const after = (await replay.readResourceAtWork(identity, lateWork)).unwrap().bytes;
+      const reads = (
+        await replay.readAtWorks([
+          { resourceId: identity, workIndex: earlyWork },
+          { resourceId: identity, workIndex: lateWork },
+        ])
+      ).unwrap();
+      const [early, late] = reads.map((result) => result.unwrap());
+      if (!early || !late) throw new Error('missing disocclusion readback');
+      const before = early.bytes;
+      const after = late.bytes;
       expect(before.every((value) => value === 0)).toBe(true);
       if (name === 'occlusion-reveal') expect(after).toEqual(expected);
       else expect(after.every((value) => value === 0)).toBe(true);
@@ -423,7 +480,7 @@ export async function verifyVisibleSurfaceReplay(
       const temporalLive = await readTemporal(lane);
       (await recorder.frameBoundary()).unwrap();
       const captured = (await pending).unwrap();
-      await save(`${lane}.rhitape`, captured.bytes);
+      await save(`${lane}.rhitape`, compactTape(captured).bytes);
       await save(
         `${lane}-inspection.json`,
         new TextEncoder().encode(JSON.stringify(renderer.inspect(), null, 2)),
@@ -451,7 +508,7 @@ export async function verifyVisibleSurfaceReplay(
         (await recorder.frameBoundary()).unwrap();
         const maskReceipt = await draw(true);
         (await recorder.frameBoundary()).unwrap();
-        await save(`${lane}-masked.rhitape`, (await maskPending).unwrap().bytes);
+        await save(`${lane}-masked.rhitape`, compactTape((await maskPending).unwrap()).bytes);
         const maskResult = renderValue(
           await renderer.observe(maskReceipt, { include: ['visible-surface'] }),
         );
@@ -509,16 +566,10 @@ export async function verifyVisibleSurfaceReplay(
           await openReplay(tape, { device: fresh, createShaderModule: webgpu.createShaderModule })
         ).unwrap();
         try {
-          const resource = geometry.attachments?.colorViewHandleIds[6];
-          if (resource === undefined) throw new Error('missing visible surface attachment');
-          const read = (await replay.readResourceAtWork(resource, geometry.workIndex)).unwrap();
+          const { read, contextRead, shadingRead, temporalRead, addressRead, binding } =
+            await visibleSurfaceReadbacks(replay, model, geometry, lane);
           expect(read.bytes).toEqual(live);
           await save(`${lane}-replay.rgba32uint`, read.bytes);
-          const contextResource = geometry.attachments?.colorViewHandleIds[4];
-          if (contextResource === undefined) throw new Error('missing lighting context attachment');
-          const contextRead = (
-            await replay.readResourceAtWork(contextResource, geometry.workIndex)
-          ).unwrap();
           const contexts = new Uint32Array(
             contextRead.bytes.buffer,
             contextRead.bytes.byteOffset,
@@ -528,14 +579,9 @@ export async function verifyVisibleSurfaceReplay(
             expect(((contexts[pixel] ?? 0) & 0x800000) === 0).toBe(receiveShadows);
           await save(`${lane}-lighting-context.r32uint`, contextRead.bytes);
           if (lane === 'automatic') {
-            const binding = geometry.bindings.find(
-              (entry) => entry.groupIndex === 3 && entry.binding === 7,
-            );
-            if (binding?.resourceId == null)
-              throw new Error('missing GPU Scene receiver address binding');
-            const addresses = (
-              await replay.readResourceAtWork(binding.resourceId, geometry.workIndex)
-            ).unwrap().bytes;
+            if (binding?.resourceId == null || addressRead === undefined)
+              throw new Error('missing GPU Scene receiver address readback');
+            const addresses = addressRead.bytes;
             const addressRows = new Uint32Array(
               addresses.buffer,
               addresses.byteOffset,
@@ -555,11 +601,7 @@ export async function verifyVisibleSurfaceReplay(
             ).toBe(true);
             await save(`${lane}-candidate-surface-rows.u32`, addresses);
           }
-          const shadingResource = geometry.attachments?.colorViewHandleIds[1];
-          if (shadingResource === undefined) throw new Error('missing shading normal attachment');
-          const shadingRead = (
-            await replay.readResourceAtWork(shadingResource, geometry.workIndex)
-          ).unwrap();
+
           await save(`${lane}-shading-normal.r32uint`, shadingRead.bytes);
           const shading = new Uint32Array(
             shadingRead.bytes.buffer,
@@ -579,18 +621,7 @@ export async function verifyVisibleSurfaceReplay(
             expect(actual[0]).toBeCloseTo(Math.SQRT1_2, 3);
             expect(actual[2]).toBeCloseTo(Math.SQRT1_2, 3);
           }
-          const temporalResource = model.resources.find(
-            (resource) =>
-              resource.lifecycle.state === 'live' &&
-              (resource.descriptor as { desc?: { label?: string } } | null)?.desc?.label ===
-                'standard-scene-temporal',
-          );
-          if (temporalResource === undefined) throw new Error('missing captured temporal resource');
-          const lastWork = model.works.at(-1);
-          if (lastWork === undefined) throw new Error('missing frame work');
-          const temporalRead = (
-            await replay.readResourceAtWork(temporalResource.resourceId, lastWork.workIndex)
-          ).unwrap();
+
           expect(temporalRead.bytes).toEqual(temporalLive);
           results.push({
             lane,
@@ -695,7 +726,7 @@ export async function verifyVisibleSurfaceReplay(
     (await recorder.frameBoundary()).unwrap();
     const reduced = await snapshot('instance-removed');
     (await recorder.frameBoundary()).unwrap();
-    await save('instance-removed.rhitape', (await instanceCapture).unwrap().bytes);
+    await save('instance-removed.rhitape', compactTape((await instanceCapture).unwrap()).bytes);
     expect(reduced.surface.records.length).toBe(64);
     expect(reduced.covered).toBe(before.covered / 2);
     expect(resolveVisibleSurface(reduced.surface, 2, 0).unwrap()?.instanceGeneration).not.toBe(

@@ -326,7 +326,15 @@ type MalformedFileCode = Extract<PackErrorCode, 'pack-malformed-pack' | 'pack-ma
 
 type JsonValidator = {
   (value: unknown): boolean;
-  errors?: readonly { readonly instancePath?: string; readonly message?: string }[] | null;
+  errors?:
+    | readonly {
+        readonly instancePath?: string;
+        readonly message?: string;
+        readonly keyword?: string;
+        readonly schemaPath?: string;
+        readonly params?: Readonly<Record<string, unknown>>;
+      }[]
+    | null;
 };
 
 async function readValidatedJson(
@@ -355,6 +363,9 @@ async function readValidatedJson(
         ajvErrors: (validate.errors ?? []).map((error) => ({
           instancePath: error.instancePath ?? '',
           message: error.message ?? 'unknown ajv error',
+          ...(error.keyword === undefined ? {} : { keyword: error.keyword }),
+          ...(error.schemaPath === undefined ? {} : { schemaPath: error.schemaPath }),
+          ...(error.params === undefined ? {} : { params: error.params }),
         })),
       }),
     );

@@ -32,12 +32,9 @@ export async function createHostStartup(options: HostStartupOptions = {}): Promi
         for (const plugin of options.startupPlugins ?? []) ctx.plugin(plugin);
       },
     };
-    const result = await startNativePlugin(
-      context,
-      startupRoot,
-      undefined,
-      options.startupTimeoutMs === undefined ? {} : { timeoutMs: options.startupTimeoutMs },
-    );
+    const result = await startNativePlugin(context, startupRoot, undefined, {
+      timeoutMs: options.startupTimeoutMs ?? null,
+    });
     if (!result.ok) throw result.error;
     fibers.push(result.value);
   } catch (error) {

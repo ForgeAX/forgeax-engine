@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { decompressZstd } from '@forgeax/engine-codec';
 import { expect, it } from 'vitest';
 import { compressShaderGroups, SHADER_GROUP_TARGET_BYTES } from '../delivery-shader-groups';
@@ -17,12 +18,18 @@ it('bounds compression groups without splitting programs and preserves input ord
     );
     for (const member of group.members)
       restored.push(
-        result.value.slice(
+        result.value.subarray(
           member.decodedRange.offset,
           member.decodedRange.offset + member.decodedRange.length,
         ),
       );
   }
-  expect(restored).toEqual(entries.map((entry) => entry.bytes));
+  // Compare every byte natively without one assertion traversal per array element.
+  expect(restored).toHaveLength(entries.length);
+  for (const [index, entry] of entries.entries()) {
+    const bytes = restored[index];
+    if (bytes === undefined) throw new Error('missing restored shader program');
+    expect(Buffer.compare(bytes, entry.bytes)).toBe(0);
+  }
   expect(await compressShaderGroups([])).toEqual([]);
 });

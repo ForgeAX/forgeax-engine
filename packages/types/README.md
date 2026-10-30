@@ -19,6 +19,10 @@ owner for unchanged labeled raw-string requests; unlabeled strings still require
 content hashing. Prefer `source.descriptor(label)` when an admitted owner already
 exists: it bypasses text matching and reuses the owner's lazy identity. Changed
 content invalidates the module and pending completion. `read()` returns full text.
+Synchronous contract SHA-256 uses Node native crypto when its builtin loader is
+available; browsers and other carriers retain portable SHA-256. Both hash the
+same full UTF-8 text, including replacement of unpaired surrogates. Native
+hashing avoids a full encoded copy and JavaScript compression rounds.
 
 Material programs declare their resource interface with `program.bindings`.
 Omission selects `render-material`; WGSL identifiers never select an interface.

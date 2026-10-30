@@ -538,6 +538,11 @@ independent lifecycle assertions, and all existing deadlines remain unchanged.
 Evidence records the selected workload. Paired CI derives the complete Engine
 consumer roster and partitions it across at most four shards.
 
+Inline asset probes admit the exact canvas's first completed `ready` frame inside
+their existing panel-extent wait before requesting a fresh capture. Layout and
+completed warming frames keep that wait pending. The capture's ten-second bound,
+natural panel dimensions, pixels and target identity checks remain unchanged.
+
 ## Lifecycle and operation ownership
 
 The resident Node process contains a BackendHost. It loads the Engine domain

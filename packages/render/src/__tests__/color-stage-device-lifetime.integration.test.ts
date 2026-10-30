@@ -1,3 +1,4 @@
+import { Hash } from 'node:crypto';
 import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { err, ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -9,7 +10,7 @@ import { colorStageFixture } from './color-stage-device-lifetime.fixture';
 it('retains the admitted source descriptor with the existing program across graph replacement', async () => {
   const f = await colorStageFixture();
   const matches = vi.spyOn(ShaderSource.prototype, 'matches');
-  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const hash = vi.spyOn(Hash.prototype, 'update');
   const compile = vi.fn(
     (_device: RhiDevice, descriptor: Parameters<typeof f.factory.createShaderModule>[0]) =>
       f.factory.createShaderModule(descriptor),
@@ -32,7 +33,7 @@ it('retains the admitted source descriptor with the existing program across grap
     expect(modules).toHaveBeenCalledTimes(17);
     for (const [request] of modules.mock.calls) expect(request).toBe(descriptor);
     expect(matches).not.toHaveBeenCalled();
-    expect(encode.mock.calls.filter(([input]) => input === descriptor?.code)).toHaveLength(1);
+    expect(hash.mock.calls.filter(([input]) => input === descriptor?.code)).toHaveLength(1);
     expect(compile).toHaveBeenCalledTimes(1);
     // Invalidation still reaches the factory using the same immutable CPU source.
     f.invalidateModules();
@@ -43,7 +44,7 @@ it('retains the admitted source descriptor with the existing program across grap
     expect(modules.mock.calls.at(-1)?.[0]).not.toBe(descriptor);
   } finally {
     adapter.dispose();
-    encode.mockRestore();
+    hash.mockRestore();
     matches.mockRestore();
     f.scope.retire();
   }

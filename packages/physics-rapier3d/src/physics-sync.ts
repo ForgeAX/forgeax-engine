@@ -1,5 +1,6 @@
 import type { Component, EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
-import { defineSystem, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { Disabled, defineSystem, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { type DerivedRangeWriter, getDerivedWriter } from '@forgeax/engine-ecs/internal';
 import { readRenderArrayView, type StateProjection } from '@forgeax/engine-ecs/projection';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import {
@@ -15,7 +16,7 @@ import {
   rigidBodyTypeFromF32,
   snapshotCollider,
 } from '@forgeax/engine-physics';
-import { ChildOf } from '@forgeax/engine-scene';
+import { ChildOf, type Transform } from '@forgeax/engine-scene';
 import type { RapierPhysicsWorld3D } from './rapier-physics-world-3d.js';
 
 export interface PhysicsTransform3D {
@@ -317,7 +318,7 @@ export const PhysicsStepSimulation: SystemHandle<readonly []> = defineSystem({
  * `physicsWriteback` system token (M2 — full resource-ification, D-4).
  *
  * After physicsStepSimulation — call pw.writebackDynamicBodies() and write
- * positions back to ECS Transform (resolved via the global registry, D-3).
+ * exact poses through the ECS numeric write fence into the World-local Transform.
  */
 export const PhysicsWriteback: SystemHandle<readonly []> = defineSystem({
   name: PHYSICS_WRITEBACK,
@@ -334,39 +335,107 @@ export const PhysicsWriteback: SystemHandle<readonly []> = defineSystem({
     }
 
     const results = pw.writebackDynamicBodies();
-    for (const r of results) {
-      const entity = r.entity as EntityHandle;
-      const pos = [r.pos.x, r.pos.y, r.pos.z];
-      const quat = [r.rotation.x, r.rotation.y, r.rotation.z, r.rotation.w];
-      if (transformPoseEquals(world, entity, transformComponent, pos, quat)) continue;
-      world.set(entity, transformComponent, { pos, quat });
+    if (results.length === 0) return;
+    let state = poseWriters.get(world);
+    if (state === undefined || state.component !== transformComponent) {
+      state = {
+        component: transformComponent,
+        active: createPoseWriter(world, transformComponent, false),
+        unmatched: [],
+      };
+      poseWriters.set(world, state);
+    }
+    const unmatched = state.unmatched;
+    unmatched.length = 0;
+    try {
+      publishPoses(state.active, results, unmatched);
+      // Ordinary queries omit Disabled. Preserve pending poses for native
+      // derived bodies that still exist while their ECS entity is disabled.
+      if (unmatched.length > 0) {
+        state.disabled ??= createPoseWriter(world, transformComponent, true);
+        publishPoses(state.disabled, unmatched);
+      }
+    } finally {
+      unmatched.length = 0;
     }
   },
 });
 
-/**
- * Skipping a bit-identical write keeps an unchanged pose out of `changed`
- * filters, so downstream transform propagation stays O(moving bodies).
- */
-function transformPoseEquals(
-  world: World,
-  entity: EntityHandle,
-  transform: Component,
-  pos: readonly number[],
-  quat: readonly number[],
-): boolean {
-  return (
-    f32ArrayEquals(readRenderArrayView(world, entity, transform, 'pos'), pos) &&
-    f32ArrayEquals(readRenderArrayView(world, entity, transform, 'quat'), quat)
-  );
+type BodyPose = ReturnType<RapierPhysicsWorld3D['writebackDynamicBodies']>[number];
+interface PoseWriter {
+  readonly writer: DerivedRangeWriter<never, typeof Transform>;
+  readonly cursor: { bindingIndex: number; row: number };
+  readonly touched: number[];
+}
+interface PoseWriters {
+  readonly component: Component;
+  readonly active: PoseWriter;
+  disabled?: PoseWriter;
+  readonly unmatched: BodyPose[];
+}
+const poseWriters = new WeakMap<World, PoseWriters>();
+
+function createPoseWriter(world: World, component: Component, disabled: boolean): PoseWriter {
+  const transform = component as typeof Transform;
+  const query = world
+    .query({ write: [transform], ...(disabled ? { with: [Disabled] } : {}) })
+    .unwrap();
+  return {
+    writer: getDerivedWriter(query, transform).unwrap(),
+    cursor: { bindingIndex: 0, row: 0 },
+    touched: [],
+  };
 }
 
-function f32ArrayEquals(stored: ArrayLike<number> | undefined, next: readonly number[]): boolean {
-  if (stored === undefined || stored.length !== next.length) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (stored[index] !== Math.fround(next[index] as number)) return false;
+/** Commit exact f32 poses and publish only changed rows through the ECS fence. */
+function publishPoses(state: PoseWriter, poses: readonly BodyPose[], unmatched?: BodyPose[]): void {
+  const { writer, cursor, touched } = state;
+  touched.length = 0;
+  try {
+    writer
+      .writeRows(touched, () => {
+        for (const pose of poses) {
+          if (!writer.locateEntity(pose.entity as EntityHandle, cursor)) {
+            unmatched?.push(pose);
+            continue;
+          }
+          const columns = writer.bindings[cursor.bindingIndex]?.write;
+          if (columns === undefined) continue;
+          const pos = columns.pos,
+            rotation = columns.quat;
+          const p = cursor.row * 3,
+            q = cursor.row * 4;
+          const x = Math.fround(pose.pos.x),
+            y = Math.fround(pose.pos.y),
+            z = Math.fround(pose.pos.z);
+          const rx = Math.fround(pose.rotation.x),
+            ry = Math.fround(pose.rotation.y);
+          const rz = Math.fround(pose.rotation.z),
+            rw = Math.fround(pose.rotation.w);
+          if (
+            pos[p] === x &&
+            pos[p + 1] === y &&
+            pos[p + 2] === z &&
+            rotation[q] === rx &&
+            rotation[q + 1] === ry &&
+            rotation[q + 2] === rz &&
+            rotation[q + 3] === rw
+          )
+            continue;
+          pos[p] = x;
+          pos[p + 1] = y;
+          pos[p + 2] = z;
+          rotation[q] = rx;
+          rotation[q + 1] = ry;
+          rotation[q + 2] = rz;
+          rotation[q + 3] = rw;
+          touched.push(cursor.bindingIndex, cursor.row);
+        }
+      })
+      .unwrap();
+  } finally {
+    touched.length = 0;
   }
-  return true;
 }
 
 /**
@@ -443,6 +512,7 @@ export function registerPhysicsSystems(world: World): () => void {
     } catch {
       // PhysicsWorld may already have been removed as part of outer teardown.
     }
+    poseWriters.delete(world);
     releaseComponents();
   };
 }

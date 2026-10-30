@@ -40,6 +40,7 @@ export async function verifyAlphaHash(
     kind: 'standard' | 'unlit' | 'skin';
     taaScale?: number;
     taaRenderPath?: 'forward' | 'deferred';
+    shadowMapSize?: number;
     recorder?: RecorderAttachment;
     image?: (
       name: string,
@@ -50,6 +51,7 @@ export async function verifyAlphaHash(
     captureIndependent?: (tape: EncodedTape) => void;
   },
 ) {
+  const { shadowMapSize = testQuality.shadowMapSize } = options;
   const world = new World({ assets });
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
@@ -175,7 +177,7 @@ export async function verifyAlphaHash(
         direction: [0.7, 0, -1],
         intensity: 1,
         castShadow: true,
-        mapSize: testQuality.shadowMapSize,
+        mapSize: shadowMapSize,
         cascadeCount: 1,
         shadowDistance: 10,
       },

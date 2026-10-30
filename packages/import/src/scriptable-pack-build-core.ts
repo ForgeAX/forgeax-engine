@@ -422,14 +422,6 @@ function outputShapeFailure(
   sourceKey: string,
   asset: PackOutput,
 ): PackAuthoringError | undefined {
-  const raw: unknown = asset;
-  if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true)
-    return outputValueError(
-      options.sourcePath,
-      '$.plugins',
-      'plugins: true on a Pack producing plugin assets',
-      options.definition.plugins,
-    );
   const customSource = declaresCookedExecution(asset);
   if (
     customSource &&
@@ -827,9 +819,12 @@ export async function buildScriptablePack(
   const localGuids = new Set<string>();
   const nativeFingerprints = new Map<string, string>();
   for (const sourceKey of Object.keys(built.value).sort()) {
+    const asset = ownedOutputs[sourceKey];
+    const raw: unknown = asset;
+    // Without the plugin capability, keep ordinary outputs and omit plugin siblings.
+    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true) continue;
     if (!isValidPackSourceKey(sourceKey))
       return err(sourceKeyFailure(options.sourcePath, sourceKey));
-    const asset = ownedOutputs[sourceKey];
     if (asset === undefined)
       return err(
         outputValueError(
@@ -879,15 +874,6 @@ export async function buildScriptablePack(
     externalEvidence,
     nativeFingerprints,
   );
-  if (options.definition.plugins !== true && imported.some((asset) => asset.kind === 'plugin'))
-    return err(
-      outputValueError(
-        options.sourcePath,
-        '$.plugins',
-        'plugins: true on a Pack producing plugin assets',
-        options.definition.plugins,
-      ),
-    );
   const product = packImportProduct(options, imported, inputFingerprint);
   if (!product.ok) return err(product.error);
   return ok({
@@ -1057,22 +1043,16 @@ export async function buildScriptablePackWorklist(
             ...(cache === undefined ? {} : { cache }),
           });
         report('cache');
-        const cached = await options.cache?.read(subject);
-        if (cached === undefined) report('cook', 'miss');
-        const pluginCapabilityMissing =
+        let cached = await options.cache?.read(subject);
+        const cachedPluginsIgnored =
           cached !== undefined &&
           subject.definition.plugins !== true &&
           cached.product.assets.some((asset) => asset.kind === 'plugin');
-        const result = pluginCapabilityMissing
-          ? err(
-              outputValueError(
-                subject.sourcePath,
-                '$.plugins',
-                'plugins: true on a Pack producing plugin assets',
-                subject.definition.plugins,
-              ),
-            )
-          : cached === undefined
+        // Rebuild a stale capability hit so its disabled plugin outputs are omitted.
+        if (cachedPluginsIgnored) cached = undefined;
+        if (cached === undefined) report('cook', 'miss');
+        const result =
+          cached === undefined
             ? await buildScriptablePack({
                 definition: subject.definition,
                 sourcePath: subject.sourcePath,

@@ -1,3 +1,4 @@
+import { Hash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
@@ -72,7 +73,7 @@ it('atomically validates code-created and edited programs and derives identities
     ).toMatchObject({ ok: false, error: { code: 'asset-invalid-value' } });
     expect(runtimeAssets(assets).version(handle).unwrap()).toBe(version);
   }
-  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const hash = vi.spyOn(Hash.prototype, 'update');
   assets
     .update(handle, {
       program: { ...before.program, emitters: [{ ...first, schedule: { rate: 10 } }] },
@@ -81,8 +82,8 @@ it('atomically validates code-created and edited programs and derives identities
   const next = assets.read(handle).unwrap();
   expect(next.programFingerprint).not.toBe(before.programFingerprint);
   expect(next.program.fingerprint).toBe(next.programFingerprint);
-  expect(encode.mock.calls.every(([text]) => text !== first.wgsl)).toBe(true);
-  encode.mockRestore();
+  expect(hash.mock.calls.every(([text]) => text !== first.wgsl)).toBe(true);
+  hash.mockRestore();
   expect(prepareRuntimeParticleEffect(next).unwrap().programFingerprint).toBe(
     next.programFingerprint,
   );

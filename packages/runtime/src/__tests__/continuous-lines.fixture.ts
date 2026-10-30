@@ -20,9 +20,9 @@ import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import {
   attachRecorder,
   buildFrameModel,
+  decodeBufferRecords,
   decodeTape,
   encodeTape,
-  inspectBufferRecords,
   openReplay,
   replayDeviceRequest,
   tapeDigest,
@@ -35,6 +35,8 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
 import threePixels from './continuous-lines-three.json';
 import { testAssets } from './helpers/runtime-assets';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 /** The real retained -> prepare -> Standard scene draw, with no application shader. */
@@ -312,32 +314,48 @@ export async function verifyContinuousLines(options: {
         const rawReplayDevice = webgpu._internal_getRawDevice(device);
         if (rawReplayDevice === undefined) throw new Error('replay WebGPU device unavailable');
         replayDevices.push(rawReplayDevice);
+        const replayWork = observeReplaySubmissions(device);
         const replay = (
           await openReplay(replayTape, { device, createShaderModule: webgpu.createShaderModule })
         ).unwrap();
         try {
+          const ranges = falsify
+            ? []
+            : works.map((selected) => {
+                const binding = selected.bindings.find(
+                  (row) => row.groupIndex === 0 && row.binding === 10,
+                );
+                if (!binding?.resourceId) throw new Error('points-lines view UBO absent');
+                const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0);
+                return { selected, resourceId: binding.resourceId, first: offset / 16 + 9 };
+              });
+          const reads = (
+            await replay.readAtWorks([
+              ...ranges.map(({ selected, resourceId, first }) => ({
+                resourceId,
+                workIndex: selected.workIndex,
+                subresource: { offset: first * 16, size: 32 },
+              })),
+              { resourceId: colorId, workIndex: work.workIndex },
+            ])
+          )
+            .unwrap()
+            .map((read) => read.unwrap());
+          replayWork.assertMaximum(20);
           if (!falsify) {
-            for (const selected of works) {
-              const inspection = (
-                await replay.inspectWork(selected.workIndex, ['pipeline', 'bindings'])
-              ).unwrap();
+            for (const [index, { selected, first }] of ranges.entries()) {
+              const inspection = describeReplayWork(selected);
               await options.save(
                 `${name}-work-${selected.workIndex}.json`,
                 new TextEncoder().encode(JSON.stringify(inspection, null, 2)),
               );
-              const ubo = selected.bindings.find(
-                (binding) => binding.groupIndex === 0 && binding.binding === 10,
-              );
-              if (!ubo?.resourceId) throw new Error('points-lines view UBO absent');
-              const offset = (ubo.bufferOffset ?? 0) + (ubo.dynamicOffset ?? 0);
-              const records = (
-                await inspectBufferRecords(
-                  replay,
-                  ubo.resourceId,
-                  selected.workIndex,
-                  { stride: 16, fields: [{ name: 'v', offset: 0, type: 'f32', components: 4 }] },
-                  { first: offset / 16 + 9, count: 2 },
-                )
+              const read = reads[index];
+              if (read === undefined) throw new Error('points-lines style readback absent');
+              expect(read.provenance.selectedWorkIndex).toBe(selected.workIndex);
+              const records = decodeBufferRecords(
+                read,
+                { stride: 16, fields: [{ name: 'v', offset: 0, type: 'f32', components: 4 }] },
+                { first, count: 2 },
               ).unwrap();
               const [style, dash] = records.records.map((record) => record.fields.v as number[]);
               if (!style || !dash) throw new Error('points-lines style records absent');
@@ -348,11 +366,14 @@ export async function verifyContinuousLines(options: {
               styles.push({ workIndex: selected.workIndex, style, dash, fragmentEntry });
             }
           }
-          const pixels = (await replay.readResourceAtWork(colorId, work.workIndex)).unwrap();
+          const pixels = reads.at(-1);
+          if (pixels === undefined) throw new Error('points-lines pixel readback absent');
+          expect(pixels.provenance.selectedWorkIndex).toBe(work.workIndex);
           if (falsify) expect(pixels.bytes.some((value, i) => value !== live[i])).toBe(true);
           else expect(pixels.bytes).toEqual(live);
         } finally {
           (await replay.dispose()).unwrap();
+          replayWork.restore();
         }
       }
       await options.save(

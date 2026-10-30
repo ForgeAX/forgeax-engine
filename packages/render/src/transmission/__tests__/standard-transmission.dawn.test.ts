@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import {
@@ -8,7 +9,7 @@ import {
 } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import {
@@ -116,17 +117,14 @@ async function readCenter(
   ];
 }
 
-async function renderCase(
-  testCase: TransmissionCase,
-  frameCount = 1,
-): Promise<{
-  readonly pixel: readonly [number, number, number, number];
-  readonly passNames: readonly string[];
-  readonly observation: boolean;
-  readonly errors: readonly string[];
-  readonly errorEvents: readonly { readonly code: string; readonly detail?: unknown }[];
-  readonly framesObserved: number;
-}> {
+// Parameter comparisons share only an initialized host. Each sample still owns
+// a fresh World/lease; constrained 16-texture devices never share a native host
+// with ordinary limits. The next test starts from fresh devices again.
+const hosts = new Map<number | undefined, Promise<TransmissionHost>>();
+let nativeDeviceRequests = 0;
+type TransmissionHost = Awaited<ReturnType<typeof createTransmissionHost>>;
+
+async function createTransmissionHost(testCase: TransmissionCase) {
   let device: GPUDevice | undefined;
   let configuredDevice: GPUDevice | undefined;
   let target: GPUTexture | undefined;
@@ -149,6 +147,7 @@ async function renderCase(
               },
             },
       );
+      nativeDeviceRequests++;
       device ??= next;
       return next;
     };
@@ -201,15 +200,76 @@ async function renderCase(
     throw new Error('runtime Dawn renderer was not ready');
   }
 
-  const { renderer, assets } = host.value;
+  return {
+    ...host.value,
+    device,
+    get configuredDevice() {
+      return configuredDevice;
+    },
+    get target() {
+      return target;
+    },
+  };
+}
+
+afterEach(async () => {
+  const pending = [...hosts.values()];
+  const maximum = hosts.size;
+  hosts.clear();
+  try {
+    for (const value of pending) {
+      const { renderer, device, target } = await value;
+      await device.queue.onSubmittedWorkDone();
+      (await renderer.dispose()).unwrap();
+      target?.destroy();
+      device.destroy();
+      expect((await device.lost).reason).toBe('destroyed');
+    }
+    expect(nativeDeviceRequests, 'real devices per transmission comparison').toBeGreaterThan(0);
+    expect(maximum, 'separate native limit cohorts').toBeLessThanOrEqual(2);
+    expect(nativeDeviceRequests, 'real devices per transmission comparison').toBeLessThanOrEqual(
+      maximum,
+    );
+  } finally {
+    nativeDeviceRequests = 0;
+  }
+});
+
+async function renderCase(
+  testCase: TransmissionCase,
+  frameCount = 1,
+): Promise<{
+  readonly pixel: readonly [number, number, number, number];
+  readonly passNames: readonly string[];
+  readonly observation: boolean;
+  readonly errors: readonly string[];
+  readonly errorEvents: readonly { readonly code: string; readonly detail?: unknown }[];
+  readonly framesObserved: number;
+}> {
+  let pending = hosts.get(testCase.sampledTextureLimit);
+  if (pending === undefined) {
+    pending = createTransmissionHost(testCase);
+    hosts.set(testCase.sampledTextureLimit, pending);
+  }
+  const fixture = await pending;
+  const { renderer, device } = fixture;
+  renderer
+    .setProfile({
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath: testCase.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath,
+    })
+    .unwrap();
+  let lease: ReturnType<typeof renderer.attach> | undefined;
   const errors: { readonly code: string; readonly detail?: unknown }[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
   try {
+    const assets = new AssetRegistry();
     const world = new World({ assets });
-    const lease = renderer.attach(world);
+    lease = renderer.attach(world);
     if (!lease.ok) throw lease.error;
+    const activeLease = lease.value;
     const plane = createPlaneGeometry(2, 2);
     if (!plane.ok) throw plane.error;
     const mesh = assets
@@ -359,9 +419,9 @@ async function renderCase(
       if (frame > 0) world.update(1 / 60).unwrap();
       const drawn = await completeReadyFrame(() => {
         const submitted = renderer.draw({
-          leases: [lease.value],
-          camera: { lease: lease.value },
-          environment: { lease: lease.value },
+          leases: [activeLease],
+          camera: { lease: activeLease },
+          environment: { lease: activeLease },
         });
         if (!submitted.ok) throw submitted.error;
         return submitted.value;
@@ -372,8 +432,9 @@ async function renderCase(
     const observation = await renderer.observe(lastDraw, { include: ['draws', 'bindings'] });
     expect(observation.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
+    const target = fixture.target;
     if (target === undefined) throw new Error('render target was not configured after draw');
-    const renderDevice = configuredDevice ?? device;
+    const renderDevice = fixture.configuredDevice ?? device;
     if (testCase.sampledTextureLimit !== undefined)
       expect(renderDevice.limits.maxSampledTexturesPerShaderStage).toBe(
         testCase.sampledTextureLimit,
@@ -391,10 +452,7 @@ async function renderCase(
   } finally {
     unsubscribe();
     await device.queue.onSubmittedWorkDone();
-    await renderer.dispose();
-    target?.destroy();
-    device.destroy();
-    expect((await device.lost).reason).toBe('destroyed');
+    if (lease?.ok) lease.value.dispose();
   }
 }
 

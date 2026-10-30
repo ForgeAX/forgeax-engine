@@ -223,13 +223,23 @@ async function drawUntilIblActive(
   for (let attempt = 0; attempt < 300; attempt++) {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const active = renderer.inspect().iblBinding?.active === 'active';
-    if (active && observeHdr) unwrap(renderer.requestObservation?.(['linear-hdr']));
+    if (observeHdr) unwrap(renderer.requestObservation?.(['linear-hdr']));
     const receipt = unwrap(
       renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
     );
     unwrap(await receipt.completed);
-    if (active) return receipt;
+    const binding = renderer.inspect().iblBinding;
+    const active =
+      binding?.active === 'active' && binding.deviceGeneration === receipt.deviceGeneration;
+    const domains = receipt.observationDomains;
+    if (
+      active &&
+      receipt.presentation === 'ready' &&
+      (!observeHdr || domains?.includes('linear-hdr') === true)
+    )
+      return receipt;
+    if (observeHdr && domains !== undefined && domains.length > 0)
+      unwrap(await renderer.observe(receipt, { include: domains }));
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error('IBL publication did not become active within 300 frames');

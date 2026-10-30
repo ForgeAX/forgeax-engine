@@ -948,7 +948,7 @@
     "packages/rhi/src/__tests__/errors-instancing.unit.test.ts::<anonymous>.<anonymous>.describeCode": 25,
     "packages/rhi/src/__tests__/errors.test-d.ts::<anonymous>.<anonymous>.describeCode": 25,
     "packages/runtime/src/__tests__/advanced-modeling.fixture.ts::verifyAdvancedModeling": 24,
-    "packages/runtime/src/__tests__/alpha-hash.dawn.test.ts::<anonymous>.capture": 32,
+    "packages/runtime/src/__tests__/alpha-hash.dawn.test.ts::<anonymous>.capture": 29,
     "packages/runtime/src/__tests__/alpha-hash.fixture.ts::verifyAlphaHash": 24,
     "packages/runtime/src/__tests__/animation-graph-asset-union.test-d.ts::<anonymous>.<anonymous>.classify": 21,
     "packages/runtime/src/__tests__/barrel-distortion-resource-lifecycle-probe.browser.test.ts::extentBytes": 29,

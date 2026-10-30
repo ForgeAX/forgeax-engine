@@ -34,11 +34,15 @@ function producers() {
 }
 
 describe('ScriptablePack import bridge with optional parameters', () => {
-  it('rejects plugin output without its explicit capability before producer dispatch', async () => {
+  it('omits plugin output without its explicit capability before producer dispatch', async () => {
     const definition = definePack({
       schemaVersion: '2.0.0',
       packageId: id('01900000-0000-7000-8000-000000000077'),
-      build: () => ok({ 'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } } }),
+      build: () =>
+        ok({
+          'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } },
+          'scene/main': scene(),
+        }),
     });
     const result = await buildScriptablePack({
       definition,
@@ -46,16 +50,24 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       outputs: producers(),
     });
     expect(result).toMatchObject({
-      ok: false,
-      error: { code: 'pack-parameter-invalid', detail: { sourceKey: '$.plugins' } },
+      ok: true,
+      value: {
+        product: { assets: [{ kind: 'scene' }] },
+        stagedOutputs: [{ sourceKey: 'scene/main' }],
+      },
     });
   });
-  it('rejects cached plugin output without its explicit capability', async () => {
+  it('rebuilds cached plugin output without its explicit capability', async () => {
     const definition = definePack({
       schemaVersion: '2.0.0',
       packageId: id('01900000-0000-7000-8000-000000000078'),
-      build: () => ok({}),
+      build: () =>
+        ok({
+          'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } },
+          'scene/main': scene(),
+        }),
     });
+    let written: unknown;
     const result = await buildScriptablePackWorklist({
       subjects: [{ definition, sourcePath: 'cached.pack.ts' }],
       outputs: producers(),
@@ -67,12 +79,15 @@ describe('ScriptablePack import bridge with optional parameters', () => {
             externalEvidence: [],
             inputFingerprint: 'cached',
           }) as never,
-        write: async () => {},
+        write: async (_subject, value) => {
+          written = value;
+        },
       },
     });
-    expect(result).toMatchObject({
-      ok: false,
-      error: { code: 'pack-parameter-invalid', detail: { sourceKey: '$.plugins' } },
+    expect(result).toMatchObject({ ok: true });
+    expect(written).toMatchObject({
+      product: { assets: [{ kind: 'scene' }] },
+      stagedOutputs: [{ sourceKey: 'scene/main' }],
     });
   });
   it('refills an idle lane before a slow earlier subject completes, with bounded lookahead', async () => {

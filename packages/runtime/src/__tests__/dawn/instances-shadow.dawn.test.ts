@@ -295,6 +295,7 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
         color: [1, 1, 1],
         intensity: 1,
         mapSize: 1024,
+        cascadeCount: 3,
         depthBias: 0.005,
         normalBias: 0.05,
         shadowDistance: 50,

@@ -27,10 +27,14 @@ Install `physics3d` in the World; game code consumes the optional
 | Character pushes | Native KCC contact impulses push solid dynamic bodies; sensor filtering remains active. No game-side duplicate push is required. |
 | Native step | Exactly one `FixedTime.delta` step per World fixed iteration; World owns host clock, bounded catch-up and discarded time. |
 | Derived geometry | Convex point sets, heightfields and voxel regions become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
-| Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform; sleeping unchanged bodies avoid redundant writes. |
+| Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform through the ECS numeric write fence; only changed f32 poses publish rows, and sleeping unchanged bodies avoid redundant writes. |
 | Managed joint group | Fixed joints or `JointData.revoluteWithAxes` hinges with body-local anchors and separate unit axes. All inputs/endpoints validate first; staged handles retire on preparation failure. |
 | Handoff | Detached body motion, explicit world pose/velocity writes and dynamic impulses use structured Results. Pose writes queue ordinary writeback; animation/visual blend stays upstream. |
 | Retirement | Constraint leases are idempotent across endpoint removal and backend disposal. Partial native retirement is observable as `managed-physics-failed` with `rebuild-required`; it never reports rollback success. |
+
+Writeback preserves Transform scale and shear and uses live entity generations and
+current table bindings, including table growth and structural moves. Native pose
+records returned by `writebackDynamicBodies()` remain detached caller-owned values.
 
 `prepareDerivedShapeCandidates` retains the complete declared roster in the same
 private admission group used by native rollback. The group uses one of 32

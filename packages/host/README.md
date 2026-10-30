@@ -54,12 +54,12 @@ adds `unavailable` for a disconnected frontend; local status errors remain
 
 Both Host options select `context`, `startupTimeoutMs` and `startupPlugins`
 from `HostStartupOptions`, matching the fields actually forwarded to native
-startup. A positive `startupTimeoutMs` overrides the startup deadline; `null`
-disables it while cancellation remains available. Assembly, transport and
-frontend cleanup options stay on their owners.
-The frontend's custom `activateRoot` callback receives the resolved startup
-budget, including the normal 30-second default, so its native activation can use
-the same policy instead of starting a second shorter timer.
+startup. A positive `startupTimeoutMs` sets a startup deadline; `null` or
+omission disables it while cancellation remains available. Assembly, transport
+and frontend cleanup options stay on their owners. The frontend's custom
+`activateRoot` callback receives the resolved startup budget, including `null`
+when no deadline is configured, so its native activation can use the same policy
+instead of starting a second timer.
 
 ## Frontend platform
 

@@ -12,6 +12,14 @@ import { PipelineCompilationRecords } from '../pipeline-compilation-records';
 import { backgroundPipelineWarmupConcurrency } from '../pipeline-library';
 import { createMockGpu } from './__mocks__/gpu-device';
 
+// Observe the real Node hash without adding Node ambient types to the browser RHI.
+interface NativeHash {
+  update(input: string | Uint8Array, encoding?: string): NativeHash;
+}
+const { Hash } = (
+  globalThis as unknown as { process: { getBuiltinModule(id: string): unknown } }
+).process.getBuiltinModule('node:crypto') as { Hash: { prototype: NativeHash } };
+
 async function fixture() {
   const gpu = createMockGpu(),
     adapter = await gpu.requestAdapter();
@@ -793,6 +801,7 @@ it('receives cloned background sources without splitting or hashing unused WGSL'
     renderPipelines: [],
     computePipelines: [],
   };
+  const hash = vi.spyOn(Hash.prototype, 'update');
   const encode = vi.spyOn(TextEncoder.prototype, 'encode');
   const copy = vi.spyOn(String, 'fromCharCode');
   try {
@@ -805,9 +814,11 @@ it('receives cloned background sources without splitting or hashing unused WGSL'
       expect(Object.isFrozen(owned.shaders)).toBe(true);
     }
     expect(copy).not.toHaveBeenCalled();
+    expect(hash).not.toHaveBeenCalled();
     expect(encode).not.toHaveBeenCalled();
   } finally {
     copy.mockRestore();
+    hash.mockRestore();
     encode.mockRestore();
   }
 });
@@ -826,13 +837,14 @@ it('hashes background sources as modules are created, not in the complete source
     computePipelines: [],
   });
   const hashed: string[] = [];
-  const encode = TextEncoder.prototype.encode;
-  const encoding = vi.spyOn(TextEncoder.prototype, 'encode').mockImplementation(function (
-    this: TextEncoder,
+  const update = Hash.prototype.update;
+  const hashing = vi.spyOn(Hash.prototype, 'update').mockImplementation(function (
+    this: NativeHash,
     input,
+    encoding,
   ) {
     if (typeof input === 'string' && texts.includes(input)) hashed.push(input);
-    return encode.call(this, input);
+    return update.call(this, input, encoding);
   });
   const create = f.raw.createShaderModule;
   let firstCreation: string[] | undefined;
@@ -848,7 +860,7 @@ it('hashes background sources as modules are created, not in the complete source
     expect(hashed).toEqual(texts);
   } finally {
     creation.mockRestore();
-    encoding.mockRestore();
+    hashing.mockRestore();
     disposeDevice(f.device);
   }
 });

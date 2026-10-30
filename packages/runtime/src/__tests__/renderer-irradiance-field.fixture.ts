@@ -126,6 +126,9 @@ export async function createIrradianceFieldHarness(options: {
   const destroyed = new Set<GPUBuffer>();
   /** Every per-instance Card buffer ever created: residency streaming must destroy them. */
   const cardBuffers: GPUBuffer[] = [];
+  const surfaceReadbacks: GPUBuffer[] = [];
+  let surfaceReadback: GPUBuffer | undefined;
+  let surfaceReadbackDevice: GPUDevice | undefined;
   const makeSurface = () => {
     assert(native);
     surface?.destroy();
@@ -150,9 +153,11 @@ export async function createIrradianceFieldHarness(options: {
           const buffer = create(descriptor);
           const label = descriptor.label ?? '';
           const card = label.startsWith('cards.');
+          const isSurfaceReadback = label === 'test.surface-readback';
+          if (isSurfaceReadback) surfaceReadbacks.push(buffer);
           if (card) cardBuffers.push(buffer);
-          if (card || label.startsWith('irradiance-field.')) {
-            if (!card) buffers.set(label, buffer);
+          if (card || isSurfaceReadback || label.startsWith('irradiance-field.')) {
+            if (!card && !isSurfaceReadback) buffers.set(label, buffer);
             const destroy = buffer.destroy.bind(buffer);
             buffer.destroy = () => {
               destroyed.add(buffer);
@@ -362,7 +367,17 @@ export async function createIrradianceFieldHarness(options: {
     assert(native && surface);
     const { width, height } = canvas;
     const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
-    const target = native.createBuffer({ size: bytesPerRow * height, usage: 9 });
+    const byteLength = bytesPerRow * height;
+    if (surfaceReadback?.size !== byteLength || surfaceReadbackDevice !== native) {
+      surfaceReadback?.destroy();
+      surfaceReadback = native.createBuffer({
+        label: 'test.surface-readback',
+        size: byteLength,
+        usage: 9,
+      });
+      surfaceReadbackDevice = native;
+    }
+    const target = surfaceReadback;
     try {
       const encoder = native.createCommandEncoder();
       encoder.copyTextureToBuffer({ texture: surface }, { buffer: target, bytesPerRow }, [
@@ -389,7 +404,7 @@ export async function createIrradianceFieldHarness(options: {
         center: red[(height / 2) * width + width / 2] ?? Number.NaN,
       };
     } finally {
-      target.destroy();
+      if (target.mapState === 'mapped') target.unmap();
     }
   };
   const read = async (label: string) => {
@@ -463,10 +478,12 @@ export async function createIrradianceFieldHarness(options: {
     destroyed,
     liveCardBuffers: () => cardBuffers.filter((buffer) => !destroyed.has(buffer)),
     createdCardBuffers: () => cardBuffers.length,
+    surfaceReadbackBuffers: () => [...surfaceReadbacks],
     async dispose() {
       unsubscribe();
       lease.dispose();
       renderValue(await renderer.dispose());
+      surfaceReadback?.destroy();
       surface?.destroy();
       native?.destroy();
     },

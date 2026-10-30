@@ -12,6 +12,13 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For Browser/Dawn fixture overhead, audit both reachable source graphs, including
+conditional shadow flags. Inspect actual shadow resources and replay queue work
+before reducing a fixture. Keep performance/precision profiles, independent
+publication and falsifier devices, selected-work provenance and every frame.
+Follow the [CI fixture budgets](../../scripts/ci/README.md#test-work-and-cost-regression-checks)
+and [native replay owners](../../scripts/ci/README.md#dawn-gates).
+
 For an independent-run SDK UI color mismatch, inspect the retained PNG and the
 status footer at the actual CI viewport before assigning a Renderer cause.
 A full version can wrap into an authored UI color oracle. Preserve exact color
@@ -26,6 +33,9 @@ reservations. Preserve cases, pixels and original deadlines. Interrupted or
 cancelled owners supply no completion sample; include skipped files in their
 completed ordinary child's process overhead. Follow
 [GI coverage and material publication](../../scripts/ci/README.md#gi-coverage-and-material-publication).
+An interrupted later owner does not invalidate an earlier successful ordinary
+child. Refresh its measured file costs in `scripts/ci/dawn-file-seconds.json`
+while retaining larger inherited forecasts and the complete native roster.
 
 For slow material-publication fixtures, retain validated artifact byte views until
 the publication owner performs JSON encoding. A preliminary JSON roundtrip makes
@@ -165,6 +175,9 @@ and retain the checkout warning and original install error.
 An independent nested checkout can have an embedded `.git` directory and no
 root submodule config. Prove its exact historical gitlink from the local HEAD
 reflog before pruning; preserve unrelated repositories and changed commits.
+For repeated native fixture startup, compare actual device requests and replay
+submissions before changing placement. Follow [native fixture workload budgets](../../scripts/ci/README.md#native-fixture-workload-budgets): reuse renderer/device preparation across independent World/asset owners, retain constrained/publication hosts and fresh falsifiers, and restore redundant work as a failing control. Never bind one asset registry to multiple Worlds. Alpha Hash keeps its cold live hosts and batches only replay work; aggregate counters still check every original texel. Furnace readiness must belong to the current ready receipt, and multiview GI reuses staging storage while retaining every frame and owned readback snapshot.
+
 For a Dawn overall job cancellation with passing groups, compare complete group
 costs, ordinary-file backfill and lane headroom in `dawn-gate-roster.mjs`; follow [Build inputs](../../scripts/ci/README.md#build-inputs)
 while preserving the full roster, native process isolation and existing deadlines.

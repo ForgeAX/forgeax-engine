@@ -1,5 +1,4 @@
-import type { World as EcsWorld } from '@forgeax/engine-ecs';
-import { FixedUpdate, World } from '@forgeax/engine-ecs';
+import { Disabled, defineComponent, FixedUpdate, World } from '@forgeax/engine-ecs';
 import {
   Collider,
   ColliderShapeValue,
@@ -56,20 +55,121 @@ function transformPos(world: World, entity: number): readonly number[] {
   return Array.from(value.pos);
 }
 
-function countTransformWrites(world: EcsWorld) {
-  const spy = vi.spyOn(world, 'set');
+function countTransformWrites(world: World) {
+  const query = world.query({ read: [Transform], changed: [Transform] }).unwrap();
+  for (const _row of query) {
+    /* consume earlier publications */
+  }
+  let count = 0;
+  world
+    .addSystem(FixedUpdate, {
+      name: 'observe-writeback-publications',
+      queries: [],
+      after: [PhysicsWriteback.name],
+      fn: () => {
+        for (const _row of query) count++;
+      },
+    })
+    .unwrap();
   return {
     stop: () => {
-      const count = spy.mock.calls.filter(
-        (call) => (call[1] as { name?: string }).name === Transform.name,
-      ).length;
-      spy.mockRestore();
+      world.removeSystem(FixedUpdate, 'observe-writeback-publications').unwrap();
       return count;
     },
   };
 }
 
 describe('active-body physics writeback', () => {
+  it('keeps exact poses across table growth, disabled rows and recycled entity slots', async () => {
+    const RAPIER = await loadOrSkip();
+    if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');
+    const world = prepareWorld();
+    const physics = createRapier3DPhysicsWorld(RAPIER);
+    world.insertResource('PhysicsWorld', physics);
+    registerPhysicsSystems(world);
+    const body = world
+      .spawn({ component: Transform, data: { scale: [2, 3, 4], shear: [0.1, 0.2, 0.3] } })
+      .unwrap();
+    const pose = {
+      entity: body,
+      pos: { x: 0.1, y: 2, z: 3 },
+      rotation: { x: 0, y: Math.sin(0.2), z: 0, w: Math.cos(0.2) },
+    };
+    const rows = vi.spyOn(physics, 'writebackDynamicBodies').mockReturnValue([pose]);
+    const Marker = defineComponent('WritebackMovedTable', {});
+    const lease = world.components.register(Marker).unwrap();
+    try {
+      tick(world);
+      const initial = world.get(body, Transform).unwrap();
+      const originalShear = Array.from(initial.shear);
+      expect(Array.from(initial.pos)).toEqual([Math.fround(0.1), 2, 3]);
+      expect(Array.from(initial.quat)).toEqual([
+        0,
+        Math.fround(Math.sin(0.2)),
+        0,
+        Math.fround(Math.cos(0.2)),
+      ]);
+      const unchanged = world.query({ changed: [Transform] }).unwrap();
+      expect([...unchanged].map((row) => row.entity)).toEqual([body]);
+      tick(world);
+      expect([...unchanged]).toHaveLength(0);
+      for (let i = 0; i < 1024; i++) world.spawn({ component: Transform, data: {} }).unwrap();
+      pose.pos.y = 4;
+      tick(world);
+      expect(transformPos(world, body)).toEqual([Math.fround(0.1), 4, 3]);
+      world.addComponent(body, { component: Marker, data: {} }).unwrap();
+      pose.pos.y = 5;
+      tick(world);
+      expect(transformPos(world, body)[1]).toBe(5);
+      world.addComponent(body, { component: Disabled, data: {} }).unwrap();
+      pose.pos.y = 6;
+      tick(world);
+      expect(transformPos(world, body)[1]).toBe(6);
+      expect(Array.from(world.get(body, Transform).unwrap().scale)).toEqual([2, 3, 4]);
+      expect(Array.from(world.get(body, Transform).unwrap().shear)).toEqual(originalShear);
+      world.removeComponent(body, Disabled).unwrap();
+      pose.pos.y = 7;
+      tick(world);
+      expect(transformPos(world, body)[1]).toBe(7);
+      world.despawn(body).unwrap();
+      const replacement = world
+        .spawn({ component: Transform, data: { pos: [20, 30, 40] } })
+        .unwrap();
+      expect(replacement).not.toBe(body);
+      tick(world);
+      expect(transformPos(world, replacement)).toEqual([20, 30, 40]);
+    } finally {
+      rows.mockRestore();
+      physics.dispose();
+      lease.dispose();
+    }
+  });
+
+  it('publishes moving poses through one ECS numeric write without per-body set calls', async () => {
+    const RAPIER = await loadOrSkip();
+    if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');
+    const world = prepareWorld();
+    const physics = createRapier3DPhysicsWorld(RAPIER);
+    world.insertResource('PhysicsWorld', physics);
+    registerPhysicsSystems(world);
+    const body = spawnDynamic(world, [0, 50, 0], 1);
+    try {
+      tick(world);
+      const writes = countTransformWrites(world);
+      const set = vi.spyOn(world, 'set');
+      try {
+        tick(world, 3);
+        expect(writes.stop()).toBe(3);
+        expect(transformPos(world, body)[1]).toBeLessThan(50);
+        expect(set.mock.calls.filter((call) => call[1] === Transform)).toHaveLength(0);
+      } finally {
+        set.mockRestore();
+      }
+    } finally {
+      physics.dispose();
+    }
+  });
+
   it('compares native poses without decoding an entire Transform component', async () => {
     const RAPIER = await loadOrSkip();
     if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');

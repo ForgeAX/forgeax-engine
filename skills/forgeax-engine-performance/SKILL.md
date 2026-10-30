@@ -59,7 +59,7 @@ World/system lifetime, with reentry and replacement handled by that owner.
 
 | Work | Prefer | Preserve |
 | --- | --- | --- |
-| Read-only, non-temporal numeric selection, including sparse/optional data | Prepared `query.batches()` and columns resolved once per batch | Real ranges use physical `start, end)`; indexed selections use `rows[0..count)`; test optional absence at the batch boundary |
+| Read-only, non-temporal numeric selection, including sparse/optional data | Prepared `query.batches()` and columns resolved once per batch | Real ranges use physical `[start, end)`; indexed selections use `rows[0..count)`; test optional absence at the batch boundary |
 | Dense required-component numeric writes | Existing spans/shared numeric kernels | Declared writes, version publication, structural fences and shared-kernel eligibility |
 | Tiny selection or known entity | Existing numeric `worldRead` probes | Optional membership, numeric representation and bounds; fragmented one-row tables may favor probes over batches |
 | Incremental derived output | Existing changed Query/StateProjection | Reconcile complete dependencies, membership, removals and recovery; changed rows alone cannot replace a full aggregate |
@@ -120,6 +120,9 @@ material/mesh/texture closure through replacement, abort, ACK and retirement.
 | Local smoke or sparse screen contribution | Existing view/composite footprint | Jitter, upsampling, filter/AA support, borders and temporal history; compare pixels and actual raster work |
 | Scene batching or exact vertex welding | Authoring/publication owner | Count CPU rows, retained geometry, topology candidates and executed draws separately; weld complete attributes while preserving primitive/material/corner order |
 | Shadow preparation/retention | Existing scene, view and physical-resource owners | Caster content at unchanged bounds, light/material changes, per-view frusta, receiver/filter/bias guard bands and new graph/device resources |
+| Repeated GPU test startup | Reuse initialized renderer/device preparation across fresh World and asset owners | Actual native request budgets, lease/target cleanup, separate constrained/publication/cold-temporal hosts, fresh replay falsifiers and unchanged frames/pixels; see [CI workload budgets](../../scripts/ci/README.md#native-fixture-workload-budgets) |
+| Repeated test readback allocation and per-texel assertion calls | Reuse unmapped staging storage at the harness lifetime; aggregate exact predicate failures | Preserve every readback, frame and pixel predicate, copy owned bytes before unmapping, replace storage on extent/device changes, and reject restored allocations or corrupted finite/coverage samples |
+| GPU test replay prefixes | Project existing FrameModel metadata and batch actual selected-work reads | Exact pixel/parameter/depth bytes and provenance, original frame windows, independent falsifier devices and actual native submission budgets |
 
 Fewer shader operations or taps are hypotheses until the actual backend shows
 both acceptable pixels and lower GPU cost. Resolution, cascade count, distance,
@@ -168,7 +171,7 @@ lower whole-Worker allocation, a smaller retained heap, or a solved runtime targ
 
 | Need | Reference |
 | --- | --- |
-| Baseline admission, clocks, cold input identity and batch comparison | [Measurement |
+| Baseline admission, clocks, cold input identity and batch comparison | Measurement |
 | Completed gaps, native task joins and publication backpressure | Slow frames |
 | Keys, fanout, rollback, VFX and producer/publication boundaries | CPU preparation |
 | Heap attribution, scratch, ECS, outputs and ownership counterexamples | GC |

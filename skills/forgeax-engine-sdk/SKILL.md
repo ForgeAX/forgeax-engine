@@ -144,8 +144,10 @@ release contract: `main` publishes `next`,
 the weekly `rc` test line publishes `rc`, and `stable` publishes `latest`. GitHub
 and npm publish independently after source qualification of mirrored channels;
 the source mirror retains its formal GitHub Release identity check and advances
-public `main` (development) or `stable` (stable). Delivery requires every enabled
-stage.
+public `main` (development) or `stable` (stable). Stable Promotion then copies the
+original verified Release assets to the public repository through `sdk-release-public.yml`;
+use that workflow with an existing stable version to backfill or retry. Delivery
+requires the public Release and every other enabled stage.
 
 > [!IMPORTANT]
 > Every SDK publication starts with

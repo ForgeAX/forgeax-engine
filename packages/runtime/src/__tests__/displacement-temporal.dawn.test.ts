@@ -19,6 +19,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createBarrelRendererFixture } from './barrel-distortion-gpu-fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -63,7 +64,13 @@ it.each([
   world
     .spawn({
       component: DirectionalLight,
-      data: { castShadow: true, direction: [0, 0, -1], intensity: 3 },
+      data: {
+        castShadow: true,
+        direction: [0, 0, -1],
+        intensity: 3,
+        mapSize: testQuality.shadowMapSize,
+        cascadeCount: testQuality.cascadeCount,
+      },
     })
     .unwrap();
   const native = renderValue(renderer.nativeDevice());
@@ -164,6 +171,10 @@ it.each([
   try {
     for (const change of ['mutable-height', 'scale', 'bias']) {
       for (let frame = 0; frame < 60; frame++) await draw();
+      expect(renderer.inspect().directionalShadow).toMatchObject({
+        mapSize: testQuality.shadowMapSize,
+        cascadeCount: testQuality.cascadeCount,
+      });
       if (change === 'mutable-height') upload(96);
       if (change === 'scale') setMaterial(0.6, 0);
       if (change === 'bias') setMaterial(0.6, 0.02);

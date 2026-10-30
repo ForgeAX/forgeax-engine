@@ -147,22 +147,18 @@ function buildScene(initialCascadeCount: number, initialMapSize: number): SceneE
     )
     .unwrap();
   const shadowEntity = world
-    .spawn(
-      {
-        component: DirectionalLight,
-        data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 },
+    .spawn({
+      component: DirectionalLight,
+      data: {
+        castShadow: true,
+        direction: [0, -1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        mapSize: initialMapSize,
+        shadowDistance: 50,
+        cascadeCount: initialCascadeCount,
       },
-      {
-        component: DirectionalLight,
-        data: {
-          castShadow: true,
-          direction: [0, -1, 0],
-          mapSize: initialMapSize,
-          shadowDistance: 50,
-          cascadeCount: initialCascadeCount,
-        },
-      },
-    )
+    })
     .unwrap();
   return { world, shadowEntity };
 }

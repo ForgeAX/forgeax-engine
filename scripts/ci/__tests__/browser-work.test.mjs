@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,8 +13,13 @@ import budgets from '../browser-work-budgets.json' with { type: 'json' };
 import { implicitShadowWorkloads } from '../browser-workload-policy.mjs';
 import { browserTestFiles } from '../run-split-vitest-browser.mjs';
 
-test('Browser creation fixtures declare shadow resolution and directional cascade workload', () => {
-  const sources = browserFixtureSources(process.cwd(), browserTestFiles());
+test('GPU creation fixtures declare shadow resolution and directional cascade workload', () => {
+  const native = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter((file) => file.endsWith('.dawn.test.ts'));
+  const sources = browserFixtureSources(process.cwd(), [...browserTestFiles(), ...native]);
   assert.ok(
     [...sources.keys()].some((file) => file.endsWith('render-worker-geometry-bootstrap.ts')),
   );
@@ -30,6 +36,15 @@ test('shadow workload policy rejects omitted product defaults and retains explic
     implicitShadowWorkloads('fixture.ts', creation('DirectionalLight', 'castShadow: true')).length,
     2,
   );
+  for (const declaration of [
+    'castShadow',
+    'castShadow: enabled',
+    'castShadow: enabled ? true : false',
+  ])
+    assert.equal(
+      implicitShadowWorkloads('fixture.ts', creation('DirectionalLight', declaration)).length,
+      2,
+    );
   assert.equal(
     implicitShadowWorkloads(
       'fixture.ts',
@@ -173,6 +188,21 @@ test('fixture encoding guard follows the current Browser roster and retains prot
     ),
     [],
   );
+});
+
+test('IES shares only ordinary assembly and retains independent publication and replay devices', () => {
+  const file = 'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts';
+  const counts = { available: true, deviceRequests: 19 };
+  assert.doesNotThrow(() => checkBrowserWorkBudget(file, counts, budgets, 4));
+  assert.throws(
+    () => checkBrowserWorkBudget(file, { ...counts, deviceRequests: 20 }, budgets, 4),
+    /exceeded/,
+  );
+  assert.throws(
+    () => checkBrowserWorkBudget(file, { ...counts, deviceRequests: 18 }, budgets, 4),
+    /cold-device/,
+  );
+  assert.throws(() => checkBrowserWorkBudget(file, counts, budgets, 3), /case budget/);
 });
 
 test('fixed replay workloads reject repeated native queue submissions', () => {

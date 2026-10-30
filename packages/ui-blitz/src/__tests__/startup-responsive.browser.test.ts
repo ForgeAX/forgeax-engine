@@ -235,6 +235,8 @@ it.each([
         'forgeax-loading-reload',
         'forgeax-fatal',
         'forgeax-fatal-message',
+        'forgeax-fatal-diagnostics',
+        'forgeax-fatal-copy',
         'forgeax-fatal-details',
         'forgeax-fatal-reload',
       ].map((id) => {
@@ -339,12 +341,17 @@ it.each([
     expect(instance.gameRoot.inert).toBe(true);
     expect(instance.document.activeElement?.id).toBe('forgeax-fatal-reload');
   }
-  await capture('03-fatal-summary');
-  await tap(
-    instances.map(({ document }) => required(document.querySelector<HTMLElement>('summary'))),
-  );
+  await capture('03-fatal-diagnostics');
   for (const { document } of instances) {
-    expect.soft(required(document.querySelector('details')).hasAttribute('open')).toBe(true);
+    const fatal = required(document.querySelector<HTMLElement>('#forgeax-fatal'));
+    expect.soft(fatal.querySelector('details, summary')).toBeNull();
+    expect
+      .soft(
+        required(
+          fatal.querySelector<HTMLElement>('#forgeax-fatal-diagnostics'),
+        ).getBoundingClientRect().height,
+      )
+      .toBeGreaterThan(0);
     expect(required(document.querySelector('#forgeax-fatal-details')).textContent).not.toContain(
       'secondary cleanup failure',
     );

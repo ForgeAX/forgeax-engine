@@ -31,7 +31,7 @@ it('matches exact borrowed text across fragments without expanding its body', ()
 });
 
 it('borrows raw text without runtime fragmentation and hashes only on first identity demand', () => {
-  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
   const copy = vi.spyOn(String, 'fromCharCode');
   try {
     const text = 'fn source() {}\n\n'.repeat(2_000);
@@ -39,13 +39,15 @@ it('borrows raw text without runtime fragmentation and hashes only on first iden
     expect(source.read()).toBe(text);
     expect(source.descriptor().code).toBe(text);
     expect(copy).not.toHaveBeenCalled();
-    expect(encode).not.toHaveBeenCalled();
+    // Only the two explicit text reads above have expanded the owner.
+    expect(read).toHaveBeenCalledTimes(2);
+    read.mockClear();
     const identity = source.identity;
-    expect(encode).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
     expect(source.identity).toBe(identity);
-    expect(encode).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
   } finally {
     copy.mockRestore();
-    encode.mockRestore();
+    read.mockRestore();
   }
 });

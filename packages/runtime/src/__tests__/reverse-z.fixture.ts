@@ -14,6 +14,8 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -135,13 +137,12 @@ export async function verifyReverseZ(
       const device = (
         await adapter.requestDevice(replayDeviceRequest(source, adapter.features, adapter.limits))
       ).unwrap();
+      const replayWork = observeReplaySubmissions(device);
       const replay = (
         await openReplay(source, { device, createShaderModule: webgpu.createShaderModule })
       ).unwrap();
       try {
-        const inspected = (
-          await replay.inspectWork(last.workIndex, ['pipeline', 'bindings'])
-        ).unwrap();
+        const inspected = describeReplayWork(last);
         const reads = (
           await replay.readAtWorks([
             { resourceId: colorId, workIndex: last.workIndex },
@@ -153,11 +154,13 @@ export async function verifyReverseZ(
             { resourceId: finalColorId, workIndex: final.workIndex },
           ])
         ).unwrap();
+        replayWork.assertMaximum(11);
         const [color, depth, output] = reads.map((result) => result.unwrap());
         if (!color || !depth || !output) throw new Error('missing reverse-Z readback');
         return { inspected, color, depth, output };
       } finally {
         (await replay.dispose()).unwrap();
+        replayWork.restore();
       }
     };
     const replay = await replayFrame(tape);

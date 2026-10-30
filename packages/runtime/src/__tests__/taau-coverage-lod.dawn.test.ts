@@ -20,6 +20,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 import { LOD_SIZE, value } from './lod-transition.fixture';
@@ -107,7 +108,13 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
     world
       .spawn({
         component: DirectionalLight,
-        data: { castShadow: true, direction: [0, 0, -1], intensity: 3 },
+        data: {
+          castShadow: true,
+          direction: [0, 0, -1],
+          intensity: 3,
+          mapSize: testQuality.shadowMapSize,
+          cascadeCount: testQuality.cascadeCount,
+        },
       })
       .unwrap();
     const frame = async (capture: boolean) => {
@@ -124,6 +131,10 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
       return pending;
     };
     for (let i = 0; i < 4; i++) await frame(false);
+    expect(renderer.inspect().directionalShadow).toMatchObject({
+      mapSize: testQuality.shadowMapSize,
+      cascadeCount: testQuality.cascadeCount,
+    });
     expect(renderer.inspect().perFramePassNames).toContain('standard-scene-coverage');
     const pending = await frame(true);
     if (!pending) throw new Error('Missing TAAU coverage capture');

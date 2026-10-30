@@ -225,6 +225,7 @@ function spawnMixedScene(
       intensity: 1,
       castShadow,
       mapSize: 1024,
+      cascadeCount: 3,
       depthBias: 0.005,
       normalBias: 0.05,
       shadowDistance: 50,

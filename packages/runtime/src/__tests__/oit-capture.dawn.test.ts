@@ -72,7 +72,7 @@ it.each([
     });
     expect(inspected).toBe(true);
   } finally {
-    host.renderer.dispose();
+    expect(await host.renderer.dispose()).toMatchObject({ ok: true });
     (await recorder.dispose()).unwrap();
     texture?.destroy();
   }

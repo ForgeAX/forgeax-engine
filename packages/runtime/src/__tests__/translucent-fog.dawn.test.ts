@@ -10,11 +10,14 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
-import { expect, it } from 'vitest';
+import { afterAll, expect, it } from 'vitest';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import { translucentViewOffset } from '../../../render/src/record/view-ubo';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { observeNativeDeviceRequests } from './native-device-work.fixture';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
+import { inspectReplayWorks } from './replay-inspections.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import {
   assertTranslucentFog,
@@ -84,11 +87,13 @@ async function verifyReplay(bytes: Uint8Array, model: FrameModel) {
       createShaderModule: webgpu.createShaderModule,
     })
   ).unwrap();
+  const submissions = observeReplaySubmissions(device);
   try {
-    const read = async (workIndex: number) => {
-      const attachment = (await replay.inspectWork(workIndex, ['pixels'])).unwrap().attachment;
+    const inspections = await inspectReplayWorks(replay, [fogWork, paneWork]);
+    const read = (index: number) => {
+      const attachment = inspections[index]?.attachment;
       expect(attachment?.format).toBe('rgba16float');
-      if (attachment === undefined) throw new Error(`missing replay output for work ${workIndex}`);
+      if (attachment === undefined) throw new Error(`missing replay output ${index}`);
       const image = {
         bytes: attachment.bytes,
         metadata: { format: 'rgba16float', bytesPerRow: TRANSLUCENT_FOG_SIZE * 8 },
@@ -98,8 +103,9 @@ async function verifyReplay(bytes: Uint8Array, model: FrameModel) {
         wall: readRgba(image, WALL_PIXEL[0], WALL_PIXEL[1]),
       };
     };
-    const afterFog = await read(fogWork.workIndex);
-    const afterPane = await read(paneWork.workIndex);
+    const afterFog = read(0);
+    const afterPane = read(1);
+    submissions.assertMaximum(8);
     expectPixel(afterFog.wall, expectedWallPixel(), 'wall after opaque fog');
     expectPixel(afterPane.wall, expectedWallPixel(), 'wall after pane');
     expectPixel(afterPane.pane, expectedPanePixel(), 'pane after its own-depth fog');
@@ -118,9 +124,39 @@ async function verifyReplay(bytes: Uint8Array, model: FrameModel) {
       afterPane,
     };
   } finally {
+    submissions.restore();
     (await replay.dispose()).unwrap();
+    device.nativeDevice().unwrap().destroy();
   }
 }
+
+// Fresh replay devices stay independent; the four live Worlds share only
+// the renderer, while sampleTranslucentFog restores profile and disposes leases.
+const nativeDevices = observeNativeDeviceRequests();
+async function createFogHost() {
+  const target = offscreenCanvas(TRANSLUCENT_FOG_SIZE);
+  const recorder = attachRecorder(webgpu).unwrap();
+  const host = await constructRuntimeRendererHost(
+    target.canvas,
+    { rhi: recorder.backend.rhi },
+    { shaderManifestUrl: manifestUrl },
+  );
+  if (!host.ok) throw new Error(JSON.stringify(host.error));
+  return { target, recorder, host };
+}
+let sharedHost: ReturnType<typeof createFogHost> | undefined;
+afterAll(async () => {
+  try {
+    if (sharedHost === undefined) return;
+    const { target, recorder, host } = await sharedHost;
+    (await host.value.renderer.dispose()).unwrap();
+    target.destroy();
+    (await recorder.dispose()).unwrap();
+    nativeDevices.assertMaximum(5);
+  } finally {
+    nativeDevices.restore();
+  }
+});
 
 it.each([
   ['forward', 'unlit'],
@@ -133,55 +169,43 @@ it.each([
     timeout: 180_000,
   },
   async (path: TranslucentFogPath, material) => {
-    const target = offscreenCanvas(TRANSLUCENT_FOG_SIZE);
-    const recorder = attachRecorder(webgpu).unwrap();
-    const host = await constructRuntimeRendererHost(
-      target.canvas,
-      { rhi: recorder.backend.rhi },
-      { shaderManifestUrl: manifestUrl },
-    );
-    if (!host.ok) throw new Error(JSON.stringify(host.error));
+    sharedHost ??= createFogHost();
+    const { recorder, host } = await sharedHost;
     mkdirSync(directory, { recursive: true });
     let tape: EncodedTape | undefined;
-    try {
-      const sample = await sampleTranslucentFog(host.value.renderer, {
-        path,
-        material,
-        recorder,
-        capture(value) {
-          tape = value;
-          writeFileSync(`${directory}/${path}-${material}.rhitape`, value.bytes);
-        },
-      });
-      if (tape === undefined) throw new Error('missing translucent-fog capture');
-      const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
-      writeFileSync(
-        `${directory}/${path}-${material}-summary.json`,
-        JSON.stringify({ digest: tape.digest, ...summarizeFrame(model) }, null, 2),
-      );
-      assertTranslucentFog(sample);
-      const replay = await verifyReplay(tape.bytes, model);
-      writeFileSync(
-        `${directory}/${path}-${material}-evidence.json`,
-        JSON.stringify(
-          {
-            backend: 'dawn',
-            live: { pane: sample.pane, wall: sample.wall },
-            expected: {
-              pane: expectedPanePixel(),
-              wall: expectedWallPixel(),
-              wallDepthFoggedPane: wallDepthFoggedPanePixel(),
-            },
-            replay,
+    const sample = await sampleTranslucentFog(host.value.renderer, {
+      path,
+      material,
+      recorder,
+      capture(value) {
+        tape = value;
+        writeFileSync(`${directory}/${path}-${material}.rhitape`, value.bytes);
+      },
+    });
+    if (tape === undefined) throw new Error('missing translucent-fog capture');
+    const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
+    writeFileSync(
+      `${directory}/${path}-${material}-summary.json`,
+      JSON.stringify({ digest: tape.digest, ...summarizeFrame(model) }, null, 2),
+    );
+    assertTranslucentFog(sample);
+    const replay = await verifyReplay(tape.bytes, model);
+    writeFileSync(
+      `${directory}/${path}-${material}-evidence.json`,
+      JSON.stringify(
+        {
+          backend: 'dawn',
+          live: { pane: sample.pane, wall: sample.wall },
+          expected: {
+            pane: expectedPanePixel(),
+            wall: expectedWallPixel(),
+            wallDepthFoggedPane: wallDepthFoggedPanePixel(),
           },
-          null,
-          2,
-        ),
-      );
-    } finally {
-      host.value.renderer.dispose();
-      target.destroy();
-      (await recorder.dispose()).unwrap();
-    }
+          replay,
+        },
+        null,
+        2,
+      ),
+    );
   },
 );

@@ -677,6 +677,7 @@ async function boot(identity, reload) {
 }
 
 function wechatGameSource(physics: readonly ('2' | '3')[], facts: ProjectFacts): string {
+  const startupTimeout = JSON.stringify(facts.startupTimeoutMs ?? null);
   return `import { activateExecutionRoot, gameHostPlugin } from '@forgeax/engine/app';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { scenePlugin } from '@forgeax/engine/scene';
@@ -713,12 +714,12 @@ export async function activate({ app, graphics, ui, canvas, gameProjection, gene
   for (const plugin of [renderComponentsPlugin(), scenePlugin(), skinningPlugin(), animationPlugin(), statePlugin(), gameHostPlugin({ app, assets, canvas,
     drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
     renderer: app.renderer, port: channel.port1, uiRoot: ui.document.querySelector('#game-ui'), gameProjection,
-    startupTimeoutMs: ${JSON.stringify(facts.startupTimeoutMs)},
+    startupTimeoutMs: ${startupTimeout},
     controlMode: { read: () => 'touch', subscribe: () => () => {} },
     setPointerLockAllowed: () => {},
   })]) { const fiber = app.pluginContext.plugin(plugin); fibers.push(fiber); await fiber.await(); }
   if (engineRoot !== null) {
-    const mounted = await activateExecutionRoot(app.pluginContext, { guid: engineRoot }, { signal: lifetime.signal, timeoutMs: ${JSON.stringify(facts.startupTimeoutMs)} });
+    const mounted = await activateExecutionRoot(app.pluginContext, { guid: engineRoot }, { signal: lifetime.signal, timeoutMs: ${startupTimeout} });
     fibers.push(mounted.fiber);
   }
   if (frontendRoot !== null && active()) {
@@ -731,7 +732,7 @@ export async function activate({ app, graphics, ui, canvas, gameProjection, gene
       ctx.provide('pluginPrograms', frontendPrograms('wechat-' + generation, 'frontend', generation));
     } });
     fibers.push(provider); await provider.await();
-    const mounted = await activateExecutionRoot(frontend, { guid: frontendRoot }, { signal: lifetime.signal, timeoutMs: ${JSON.stringify(facts.startupTimeoutMs)} });
+    const mounted = await activateExecutionRoot(frontend, { guid: frontendRoot }, { signal: lifetime.signal, timeoutMs: ${startupTimeout} });
     fibers.push(mounted.fiber);
   }
   return { dispose: cleanup };

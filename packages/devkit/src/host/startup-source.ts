@@ -50,11 +50,14 @@ export function hostStartupDocument(
       #forgeax-loading-fill { width: 0; height: 100%; background: rgb(230 235 245 / 78%); transition: width 200ms linear; }
       #forgeax-loading-detail, #forgeax-loading-meta { margin: 0; min-height: 1.5em; max-width: 100%; overflow: hidden; color: rgb(230 235 245 / 52%); font-size: 13px; }
       #forgeax-loading-slow, #forgeax-loading-reload { display: none; }
-      #forgeax-loading-reload, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+      #forgeax-loading-reload, #forgeax-fatal-copy, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
       #forgeax-fatal { position: absolute; inset: 0; z-index: 2147483647; display: none; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #0b0d10; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; }
       #forgeax-fatal-content { display: grid; gap: 12px; width: min(680px, 100%); text-align: left; }
       #forgeax-fatal-message { margin: 0; font-size: 18px; }
-      #forgeax-fatal-details { max-height: 45vh; overflow: auto; white-space: pre-wrap; }
+      #forgeax-fatal-diagnostics-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+      #forgeax-fatal-diagnostics-title { margin: 0; font-size: 15px; font-weight: 600; }
+      #forgeax-fatal-copy-status { min-height: 1.5em; margin: 0; color: rgb(230 235 245 / 68%); font-size: 12px; }
+      #forgeax-fatal-details { min-width: 0; max-height: 45vh; margin: 0; padding: 12px; border: 1px solid rgb(230 235 245 / 16%); border-radius: 5px; background: rgb(0 0 0 / 24%); overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
       @keyframes forgeax-loading-spin { to { transform: rotate(360deg); } }
       @media (prefers-reduced-motion: reduce) { #forgeax-loading, #forgeax-loading-fill { transition: none; } #forgeax-loading-spinner { animation: none; } }
     </style>
@@ -77,7 +80,14 @@ export function hostStartupDocument(
     <div id="forgeax-fatal" role="alert">
       <div id="forgeax-fatal-content">
         <p id="forgeax-fatal-message">Unable to start the game.</p>
-        <details><summary>Diagnostics</summary><pre id="forgeax-fatal-details"></pre></details>
+        <section id="forgeax-fatal-diagnostics" aria-labelledby="forgeax-fatal-diagnostics-title">
+          <div id="forgeax-fatal-diagnostics-header">
+            <h2 id="forgeax-fatal-diagnostics-title">Diagnostics</h2>
+            <button id="forgeax-fatal-copy" type="button">Copy diagnostics</button>
+          </div>
+          <p id="forgeax-fatal-copy-status" aria-live="polite"></p>
+          <pre id="forgeax-fatal-details" tabindex="0"></pre>
+        </section>
         <button id="forgeax-fatal-reload" type="button">Reload</button>
       </div>
     </div>
@@ -151,6 +161,8 @@ export function hostStartupScript(
         const fatal = document.querySelector('#forgeax-fatal');
         const fatalMessage = document.querySelector('#forgeax-fatal-message');
         const fatalDetails = document.querySelector('#forgeax-fatal-details');
+        const fatalCopy = document.querySelector('#forgeax-fatal-copy');
+        const fatalCopyStatus = document.querySelector('#forgeax-fatal-copy-status');
         const fatalReload = document.querySelector('#forgeax-fatal-reload');
         const gameUi = document.querySelector('#game-ui');
         const QueryParams = typeof URLSearchParams === 'function'
@@ -221,6 +233,48 @@ export function hostStartupScript(
             node.setAttribute(name, value);
           }
         };
+        const copyDiagnostics = async () => {
+          const text = [fatalMessage?.textContent, fatalDetails?.textContent]
+            .map((value) => value?.trim())
+            .filter((value) => value !== undefined && value.length > 0)
+            .join('\\n\\n');
+          let copied = false;
+          try {
+            const clipboard = host?.clipboard ?? globalThis.navigator?.clipboard;
+            if (typeof clipboard?.writeText === 'function') {
+              await clipboard.writeText(text);
+              copied = true;
+            }
+          } catch {
+            // Continue to the DOM fallback when clipboard permission is unavailable.
+          }
+          if (!copied) {
+            try {
+              const textarea = document.createElement?.('textarea');
+              const parent = document.body ?? document.documentElement;
+              if (textarea !== undefined && parent !== undefined && parent !== null) {
+                textarea.value = text;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-10000px';
+                parent.appendChild(textarea);
+                try {
+                  textarea.focus?.();
+                  textarea.select();
+                  copied = document.execCommand?.('copy') === true;
+                } finally {
+                  textarea.remove?.();
+                }
+              }
+            } catch {
+              copied = false;
+            }
+          }
+          setText(fatalCopyStatus, copied ? 'Diagnostics copied.' : 'Could not copy diagnostics.');
+        };
+        const onCopyDiagnostics = () => {
+          void copyDiagnostics();
+        };
         const isStartupControlTarget = (target) => {
           if (!(isNode(target))) return false;
           const owns = (node) =>
@@ -238,9 +292,8 @@ export function hostStartupScript(
           event?.stopPropagation?.();
         };
         const onStartupControlKey = (event) => {
-          // Let the focused Reload button receive its default Enter/Space
-          // activation, but stop the key event before it bubbles to the
-          // gameplay producer while the startup surface owns the page.
+          // Let focused startup buttons receive their default activation, but
+          // stop the key event before it reaches gameplay while this surface owns the page.
           if (!inputEnabled) event?.stopPropagation?.();
         };
         const startupInputKinds = [
@@ -598,6 +651,7 @@ export function hostStartupScript(
           cleanupStartupListeners();
           bindStartupInputCapture();
           bindFatalReload();
+          bindFatalCopy();
           let details = formatStartupFailure(reason);
           const notice = fatal;
           if (!(isElement(notice))) return;
@@ -816,6 +870,11 @@ export function hostStartupScript(
             fatalReload.removeEventListener('keydown', onStartupControlKey);
             fatalReload.removeEventListener('keyup', onStartupControlKey);
           }
+          if (fatalCopy !== null && typeof fatalCopy.removeEventListener === 'function') {
+            fatalCopy.removeEventListener('click', onCopyDiagnostics);
+            fatalCopy.removeEventListener('keydown', onStartupControlKey);
+            fatalCopy.removeEventListener('keyup', onStartupControlKey);
+          }
         };
         setLoadingControls(true);
         const bindFatalReload = () => {
@@ -827,6 +886,16 @@ export function hostStartupScript(
           fatalReload.addEventListener('click', reload);
           fatalReload.addEventListener('keydown', onStartupControlKey);
           fatalReload.addEventListener('keyup', onStartupControlKey);
+        };
+        const bindFatalCopy = () => {
+          if (
+            fatalCopy === null ||
+            !isElement(fatalCopy) ||
+            typeof fatalCopy.addEventListener !== 'function'
+          ) return;
+          fatalCopy.addEventListener('click', onCopyDiagnostics);
+          fatalCopy.addEventListener('keydown', onStartupControlKey);
+          fatalCopy.addEventListener('keyup', onStartupControlKey);
         };
         if (gamePage) {
           // Render Worker recovery replaces its transferred canvas. Capture

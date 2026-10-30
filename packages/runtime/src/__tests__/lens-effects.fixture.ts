@@ -20,12 +20,15 @@ import {
   type RecorderAttachment,
   type ReplayReadbackResult,
   replayDeviceRequest,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
+import { describeReplayWork } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -242,15 +245,12 @@ export async function verifyLensEffects(
               replayDeviceRequest(replayTape, adapter.features, adapter.limits),
             )
           ).unwrap();
+          const replayWork = observeReplaySubmissions(device);
           const session = (
             await openReplay(replayTape, { device, createShaderModule: webgpu.createShaderModule })
           ).unwrap();
           try {
-            const inspected = (
-              await session.inspectWork(lens.workIndex, ['pipeline', 'bindings', 'pixels'])
-            ).unwrap();
-            if (!inspected.attachment) throw new Error('missing replay pixels');
-            const uniform = inspected.bindings?.find(
+            const uniform = lens.bindings.find(
               (binding) => binding.groupIndex === 1 && binding.binding === 2,
             );
             if (!uniform?.resourceId) throw new Error('missing lens parameter buffer');
@@ -258,9 +258,23 @@ export async function verifyLensEffects(
               (resource) => resource.resourceId === uniform.resourceId,
             );
             expect(resource?.descriptor).toMatchObject({ desc: { size: 48 } });
-            const parameters = (
-              await session.readResourceAtWork(uniform.resourceId, lens.workIndex)
-            ).unwrap();
+            const output = workOutputs(lens).find((row) => row.role === 'color');
+            if (output === undefined) throw new Error('missing replay pixels');
+            const reads = (
+              await session.readAtWorks([
+                { ...output.request, workIndex: lens.workIndex },
+                { resourceId: uniform.resourceId, workIndex: lens.workIndex },
+              ])
+            )
+              .unwrap()
+              .map((read) => read.unwrap());
+            replayWork.assertMaximum(8);
+            const [attachment, parameters] = reads;
+            if (attachment === undefined || parameters === undefined)
+              throw new Error('missing lens replay readback');
+            for (const read of reads)
+              expect(read.provenance.selectedWorkIndex).toBe(lens.workIndex);
+            const inspected = describeReplayWork(lens, attachment);
             expect(parameters.bytes.byteLength).toBe(48);
             expect(
               new DataView(parameters.bytes.buffer, parameters.bytes.byteOffset).getFloat32(
@@ -276,10 +290,11 @@ export async function verifyLensEffects(
               ),
             );
 
-            return rgba(inspected.attachment);
+            return rgba(attachment);
           } finally {
             try {
               (await session.dispose()).unwrap();
+              replayWork.restore();
             } finally {
               device.nativeDevice().unwrap().destroy();
             }

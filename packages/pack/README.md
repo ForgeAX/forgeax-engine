@@ -132,11 +132,15 @@ still validates fresh source metadata but executes only declared plugin producer
 map meshes, materials and equipment are produced by the normal asset worklist.
 Direct Pack JSON plugin outputs remain explicit in their existing source entries.
 
-Both cold production and verified cache hits reject plugin outputs from an
-undeclared producer. Parameters, instances, isolated worker lifetimes, deferred
-content reads and complete final reference validation keep their existing owners.
-When migrating an older procedural plugin Pack, add `plugins: true`; do not add
-it to ordinary resource Packs to restore the former duplicate execution.
+An omitted `plugins` field means `false`. Plugin discovery does not execute that
+ScriptablePack, and cold production omits its `kind: 'plugin'` outputs while
+keeping ordinary resources. Cache entries containing plugin outputs are treated
+as misses and rebuilt under the same rule. Declare `plugins: true` when those
+outputs should be published and discovered. This capability does not activate a
+PluginAsset; the host still chooses which definitions to mount. Parameters,
+instances, isolated worker lifetimes, deferred content reads and complete final
+reference validation keep their existing owners. Direct Pack JSON plugin
+outputs remain explicit in their source entries.
 
 ## ScriptablePack 与 Pack authoring
 

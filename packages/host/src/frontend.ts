@@ -230,7 +230,7 @@ export async function createFrontendHost(options: FrontendHostOptions = {}): Pro
       next = valid.value;
       current = next;
       const startupTimeoutMs =
-        options.startupTimeoutMs === undefined ? 30_000 : options.startupTimeoutMs;
+        options.startupTimeoutMs === undefined ? null : options.startupTimeoutMs;
       const activation = (async () => {
         await report({ state: 'loading', revision: next.revision });
         if (controller.signal.aborted || disposed)

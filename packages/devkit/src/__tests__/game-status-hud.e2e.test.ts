@@ -70,6 +70,63 @@ it('shows English version and completed-frame diagnostics without intercepting g
   }
 });
 
+it('keeps startup diagnostics expanded and copies the structured failure', async () => {
+  const executablePath = [
+    process.env.FORGEAX_BROWSER_EXECUTABLE,
+    '/opt/google/chrome-beta/chrome',
+    chromium.executablePath(),
+  ].find((path): path is string => path !== undefined && existsSync(path));
+  const browser = await chromium.launch({
+    headless: true,
+    ...(executablePath ? { executablePath } : {}),
+    chromiumSandbox: true,
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 720 } });
+    await page.setContent(hostStartupDocument('Game'));
+    await page.addScriptTag({
+      content: `
+        const host = {
+          document, events: window, reducedMotion: true,
+          surface: () => document.querySelector('#app'),
+          now: () => performance.now(), visible: () => true, reload: () => {},
+          clipboard: {
+            writeText: text => document.documentElement.dataset.copiedDiagnostics = text,
+          },
+        };
+        const startup = ${hostStartupScript(true, 'host')};
+        startup.bindSession('game');
+        startup.prepare();
+        startup.fail({
+          name: 'Error', code: 'game-bundle-load-failed',
+          message: 'engine code download failed',
+          detail: { phase: 'engine-code' },
+        });
+      `,
+    });
+
+    const fatal = page.locator('#forgeax-fatal');
+    expect(await fatal.isVisible()).toBe(true);
+    expect(await fatal.locator('details').count()).toBe(0);
+    expect(await page.locator('#forgeax-fatal-details').textContent()).toContain(
+      'detail.phase: engine-code',
+    );
+    await page.getByRole('button', { name: 'Copy diagnostics' }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('#forgeax-fatal-copy-status')?.textContent === 'Diagnostics copied.',
+    );
+    const copied = await page.evaluate(
+      () => document.documentElement.dataset.copiedDiagnostics ?? '',
+    );
+    expect(copied).toContain('game-bundle-load-failed');
+    expect(copied).toContain('engine code download failed');
+    expect(copied).toContain('detail.phase: engine-code');
+  } finally {
+    await browser.close();
+  }
+});
+
 it('admits gameplay when submitted and completed frame receipts cross an open shadow root', async () => {
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,

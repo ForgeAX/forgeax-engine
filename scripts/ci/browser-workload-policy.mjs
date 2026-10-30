@@ -26,9 +26,10 @@ function shadowCreation(node, ast) {
   )
     return undefined;
   const workload = objectFields(data);
+  const castShadow = workload.get('castShadow');
   if (
     component !== 'PointLightShadow' &&
-    workload.get('castShadow')?.initializer?.kind !== ts.SyntaxKind.TrueKeyword
+    (castShadow === undefined || castShadow.initializer?.kind === ts.SyntaxKind.FalseKeyword)
   )
     return undefined;
   return { component, workload };

@@ -184,6 +184,17 @@ function previewPanelTestId(kind) {
   return 'panel-texture-preview';
 }
 
+export function inlinePreviewReadyExtent({ testId, targetId }) {
+  const host = document.querySelector(`[data-testid="${testId}"] [data-forgeax-preview-panel]`);
+  const surface = host?.querySelector('canvas');
+  const dpr = Math.max(1, devicePixelRatio);
+  const width = Math.round((host?.clientWidth ?? 0) * dpr);
+  const height = Math.round((host?.clientHeight ?? 0) * dpr);
+  return width > 0 && height > 0 && surface?.dataset.forgeaxAssetPreview === targetId &&
+    surface.width === width && surface.height === height &&
+    surface.forgeaxFrameProgress?.completed?.presentation === 'ready' ? [width, height] : false;
+}
+
 export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }) {
   const capturePreview = async (args, worldId) => {
     try {
@@ -219,15 +230,8 @@ export async function verifyInlinePreviews({ page, workspace, onCaptureFailure }
     const tree = await workspace.getSceneTree(args);
     assert.equal(tree.worldId, preview.target.worldId);
     assert.ok(tree.nodes.length > 0);
-    const extent = await page.waitForFunction(({ testId, targetId }) => {
-      const host = document.querySelector(`[data-testid="${testId}"] [data-forgeax-preview-panel]`);
-      const surface = host?.querySelector('canvas');
-      const dpr = Math.max(1, devicePixelRatio);
-      const width = Math.round((host?.clientWidth ?? 0) * dpr);
-      const height = Math.round((host?.clientHeight ?? 0) * dpr);
-      return width > 0 && height > 0 && surface?.dataset.forgeaxAssetPreview === targetId &&
-        surface.width === width && surface.height === height ? [width, height] : false;
-    }, { testId: previewPanelTestId(asset.kind), targetId: args.targetId });
+    const extent = await page.waitForFunction(inlinePreviewReadyExtent,
+      { testId: previewPanelTestId(asset.kind), targetId: args.targetId });
     const dimensions = await extent.jsonValue();
     await extent.dispose();
     {

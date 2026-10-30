@@ -104,7 +104,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
       if (identityJson === undefined) throw new Error('generated SSR identity missing');
       const identity = JSON.parse(identityJson);
       expect(identity.sourceHead).toBe('project:worker-bootstrap');
-      expect(generatedHost).toContain("'./execution-bootstrap.js'");
+      expect(generatedHost).toContain("'./execution-bootstrap.ts'");
       expect(generatedHost).toContain('virtual:forgeax/plugin-programs/frontend');
       expect(generatedHost).not.toMatch(/import\([^)]*assets\/backend\.ts/);
       expect(generatedHost).toContain('virtual:forgeax/plugin-programs/engine');
@@ -127,7 +127,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
           rollupOptions: {
             preserveEntrySignatures: 'allow-extension',
             input: { 'execution-bootstrap': resolve(generatedRoot, 'execution-bootstrap.ts') },
-            output: { entryFileNames: 'assets/execution-bootstrap.js' },
+            output: { entryFileNames: 'assets/[name]-[hash].js' },
           },
         },
       });
@@ -168,7 +168,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
       expect(
         Math.abs(mapped.originalColumn - authored.indexOf('productionProbe')),
       ).toBeLessThanOrEqual(1);
-      const bootstrap = sources.find(([file]) => file === 'execution-bootstrap.js');
+      const bootstrap = sources.find(([file]) => /^execution-bootstrap-[\w-]+\.js$/.test(file));
       expect(bootstrap).toBeDefined();
       if (bootstrap === undefined) return;
 
@@ -224,9 +224,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
       const generatedIndex = await readFile(resolve(generatedRoot, 'index.html'), 'utf8');
       expect(generatedIndex).toContain('id="forgeax-loading"');
       expect(generatedHost).toContain(`const executionWorkers = ${JSON.stringify(workers)}`);
-      expect(generatedHost).toContain(
-        "import.meta.env.DEV ? './execution-bootstrap.ts' : './execution-bootstrap.js'",
-      );
+      expect(generatedHost).toContain("'./execution-bootstrap.ts'");
       expect(config.build?.rollupOptions?.preserveEntrySignatures).toBe('allow-extension');
       expect(config.build?.rollupOptions?.input).toEqual({
         index: resolve(generatedRoot, 'index.html'),

@@ -1,3 +1,4 @@
+import { Hash } from 'node:crypto';
 import { err, ok, type Result, RhiError, type ShaderModule } from '@forgeax/engine-rhi';
 import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -16,7 +17,7 @@ const variant = (key: string, source = key) => ({
 });
 
 it('reuses admitted source across string retries, cached hits and same-label replacement', () => {
-  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const hash = vi.spyOn(Hash.prototype, 'update');
   const descriptor = vi.spyOn(ShaderSource.prototype, 'descriptor');
   const module = {} as ShaderModule;
   const compile = vi.fn(() => ok(module));
@@ -31,7 +32,7 @@ it('reuses admitted source across string retries, cached hits and same-label rep
   try {
     for (let frame = 0; frame < 256; frame++)
       expect(adapter.createShaderModule({ code, label: 'stable-source' })).toEqual(ok(module));
-    expect(encode).toHaveBeenCalledTimes(1);
+    expect(hash).toHaveBeenCalledTimes(1);
     expect(compile).toHaveBeenCalledTimes(1);
     expect(descriptor).toHaveBeenCalledTimes(1);
     // A same-length content change must still retire the cached module.
@@ -40,7 +41,7 @@ it('reuses admitted source across string retries, cached hits and same-label rep
     expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
       ok(module),
     );
-    expect(encode).toHaveBeenCalledTimes(2);
+    expect(hash).toHaveBeenCalledTimes(2);
     expect(compile).toHaveBeenCalledTimes(2);
     adapter.invalidateModule('stable-source');
     expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
@@ -49,17 +50,17 @@ it('reuses admitted source across string retries, cached hits and same-label rep
     expect(adapter.createShaderModule({ code: changed, label: 'stable-source' })).toEqual(
       ok(module),
     );
-    expect(encode).toHaveBeenCalledTimes(3);
+    expect(hash).toHaveBeenCalledTimes(3);
     expect(compile).toHaveBeenCalledTimes(3);
   } finally {
     adapter.dispose();
     descriptor.mockRestore();
-    encode.mockRestore();
+    hash.mockRestore();
   }
 });
 
 it('reuses source admission while the async module is pending', async () => {
-  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  const hash = vi.spyOn(Hash.prototype, 'update');
   const module = {} as ShaderModule;
   let complete: ((result: Result<ShaderModule, RhiError>) => void) | undefined;
   const compile = vi.fn(
@@ -79,17 +80,17 @@ it('reuses source admission while the async module is pending', async () => {
       expect(adapter.createShaderModule({ code: 'pending source', label: 'pending' }).ok).toBe(
         false,
       );
-    expect(encode).toHaveBeenCalledTimes(1);
+    expect(hash).toHaveBeenCalledTimes(1);
     expect(compile).toHaveBeenCalledTimes(1);
     complete?.(ok(module));
     await Promise.resolve();
     expect(adapter.createShaderModule({ code: 'pending source', label: 'pending' })).toEqual(
       ok(module),
     );
-    expect(encode).toHaveBeenCalledTimes(1);
+    expect(hash).toHaveBeenCalledTimes(1);
   } finally {
     adapter.dispose();
-    encode.mockRestore();
+    hash.mockRestore();
   }
 });
 
@@ -99,8 +100,8 @@ it.each([
   { path: 'labeled source owner', labeled: true, owned: true, hashes: 1, scans: 0 },
   { path: 'unlabeled source owner', labeled: false, owned: true, hashes: 1, scans: 0 },
 ])('bounds hashing and matching for $path', ({ labeled, owned, hashes, scans }) => {
-  // ShaderSource's SHA-256 path encodes its full input once per actual digest.
-  const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+  // Observe actual Node digests, independently of the portable UTF-8 encoder.
+  const hash = vi.spyOn(Hash.prototype, 'update');
   const match = vi.spyOn(ShaderSource.prototype, 'matches');
   const code = '// exact source hash counter\n'.repeat(1024);
   const source = new ShaderSource([code]);
@@ -119,13 +120,13 @@ it.each([
       const desc = owned ? source.descriptor(label) : { code, label };
       expect(adapter.createShaderModule(desc)).toEqual(ok(module));
     }
-    expect(encode.mock.calls.filter(([input]) => input === code)).toHaveLength(hashes);
+    expect(hash.mock.calls.filter(([input]) => input === code)).toHaveLength(hashes);
     expect(match).toHaveBeenCalledTimes(scans);
     expect(compile).toHaveBeenCalledTimes(1);
   } finally {
     adapter.dispose();
     match.mockRestore();
-    encode.mockRestore();
+    hash.mockRestore();
   }
 });
 

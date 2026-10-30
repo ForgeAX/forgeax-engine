@@ -63,6 +63,7 @@ import {
   owningAssetLibrary,
 } from './asset-libraries.js';
 import { loadProjectCookers } from './build/cookers.js';
+import { executionBootstrapEntry } from './build/execution-bootstrap.js';
 import { executionWorkerEntries, runtimeDependencyEntries } from './build/execution-workers.js';
 import { materialBuildCapabilityGuard } from './build/material-profile.js';
 import {
@@ -114,11 +115,7 @@ import { LIVE_BRIDGE_OWNER_PARAM } from './live-bridge-url.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
-import {
-  DEV_EXECUTION_TIMEOUT_MS,
-  DEV_PREPARATION_TIMEOUT_MS,
-  PRODUCTION_EXECUTION_TIMEOUT_MS,
-} from './startup-budget.js';
+import { DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import { projectToolProjection } from './tools/project-tools.js';
 import type {
   BootstrapRoot,
@@ -743,17 +740,6 @@ export function devKitHostBridge(
   };
 }
 
-/**
- * The bootstrap entry keeps a fixed file name while its hashed imports change per build;
- * a build-keyed query stops a cached older bootstrap from pairing old imports with new ones.
- */
-function executionBootstrapBuildPath(identity: SsrAdmissionIdentity | undefined): string {
-  const path = './execution-bootstrap.js';
-  return identity === undefined
-    ? path
-    : `${path}?v=${identity.buildSha256.slice('sha256:'.length, 'sha256:'.length + 16)}`;
-}
-
 /** The existing input fence identifies this generation, not a Git commit or final bundle. */
 function projectSsrIdentity(
   facts: ProjectFacts,
@@ -924,9 +910,7 @@ function hostSource(
       ? []
       : [`webAudioPlugin(mainAudio)`, `audioPlugin()`, `skinningPlugin()`];
   const startupTimeout =
-    facts.startupTimeoutMs === undefined
-      ? `(import.meta.env.DEV ? ${DEV_EXECUTION_TIMEOUT_MS} : ${PRODUCTION_EXECUTION_TIMEOUT_MS})`
-      : JSON.stringify(facts.startupTimeoutMs);
+    facts.startupTimeoutMs === undefined ? 'null' : JSON.stringify(facts.startupTimeoutMs);
   return `${pipelineLibraryImports(appOptions)}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
 import { activateExecutionRoot, addLoadWork, assembleAssetRuntime, beginLoadSession, beginLoadWork, describeLoadProgress, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
@@ -1636,7 +1620,7 @@ const appBootstrapPlugin = {
               // Development includes cold Vite compilation before the native Worker handshake.
               startupTimeoutMs: ${startupTimeout},
               bootstrap: new URL(
-                import.meta.env.DEV ? './execution-bootstrap.ts' : ${JSON.stringify(executionBootstrapBuildPath(ssrIdentity))},
+                './execution-bootstrap.ts',
                 import.meta.url,
               ),
               assetCatalog: {
@@ -2941,12 +2925,7 @@ function viteBuildOptions(
           },
       output: {
         ...(wechat ? { format: 'cjs' as const, chunkFileNames: 'assets/[name]-[hash].js' } : {}),
-        entryFileNames: (chunk) =>
-          wechat
-            ? 'game.js'
-            : chunk.name === 'execution-bootstrap'
-              ? 'assets/execution-bootstrap.js'
-              : 'assets/[name]-[hash].js',
+        entryFileNames: wechat ? 'game.js' : 'assets/[name]-[hash].js',
       },
     },
   };
@@ -3227,6 +3206,7 @@ export async function createViteConfig(
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),
       executionWorkerEntries(undefined, delivery),
+      executionBootstrapEntry(realGeneratedRoot),
       ...(serving ? [generatedHostOwnerPlugin(generated)] : []),
       ...engineWorkspacePlugins,
 

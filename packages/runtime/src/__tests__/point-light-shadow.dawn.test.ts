@@ -1,4 +1,5 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl as createShaderManifestUrl } from './shader-manifest-url.fixture';
 // point-light-shadow.dawn.test.ts
@@ -685,7 +686,14 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       );
       worldBaseline.spawn({
         component: DirectionalLight,
-        data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 0.5 },
+        data: {
+          castShadow: true,
+          direction: [0, -1, 0],
+          color: [1, 1, 1],
+          intensity: 0.5,
+          mapSize: testQuality.shadowMapSize,
+          cascadeCount: testQuality.cascadeCount,
+        },
       });
       worldBaseline.spawn(
         {
@@ -727,6 +735,10 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       if (renderTarget === undefined) throw new Error('renderTarget not configured');
       const pixelsBaseline = await doReadPixelsM5(device, renderTarget, FRAME_W, FRAME_H);
       expect(pixelsBaseline.length).toBeGreaterThan(0);
+      expect(renderer.inspect().directionalShadow).toMatchObject({
+        mapSize: testQuality.shadowMapSize,
+        cascadeCount: testQuality.cascadeCount,
+      });
 
       let baselineNonZero = 0;
       for (let i = 0; i < pixelsBaseline.length; i += 4) {
@@ -763,7 +775,14 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       );
       worldShadow.spawn({
         component: DirectionalLight,
-        data: { castShadow: true, direction: [0, -1, 0], color: [1, 1, 1], intensity: 0.5 },
+        data: {
+          castShadow: true,
+          direction: [0, -1, 0],
+          color: [1, 1, 1],
+          intensity: 0.5,
+          mapSize: testQuality.shadowMapSize,
+          cascadeCount: testQuality.cascadeCount,
+        },
       });
       worldShadow.spawn(
         {
@@ -815,6 +834,10 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       if (renderTarget === undefined) throw new Error('renderTarget not configured');
       const pixelsShadow = await doReadPixelsM5(device, renderTarget, FRAME_W, FRAME_H);
       expect(pixelsShadow.length).toBeGreaterThan(0);
+      expect(renderer.inspect().directionalShadow).toMatchObject({
+        mapSize: testQuality.shadowMapSize,
+        cascadeCount: testQuality.cascadeCount,
+      });
       // This manifest is built without `pointShadows: true`, so no Standard
       // variant samples the cube atlas even though casters rasterize into it.
       // Inspection must say so instead of reporting a ready shadow path.

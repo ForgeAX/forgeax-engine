@@ -15,10 +15,13 @@ import {
   decodeTape,
   encodeTape,
   openReplay,
+  type ReplaySession,
   replayDeviceRequest,
   tapeDigest,
   type V7RhiCallEvent,
   type V7Tape,
+  type WorkEntry,
+  workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -30,6 +33,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { observeReplaySubmissions } from './native-replay-work.fixture';
 import { inspectReplayWorks } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -38,6 +42,30 @@ function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Required displacement fixture value is missing');
   return value;
 }
+
+async function stableDisplacementReads(
+  replay: ReplaySession,
+  work: WorkEntry,
+  shadow: { texture: string; layer: number; mip: number; finalView: string; cached: boolean },
+) {
+  const output = required(workOutputs(work).find((row) => row.role === 'color'));
+  const reads = (
+    await replay.readAtWorks([
+      { ...output.request, workIndex: work.workIndex },
+      {
+        resourceId: shadow.texture,
+        workIndex: work.workIndex,
+        subresource: { arrayLayer: shadow.layer, mipLevel: shadow.mip },
+      },
+      ...(shadow.cached ? [{ resourceId: shadow.finalView, workIndex: work.workIndex }] : []),
+    ])
+  )
+    .unwrap()
+    .map((read) => read.unwrap());
+  for (const read of reads) expect(read.provenance.selectedWorkIndex).toBe(work.workIndex);
+  return reads;
+}
+
 const size = 64;
 const difference = (a: number[], b: number[]) =>
   a.reduce((max, v, i) => Math.max(max, Math.abs(v - (b[i] ?? NaN))), 0);
@@ -599,6 +627,7 @@ export async function verifyStandardDisplacement(
               );
               finalShadowId = required(stableShadow.attachments?.depthStencilViewHandleId);
             }
+            const replayWork = observeReplaySubmissions(device);
             const stableReplay = (
               await openReplay(stableTape, {
                 device,
@@ -607,20 +636,17 @@ export async function verifyStandardDisplacement(
             ).unwrap();
             try {
               const stableWork = sceneColorWork(stableModel, renderPath);
-              const stableColor = (
-                await stableReplay.inspectWork(stableWork.workIndex, ['pixels'])
-              ).unwrap();
-              const stableReplayDelta = difference(
-                pixels,
-                hdr(required(stableColor.attachment).bytes, size * 8),
-              );
+              const reads = await stableDisplacementReads(stableReplay, stableWork, {
+                texture: shadowTextureId,
+                layer: shadowLayer,
+                mip: shadowView.desc.baseMipLevel ?? 0,
+                finalView: finalShadowId,
+                cached: cachedShadow === true,
+              });
+              replayWork.assertMaximum(13);
+              const stableReplayDelta = difference(pixels, hdr(required(reads[0]).bytes, size * 8));
               expect(stableReplayDelta).toBeLessThanOrEqual(0.005);
-              const retainedDepth = (
-                await stableReplay.readResourceAtWork(shadowTextureId, stableWork.workIndex, {
-                  arrayLayer: shadowLayer,
-                  mipLevel: shadowView.desc.baseMipLevel ?? 0,
-                })
-              ).unwrap();
+              const retainedDepth = required(reads[1]);
               expect(retainedDepth.format).toBe('depth32float');
               const retainedFloats = Array.from(
                 new Float32Array(
@@ -632,9 +658,7 @@ export async function verifyStandardDisplacement(
               const retainedShadowDelta = difference(shadowFloats, retainedFloats);
               expect(retainedShadowDelta).toBe(0);
               if (cachedShadow) {
-                const finalDepth = (
-                  await stableReplay.readResourceAtWork(finalShadowId, stableWork.workIndex)
-                ).unwrap();
+                const finalDepth = required(reads[2]);
                 expect(finalDepth.bytes).toEqual(retainedDepth.bytes);
               }
               results.set(`${renderPath}/${entry.name}/shadow`, retainedFloats);
@@ -653,6 +677,7 @@ export async function verifyStandardDisplacement(
               });
             } finally {
               (await stableReplay.dispose()).unwrap();
+              replayWork.restore();
             }
             const validation = await raw.popErrorScope();
             expect(validation?.message).toBeUndefined();

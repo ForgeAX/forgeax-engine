@@ -414,7 +414,10 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     // CDP acknowledgment alone does not establish DOM control release. Qualify
     // it before checking the separately delivered intent in the source Worker.
     await expect.poll(() => currentPage.locator('#game-ui [data-ui-part].held').count()).toBe(0);
-    await expect.poll(async () => (await read()).animation.walkWeight).toBe(0);
+    // The source World samples the Host's port message on a later Update.
+    // Use the same bounded Worker input window as movement above; Vitest's
+    // one-second unit assertion default can expire before that Update on CI.
+    await expect.poll(async () => (await read()).animation.walkWeight, { timeout: 30_000 }).toBe(0);
     const evidence = resolve(
       import.meta.dirname,
       '../../../../artifacts/worker-execution-policy-3297/new-project',

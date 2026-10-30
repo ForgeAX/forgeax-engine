@@ -55,9 +55,10 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
       await page.setContent(hostStartupDocument(title));
       await page.addScriptTag({
         content: `
-        const state = globalThis.__startupKeyboard = { inputEnabled: false, reloads: 0 };
+        const state = globalThis.__startupKeyboard = { inputEnabled: false, reloads: 0, copied: '' };
         const host = { document, events: window, surface: () => document.querySelector('#app'),
           now: () => performance.now(), visible: () => true, reducedMotion: false,
+          clipboard: { writeText: text => { state.copied = text; } },
           reload: () => { state.reloads += 1; } };
         globalThis.__testStartup = ${hostStartupScript(true, 'host')};
         globalThis.__testStartup.bindInput(enabled => { state.inputEnabled = enabled; });
@@ -120,10 +121,15 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
     });
     expect(await page.evaluate(() => document.activeElement?.id)).toBe('forgeax-fatal-reload');
     await page.keyboard.press('Shift+Tab');
-    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('SUMMARY');
-    await page.keyboard.press('Enter');
-    expect(await page.locator('details').getAttribute('open')).not.toBeNull();
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe('forgeax-fatal-details');
+    const diagnostics = page.locator('#forgeax-fatal-diagnostics');
+    const copy = page.locator('#forgeax-fatal-copy');
     const details = page.locator('#forgeax-fatal-details');
+    expect(
+      await diagnostics.evaluate((node) => node.getBoundingClientRect().height),
+    ).toBeGreaterThan(0);
+    expect(await copy.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(0);
+    expect(await page.locator('#forgeax-fatal details, #forgeax-fatal summary').count()).toBe(0);
     expect(await details.textContent()).toContain('plugin-startup-failed');
     expect(await details.textContent()).not.toContain('secondary failure');
     expect(await details.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
@@ -131,7 +137,16 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
     await page.mouse.wheel(0, 90);
     await page.clock.runFor(100);
     await expect.poll(() => details.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
-    await page.screenshot({ path: resolve(evidence, '02-fatal-details-reload.png') });
+    await page.keyboard.press('Shift+Tab');
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe('forgeax-fatal-copy');
+    await page.keyboard.press('Enter');
+    await expect
+      .poll(() => page.locator('#forgeax-fatal-copy-status').textContent())
+      .toBe('Diagnostics copied.');
+    expect(
+      await page.evaluate(() => Reflect.get(globalThis, '__startupKeyboard').copied),
+    ).toContain('plugin-startup-failed');
+    await page.screenshot({ path: resolve(evidence, '02-fatal-diagnostics-reload.png') });
     await page.locator('#forgeax-fatal-reload').tap();
     expect(await page.evaluate(() => Reflect.get(globalThis, '__startupKeyboard').reloads)).toBe(1);
 

@@ -312,11 +312,16 @@ it('splits one Renderer GI budget fairly between two CameraViews in different ro
       lateSamples: shared.lateSamples,
     };
     expect(h.errors).toEqual([]);
+    const readbacks = h.surfaceReadbackBuffers();
+    expect(readbacks, 'actual native staging buffers across every observed frame').toHaveLength(1);
+    expect(readbacks[0]?.mapState).toBe('unmapped');
+    expect(readbacks[0]?.size).toBe(Math.ceil((SIZE * 4) / 256) * 256 * SIZE);
   } finally {
     writeFileSync(
       `${directory}/multiview-result.json`,
       JSON.stringify({ result, errors: h.errors, inspection: h.renderer.inspect() }, null, 2),
     );
     await h.dispose();
+    expect(h.surfaceReadbackBuffers().every((buffer) => h.destroyed.has(buffer))).toBe(true);
   }
 });

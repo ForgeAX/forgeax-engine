@@ -1,11 +1,38 @@
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { it } from 'vitest';
+import { afterAll, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { IES_TEST_SIZE, verifyLocalIes } from './ies-local-lights.fixture';
 import { verifyLocalIesReplay } from './ies-local-lights-replay.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
+
+async function createIesHost(publicationSource?: { source: string; epoch: number }) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = IES_TEST_SIZE;
+  document.body.append(canvas);
+  const recorder = attachRecorder(webgpu).unwrap();
+  const host = renderValue(
+    await constructRuntimeRendererHost(canvas, {
+      rhi: recorder.backend.rhi,
+      ...(publicationSource === undefined ? {} : { publicationSource }),
+    }),
+  );
+  return { canvas, recorder, host };
+}
+
+type IesHost = Awaited<ReturnType<typeof createIesHost>>;
+let ordinaryHost: Promise<IesHost> | undefined;
+
+async function disposeIesHost({ canvas, recorder, host }: IesHost) {
+  renderValue(await host.renderer.dispose());
+  canvas.remove();
+  (await recorder.dispose()).unwrap();
+}
+
+afterAll(async () => {
+  if (ordinaryHost !== undefined) await disposeIesHost(await ordinaryHost);
+});
 
 // Keep all four light/path combinations. The publication cases also exercise
 // the complete profile assertions; neither carrier repeats their plain variants.
@@ -18,17 +45,15 @@ for (const [path, kind, combined] of [
   it(`renders ${path} ${kind} IES ${combined ? 'with publication and shadow/source texture' : ''} in Browser`, {
     timeout: 180_000,
   }, async () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = IES_TEST_SIZE;
-    document.body.append(canvas);
-    const recorder = attachRecorder(webgpu).unwrap();
     const identity = { source: `ies-${kind}`, epoch: 1 };
-    const host = renderValue(
-      await constructRuntimeRendererHost(canvas, {
-        rhi: recorder.backend.rhi,
-        ...(combined ? { publicationSource: identity } : {}),
-      }),
-    );
+    let fixture: IesHost;
+    if (combined) fixture = await createIesHost(identity);
+    else {
+      ordinaryHost ??= createIesHost();
+      fixture = await ordinaryHost;
+    }
+    const { canvas, recorder, host } = fixture;
+    document.body.append(canvas);
     const save = async (name: string, bytes: Uint8Array) => {
       let binary = '';
       for (let i = 0; i < bytes.length; i += 8192)
@@ -66,9 +91,8 @@ for (const [path, kind, combined] of [
         new TextEncoder().encode(JSON.stringify(samples, null, 2)),
       );
     } finally {
-      renderValue(await host.renderer.dispose());
       canvas.remove();
-      (await recorder.dispose()).unwrap();
+      if (combined) await disposeIesHost(fixture);
     }
   });
 }

@@ -55,5 +55,10 @@
     "minimumDeviceRequests": 2,
     "minimumCases": 1,
     "submissions": 40
+  },
+  "packages/runtime/src/__tests__/ies-local-lights.browser.test.ts": {
+    "deviceRequests": 19,
+    "minimumDeviceRequests": 19,
+    "minimumCases": 4
   }
 }

@@ -170,10 +170,11 @@ budget. The project startup override also reaches these waits; `null` disables
 them. A visible Engine fatal ends first-frame waiting immediately and reports
 failure even when page/console error lists are empty. It is never a waiting bridge.
 
-Generated browser realms derive one startup budget from the project setting or
-the existing environment default (120 seconds in development, 30 in production).
-Frontend preparation, the frontend Host, App, GameHost and Engine root activation
-consume that same value; an omitted option must not select another library deadline.
+Generated browser realms have no startup deadline by default. A positive
+`package.json#forgeax.startupTimeoutMs` sets one shared deadline for frontend
+preparation, the frontend Host, App, GameHost and Engine root activation; `null`
+or omission leaves startup unbounded. The loading progress and slow-load hint
+remain visible, and actual startup errors still surface immediately.
 
 Native host plugins inject `devkitBackend`, `engineWorkspace` and `toolApi`.
 `devkitBackend` exposes the exact Host, workspace root and optional
@@ -1047,8 +1048,12 @@ buffers and larger payloads stream without changing content versions, readonly
 permissions, dependency links or cancellation cleanup. Serving admits the resolved App output directory for its
 Worker constructor URLs while preserving the surrounding filesystem boundary.
 The bootstrap entry is
-`dist/assets/execution-bootstrap.js`, and the generated `index.html`
-and its main module reference the same closure. `web-zip` includes that module
+`dist/assets/execution-bootstrap-<content-hash>.js`. The build links the generated
+source URL to that emitted chunk before finalizing hashes, so the page and its
+bootstrap reference the same closure, including shared Engine modules. Runtime
+dependency changes update this URL even when the authored SSR identity is unchanged;
+the SSR input digest is not a bundle cache key. Development serves the source URL.
+`web-zip` includes that module
 and all of its discovered dependencies in the verified archive. `single-html`
 embeds the same generated page, module, Worker, WASM, Pack, shader, media, and
 font closure in the candidate HTML. Follow the normal `forgeax project preview`
@@ -1686,16 +1691,19 @@ on the Host. Await the factory provider's native activation before installing
 play UI; a pending provider is not yet visible to rebuild. App still starts before awaited frontend activation so asset work
 can advance; arbitrary Engine startup audio is not held for frontend configuration.
 
-Generated hosts keep their normal startup deadlines unless the project sets
-`package.json#forgeax.startupTimeoutMs`. A positive integer overrides the App,
-Worker, Host, root-plugin, and CLI backend-startup deadlines. Set it to `null`
-to disable those deadlines; explicit cancellation and disposal remain
-available. The game can also read this value through `GameHost.startupTimeoutMs`
-for its own loading barriers. Omission preserves each Engine surface's normal
-behavior, and per-frame deadlines are unchanged.
+Generated game hosts have no startup deadline by default. A positive integer in
+`package.json#forgeax.startupTimeoutMs` sets the App, Worker, Host and root-plugin
+startup deadline. Set it to `null`, or omit it, to let startup continue until it
+completes, fails for another reason or is explicitly cancelled/disposed. The
+game can read the resolved value through `GameHost.startupTimeoutMs` for its own
+loading barriers. This does not change per-frame deadlines or CLI operation
+budgets.
 
 The generated game host renders structured startup failures recursively instead
-of coercing thrown objects to `[object Object]`. It preserves `name`, `message`,
+of coercing thrown objects to `[object Object]`. Diagnostics are always
+expanded, and **Copy diagnostics** copies the failure message and structured
+details to the clipboard, with a DOM copy fallback when browser clipboard access
+is unavailable. It preserves `name`, `message`,
 `code`, `expected`, `hint`, `reason`, and bounded nested
 `cause/detail/webgpuError/wgpuError/error` fields. Generic objects use bounded
 JSON serialization and circular objects receive an explicit diagnostic. Traversal
@@ -1744,9 +1752,9 @@ navigation into visible startup controls, including the slow-load Reload button,
 while its event is stopped before reaching gameplay. Successful entry removes
 `inert` from the existing guide; it does not rebuild that UI.
 
-Loading and fatal overlays scroll when their content exceeds the viewport. On
-short screens, the slow-load hint and expanded Diagnostics keep `Reload`
-reachable; the bounded Diagnostics region retains its own independent scrolling.
+Loading and fatal overlays scroll when their content exceeds the viewport. The
+fatal page keeps its Copy diagnostics button above the complete, expanded error
+text; the diagnostic block no longer has a separate collapsed or scrolling area.
 
 ## RHI-debug operations
 
@@ -1834,7 +1842,7 @@ RhiNull readiness are not visual proof.
 
 ## Project authority
 
-`forge.json.roots`, package manifests/locks, and authored Pack/Meta/code are persistent authority. `package.json#forgeax.startupTimeoutMs` is the project startup policy: positive milliseconds set a shared startup deadline, `null` disables it, and omission retains Engine defaults. Program tables, Catalog and runtime assembly are derived. Definitions use deferred reference consumption; loading a plugin asset does not install it.
+`forge.json.roots`, package manifests/locks, and authored Pack/Meta/code are persistent authority. `package.json#forgeax.startupTimeoutMs` is the project startup policy: positive milliseconds set a shared startup deadline; `null` or omission disables that deadline. Program tables, Catalog and runtime assembly are derived. Definitions use deferred reference consumption; loading a plugin asset does not install it.
 
 Node plugin delivery exports portable artifacts through the existing program entries'
 asynchronous `exportSource()`

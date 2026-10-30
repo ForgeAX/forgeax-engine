@@ -172,7 +172,7 @@ function createCanvas(width: number, height: number): CaptureCanvas {
               viewFormats: ['rgba8unorm-srgb'],
             });
           }
-          if (texture === undefined) throw new Error('ForgeaX AC-27 canvas texture is unavailable');
+          if (texture === undefined) throw new Error('ForgeAX AC-27 canvas texture is unavailable');
           return texture;
         },
       };
@@ -254,7 +254,7 @@ function cameraData() {
 function compactRows(bytes: Uint8Array, bytesPerRow: number, width: number, height: number, bytesPerPixel: number): Uint8Array {
   const rowBytes = width * bytesPerPixel;
   if (bytesPerRow < rowBytes || bytes.byteLength < bytesPerRow * height) {
-    throw new Error(`ForgeaX AC-27 readback row shape is invalid (${bytes.byteLength}/${bytesPerRow}x${height})`);
+    throw new Error(`ForgeAX AC-27 readback row shape is invalid (${bytes.byteLength}/${bytesPerRow}x${height})`);
   }
   const compact = new Uint8Array(rowBytes * height);
   for (let row = 0; row < height; row += 1) {
@@ -281,7 +281,7 @@ export function normalizeAutoExposureFinalReadback(bytes: Uint8Array, format: Te
 } {
   if (format !== 'rgba8unorm' && format !== 'rgba8unorm-srgb'
     && format !== 'bgra8unorm' && format !== 'bgra8unorm-srgb') {
-    throw new Error(`ForgeaX AC-27 final-display observation format is not an 8-bit display format: ${format}`);
+    throw new Error(`ForgeAX AC-27 final-display observation format is not an 8-bit display format: ${format}`);
   }
   return {
     bytes: normalizeCanvasReadbackBytes(bytes, format),
@@ -297,7 +297,7 @@ function sampleRoi(values: readonly number[], width: number, roi: RgbaRoi): numb
       sampled.push(values[offset] ?? 0, values[offset + 1] ?? 0, values[offset + 2] ?? 0, values[offset + 3] ?? 0);
     }
   }
-  if (sampled.some((value) => !Number.isFinite(value))) throw new Error('ForgeaX AC-27 ROI contains a non-finite channel');
+  if (sampled.some((value) => !Number.isFinite(value))) throw new Error('ForgeAX AC-27 ROI contains a non-finite channel');
   return sampled;
 }
 
@@ -308,7 +308,7 @@ function decodeSrgb(value: number): number {
 
 function sha256Bytes(bytes: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
-  if (subtle === undefined) throw new Error('ForgeaX AC-27 hashing requires WebCrypto subtle.digest');
+  if (subtle === undefined) throw new Error('ForgeAX AC-27 hashing requires WebCrypto subtle.digest');
   return subtle.digest('SHA-256', bytes as unknown as BufferSource).then((digest) =>
     Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join(''),
   );
@@ -320,7 +320,7 @@ function stableConfig(): AutoExposureAc27RendererConfig {
 
 function observationByDomain(observation: FrameReceiptObservation, domain: DomainObservation['domain']): DomainObservation {
   const match = observation.observations?.find((candidate) => candidate.domain === domain);
-  if (match === undefined) throw new Error(`ForgeaX AC-27 ${domain} observation is missing`);
+  if (match === undefined) throw new Error(`ForgeAX AC-27 ${domain} observation is missing`);
   return match;
 }
 
@@ -342,19 +342,19 @@ function provenance(options: AutoExposureForgeaxCaptureOptions): AutoExposureAc2
 function validateOptions(options: AutoExposureForgeaxCaptureOptions): void {
   positiveInteger(options.width, 'width');
   positiveInteger(options.height, 'height');
-  if (!REVISION_PATTERN.test(options.testedRevision)) throw new Error('ForgeaX AC-27 requires an exact paired revision');
-  if (!SHA256_PATTERN.test(options.build)) throw new Error('ForgeaX AC-27 requires a SHA-256 build digest');
-  if (options.sourceSha !== undefined && !SHA256_PATTERN.test(options.sourceSha)) throw new Error('ForgeaX AC-27 sourceSha must be a SHA-256 digest');
-  if (options.runner.id.length === 0) throw new Error('ForgeaX AC-27 runner id is required');
-  if (options.referenceLane !== undefined && options.referenceLane !== 'direct' && options.referenceLane !== 'clustered') throw new Error('ForgeaX AC-27 lane must be direct or clustered');
+  if (!REVISION_PATTERN.test(options.testedRevision)) throw new Error('ForgeAX AC-27 requires an exact paired revision');
+  if (!SHA256_PATTERN.test(options.build)) throw new Error('ForgeAX AC-27 requires a SHA-256 build digest');
+  if (options.sourceSha !== undefined && !SHA256_PATTERN.test(options.sourceSha)) throw new Error('ForgeAX AC-27 sourceSha must be a SHA-256 digest');
+  if (options.runner.id.length === 0) throw new Error('ForgeAX AC-27 runner id is required');
+  if (options.referenceLane !== undefined && options.referenceLane !== 'direct' && options.referenceLane !== 'clustered') throw new Error('ForgeAX AC-27 lane must be direct or clustered');
 }
 
 export function validateAutoExposureForgeaxArtifact(input: unknown): { ok: true } | { ok: false; reason: string } {
   if (input === null || typeof input !== 'object') return { ok: false, reason: 'artifact must be an object' };
   const artifact = input as Partial<AutoExposureForgeaxArtifact>;
-  if (artifact.schemaVersion !== 1 || artifact.kind !== 'auto-exposure-forgeax-live' || artifact.qualification !== 'live-forgeax-renderer-readback') return { ok: false, reason: 'artifact kind/version is not live ForgeaX' };
-  if (artifact.side !== 'forgeax' || artifact.caseId !== AUTO_EXPOSURE_SCENE_CASE.caseId) return { ok: false, reason: 'artifact is not bound to the ForgeaX AC-27 case' };
-  if (artifact.provenance?.implementation !== 'forgeax' || typeof artifact.provenance.commit !== 'string' || !REVISION_PATTERN.test(artifact.provenance.commit) || typeof artifact.provenance.build !== 'string' || !SHA256_PATTERN.test(artifact.provenance.build)) return { ok: false, reason: 'artifact ForgeaX provenance is incomplete' };
+  if (artifact.schemaVersion !== 1 || artifact.kind !== 'auto-exposure-forgeax-live' || artifact.qualification !== 'live-forgeax-renderer-readback') return { ok: false, reason: 'artifact kind/version is not live ForgeAX' };
+  if (artifact.side !== 'forgeax' || artifact.caseId !== AUTO_EXPOSURE_SCENE_CASE.caseId) return { ok: false, reason: 'artifact is not bound to the ForgeAX AC-27 case' };
+  if (artifact.provenance?.implementation !== 'forgeax' || typeof artifact.provenance.commit !== 'string' || !REVISION_PATTERN.test(artifact.provenance.commit) || typeof artifact.provenance.build !== 'string' || !SHA256_PATTERN.test(artifact.provenance.build)) return { ok: false, reason: 'artifact ForgeAX provenance is incomplete' };
   if (JSON.stringify(artifact.fixtureIdentity) !== JSON.stringify(AUTO_EXPOSURE_SCENE_CASE.fixtureIdentity) || JSON.stringify(artifact.scene) !== JSON.stringify(AUTO_EXPOSURE_THREE_R184_FIXTURE)) return { ok: false, reason: 'artifact fixture does not match the canonical executable fixture' };
   if (JSON.stringify(artifact.config) !== JSON.stringify(AUTO_EXPOSURE_SCENE_CASE.rendererConfig)) return { ok: false, reason: 'artifact renderer config is not the pinned AC-27 config' };
   if (JSON.stringify(artifact.stageOrder) !== JSON.stringify(AC27_COMMON_STAGE_MAPPING) || !Array.isArray(artifact.stages) || artifact.stages.length !== AC27_COMMON_STAGE_MAPPING.length) return { ok: false, reason: 'artifact common-stage mapping is incomplete' };
@@ -389,7 +389,7 @@ export function validateAutoExposureForgeaxArtifact(input: unknown): { ok: true 
   return { ok: true };
 }
 
-/** Capture all common AC-27 domains from the real ForgeaX renderer receipt. */
+/** Capture all common AC-27 domains from the real ForgeAX renderer receipt. */
 export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCaptureOptions): Promise<AutoExposureForgeaxArtifact> {
   validateOptions(options);
   const surface = createCanvas(options.width, options.height);
@@ -405,7 +405,7 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
   );
   if (!constructed.ok) {
     surface.destroy();
-    throw new Error(`ForgeaX AC-27 renderer unavailable: ${'code' in constructed.error ? constructed.error.code : String(constructed.error)}`);
+    throw new Error(`ForgeAX AC-27 renderer unavailable: ${'code' in constructed.error ? constructed.error.code : String(constructed.error)}`);
   }
   const renderer = constructed.value.renderer as Renderer;
   const debugHost = constructed.value.debugDrawHost as {
@@ -417,7 +417,7 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
   if (!attached.ok) {
     await renderer.dispose();
     surface.destroy();
-    throw new Error(`ForgeaX AC-27 attach failed: ${attached.error.code}`);
+    throw new Error(`ForgeAX AC-27 attach failed: ${attached.error.code}`);
   }
   try {
     let receipt;
@@ -425,17 +425,17 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
       world.update(1 / 60).unwrap();
       if (frame === 1) {
         const requested = renderer.requestObservation?.(['linear-hdr', 'linear-ldr', 'final-display']);
-        if (requested === undefined || !requested.ok) throw new Error(`ForgeaX AC-27 observation request failed: ${requested === undefined ? 'unavailable' : requested.error.code}`);
+        if (requested === undefined || !requested.ok) throw new Error(`ForgeAX AC-27 observation request failed: ${requested === undefined ? 'unavailable' : requested.error.code}`);
       }
       const drawn = renderer.draw({ leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
-      if (!drawn.ok) throw new Error(`ForgeaX AC-27 draw failed: ${drawn.error.code}`);
+      if (!drawn.ok) throw new Error(`ForgeAX AC-27 draw failed: ${drawn.error.code}`);
       receipt = drawn.value;
     }
-    if (receipt === undefined) throw new Error('ForgeaX AC-27 did not produce a receipt');
+    if (receipt === undefined) throw new Error('ForgeAX AC-27 did not produce a receipt');
     const completed = await receipt.completed;
-    if (!completed.ok) throw new Error(`ForgeaX AC-27 receipt failed: ${completed.error.code}`);
+    if (!completed.ok) throw new Error(`ForgeAX AC-27 receipt failed: ${completed.error.code}`);
     const observed = await renderer.observe(receipt, { include: ['linear-hdr', 'linear-ldr', 'final-display'] });
-    if (!observed.ok) throw new Error(`ForgeaX AC-27 observation failed: ${JSON.stringify({ error: observed.error, passNames: debugHost.perFramePassNames, features: debugHost.renderFeatureDiagnostics?.() })}`);
+    if (!observed.ok) throw new Error(`ForgeAX AC-27 observation failed: ${JSON.stringify({ error: observed.error, passNames: debugHost.perFramePassNames, features: debugHost.renderFeatureDiagnostics?.() })}`);
     const roi = roiFor(options.width, options.height);
     const domains = {
       hdr: observationByDomain(observed.value, 'linear-hdr'),
@@ -508,7 +508,7 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
       notApplicable: AUTO_EXPOSURE_SCENE_CASE.notApplicable,
     };
     const valid = validateAutoExposureForgeaxArtifact(artifact);
-    if (!valid.ok) throw new Error(`ForgeaX AC-27 artifact validation failed: ${valid.reason}`);
+    if (!valid.ok) throw new Error(`ForgeAX AC-27 artifact validation failed: ${valid.reason}`);
     return Object.freeze(artifact);
   } finally {
     await renderer.dispose();
@@ -518,6 +518,6 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
 
 export function serializeAutoExposureForgeaxArtifact(artifact: AutoExposureForgeaxArtifact): string {
   const valid = validateAutoExposureForgeaxArtifact(artifact);
-  if (!valid.ok) throw new Error(`cannot serialize invalid ForgeaX AC-27 artifact: ${valid.reason}`);
+  if (!valid.ok) throw new Error(`cannot serialize invalid ForgeAX AC-27 artifact: ${valid.reason}`);
   return `${JSON.stringify(artifact, null, 2)}\n`;
 }

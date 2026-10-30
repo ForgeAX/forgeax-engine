@@ -14,7 +14,7 @@ const SOURCE_KEY = 'color-grading/neutral';
 function cubeSource(size = 16): string {
   const rows = Array.from({ length: size ** 3 }, () => '0 0.5 1');
   return [
-    'TITLE "ForgeaX neutral LUT"',
+    'TITLE "ForgeAX neutral LUT"',
     `LUT_3D_SIZE ${size}`,
     'DOMAIN_MIN 0 0 0',
     'DOMAIN_MAX 1 1 1',

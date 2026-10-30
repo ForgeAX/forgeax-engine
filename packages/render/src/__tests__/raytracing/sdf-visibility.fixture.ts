@@ -6,6 +6,7 @@ import {
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createGlobalSdfComposition, type GlobalSdfComposition } from '../../raytracing/global-sdf';
 import {
   createSdfQuery,
@@ -245,7 +246,9 @@ export async function verifyVisibilitySdf(
     for (const [i, work] of model.works.entries()) {
       const id = work.bindings.find((b) => b.binding === (i === 6 ? 4 : 3))?.resourceId;
       assert(id);
-      expect((await replay.readResourceAtWork(id, i)).unwrap().bytes).toEqual(live[i]);
+      expect(equalBytes((await replay.readResourceAtWork(id, i)).unwrap().bytes, live[i])).toBe(
+        true,
+      );
     }
   } finally {
     (await replay.dispose()).unwrap();

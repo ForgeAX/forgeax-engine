@@ -5,6 +5,7 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { DeviceScope } from '../device/device-scope';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -217,7 +218,7 @@ export async function verifyGraphTextureResidency() {
         assert(expected);
         expect(actual.byteLength).toBe(index % 2 === 0 ? 16 : 4);
         for (let offset = 0; offset < actual.byteLength; offset += 4)
-          expect(actual.slice(offset, offset + 4)).toEqual(expected);
+          expect(equalBytes(actual.slice(offset, offset + 4), expected)).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();

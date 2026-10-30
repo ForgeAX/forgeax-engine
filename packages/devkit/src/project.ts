@@ -132,7 +132,7 @@ export async function readProjectFacts(
     return projectError(
       'project-manifest-unreadable',
       'readable forge.json and package.json files',
-      'Run the command from a ForgeaX game root or pass its directory.',
+      'Run the command from a ForgeAX game root or pass its directory.',
       { root, reason: cause instanceof Error ? cause.message : String(cause) },
     );
   }
@@ -241,7 +241,7 @@ export function commandError(cause: unknown, fallbackCode: string): CommandError
   if (failures.length === 1 && first !== undefined) return first;
   return {
     code: fallbackCode,
-    expected: 'the ForgeaX command to complete',
+    expected: 'the ForgeAX command to complete',
     hint: 'Inspect the underlying diagnostic and repair the owning input.',
     detail: {
       ...(failures.length === 0 ? {} : { failures }),

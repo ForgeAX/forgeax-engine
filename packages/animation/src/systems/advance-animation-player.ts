@@ -193,7 +193,8 @@ function advanceOnePlayer(world: World, entityRaw: number, dt: number, scratch: 
     });
   }
 
-  const newTimes = new Float64Array(ap.times);
+  const previousTimes = ap.times;
+  const newTimes = new Float64Array(previousTimes);
   const activeSlots = collectActiveSlotsAndAdvanceTimes(
     world,
     ap,
@@ -227,7 +228,17 @@ function advanceOnePlayer(world: World, entityRaw: number, dt: number, scratch: 
   // Persist the advanced times column (D-7: weights are never written back —
   // negative-weight clamping is read-time only). Only `times` is set, so the
   // clips / weights / speeds slots are left untouched.
-  world.set(entity, AnimationPlayer, { times: newTimes });
+  // Externally sampled and paused players still evaluate their pose/events,
+  // but an unchanged clock is already validated World state. Avoid a managed
+  // array write and change publication when normalization did not alter it.
+  let clockChanged = false;
+  for (let index = 0; index < newTimes.length; index++) {
+    if (!Object.is(newTimes[index], previousTimes[index])) {
+      clockChanged = true;
+      break;
+    }
+  }
+  if (clockChanged) world.set(entity, AnimationPlayer, { times: newTimes });
 
   if (activeSlots.length > 0) tickEntityTargets(world, entity, entityRaw, activeSlots, scratch);
   commitRoot?.();

@@ -130,7 +130,12 @@ it.each([
       expect(() => submitFrameRecordings([record()])).toThrowError(
         expect.objectContaining({
           code: 'frame-submit-rejected',
-          detail: { operation: 'draw', stage: 'submit', accepted: false },
+          detail: expect.objectContaining({
+            operation: 'draw',
+            stage: 'submit',
+            accepted: false,
+            cause: expect.objectContaining({ code: 'frame-generation-stale' }),
+          }),
         }),
       );
     else

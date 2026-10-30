@@ -7,6 +7,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
 import {
   type RenderBundleCounters,
@@ -160,7 +161,7 @@ it.each([
           };
           const direct = await render(false);
           const retained = await render(true);
-          expect(retained).toEqual(direct);
+          expect(equalBytes(retained, direct)).toBe(true);
           expect(retained.some((value, index) => index % 4 !== 3 && value > 200)).toBe(true);
           if (
             previous !== undefined &&

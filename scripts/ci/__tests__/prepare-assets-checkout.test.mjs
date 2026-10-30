@@ -50,7 +50,7 @@ test('already-forwarded checkout authorization is propagated once to actual Git 
     assert.equal(git(['init', '-q']).status, 0);
     writeFileSync(
       join(root, '.gitmodules'),
-      '[submodule "forgeax-engine-assets"]\n path = forgeax-engine-assets\n url = https://github.com/ForgeaX-Games/forgeax-engine-assets.git\n',
+      '[submodule "forgeax-engine-assets"]\n path = forgeax-engine-assets\n url = https://github.com/ForgeAX/forgeax-engine-assets.git\n',
     );
     const environment = { ...process.env };
     const duplicate = {

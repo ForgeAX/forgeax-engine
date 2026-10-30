@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Same-browser WebGPU comparison for the ForgeaX and Three.js object paths.
+// Same-browser WebGPU comparison for the ForgeAX and Three.js object paths.
 // This is intentionally an ad-hoc experiment, not a CI admission gate.
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -378,7 +378,7 @@ function validateEvidence(implementation, evidence, intervals, pageErrors, conso
   if (evidence?.postSpawn?.pointLightCount !== config.pointLights) errors.push('point-light count drifted');
   if (evidence?.postSpawn?.spotLightCount !== config.spotLights) errors.push('spot-light count drifted');
   if ((evidence?.frameErrors ?? []).length > 0) errors.push('implementation reported frame errors');
-  if ((evidence?.appRendererErrors ?? []).length > 0) errors.push('ForgeaX reported renderer errors');
+  if ((evidence?.appRendererErrors ?? []).length > 0) errors.push('ForgeAX reported renderer errors');
   if (intervals.length !== config.measureFrames) {
     errors.push(`captured ${intervals.length}/${config.measureFrames} frame intervals`);
   }

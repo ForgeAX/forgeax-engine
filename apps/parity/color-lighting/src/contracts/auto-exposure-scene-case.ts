@@ -67,8 +67,8 @@ export const AUTO_EXPOSURE_SCENE_CASE = {
   overallParityClaim: false,
   notApplicable: [
     { stage: 'auto-exposure', reason: 'Three.js r184 has no equivalent renderer-owned histogram/adaptation contract' },
-    { stage: 'TAAU', reason: 'Three.js fixture has no equivalent ForgeaX temporal upscaler stage' },
-    { stage: 'cube-producer', reason: 'Three.js reference does not own ForgeaX Node-only cube import or Pack producer' },
+    { stage: 'TAAU', reason: 'Three.js fixture has no equivalent ForgeAX temporal upscaler stage' },
+    { stage: 'cube-producer', reason: 'Three.js reference does not own ForgeAX Node-only cube import or Pack producer' },
   ],
 } as const;
 

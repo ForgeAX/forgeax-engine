@@ -5,6 +5,7 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import {
   createRayPathTracer,
@@ -255,9 +256,12 @@ export async function verifyCoverage(
         assert(work);
         const resource = work.bindings.find((b) => b.binding === 6)?.resourceId;
         assert(resource);
-        expect((await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes).toEqual(
-          outputs[c],
-        );
+        expect(
+          equalBytes(
+            (await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes,
+            outputs[c],
+          ),
+        ).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();

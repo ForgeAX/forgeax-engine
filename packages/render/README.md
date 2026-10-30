@@ -1542,7 +1542,7 @@ Surface or repacking image channels. Each slot accepts a GUID or the existing
 
 Selectors are integers `0..3` for R/G/B/A. The default channels and scalar
 multiplication follow [Three.js MeshStandardMaterial](https://threejs.org/docs/pages/MeshStandardMaterial.html).
-ForgeaX retains its `metallic` naming; Standard roughness defaults to `1`, matching Three r184.
+ForgeAX retains its `metallic` naming; Standard roughness defaults to `1`, matching Three r184.
 The shared schema also defaults `emissiveIntensity` and `sheenRoughness` to `1`.
 An emissive color therefore works without an additional intensity override; black remains the default color.
 An independent metallic/roughness input replaces only its corresponding packed
@@ -2919,8 +2919,8 @@ Compared against Three.js commit
 | [`WebGPUTimestampQueryPool`](https://github.com/mrdoob/three.js/blob/b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2/src/renderers/webgpu/utils/WebGPUTimestampQueryPool.js) | Resolve GPU timestamps asynchronously with bounded pending readback. |
 
 These sources supply scaling, reconstruction and timing primitives. The automatic
-budget controller, smoothing thresholds and scale-step policy above are ForgeaX
-choices. Existing ForgeaX TAAU retains its reconstruction and 8-pixel alignment;
+budget controller, smoothing thresholds and scale-step policy above are ForgeAX
+choices. Existing ForgeAX TAAU retains its reconstruction and 8-pixel alignment;
 Three.js floors each scaled axis. The GPU regression checks output-sized history
 on every completed transition frame and verifies the actual TAAU texture bindings
 in the captured RHI work.
@@ -3575,8 +3575,8 @@ roughness-to-mip mapping. Seven lowest logical levels retain 16-pixel faces,
 including their one-texel borders. A 128-pixel source produces ten logical levels
 in a 384×512 atlas. This changes specular radiance, not Skylight's UE-style
 ownership of diffuse and reflected environment light.
-ForgeaX retains its image-environment BRDF LUT; Three uses a 16×16 DFG table,
-also used by ForgeaX's solid environment. ForgeaX evaluates compensation on the blended
+ForgeAX retains its image-environment BRDF LUT; Three uses a 16×16 DFG table,
+also used by ForgeAX's solid environment. ForgeAX evaluates compensation on the blended
 F0, whereas Three mixes dielectric and metallic compensation. Material-grid
 appearance is therefore not claimed pixel-identical from the furnace gate.
 
@@ -4155,7 +4155,19 @@ multiplier; auto exposure carries a fallback, EV compensation, bounded EV
 range, and non-negative adaptation rates. The renderer owns the GPU receipt,
 but the author owns the Camera input. `perspective()` / `orthographic()` project
 the exposure union into the Camera's numeric SoA columns; `world.set` consumes
-that POD, not the authoring union directly:
+that POD, not the authoring union directly.
+
+| Live device capability | Auto-exposure behavior | Inspection |
+| --- | --- | --- |
+| Compute and storage buffers | GPU metering and adaptation | Committed GPU receipt after submit |
+| Either capability unavailable, including `wgpu-webgl2` | Render with the authored `fallback`; no metering buffers or compute passes | `actualState: 'fallback'`, zero metering cost and a structured capability failure; no committed GPU measurement |
+| Resource allocation or recording fails on a capable device | Preserve the ordinary structured render failure | Inspect the original cause; capability fallback does not suppress operational errors |
+
+The renderer evaluates admission for the live device generation without changing
+the Camera or saved preferences. Device recovery can therefore resume metering
+when the replacement device supports it.
+
+For example:
 
 ```ts
 world.set(camera, Camera, perspective({
@@ -6073,7 +6085,7 @@ authored raster state.
 
 RectAreaLight defaults to a 10 by 10 emitter with unlimited range (`Infinity`),
 matching Three's unbounded area light. A finite positive range is an explicit
-ForgeaX cutoff; color and intensity remain white and 1.
+ForgeAX cutoff; color and intensity remain white and 1.
 
 Bare-engine Directional and Spot lights default to `castShadow: false`; the
 `game-3d` template explicitly enables its sun. Point lights still require the
@@ -6455,7 +6467,7 @@ The public mode names are the same names used by the Three r184 oracle:
 | `agx` | `TONEMAP_AGX` | AgX curve |
 | `neutral` | `TONEMAP_NEUTRAL` | Khronos neutral curve |
 
-`TONEMAP_REINHARD_EXTENDED` is the existing ForgeaX luminance-domain curve. Its
+`TONEMAP_REINHARD_EXTENDED` is the existing ForgeAX luminance-domain curve. Its
 separate `reinhard-extended` name is intentional: it is not a second formula
 hidden behind the Three `reinhard` name.
 
@@ -7909,7 +7921,7 @@ bindings and pixels on a fresh device, and removes the composite draw as a falsi
 
 The reference is [Three.js OutlinePass](https://threejs.org/docs/pages/OutlinePass.html):
 selection mask, depth visibility classification, edge expansion, then composition.
-ForgeaX uses its existing depth and output chain. Glow, animated pulses and pattern
+ForgeAX uses its existing depth and output chain. Glow, animated pulses and pattern
 textures are separate effects and are not part of this component.
 
 ## Public material MRT
@@ -8022,7 +8034,7 @@ The focused gates supplement the full hello/learn-render 60-frame roster,
 Reference: Three.js [MRTNode](https://threejs.org/docs/pages/MRTNode.html) names
 outputs and permits individual blend/clear policy; its
 [post-processing guide](https://threejs.org/manual/pages/webgpu-postprocessing.html)
-shows attachment format selection and downstream sampling. ForgeaX preserves
+shows attachment format selection and downstream sampling. ForgeAX preserves
 those result capabilities through MaterialAsset and RenderGraph instead of adding
 a separate material node system.
 
@@ -8317,7 +8329,7 @@ in the same Renderer submission; only success acknowledges the encoded upload.
 Idle mip preparation allocates nothing. Video uploads keep one level.
 The browser checkerboard regression verifies linear-light minification (white/black
 averages to sRGB 188), with a base-level-only sampling falsifier.
-ForgeaX uses `update()` and managed material assets;
+ForgeAX uses `update()` and managed material assets;
 it does not add a second asset catalogue or mimic Three's entire Texture hierarchy.
 
 Verification lives in `canvas-texture.browser.test.ts`,
@@ -8587,7 +8599,7 @@ facts carry `viewId`; DynamicResolution consumes only its own view interval.
 
 The reference is [Three.js r184 multiple views](https://github.com/mrdoob/three.js/blob/r184/examples/webgl_multiple_views.html)
 for viewport/scissor and per-region aspect, and [EffectComposer](https://github.com/mrdoob/three.js/blob/r184/examples/jsm/postprocessing/EffectComposer.js)
-for independent post-processing targets. ForgeaX's ECS CameraView declaration owns
+for independent post-processing targets. ForgeAX's ECS CameraView declaration owns
 these choices instead of mutable global viewport state. Rendering cost remains
 proportional to repeated visible geometry and post-processing; reducing minimap
 resolution and cadence reduces that work without changing shared asset identity.
@@ -8724,7 +8736,7 @@ the count back to a positive value restores the ordinary presentation checks.
 
 ### Opaque ray reference foundation (experimental internal surface)
 
-The ray tracing continuation report preserves the implementation, failed acceptance evidence and reproduction commands for PR #3561. Its design index routes the research documents. The takeover checkpoint retains the final-head native captures; the [delivery relay](https://github.com/ForgeaX-Games/forgeax-engine/pull/3561#issuecomment-5959950959) records the subsequent merge and remaining evidence requests.
+The ray tracing continuation report preserves the implementation, failed acceptance evidence and reproduction commands for PR #3561. Its design index routes the research documents. The takeover checkpoint retains the final-head native captures; the [delivery relay](https://github.com/ForgeAX/forgeax-engine/pull/3561#issuecomment-5959950959) records the subsequent merge and remaining evidence requests.
 
 `@forgeax/engine-render/internal` exports `buildRayReferenceScene`,
 `createRayReferenceQuery`, `packReferenceRays`, and `traceReferenceRay`. This opt-in
@@ -10281,7 +10293,7 @@ intensity `1`. Its extraction subtracts the threshold and its tent pyramid is
 normalized. Three WebGPU uses smoothstep extraction over `threshold..threshold+0.01`,
 separable Gaussian kernels and five weighted mip contributions. At threshold `0`,
 strength `1`, radius `0`, the r184 truncated kernels yield uniform gain about
-`2.936`; ForgeaX yields `1`. Neither `scatter` nor `softKnee` is an alias for
+`2.936`; ForgeAX yields `1`. Neither `scatter` nor `softKnee` is an alias for
 Three's `radius` or `smoothWidth`. These are deliberate retained differences:
 copying the threshold default or multiplying intensity cannot align the spatial
 response and would change ordinary scene brightness.

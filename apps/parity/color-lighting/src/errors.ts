@@ -113,9 +113,9 @@ export function parityError(
     case 'file-read-failed':
       return new ColorLightingParityError(code, 'readable case input', 'check the case path and rerun the named case', detail);
     case 'provenance-conflict':
-      return new ColorLightingParityError(code, 'different ForgeaX and Three implementations', 'use independent adapters before numerical diff', detail);
+      return new ColorLightingParityError(code, 'different ForgeAX and Three implementations', 'use independent adapters before numerical diff', detail);
     case 'primary-capture-missing':
-      return new ColorLightingParityError(code, 'ForgeaX and Three WebGPU primary captures', 'capture both primary outputs; fallback cannot replace Three WebGPU', detail);
+      return new ColorLightingParityError(code, 'ForgeAX and Three WebGPU primary captures', 'capture both primary outputs; fallback cannot replace Three WebGPU', detail);
     case 'capture-envelope-invalid':
       return new ColorLightingParityError(code, 'complete named capture envelope', 'restore the missing field before comparing pixels', detail);
     case 'aggregate-only-input':

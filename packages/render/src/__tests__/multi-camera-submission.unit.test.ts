@@ -30,7 +30,14 @@ function fixture(fail: 'none' | 'finish' | 'submit' = 'none') {
   );
   const submit = vi.fn(() =>
     fail === 'submit'
-      ? { ok: false, error: { code: 'submit-failure' } }
+      ? {
+          ok: false,
+          error: {
+            code: 'submit-failure',
+            expected: 'queue accepts the command buffer',
+            hint: 'inspect queue failure',
+          },
+        }
       : { ok: true, value: undefined },
   );
   const encoder = { finish } as unknown as RhiCommandEncoder;
@@ -54,7 +61,7 @@ function fixture(fail: 'none' | 'finish' | 'submit' = 'none') {
     );
     return result.ok;
   }
-  return { finish, submit, committed, aborted, encoded, record };
+  return { finish, submit, committed, aborted, encoded, record, encoder, device };
 }
 
 describe('multi-camera submission barrier', () => {
@@ -81,12 +88,57 @@ describe('multi-camera submission barrier', () => {
       expect(() => submitFrameRecordings([f.record(1), f.record(2)])).toThrowError(
         expect.objectContaining({
           code: 'frame-submit-rejected',
-          detail: { operation: 'draw', stage: 'submit', accepted: false },
+          detail: expect.objectContaining({
+            operation: 'draw',
+            stage: 'submit',
+            accepted: false,
+            cause: expect.objectContaining({
+              code: 'submit-failure',
+              expected: 'queue accepts the command buffer',
+              hint: 'inspect queue failure',
+            }),
+          }),
         }),
       );
     else expect(submitFrameRecordings([f.record(1), f.record(2)])).toBe(false);
     expect(f.committed).toEqual([]);
     expect(f.aborted).toEqual([1, 2]);
+  });
+  it.each([
+    false,
+    true,
+  ])('retains a stale input cause and rejects without queue acceptance (diagnostic throws=%s)', (diagnosticThrows) => {
+    const f = fixture();
+    const cause = {
+      code: 'fixture-stale-input',
+      expected: 'accepted input remains current',
+      hint: 'reprepare input',
+    };
+    function* record(): FrameRecording {
+      const result = yield {
+        encoder: f.encoder,
+        device: f.device,
+        reportError: () => undefined,
+        isCurrent: () => false,
+        rejectionCause: () => {
+          if (diagnosticThrows) throw Error('diagnostic failed');
+          return cause;
+        },
+      };
+      return result.ok;
+    }
+    expect(() => submitFrameRecordings([record()])).toThrowError(
+      expect.objectContaining({
+        code: 'frame-submit-rejected',
+        detail: expect.objectContaining({
+          accepted: false,
+          cause: expect.objectContaining({
+            code: diagnosticThrows ? 'frame-generation-stale' : cause.code,
+          }),
+        }),
+      }),
+    );
+    expect(f.submit).not.toHaveBeenCalled();
   });
   it('aborts a previously encoded camera if a later camera cannot encode', () => {
     const f = fixture();

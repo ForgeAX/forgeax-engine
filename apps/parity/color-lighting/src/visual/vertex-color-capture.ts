@@ -427,14 +427,14 @@ async function copyForgeaxObservation(
     },
   });
   if (!observation.ok) {
-    throw new Error(`ForgeaX copyTextureToBuffer readback unavailable: ${observation.error.code}`);
+    throw new Error(`ForgeAX copyTextureToBuffer readback unavailable: ${observation.error.code}`);
   }
   return observation.value.bytes;
 }
 
 async function copyForgeaxSurface(device: RhiDevice, canvas: HTMLCanvasElement): Promise<Uint8Array> {
   const context = acquireCanvasContext(canvas);
-  if (!context.ok) throw new Error('ForgeaX display surface context is unavailable');
+  if (!context.ok) throw new Error('ForgeAX display surface context is unavailable');
   const texture = context.value.getCurrentTexture();
   if (!texture.ok) throw texture.error;
   return copyTextureBytes(device, texture.value, WIDTH, HEIGHT, 4);
@@ -497,7 +497,7 @@ async function captureForgeaxWithAssembly(
     for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
       world.update().unwrap();
       const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-      if (!draw.ok) throw new Error(`ForgeaX frame ${frame} failed: ${draw.error.code}`);
+      if (!draw.ok) throw new Error(`ForgeAX frame ${frame} failed: ${draw.error.code}`);
       if (frame === 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
@@ -543,12 +543,12 @@ export async function createForgeaxVertexColorCaptureSession(
     surface.destroy();
     const error = constructed.error;
     const code = 'code' in error ? error.code : 'engine-environment-error';
-    throw new Error(`ForgeaX renderer unavailable: ${code}`);
+    throw new Error(`ForgeAX renderer unavailable: ${code}`);
   }
   let disposed = false;
   return {
     capture(options) {
-      if (disposed) return Promise.reject(new Error('ForgeaX vertex-color capture session is disposed'));
+      if (disposed) return Promise.reject(new Error('ForgeAX vertex-color capture session is disposed'));
       return captureForgeaxWithAssembly(constructed.value, surface, options);
     },
     async dispose() {
@@ -567,7 +567,7 @@ export async function captureForgeaxVertexColor(options: VertexCaptureOptions): 
   if (options.forgeaxBundler === undefined) {
     throw new Error(JSON.stringify({
       code: 'producer-entry-missing',
-      detail: 'ForgeaX bundler options were not injected into the capture entry',
+      detail: 'ForgeAX bundler options were not injected into the capture entry',
       recovery: 'run a producer entry with an injected shader manifest (Browser adapter or Dawn data URL)',
     }));
   }

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Packaged Tauri proof that ForgeaX can present native Metal, DX12 or Vulkan Ray Query output in a desktop viewport.",
+  "description": "Packaged Tauri proof that ForgeAX can present native Metal, DX12 or Vulkan Ray Query output in a desktop viewport.",
   "scripts": {
     "build:desktop": "node scripts/build-desktop.mjs",
     "check:native": "node scripts/generate-icons.mjs && cargo check --manifest-path src-tauri/Cargo.toml",

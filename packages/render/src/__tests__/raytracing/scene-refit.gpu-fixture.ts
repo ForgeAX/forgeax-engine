@@ -1,5 +1,6 @@
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { buildRaySurfaceScene, type RaySurfaceScene } from '../../raytracing/attributes';
 import { createRayPathTracer, type RayPathTracer } from '../../raytracing/path-tracer';
 import { RaySceneRefit } from '../../raytracing/scene-refit';
@@ -44,8 +45,8 @@ export async function verifyRaySceneRefit(fixture: RayPathFixture) {
     const incremental = await sample(tracer);
     cold = await create(rebuilt);
     const reference = await sample(cold);
-    expect(incremental).toEqual(reference);
-    expect(incremental).not.toEqual(before);
+    expect(equalBytes(incremental, reference)).toBe(true);
+    expect(equalBytes(incremental, before)).toBe(false);
     return {
       before,
       incremental,

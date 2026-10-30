@@ -22,6 +22,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -321,7 +322,7 @@ export async function verifyRendererReflections(
     renderValue(renderer.setProfile({ ...directProfile, diffuseGi: gi }));
     await settled();
     const giOnly = await hdr('gi-only');
-    expect(giOnly.bytes).toEqual(direct.bytes);
+    expect(equalBytes(giOnly.bytes, direct.bytes)).toBe(true);
 
     renderValue(renderer.setProfile({ ...directProfile, diffuseGi: { ...gi, reflections } }));
     await settled();
@@ -423,9 +424,9 @@ export async function verifyRendererReflections(
       assert(fallback);
       assert(composed);
       // Reflections leave direct lighting untouched.
-      expect(lit.bytes).toEqual(direct.bytes);
+      expect(equalBytes(lit.bytes, direct.bytes)).toBe(true);
       preComposite = before.bytes;
-      expect(composed.bytes).toEqual(captured.bytes);
+      expect(equalBytes(composed.bytes, captured.bytes)).toBe(true);
       await save('reflection-fallback.rgba16float', fallback.bytes);
       const data = new DataView(
         fallback.bytes.buffer,
@@ -455,8 +456,8 @@ export async function verifyRendererReflections(
         await falsifier.replay.readResourceAtWork(sceneHandle, last.workIndex)
       ).unwrap();
       // Omitting the composite leaves exactly the scene its producers wrote.
-      expect(without.bytes).toEqual(preComposite);
-      expect(without.bytes).not.toEqual(captured.bytes);
+      expect(equalBytes(without.bytes, preComposite)).toBe(true);
+      expect(equalBytes(without.bytes, captured.bytes)).toBe(false);
     } finally {
       await falsifier.dispose();
     }

@@ -1,4 +1,4 @@
 interface:
-  display_name: "ForgeaX Engine Performance"
-  short_description: "Measure and optimize ForgeaX CPU and GPU costs"
-  default_prompt: "Use $forgeax-engine-performance to profile and optimize a ForgeaX workload while preserving correctness and comparable evidence."
+  display_name: "ForgeAX Engine Performance"
+  short_description: "Measure and optimize ForgeAX CPU and GPU costs"
+  default_prompt: "Use $forgeax-engine-performance to profile and optimize a ForgeAX workload while preserving correctness and comparable evidence."

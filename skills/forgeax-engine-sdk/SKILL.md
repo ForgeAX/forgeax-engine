@@ -1,12 +1,12 @@
 ---
 name: forgeax-engine-sdk
 description: >-
-  ForgeaX SDK onboarding, capability discovery, production, and acceptance. Use when
+  ForgeAX SDK onboarding, capability discovery, production, and acceptance. Use when
   receiving the SDK, choosing Engine features, building a ZIP, publishing a dev, rc
   or stable version, checking reproducibility, or diagnosing bootstrap.
 ---
 
-# ForgeaX Engine SDK
+# ForgeAX Engine SDK
 
 ## Start here for game work
 
@@ -72,7 +72,7 @@ Translate the requested game into a small capability adoption plan before editin
 
 ```text
 Need: <player-visible or production requirement>
-Use: <one ForgeaX capability and its owner>
+Use: <one ForgeAX capability and its owner>
 Entry: <focused skill, CLI operation, or package README>
 Proof: <test, asset verification, browser evidence, or package output>
 Defer: <available capabilities not needed now>
@@ -118,7 +118,7 @@ flowchart LR
   H -. "User requests release" .-> I["Game release route"]
 ```
 
-Run `forgeax help --tree --json`, then `forgeax help <command-path> --json`, before guessing authoring-operation inputs. Use the CLI skill for the command boundary. Start the seven-stage ForgeaX closed loop only when the user explicitly authorizes it for the current task.
+Run `forgeax help --tree --json`, then `forgeax help <command-path> --json`, before guessing authoring-operation inputs. Use the CLI skill for the command boundary. Start the seven-stage ForgeAX closed loop only when the user explicitly authorizes it for the current task.
 
 Successful `new` also performs a two-second, best-effort check of the configured npm registry's `@forgeax/engine-sdk` channel tag (`next` for a development SDK, `latest` for stable; an rc SDK compares both `rc` and `latest`, so it is offered the promoted stable). Only a strictly newer semantic version produces a text warning; JSON always records `sdkUpdate` as `available`, `current`, `skipped`, or `unavailable`. Offline mode and `FORGEAX_DISABLE_UPDATE_CHECK=1` skip the query, and registry failure never rolls back a created game. Treat the warning as information, not migration authority: install the newer SDK in another directory, read its release notes, then migrate and test each existing game explicitly. Games remain pinned and are never rewritten by SDK discovery.
 

@@ -37,7 +37,7 @@ const api = {
       scenes.push(await createForgeaxScene(document.getElementById('forgeax')));
       api.apply();
       generation++;
-      status.textContent = `Ready · Three.js 0.184.0 · ForgeaX ${api.productHead.slice(0, 12)} · generation ${generation}`;
+      status.textContent = `Ready · Three.js 0.184.0 · ForgeAX ${api.productHead.slice(0, 12)} · generation ${generation}`;
       controls.forEach((control) => {
         control.disabled = false;
       });

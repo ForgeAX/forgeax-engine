@@ -9,6 +9,7 @@ import type { VfxGpuEffectAsset, VfxGpuTickIntent } from '@forgeax/engine-vfx';
 import { particleEffectContribution } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import { equalByteMaps } from '../../../../scripts/test/byte-equality.mjs';
 import type { RenderFeatureExecutionFrame } from '../../../render/src/features/frame-execution';
 import type { RenderFeaturePlanExecutionPass } from '../../../render/src/features/host';
 import {
@@ -469,7 +470,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       if (ticks === 3) {
         const failed = await run(required(chain), prepared, required(prepared.passes[2]).name);
         expect(failed.result.ok).toBe(false);
-        expect(await read(prepared)).toEqual(initial);
+        expect(equalByteMaps(await read(prepared), initial)).toBe(true);
         feature.onFrameAborted?.(frame);
         prepared.session.abortFrame().unwrap();
         prepared = prepare(frame);
@@ -479,7 +480,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       const right = await run(required(chain), prepared);
       expect(left.result.ok).toBe(true);
       expect(right.result.ok).toBe(true);
-      expect(right.bytes).toEqual(left.bytes);
+      expect(equalByteMaps(right.bytes, left.bytes)).toBe(true);
       expect(right.trace).toEqual(left.trace);
       expect(left.begins).toBe(ticks * 4);
       expect(right.begins).toBe(ticks === 0 ? 0 : 1);
@@ -530,7 +531,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
                 },
           ),
         };
-        expect((await run(required(chain), broken)).bytes).not.toEqual(right.bytes);
+        expect(equalByteMaps((await run(required(chain), broken)).bytes, right.bytes)).toBe(false);
         restore(prepared, required(right.bytes));
       }
       feature.onFrameSubmitted?.(frame, {

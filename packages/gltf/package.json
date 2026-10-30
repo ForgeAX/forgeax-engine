@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Runtime glTF 2.0 importer and build-time producer. Pure-function parseGlb / parseGltf / toAssetPack is invoked by the unified ForgeaX asset command and writes <source>.meta.json for runtime loadByGuid<SceneAsset>.",
+  "description": "Runtime glTF 2.0 importer and build-time producer. Pure-function parseGlb / parseGltf / toAssetPack is invoked by the unified ForgeAX asset command and writes <source>.meta.json for runtime loadByGuid<SceneAsset>.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

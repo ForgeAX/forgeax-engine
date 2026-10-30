@@ -11,6 +11,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import {
   createIrradianceFieldHarness,
@@ -296,7 +297,7 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     expect(edited.cards.captured).toBe(edited.cards.tiles);
     expect(captures.length).toBeGreaterThanOrEqual(6);
     expect(new Set(captures.map((c) => c.instanceId)).size).toBeGreaterThanOrEqual(1);
-    expect(await field.readBuffer('probe-global.voxels')).toEqual(voxels);
+    expect(equalBytes(await field.readBuffer('probe-global.voxels'), voxels)).toBe(true);
     const changed = changedTiles(atlas, await field.readAtlas('cards.albedoRoughness'));
     expect(changed).toBeGreaterThan(0);
     expect(changed).toBeLessThanOrEqual(6);
@@ -333,7 +334,7 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
       materialUniformUploads: beforeAssetEdit.materialUniformUploads + 1,
       pendingTiles: 0,
     });
-    expect(await field.readBuffer('probe-global.voxels')).toEqual(voxels);
+    expect(equalBytes(await field.readBuffer('probe-global.voxels'), voxels)).toBe(true);
     const assetChangedTiles = changedTiles(
       redAtlas,
       await field.readAtlas('cards.albedoRoughness'),
@@ -418,7 +419,9 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
         const rejected = inspectField();
         expect(rejected.submittedFrames).toBe(before.submittedFrames);
         expect(rejected.edits?.pendingTiles).toBe(6);
-        expect(await field.readAtlas('cards.albedoRoughness')).toEqual(atlas);
+        const unchangedAtlas = await field.readAtlas('cards.albedoRoughness');
+        expect({ ...unchangedAtlas, bytes: undefined }).toEqual({ ...atlas, bytes: undefined });
+        expect(equalBytes(unchangedAtlas.bytes, atlas.bytes)).toBe(true);
         h.errors.length = 0;
       }
       await h.settle(1);
@@ -433,7 +436,7 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
         materialUniformUploads: edits.materialUniformUploads,
         pendingTiles: 0,
       });
-      expect(await field.readBuffer('probe-global.voxels')).toEqual(voxels);
+      expect(equalBytes(await field.readBuffer('probe-global.voxels'), voxels)).toBe(true);
       const changed = changedTiles(atlas, await field.readAtlas('cards.albedoRoughness'));
       expect(changed).toBeGreaterThan(0);
       expect(changed).toBeLessThanOrEqual(6);

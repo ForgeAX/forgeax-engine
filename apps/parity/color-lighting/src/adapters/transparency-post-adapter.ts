@@ -151,20 +151,20 @@ export async function captureTransparencyForgeaxBrowser(
     });
     world.update().unwrap();
     const drawn = drawFrame();
-    if (!drawn.ok) throw new Error(`transparent ForgeaX draw failed: ${drawn.error.code}`);
+    if (!drawn.ok) throw new Error(`transparent ForgeAX draw failed: ${drawn.error.code}`);
     const observed = await renderer.observe(drawn.value, { include: ['draws'] });
-    if (!observed.ok) throw new Error(`transparent ForgeaX observation failed: ${observed.error.code}`);
+    if (!observed.ok) throw new Error(`transparent ForgeAX observation failed: ${observed.error.code}`);
     if (rendererKind === 'webgl') await waitForAnimationFrameOrTimeout();
     else await renderer.observe(drawn.value, { include: ['timings'] });
     world.update().unwrap();
     const warmed = drawFrame();
-    if (!warmed.ok) throw new Error(`transparent ForgeaX warmed draw failed: ${warmed.error.code}`);
+    if (!warmed.ok) throw new Error(`transparent ForgeAX warmed draw failed: ${warmed.error.code}`);
     const warmedObservation = await renderer.observe(warmed.value, { include: ['draws'] });
-    if (!warmedObservation.ok) throw new Error(`transparent ForgeaX warmed observation failed: ${warmedObservation.error.code}`);
+    if (!warmedObservation.ok) throw new Error(`transparent ForgeAX warmed observation failed: ${warmedObservation.error.code}`);
     if (rendererKind === 'webgl') await waitForAnimationFrameOrTimeout();
     else await renderer.observe(warmed.value, { include: ['timings'] });
     removeRenderErrorListener();
-    if (renderErrors.length > 0) throw new Error(`transparent ForgeaX render errors: ${renderErrors.join(' | ')}`);
+    if (renderErrors.length > 0) throw new Error(`transparent ForgeAX render errors: ${renderErrors.join(' | ')}`);
     const pixels = await readCanvasPixels(canvas);
     const surfaceEvidence = rendererKind === 'webgl' && fallbackBackendId !== undefined
       ? await projectForgeaxSurfaceEvidence({

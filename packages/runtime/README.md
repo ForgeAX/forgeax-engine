@@ -445,7 +445,7 @@ host with both backend paths, completed frames, and pixel readback.
 Always diagnose the final structured error rather than matching the word
 “WebGPU”. Inspect `.code`, `.expected`, `.hint`, and nested backend causes. Asset,
 shader, Pack, permission-policy, and application bootstrap failures belong to
-their own owners and must not be repaired by replacing ForgeaX with a second
+their own owners and must not be repaired by replacing ForgeAX with a second
 Canvas renderer or by swallowing the entry-module exception.
 
 ## Import each domain from its owner

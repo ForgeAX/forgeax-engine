@@ -49,6 +49,9 @@ interface MaterialPackCookInput {
   readonly table?: MaterialTable;
 }
 
+/** Explicit build targets; the default remains the complete portable publication. */
+export type MaterialPackCookProfile = 'webgpu-storage' | 'webgpu-storage-ray';
+
 interface MaterialSourceFile {
   readonly path: string;
   readonly source: string;
@@ -337,11 +340,15 @@ function materialSourceCachePath(path: string, roots: readonly string[]): string
 /** Build a Pack NativeCooker for authored WGSL material rows. */
 export function createMaterialPackCooker(
   roots: readonly string[] = [],
-  options: { readonly profile?: 'webgpu-storage' } = {},
+  options: { readonly profile?: MaterialPackCookProfile } = {},
 ): NativeCooker {
-  if (options.profile !== undefined && options.profile !== 'webgpu-storage')
-    throw new Error('material profile must be webgpu-storage when provided');
-  const storageOnly = options.profile === 'webgpu-storage';
+  if (
+    options.profile !== undefined &&
+    options.profile !== 'webgpu-storage' &&
+    options.profile !== 'webgpu-storage-ray'
+  )
+    throw new Error('material profile must be webgpu-storage or webgpu-storage-ray when provided');
+  const storageOnly = options.profile !== undefined;
   // The material Worker replaces this cooker when roots/profile change; its
   // bounded preparation roster never outlives that existing owner.
   const compilePackVariant = createMaterialPackVariantCompiler(compile);
@@ -372,7 +379,7 @@ export function createMaterialPackCooker(
           .sort(),
       ];
       const hash = createHash('sha256').update('material-pack-cooker/3');
-      if (storageOnly) hash.update('\0profile:webgpu-storage');
+      if (options.profile !== undefined) hash.update(`\0profile:${options.profile}`);
       const native = await getCompilerFingerprint();
       if (!native.ok) throw native.error;
       hash.update(native.value).update('\0');
@@ -568,7 +575,7 @@ export function createMaterialPackCooker(
       // declaring storage itself, so compose its uniform program before the
       // compiler-free runtime. Single-layer media and GPU particles have
       // storage/compute-backed inputs outside this raster fallback route.
-      // The explicit desktop validation profile requires storage WebGPU at startup.
+      // Explicit validation targets require storage WebGPU at startup.
       // Portable publication still cooks both uniform-fallback backends by default.
       const fallbackGeometries = new Set(
         storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot
@@ -696,7 +703,8 @@ export function createMaterialPackCooker(
       }
       const programs = [...materialPrograms(passes, normalizedInput)];
       const derivatives: CookedRayMaterial[] = [];
-      for (const rayContext of storageOnly || context.geometry === 'terrain'
+      for (const rayContext of options.profile === 'webgpu-storage' ||
+      context.geometry === 'terrain'
         ? []
         : (['ray-hit', 'card-capture'] as const)) {
         // Context eligibility is independent: a custom Surface can retain its
@@ -741,11 +749,13 @@ export function createMaterialPackCooker(
       // backend program. Give the producer a new input identity so existing
       // DDC publications cannot keep the old storage-only program set.
       const producerFingerprint = `sha256:${createHash('sha256')
-        .update(`material-raster-variants/3:${fingerprint}${storageOnly ? ':webgpu-storage' : ''}`)
+        .update(
+          `material-raster-variants/3:${fingerprint}${options.profile === undefined ? '' : `:${options.profile}`}`,
+        )
         .digest('hex')}`;
       const record = cookedRecord(
         storageOnly
-          ? { ...normalizedInput, profile: 'webgpu-storage-validation/v1' }
+          ? { ...normalizedInput, profile: `${options.profile}-validation/v1` }
           : normalizedInput,
         cooked.value.resolved.asset,
         sourceClosure,

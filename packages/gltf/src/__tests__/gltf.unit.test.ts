@@ -1512,7 +1512,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
       });
     });
 
-    it('reads glTF ForgeaX extras as producer-authored bounds without bind-pose derivation', async () => {
+    it('reads glTF ForgeAX extras as producer-authored bounds without bind-pose derivation', async () => {
       const parsed = await parseGltf(
         {
           asset: { version: '2.0' },

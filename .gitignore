@@ -116,7 +116,7 @@ shared-build-inputs-release/
 .forgeax-debug/
 packages/*/.forgeax-debug/
 
-# ForgeaX project state, generated links, and DDC caches.
+# ForgeAX project state, generated links, and DDC caches.
 **/.forgeax/
 
 # `bun fx setup` links every game template to the shared AI-first game guide.

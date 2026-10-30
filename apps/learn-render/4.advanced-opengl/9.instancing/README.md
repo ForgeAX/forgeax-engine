@@ -43,7 +43,7 @@ choices, not alternative authoring APIs.
 
 ## LearnOpenGL mapping
 
-| LearnOpenGL concept | ForgeaX owner |
+| LearnOpenGL concept | ForgeAX owner |
 |:--|:--|
 | `glDrawElementsInstanced` | Renderer submission derived from one `Instances` entity |
 | Per-instance `mat4` vertex attributes | Packed `Instances.transforms`; GPU layout is internal |

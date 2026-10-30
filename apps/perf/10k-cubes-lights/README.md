@@ -87,14 +87,14 @@ pnpm --filter @forgeax/perf-10k-cubes-lights compare:browser
 ```
 
 The command serves the production Vite bundle and runs Three.js `0.184.0`
-(`WebGPURenderer`) beside the ForgeaX page in fresh Chrome contexts. Both pages
+(`WebGPURenderer`) beside the ForgeAX page in fresh Chrome contexts. Both pages
 use the same seed, bounds, camera law, unit-cube dimensions,
 standard-PBR material parameters, `32` clustered punctual lights, viewport,
 warm-up, and measured frame count. The default distribution is `16 PointLight
-+ 16 SpotLight` only to preserve light-kind parity with Three.js; ForgeaX
++ 16 SpotLight` only to preserve light-kind parity with Three.js; ForgeAX
 routes both kinds through the same Cluster light-data, binning, and shading
 path. The comparison deliberately uses 10,000 independent objects; it does
-not compare Three.js `InstancedMesh` to ForgeaX entities.
+not compare Three.js `InstancedMesh` to ForgeAX entities.
 
 Frame intervals are measured from browser
 `requestAnimationFrame` (therefore a Three.js result near 60 FPS can be a

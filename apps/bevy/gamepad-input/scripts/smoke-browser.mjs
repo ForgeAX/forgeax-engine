@@ -28,7 +28,7 @@ try {
     await page.addInitScript(() => {
       let current = { south: false, trigger: 0, stick: 0 };
       const makeButton = (value) => ({ pressed: value > 0.5, touched: value > 0, value });
-      const makePad = () => ({ id: 'ForgeaX Mock Standard Gamepad', index: 0, connected: true, mapping: 'standard', buttons: [makeButton(current.south ? 1 : 0), ...Array.from({ length: 6 }, () => makeButton(0)), makeButton(current.trigger)], axes: [current.stick, 0, 0, 0], timestamp: performance.now() });
+      const makePad = () => ({ id: 'ForgeAX Mock Standard Gamepad', index: 0, connected: true, mapping: 'standard', buttons: [makeButton(current.south ? 1 : 0), ...Array.from({ length: 6 }, () => makeButton(0)), makeButton(current.trigger)], axes: [current.stick, 0, 0, 0], timestamp: performance.now() });
       Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => [makePad()] });
       globalThis.__setMockGamepad = (next) => { current = { ...current, ...next }; };
     });

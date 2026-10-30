@@ -1,6 +1,7 @@
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   CARD_LOOKUP_STRIDE,
   CardLookupStatus,
@@ -129,8 +130,12 @@ export async function verifyTwoSidedSdf(fixture: SdfCardsFixture) {
     expect((await replay.readResource(hitResource)).unwrap().bytes.every((v) => v === 0)).toBe(
       true,
     );
-    expect((await replay.readResourceAtWork(hitResource, 2)).unwrap().bytes).toEqual(live);
-    expect((await replay.readResourceAtWork(lookupResource, 3)).unwrap().bytes).toEqual(mapped);
+    expect(equalBytes((await replay.readResourceAtWork(hitResource, 2)).unwrap().bytes, live)).toBe(
+      true,
+    );
+    expect(
+      equalBytes((await replay.readResourceAtWork(lookupResource, 3)).unwrap().bytes, mapped),
+    ).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();
     freshRaw?.destroy();

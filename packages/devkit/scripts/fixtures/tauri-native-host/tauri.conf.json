@@ -1,5 +1,5 @@
 {
-  "productName": "ForgeaX native host probe",
+  "productName": "ForgeAX native host probe",
   "version": "0.0.0",
   "identifier": "com.forgeax.nativeprobe",
   "build": {

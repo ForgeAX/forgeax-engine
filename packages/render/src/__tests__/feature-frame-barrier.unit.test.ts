@@ -109,7 +109,12 @@ describe('Renderer feature frame barrier', () => {
       expect(() => submitFrameRecordings([f.view('a'), f.view('b')])).toThrowError(
         expect.objectContaining({
           code: 'frame-submit-rejected',
-          detail: { operation: 'draw', stage: 'submit', accepted: false },
+          detail: expect.objectContaining({
+            operation: 'draw',
+            stage: 'submit',
+            accepted: false,
+            cause: expect.objectContaining({ code: 'test-submit' }),
+          }),
         }),
       );
     else expect(submitFrameRecordings([f.view('a'), f.view('b')])).toBe(false);

@@ -58,14 +58,14 @@ try {
     assert.deepEqual(tools.map(tool => tool.name).sort(),
       ['forgeax_view_start', 'forgeax_view_transport']);
     const openingTool = tools.find(tool => tool.name === 'forgeax_view_start');
-    assert.equal(openingTool.title, 'ForgeaX View');
+    assert.equal(openingTool.title, 'ForgeAX View');
     const listedResource = (await appClient.listResources()).resources[0];
-    assert.equal(listedResource.name, 'ForgeaX View');
+    assert.equal(listedResource.name, 'ForgeAX View');
     assert.equal(listedResource.uri, openingTool._meta.ui.resourceUri);
     assert.equal(new URL(listedResource.uri).searchParams.get('version'), manifest.version);
     const resource = await appClient.readResource({ uri: listedResource.uri });
     assert.ok(resource.contents[0].text.includes(`data-forgeax-app-version="${APP_VERSION}"`));
-    assert.match(resource.contents[0].text, /<title>ForgeaX View<\/title>/);
+    assert.match(resource.contents[0].text, /<title>ForgeAX View<\/title>/);
     assert.match(await readFile(join(plugin, 'dist/full-view.html'), 'utf8'), /__FX_VIEW_CONFIG__/);
     assert.match(await readFile(join(plugin, 'dist/preview-runtime.mjs'), 'utf8'), /preparePlatform/);
     // A packaged compiler must load outside the checkout and build real source.

@@ -9,7 +9,7 @@ import {
   replayDeviceRequest,
   type V7Tape,
 } from '@forgeax/engine-rhi-debug';
-import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
+import { createShaderModule, disposeDevice, rhi } from '@forgeax/engine-rhi-webgpu';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createContext, useContext } from 'react';
 import type { InspectWork, ViewerArtifactRef, ViewerModel } from './viewer-model';
@@ -113,7 +113,8 @@ function unavailableReplay(error: RhiDebugError): ViewerReplay {
   };
 }
 
-function activeReplay(session: ReplaySession): ViewerReplay {
+function activeReplay(session: ReplaySession, releaseBackend: () => void): ViewerReplay {
+  let disposal: Promise<void> | undefined;
   return {
     session,
     error: null,
@@ -129,9 +130,14 @@ function activeReplay(session: ReplaySession): ViewerReplay {
     },
     readResource: (resourceId, subresource, signal) =>
       session.readResource(resourceId, subresource, signal),
-    dispose: async () => {
-      await session.dispose();
-    },
+    dispose: () =>
+      (disposal ??= (async () => {
+        try {
+          await session.dispose();
+        } finally {
+          releaseBackend();
+        }
+      })()),
   };
 }
 
@@ -148,12 +154,20 @@ export async function openViewerReplay(tape: V7Tape): Promise<ViewerReplay> {
   );
   if (!device.ok) return unavailableReplay(backendError(device.error));
 
-  const session = await openReplay(tape, {
-    device: device.value,
-    createShaderModule,
-  });
-  if (!session.ok) return unavailableReplay(session.error);
-  return activeReplay(session.value);
+  try {
+    const session = await openReplay(tape, {
+      device: device.value,
+      createShaderModule,
+    });
+    if (!session.ok) {
+      disposeDevice(device.value);
+      return unavailableReplay(session.error);
+    }
+    return activeReplay(session.value, () => disposeDevice(device.value));
+  } catch (cause) {
+    disposeDevice(device.value);
+    throw cause;
+  }
 }
 
 export function useViewerContext(): ViewerContextValue | null {

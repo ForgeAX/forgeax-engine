@@ -1,7 +1,7 @@
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import type { CommandBuffer, RhiCommandEncoder, RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { CubeCaptureWork } from '../capture/scheduler';
-import { RendererOperationError } from '../errors/render';
+import { type RendererOperationCause, RendererOperationError } from '../errors/render';
 import type {
   RenderFeatureFrameBatch,
   RenderFeatureFrameInput,
@@ -42,6 +42,7 @@ export interface RecordedView {
   readonly device: RhiDevice;
   readonly beforeSubmit?: ((device: RhiDevice) => RhiError | undefined) | undefined;
   readonly isCurrent?: () => boolean;
+  readonly rejectionCause?: () => RendererOperationCause | undefined;
   /** Physical submission, before any publication callback or generation rejection. */
   readonly onSubmittedWork?: (completed: Promise<void>) => void;
   readonly reportError: (error: RhiError) => void;
@@ -133,6 +134,7 @@ export function* recordFrameTransaction<T>(
       ? {}
       : {
           isCurrent: () => fence.currentGeneration() === fence.capturedGeneration,
+          ...(fence.rejectionCause === undefined ? {} : { rejectionCause: fence.rejectionCause }),
         }),
   };
   if (
@@ -189,9 +191,11 @@ class FrameSubmission {
     [];
   private batch: RenderFeatureFrameBatch | undefined;
   private sceneInputsReady = true;
+  private captureReady = true;
   private sharedGraph: ReturnType<typeof recordSharedFeatureGraph>;
   private work: RecordedView | undefined;
-  private readonly currentChecks: (() => boolean)[] = [];
+  private readonly currentChecks: RecordedView[] = [];
+  private submissionCause: RendererOperationCause | undefined;
   private readonly submittedWork: ((completed: Promise<void>) => void)[] = [];
   private result: RendererFrameStageResult<void> = { ok: false, stage: 'execute' };
   private readonly failures: unknown[] = [];
@@ -268,6 +272,7 @@ class FrameSubmission {
     if ('kind' in next.value)
       throw new Error('A render view yielded more than one feature preparation request');
     this.pending.push(recording);
+    if (next.value.presentation === 'pending') this.captureReady = false;
     const work = this.work;
     if (
       work !== undefined &&
@@ -275,7 +280,7 @@ class FrameSubmission {
     )
       throw new Error('Renderer views must record into one encoder on one device');
     this.work = next.value;
-    if (next.value.isCurrent !== undefined) this.currentChecks.push(next.value.isCurrent);
+    if (next.value.isCurrent !== undefined) this.currentChecks.push(next.value);
     if (next.value.onSubmittedWork !== undefined)
       this.submittedWork.push(next.value.onSubmittedWork);
     return true;
@@ -481,11 +486,27 @@ class FrameSubmission {
   ): boolean {
     const injected = work.beforeSubmit?.(work.device);
     if (injected !== undefined) {
+      this.submissionCause = injected;
       work.reportError(injected);
       this.result = { ok: false, stage: 'submit' };
       return false;
     }
-    if (this.isCurrent?.() === false || this.currentChecks.some((check) => !check())) {
+    const frameCurrent = this.isCurrent?.() !== false;
+    const stale = frameCurrent
+      ? this.currentChecks.find((work) => work.isCurrent?.() === false)
+      : undefined;
+    if (!frameCurrent || stale !== undefined) {
+      this.submissionCause = {
+        code: 'frame-generation-stale',
+        expected: 'encoded frame inputs remain current through queue acceptance',
+        hint: 'reprepare the rejected frame through its owner',
+        detail: { frameCurrent },
+      };
+      try {
+        this.submissionCause = stale?.rejectionCause?.() ?? this.submissionCause;
+      } catch {
+        /* Keep the original rejection when diagnostics fail. */
+      }
       this.result = { ok: false, stage: 'submit' };
       return false;
     }
@@ -498,6 +519,7 @@ class FrameSubmission {
     buffers.push(commands);
     const submitted = work.device.queue.submit(buffers);
     if (!submitted.ok) {
+      this.submissionCause = submitted.error;
       work.reportError(submitted.error);
       this.result = { ok: false, stage: 'submit' };
       return false;
@@ -555,7 +577,9 @@ class FrameSubmission {
     const accepted = this.result.ok && this.sceneInputsReady;
     const completion = this.completion;
     this.capture(() => first.internals.featureSceneInputs?.complete(accepted, completion));
-    this.capture(() => first.internals.rendererCaptureOwner?.complete(accepted, completion));
+    this.capture(() =>
+      first.internals.rendererCaptureOwner?.complete(accepted && this.captureReady, completion),
+    );
     if (accepted) this.acknowledgeFeatureBatch(first);
     else this.abortFeatureBatch(first);
     const batch = this.batch;
@@ -616,6 +640,18 @@ class FrameSubmission {
         operation: 'draw',
         stage: 'submit',
         accepted: false,
+        ...(this.submissionCause === undefined
+          ? {}
+          : {
+              cause: {
+                code: this.submissionCause.code,
+                expected: this.submissionCause.expected,
+                hint: this.submissionCause.hint,
+                ...(this.submissionCause.detail === undefined
+                  ? {}
+                  : { detail: this.submissionCause.detail }),
+              },
+            }),
       });
     }
   }

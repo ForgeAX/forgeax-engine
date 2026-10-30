@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schema/asset-authority.schema.json",
-  "title": "ForgeaX asset authority audit manifest",
+  "title": "ForgeAX asset authority audit manifest",
   "description": "Machine-readable audit input and output contract for asset authoring authority.",
   "type": "object",
   "required": ["schemaVersion", "categories", "producers", "inputs"],

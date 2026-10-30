@@ -3,6 +3,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { createOitScene, OIT_SIZE } from '../../../runtime/src/__tests__/oit.fixture';
 import { shaderManifestUrl } from '../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { constructRuntimeRendererHost } from '../../../runtime/src/renderer-host';
@@ -85,7 +86,7 @@ it.each([
     expect(blended.probes.left[0]).toBeGreaterThan(before.probes.left[0] + 0.1);
     expect(blended.probes.background).toEqual(before.probes.background);
     expect(blended.probes.occluded).toEqual(before.probes.occluded);
-    expect(restored.observation.bytes).toEqual(before.observation.bytes);
+    expect(equalBytes(restored.observation.bytes, before.observation.bytes)).toBe(true);
     expect(scene.errors).toEqual([]);
     const directory = 'artifacts/empty-transparency';
     mkdirSync(directory, { recursive: true });

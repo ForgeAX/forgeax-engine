@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schemas/vertex-color-gate-report-v1.json",
-  "title": "ForgeaX vertex-color candidate gate report",
+  "title": "ForgeAX vertex-color candidate gate report",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "status", "candidateSourceSha", "gates", "step7Handoff"],

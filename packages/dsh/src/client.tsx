@@ -28,14 +28,14 @@ export function apply(ctx: ClientContext): void {
         name: 'shell.overlay',
         id: 'forgeax-engine',
         order: 80,
-        label: 'ForgeaX Engine',
+        label: 'ForgeAX Engine',
       },
-      ForgeaXPanel,
+      ForgeAXPanel,
     ),
   );
 }
 
-function ForgeaXPanel(): React.JSX.Element {
+function ForgeAXPanel(): React.JSX.Element {
   const [open, setOpen] = useState(true);
   const [realm, setRealm] = useState<FederationStatus>();
   const [engine, setEngine] = useState<EnginePreviewStatus>();
@@ -132,7 +132,7 @@ function ForgeaXPanel(): React.JSX.Element {
         }}
       >
         <div>
-          <strong style={{ fontSize: 14 }}>ForgeaX Engine</strong>
+          <strong style={{ fontSize: 14 }}>ForgeAX Engine</strong>
           <span
             data-forgeax-ready={realm?.ready === true ? 'true' : 'false'}
             style={{
@@ -169,7 +169,7 @@ function ForgeaXPanel(): React.JSX.Element {
               ref={iframe}
               data-forgeax-engine-frame="real"
               src={engineEndpoint}
-              title="Running ForgeaX Engine"
+              title="Running ForgeAX Engine"
               onLoad={() => {
                 iframe.current?.contentWindow?.postMessage(
                   { protocol: FEDERATION_PROTOCOL_VERSION, kind: 'forgeax-engine-poll' },

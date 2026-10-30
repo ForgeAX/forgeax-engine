@@ -14,12 +14,17 @@ export default defineProject({
   test: {
     environment: 'node',
     name: '@forgeax/engine-app',
-    // Exclude `*.browser.test.ts` -- those are owned by the root `browser`
-    // vitest project (K-3 split). Without this, the per-package project's
+    // Browser files belong to the root `browser` / `browser-no-webgpu`
+    // projects (K-3 split). Without this, the per-package project's
     // default include glob picks up the browser test files in node env
     // (no document / no real WebGPU canvas), causing cascade fail under
     // `pnpm test:unit`. Mirrors packages/runtime/vitest.config.ts policy.
-    exclude: ['**/node_modules/**', '**/dist/**', '**/*.browser.test.ts'],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/*.browser.test.ts',
+      '**/*.browser-no-webgpu.test.ts',
+    ],
     typecheck: {
       enabled: true,
       tsconfig: './tsconfig.json',

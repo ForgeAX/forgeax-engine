@@ -69,7 +69,7 @@ function threeR184Sky(
 }
 
 describe('Three.js r184 same-parameter model reference', () => {
-  it('pins natural daylight probes independently from the ForgeaX evaluator', () => {
+  it('pins natural daylight probes independently from the ForgeAX evaluator', () => {
     const probes = Object.entries(PROFILES).map(([time, profile]) => {
       const horizon = normalize([profile.sun[0], 0.08, profile.sun[2]]);
       return {

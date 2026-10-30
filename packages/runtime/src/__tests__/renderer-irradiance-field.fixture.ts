@@ -217,10 +217,22 @@ export async function createIrradianceFieldHarness(options: {
   ) => {
     for (const dependency of dependencies) materialDependencies.set(dependency.guid, dependency);
     const guid = AssetGuid.format(AssetGuid.random());
-    const cooked = await createMaterialPackCooker().cook({ guid, source });
+    const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage-ray' }).cook({
+      guid,
+      source,
+    });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
+    assert(
+      record.programs.every(({ selections }) =>
+        selections.every(
+          ({ context }) =>
+            context.backend === 'webgpu' && context.capability !== 'uniform-fallback',
+        ),
+      ),
+      'GI fixture material producer must target storage WebGPU with ray programs',
+    );
     const ready = await createMaterialLoader({
       loadPublication: async () => ({ guid, record, artifacts: cooked.artifacts }),
       loadReference: async () => true,

@@ -43,7 +43,7 @@ it('samples old and new compressed image mip chains in one GPU submission', asyn
     store.adoptTextureChange(change, source(), worldRenderResources(world)).unwrap();
   changes.accept();
   const after = await prepare();
-  expect(after.view).not.toBe(before.view);
+  expect(Object.is(after.view, before.view)).toBe(false);
   expect(before.texture.isDestroyed).toBe(false);
   expect(after.receipt.mipLevelCount).toBe(5);
   const shader = (

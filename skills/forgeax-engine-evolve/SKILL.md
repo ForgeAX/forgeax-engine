@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-evolve
-description: ForgeaX consumer evidence and Engine improvement. Use when reviewing game-development traces, repeated failures or costly workarounds to establish Engine responsibility, fix owners and improve guidance.
+description: ForgeAX consumer evidence and Engine improvement. Use when reviewing game-development traces, repeated failures or costly workarounds to establish Engine responsibility, fix owners and improve guidance.
 ---
 
 # Evolve Engine from real use

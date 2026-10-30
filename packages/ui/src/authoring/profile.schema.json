@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schemas/ui-authoring-profile-v1.json",
-  "title": "ForgeaX UI authoring profile",
+  "title": "ForgeAX UI authoring profile",
   "description": "Machine-readable boundary for parser-backed HTML and CSS authoring validation.",
   "type": "object",
   "required": ["version", "category", "blocking", "precedence", "diagnostics"],

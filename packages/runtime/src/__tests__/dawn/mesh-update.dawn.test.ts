@@ -71,8 +71,8 @@ it.each([
     const after = store.getMeshGpuHandles(handle);
     assert(after);
     if (mode === 'expansion') {
-      expect(after.vertexBuffer).not.toBe(vertexBuffer);
-      expect(after.indexBuffer).not.toBe(indexBuffer);
+      expect(Object.is(after.vertexBuffer, vertexBuffer)).toBe(false);
+      expect(Object.is(after.indexBuffer, indexBuffer)).toBe(false);
       expect(after.vboBytes).toBe(replacement.vertices.byteLength);
     } else {
       expect(after.vertexBuffer).toBe(vertexBuffer);

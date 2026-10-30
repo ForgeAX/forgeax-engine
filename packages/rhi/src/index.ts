@@ -1939,7 +1939,7 @@ export interface RhiQueue {
  *
  * Method NAMES align byte-for-byte with `@webgpu/types.GPUCommandEncoder` +
  * `GPUDebugCommandsMixin` (research F-1 / D-S4). 12 spec methods plus one
- * ForgeaX compound operation:
+ * ForgeAX compound operation:
  *   - 9 direct: beginRenderPass / beginComputePass / copyBufferToBuffer /
  *               copyBufferToTexture / copyTextureToBuffer / copyTextureToTexture /
  *               clearBuffer / resolveQuerySet / finish
@@ -1973,7 +1973,7 @@ export interface RhiCommandEncoder {
   /**
    * Record an empty timestamp-enabled compute pass and close it immediately.
    *
-   * This is a ForgeaX compound recording operation equivalent to
+   * This is a ForgeAX compound recording operation equivalent to
    * `const pass = encoder.beginComputePass(desc); pass.end()`; it is not a
    * native `GPUCommandEncoder` method and does not write a timestamp directly.
    *

@@ -113,7 +113,7 @@ self-hosted fleet has no physical-GPU provider. The former physical-GPU
 admission test and its artifact were removed rather than weakening the result
 or claiming that simulated GPU timing is native timing.
 
-The manifest declares all five ForgeaX metric kinds. Bundle-size, FPS, bench,
+The manifest declares all five ForgeAX metric kinds. Bundle-size, FPS, bench,
 and spike-report are intentionally disabled here because their evidence owners
 are the package build, carrier smoke, render benchmark, and spike workflow;
 the gate metric remains enabled and invokes the exact Dawn smoke command.

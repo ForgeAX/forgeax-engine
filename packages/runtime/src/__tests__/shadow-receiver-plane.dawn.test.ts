@@ -115,12 +115,21 @@ it.each([
       const table: Record<string, MaterialAsset> = { [guid('layer')]: layer };
       for (const [key, asset] of Object.entries(closure))
         if (asset.kind === 'material') table[guid(key)] = asset;
-      const cooker = createMaterialPackCooker();
+      const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
       for (const [materialGuid, source] of Object.entries(table)) {
         const cooked = await cooker.cook({ guid: materialGuid, source, table });
         const record = validateCookedMaterialRecord(
           (cooked.payload as { cooked: unknown }).cooked,
         ).unwrap();
+        expect(
+          record.programs.every(({ selections }) =>
+            selections.every(
+              ({ context }) =>
+                context.backend === 'webgpu' && context.capability !== 'uniform-fallback',
+            ),
+          ),
+          'terrain shadow fixture must cook its actual storage WebGPU target',
+        ).toBe(true);
         const ready = await createMaterialLoader({
           loadPublication: async () => ({
             guid: materialGuid,

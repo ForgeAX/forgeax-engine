@@ -60,7 +60,7 @@ does not reuse or reset a finished encoder or alter descriptor forwarding.
 ## Timestamp write contract
 
 Timestamp capture uses the WebGPU pass descriptor `timestampWrites` field on
-`beginRenderPass` / `beginComputePass`. The shim maps the opaque ForgeaX
+`beginRenderPass` / `beginComputePass`. The shim maps the opaque ForgeAX
 `QuerySet` to the native `GPUQuerySet` at the pass boundary. The obsolete
 command-encoder `writeTimestamp` entry is intentionally not exposed: current
 Dawn rejects that method even when `timestamp-query` is advertised. A device

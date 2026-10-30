@@ -63,7 +63,7 @@ function artifact(decoded: readonly number[]): Record<string, unknown> {
   };
 }
 
-describe('ForgeaX AC-27 producer contract', () => {
+describe('ForgeAX AC-27 producer contract', () => {
   it('normalizes only the native BGRA display format and rejects non-display formats', () => {
     const bgra = Uint8Array.from([1, 2, 3, 4]);
     const normalized = normalizeAutoExposureFinalReadback(bgra, 'bgra8unorm-srgb');

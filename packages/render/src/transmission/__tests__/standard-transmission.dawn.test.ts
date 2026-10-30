@@ -220,7 +220,8 @@ afterEach(async () => {
     for (const value of pending) {
       const { renderer, device, target } = await value;
       await device.queue.onSubmittedWorkDone();
-      (await renderer.dispose()).unwrap();
+      const disposed = await renderer.dispose();
+      if (!disposed.ok) throw disposed.error;
       target?.destroy();
       device.destroy();
       expect((await device.lost).reason).toBe('destroyed');
@@ -234,6 +235,17 @@ afterEach(async () => {
     nativeDeviceRequests = 0;
   }
 });
+
+function selectTransmissionProfile(
+  renderer: TransmissionHost['renderer'],
+  renderPath: TransmissionCase['renderPath'],
+): void {
+  const selected = renderer.setProfile({
+    ...DEFAULT_STANDARD_PROFILE,
+    renderPath: renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath,
+  });
+  if (!selected.ok) throw selected.error;
+}
 
 async function renderCase(
   testCase: TransmissionCase,
@@ -253,12 +265,7 @@ async function renderCase(
   }
   const fixture = await pending;
   const { renderer, device } = fixture;
-  renderer
-    .setProfile({
-      ...DEFAULT_STANDARD_PROFILE,
-      renderPath: testCase.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath,
-    })
-    .unwrap();
+  selectTransmissionProfile(renderer, testCase.renderPath);
   let lease: ReturnType<typeof renderer.attach> | undefined;
   const errors: { readonly code: string; readonly detail?: unknown }[] = [];
   const unsubscribe = renderer.subscribe((event) => {

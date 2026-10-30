@@ -2,11 +2,11 @@
 // smoke so the falsified scene is the one users see.
 //
 // Bevy parents both lights under one transform at (5, 5, 0) looking at the
-// origin; the directional light only uses that rotation. ForgeaX keeps the
+// origin; the directional light only uses that rotation. ForgeAX keeps the
 // point light's Transform and derives DirectionalLight.direction from it.
 //
 // Bias units: PointLightShadow uses Bevy's semantics directly (depthBias in
-// world meters, normalBias in cube texels). DirectionalLight keeps ForgeaX's
+// world meters, normalBias in cube texels). DirectionalLight keeps ForgeAX's
 // units (depthBias is a normalized depth floor on top of automatic slope and
 // texel coverage, normalBias is world meters), so its steps are rescaled.
 import { createPlaneGeometry, createSphereGeometry } from '@forgeax/engine-geometry';
@@ -36,7 +36,7 @@ export const BIAS_STEPS = Object.freeze({
   point: { depthBias: 0.01, normalBias: 0.1 },
   directional: { depthBias: 0.0005, normalBias: 0.01 },
 });
-// Bevy's F cycles Hardware2x2 / Gaussian / Temporal on the camera. ForgeaX
+// Bevy's F cycles Hardware2x2 / Gaussian / Temporal on the camera. ForgeAX
 // filtering is per directional light (closed profile union, pcf1 is the
 // single hardware 2x2 compare); point cube shadows are hardware 2x2 only.
 export const FILTERS = Object.freeze(['pcf1', 'pcf3', 'pcf5', 'pcssMedium', 'pcssHigh']);

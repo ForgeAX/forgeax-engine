@@ -2,6 +2,7 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { CARD_PLANES, createSurfaceCapture } from '../../raytracing/surface-cards';
 import type { SdfCardsFixture } from './sdf-cards.commands';
 import { decodeNormal, half, readCardPlanes, sdfCubeInstance } from './sdf-cards.fixture';
@@ -215,7 +216,7 @@ export async function verifyCardCoverage(fixture: SdfCardsFixture) {
         const resource = model.works[10]?.attachments?.colorViewHandleIds[i];
         assert(resource);
         const bytes = (await replay.readResourceAtWork(resource, 10)).unwrap().bytes;
-        expect(bytes).toEqual(planes[i]);
+        expect(equalBytes(bytes, planes[i])).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();
@@ -241,9 +242,12 @@ export async function verifyCardCoverage(fixture: SdfCardsFixture) {
         for (const i of CARD_PLANES.keys()) {
           const resource = viewModel.works[0]?.attachments?.colorViewHandleIds[i];
           assert(resource);
-          expect((await viewReplay.readResourceAtWork(resource, 0)).unwrap().bytes).toEqual(
-            exact.planes[i],
-          );
+          expect(
+            equalBytes(
+              (await viewReplay.readResourceAtWork(resource, 0)).unwrap().bytes,
+              exact.planes[i],
+            ),
+          ).toBe(true);
         }
       } finally {
         (await viewReplay.dispose()).unwrap();

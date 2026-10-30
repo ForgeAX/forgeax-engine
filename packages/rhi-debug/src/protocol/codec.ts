@@ -1,7 +1,7 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import pako from 'pako';
+import { gzip, ungzip } from '#tape-gzip';
 import { createRhiDebugError } from '../errors';
 import {
   type RhiCallEvent,
@@ -67,7 +67,7 @@ export function encodeTapeParts(
   for (const blob of tape.blobs) {
     // Parts borrow the blob bytes; callers that need ownership materialize once.
     const raw = blob.bytes;
-    const payload = compression === 'gzip' ? pako.gzip(raw) : raw;
+    const payload = compression === 'gzip' ? gzip(raw) : raw;
     payloads.push(payload);
     const known = options.contentHashes === true && compression === 'none';
     blobs.push({
@@ -275,7 +275,7 @@ export function decodeTape(bytes: Uint8Array): Result<Tape, TapeDecodeError> {
       );
     let raw: Uint8Array;
     try {
-      raw = blob.compression === 'gzip' ? new Uint8Array(pako.ungzip(stored)) : stored;
+      raw = blob.compression === 'gzip' ? new Uint8Array(ungzip(stored)) : stored;
     } catch {
       return err(
         createRhiDebugError('tape-invalid', {

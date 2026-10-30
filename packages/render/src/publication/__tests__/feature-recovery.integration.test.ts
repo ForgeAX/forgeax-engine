@@ -208,7 +208,9 @@ it('recovers without replaying submitted feature data and plans the next publica
     expect(seen).toHaveLength(1);
     expect(devices).toHaveLength(2);
     const replacement = adopt.mock.contexts.find(
-      (registry) => registry.materialArtifactDeclaration(pendingKey)?.kind === 'bytes',
+      (registry): registry is ShaderRegistry =>
+        registry instanceof ShaderRegistry &&
+        registry.materialArtifactDeclaration(pendingKey)?.kind === 'bytes',
     );
     expect(replacement).toBeDefined();
     const retained = replacement?.materialArtifactDeclaration(pendingKey);

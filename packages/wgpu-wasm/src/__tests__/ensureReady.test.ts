@@ -218,4 +218,47 @@ describe('ensureReady singleton wrapper', () => {
     expect(_initCallCount).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it.each([
+    { encoding: 'base64', tampered: false },
+    { encoding: 'percent', tampered: false },
+    { encoding: 'base64', tampered: true },
+    { encoding: 'percent', tampered: true },
+  ])('verifies embedded $encoding provenance without fetch (tampered=$tampered)', async ({
+    encoding,
+    tampered,
+  }) => {
+    const mod = await import('../index.js');
+    const NativeURL = globalThis.URL;
+    const manifest = new TextDecoder()
+      .decode(MOCK_MANIFEST)
+      .replace('sha256-test', tampered ? 'sha256-tampered' : 'sha256-test');
+    const embedded =
+      encoding === 'base64'
+        ? `data:application/json;charset=utf-8;base64,${btoa(manifest)}`
+        : `data:application/json,${encodeURIComponent(manifest)}`;
+    vi.stubGlobal(
+      'URL',
+      class extends NativeURL {
+        constructor(input: string | URL, base?: string | URL) {
+          super(String(input).endsWith('/provenance.json') ? embedded : input, base);
+        }
+      },
+    );
+    vi.stubGlobal('process', undefined);
+    const fetchMock = vi.fn(async (input: URL) => {
+      if (input.protocol === 'data:') throw new TypeError('Failed to fetch');
+      const bytes = input.pathname.endsWith('/wgpu_wasm_bg.wasm') ? MOCK_ARTIFACT : MOCK_GLUE;
+      return new Response(bytes.slice().buffer);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    if (tampered) {
+      await expect(mod.ensureReady()).rejects.toThrow('compiler fingerprint');
+      expect(_initCallCount).toBe(0);
+    } else {
+      await expect(mod.ensureReady()).resolves.toBeDefined();
+      expect(_initCallCount).toBe(1);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

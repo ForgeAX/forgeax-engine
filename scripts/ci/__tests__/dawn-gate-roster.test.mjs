@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { BaseSequencer, createVitest } from 'vitest/node';
 import { DawnSequencer, planDawnShards } from '../../../config/vitest-dawn-sequencer.ts';
 import { DAWN_COMPACT_TEST_FILES } from '../dawn-compact-roster.mjs';
-import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS } from '../dawn-gate-roster.mjs';
+import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from '../dawn-gate-roster.mjs';
 import {
   dawnVitestArgs,
   selectDawnGroups,
@@ -19,9 +19,11 @@ const selectors = ['FORGEAX_DAWN_ISOLATED', 'FORGEAX_DAWN_COMPACT', 'FORGEAX_DAW
 const nativeVitest = await createVitest('test', { project: ['dawn'], watch: false });
 let nativeSpecifications;
 let configuredSequencer;
+let rootDawnPolicy;
 const configuredPartitions = [];
 try {
   nativeSpecifications = await nativeVitest.globTestSpecifications();
+  rootDawnPolicy = dawnPolicy(nativeVitest);
   configuredSequencer = nativeVitest.config.sequence.sequencer;
   for (let index = 1; index <= DAWN_GATE_SHARDS.length; index++) {
     const owner = DAWN_GATE_GROUPS.find(
@@ -42,12 +44,80 @@ try {
   await nativeVitest.close();
 }
 
-function listDawnFiles(extraEnv = {}) {
+function dawnPolicy(vitest) {
+  const project = vitest.projects.find((project) => project.name === 'dawn');
+  assert.ok(project, 'missing Dawn project');
+  const keys = [
+    'root',
+    'environment',
+    'setupFiles',
+    'include',
+    'exclude',
+    'pool',
+    'isolate',
+    'maxWorkers',
+    'fileParallelism',
+    'testTimeout',
+    'hookTimeout',
+    'teardownTimeout',
+    'retry',
+  ];
+  return {
+    execution: Object.fromEntries(keys.map((key) => [key, project.config[key]])),
+    typecheck: {
+      enabled: project.config.typecheck.enabled,
+      include: project.config.typecheck.include,
+    },
+    sequencer: Function.prototype.toString.call(vitest.config.sequence.sequencer),
+    aliases: project.vite.config.resolve.alias.map(({ find, replacement }) => ({
+      find: String(find),
+      replacement,
+    })),
+  };
+}
+
+test('the dedicated entry retains the root Dawn execution policy and source aliases', async () => {
+  const vitest = await createVitest('test', {
+    config: resolve(DAWN_VITEST_CONFIG),
+    project: ['dawn'],
+    watch: false,
+  });
+  try {
+    assert.deepEqual(dawnPolicy(vitest), rootDawnPolicy);
+    const dependencies = vitest.vite.config.configFileDependencies.map((path) =>
+      relative(root, path).replaceAll('\\', '/'),
+    );
+    assert.ok(
+      dependencies.includes('config/vitest-dawn-project.ts') &&
+        dependencies.includes('config/vitest-shared.ts'),
+      'configuration dependency evidence must include the actual shared policy modules',
+    );
+    assert.ok(
+      !dependencies.some((path) =>
+        /(?:vitest-browser-project|vitest-browser-provider|material-publication\.commands)\./.test(
+          path,
+        ),
+      ),
+      'native configuration must not initialize browser command owners',
+    );
+  } finally {
+    await vitest.close();
+  }
+});
+
+function listDawnFiles(extraEnv = {}, config = DAWN_VITEST_CONFIG) {
   const env = { ...process.env };
   for (const key of selectors) delete env[key];
   const output = execFileSync(
     process.execPath,
-    ['node_modules/vitest/vitest.mjs', 'list', '--project=dawn', '--filesOnly', '--json'],
+    [
+      'node_modules/vitest/vitest.mjs',
+      'list',
+      ...(config === null ? [] : ['--config', config]),
+      '--project=dawn',
+      '--filesOnly',
+      '--json',
+    ],
     { cwd: root, env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 60_000 },
   );
   return JSON.parse(output)
@@ -58,12 +128,25 @@ function listDawnFiles(extraEnv = {}) {
 test('actual Vitest discovery conserves every Dawn file across execution groups', () => {
   const owners = validateDawnGateRoster();
   const ordinary = listDawnFiles();
+  assert.deepEqual(ordinary, listDawnFiles({}, null), 'Dawn entry retains root ordinary discovery');
   assert.ok(ordinary.length > 0, 'the ordinary gate must execute tests');
   const all = listDawnFiles({
     FORGEAX_DAWN_ISOLATED: '1',
     FORGEAX_DAWN_COMPACT: '1',
     FORGEAX_DAWN_PARTITION: 'roster-audit',
   });
+  assert.deepEqual(
+    all,
+    listDawnFiles(
+      {
+        FORGEAX_DAWN_ISOLATED: '1',
+        FORGEAX_DAWN_COMPACT: '1',
+        FORGEAX_DAWN_PARTITION: 'roster-audit',
+      },
+      null,
+    ),
+    'Dawn entry retains the complete root discovery',
+  );
   for (const file of ordinary) assert.ok(!owners.has(file), `duplicate ordinary owner: ${file}`);
   const planned = [...ordinary, ...owners.keys()].sort();
   assert.deepEqual(planned, all, 'every discovered file must execute exactly once');
@@ -73,6 +156,8 @@ test('each group keeps its admission and native lifetime boundary', () => {
   const ids = DAWN_GATE_GROUPS.map(({ id }) => id);
   assert.equal(new Set(ids).size, ids.length);
   for (const group of DAWN_GATE_GROUPS) {
+    const args = dawnVitestArgs(group);
+    assert.equal(args[args.indexOf('--config') + 1], DAWN_VITEST_CONFIG);
     const passWithNoTests = group.vitestShard === undefined ? 'false' : 'true';
     assert.ok(dawnVitestArgs(group).includes(`--passWithNoTests=${passWithNoTests}`));
     if (group.id.startsWith('compact-')) assert.equal(group.env.FORGEAX_DAWN_COMPACT, '1');
@@ -114,8 +199,7 @@ test('four Dawn jobs cover every complete native group exactly once', () => {
   }
   const gi4Lane = DAWN_GATE_SHARDS.findIndex((lane) => lane.includes('gi-4'));
   const gi5Lane = DAWN_GATE_SHARDS.findIndex((lane) => lane.includes('gi-5'));
-  assert.equal(gi4Lane, 3, 'the complete GI-4 owner moves off the measured overrun lane');
-  assert.equal(gi5Lane, 3, 'the complete GI-5 owner stays with the recovered fourth lane');
+  assert.notEqual(gi4Lane, gi5Lane, 'the two growing GI tails must not share the overrun lane');
   assert.throws(() => selectDawnShard('0/4'), /outside/);
   assert.throws(() => selectDawnShard('1/3'), /outside/);
   assert.throws(() => selectDawnShard('1/8'), /outside/);

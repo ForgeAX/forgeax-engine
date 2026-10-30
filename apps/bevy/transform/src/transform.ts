@@ -93,7 +93,7 @@ export function stepTransform(world: World, dt: number): void {
   const centerState = world.get(centerHandle, CenterSphere);
   if (!cube.ok || !orbit.ok || !center.ok || !centerState.ok) return;
 
-  // ForgeaX's Transform convention is local −Z forward (the same Bevy convention).
+  // ForgeAX's Transform convention is local −Z forward (the same Bevy convention).
   const forward = quat.transformVec3(vec3.create(), cube.value.quat, [0, 0, -1]);
   const move = orbit.value.moveSpeed * dt;
   const nextPos: [number, number, number] = [

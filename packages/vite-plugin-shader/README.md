@@ -207,7 +207,7 @@ again. A completed authored generation is not held in a permanent option cache.
 | `engineShaderSourceDigest(root)` | Packaged-profile provenance: SHA-256 over every `*.wgsl` under `root`, recorded in the packaged container and re-derived by the loader |
 | `encodePackagedProfiles` / `decodePackagedProfiles` / `packagedProfilePublication` / `PACKAGED_PROFILES_FILE` / `PACKAGED_PROFILE_NAMES` | The pooled `profiles.json.gz` container and exact per-profile publication rebuild |
 | `toRollupLog(err)` | `ShaderError` → `RollupLog`（hint 双投影，w14 落地） |
-| `ForgeaXShaderRollupLog` | RollupLog 扩展类型（`hint` 顶层投影是 forgeax 自定义字段） |
+| `ForgeAXShaderRollupLog` | RollupLog 扩展类型（`hint` 顶层投影是 forgeax 自定义字段） |
 | `virtual:forgeax/bundler` | Build-time virtual module emitting `forgeaxBundlerAdapter()` factory（feat-20260608 M3，详见下节） |
 
 ## `virtual:forgeax/bundler` virtual module

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Optional local MCP adapter for ForgeaX Engine and View owner APIs",
+  "description": "Optional local MCP adapter for ForgeAX Engine and View owner APIs",
   "dependencies": {
     "@forgeax/engine": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",

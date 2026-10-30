@@ -92,11 +92,11 @@ describe('vertex-color producer entry contract', () => {
     process.env.FORGEAX_VERTEX_COLOR_SOURCE_SHA = 'a'.repeat(40);
     globalThis.__forgeaxVertexColorPublish = () => {};
     await expect(runVertexColorProducerEntry('forgeax', 'dawn')).rejects.toThrow(
-      /ForgeaX bundler options were not injected into the capture entry/,
+      /ForgeAX bundler options were not injected into the capture entry/,
     );
   });
 
-  it('opts the ForgeaX producer into the renderer-owned linear-HDR observation', () => {
+  it('opts the ForgeAX producer into the renderer-owned linear-HDR observation', () => {
     const captureSource = readFileSync(new URL('../vertex-color-capture.ts', import.meta.url), 'utf8');
     expect(captureSource).toMatch(/tonemap:\s*TONEMAP_LINEAR/);
     expect(captureSource).toMatch(/zero-config tonemap path writes directly to the display surface/);

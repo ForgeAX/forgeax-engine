@@ -1,7 +1,11 @@
 import { fileURLToPath } from 'node:url';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import {
+  createRuntimePackPublication,
+  encodeMaterialProgramWire,
+} from '@forgeax/engine-pack/runtime';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
+import { normaliseForPack } from '../../packages/import/src/pack-value';
 import { createMaterialPackCooker } from '../../packages/shader-compiler/src/material/pack-cooker';
 
 const guid = '8f50ae65-6e0a-40b4-8949-b47006edab90';
@@ -65,14 +69,20 @@ export function materialProgramFixture(mixed = false, allTransparent = false): P
     };
     const cooked = await createMaterialPackCooker([root]).cook({ guid, source: material });
     const sourcePath = `${prefix}material.pack.json`;
-    const pack = JSON.parse(
-      JSON.stringify(
-        {
-          assets: [{ guid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} }],
-        },
-        (_key, value) => (value instanceof Uint8Array ? [...value] : value),
-      ),
-    );
+    const pack = {
+      assets: [{ guid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} }],
+    };
+    const programs = (
+      pack.assets[0]?.payload as {
+        cooked: {
+          programs: {
+            artifact: { bytes: unknown };
+          }[];
+        };
+      }
+    ).cooked.programs;
+    if (!programs.every(({ artifact }) => artifact.bytes instanceof Uint8Array))
+      throw new Error('material fixture bytes must remain native through publication identity');
     const published = createRuntimePackPublication({
       scopeId: 'asset-runtime',
       sourcePath,
@@ -80,7 +90,10 @@ export function materialProgramFixture(mixed = false, allTransparent = false): P
       packageUrl: sourcePath,
       pack,
     });
-    return { pack: JSON.stringify(published.pack), publication: published.publication };
+    return {
+      pack: JSON.stringify(normaliseForPack(encodeMaterialProgramWire(published.pack))),
+      publication: published.publication,
+    };
   };
   return {
     name: mixed ? 'material-program-mixed-regression' : 'material-program-regression',

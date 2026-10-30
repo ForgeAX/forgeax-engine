@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-physics
 description: >-
-  ForgeaX ECS physics and Rapier backend route. Use when adding bodies, colliders, character
+  ForgeAX ECS physics and Rapier backend route. Use when adding bodies, colliders, character
   movement, collision handling, managed joints or skeletal physics blending, or selecting and diagnosing a 2D/3D backend.
 ---
 
@@ -205,3 +205,8 @@ shapes; stable ticks and pose-only motion reuse them. Runtime vertex edits
 invalidate the cooked attachment. Repair and recook the producer, then rebind
 the ordinary mesh ref. Contract and lifetime: `packages/physics/README.md`,
 Source mesh collision; `packages/import/README.md`, Mesh collision cooking.
+
+For several read-only completed-step neighbor consumers, use optional
+`PhysicsWorld.getCurrentContactNeighborsBatch` when available. Masks and normal
+filters remain per request; results and owner reuse never survive a mutation.
+The batch retains all-or-error admission and per-query visit limits.

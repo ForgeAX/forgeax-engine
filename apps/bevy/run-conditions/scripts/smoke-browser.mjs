@@ -79,7 +79,7 @@ try {
   await page.locator('#app').waitFor();
   await waitFor(
     async () => await page.evaluate(() => Boolean(globalThis.__bevyRunConditionsReady)),
-    'ForgeaX run-conditions app',
+    'ForgeAX run-conditions app',
     30_000,
   );
   await sleep(2_500);

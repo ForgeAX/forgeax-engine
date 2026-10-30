@@ -31,7 +31,7 @@ await writeFile(resolve(output, 'game.json'), JSON.stringify({
   deviceOrientation: 'portrait', showStatusBar: false,
 }, null, 2) + '\n');
 await writeFile(resolve(output, 'project.config.json'), JSON.stringify({
-  appid: values.appid, compileType: 'game', projectname: 'ForgeaX Host Contract',
+  appid: values.appid, compileType: 'game', projectname: 'ForgeAX Host Contract',
   setting: { es6: false, minified: false }, libVersion: 'latest',
 }, null, 2) + '\n', { mode: 0o600 });
 const bytes = await readFile(resolve(output, 'game.js'));

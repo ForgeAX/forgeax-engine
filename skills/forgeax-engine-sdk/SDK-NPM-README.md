@@ -1,18 +1,18 @@
 # @forgeax/engine-sdk
 
 > [!IMPORTANT]
-> This package is the npm carrier for the ForgeaX Engine SDK. It contains the
+> This package is the npm carrier for the ForgeAX Engine SDK. It contains the
 > SDK source payload and Engine byte references under `sdk/`; it is not a game project and it does not
 > install dependencies into the current directory by itself.
 
 ## Quick start
 
-Use the ForgeaX umbrella CLI to install this carrier into a directory outside
+Use the ForgeAX umbrella CLI to install this carrier into a directory outside
 the npm cache:
 
 ```bash
-pnpm dlx @forgeax/engine@latest sdk install ~/ForgeaX/sdk
-cd ~/ForgeaX/sdk
+pnpm dlx @forgeax/engine@latest sdk install ~/ForgeAX/sdk
+cd ~/ForgeAX/sdk
 node ./bin/forgeax.mjs project init
 node ./bin/forgeax.mjs project new ../my-game --template game-3d  # 3D games
 cd ../my-game
@@ -85,7 +85,7 @@ an unbuilt workspace or npm-incompatible `workspace:*` dependencies.
 - pnpm `12.15.0` (Corepack can activate the exact SDK pin)
 - Browser with native WebGPU or the supported WebGL2 downlevel path for rendered previews
 
-For the public entry guide, see [ForgeaX Engine for AI-assisted game
+For the public entry guide, see [ForgeAX Engine for AI-assisted game
 development](https://forgeax.github.io/download/engine-ai.md). The installed
 SDK remains the authoritative, versioned documentation for its exact
 capabilities and files.

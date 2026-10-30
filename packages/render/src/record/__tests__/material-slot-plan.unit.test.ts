@@ -259,6 +259,33 @@ describe('shared GPU materials without CPU geometry', () => {
     expect(plan.materialBindings).toHaveLength(2);
   });
 
+  it('identifies the source of an unfixed direct material without borrowing live values', () => {
+    const resource = material();
+    const direct = row(73, resource);
+    expect(() =>
+      buildDispatchPlan(ceiling(8), [direct], [], [], [], undefined, false, {
+        bindings: [],
+        worlds: [direct.world],
+        frame: new MaterialFrame(undefined),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'rhi-descriptor-invalid',
+        detail: expect.objectContaining({
+          error: expect.objectContaining({
+            detail: expect.objectContaining({
+              worldId: 0,
+              entityKey: 73,
+              primaryMaterial: true,
+              materialIdentity: expect.any(Number),
+              materialFrameIdentity: expect.any(Number),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('rejects an unfixed shared material instead of borrowing its current value', () => {
     expect(() =>
       buildDispatchPlan(ceiling(0, 1), [], unreadableDispatch, [], [], undefined, false, {

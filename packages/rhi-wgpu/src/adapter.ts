@@ -30,7 +30,7 @@ import { projectAdapterCapabilities } from '@forgeax/engine-rhi';
 
 import {
   type CanvasConfiguration,
-  type RequestDeviceOptions as ForgeaXRequestDeviceOptions,
+  type RequestDeviceOptions as ForgeAXRequestDeviceOptions,
   ok,
   type Result,
   type RhiAdapter,
@@ -78,7 +78,7 @@ export function makeRhiAdapter(rawAdapter: RawAdapterLike): RhiAdapter {
       rawAdapter.limits as unknown as Record<string, unknown> | undefined,
     ),
     async requestDevice(
-      opts?: ForgeaXRequestDeviceOptions | undefined,
+      opts?: ForgeAXRequestDeviceOptions | undefined,
     ): Promise<Result<RhiDevice, RhiError>> {
       try {
         const rawDevice = await rawAdapter.requestDevice(opts);

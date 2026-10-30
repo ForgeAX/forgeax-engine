@@ -1,6 +1,6 @@
 # `@forgeax/engine-ecs`
 
-Archetype ECS for ForgeaX. The package owns the hot path shared by every
+Archetype ECS for ForgeAX. The package owns the hot path shared by every
 domain: entity identity, component storage, relationships, queries, structural
 mutation, schedules, resources, time, and optional shared numeric kernels.
 

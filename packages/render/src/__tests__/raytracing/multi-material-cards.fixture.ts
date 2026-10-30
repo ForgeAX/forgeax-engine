@@ -1,6 +1,7 @@
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   CARD_LOOKUP_STRIDE,
   CardLookupStatus,
@@ -333,23 +334,29 @@ export async function verifyMultiMaterialCards(fixture: SdfCardsFixture) {
           assert(color);
           const bytes = (await replay.readResourceAtWork(color, work.workIndex)).unwrap().bytes;
           capture.colors.push([half(bytes, 0), half(bytes, 2), half(bytes, 4)]);
-          expect(bytes).toEqual(capture.planes[0]);
+          expect(equalBytes(bytes, capture.planes[0])).toBe(true);
         }
         for (const i of CARD_PLANES.keys()) {
           const resource = model.works[capture.rasterWorks - 1]?.attachments?.colorViewHandleIds[i];
           assert(resource);
           expect(
-            (await replay.readResourceAtWork(resource, capture.rasterWorks - 1)).unwrap().bytes,
-          ).toEqual(capture.planes[i]);
+            equalBytes(
+              (await replay.readResourceAtWork(resource, capture.rasterWorks - 1)).unwrap().bytes,
+              capture.planes[i],
+            ),
+          ).toBe(true);
         }
         for (const read of capture.buffers) {
           const resource = model.works[read.work]?.bindings.find(
             (b) => b.binding === read.binding,
           )?.resourceId;
           assert(resource);
-          expect((await replay.readResourceAtWork(resource, read.work)).unwrap().bytes).toEqual(
-            read.bytes,
-          );
+          expect(
+            equalBytes(
+              (await replay.readResourceAtWork(resource, read.work)).unwrap().bytes,
+              read.bytes,
+            ),
+          ).toBe(true);
         }
       } finally {
         (await replay.dispose()).unwrap();

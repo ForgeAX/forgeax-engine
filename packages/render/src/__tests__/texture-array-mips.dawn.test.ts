@@ -11,6 +11,7 @@ import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { numMipLevels } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { GpuResidencyCache } from '../device/gpu-residency';
 
 const width = 8;
@@ -228,9 +229,9 @@ for (const format of ['rgba8unorm', 'rgba8unorm-srgb'] as const)
           const expected = await readMip(device, reference, 0, mip, extent);
           expect(expected.some((value) => value !== 0)).toBe(true);
           expect(
-            await readMip(device, cube, layer, mip, extent),
+            equalBytes(await readMip(device, cube, layer, mip, extent), expected),
             `face ${layer}, mip ${mip}`,
-          ).toEqual(expected);
+          ).toBe(true);
         }
       }
       expect(await raw.popErrorScope()).toBeNull();

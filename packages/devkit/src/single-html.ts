@@ -350,7 +350,7 @@ function collectEntrySource(html: string): CommandResult<string> {
     return errorResult(
       'single-html-entry-ambiguous',
       'production index.html to contain exactly one module entry',
-      'Converge the generated host to one ForgeaX module entry before packaging.',
+      'Converge the generated host to one ForgeAX module entry before packaging.',
       { external: external.length, inline: inline.length },
     );
   }

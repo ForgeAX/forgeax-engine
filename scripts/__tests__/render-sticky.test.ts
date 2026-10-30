@@ -91,7 +91,7 @@ describe('scripts/metrics/render-sticky.mjs sticky comment composer (w22)', () =
         GITHUB_SHA: 'merge-event',
         GITHUB_RUN_ID: '42',
         GITHUB_RUN_ATTEMPT: '2',
-        GITHUB_REPOSITORY: 'ForgeaX-Games/forgeax-engine',
+        GITHUB_REPOSITORY: 'ForgeAX/forgeax-engine',
         FORGEAX_CI_NEEDS: JSON.stringify({
           'primary-pnpm': { result: 'failure', outputs: {} },
           'metrics-validate': { result: 'skipped', outputs: {} },
@@ -155,7 +155,7 @@ describe('scripts/metrics/render-sticky.mjs sticky comment composer (w22)', () =
       GITHUB_SHA: 'merge-event',
       GITHUB_RUN_ID: '42',
       GITHUB_RUN_ATTEMPT: '2',
-      GITHUB_REPOSITORY: 'ForgeaX-Games/forgeax-engine',
+      GITHUB_REPOSITORY: 'ForgeAX/forgeax-engine',
       GITHUB_SERVER_URL: 'https://github.com',
     });
     expect(r.stdout).toContain('Head: `tested-head`');

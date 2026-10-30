@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schemas/render-target-public-v1.json",
-  "title": "ForgeaX public render-target and reflection-probe surface",
+  "title": "ForgeAX public render-target and reflection-probe surface",
   "type": "object",
   "additionalProperties": false,
   "required": [

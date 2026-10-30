@@ -298,6 +298,7 @@ async function publishWithExecutors(
     const cacheIdentity = cooker.cacheIdentity;
     return {
       key: cooker.key,
+      ...(cooker.concurrency === undefined ? {} : { concurrency: cooker.concurrency }),
       ...(cacheIdentity === undefined ? {} : { cacheIdentity: () => cacheIdentity.call(cooker) }),
       ...(discover === undefined
         ? {}

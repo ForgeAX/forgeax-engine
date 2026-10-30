@@ -493,7 +493,7 @@ import { utf8fromStringLoose } from '@exodus/bytes/utf8.js';
     if (options.showFrameResult === true && typeof wx.showModal === 'function') {
       try {
         var renderer = report.observation && report.observation.renderer;
-        wx.showModal({ title: 'ForgeaX startup result', showCancel: false,
+        wx.showModal({ title: 'ForgeAX startup result', showCancel: false,
           content: JSON.stringify({ source: options.source.manifestSha256.slice(0, 12), runId: options.runId,
             reason: reason, phase: renderer && renderer.phase,
             startupError: renderer && renderer.startupError,

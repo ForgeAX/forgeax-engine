@@ -54,7 +54,7 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
   const currentGpu = inputs.capture();
   const arena = currentGpu.buffer().unwrap();
   currentGpu.seal().unwrap();
-  expect(arena.buffer).not.toBe(previousArena.buffer);
+  expect(Object.is(arena.buffer, previousArena.buffer)).toBe(false);
   expect(current.historyCompatible(previous, 11)).toBe(false);
   expect(current.historyCompatible(previous, 27)).toBe(true);
   const resources: Buffer[] = [];
@@ -330,7 +330,7 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
     bInput = bGpu.buffer().unwrap();
   bGpu.seal().unwrap();
   try {
-    expect(bInput.buffer).not.toBe(aInput.buffer);
+    expect(Object.is(bInput.buffer, aInput.buffer)).toBe(false);
     expect(bInput.byteLength).toBeGreaterThan(aInput.byteLength);
     const old = await readBuffer(device, aInput.buffer, aInput.byteLength);
     const grown = await readBuffer(device, bInput.buffer, bInput.byteLength);

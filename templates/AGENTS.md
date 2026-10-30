@@ -1,4 +1,4 @@
-# ForgeaX Game Project Guide
+# ForgeAX Game Project Guide
 
 AI-first TypeScript game on `@forgeax/engine`. Hard rules and routing here;
 open a reference only when its task applies. Never read whole large `SKILL.md` files;
@@ -46,7 +46,7 @@ stop after their short start section unless the task needs more.
   Requirement coverage.
 - Append confirmed Engine/SDK issues to `docs/feedback.md` at once (no secrets);
   `project package` ships it.
-- Edit this project directly. A ForgeaX closed loop needs explicit user agreement.
+- Edit this project directly. A ForgeAX closed loop needs explicit user agreement.
 - Capture with [`forgeax-engine-rhi-debug`](skills/forgeax-engine-rhi-debug/SKILL.md) only for
   unexplained black frames, missing objects, wrong lighting or flicker, before editing
   shaders; never to deliver.

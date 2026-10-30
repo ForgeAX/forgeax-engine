@@ -14,6 +14,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import { equalByteMaps } from '../../../../scripts/test/byte-equality.mjs';
 import type { RenderFeatureExecutionFrame } from '../../../render/src/features/frame-execution';
 import type { RenderFeaturePlanExecutionPass } from '../../../render/src/features/host';
 import {
@@ -467,19 +468,19 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     expect([...candidate.programs.values()]).toEqual([...initial.programs.values()]);
     expect([...candidate.bindings.values()]).toEqual([...initial.bindings.values()]);
     // Authoritative simulation buffers only; preparation still writes tick and parameter inputs.
-    expect(await read(candidate)).toEqual(oldBytes);
+    expect(equalByteMaps(await read(candidate), oldBytes)).toBe(true);
     abort(candidate); // Cancellation before encoding has no effect either.
     candidate = prepare(resetFrame);
     await execute(candidate, true); // Copies encoded, then compute encoding fails.
-    expect(await read(candidate)).toEqual(oldBytes);
+    expect(equalByteMaps(await read(candidate), oldBytes)).toBe(true);
     abort(candidate);
     candidate = prepare(resetFrame);
     expect(await execute(candidate)).toBe(1);
     const resetBytes = await read(candidate);
-    expect(resetBytes).not.toEqual(oldBytes);
+    expect(equalByteMaps(resetBytes, oldBytes)).toBe(false);
     const fresh = prepare(frame([reset]), freshFeature, freshOwner);
     await execute(fresh);
-    expect(resetBytes).toEqual(await read(fresh)); // Includes particles, custom state and trail history.
+    expect(equalByteMaps(resetBytes, await read(fresh))).toBe(true); // Includes particles, custom state and trail history.
 
     const finalReset = intent(10),
       finalTick = intent(10, 1);
@@ -495,7 +496,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     expect(await execute(batch)).toBe(2); // Only the actual mid-batch reset splits compute.
     const freshBatch = prepare(frame([finalReset, finalTick]), freshFeature, freshOwner);
     expect(await execute(freshBatch)).toBe(1);
-    expect(await read(batch)).toEqual(await read(freshBatch));
+    expect(equalByteMaps(await read(batch), await read(freshBatch))).toBe(true);
     const stable = prepare(frame([intent(10, 2), intent(10, 3), intent(10, 4)]));
     expect(await execute(stable)).toBe(1); // Three ordinary ticks keep one native compute pass.
 
@@ -511,7 +512,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       freshOwner,
     );
     await execute(freshRecovery);
-    expect(await read(recovered)).toEqual(await read(freshRecovery));
+    expect(equalByteMaps(await read(recovered), await read(freshRecovery))).toBe(true);
     const retained = prepare(frame([], [intent(11, 2)]), feature, recoveredOwner, 1);
     expect(retained.passes.every((pass) => pass.enabled === false)).toBe(true);
     abort(retained);
@@ -608,7 +609,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       expect(submittedPrograms(replayed)).toEqual(expected);
       const previous = await read(replayed);
       await execute(replayed, true);
-      expect(await read(replayed)).toEqual(previous);
+      expect(equalByteMaps(await read(replayed), previous)).toBe(true);
       abort(replayed);
       replayed = prepare(recovery, feature, recoveredOwner, 2);
       expect(submittedPrograms(replayed)).toEqual(expected);
@@ -618,11 +619,16 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       await execute(standalone);
       const finalPrefix = finalStoragePrefix(replayed);
       expect(
-        await read({
-          ...replayed,
-          buffers: new Map([...replayed.buffers].filter(([name]) => name.startsWith(finalPrefix))),
-        }),
-      ).toEqual(await read(standalone));
+        equalByteMaps(
+          await read({
+            ...replayed,
+            buffers: new Map(
+              [...replayed.buffers].filter(([name]) => name.startsWith(finalPrefix)),
+            ),
+          }),
+          await read(standalone),
+        ),
+      ).toBe(true);
       source.onSourceFrameSubmitted?.(recovery, structuredClone(replayed.plan.sourceFeedback));
       expect(runtime.snapshot()).toHaveLength(0);
       expect(runtime.lastCommittedEmitter(player, 'restart')?.seed).toBe(25);
@@ -661,13 +667,16 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       await execute(editedControl);
       const editedPrefix = finalStoragePrefix(editedWork);
       expect(
-        await read({
-          ...editedWork,
-          buffers: new Map(
-            [...editedWork.buffers].filter(([name]) => name.startsWith(editedPrefix)),
-          ),
-        }),
-      ).toEqual(await read(editedControl));
+        equalByteMaps(
+          await read({
+            ...editedWork,
+            buffers: new Map(
+              [...editedWork.buffers].filter(([name]) => name.startsWith(editedPrefix)),
+            ),
+          }),
+          await read(editedControl),
+        ),
+      ).toBe(true);
       source.onSourceFrameSubmitted?.(editedFrame, structuredClone(editedWork.plan.sourceFeedback));
       expect(runtime.snapshot()).toHaveLength(0);
     } finally {
@@ -675,7 +684,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     }
 
     const changed = prepare(frame([intent(12, 0, 2, incompatible)]));
-    expect(buffer(changed, '.particles')).not.toBe(buffer(initial, '.particles'));
+    expect(Object.is(buffer(changed, '.particles'), buffer(initial, '.particles'))).toBe(false);
     expect(renderFeaturePlanSignature(changed.work)).not.toBe(
       renderFeaturePlanSignature(initial.work),
     );

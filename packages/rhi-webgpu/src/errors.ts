@@ -8,7 +8,7 @@ export function adapterUnavailable(): Result<never, RhiError> {
     new RhiError({
       code: 'adapter-unavailable',
       expected: 'an available browser-native WebGPU adapter',
-      hint: 'this only reports the browser-native WebGPU channel; ForgeaX may continue through its wgpu/WebGL2 fallback, so do not conclude that the browser or machine is unsupported unless both backend causes fail',
+      hint: 'this only reports the browser-native WebGPU channel; ForgeAX may continue through its wgpu/WebGL2 fallback, so do not conclude that the browser or machine is unsupported unless both backend causes fail',
     }),
   );
 }
@@ -39,7 +39,7 @@ export function requestAdapterFailed(cause: unknown): Result<never, RhiError> {
     new RhiError({
       code: 'webgpu-runtime-error',
       expected: 'navigator.gpu.requestAdapter() resolves with an adapter or null',
-      hint: 'inspect detail.error before assigning the failure to WebGPU capability; the ForgeaX runtime can still attempt its wgpu/WebGL2 fallback',
+      hint: 'inspect detail.error before assigning the failure to WebGPU capability; the ForgeAX runtime can still attempt its wgpu/WebGL2 fallback',
       detail: {
         error: {
           code: 'request-adapter-threw',

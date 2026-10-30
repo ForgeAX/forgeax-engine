@@ -1,6 +1,7 @@
 import type { Result, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
 import { buildFrameModel } from '../../../rhi-debug/src/frame-model';
 import { decodeTape } from '../../../rhi-debug/src/protocol/codec';
@@ -153,7 +154,7 @@ export async function runRenderBundleFixture(warmupFrames = 60) {
     expect(Array.from(green.slice(0, 4))).toEqual([0, 255, 0, 255]);
     await frame(false);
     const direct = await readbackTexturePixels(device, texture, 32, 32);
-    expect(direct).toEqual(green);
+    expect(equalBytes(direct, green)).toBe(true);
     const replayAdapter = value(await backend.rhi.requestAdapter());
     const replayDevice = value(await replayAdapter.requestDevice());
     const replay = value(
@@ -166,7 +167,7 @@ export async function runRenderBundleFixture(warmupFrames = 60) {
       for (const inspection of await inspectReplayWorks(replay, model.works)) {
         expect(inspection.pipeline).toBeDefined();
         expect(inspection.bindings?.length).toBe(1);
-        expect(inspection.attachment?.bytes).toEqual(green);
+        expect(equalBytes(inspection.attachment?.bytes, green)).toBe(true);
       }
     } finally {
       value(await replay.dispose());

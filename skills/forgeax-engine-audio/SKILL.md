@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-audio
 description: >-
-  ForgeaX realm-neutral ECS audio with Host-owned playback. Use when playing BGM/SFX,
+  ForgeAX realm-neutral ECS audio with Host-owned playback. Use when playing BGM/SFX,
   wiring spatial listeners or buses, transporting Worker audio, or diagnosing decode and cleanup.
 ---
 

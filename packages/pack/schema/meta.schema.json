@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/pack/schema/meta.schema.json",
+  "$id": "https://github.com/ForgeAX/forgeax-engine/packages/pack/schema/meta.schema.json",
   "title": "ExternalAssetPackage",
   "description": "Schema for .meta.json files describing an external asset package (source file + import settings + derived sub-assets).",
   "$comment": "ScriptablePack durable consumer kinds are published by SCRIPTABLE_PACK_ASSET_KINDS in @forgeax/engine-pack/source; Meta sub-asset kind remains open for producer extensions.",

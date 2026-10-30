@@ -28,6 +28,7 @@ import type { Asset, AssetHandle } from '@forgeax/engine-types';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import {
@@ -99,7 +100,7 @@ async function verifyColdMaterialMips(
     expect(target.desc.baseMipLevel).toBe(index + 1);
     const before = mipReads[index + 1]?.unwrap().bytes;
     assert(before);
-    expect(before).toEqual(new Uint8Array(before.length));
+    expect(equalBytes(before, new Uint8Array(before.length))).toBe(true);
     save(`cold-material-unwritten-mip-${index + 1}.bin`, before);
   }
   const materialReads = model.works.filter(
@@ -259,10 +260,22 @@ it.each([
   const publication: { guid: string; asset: Asset; refs?: readonly string[] }[] = [];
   const publishMaterial = async (source: MaterialAsset) => {
     const guid = AssetGuid.format(AssetGuid.random());
-    const cooked = await createMaterialPackCooker().cook({ guid, source });
+    const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage-ray' }).cook({
+      guid,
+      source,
+    });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
+    assert(
+      record.programs.every(({ selections }) =>
+        selections.every(
+          ({ context }) =>
+            context.backend === 'webgpu' && context.capability !== 'uniform-fallback',
+        ),
+      ),
+      'GI fixture material producer must target storage WebGPU with ray programs',
+    );
     const ready = await createMaterialLoader({
       loadPublication: async () => ({ guid, record, artifacts: cooked.artifacts }),
       loadReference: async () => true,
@@ -731,12 +744,12 @@ it.each([
     const second = await capture('retained', false);
     assert(first.candidate);
     expect(new Float32Array(first.candidate.buffer)[2]).toBeGreaterThan(0);
-    expect(second.rays).toEqual(first.rays);
+    expect(equalBytes(second.rays, first.rays)).toBe(true);
     for (let i = 0; i < 60; i++) await draw();
     expect(renderer.inspect().probePlacement?.global?.compositionBuilds).toBe(1);
     const diagnosticHdr = await hdr();
     save('with-global.rgba16f', diagnosticHdr);
-    expect(diagnosticHdr).toEqual(baseline);
+    expect(equalBytes(diagnosticHdr, baseline)).toBe(true);
     const accepted = renderer.inspect().probePlacement?.submittedFrames;
     assert(accepted);
     afterExtract = () => {
@@ -793,7 +806,7 @@ it.each([
     await expect.poll(() => renderer.state()).toBe('device-lost');
     renderValue(await renderer.recover());
     await settle();
-    expect(await hdr()).toEqual(baseline);
+    expect(equalBytes(await hdr(), baseline)).toBe(true);
     expect(errors).toEqual([]);
   } finally {
     unsubscribe();
@@ -879,7 +892,7 @@ it.each([
         const read = reads[index]?.unwrap();
         assert(read);
         expect(read.provenance.selectedWorkIndex).toBe(request.workIndex);
-        expect(read.bytes).toEqual(outputs[request.key]);
+        expect(equalBytes(read.bytes, outputs[request.key])).toBe(true);
         save(`${name}-replay-${request.key}.bin`, read.bytes);
       }
       // Allow staging variance, but reject the former 45/119/190-submit prefixes.
@@ -972,9 +985,12 @@ it.each([
                 .every((value, channel) => value === original[offset + channel])
             )
               changedRgbTexels++;
-            expect(texels.subarray(offset + 6, offset + 8)).toEqual(
-              original.subarray(offset + 6, offset + 8),
-            );
+            expect(
+              equalBytes(
+                texels.subarray(offset + 6, offset + 8),
+                original.subarray(offset + 6, offset + 8),
+              ),
+            ).toBe(true);
           }
           expect(changedRgbTexels).toBe(6 * 16 * 16);
           const validity = sample.bindings.find((binding) => binding.binding === 12)?.resourceId;
@@ -982,7 +998,7 @@ it.each([
           const validityTexels = (
             await replay.readResourceAtWork(validity, sample.workIndex)
           ).unwrap().bytes;
-          expect(validityTexels).toEqual(cold.outputs['cards.f0Validity']);
+          expect(equalBytes(validityTexels, cold.outputs['cards.f0Validity'])).toBe(true);
           save('missing-mips-cards.f0Validity.bin', validityTexels);
           writeFileSync(
             `${directory}/missing-mips-result.json`,
@@ -999,9 +1015,9 @@ it.each([
           );
           // A valid black material is still valid. Missing mips must affect the
           // captured material, not manufacture an unsupported-surface result.
-          expect(bytes).toEqual(cold.outputs['card-support']);
+          expect(equalBytes(bytes, cold.outputs['card-support'])).toBe(true);
         } else {
-          expect(bytes).not.toEqual(cold.outputs['card-support']);
+          expect(equalBytes(bytes, cold.outputs['card-support'])).toBe(false);
           const view = new DataView(bytes.buffer);
           expect(
             Array.from({ length: bytes.length / 32 }, (_, index) =>
@@ -1025,7 +1041,7 @@ it.each([
           const read = inputReads[index]?.unwrap();
           assert(read);
           expect(read.provenance.selectedWorkIndex).toBe(support.workIndex);
-          expect(read.bytes).toEqual(cold.outputs[key]);
+          expect(equalBytes(read.bytes, cold.outputs[key])).toBe(true);
         }
         save(`missing-${skipped}-support.bin`, bytes);
       } finally {

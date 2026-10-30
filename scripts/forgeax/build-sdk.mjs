@@ -708,7 +708,7 @@ await Promise.all([
     resolve(root, 'schemas/forgeax-dist.schema.json'),
     resolve(stage, 'schemas', 'forgeax-dist.schema.json'),
   ),
-  cp(resolve(root, 'LICENSE'), resolve(stage, 'licenses', 'ForgeaX-Apache-2.0.txt')),
+  cp(resolve(root, 'LICENSE'), resolve(stage, 'licenses', 'ForgeAX-Apache-2.0.txt')),
   cp(
     resolve(root, 'packages', 'codec', 'pkg', 'basis_transcoder.wasm'),
     resolve(stage, 'toolchain', 'wasm', 'basis_transcoder.wasm'),
@@ -891,7 +891,7 @@ const sbom = {
   dataLicense: 'CC0-1.0',
   SPDXID: 'SPDXRef-DOCUMENT',
   name: `forgeax-sdk-v${version}`,
-  documentNamespace: `https://github.com/ForgeaX-Games/forgeax-engine/releases/${engineCommit}`,
+  documentNamespace: `https://github.com/ForgeAX/forgeax-engine/releases/${engineCommit}`,
   packages: packageRows.map((entry, index) => ({
     SPDXID: `SPDXRef-Package-${index}`,
     name: entry.name,
@@ -924,11 +924,11 @@ try {
         name: '@forgeax/engine-sdk',
         version,
         license: 'Apache-2.0',
-        description: 'On-demand ForgeaX SDK carrier for the forgeax CLI.',
+        description: 'On-demand ForgeAX SDK carrier for the forgeax CLI.',
         homepage: 'https://forgeax.github.io/download/engine-ai.md',
         repository: {
           type: 'git',
-          url: 'https://github.com/ForgeaX-Games/forgeax-engine.git',
+          url: 'https://github.com/ForgeAX/forgeax-engine.git',
           directory: 'skills/forgeax-engine-sdk',
         },
         keywords: ['forgeax', 'game-engine', 'game-sdk', 'webgpu'],

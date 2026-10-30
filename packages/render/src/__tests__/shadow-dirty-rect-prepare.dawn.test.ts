@@ -182,7 +182,7 @@ function customMaterialFixture(device: RhiDevice) {
       const replacement = store
         .ensureResident(texture, source, worldRenderResources(world))
         .unwrap();
-      expect(replacement.view).not.toBe(previous);
+      expect(Object.is(replacement.view, previous)).toBe(false);
     },
     dispose() {
       store.destroyAll();
@@ -411,7 +411,7 @@ function expectCustomMaterialBinding(
   for (const [name, query] of Object.entries(custom.queries))
     expect(query, name).toHaveBeenCalledTimes(observations);
   expect(bound).toBeDefined();
-  if (frame === 30) expect(bound).not.toBe(previousMaterial);
+  if (frame === 30) expect(Object.is(bound, previousMaterial)).toBe(false);
   else expect(bound).toBe(previousMaterial ?? custom.group);
   return bound as BindGroup;
 }

@@ -11,6 +11,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
   createIrradianceFieldHarness,
   type FieldImage,
@@ -139,7 +140,7 @@ it('moves and removes a field source in place: only its Cards, its SDF box and n
     try {
       const inspected = (await replay.inspectWork(composite.workIndex, ['pixels'])).unwrap();
       assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(editFrame.bytes);
+      expect(equalBytes(inspected.attachment.bytes, editFrame.bytes)).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       webgpu._internal_getRawDevice(device)?.destroy();

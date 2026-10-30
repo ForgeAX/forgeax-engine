@@ -441,7 +441,7 @@ export function validateAutoExposureThreeR184Artifact(input: unknown): { ok: tru
 
 /**
  * Execute the independent Three.js reference and return a persistable artifact.
- * No ForgeaX code, analytic formula, or CPU-generated candidate participates in
+ * No ForgeAX code, analytic formula, or CPU-generated candidate participates in
  * these stage values; CPU work only hashes and projects the GPU readback.
  */
 export async function captureAutoExposureThreeR184(

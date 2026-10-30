@@ -31,6 +31,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
 import threePixels from './continuous-lines-three.json';
@@ -370,7 +371,7 @@ export async function verifyContinuousLines(options: {
           if (pixels === undefined) throw new Error('points-lines pixel readback absent');
           expect(pixels.provenance.selectedWorkIndex).toBe(work.workIndex);
           if (falsify) expect(pixels.bytes.some((value, i) => value !== live[i])).toBe(true);
-          else expect(pixels.bytes).toEqual(live);
+          else expect(equalBytes(pixels.bytes, live)).toBe(true);
         } finally {
           (await replay.dispose()).unwrap();
           replayWork.restore();

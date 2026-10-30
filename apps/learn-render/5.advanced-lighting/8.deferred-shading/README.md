@@ -6,7 +6,7 @@ the render graph owns the deferred attachments, clustered membership, and
 receipt-bound frame evidence.
 
 > [!NOTE]
-> The tutorial describes Blinn-Phong. ForgeaX uses `Materials.standard` with
+> The tutorial describes Blinn-Phong. ForgeAX uses `Materials.standard` with
 > PBR GGX and Lambert terms, so the pixels are expected to differ while the
 > scene layout and light inputs remain comparable.
 

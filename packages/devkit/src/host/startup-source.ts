@@ -1,5 +1,6 @@
 /** Shared author markup and one startup lifecycle, emitted statically for each host. */
 import { DEFAULT_LOAD_PROGRESS_LABELS, type LoadProgressLabels } from '@forgeax/engine-types';
+import { type StartupCacheIdentity, startupCacheSource } from './startup-cache-source.js';
 import type { HostVersions } from './versions.js';
 
 function escapeHtml(value: string): string {
@@ -110,6 +111,7 @@ export function hostStartupScript(
   startupScreen = true,
   hostExpression = 'undefined',
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  cacheIdentity?: StartupCacheIdentity,
 ): string {
   const startupEnabled = startupScreen ? 'true' : 'false';
   return `
@@ -184,6 +186,7 @@ export function hostStartupScript(
         // Editor Play uses it and waits for a completed game frame. Every page
         // retains the fatal diagnostic surface and Reload action.
         const fatalEnabled = true;
+        const startupCache = ${startupCacheSource(cacheIdentity)};
         let phase = gamePage ? 'loading' : 'disabled';
         let slowTimer;
         let fadeTimer;
@@ -657,12 +660,12 @@ export function hostStartupScript(
           if (!(isElement(notice))) return;
           const message = runtimeFailure ? 'The game stopped because execution failed.' : 'Unable to start the game.';
           if (/webgpu|adapter-unavailable|no usable (rendering )?backend/i.test(details)) {
-            details += '\\n\\nRenderer diagnosis: ForgeaX supports browser WebGPU and a wgpu/WebGL2 fallback. This failure alone does not prove that WebGPU is unsupported; use the structured code, hint, and nested backend causes above.';
+            details += '\\n\\nRenderer diagnosis: ForgeAX supports browser WebGPU and a wgpu/WebGL2 fallback. This failure alone does not prove that WebGPU is unsupported; use the structured code, hint, and nested backend causes above.';
           }
           // Keep the existing plain-text diagnostic fallback for hosts that
           // provide only one synthetic HTMLElement in a test harness.
           if (fatalMessage === notice) {
-            notice.textContent = (runtimeFailure ? 'ForgeaX game stopped.\\n' : 'ForgeaX game failed to start.\\n') + message + '\\n' + details;
+            notice.textContent = (runtimeFailure ? 'ForgeAX game stopped.\\n' : 'ForgeAX game failed to start.\\n') + message + '\\n' + details;
           } else {
             setText(fatalMessage, message);
             setText(fatalDetails, details);
@@ -673,6 +676,29 @@ export function hostStartupScript(
           setAttribute(loading, 'aria-hidden', 'true');
           setAttribute(loading, 'data-fading', 'false');
           if (gamePage && fatalReload !== null && isElement(fatalReload)) fatalReload.focus?.();
+          if (startupCache !== undefined) {
+            void startupCache.recover(details, () => {
+              // The native/dev startup oracle observes the fatal surface. Keep
+              // recovery nonterminal until its single retry has really failed.
+              setDisplay(notice, 'none');
+              setDisplay(loading, 'grid');
+              setAttribute(loading, 'aria-hidden', 'false');
+              setText(loadingStatus, 'Refreshing cached startup resources and retrying once…');
+            }).then(result => {
+              if (result.status === 'reloaded' || result.status === 'disabled' || phase === 'destroyed') return;
+              setDisplay(loading, 'none');
+              setAttribute(loading, 'aria-hidden', 'true');
+              setDisplay(notice, 'grid');
+              setText(fatalMessage, message);
+              if (result.status === 'exhausted') {
+                setText(fatalDetails, details + '\\n\\nAutomatic startup cache recovery was attempted once.' +
+                  (result.previous ? '\\nFirst failure:\\n' + result.previous : ''));
+              } else if (result.status === 'failed') {
+                setText(fatalDetails, details + '\\n\\nStartup cache recovery failed: ' + result.error);
+              }
+            });
+          }
+
         };
         const prepare = () => {
           if (!gamePage || (phase !== 'loading' && phase !== 'fading')) return;
@@ -726,6 +752,7 @@ export function hostStartupScript(
           // The game is presentable now; the fade is cosmetic and must not
           // swallow the first player or scripted input.
           setInputEnabled(true);
+          startupCache?.complete();
           runEntered();
           const fadeGeneration = sessionGeneration;
           const fadeCanvas = latestSubmitted.canvas;
@@ -753,6 +780,7 @@ export function hostStartupScript(
           if (phase === 'destroyed') return;
           sessionGeneration += 1;
           phase = 'destroyed';
+          startupCache?.retire();
           frameRate.destroy();
           setInputEnabled(false);
           clearStartupWork();
@@ -945,6 +973,7 @@ export function hostStartupScript(
           }
         };
         const startup = Object.freeze({
+          ready: () => startupCache?.ready() ?? Promise.resolve(),
           prepare,
           enter,
           fail: show,

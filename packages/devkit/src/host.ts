@@ -102,6 +102,9 @@ import {
   previewVfxBoundsSource,
   resourcePresentationSource,
 } from './host/resource-presentation-source.js';
+import { startupCacheHttp } from './host/startup-cache-http.js';
+import { createStartupCacheIdentity } from './host/startup-cache-identity.js';
+import { startupEntrySource } from './host/startup-cache-source.js';
 import { hostStartupDocument, hostStartupScript } from './host/startup-source.js';
 import { type HostVersions, hostVersions } from './host/versions.js';
 import {
@@ -2179,26 +2182,32 @@ function htmlSource(
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
   versions?: HostVersions,
   head = '',
+  projectId = title,
+  revision?: string,
 ): string {
+  const identity =
+    versions === undefined
+      ? undefined
+      : createStartupCacheIdentity({
+          ...versions,
+          project: projectId,
+          ...(revision === undefined ? {} : { revision }),
+        });
   return hostStartupDocument(title, labels, versions)
     .replace('  </head>', `${head}\n  </head>`)
     .replace(
       '  </body>',
-      `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
+      `    <script>${hostStartupScript(startupScreen, 'undefined', labels, identity)}</script>
     <script>
       (() => {
         // This inert marker keeps generated pages inspectable by older hosts
         // that only parse the fatal diagnostic hook.
-        const startupFailureText = 'ForgeaX game failed to start.\\n' + 'Unable to start the game.';
+        const startupFailureText = 'ForgeAX game failed to start.\\n' + 'Unable to start the game.';
         void startupFailureText;
       })();
     </script>
     <script type="module">
-      try {
-        await import('./main.ts');
-      } catch (error) {
-        globalThis.__forgeaxStartup?.fail?.(error);
-      }
+      ${startupEntrySource(identity)}
     </script>
   </body>`,
     );
@@ -2434,7 +2443,10 @@ export async function startPreviewProjectWithHost(
                 root,
                 configFile: false,
                 base: verified.value.base,
-                plugins: [await preparePreviewHttpArtifacts(distRoot, verified.value)],
+                plugins: [
+                  startupCacheHttp(),
+                  await preparePreviewHttpArtifacts(distRoot, verified.value),
+                ],
                 preview: {
                   open: false,
                   ...port,
@@ -3120,6 +3132,19 @@ export async function createViteConfig(
           resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
           await hostVersions(facts),
           htmlHead,
+          facts.id,
+          createHash('sha256')
+            .update(
+              JSON.stringify(
+                [...sourceInventory.sourceSnapshot.inputs]
+                  .map(([path, digest]) => [
+                    relative(facts.root, path).replaceAll('\\', '/'),
+                    digest,
+                  ])
+                  .sort(),
+              ),
+            )
+            .digest('hex'),
         ),
       ),
       writeFile(
@@ -3202,6 +3227,7 @@ export async function createViteConfig(
     });
     const delivery = wechat === undefined ? 'browser' : 'native';
     const plugins: Plugin[] = [
+      startupCacheHttp(),
       ...(serving ? [previewInputsPlugin(pack)] : []),
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),

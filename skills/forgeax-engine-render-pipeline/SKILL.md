@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-render-pipeline
-description: ForgeaX render pipelines, post-processing, and typed RenderGraph ownership. Use when configuring camera effects, authoring pipelines/features, or tracing compute, raster, and graph resources.
+description: ForgeAX render pipelines, post-processing, and typed RenderGraph ownership. Use when configuring camera effects, authoring pipelines/features, or tracing compute, raster, and graph resources.
 ---
 
 # forgeax-engine-render-pipeline

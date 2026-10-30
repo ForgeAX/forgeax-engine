@@ -299,7 +299,7 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
       // Encode the completion but abandon it before submit or commit.
       compiled.execute({ encoder: device.createCommandEncoder({}).unwrap() }).unwrap();
       await frame('failed-submit-recovery', missing);
-      expect(lane.current().tlas).not.toBe(old);
+      expect(Object.is(lane.current().tlas, old)).toBe(false);
       await frame('recovery-budget', missing);
       await frame('recovery-complete', complete);
       expect(result.frames.at(-1)?.instances[0]).toBe(9);

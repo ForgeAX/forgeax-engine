@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { IES_TEST_SIZE, localIesProfile } from './ies-local-lights.fixture';
 
@@ -89,11 +90,14 @@ export async function verifyLocalIesReplay(
     expect(metadata[18]).toBe(0);
     expect(profile.width).toBe(256);
     expect(profile.height).toBe(128);
-    expect(profile.bytes).toEqual(
-      localIesProfile(
-        name.endsWith('polar-front') ? 'polar' : name.endsWith('wide270') ? 'wide270' : 'upper',
-      ).data,
-    );
+    expect(
+      equalBytes(
+        profile.bytes,
+        localIesProfile(
+          name.endsWith('polar-front') ? 'polar' : name.endsWith('wide270') ? 'wide270' : 'upper',
+        ).data,
+      ),
+    ).toBe(true);
     expect(attachment.format).toBe('rgba16float');
     const pixels = luminanceRgba16f(attachment.bytes, IES_TEST_SIZE, IES_TEST_SIZE);
     expect(pixels.every(Number.isFinite)).toBe(true);

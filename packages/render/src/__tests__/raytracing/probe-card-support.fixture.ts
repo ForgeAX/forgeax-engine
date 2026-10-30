@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   createProbeCardSupportRecorder,
   PROBE_CARD_SUPPORT_WGSL,
@@ -99,7 +100,9 @@ export async function verifyProbeCardSupport() {
   device.queue.submit([encoder.finish().unwrap()]).unwrap();
   const live = await readBuffer(device, input.output.buffer, data.output.byteLength);
   for (const name of ['rays', 'hits', 'candidates', 'samples'] as const)
-    expect(await readBuffer(device, input[name].buffer, data[name].byteLength)).toEqual(data[name]);
+    expect(
+      equalBytes(await readBuffer(device, input[name].buffer, data[name].byteLength), data[name]),
+    ).toBe(true);
   (await recorder.frameBoundary()).unwrap();
   const bytes = (await pending).unwrap().bytes;
   const view = new DataView(live.buffer);
@@ -134,7 +137,9 @@ export async function verifyProbeCardSupport() {
     await openReplay(tape, { device: fresh, createShaderModule: gpu.createShaderModule })
   ).unwrap();
   try {
-    expect((await replay.readResourceAtWork(output, work.workIndex)).unwrap().bytes).toEqual(live);
+    expect(
+      equalBytes((await replay.readResourceAtWork(output, work.workIndex)).unwrap().bytes, live),
+    ).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();
     freshRaw.destroy();

@@ -51,7 +51,7 @@ describe('readProjectFacts', () => {
       value: { root, roots, assetRoots: ['assets'] },
     });
   });
-  it('reads a project startup deadline from the ForgeaX package extension', async () => {
+  it('reads a project startup deadline from the ForgeAX package extension', async () => {
     const root = await project({}, { forgeax: { startupTimeoutMs: 120_000 } });
     expect(await readProjectFacts(root)).toMatchObject({
       ok: true,

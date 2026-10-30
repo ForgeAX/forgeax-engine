@@ -2,6 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { Camera, CameraView, type Renderer } from '@forgeax/engine-render';
 import type { RhiInstance } from '@forgeax/engine-rhi';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { createDisplayP3Scene, pixelAt } from './display-p3.fixture';
 
@@ -118,7 +119,7 @@ export async function verifyCpuUiComposition(
     expect(pixelAt(loading.rgba, [48, 16])).toEqual([255, 255, 255]);
     await save('loading', loading.rgba);
     const cached = await readUiFrame(renderer, boot);
-    expect(cached.rgba).toEqual(loading.rgba);
+    expect(equalBytes(cached.rgba, loading.rgba)).toBe(true);
     expect(submissions).toBe(2);
     releaseManifest();
     value(await host.initialization);
@@ -126,7 +127,7 @@ export async function verifyCpuUiComposition(
     // An explicit scene-free frame must keep Loading alive across that gap.
     const activating = await readUiFrame(renderer, null);
     expect(activating.receipt.presentation).toBe('pending');
-    expect(activating.rgba).toEqual(loading.rgba);
+    expect(equalBytes(activating.rgba, loading.rgba)).toBe(true);
     expect(activating.receipt.barrelDistortion).toBeUndefined();
     await save('scene-activating', activating.rgba);
     dirty = new Uint8Array(64 * 64 * 4);
@@ -158,20 +159,20 @@ export async function verifyCpuUiComposition(
     await save('scene-with-ui', after.rgba);
     original.fill(0);
     const retained = await readUiFrame(renderer, scene.world);
-    expect(retained.rgba).toEqual(after.rgba);
+    expect(equalBytes(retained.rgba, after.rgba)).toBe(true);
     expect(errors).toEqual([]);
     // Retiring a failed scene keeps Fatal/Reload on the same live surface,
     // without carrying the last submitted scene's display context.
     const retired = await readUiFrame(renderer, null);
     expect(retired.receipt.presentation).toBe('pending');
     expect(retired.receipt.barrelDistortion).toBeUndefined();
-    expect(retired.rgba).toEqual(loading.rgba);
+    expect(equalBytes(retired.rgba, loading.rgba)).toBe(true);
     expect(painted).toBe(67);
     expect(submissions).toBe(67);
     // Returning to a camera-free World preserves UI composition and normal completion.
     const cameraFree = await readUiFrame(renderer, boot);
     expect(cameraFree.receipt.presentation).toBe('ready');
-    expect(cameraFree.rgba).toEqual(loading.rgba);
+    expect(equalBytes(cameraFree.rgba, loading.rgba)).toBe(true);
     expect(errors).toEqual([]);
   } catch (cause) {
     throw new Error(`CPU UI composition failed: ${JSON.stringify(errors)}`, { cause });

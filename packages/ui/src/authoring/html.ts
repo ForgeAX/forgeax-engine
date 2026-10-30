@@ -267,7 +267,7 @@ export function parseHtmlAuthoring(
             sourcePath,
             sourceRange: range,
             rule: 'html-ui-hooks',
-            expected: 'a supported non-empty ForgeaX UI hook',
+            expected: 'a supported non-empty ForgeAX UI hook',
             actual: `${name}=${value}`,
             hint: 'Use data-ui-part, data-ui-action, data-ui-template, or data-framework-island with a non-empty value.',
           });

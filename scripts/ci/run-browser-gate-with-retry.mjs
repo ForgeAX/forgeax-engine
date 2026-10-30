@@ -35,7 +35,7 @@ const retryPatterns = Object.freeze({
     // remain hard failures.
     /Pre-transform error: The file does not exist at "[^"\n]+\/node_modules\/\.vite\/vitest\/[^"\n]+\/deps\/[^"\n]+\.js" which is in the optimize deps directory/,
     /bootstrap inconclusive within \d+s[\s\S]*runner instability, rerun/,
-    /ForgeaX linear HDR observation failed: observation-unavailable/,
+    /ForgeAX linear HDR observation failed: observation-unavailable/,
     // Headed Chrome Beta + lavapipe can occasionally stall an isolated
     // advanced-lighting WebGPU bootstrap until its bounded 60s test budget.
     // Retry only this exact gate timeout; assertions and other test timeouts

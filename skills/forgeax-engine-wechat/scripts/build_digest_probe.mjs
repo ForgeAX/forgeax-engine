@@ -33,7 +33,7 @@ const result = await build({ entryPoints: [join(scripts, '../fixtures/digest-pro
 });
 await writeFile(join(out, 'game.json'), JSON.stringify({ deviceOrientation: 'landscape' }, null, 2) + '\n');
 await writeFile(join(out, 'project.config.json'), JSON.stringify({ appid, compileType: 'game',
-  projectname: 'ForgeaX native digest probe', setting: { es6: false, enhance: false, minified: false } }, null, 2) + '\n');
+  projectname: 'ForgeAX native digest probe', setting: { es6: false, enhance: false, minified: false } }, null, 2) + '\n');
 await writeFile(join(out, 'probe-inputs.json'), JSON.stringify({ ...inputs, graphics: false,
   bundle: { byteLength: (await readFile(join(out, 'game.js'))).length, digest: sha256(await readFile(join(out, 'game.js'))) },
   modules: Object.keys(result.metafile.inputs) }, null, 2) + '\n');

@@ -267,7 +267,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           if (prepared?.shadowViewPool === undefined) throw Error('expected retry preparation');
           pool = prepared.shadowViewPool;
           current = update();
-          expect(current[0]?.plan).not.toBe(aborted);
+          expect(Object.is(current[0]?.plan, aborted)).toBe(false);
         }
         expect(new Set(current.map((view) => view.plan)).size).toBe(1);
         expect(new Set(current.map((view) => view.view.visibleBuffer)).size).toBe(3);

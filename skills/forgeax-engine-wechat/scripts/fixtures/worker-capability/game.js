@@ -31,7 +31,7 @@ function finish(reason) {
       if (context) {
         context.fillStyle = '#152433'; context.fillRect(0, 0, 960, 440);
         context.fillStyle = '#f5df85'; context.font = '26px sans-serif';
-        ['ForgeaX Worker V2 capability probe', `WeChat ${report.facts.version} / SDK ${report.facts.SDKVersion}`,
+        ['ForgeAX Worker V2 capability probe', `WeChat ${report.facts.version} / SDK ${report.facts.SDKVersion}`,
           `V2 admission: ${report.facts.standardWorker}`, `Result: ${reason}`,
           `Worker replies: ${report.workers.filter((row) => row.reply).length} / ${report.workers.length}`,
           `Run: ${options.runId}`].forEach((line, index) => context.fillText(line, 28, 60 + index * 45));

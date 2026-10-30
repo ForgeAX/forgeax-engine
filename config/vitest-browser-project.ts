@@ -26,6 +26,7 @@ import { vfxMeshLightingCommands } from '../packages/runtime/src/__tests__/vfx-m
 import { createMaterialPackCooker } from '../packages/shader-compiler/src/index';
 import { fixedFieldCommands } from '../packages/vfx-render/src/__tests__/force-fields-fixed-ticks.server';
 import { nativeBindingCommands } from '../packages/wgpu-wasm/scripts/__tests__/native-binding.commands.mjs';
+import { productionCspCommands } from '../packages/wgpu-wasm/scripts/__tests__/production-csp.commands.mjs';
 import { browserFixtureInputs } from '../scripts/ci/browser-fixture-inputs.mjs';
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../scripts/ci/browser-process-cache.mjs';
@@ -173,6 +174,7 @@ export function createBrowserProject() {
     ['packages/render/src/__tests__/gpu-driven-stable-command-addresses.browser.test.ts', []],
     ['packages/render/src/record/__tests__/indirect-bundle-retirement.browser.test.ts', []],
     ['packages/app/__tests__/engine-worker-asset-loss.browser.test.ts', []],
+    ['packages/app/src/__tests__/auto-exposure-webgl2.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/dom.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/game-guide-keyboard.browser.test.ts', []],
@@ -333,6 +335,7 @@ export function createBrowserProject() {
         ui: false,
         commands: {
           ...nativeBindingCommands,
+          ...productionCspCommands,
           ...fixedFieldCommands,
           ...renderWorkerCommands,
           ...websocketListenerCommands,

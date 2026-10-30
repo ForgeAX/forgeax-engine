@@ -1,6 +1,7 @@
 import { RhiError } from '@forgeax/engine-rhi';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import type { MeshSsboCapacity } from '../assembly/mesh-ssbo-grow';
+import type { MeshGpuHandles } from '../device/gpu-residency';
 import { directMorphGeometry } from '../device/morph-geometry';
 import type { GpuDrivenMaterialBinding } from '../gpu-driven/production-raster';
 import { disposeTransientInstanceBuffers } from '../instance-buffer-cache';
@@ -174,6 +175,44 @@ export function materialSlotCountForPrefix(
   return maxSlot + 1;
 }
 
+/** Resolve geometry residency without mixing it with frame admission. */
+function prepareMeshResidency(
+  internals: RenderSystemInternals,
+  renderableWorld: RenderResourceScope,
+  r: RenderableSnapshot,
+  meshAsset: MeshAsset,
+  profilePhase: RecordProfileRunner | undefined,
+): MeshGpuHandles | undefined {
+  const meshAssetHandle = r.assetHandle as AssetHandle<'mesh'>;
+  let meshHandles =
+    r.generatedMesh === undefined
+      ? internals.gpuStore.getMeshGpuHandles(meshAssetHandle, renderableWorld)
+      : undefined;
+  const lodMeshes = runRecordProfilePhase(profilePhase, 'record/validation/lod-assets', () =>
+    r.lods?.map((lod) => renderAsset<MeshAsset>(renderableWorld, lod.mesh)),
+  );
+  const resolvedLodMeshes = lodMeshes?.map((lod) => (lod?.kind === 'mesh' ? lod : undefined));
+  if (meshHandles === undefined) {
+    const residentRes = runRecordProfilePhase(profilePhase, 'record/validation/residency', () =>
+      r.generatedMesh !== undefined
+        ? internals.gpuStore.ensureGeneratedMesh(r.generatedMesh)
+        : internals.gpuStore.ensureResident(
+            meshAssetHandle,
+            meshAsset,
+            renderableWorld,
+            resolvedLodMeshes,
+            profilePhase,
+          ),
+    );
+    if (residentRes.ok) {
+      meshHandles = residentRes.value;
+    } else if (residentRes.error instanceof RhiError) {
+      internals.errorRegistry.fire(residentRes.error);
+    }
+  }
+  return meshHandles;
+}
+
 /**
  * feat-20260704 M3/w18: validate renderable handles + collect the render plan,
  * extracted verbatim from `recordFrame`. Empty `renderables` input or all-
@@ -219,6 +258,9 @@ export function validateRenderables(
     const r = meshes === undefined ? input : meshDrawSnapshot(input, meshes);
     if (excludedEntityKeys.has(worldEntityKey(worldKeys?.[r.worldId] ?? r.worldId, r.entityKey)))
       continue;
+    // The CPU shadow path reads the complete persistent projection. Ordinary
+    // hidden rows own no geometry work once their explicit preparation retires.
+    if (r.authorVisible === false && r.pipelinePreparation === undefined) continue;
     const renderableWorld = worlds[r.worldId] ?? world;
     if (r.generatedMesh === undefined && r.assetHandle === undefined) continue;
     const assetRes = runRecordProfilePhase(profilePhase, 'record/validation/asset', () =>
@@ -237,33 +279,13 @@ export function validateRenderables(
       );
       continue;
     }
-    const meshAssetHandle = r.assetHandle as AssetHandle<'mesh'>;
-    let meshHandles =
-      r.generatedMesh === undefined
-        ? internals.gpuStore.getMeshGpuHandles(meshAssetHandle, renderableWorld)
-        : undefined;
-    const lodMeshes = runRecordProfilePhase(profilePhase, 'record/validation/lod-assets', () =>
-      r.lods?.map((lod) => renderAsset<MeshAsset>(renderableWorld, lod.mesh)),
+    const meshHandles = prepareMeshResidency(
+      internals,
+      renderableWorld,
+      r,
+      assetRes.value,
+      profilePhase,
     );
-    const resolvedLodMeshes = lodMeshes?.map((lod) => (lod?.kind === 'mesh' ? lod : undefined));
-    if (meshHandles === undefined) {
-      const residentRes = runRecordProfilePhase(profilePhase, 'record/validation/residency', () =>
-        r.generatedMesh !== undefined
-          ? internals.gpuStore.ensureGeneratedMesh(r.generatedMesh)
-          : internals.gpuStore.ensureResident(
-              meshAssetHandle,
-              assetRes.value,
-              renderableWorld,
-              resolvedLodMeshes,
-              profilePhase,
-            ),
-      );
-      if (residentRes.ok) {
-        meshHandles = residentRes.value;
-      } else if (residentRes.error instanceof RhiError) {
-        internals.errorRegistry.fire(residentRes.error);
-      }
-    }
     if (meshHandles === undefined) {
       internals.errorRegistry.fire(
         new RhiError({
@@ -526,6 +548,7 @@ function dispatchOrderMatches(
 function acceptedMaterialSnapshot(
   material: MaterialResource,
   sharedMaterials: SharedMaterialFrame | undefined,
+  source?: RenderableSnapshot,
 ): MaterialSnapshot {
   if (sharedMaterials === undefined) return material.snapshot;
   const accepted = sharedMaterials.frame.get(material);
@@ -534,6 +557,28 @@ function acceptedMaterialSnapshot(
       code: 'rhi-descriptor-invalid',
       expected: 'a fixed material version for every prepared binding',
       hint: 'prepare materials and geometry from the same accepted Scene publication',
+      detail: {
+        error: {
+          code: 'material-binding-not-accepted',
+          message: 'Prepared binding has no accepted material version',
+          detail: {
+            materialIdentity: getOpaqueResourceIdentity(material),
+            materialHandle: material.snapshot.materialHandle,
+            materialFrameIdentity: getOpaqueResourceIdentity(sharedMaterials.frame),
+            ...(source === undefined
+              ? {}
+              : {
+                  worldId: source.worldId,
+                  entityKey: source.entityKey,
+                  meshHandle: source.assetHandle,
+                  primaryMaterial: source.material === material,
+                  materialIdentities: source.materials.map(getOpaqueResourceIdentity),
+                  authorVisible: source.authorVisible !== false,
+                  pipelinePreparation: source.pipelinePreparation !== undefined,
+                }),
+          },
+        },
+      },
     });
   return accepted.snapshot;
 }
@@ -543,7 +588,9 @@ function materialGroupOf(
   sharedMaterials: SharedMaterialFrame | undefined,
 ): readonly MaterialResource[] {
   if (
-    materialUsesSpriteGeometry(acceptedMaterialSnapshot(entry.source.material, sharedMaterials))
+    materialUsesSpriteGeometry(
+      acceptedMaterialSnapshot(entry.source.material, sharedMaterials, entry.source),
+    )
   ) {
     return [entry.source.material];
   }
@@ -563,8 +610,12 @@ function buildMaterialTable(
       ? ''
       : (materialBindingClasses?.get(`${source.worldId}:${source.entityKey}`) ?? '');
   });
-  const slots = materialSlotPlan.slots.map((material) =>
-    acceptedMaterialSnapshot(material, sharedMaterials),
+  const slots = materialSlotPlan.slots.map((material, slot) =>
+    acceptedMaterialSnapshot(
+      material,
+      sharedMaterials,
+      materialRows[materialSlotPlan.slotOwners[slot] ?? -1]?.source,
+    ),
   );
   const bindings: MaterialBinding[] = materialSlotPlan.slots.map((material, slot) => {
     const owner = materialRows[materialSlotPlan.slotOwners[slot] ?? -1];

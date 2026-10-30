@@ -12,6 +12,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { required } from '../../../ui-blitz/src/__tests__/fixture.js';
 import { compareUiRaster } from '../../../ui-blitz/src/__tests__/gpu-parity-fixture.js';
 import { createBlitzUi, gpuShaders, type UiWasmHost } from '../../../ui-blitz/src/index.js';
@@ -137,7 +138,7 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
         dynamicPixels = live.rgba;
       } else {
         expect(raster).toHaveLength(0);
-        expect(live.rgba).toEqual(dynamicPixels);
+        expect(equalBytes(live.rgba, dynamicPixels)).toBe(true);
       }
       const uiBinding = required(
         composite.bindings.find(

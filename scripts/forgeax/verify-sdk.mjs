@@ -1688,6 +1688,7 @@ if (selected('source')) {
           FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
           FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
           FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
+          DEBUG: [sourceEnv.DEBUG, 'pw:browser'].filter(Boolean).join(','),
         },
         maxBuffer: 64 * 1024 * 1024,
       },

@@ -24,7 +24,7 @@ export function spawnVolumetricSpot(
         component: PointLight,
         data: {
           // Three's #f9bb50 becomes this linear RGB value under its color
-          // management. Light component colors are already linear in ForgeaX.
+          // management. Light component colors are already linear in ForgeAX.
           color: [0.9473065367, 0.4969329951, 0.0802198203],
           intensity: pointEnabled ? 3 : 0,
           range: 100,

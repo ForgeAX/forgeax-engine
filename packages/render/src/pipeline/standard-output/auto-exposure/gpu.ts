@@ -15,7 +15,7 @@ import {
   AUTO_EXPOSURE_HISTOGRAM_DISPATCH,
   resolveAutoExposureShaderModuleFactory,
 } from './graph';
-import { AutoExposureCapabilityUnavailableError } from './inspection';
+import { autoExposureCapabilityFailure } from './inspection';
 
 export const AUTO_EXPOSURE_HISTOGRAM_BYTES = 1024;
 const AUTO_EXPOSURE_STATE_BYTES = 32;
@@ -78,14 +78,8 @@ export function createAutoExposureGpuResources(
   device: RhiDevice,
   generation: number,
 ): Result<AutoExposureGpuResources, unknown> {
-  if (!device.caps.compute) {
-    return err(new AutoExposureCapabilityUnavailableError({ capability: 'compute', generation }));
-  }
-  if (!device.caps.storageBuffer) {
-    return err(
-      new AutoExposureCapabilityUnavailableError({ capability: 'storage-buffer', generation }),
-    );
-  }
+  const unavailable = autoExposureCapabilityFailure(device.caps, generation);
+  if (unavailable !== undefined) return err(unavailable);
   const histogram = createBuffer(
     device,
     'standard-auto-exposure-histogram',

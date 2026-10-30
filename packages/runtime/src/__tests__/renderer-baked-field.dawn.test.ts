@@ -20,6 +20,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterEach, assert, expect, it, vi } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { createIrradianceFieldHarness } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
@@ -149,7 +150,7 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
 
     h.setGi({ gather: 'baked', volume: DARK, resolution: 'half' });
     await h.settle(2);
-    expect((await h.image()).bytes).toEqual(off.bytes);
+    expect(equalBytes((await h.image()).bytes, off.bytes)).toBe(true);
 
     h.setGi({ gather: 'baked', volume: LIT, resolution: 'half' });
     await h.settle(2);
@@ -203,7 +204,7 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     try {
       const inspected = (await replay.inspectWork(composite.workIndex, ['pixels'])).unwrap();
       assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(captured.bytes);
+      expect(equalBytes(inspected.attachment.bytes, captured.bytes)).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       webgpu._internal_getRawDevice(device)?.destroy();

@@ -6,6 +6,13 @@
   "license": "Apache-2.0",
   "sideEffects": false,
   "description": "Single-file v7 RHI tape capture, FrameModel projection, deterministic fresh-backend replay, and structured AI-readable inspection for forgeax-engine.",
+  "imports": {
+    "#tape-gzip": {
+      "types": "./src/protocol/gzip.ts",
+      "node": "./dist/protocol/gzip-node.mjs",
+      "default": "./dist/protocol/gzip.mjs"
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

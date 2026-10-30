@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createServer, normalizePath, type Plugin, type ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type RawData, WebSocket } from 'ws';
-import { type ForgeaXShaderPlugin, forgeaxShader } from '../index.js';
+import { type ForgeAXShaderPlugin, forgeaxShader } from '../index.js';
 
 // The first direct WGSL transform cold-starts the naga/WASM compiler. On a
 // clean CI worker that startup can consume more than the old 15 s budget
@@ -76,9 +76,9 @@ function describeModule(value: unknown) {
 }
 
 function observePlugin(
-  plugin: ForgeaXShaderPlugin,
+  plugin: ForgeAXShaderPlugin,
   observation: HmrObservation,
-): ForgeaXShaderPlugin {
+): ForgeAXShaderPlugin {
   return {
     ...plugin,
     async transform(this, code, id) {
@@ -480,7 +480,7 @@ describe('direct WGSL Vite HMR ownership', () => {
   );
 
   it(
-    'bypasses raw query variants while retaining ForgeaX import variants',
+    'bypasses raw query variants while retaining ForgeAX import variants',
     async () => {
       const { server, rawShaderPath } = activeFixture;
       const rawSource = await readFile(rawShaderPath, 'utf8');

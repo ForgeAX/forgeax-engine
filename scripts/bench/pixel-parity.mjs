@@ -8,7 +8,7 @@
 //   3. chromium.launch({ args: ['--enable-unsafe-webgpu', ...] }).
 //   4. browser.newContext + one page; two captures via window.__captureLeft
 //      and window.__captureRight from the same frame (D-1 / D-3: single
-//      ForgeaX render provides both hooks — self-consistency check).
+//      ForgeAX render provides both hooks — self-consistency check).
 //   5. Evaluate parity inline (Node-side mirror of
 //      apps/parity/forgeax/src/evaluate-parity.ts; semantics SSOT'd in
 //      TS — see that file's tests for the 9-case contract). The .ts
@@ -513,7 +513,7 @@ async function captureBothFromSinglePage(targetConfig) {
       process.stderr.write(`[forgeax.pageerror] ${err.message}\n`);
     });
     await page.goto(forgeaxUrl, { waitUntil: 'load' });
-    // D-1 / D-3: single ForgeaX preview provides both __captureLeft and
+    // D-1 / D-3: single ForgeAX preview provides both __captureLeft and
     // __captureRight hooks. Wait for both to be installed (they share the
     // same assignment in declare_capture_hook, so either probe works, but
     // checking both is defense-in-depth).

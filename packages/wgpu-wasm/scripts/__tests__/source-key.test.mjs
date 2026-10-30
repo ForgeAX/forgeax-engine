@@ -16,7 +16,7 @@ test('source fingerprint is stable across autocrlf checkouts and SDK expansion',
   const expanded = await mkdtemp(join(tmpdir(), 'forgeax-wgpu-source-expanded-key-'));
   t.after(() => rm(expanded, { recursive: true, force: true }));
   git(root, 'init', '--quiet');
-  git(root, 'config', 'user.name', 'ForgeaX test');
+  git(root, 'config', 'user.name', 'ForgeAX test');
   git(root, 'config', 'user.email', 'forgeax-test@example.invalid');
   git(root, 'config', 'core.autocrlf', 'false');
   await writeFile(join(root, '.gitattributes'), '* text=auto\n');

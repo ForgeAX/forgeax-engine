@@ -355,7 +355,10 @@ it('enters the generated game after its canvas is replaced during startup', asyn
         document.body.append(frame);
         frame.srcdoc = source;
       },
-      html.replace('./main.ts', entry),
+      html.replace(
+        /await import\("\.\/main\.ts[^"\n]*"\)/g,
+        `await import(${JSON.stringify(entry)})`,
+      ),
     );
     await expect
       .poll(() =>

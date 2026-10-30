@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-rhi
 description: >-
-  ForgeaX spec-aligned rendering hardware interface. Use when implementing or debugging
+  ForgeAX spec-aligned rendering hardware interface. Use when implementing or debugging
   a backend, capability gate, resource lifetime, descriptor, or backend-selection path.
 ---
 
@@ -203,11 +203,11 @@ compatibility; a real GPU or Dawn remains the rendering authority.
 ## Vertex layout aliases: multi-UV clamp-to-last
 
 > [!IMPORTANT]
-> WebGPU allows multiple vertex attributes to share a buffer offset with distinct shaderLocation values. ForgeaX uses this for clamp-to-last: when a mesh has n UV sets and a shader declares m>n, attributes in `[n,m)` point to set n-1's offset on the actual draw path.
+> WebGPU allows multiple vertex attributes to share a buffer offset with distinct shaderLocation values. ForgeAX uses this for clamp-to-last: when a mesh has n UV sets and a shader declares m>n, attributes in `[n,m)` point to set n-1's offset on the actual draw path.
 
 ### WebGPU behavior
 
-ValidateVertexAttribute has no byte-range overlap check; shared offsets are intentional and legal when shaderLocation values differ. setBindGroup overlap restrictions do not apply to vertex attributes. This supports ForgeaX's D-1 decision.
+ValidateVertexAttribute has no byte-range overlap check; shared offsets are intentional and legal when shaderLocation values differ. setBindGroup overlap restrictions do not apply to vertex attributes. This supports ForgeAX's D-1 decision.
 
 ```ts
 // Legal: vertex attributes share a buffer offset.

@@ -26,6 +26,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -269,9 +270,12 @@ export async function verifyAdvancedModeling(
         const blob = tape.blobs.find((value) => value.hash === seed?.hash);
         if (!seed || !blob) throw new Error('missing captured mesh bytes');
         const bytes = new Uint8Array(expected.buffer, expected.byteOffset, expected.byteLength);
-        expect(blob.bytes.subarray(seed.byteOffset, seed.byteOffset + seed.byteLength)).toEqual(
-          bytes,
-        );
+        expect(
+          equalBytes(
+            blob.bytes.subarray(seed.byteOffset, seed.byteOffset + seed.byteLength),
+            bytes,
+          ),
+        ).toBe(true);
         uploadedBuffers.push({ resourceId: id, bytes: bytes.byteLength, digest: seed.hash });
       }
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();

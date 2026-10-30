@@ -1,4 +1,4 @@
-# ForgeaX format tier one
+# ForgeAX format tier one
 
 ![Status: format-tier1 dogfood](https://img.shields.io/badge/status-format--tier1%20dogfood-5277c3)
 ![Run data: local only](https://img.shields.io/badge/run%20data-local%20only-6f42c1)

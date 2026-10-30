@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 rust-version = "1.87"
 publish = false
-description = "Private native wgpu owner for ForgeaX desktop hosts and the Ray Query route proof."
+description = "Private native wgpu owner for ForgeAX desktop hosts and the Ray Query route proof."
 license = "Apache-2.0"
 
 [features]

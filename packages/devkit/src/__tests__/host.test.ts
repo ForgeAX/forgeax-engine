@@ -1083,7 +1083,7 @@ describe('standalone host', () => {
     const generatedHtml = await readFile(resolve(root, '.forgeax/generated/index.html'), 'utf8');
     expect(generatedHtml).toContain('formatStartupFailure');
     expect(generatedHtml).toContain('appendStructuredFailure');
-    for (const prefix of ['ForgeaX game failed to start.', 'ForgeaX game stopped.']) {
+    for (const prefix of ['ForgeAX game failed to start.', 'ForgeAX game stopped.']) {
       expect(generatedHtml).toContain(`${prefix}\\n`);
       expect(generatedHtml).not.toContain(`${prefix}\n`);
     }

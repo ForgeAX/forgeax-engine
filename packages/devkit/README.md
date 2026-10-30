@@ -101,7 +101,7 @@ assets can instead be referenced by another Pack.
 Organize Packs by feature. Small behaviors belong in same-file named exports; complex implementations
 may use ordinary TypeScript modules. Neither `plugin.ts` nor `.plugin.ts` is a special entrypoint.
 
-DevKit is the Node-only external-project seam for ForgeaX. It derives project
+DevKit is the Node-only external-project seam for ForgeAX. It derives project
 commands, authoring-preview contributions, and one AI-facing RHI-debug path from
 the existing project authorities. It owns orchestration and file access; Engine
 owns rendering, RHI events, replay backends, and preview execution.
@@ -1714,7 +1714,7 @@ The terminal panel retains the first failure of its startup generation; secondar
 renderer or cleanup errors do not replace the cause that made startup fail.
 
 When the resulting evidence mentions WebGPU, adapter absence, or no usable
-backend, the host also states that ForgeaX supports browser WebGPU and a
+backend, the host also states that ForgeAX supports browser WebGPU and a
 wgpu/WebGL2 fallback. This note is intentionally not a fallback decision: the
 structured cause remains the authority. A publishing Agent must not infer
 unsupported hardware, swallow the entry error, or inject a replacement Canvas
@@ -1737,6 +1737,35 @@ game merely to remove an uncaught exception.
 | Entered | The fade completes and the overlay leaves layout. | Startup frame, visibility, input-capture, and timer listeners are removed. |
 | Failed | Entry errors, `app.onError`, resource errors, and rejected receipts render structured fatal diagnostics with `Reload`; arbitrary nested detail remains inspectable. | Loading/fade work and gameplay input are cleared; the fatal Reload listener is retained for the terminal page. |
 | Hidden/destroyed | Background tabs do not spend the slow-load budget or invent a completed frame. | `pagehide`, entered, and failed paths cancel pending timers and startup listeners. |
+
+The default HTTP(S) game document versions its compiled entry before importing any
+Engine or Game module, using Engine/Game versions and the project source revision.
+A changed successful-start identity revalidates the HTTP cache. A failure before
+the first accepted ready frame refreshes startup HTTP resources and retries once;
+the URL bounds the retry even when browser storage is denied. A second failure
+retains the original and current diagnostics. Runtime faults after entry never
+trigger this startup reset. Native, tool, and managed workspace targets retain
+their existing lifecycle. Editor Play keeps its loading overlay, while its parent
+owns target failure, retirement, and recovery; the child never refreshes itself.
+
+CacheStorage belongs to the application's existing Service Worker. An owner can
+handle MessageChannel requests `{kind: 'forgeax-startup-cache', protocol:
+'forgeax-startup-cache/1', action: 'prepare' | 'reset', project, version, versions}`.
+`project` is the authored project ID, `version` is the derived startup identity,
+and `versions` carries `game`, `engine`, `project` and optional source `revision`.
+Reply `{protocol, accepted: true}` promptly to extend the 500 ms capability probe
+to a 30 s operation budget, then `{protocol, ok: true}` or
+`{protocol, ok: false, error}`. Validate the source client and project; prepare
+its current build before modules run and reset only the owner's data. Unknown
+Workers remain installed. Recovery checks the existing registration for an update,
+allowing an older owner to adopt the protocol without replacing its scope.
+
+Dev and preview answer `?forgeax-startup-cache-reset=1` with
+`Clear-Site-Data: "cache"` and `Cache-Control: no-store`; custom static hosts should
+support the same cache-only response. This clears no settings, cookies or origin
+storage. Content-addressed production chunks, the versioned entry and explicit
+startup-module refresh also prevent reuse of stale HTTP entry bytes. The Engine
+never deletes arbitrary CacheStorage or unregisters Service Workers.
 
 Cover text comes from `devkitAppOptions.loadingLabels` (`lang`, `phases`,
 `loading`, `elapsed`, `slow`, `reload`) over the English defaults; the build

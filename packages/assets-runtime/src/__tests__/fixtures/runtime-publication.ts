@@ -1,9 +1,13 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { meshAssetContribution } from '@forgeax/engine-geometry';
 import { textureContribution } from '@forgeax/engine-image';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import {
+  createRuntimePackPublication,
+  encodeMaterialProgramWire,
+} from '@forgeax/engine-pack/runtime';
 import { materialContribution } from '@forgeax/engine-render';
 import type { Asset } from '@forgeax/engine-types';
+import { normaliseForPack } from '../../../../import/src/pack-value.js';
 import { createCatalogSource } from '../../catalog-source';
 
 /** Use the real source/decode/adopt boundary, including its JSON transport. */
@@ -32,9 +36,8 @@ export function prepareRuntimeAssetPublication(
       })),
     },
   });
-  const body = JSON.stringify(publication.pack, (_key, value) =>
-    ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
-  );
+  // Project numeric views once; native JSON encoding then avoids a callback per byte.
+  const body = JSON.stringify(normaliseForPack(encodeMaterialProgramWire(publication.pack)));
   const catalog = entries.map(({ guid, asset, sourceKey }) => ({
     guid,
     kind: asset.kind,

@@ -1,3 +1,5 @@
+export const DAWN_VITEST_CONFIG = 'config/vitest.dawn.config.ts';
+
 import { DAWN_COMPACT_TEST_FILES } from './dawn-compact-roster.mjs';
 import { DAWN_HEAVY_TEST_PARTITIONS } from './dawn-heavy-roster.mjs';
 
@@ -135,6 +137,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'heavy-1',
     'renderer',
     'screen-probe',
+    'gi-5',
   ]),
   Object.freeze([
     'ordinary-2',
@@ -155,7 +158,6 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'specular-aa',
     'gpu-timing',
     'gi-4',
-    'gi-5',
   ]),
 ]);
 

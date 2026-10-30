@@ -17,13 +17,13 @@ describe('commandInvocation', () => {
     expect(
       commandInvocation(
         'npm',
-        ['install', '--prefix', 'C:\\Games\\ForgeaX Game'],
+        ['install', '--prefix', 'C:\\Games\\ForgeAX Game'],
         'win32',
         'C:\\Windows\\System32\\cmd.exe',
       ),
     ).toEqual({
       file: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', 'npm', 'install', '--prefix', 'C:\\Games\\ForgeaX Game'],
+      args: ['/d', '/s', '/c', 'npm', 'install', '--prefix', 'C:\\Games\\ForgeAX Game'],
       options: { windowsVerbatimArguments: false },
     });
   });
@@ -33,9 +33,9 @@ describe('commandInvocation', () => {
       execFileCommand(process.execPath, [
         '-e',
         'process.stdout.write(process.argv[1])',
-        'ForgeaX & Game',
+        'ForgeAX & Game',
       ]),
-    ).resolves.toEqual({ stdout: 'ForgeaX & Game', stderr: '' });
+    ).resolves.toEqual({ stdout: 'ForgeAX & Game', stderr: '' });
   });
 
   it('reuses the owning pnpm entry without shell interpretation or a PATH shim', async () => {
@@ -43,7 +43,7 @@ describe('commandInvocation', () => {
     try {
       const manager = join(root, 'pnpm.mjs');
       await writeFile(manager, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
-      const args = ['install', 'ForgeaX & Game', '100%', 'quote"value'];
+      const args = ['install', 'ForgeAX & Game', '100%', 'quote"value'];
       const result = await execFileCommand('pnpm', args, {
         env: { ...process.env, npm_execpath: manager },
       });

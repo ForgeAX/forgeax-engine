@@ -1,3 +1,4 @@
+import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { CameraExposure } from '../../../components/camera';
 
 export type AutoExposureErrorCode = keyof AutoExposureErrorDetailByCode;
@@ -51,6 +52,18 @@ export class AutoExposureCapabilityUnavailableError extends Error {
     super(`auto-exposure-capability-unavailable: ${detail.capability}`);
     this.name = 'AutoExposureCapabilityUnavailableError';
   }
+}
+
+/** One admission rule for allocation, downlevel rendering and inspection. */
+export function autoExposureCapabilityFailure(
+  caps: Pick<RhiCaps, 'compute' | 'storageBuffer'>,
+  generation: number,
+): AutoExposureCapabilityUnavailableError | undefined {
+  if (!caps.compute)
+    return new AutoExposureCapabilityUnavailableError({ capability: 'compute', generation });
+  if (!caps.storageBuffer)
+    return new AutoExposureCapabilityUnavailableError({ capability: 'storage-buffer', generation });
+  return undefined;
 }
 
 export class AutoExposureStaleGenerationError extends Error {
@@ -153,7 +166,7 @@ const ERROR_POLICY: Readonly<
   },
   'auto-exposure-capability-unavailable': {
     expected: 'the auto-exposure stage has the required device capability',
-    hint: 'inspect live capabilities and retry the same camera generation',
+    hint: 'use the authored fallback exposure or select a device with compute and storage buffers',
   },
   'auto-exposure-stale-generation': {
     expected: 'the prepared auto-exposure state matches the camera target generation',

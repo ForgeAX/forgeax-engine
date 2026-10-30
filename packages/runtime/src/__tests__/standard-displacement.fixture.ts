@@ -29,6 +29,7 @@ import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { derive, type MeshAsset, type TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
@@ -659,7 +660,7 @@ export async function verifyStandardDisplacement(
               expect(retainedShadowDelta).toBe(0);
               if (cachedShadow) {
                 const finalDepth = required(reads[2]);
-                expect(finalDepth.bytes).toEqual(retainedDepth.bytes);
+                expect(equalBytes(finalDepth.bytes, retainedDepth.bytes)).toBe(true);
               }
               results.set(`${renderPath}/${entry.name}/shadow`, retainedFloats);
               await save(`${renderPath}-${entry.name}-shadow.depth32float`, retainedDepth.bytes);

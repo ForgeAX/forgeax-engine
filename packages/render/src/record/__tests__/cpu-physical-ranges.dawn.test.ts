@@ -1,6 +1,7 @@
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
 import { cpuPhysicalRangesFixture } from './cpu-physical-ranges-fixture';
 import { CPU_SETUP_SHADER } from './main-pass-cpu-setup-fixture';
@@ -67,15 +68,20 @@ it.each([
     for (const level of [0, 1] as const) {
       const pixels = await render((pass) => f.oracle(pass, kind, level));
       for (const fault of ['first', 'base', 'omit'] as const)
-        expect(await render((pass) => f.oracle(pass, kind, level, fault))).not.toEqual(pixels);
+        expect(equalBytes(await render((pass) => f.oracle(pass, kind, level, fault)), pixels)).toBe(
+          false,
+        );
       expected.push(pixels);
     }
-    expect(expected[1]).not.toEqual(expected[0]);
+    expect(equalBytes(expected[1], expected[0])).toBe(false);
     for (let frame = 0; frame < 60; frame++) {
       const level = (frame % 2) as 0 | 1;
-      expect(await render((pass) => f.recordRange(pass, kind, level, frame % 3 === 0))).toEqual(
-        expected[level],
-      );
+      expect(
+        equalBytes(
+          await render((pass) => f.recordRange(pass, kind, level, frame % 3 === 0)),
+          expected[level],
+        ),
+      ).toBe(true);
       expect(f.secondMesh.submeshes).toBe(f.sourceSubmeshes);
       expect(f.second.source.gpuDrivenDraws).toEqual(f.sourceDraws);
     }

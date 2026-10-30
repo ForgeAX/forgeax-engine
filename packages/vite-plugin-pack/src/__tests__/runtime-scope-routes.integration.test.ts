@@ -133,7 +133,7 @@ describe('runtime-scoped pack routes', () => {
                 status: 'failed' as const,
                 error: {
                   code: 'scan-failed',
-                  expected: 'an accepted ForgeaX pack snapshot',
+                  expected: 'an accepted ForgeAX pack snapshot',
                   hint: 'repair the producer and retry',
                   detail: { stage: 'scan', subject: 'fixture' },
                 },

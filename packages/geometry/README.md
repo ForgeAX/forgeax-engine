@@ -434,7 +434,7 @@ explicitly. A bias is a raster state, not a displacement of every vertex along
 its normal. Excessive bias can show through nearby surfaces.
 
 Reference: Three.js r184 `DecalGeometry` six-plane clipping and the official
-`webgl_decals` example's polygon offset. ForgeaX keeps output receiver-local
+`webgl_decals` example's polygon offset. ForgeAX keeps output receiver-local
 and applies its canonical MeshAsset tangent/layout contract. The alternative
 [GPU projected decal](../render/README.md#projected-decals) reads visible depth.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Measure already-captured ForgeaX/Three screenshots. This is deliberately a
+// Measure already-captured ForgeAX/Three screenshots. This is deliberately a
 // read-only diagnostic: it does not choose lighting parameters or mutate either
 // renderer. The comparison is in display-space bytes, so it must not be read
 // as a linear-HDR acceptance oracle.

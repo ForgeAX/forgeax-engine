@@ -16,7 +16,7 @@
   function showFatal() {
     if (options.observeFrames || options.observeGlLink || showingFacts || fatalShown || !firstFatal) return;
     fatalShown = true;
-    wx.showModal({ title: 'ForgeaX first fatal', content: firstFatal.slice(0, 3500), showCancel: false });
+    wx.showModal({ title: 'ForgeAX first fatal', content: firstFatal.slice(0, 3500), showCancel: false });
   }
   function record(kind, error) {
     if (!firstFatal) firstFatal = kind + '\n' + describe(error);
@@ -50,7 +50,7 @@
   if (!options.observeFrames) {
     if (options.observeGlLink) return;
     wx.showModal({
-      title: 'ForgeaX native API facts', content: facts, showCancel: false,
+      title: 'ForgeAX native API facts', content: facts, showCancel: false,
       complete: function () { showingFacts = false; showFatal(); }
     });
     return;
@@ -79,7 +79,7 @@
     result.generation = baseline && baseline.generation;
     console.info('[forgeax.phone.frames]', JSON.stringify(result));
     if (options.showFrameResult && typeof wx.showModal === 'function') {
-      wx.showModal({ title: 'ForgeaX frame observation', showCancel: false,
+      wx.showModal({ title: 'ForgeAX frame observation', showCancel: false,
         content: result.phase === 'complete'
           ? 'Completed: ' + result.completedFps.toFixed(2) + ' FPS\nPresented: ' + result.presentedFps.toFixed(2)
             + ' FPS\nWindow: ' + result.elapsedMs + ' ms\nGeneration: ' + result.generation

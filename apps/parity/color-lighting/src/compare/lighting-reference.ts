@@ -57,7 +57,7 @@ export interface LightingSceneManifest {
     /** The product's default Camera path is explicitly no-AA. */
     readonly antialias: 'none';
     readonly position: readonly [0, 0.15, 8.7];
-    /** ForgeaX camera forward is -Z; identity matches the authored Transform. */
+    /** ForgeAX camera forward is -Z; identity matches the authored Transform. */
     readonly rotation: readonly [0, 0, 0, 1];
     readonly clearColor: readonly [0.006, 0.009, 0.015, 1];
   };
@@ -576,7 +576,7 @@ function toneMappedBackgroundLinear(
   exposure: number,
 ): readonly [number, number, number] {
   // WebGL Scene.background bypasses Three's tone-mapping shader, while the
-  // ForgeaX camera clear is written to HDR and then passes through ACES. Use
+  // ForgeAX camera clear is written to HDR and then passes through ACES. Use
   // the exact r184 ACES matrices/fit to put the WebGL clear into the same
   // linear display domain before its normal sRGB output conversion.
   const exposed: [number, number, number] = [
@@ -655,7 +655,7 @@ function configureRenderer(renderer: any, canvas: HTMLCanvasElement, manifest: L
 }
 
 function aimThreeSpotTarget(light: any, spot: LightingSceneManifest['lighting']['spot']): void {
-  // ForgeaX stores the emitted direction explicitly on SpotLight. Three's
+  // ForgeAX stores the emitted direction explicitly on SpotLight. Three's
   // native SpotLight derives the same axis from light.position - target.position,
   // so target must be placed at position + direction. Targeting the world
   // origin would introduce a second, unowned direction and makes the A/B
@@ -786,7 +786,7 @@ export function renderThreeCookieReference(
   if (!plainSpot) light.map = createCookieTexture(asset);
   // SpotLight.map reuses the SpotLightShadow projector even when shadows are
   // disabled. Set its explicit texture aspect so Three's native matrix and
-  // ForgeaX's slice-keyed aspect matrix receive the same authored fact.
+  // ForgeAX's slice-keyed aspect matrix receive the same authored fact.
   light.shadow.aspect = asset.shape.extent.width / asset.shape.extent.height;
   aimThreeSpotTarget(light, spot);
   scene.add(light, light.target);
@@ -861,7 +861,7 @@ export function renderThreeProbeReference(
   for (const result of results) {
     const scene = new Scene();
     // Match HANDLE_SPHERE / BUILTIN_SPHERE's representation: the builtin is
-    // a unit sphere and ForgeaX applies the authored radius through Transform
+    // a unit sphere and ForgeAX applies the authored radius through Transform
     // scale. Keeping that split also preserves the same f32 multiplication
     // point at the vertex stage instead of baking radius into Three's CPU
     // geometry attributes.
@@ -889,7 +889,7 @@ function createIesReferenceMap(profile: IesProfileAsset, spot: LightingSceneMani
     const profileValue = sampleIesRadialProfile(profileView, normalizedElevation);
     const polarDeg = normalizedElevation * 180;
     // Three r184's IESSpotLightNode replaces SpotLight's smoothstep cone with
-    // the IES sample. ForgeaX's contract composes both factors. Fold the same
+    // the IES sample. ForgeAX's contract composes both factors. Fold the same
     // explicit cone into the native 1D reference map so this adapter preserves
     // product inputs without changing either side's authored light values.
     const cone = smoothstep(cosOuter, cosInner, Math.cos((polarDeg * Math.PI) / 180));
@@ -989,7 +989,7 @@ export async function renderThreeSpotCombinedReference(
 }
 
 /**
- * Recovery's lifecycle and LKG transitions are ForgeaX-owned. This reference
+ * Recovery's lifecycle and LKG transitions are ForgeAX-owned. This reference
  * renders the same authored geometry and the native Three direct-light
  * baseline (Rect + IES/Cookie Spot + shadow), plus the recovery Sky irradiance
  * as one SH9 LightProbe. It is deliberately not presented as a native Three

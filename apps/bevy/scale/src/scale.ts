@@ -3,7 +3,7 @@
 //
 // Reproduces Bevy's `transforms/scale` example: a white cube starts rotated 45°
 // about Y, grows along one scale axis, reverses at its maximum, and cycles to the
-// next axis after reaching its minimum. ForgeaX mapping:
+// next axis after reaching its minimum. ForgeAX mapping:
 //   - Scaling { scale_direction, scale_speed, max_element_size, min_element_size }
 //     -> game-owned Scaling component
 //   - transform.scale += direction * speed * Time.delta_secs()

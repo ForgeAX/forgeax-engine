@@ -216,7 +216,7 @@ class PhoneDiagnosticCloneTests(unittest.TestCase):
             entry = (base / 'diagnostic/game.js').read_bytes()
             self.assertIn(b'forgeax-phone-startup', entry)
             self.assertNotIn(b'__FORGEAX_PROBE_OPTIONS__', entry)
-            self.assertNotIn(b'ForgeaX native API facts', entry)
+            self.assertNotIn(b'ForgeAX native API facts', entry)
             self.assertTrue(entry.endswith(before['game.js']))
             self.assertEqual((base / 'diagnostic/forgeax-dist.json').read_bytes(), before['forgeax-dist.json'])
             self.assertEqual({path.name: path.read_bytes() for path in source.iterdir()}, before)

@@ -2187,7 +2187,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('(c) empty defines (undefined/default) is treated as no-defines', () => {
-      // The default ForgeaXShaderOptions omits defines entirely — this is
+      // The default ForgeAXShaderOptions omits defines entirely — this is
       // the normal path for regular .wgsl files.
       const plugin = forgeaxShader();
       expect(plugin.name).toBe('forgeax:shader');

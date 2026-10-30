@@ -91,7 +91,8 @@ import { applyKccTuning } from './character-controller-tuning.js';
 import {
   currentContactOwner,
   queryContactManifolds,
-  queryContactNeighbors,
+  readContactNeighborSnapshot,
+  readContactNeighborsBatch,
   readContactQuery,
 } from './contact-query.js';
 import {
@@ -928,22 +929,30 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     filterMask?: number,
     normalFilter?: PhysicsContactNormalFilter,
   ): Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure> {
-    return readContactQuery(
+    return readContactNeighborSnapshot(
       this.currentContactStepAvailable(),
       entity,
       () => this.bodyForEntity(entity),
-      (body) => ({
-        fixedStep: this.fixedStep,
-        deltaTime: this.contactDeltaTime,
-        entities: queryContactNeighbors(
-          this.raw,
-          body,
-          this.currentContactOwner,
-          entity,
-          filterMask,
-          normalFilter,
-        ),
-      }),
+      this.raw,
+      this.currentContactOwner,
+      this.fixedStep,
+      this.contactDeltaTime,
+      filterMask,
+      normalFilter,
+    );
+  }
+
+  getCurrentContactNeighborsBatch(
+    requests: Parameters<NonNullable<PhysicsWorld['getCurrentContactNeighborsBatch']>>[0],
+  ): Result<readonly PhysicsContactNeighborsSnapshot[], ManagedPhysicsFailure> {
+    return readContactNeighborsBatch(
+      requests,
+      this.raw,
+      this.currentContactOwner,
+      (entity) => this.bodyForEntity(entity),
+      () => this.currentContactStepAvailable(),
+      this.fixedStep,
+      this.contactDeltaTime,
     );
   }
 

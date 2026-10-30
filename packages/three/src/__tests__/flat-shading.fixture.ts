@@ -1,5 +1,6 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { comparePixels, displayPixels, readyFrames, verifyReplay } from './render.fixture';
 
 export async function verifyFlatShading(
@@ -61,11 +62,13 @@ export async function verifyFlatShading(
       material.flatShading = true;
       material.needsUpdate = true;
       const flat = await frame(`${material.type}-explicit`);
-      expect(flat.pixels).not.toEqual(smooth.pixels);
+      expect(equalBytes(flat.pixels, smooth.pixels)).toBe(false);
       material.flatShading = false;
       material.needsUpdate = true;
       mesh.geometry = missing;
-      expect((await frame(`${material.type}-missing-normal`)).pixels).toEqual(flat.pixels);
+      expect(equalBytes((await frame(`${material.type}-missing-normal`)).pixels, flat.pixels)).toBe(
+        true,
+      );
       expect(missing.hasAttribute('normal')).toBe(false);
       mesh.geometry = geometry;
       mesh.position.x = -0.48;
@@ -78,7 +81,9 @@ export async function verifyFlatShading(
       const shared = await frame(`${material.type}-shared`);
       await verifyReplay(shared.capture);
       material.dispose();
-      expect((await frame(`${material.type}-dispose-reuse`)).pixels).toEqual(shared.pixels);
+      expect(
+        equalBytes((await frame(`${material.type}-dispose-reuse`)).pixels, shared.pixels),
+      ).toBe(true);
       scene.remove(other);
       mesh.position.x = 0;
       mesh.scale.set(-1, 0.8, 1.2);
@@ -92,7 +97,9 @@ export async function verifyFlatShading(
       material.flatShading = false;
       material.needsUpdate = true;
       mesh.scale.setScalar(1);
-      expect((await frame(`${material.type}-restored`)).pixels).toEqual(smooth.pixels);
+      expect(equalBytes((await frame(`${material.type}-restored`)).pixels, smooth.pixels)).toBe(
+        true,
+      );
       orthographic.position.set(0.7, 0.4, 3);
       orthographic.lookAt(0, 0, 0);
       await frame(`${material.type}-rotated-orthographic`);

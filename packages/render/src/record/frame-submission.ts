@@ -8,6 +8,7 @@ import type { FrameRecording } from '../assembly/frame-recording';
 import type { RenderTargetLayerWrite } from '../assembly/render-target-host';
 import type { PlanarCaptureState } from '../capture/planar-state';
 import { settleAtmospherePublish } from '../environment/storage';
+import type { RendererOperationCause } from '../errors/render';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import type { DynamicResolutionController } from '../pipeline/dynamic-resolution';
@@ -224,22 +225,34 @@ export function shadowPassContext(
   };
 }
 
-function submissionInputsCurrent(
+function submissionInputFailure(
   frameState: RenderFrameState,
   gi: FrameDiffuseGi,
   shadowPublication: ShadowPublication,
   nativeScene: PersistentGpuDrivenState | undefined,
   shadowMeshInput: ShadowMeshInput | undefined,
   shadowLodToken: object | undefined,
-): boolean {
-  return (
-    diffuseGiFencesCurrent(gi) &&
-    (shadowPublication === undefined || shadowPublication.isCurrent()) &&
-    (nativeScene?.retained === undefined || nativeScene.retained.isSourceCurrent()) &&
-    (shadowMeshInput === undefined ||
-      (shadowMeshInputCurrent(shadowMeshInput) &&
-        frameState.directionalShadowLod?.token === shadowLodToken))
-  );
+): RendererOperationCause | undefined {
+  let code: string | undefined;
+  if (!diffuseGiFencesCurrent(gi)) code = 'frame-gi-input-stale';
+  else if (shadowPublication !== undefined && !shadowPublication.isCurrent())
+    code = 'frame-shadow-publication-stale';
+  else if (nativeScene?.retained !== undefined && !nativeScene.retained.isSourceCurrent())
+    code = 'frame-scene-source-stale';
+  else if (shadowMeshInput !== undefined && !shadowMeshInputCurrent(shadowMeshInput))
+    code = 'frame-shadow-mesh-stale';
+  else if (
+    shadowMeshInput !== undefined &&
+    frameState.directionalShadowLod?.token !== shadowLodToken
+  )
+    code = 'frame-shadow-lod-stale';
+  return code === undefined
+    ? undefined
+    : {
+        code,
+        expected: 'the encoded scene inputs retain their accepted versions through submission',
+        hint: 'inspect the named input owner and reprepare the rejected frame',
+      };
 }
 
 function commitSsrHistory(
@@ -286,20 +299,22 @@ export function frameSubmissionHooks(
   ) {
     return undefined;
   }
+  let rejection: RendererOperationCause | undefined;
   return {
     generationFence: {
       capturedGeneration: 0,
-      currentGeneration: () =>
-        submissionInputsCurrent(
+      rejectionCause: () => rejection,
+      currentGeneration: () => {
+        rejection = submissionInputFailure(
           frameState,
           gi,
           shadowPublication,
           nativeScene,
           shadowMeshInput,
           shadowLodToken,
-        )
-          ? 0
-          : -1,
+        );
+        return rejection === undefined ? 0 : -1;
+      },
     },
     onSubmittedWork: (done: Promise<void>) => {
       gpuDriven?.onSubmittedWork?.(done);

@@ -39,7 +39,7 @@ function sha256(value: string | undefined, name: string): string {
 
 function runnerKind(value: string | undefined): 'browser-webgpu' | 'dawn' {
   if (value === 'browser-webgpu' || value === 'dawn') return value;
-  throw new Error(JSON.stringify({ code: 'producer-entry-missing', detail: 'ForgeaX AC-27 backend must be browser-webgpu or dawn' }));
+  throw new Error(JSON.stringify({ code: 'producer-entry-missing', detail: 'ForgeAX AC-27 backend must be browser-webgpu or dawn' }));
 }
 
 export function autoExposureForgeaxProducerIsScheduled(): boolean {
@@ -88,11 +88,11 @@ export async function runAutoExposureForgeaxProducerEntry(forgeaxBundler: AutoEx
     ?? environment.VITE_FORGEAX_AUTO_EXPOSURE_AC27_REFERENCE_LANE
     ?? 'direct';
   if (lane !== 'direct' && lane !== 'clustered') {
-    throw new Error(JSON.stringify({ code: 'producer-entry-missing', detail: 'ForgeaX AC-27 reference lane must be direct or clustered' }));
+    throw new Error(JSON.stringify({ code: 'producer-entry-missing', detail: 'ForgeAX AC-27 reference lane must be direct or clustered' }));
   }
   const publish = globalThis.__forgeaxAutoExposureForgeaxPublish;
   if (publish === undefined) {
-    throw new Error(JSON.stringify({ code: 'producer-entry-missing', detail: 'ForgeaX AC-27 artifact publisher is unavailable' }));
+    throw new Error(JSON.stringify({ code: 'producer-entry-missing', detail: 'ForgeAX AC-27 artifact publisher is unavailable' }));
   }
   const artifact = await captureAutoExposureForgeax({
     width,

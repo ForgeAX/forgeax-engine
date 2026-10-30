@@ -7,6 +7,7 @@ import {
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import type { ReferenceRay } from '../../raytracing/scene';
 import { createSdfQuery, packSdfScene, type SdfQuery } from '../../raytracing/sdf-query';
 import { readBuffer } from './path-tracer.fixture';
@@ -141,8 +142,8 @@ export async function verifySdfStorage(
     expect(Math.abs(combined.getFloat32(16, true) - 2.8)).toBeLessThan(sampled.spacing);
     expect(Math.abs(combined.getFloat32(3 * 64 + 16, true) - 3)).toBeLessThan(loaded.spacing);
     // The strict geometric branch retains its old scalar values and result.
-    expect(combinedBytes.subarray(64, 88)).toEqual(baselineBytes.subarray(64, 88));
-    expect(combinedBytes.subarray(92, 128)).toEqual(baselineBytes.subarray(92, 128));
+    expect(equalBytes(combinedBytes.subarray(64, 88), baselineBytes.subarray(64, 88))).toBe(true);
+    expect(equalBytes(combinedBytes.subarray(92, 128), baselineBytes.subarray(92, 128))).toBe(true);
     expect(baseline.getUint32(0, true)).toBe(0);
     expect(baseline.getUint32(128, true)).toBe(0);
   } finally {
@@ -164,7 +165,7 @@ export async function verifySdfStorage(
   const blob = tape.blobs.find((b) => b.hash === seed.hash);
   assert(blob);
   const bytes = blob.bytes;
-  expect(bytes).toEqual(packSdfScene(sources).unwrap().fields);
+  expect(equalBytes(bytes, packSdfScene(sources).unwrap().fields)).toBe(true);
   const fresh = (await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const freshRaw = webgpu._internal_getRawDevice(fresh);
   assert(freshRaw);
@@ -177,9 +178,12 @@ export async function verifySdfStorage(
       const result = item.bindings.find((b) => b.binding === 3)?.resourceId;
       assert(result);
       expect((await replay.readResource(result)).unwrap().bytes.every((b) => b === 0)).toBe(true);
-      expect((await replay.readResourceAtWork(result, item.workIndex)).unwrap().bytes).toEqual(
-        live[i],
-      );
+      expect(
+        equalBytes(
+          (await replay.readResourceAtWork(result, item.workIndex)).unwrap().bytes,
+          live[i],
+        ),
+      ).toBe(true);
     }
   } finally {
     (await replay.dispose()).unwrap();

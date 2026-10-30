@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/vite-plugin-pack/schema/runtime-binding.schema.json",
+  "$id": "https://github.com/ForgeAX/forgeax-engine/packages/vite-plugin-pack/schema/runtime-binding.schema.json",
   "title": "RuntimeAssetBinding",
-  "description": "Host-injected binding for one ForgeaX dev Catalog scope. The scope and generation are the only runtime identity; filesystem roots do not cross this contract.",
+  "description": "Host-injected binding for one ForgeAX dev Catalog scope. The scope and generation are the only runtime identity; filesystem roots do not cross this contract.",
   "type": "object",
   "additionalProperties": false,
   "required": [

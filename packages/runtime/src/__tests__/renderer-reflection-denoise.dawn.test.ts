@@ -12,6 +12,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
   createIrradianceFieldHarness,
   irradianceFieldGi,
@@ -167,7 +168,9 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
       const output = inspected.outputs?.find((entry) => entry.name === '@group(0)@binding(19)');
       assert(output, 'the spatial filter exposes its denoised storage output');
       const bytes = output.result.unwrap().bytes;
-      expect(bytes).toEqual(new Uint8Array(live.buffer, live.byteOffset, live.byteLength));
+      expect(equalBytes(bytes, new Uint8Array(live.buffer, live.byteOffset, live.byteLength))).toBe(
+        true,
+      );
       const history = (await replay.inspectWork(temporalWork.workIndex, ['outputs']))
         .unwrap()
         .outputs?.find((entry) => entry.name === '@group(0)@binding(16)');

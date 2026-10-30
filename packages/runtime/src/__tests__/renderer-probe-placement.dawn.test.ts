@@ -18,6 +18,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { rayPathCommands } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
@@ -277,13 +278,13 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
       await draw();
       expect(roles.at(-1)?.accepted).toBe(previous.candidate);
     }
-    expect(await hdr()).toEqual(baseline);
+    expect(equalBytes(await hdr(), baseline)).toBe(true);
     const nativeMaterial = testAssets(world)
       .create(Materials.standard({ baseColor: [0.8, 0.4, 0.2, 1], roughness: 0.65, specular: 0 }))
       .unwrap();
     world.set(receiver, MeshRenderer, { materials: [nativeMaterial] }).unwrap();
     await draw();
-    expect(await hdr()).toEqual(baseline);
+    expect(equalBytes(await hdr(), baseline)).toBe(true);
     world.set(receiver, MeshRenderer, { materials: [materialHandle] }).unwrap();
     await draw();
     const accepted = renderer.inspect().probePlacement;
@@ -347,7 +348,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
     expect(destroyed.has(active)).toBe(true);
     renderValue(renderer.setProfile({ ...profile, probePlacement: { seeds } }));
     await settle();
-    expect(roles.at(-1)?.candidate).not.toBe(active);
+    expect(Object.is(roles.at(-1)?.candidate, active)).toBe(false);
     for (const mode of ['auxiliary', 'cube', 'multi-view', 'planar', 'stereo'] as const) {
       const target = renderValue(
         renderer.createRenderTarget({
@@ -403,7 +404,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
     renderValue(await renderer.recover());
     await settle();
     expect(renderer.inspect().probePlacement?.submittedFrames).toBeGreaterThan(0);
-    expect(await hdr()).toEqual(baseline);
+    expect(equalBytes(await hdr(), baseline)).toBe(true);
     expect(errors).toEqual([]);
   } finally {
     unsubscribe();

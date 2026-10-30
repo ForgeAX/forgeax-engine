@@ -19,7 +19,7 @@ export const preparePlatform = {
   name: 'forgeax.mcp.preview.platform',
   async apply(ctx: Context) {
     const app = new App(
-      { name: 'ForgeaX Engine Preview runtime', version: APP_VERSION },
+      { name: 'ForgeAX Engine Preview runtime', version: APP_VERSION },
       { availableDisplayModes: ['fullscreen'] },
       { autoResize: false },
     );
@@ -27,7 +27,7 @@ export const preparePlatform = {
     await app.connect();
     const config = JSON.parse(document.getElementById('fx-config')!.textContent!);
     const report = (value: unknown) => {
-      console.debug('ForgeaX Preview', value);
+      console.debug('ForgeAX Preview', value);
     };
     const invoke = async (args: any, options: any = {}) => {
       const result = await app.callServerTool({ name: TRANSPORT_TOOL, arguments: args }, options);

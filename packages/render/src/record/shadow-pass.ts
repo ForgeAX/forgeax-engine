@@ -2072,6 +2072,7 @@ export function prepareShadowMaterialPipelines(
   prepareGpuDrivenShadowViewPipelines(c, views, rendererRecording, requiredView);
   if (
     c.runtime.prepareMaterialShaderPipeline !== undefined &&
+    c.runtime.device.caps.storageBuffer &&
     c.gpuDrivenGeometryLane !== 'direct' &&
     reflections.size > 0
   ) {
@@ -2085,9 +2086,51 @@ export function prepareShadowMaterialPipelines(
       )) {
         if (execution.route !== 'gpu') continue;
         const { prepared, material, artifact } = execution;
-        const passes = [execution.pass];
-        for (const pass of passes) {
-          if (artifact === undefined) {
+        const pass = execution.pass;
+        if (artifact === undefined) {
+          markPipelinePreparationPending(c.frameState, {
+            code: 'shadow-pipeline-preparation',
+            worldId: entry.source.worldId,
+            entity: entry.source.entityKey,
+            pass: 'shadow',
+            ...(pass.shaderId === undefined ? {} : { shader: pass.shaderId.slice(0, 256) }),
+          });
+          continue;
+        }
+        preparedHiddenDraws ??= new Map();
+        let selected = preparedHiddenDraws.get(entry);
+        if (selected === undefined) {
+          selected = new Set();
+          preparedHiddenDraws.set(entry, selected);
+        }
+        selected.add(draw.sourceDrawIndex);
+        const shadowRenderState = transformRenderState(
+          pass.renderState,
+          entry.source.transform.world,
+        );
+        for (const reflected of reflections) {
+          if (
+            requestGpuDrivenShadowPipeline(
+              c,
+              c.runtime.prepareMaterialShaderPipeline,
+              {
+                mesh: entry.mesh,
+                deformation: prepared.identity.deformation,
+                shadowArtifact: artifact,
+                material,
+                vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
+                  (a) => a.key === 'color',
+                ),
+                ...(shadowRenderState === undefined ? {} : { shadowRenderState }),
+                ...(pass.vertexEntry === undefined ? {} : { shadowVertexEntry: pass.vertexEntry }),
+                ...(pass.fragmentEntry === undefined
+                  ? {}
+                  : { shadowFragmentEntry: pass.fragmentEntry }),
+              },
+              { key: draw.key },
+              reflected,
+            ) == null
+          )
             markPipelinePreparationPending(c.frameState, {
               code: 'shadow-pipeline-preparation',
               worldId: entry.source.worldId,
@@ -2095,52 +2138,6 @@ export function prepareShadowMaterialPipelines(
               pass: 'shadow',
               ...(pass.shaderId === undefined ? {} : { shader: pass.shaderId.slice(0, 256) }),
             });
-            continue;
-          }
-          preparedHiddenDraws ??= new Map();
-          let selected = preparedHiddenDraws.get(entry);
-          if (selected === undefined) {
-            selected = new Set();
-            preparedHiddenDraws.set(entry, selected);
-          }
-          selected.add(draw.sourceDrawIndex);
-          const shadowRenderState = transformRenderState(
-            pass.renderState,
-            entry.source.transform.world,
-          );
-          for (const reflected of reflections) {
-            if (
-              requestGpuDrivenShadowPipeline(
-                c,
-                c.runtime.prepareMaterialShaderPipeline,
-                {
-                  mesh: entry.mesh,
-                  deformation: prepared.identity.deformation,
-                  shadowArtifact: artifact,
-                  material,
-                  vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
-                    (a) => a.key === 'color',
-                  ),
-                  ...(shadowRenderState === undefined ? {} : { shadowRenderState }),
-                  ...(pass.vertexEntry === undefined
-                    ? {}
-                    : { shadowVertexEntry: pass.vertexEntry }),
-                  ...(pass.fragmentEntry === undefined
-                    ? {}
-                    : { shadowFragmentEntry: pass.fragmentEntry }),
-                },
-                { key: draw.key },
-                reflected,
-              ) == null
-            )
-              markPipelinePreparationPending(c.frameState, {
-                code: 'shadow-pipeline-preparation',
-                worldId: entry.source.worldId,
-                entity: entry.source.entityKey,
-                pass: 'shadow',
-                ...(pass.shaderId === undefined ? {} : { shader: pass.shaderId.slice(0, 256) }),
-              });
-          }
         }
       }
     }

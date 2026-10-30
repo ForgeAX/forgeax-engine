@@ -1,7 +1,7 @@
 # Skinned resource preview evidence
 
 Paired review: View PR #239
-and [Engine PR #4731](https://github.com/ForgeaX-Games/forgeax-engine/pull/4731).
+and [Engine PR #4731](https://github.com/ForgeAX/forgeax-engine/pull/4731).
 `results.json` records the exact Engine implementation used for the pixel proof;
 the Engine PR pins the corresponding View candidate through `tools/view`.
 

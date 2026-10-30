@@ -101,7 +101,7 @@ const sceneEntries: readonly ExtendedLightingSceneRosterEntry[] = [
     independentOracleBoundary: 'finite-volume c/q/Q/alpha/C/S interpolation with Sky diffuse residual',
   }),
   sceneEntry(recovery, 'recovery', {
-    threeNativeSubset: 'Three lighting baseline only; generation and LKG recovery are ForgeaX-owned',
+    threeNativeSubset: 'Three lighting baseline only; generation and LKG recovery are ForgeAX-owned',
     independentOracleBoundary: 'candidate generation, atomic acceptance, stale rejection, and LKG observability',
   }),
 ];

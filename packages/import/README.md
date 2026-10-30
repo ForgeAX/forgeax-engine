@@ -74,8 +74,10 @@ length and SHA before removing a serialized copy. Missing or inconsistent extern
 evidence retains the inline bytes for the existing complete record, integrity and
 inline/external equality checks; compaction never repairs a malformed publication.
 
-CookProduct digests use the same typed-array-to-JSON-array normalization as Pack
-publication. A native view and its transported array therefore retain one output
+CookProduct digests and Pack publication share numeric view normalization,
+including the clamped byte views admitted by Equirect assets. The projection
+copies the selected view elements without changing the source.
+A native view and its transported array therefore retain one output
 digest; changed values or artifact bytes still change that digest. Normalization
 does not alter source sampling, GUIDs, material programs or the emitted Pack format.
 Source-package production and Vite development request product-only import;
@@ -982,3 +984,8 @@ fields derive from ImportedAsset; runtime Assets still never carry ref indices.
 
 Production builds emit one file per artifact. Player packaging groups them into
 Asset Bundles; see [the DevKit player delivery contract](../devkit/README.md#player-asset-bundles).
+
+Native cookers opt into reentrant output preparation with `concurrency: 'parallel'`.
+ScriptablePack admits at most four contiguous opted-in outputs at a time,
+preserves authored publication order and drains admitted cooks before returning
+the first authored failure. Producers without that declaration remain serial.

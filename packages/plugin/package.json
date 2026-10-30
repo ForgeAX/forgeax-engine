@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "ForgeaX entry point for the DeepSeek Cordis plugin runtime.",
+  "description": "ForgeAX entry point for the DeepSeek Cordis plugin runtime.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

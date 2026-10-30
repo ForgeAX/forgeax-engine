@@ -3,6 +3,7 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -84,7 +85,7 @@ export async function verifySamplerResidency() {
       const current = store
         .ensureSamplerResident(handle, assets.read(handle).unwrap(), worldRenderResources(scope))
         .unwrap();
-      if (index !== 0) expect(current).not.toBe(previous);
+      if (index !== 0) expect(Object.is(current, previous)).toBe(false);
       const binding = device
         .createBindGroup({
           layout,
@@ -150,9 +151,12 @@ export async function verifySamplerResidency() {
           (binding) => binding.groupIndex === 0 && binding.binding === 3,
         )?.resourceId;
         assert(resource);
-        expect((await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes).toEqual(
-          results[index],
-        );
+        expect(
+          equalBytes(
+            (await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes,
+            results[index],
+          ),
+        ).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();

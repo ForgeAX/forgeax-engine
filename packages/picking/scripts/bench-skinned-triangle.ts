@@ -45,7 +45,7 @@ for(const segments of [16,512,4096,16384]) {
   }
   results.push({triangles:segments*2,vertices:(segments+1)*2,joints:2,forgeax,threejs:referenceResult});
 }
-const output={runtime:process.versions,platform:platform(),arch:arch(),cpu:cpus()[0]?.model,scope:'one exact query; ForgeaX builds current world vertices/bounds once, Three.js recomputes posed sphere/box then raycasts; propagation excluded; static pose; no GPU readback',reference,results};
+const output={runtime:process.versions,platform:platform(),arch:arch(),cpu:cpus()[0]?.model,scope:'one exact query; ForgeAX builds current world vertices/bounds once, Three.js recomputes posed sphere/box then raycasts; propagation excluded; static pose; no GPU readback',reference,results};
 mkdirSync('artifacts/skinned-triangle-picking',{recursive:true});
 writeFileSync('artifacts/skinned-triangle-picking/benchmark.json',JSON.stringify(output,null,2));
 console.log(JSON.stringify(output,null,2));

@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createRasterProbePlacement } from '../../raytracing/probe-placement';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import { readBuffer } from './path-tracer.fixture';
@@ -360,9 +361,9 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
       const output = await readBuffer(device, candidate, size),
         diagnostic = await readBuffer(device, diagnostics, count * 16);
       expect(
-        await readBuffer(device, accepted, size),
+        equalBytes(await readBuffer(device, accepted, size), before),
         `${name}: accepted state is read-only`,
-      ).toEqual(before);
+      ).toBe(true);
       stages.push({ name, candidate: output, diagnostics: diagnostic, accepted: before });
       return {
         f: new Float32Array(output.buffer, output.byteOffset, size / 4),
@@ -383,9 +384,12 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
     expect(first.f[2]).toBeGreaterThan(0.3); // Geometric normal deliberately points the other way.
     for (let index = 1; index < count; index++) {
       expect(first.u[index * 4 + 2]).toBe([0, 2, 0, 2, 0, 2, 2, 0, 0, 2, 2, 2][index]);
-      expect(first.output.slice(index * 32, index * 32 + 32)).toEqual(
-        new Uint8Array(stateBytes, index * 32, 32),
-      );
+      expect(
+        equalBytes(
+          first.output.slice(index * 32, index * 32 + 32),
+          new Uint8Array(stateBytes, index * 32, 32),
+        ),
+      ).toBe(true);
     }
     // The caller promotes only after the first successful submit.
     const promote = device.createCommandEncoder({}).unwrap();
@@ -393,16 +397,16 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
     device.queue.submit([promote.finish().unwrap()]).unwrap();
     const second = await run('placement-second', 0);
     expect(second.u[2]).toBe(0);
-    expect(second.output).toEqual(first.output);
+    expect(equalBytes(second.output, first.output)).toBe(true);
     for (const mode of [1, 2, 3, 4, 5]) {
       device.queue.writeBuffer(accepted, 0, stateBytes).unwrap();
       const rejected = await run(`placement-raster-fault-${mode}`, mode);
       expect(rejected.u[2]).toBe(0);
       expect(rejected.u[3]).toBe(0);
-      expect(rejected.output).toEqual(new Uint8Array(stateBytes));
+      expect(equalBytes(rejected.output, new Uint8Array(stateBytes))).toBe(true);
     }
     const backface = await run('placement-covered-backface', 6);
-    expect(backface.output).toEqual(first.output);
+    expect(equalBytes(backface.output, first.output)).toBe(true);
     const flipped = await run('placement-shading-normal-control', 7);
     expect(flipped.u[2]).toBe(1);
     expect(flipped.f[2]).toBeLessThan(0.3);
@@ -426,12 +430,12 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
       normal: mismatchNormal,
     });
     expect(mismatch.u[2]).toBe(3);
-    expect(mismatch.output).toEqual(new Uint8Array(stateBytes));
+    expect(equalBytes(mismatch.output, new Uint8Array(stateBytes))).toBe(true);
     viewData[230] = 1;
     device.queue.writeBuffer(view, 256, viewData).unwrap();
     const orthographic = await run('placement-unsupported-orthographic', 0);
     expect(orthographic.u[2]).toBe(3);
-    expect(orthographic.output).toEqual(new Uint8Array(stateBytes));
+    expect(equalBytes(orthographic.output, new Uint8Array(stateBytes))).toBe(true);
     viewData[230] = 0;
     device.queue.writeBuffer(view, 256, viewData).unwrap();
     // The raster occupies the bottom-right quadrant. Dropping the viewport
@@ -441,7 +445,7 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
     const wrongOrigin = await run('placement-view-origin-falsifier', 0);
     expect(wrongOrigin.u[2]).toBe(0);
     expect(wrongOrigin.u[3]).toBe(0);
-    expect(wrongOrigin.output).toEqual(new Uint8Array(stateBytes));
+    expect(equalBytes(wrongOrigin.output, new Uint8Array(stateBytes))).toBe(true);
     device.queue.writeBuffer(viewRect, 0, new Uint32Array(rasterRect)).unwrap();
     const subrect = await run('placement-view-rectangle', 0);
     expect(subrect.u[2]).toBe(1);
@@ -466,7 +470,7 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
     device.queue.writeBuffer(viewRect, 0, new Uint32Array([8, 12, 64, 64])).unwrap();
     const badRect = await run('placement-invalid-view-rectangle', 0);
     expect(badRect.u[2]).toBe(3);
-    expect(badRect.output).toEqual(new Uint8Array(stateBytes));
+    expect(equalBytes(badRect.output, new Uint8Array(stateBytes))).toBe(true);
     // Rotate the camera onto -X: the same plane is at world Z=-2 and view
     // depth 4. An accidental world-Z/clip-W substitution now fails placement.
     const rotatedVp = mat4.multiply(
@@ -501,8 +505,8 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
       pass = abandoned.beginComputePass({});
     placement.record(pass, input, count).unwrap();
     pass.end();
-    expect(await readBuffer(device, candidate, size)).toEqual(beforeCandidate);
-    expect(await readBuffer(device, accepted, size)).toEqual(beforeAccepted);
+    expect(equalBytes(await readBuffer(device, candidate, size), beforeCandidate)).toBe(true);
+    expect(equalBytes(await readBuffer(device, accepted, size), beforeAccepted)).toBe(true);
     const initialization = verifyProducedRanges(tape, model);
     const works = model.works.filter((work) =>
       work.pipeline.shaders.some((shader) => shader.entryPoint === 'placeRasterProbes'),
@@ -536,9 +540,12 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
             const resource = work.bindings.find((entry) => entry.binding === binding)?.resourceId;
             assert(resource);
             expect(
-              (await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes,
+              equalBytes(
+                (await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes,
+                expected,
+              ),
               `${stage.name} binding ${binding}`,
-            ).toEqual(expected);
+            ).toBe(true);
           }
           expect(work.bindings.find((entry) => entry.binding === 3)?.bufferSize).toBe(64);
           expect(work.bindings.find((entry) => entry.binding === 4)?.bufferOffset).toBe(256);

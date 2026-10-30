@@ -126,7 +126,7 @@ clips and inline JSON arrays still decode unchanged.
 ## TypeScript-first animation control
 
 > [!IMPORTANT]
-> TypeScript is the primary animation-control language. ForgeaX does not require
+> TypeScript is the primary animation-control language. ForgeAX does not require
 > or provide a native animation FSM, transition-condition language, or controller
 > asset. An FSM used by a game is a specialization of ordinary TypeScript control
 > code; it must not become the mandatory execution or authoring boundary.
@@ -681,3 +681,8 @@ The [ordinary Pack example and frozen acceptance](../../scripts/dev-verify/roi-2
 exercise public subpaths, Scene JSON, independent double-precision curve/frame
 references and actual Skin qualification. This link is a reproduction entry,
 not a claim that every qualification gate has passed.
+
+Externally timed or paused players still evaluate targets and timeline/root-motion
+contracts. Playback only writes `AnimationPlayer.times` when normalization or
+advancement changes an element (including signed zero); an unchanged time array
+does not allocate managed World storage or publish a component change.

@@ -201,7 +201,7 @@ describe('tone ramp Dawn gate', () => {
     ? (['linear', 'aces-filmic', 'neutral'] as const)
     : TONE_REQUIRED_MODES;
   for (const mode of dawnModes) {
-    it.skipIf(!dawnReady)(`executes ${mode} through the ForgeaX renderer`, async () => {
+    it.skipIf(!dawnReady)(`executes ${mode} through the ForgeAX renderer`, async () => {
       const bytes = await captureMode(mode);
       expect(bytes.byteLength).toBeGreaterThan(0);
     }, 60_000);

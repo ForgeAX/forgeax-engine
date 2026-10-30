@@ -1,9 +1,9 @@
 ---
 name: forgeax-engine-vfx
-description: ForgeaX code-first GPU VFX authoring, cooking, playback, and rendering. Use when creating, loading, debugging, or extending particle, ribbon, trail, beam, billboard, or mesh effects.
+description: ForgeAX code-first GPU VFX authoring, cooking, playback, and rendering. Use when creating, loading, debugging, or extending particle, ribbon, trail, beam, billboard, or mesh effects.
 ---
 
-# ForgeaX VFX
+# ForgeAX VFX
 
 ## Choose the path first
 

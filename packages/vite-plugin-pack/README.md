@@ -92,6 +92,10 @@ and `stale` entries remain unavailable for serving.
 Consumers should pass the same explicit `ddc` object to every plugin entry
 point. Do not add legacy, v1, compatibility, basename, or URL fallback paths.
 
+Dev publication preserves native cookers' explicit concurrency declarations.
+ScriptablePack batches at most four opted-in outputs while keeping authored
+publication order, failure draining and the complete Catalog readiness barrier.
+
 ## Native authored Pack cookers
 
 ### Public ScriptablePack consumer contract

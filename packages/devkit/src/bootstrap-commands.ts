@@ -272,7 +272,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
         ok: false,
         error: {
           code: 'sdk-context-missing',
-          expected: 'forgeax project new to run from an unpacked ForgeaX SDK',
+          expected: 'forgeax project new to run from an unpacked ForgeAX SDK',
           hint:
             'Install the matching SDK outside the game: forgeax sdk install --root <sdk-root>; ' +
             'then run node <sdk-root>/bin/forgeax.mjs project init --root <sdk-root> and ' +

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ForgeaX cooked material record",
+  "title": "ForgeAX cooked material record",
   "type": "object",
   "required": ["schemaVersion", "guid", "resolved", "refs", "programs", "receipt"],
   "properties": {

@@ -27,7 +27,7 @@ interface SkinJson {
   readonly name?: string;
   readonly joints: readonly number[];
   readonly inverseBindMatrices?: number;
-  /** glTF source metadata authored by the ForgeaX asset producer. */
+  /** glTF source metadata authored by the ForgeAX asset producer. */
   readonly extras?: {
     readonly forgeax?: {
       readonly conservativeAnimatedBounds?: unknown;

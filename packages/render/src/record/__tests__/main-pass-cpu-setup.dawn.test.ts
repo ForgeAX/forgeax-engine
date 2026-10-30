@@ -1,6 +1,7 @@
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -90,7 +91,7 @@ it('preserves native pixels through sparse claims, CPU fallback and replacement 
         if (frame === 5 || frame === 45) f.entries.reverse();
         const actual = await render((pass) => f.record(pass, 'forward', ownership));
         const expected = await render((pass) => oracle(pass, allCpu, false));
-        expect(actual).toEqual(expected);
+        expect(equalBytes(actual, expected)).toBe(true);
         expect(actual.some((value, index) => index % 4 === 0 && value > 200)).toBe(true);
         if (frame === 0) {
           const missingDraw = await render((pass) => oracle(pass, allCpu, true));
@@ -225,8 +226,9 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
   };
   try {
     const expected = await render(true);
-    expect(await render(true, true)).not.toEqual(expected);
-    for (let frame = 0; frame < 60; frame++) expect(await render(false)).toEqual(expected);
+    expect(equalBytes(await render(true, true), expected)).toBe(false);
+    for (let frame = 0; frame < 60; frame++)
+      expect(equalBytes(await render(false), expected)).toBe(true);
     expect(f.errors).toEqual([]);
     expect(await native.popErrorScope()).toBeNull();
   } finally {

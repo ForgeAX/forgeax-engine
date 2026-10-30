@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-rhi-debug
 description: >-
-  ForgeaX first-line capture, replay, and per-work diagnosis for difficult rendering failures.
+  ForgeAX first-line capture, replay, and per-work diagnosis for difficult rendering failures.
   Use when output is black, missing, incorrectly lit or shadowed, flickering, divergent across backends, or unexplained.
 ---
 
@@ -76,6 +76,9 @@ or the SDK's `source/engine/packages/rhi-debug/README.md`.
    scene/backend and original visible symptom.
    Keep before/after artifacts explicit; replay evidence supplements the required
    browser, Dawn, and smoke gates for the changed implementation.
+   For recorder fallback without a usable WebGPU adapter, use the
+   [Browser without WebGPU route](../../scripts/ci/README.md#browser-without-webgpu).
+   Keep its Worker, sixty-frame and decoded-tape checks in the Browser owner.
 
 If capture, replay, or readback is blocked, preserve the attempted command,
 structured failure, and capability result. Follow structured recovery below and
@@ -241,6 +244,12 @@ message text to decide control flow.
 | `readback-failed` | Preserve the detail stage and dispose the replay session. |
 
 ## Viewer evidence
+
+The Viewer owns its fresh replay device. Replacing or closing a tape drains the
+session before disposing that device once; rejected admission and failed cleanup
+must also release it. Check `viewer-replay-lifecycle.test.ts` for ownership, then
+qualify real captured-frame replay and pixels. Do not infer a device-loss cause
+from a lifecycle unit pass.
 
 The Viewer is read-only. It loads one `.rhitape`, shows the four linked views
 through the shared `workIndex`, and keeps the structural model available when

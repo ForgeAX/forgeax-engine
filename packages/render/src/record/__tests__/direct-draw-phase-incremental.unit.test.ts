@@ -10,7 +10,7 @@ import type { CameraSnapshot } from '../../render-contract';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
 import type { DrawEvidence } from '../../scene/draw-evidence';
 import { FrameSet } from '../../scene/frame-set';
-import { MaterialDispatch } from '../../scene/material-dispatch';
+import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
 import type { ProbeBlendBufferProjection } from '../../scene/probe-blend';
 import { RenderScene } from '../../scene/render-scene';
 import { TRANSPARENT_SORT_MODE_DISTANCE } from '../../systems/transparent-sort-config';
@@ -153,6 +153,37 @@ it('refreshes retained rows even when no authored pass enters a bin', () => {
   expect(next.rows[0]?.source.transform.world[14]).toBe(9);
   expect(next).not.toBe(first);
   expect(phase.sync(input())).toBe(next);
+});
+
+it('retires view rows without Pass bins before their material version is released', () => {
+  const f = fixture(0, 0),
+    phase = new DirectDrawPhase();
+  const held = new MaterialFrame(undefined).with(opaque);
+  const input: DirectDrawInput = {
+    ...f.input(),
+    materials: held,
+    entries: { selector: { LightMode: ['Deferred'] } },
+    viewDraws: [source(91, opaque)],
+    prepareUnbatched: (sources) =>
+      sources.map((source, renderableIndex) => ({
+        source,
+        mesh,
+        renderableIndex,
+        meshSlot: 0,
+        renderState: undefined,
+        stencilReference: undefined,
+      })),
+  };
+  const first = phase.sync(input);
+  expect(first.rows).toHaveLength(1);
+  expect(first.dispatch).toHaveLength(0);
+  // The display owner withdraws its generated draw before its retained material lease.
+  const retired = phase.sync({ ...input, viewDraws: [] });
+  expect(retired.rows).toEqual([]);
+  expect(retired).not.toBe(first);
+  const released = phase.sync({ ...input, viewDraws: [], materials: held.without(opaque) });
+  expect(released.rows).toEqual([]);
+  expect(released.dispatch).toEqual([]);
 });
 
 it('keeps a steady frame at zero phase work and returns the same output', () => {

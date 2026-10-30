@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-state
 description: >-
-  ForgeaX typed state transitions and state-scoped ECS lifetimes. Use when defining game
+  ForgeAX typed state transitions and state-scoped ECS lifetimes. Use when defining game
   modes, switching levels, gating systems, or spawning and removing state-owned entities.
 ---
 

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "ForgeaX live eval/introspection transport with structural World, renderer, assets, profiler, and execution roots. DevKit owns the public dev command surface.",
+  "description": "ForgeAX live eval/introspection transport with structural World, renderer, assets, profiler, and execution roots. DevKit owns the public dev command surface.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

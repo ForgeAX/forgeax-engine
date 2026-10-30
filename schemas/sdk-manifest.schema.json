@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/sdk-manifest.schema.json",
-  "title": "ForgeaX SDK archive manifest",
+  "$id": "https://github.com/ForgeAX/forgeax-engine/sdk-manifest.schema.json",
+  "title": "ForgeAX SDK archive manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [

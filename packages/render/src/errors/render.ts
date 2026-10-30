@@ -1540,6 +1540,7 @@ export interface RendererOperationDetailByCode {
     readonly operation: 'draw';
     readonly stage: 'submit';
     readonly accepted: false;
+    readonly cause?: RendererOperationCause;
   };
   readonly 'world-lease-invalid': {
     readonly operation: 'attach' | 'draw';

@@ -9,6 +9,7 @@ import {
   retireAutoExposureGpuResources,
   writeAutoExposureParameters,
 } from './auto-exposure/gpu';
+import { autoExposureCapabilityFailure } from './auto-exposure/inspection';
 import {
   commitAutoExposureSubmission,
   createAutoExposureState,
@@ -37,7 +38,13 @@ export function prepareStandardOutputResources(
   world: RenderResourceScope,
 ): Result<void, RhiError> {
   const output = camera?.output;
-  if (output?.exposure.kind === 'auto') {
+  // The authored fallback remains the scalar Camera exposure when metering is
+  // unavailable. Do not build a compute graph or fault a downlevel renderer.
+  if (
+    output?.exposure.kind === 'auto' &&
+    autoExposureCapabilityFailure(internals.device.caps, state.compiledFrameGraphGeneration) ===
+      undefined
+  ) {
     const pending = state.pendingAutoExposureGpuResources;
     if (pending !== undefined && pending.device !== internals.device) {
       retireAutoExposureGpuResources(pending);
@@ -157,11 +164,7 @@ export function stageStandardOutputStates(
   const targetGeneration = Math.max(1, camera?.historyVersion ?? 0);
   const deviceEpoch = internals.deviceScope.generation;
 
-  if (
-    output.exposure.kind === 'auto' &&
-    (frameState.pendingAutoExposureGpuResources !== undefined ||
-      frameState.autoExposureGpuResources !== undefined)
-  ) {
+  if (output.exposure.kind === 'auto') {
     let state = frameState.autoExposureState;
     if (state === undefined || state.fallback !== output.exposure.fallback) {
       const created = createAutoExposureState({
@@ -265,10 +268,10 @@ export function commitStandardOutputSubmission(state: RenderFrameState, queue: R
   }
   const pendingAutoState = state.pendingAutoExposureState;
   if (pendingAutoState !== undefined) {
-    state.autoExposureState = commitAutoExposureSubmission(
-      pendingAutoState.state,
-      pendingAutoState,
-    );
+    state.autoExposureState =
+      state.autoExposureGpuResources === undefined
+        ? pendingAutoState.state
+        : commitAutoExposureSubmission(pendingAutoState.state, pendingAutoState);
     state.pendingAutoExposureState = undefined;
   }
   const pendingLut = state.pendingStandardLutGpuResources;

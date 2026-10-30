@@ -124,7 +124,7 @@ function renderIndex(missing: string | null): void {
         `<tr><td><a href="?f=${row.id}">${row.id}</a></td><td>${row.definition.kind}</td><td>${row.form}</td><td>${escapeHtml(row.definition.catalog)}</td><td>${escapeHtml(row.definition.expect)}${row.definition.knownIssue === undefined ? '' : ` <b>Known issue:</b> ${escapeHtml(row.definition.knownIssue)}`}</td></tr>`,
     )
     .join('');
-  index.innerHTML = `${head}<h1>ForgeaX Feature Lab</h1><p>${features.length} features. V = visual toggle, P = live probe, H = headless probe. Manual: apps/feature-lab/README.md.</p><table><tr><th>id</th><th>kind</th><th>form</th><th>catalog row</th><th>expect</th></tr>${rows}</table>`;
+  index.innerHTML = `${head}<h1>ForgeAX Feature Lab</h1><p>${features.length} features. V = visual toggle, P = live probe, H = headless probe. Manual: apps/feature-lab/README.md.</p><table><tr><th>id</th><th>kind</th><th>form</th><th>catalog row</th><th>expect</th></tr>${rows}</table>`;
 }
 
 function renderHud(feature: RegisteredFeature): void {

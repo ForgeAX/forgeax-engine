@@ -82,7 +82,7 @@ test('parent-only checkout leaves stale View manifests that the exact Engine pin
 test('every full CI workspace install resolves and materializes the Engine View pin first', () => {
   const action = readFileSync(resolve('.github/actions/prepare-view-checkout/action.yml'), 'utf8');
   assert.match(action, /git rev-parse HEAD:tools\/view/);
-  assert.match(action, /repository: ForgeaX-Games\/forgeax-view/);
+  assert.match(action, /repository: ForgeAX\/forgeax-view/);
   assert.match(action, /ref: \$\{\{ steps\.view-pin\.outputs\.sha \}\}/);
   assert.match(action, /git -C tools\/view rev-parse HEAD/);
   const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
@@ -95,7 +95,7 @@ test('every full CI workspace install resolves and materializes the Engine View 
       const before = section.slice(0, match.index);
       assert.ok(
         before.includes('uses: ./.github/actions/prepare-view-checkout') ||
-          (before.includes('repository: ForgeaX-Games/forgeax-view') &&
+          (before.includes('repository: ForgeAX/forgeax-view') &&
             /ref: \$\{\{ steps\.view-pin\.outputs\.sha \}\}/.test(before)),
         `${section.trim().split('\n')[0]} must materialize its exact View gitlink before frozen install`,
       );

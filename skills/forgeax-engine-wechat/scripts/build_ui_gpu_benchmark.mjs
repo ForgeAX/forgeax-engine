@@ -304,8 +304,8 @@ try {
           appid: values.appid,
           compileType: 'game',
           projectname: interactive
-            ? `ForgeaX GPU UI ${sceneName}`
-            : 'ForgeaX Shared GPU UI Benchmark',
+            ? `ForgeAX GPU UI ${sceneName}`
+            : 'ForgeAX Shared GPU UI Benchmark',
           libVersion: 'latest',
           setting: { es6: false, enhance: false, minified: false },
         },
@@ -345,8 +345,8 @@ try {
     await writeFile(
       join(out, 'index.html'),
       interactive
-        ? `<!doctype html><meta charset="utf-8"><title>ForgeaX GPU UI ${sceneName}</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#10243a}canvas{display:block}</style><canvas></canvas><script type="module" src="browser.bundle.js"></script>`
-        : '<!doctype html><meta charset="utf-8"><title>ForgeaX GPU UI owner benchmark</title><style>html,body{margin:0;width:100%;height:100%;background:#263746}canvas{display:block;width:844px;height:390px}</style><canvas width="2532" height="1170"></canvas><script type="module" src="browser.bundle.js"></script>',
+        ? `<!doctype html><meta charset="utf-8"><title>ForgeAX GPU UI ${sceneName}</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#10243a}canvas{display:block}</style><canvas></canvas><script type="module" src="browser.bundle.js"></script>`
+        : '<!doctype html><meta charset="utf-8"><title>ForgeAX GPU UI owner benchmark</title><style>html,body{margin:0;width:100%;height:100%;background:#263746}canvas{display:block;width:844px;height:390px}</style><canvas width="2532" height="1170"></canvas><script type="module" src="browser.bundle.js"></script>',
     );
     hostFiles.push(
       'browser.bundle.js',

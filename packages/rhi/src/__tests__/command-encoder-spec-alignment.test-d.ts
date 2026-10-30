@@ -2,7 +2,7 @@
 // `@webgpu/types` GPUCommandEncoder (research F-1 / plan-strategy D-S4).
 //
 // Asserts (will be RED until w3 lands the impl):
-// - 12 spec methods (9 direct + 3 GPUDebugCommandsMixin) plus one ForgeaX
+// - 12 spec methods (9 direct + 3 GPUDebugCommandsMixin) plus one ForgeAX
 //   compound operation exist on RhiCommandEncoder
 // - `copyBufferToBuffer` exposes both spec overloads (3-arg shorthand + 5-arg full form)
 // - `finish()` returns Result<CommandBuffer, RhiError>
@@ -34,7 +34,7 @@ describe('w2 - RhiCommandEncoder spec method set (12 spec + 1 compound)', () => 
     expectTypeOf<RhiCommandEncoder['beginComputePass']>().toBeFunction();
   });
 
-  it('exposes encodeEmptyComputePass(desc): void as a ForgeaX compound operation', () => {
+  it('exposes encodeEmptyComputePass(desc): void as a ForgeAX compound operation', () => {
     type Expected = (desc: ComputePassDescriptor) => void;
     expectTypeOf<RhiCommandEncoder['encodeEmptyComputePass']>().toMatchTypeOf<Expected>();
   });

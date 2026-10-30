@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `bounding_2d` example using ForgeaX 2D AABB, bounding-circle, raycast, and sweep primitives.",
+  "description": "Reproduction of Bevy's `bounding_2d` example using ForgeAX 2D AABB, bounding-circle, raycast, and sweep primitives.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",

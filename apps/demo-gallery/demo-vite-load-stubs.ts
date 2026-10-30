@@ -1,10 +1,10 @@
 import type { PluginPackOptions } from '@forgeax/engine-vite-plugin-pack';
-import type { ForgeaXShaderOptions } from '@forgeax/engine-vite-plugin-shader';
+import type { ForgeAXShaderOptions } from '@forgeax/engine-vite-plugin-shader';
 import type { Plugin } from 'vite';
 
 interface CaptureState {
   packCaptures: PluginPackOptions[];
-  shaderCaptures: ForgeaXShaderOptions[];
+  shaderCaptures: ForgeAXShaderOptions[];
 }
 
 const CAPTURE_KEY = '__forgeaxDemoGalleryViteCapture';
@@ -49,7 +49,7 @@ export function getCapturedPackOptions(): readonly PluginPackOptions[] {
   return captureHost()[CAPTURE_KEY]?.packCaptures ?? [];
 }
 
-export function getCapturedShaderOptions(): ForgeaXShaderOptions | undefined {
+export function getCapturedShaderOptions(): ForgeAXShaderOptions | undefined {
   return captureHost()[CAPTURE_KEY]?.shaderCaptures.at(-1);
 }
 
@@ -72,7 +72,7 @@ export function reloadAssetHost() {
   return () => {};
 }
 
-export function forgeaxShader(opts: ForgeaXShaderOptions = {}): Plugin {
+export function forgeaxShader(opts: ForgeAXShaderOptions = {}): Plugin {
   captureState().shaderCaptures.push({
     ...opts,
     ...(opts.materialPackages ? { materialPackages: [...opts.materialPackages] } : {}),

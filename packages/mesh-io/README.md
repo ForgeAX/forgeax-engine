@@ -2,7 +2,7 @@
 
 Node-only source-format adapters produce canonical `MeshAsset` values and export
 static mesh placements. The package uses MIT-licensed Three.js r184 format tools
-at build time; the player still consumes cooked ForgeaX assets through Catalog.
+at build time; the player still consumes cooked ForgeAX assets through Catalog.
 UE 5.8.1's official translators and exporters informed the result boundaries,
 not the engine API or implementation source.
 

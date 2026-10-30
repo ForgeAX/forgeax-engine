@@ -20,13 +20,9 @@ import {
   type CaptureFrameOptions,
   type RecorderAttachment,
 } from '@forgeax/engine-rhi-debug';
-import * as rhiWebgpu from '@forgeax/engine-rhi-webgpu';
 import * as engineRuntimeModule from '@forgeax/engine-runtime';
 import { createDevImportTransport, EngineEnvironmentError } from '@forgeax/engine-runtime';
-import {
-  constructRuntimeRendererHost,
-  loadRhiPack,
-} from '@forgeax/engine-runtime/internal/renderer-host';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   type BuildAppArgs,
@@ -43,6 +39,7 @@ import {
   publishBrowserFrameSubmitted,
   resetBrowserFrameProgress,
 } from './browser-frame-signal';
+import { recordableBackend } from './internal/recordable-rhi';
 
 export type { BrowserFrameProgress } from './browser-frame-signal';
 
@@ -142,7 +139,7 @@ function rhiDebugHostPlugin(dispose: () => void): Plugin {
  * auto-wires the aspect-sync plugin. Native assemble hosts explicitly install
  * the same `canvasAspectPlugin`; bare `createRenderer` does not mutate World.
  *
- * @see {@link https://github.com/ForgeaX-Games/forgeax-engine/blob/main/docs/how-to/2026-06-18-host-engine-contract.md | Host-engine contract SSOT}
+ * @see {@link https://github.com/ForgeAX/forgeax-engine/blob/main/docs/how-to/2026-06-18-host-engine-contract.md | Host-engine contract SSOT}
  */
 export function createApp(
   canvas: HTMLCanvasElement,
@@ -708,55 +705,6 @@ function readRhiDebugFlag(): string | undefined {
   const processEnv = (globalThis as { process?: { env?: { FORGEAX_ENGINE_RHI_DEBUG?: string } } })
     .process?.env;
   return resolveRhiDebugFlag(importMetaEnv, processEnv);
-}
-
-type RecorderInput = Parameters<typeof attachRecorder>[0];
-
-/** The usable backend the recorder wraps, with the startup adapter probe consumed once. */
-async function recordableBackend(
-  rendererOpts: import('@forgeax/engine-render').RendererOptions,
-): Promise<RecorderInput> {
-  const nav: { gpu?: unknown } | undefined =
-    typeof globalThis !== 'undefined'
-      ? (globalThis as { navigator?: { gpu?: unknown } }).navigator
-      : undefined;
-  const hasWebGPU = nav !== undefined && 'gpu' in nav && nav.gpu !== undefined;
-  // A GPU entry can exist while requestAdapter() returns null. Runtime
-  // normally retries with wgpu/WebGL2 in that case; the recorder-injected
-  // RHI is explicit, so select the usable backend before wrapping it.
-  const explicitRhi = rendererOpts.rhi;
-  let nativeAdapter =
-    explicitRhi === undefined && hasWebGPU ? await rhiWebgpu.requestAdapter() : undefined;
-  const realBackend = (explicitRhi !== undefined
-    ? { rhi: explicitRhi, ...explicitRhi }
-    : nativeAdapter?.ok
-      ? rhiWebgpu
-      : await import('@forgeax/engine-rhi-wgpu')) as unknown as Record<string, unknown>;
-  if (explicitRhi === undefined && !nativeAdapter?.ok && 'ensureReady' in realBackend) {
-    await (realBackend.ensureReady as () => Promise<unknown>)();
-  }
-  const pack = loadRhiPack(realBackend);
-  if (pack.createShaderModule === undefined) {
-    throw new Error('RHI-debug requires a backend createShaderModule capability');
-  }
-  return {
-    // Consume the probe for startup only. Recovery must request a fresh
-    // adapter from the same backend after the previous generation is lost.
-    rhi: nativeAdapter?.ok
-      ? {
-          ...pack.rhi,
-          requestAdapter: async (...args) => {
-            const initialAdapter = nativeAdapter;
-            nativeAdapter = undefined;
-            return initialAdapter ?? pack.rhi.requestAdapter(...args);
-          },
-        }
-      : pack.rhi,
-    createShaderModule: pack.createShaderModule,
-    ...(pack.createShaderModuleImmediate === undefined
-      ? {}
-      : { createShaderModuleImmediate: pack.createShaderModuleImmediate }),
-  };
 }
 
 /** Route renderer options through an attached recorder and expose its capture. */

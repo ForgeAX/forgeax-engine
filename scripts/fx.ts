@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// ForgeaX Engine developer command entry.
+// ForgeAX Engine developer command entry.
 //
 // Usage:
 //   bun fx <command> [args...]
@@ -748,7 +748,7 @@ function ci(args: string[]): never {
 }
 
 function usage(): void {
-  console.log(`ForgeaX Engine developer CLI
+  console.log(`ForgeAX Engine developer CLI
 
 Usage:
   bun fx <command> [args...]

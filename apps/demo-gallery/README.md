@@ -1,6 +1,6 @@
 # Demo Gallery
 
-`@forgeax/demo-gallery` is a development host that discovers ForgeaX demos and
+`@forgeax/demo-gallery` is a development host that discovers ForgeAX demos and
 serves them through one Vite port. It does not maintain a demo allowlist.
 
 ## Discovery contract

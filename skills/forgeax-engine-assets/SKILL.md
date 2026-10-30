@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-assets
 description: >-
-  ForgeaX authoring-to-runtime asset route with GUID identity and producer-owned recovery.
+  ForgeAX authoring-to-runtime asset route with GUID identity and producer-owned recovery.
   Use when authoring, importing, cooking, loading, validating, or repairing any game asset.
 ---
 

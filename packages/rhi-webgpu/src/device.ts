@@ -15,7 +15,7 @@
 //
 // w3 / w5 / w6 (feat-20260508-rhi-surface-completion, co-commit):
 // - createCommandEncoder + 12 RhiCommandEncoder spec methods plus the
-//   ForgeaX encodeEmptyComputePass compound operation + 3 mixin (w3)
+//   ForgeAX encodeEmptyComputePass compound operation + 3 mixin (w3)
 // - Shared draw/binding commands, pass state, queries and immutable bundles
 // - Queue.submit / writeBuffer real implementation + bounds validation (w6)
 //

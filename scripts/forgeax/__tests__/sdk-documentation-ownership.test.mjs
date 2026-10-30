@@ -25,7 +25,7 @@ test('shipped entrypoints route narrative reference guides to the canonical Harn
       if (!target.includes('/references/') && !target.startsWith('references/')) continue;
       assert.match(
         target,
-        /^https:\/\/github\.com\/ForgeaX-Games\/forgeax-engine-harness\/blob\/main\/docs\/engine\//,
+        /^https:\/\/github\.com\/ForgeAX\/forgeax-engine-harness\/blob\/main\/docs\/engine\//,
         `${entry}: ${target}`,
       );
     }

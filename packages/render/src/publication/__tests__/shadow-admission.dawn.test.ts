@@ -19,6 +19,7 @@ import {
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { installDefaultAssetDecoders } from '../../../../runtime/src/asset-contributions';
 import { createRenderer } from '../../../../runtime/src/createRenderer';
@@ -295,7 +296,8 @@ it.each([
   };
   const cpu = await run(true),
     gpu = await run(false);
-  expect(gpu).toEqual(cpu);
+  expect(gpu.length).toBe(cpu.length);
+  for (const [index, bytes] of gpu.entries()) expect(equalBytes(bytes, cpu[index])).toBe(true);
   expect(gpu[0]?.some((value, index) => index % 4 !== 3 && value > 10)).toBe(true);
-  expect(gpu[0]).not.toEqual(gpu[2]);
+  expect(equalBytes(gpu[0], gpu[2])).toBe(false);
 }, 60_000);

@@ -10,6 +10,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { afterAll, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { compactTape } from '../../../runtime/src/__tests__/compact-tape.fixture';
 
 export const SIZE = 128;
@@ -166,7 +167,7 @@ export async function verifyRender(
   f.mesh.matrixAutoUpdate = false;
   f.mesh.matrix.set(1, 0.35, 0.2, 0.1, 0, 0.8, -0.2, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   const affine = await coreFrame('manual-affine');
-  expect(displayPixels(affine)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(affine), baseline)).toBe(false);
   const normals = new THREE.MeshStandardMaterial({ color: 0x80b090, roughness: 1 });
   const affineLight = new THREE.DirectionalLight(0xffffff, 3);
   affineLight.position.set(2, 3, 5);
@@ -192,17 +193,19 @@ export async function verifyRender(
   f.mesh.matrix.makeTranslation(100, 0, 0);
   comparePixels(displayPixels(await coreFrame('frozen-world')), displayPixels(affine), 1 / 255);
   f.mesh.matrixWorld.makeTranslation(-0.4, 0.3, 0);
-  expect(displayPixels(await coreFrame('world-edit'))).not.toEqual(displayPixels(affine));
+  expect(equalBytes(displayPixels(await coreFrame('world-edit')), displayPixels(affine))).toBe(
+    false,
+  );
   await verifyReplay(affine);
   f.mesh.matrixAutoUpdate = true;
   f.mesh.matrixWorldAutoUpdate = true;
   f.camera.setViewOffset(SIZE * 2, SIZE * 2, SIZE / 2 + 12, SIZE / 2 - 8, SIZE, SIZE);
   const offset = await coreFrame('view-offset');
-  expect(displayPixels(offset)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(offset), baseline)).toBe(false);
   f.camera.filmOffset = 2;
   f.camera.updateProjectionMatrix();
   const film = await coreFrame('film-offset');
-  expect(displayPixels(film)).not.toEqual(displayPixels(offset));
+  expect(equalBytes(displayPixels(film), displayPixels(offset))).toBe(false);
   f.camera.filmOffset = -2;
   comparePixels(displayPixels(await coreFrame('cached-projection')), displayPixels(film), 1 / 255);
   await verifyReplay(film);
@@ -217,7 +220,7 @@ export async function verifyRender(
   cameraParent.add(f.camera);
   cameraParent.updateMatrixWorld(true);
   const parented = await coreFrame('external-camera-parent');
-  expect(displayPixels(parented)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(parented), baseline)).toBe(false);
   cameraParent.position.x = 100;
   comparePixels(
     displayPixels(await coreFrame('cached-camera-parent')),
@@ -236,7 +239,7 @@ export async function verifyRender(
   f.camera.matrixWorldAutoUpdate = false;
   f.camera.matrixWorldInverse.makeTranslation(-0.3, 0, -5);
   const manualView = await coreFrame('manual-view-cache');
-  expect(displayPixels(manualView)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(manualView), baseline)).toBe(false);
   f.camera.matrixWorld.makeTranslation(100, 0, 0);
   comparePixels(
     displayPixels(await coreFrame('frozen-view-cache')),
@@ -248,7 +251,7 @@ export async function verifyRender(
   f.camera.position.set(3.999999999999998, 2.499999999999999, 5.999999999999997);
   f.camera.lookAt(0, 0.3, 0);
   const orbit = await coreFrame('orbit-camera');
-  expect(displayPixels(orbit)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(orbit), baseline)).toBe(false);
   await verifyReplay(orbit);
   f.camera.position.set(0, 0, 5);
   f.camera.quaternion.identity();
@@ -258,7 +261,7 @@ export async function verifyRender(
   const changedPixels = displayPixels(changed);
   expect(changedPixels[center]).toBeGreaterThan(200);
   expect(changedPixels[center + 1]).toBeLessThan(100);
-  expect(changedPixels).not.toEqual(baseline);
+  expect(equalBytes(changedPixels, baseline)).toBe(false);
   if (oracle !== undefined) comparePixels(changedPixels, await oracle(f.scene, f.camera));
   // An old tape must remain unchanged after the live source material was edited.
   await verifyReplay(capture);
@@ -285,7 +288,7 @@ export async function verifyRender(
   const textureOracle = await oracle?.(f.scene, f.camera);
   await evidence?.('texture', textureCapture, textureOracle);
   if (textureOracle !== undefined) comparePixels(textured, textureOracle);
-  expect(textured).not.toEqual(restored);
+  expect(equalBytes(textured, restored)).toBe(false);
   const light = new THREE.DirectionalLight(0xffffff, 2);
   light.position.set(0, 0, 5);
   f.scene.add(light);
@@ -402,7 +405,7 @@ export async function verifyRender(
     } else if (state === 'power') {
       expect(actual[center + 1]).toBeLessThan((spotPixels?.[center + 1] ?? 0) - 20);
     } else if (state === 'hard-edge') {
-      expect(actual).not.toEqual(spotPixels);
+      expect(equalBytes(actual, spotPixels)).toBe(false);
     } else {
       if (spotPixels === undefined || spotBaseline === undefined)
         throw new Error('missing spot frame');

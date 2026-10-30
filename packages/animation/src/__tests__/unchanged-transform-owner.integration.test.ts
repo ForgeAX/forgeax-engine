@@ -57,6 +57,33 @@ function fixture(values = [0.1, 0.2, 0.3]) {
 }
 
 describe('animation owns only changed f32 Transform submissions', () => {
+  it('samples externally timed zero-speed players without resubmitting their unchanged clock', () => {
+    const { world, player, target, writes } = fixture();
+    world.set(player, AnimationPlayer, { times: [0.25], speeds: [0] }).unwrap();
+    const clocks = world.query({ changed: [AnimationPlayer] }).unwrap();
+    Array.from(clocks);
+    writes.mockClear();
+    advanceAnimationPlayer(world, 0.5);
+    expect(
+      writes.mock.calls.filter(
+        ([entity, component]) => entity === player && component === AnimationPlayer,
+      ),
+    ).toHaveLength(0);
+    expect(Array.from(clocks)).toHaveLength(0);
+    expect(world.get(player, AnimationPlayer).unwrap().times[0]).toBe(0.25);
+    expect(Array.from(world.get(target, Transform).unwrap().pos)).toEqual(
+      [0.1, 0.2, 0.3].map(Math.fround),
+    );
+    world.set(target, Transform, { pos: [8, 9, 10] }).unwrap();
+    advanceAnimationPlayer(world, 0.5);
+    expect(Array.from(world.get(target, Transform).unwrap().pos)).toEqual(
+      [0.1, 0.2, 0.3].map(Math.fround),
+    );
+    world.set(player, AnimationPlayer, { times: [1.25], looping: true }).unwrap();
+    advanceAnimationPlayer(world, 0.5);
+    expect(world.get(player, AnimationPlayer).unwrap().times[0]).toBe(0.25);
+  });
+
   it('keeps clocks and timeline events advancing while a constant pose publishes no repeated writes', () => {
     const { world, player, target, writes, targetWrites } = fixture();
     advanceAnimationPlayer(world, 0.25);

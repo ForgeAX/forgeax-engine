@@ -3,7 +3,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS } from './dawn-gate-roster.mjs';
+import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { DAWN_TEST_PARTITIONS, runDawnPartitions } from './run-dawn-partitions.mjs';
 import { runDirectLightDawn } from './run-direct-light-dawn.mjs';
@@ -39,6 +39,8 @@ export function dawnVitestArgs(group) {
   return [
     VITEST,
     'run',
+    '--config',
+    DAWN_VITEST_CONFIG,
     '--project=dawn',
     group.vitestShard === undefined ? '--passWithNoTests=false' : '--passWithNoTests=true',
     '--maxWorkers=1',

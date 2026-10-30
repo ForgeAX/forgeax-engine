@@ -24,7 +24,7 @@ import type { ShaderError, ShaderErrorDetail } from '@forgeax/engine-shader-comp
  *
  * forgeax extension: `hint` (top-level surface, runtime/build-time consistent).
  */
-export interface ForgeaXShaderRollupLog
+export interface ForgeAXShaderRollupLog
   extends Pick<ShaderError, 'code' | 'message' | 'hint' | 'expected'>,
     Partial<Pick<ShaderError, 'lineNum' | 'linePos' | 'detail'>> {
   readonly loc?:
@@ -59,7 +59,7 @@ export interface ForgeaXShaderRollupLog
  *   abstraction; runtime RhiError.hint at the top level = build-time err.hint
  *   at the top level).
  */
-export function toRollupLog(err: ShaderError): ForgeaXShaderRollupLog {
+export function toRollupLog(err: ShaderError): ForgeAXShaderRollupLog {
   const detail = err.detail;
   const reason =
     detail?.code === 'shader-compile-failed' ||

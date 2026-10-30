@@ -61,7 +61,7 @@ fn main() {
         .setup(move |app| {
             let side = if options.smoke { 512.0 } else { 800.0 };
             let native_window = match tauri::window::WindowBuilder::new(app, "native-ray-query")
-                .title("ForgeaX Native Ray Query Viewport")
+                .title("ForgeAX Native Ray Query Viewport")
                 .inner_size(side, side)
                 .build()
             {

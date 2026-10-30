@@ -857,7 +857,7 @@ function cameraPodFromDefaults(): CameraPod {
  * `autoAspect = false` to opt out (render-to-texture, split-screen).
  * Cameras on the `createRenderer` path do not receive aspect-sync.
  *
- * @see {@link https://github.com/ForgeaX-Games/forgeax-engine/blob/main/docs/how-to/2026-06-18-host-engine-contract.md | Host-engine contract SSOT}
+ * @see {@link https://github.com/ForgeAX/forgeax-engine/blob/main/docs/how-to/2026-06-18-host-engine-contract.md | Host-engine contract SSOT}
  *
  * @example
  * ```ts

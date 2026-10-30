@@ -467,7 +467,7 @@ it('keeps an entered game available after native keyboard transport failure and 
   expect(host.inspect()).toMatchObject({ phase: 'ready' });
   expect(host.inspect()?.startupError).toBeUndefined();
   expect(host.scope.console.warn).toHaveBeenCalledWith(
-    'ForgeaX native input failed',
+    'ForgeAX native input failed',
     expect.objectContaining({ detail: { operation: 'wx.showKeyboard', cause } }),
   );
   expect(field.value).toBe(value);

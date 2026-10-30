@@ -239,7 +239,7 @@ fn main() {
         })
         .setup(move |app| {
             save(&app.state::<HostState>())?;
-            let title = app.config().product_name.clone().unwrap_or_else(|| "ForgeaX".into());
+            let title = app.config().product_name.clone().unwrap_or_else(|| "ForgeAX".into());
             let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
                 .title(title).inner_size(1280.0, 800.0);
             if let Some(source) = &probe { builder = builder.initialization_script(source); }
@@ -253,7 +253,7 @@ fn main() {
                     let state = handle.state::<HostState>();
                     if !state.closing.swap(true, Ordering::SeqCst) {
                         if let Some(window) = handle.get_webview_window("main") {
-                            if let Err(error) = window.eval(CLOSE) { eprintln!("ForgeaX Host close failed: {error}"); handle.exit(1); }
+                            if let Err(error) = window.eval(CLOSE) { eprintln!("ForgeAX Host close failed: {error}"); handle.exit(1); }
                         }
                     }
                 }

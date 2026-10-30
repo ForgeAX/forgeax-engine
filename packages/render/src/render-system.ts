@@ -93,6 +93,7 @@ import type { MaterialResource } from './material-resource';
 import { AUTO_EXPOSURE_HISTOGRAM_BYTES } from './pipeline/standard-output/auto-exposure/gpu';
 import {
   type AutoExposureInspection,
+  autoExposureCapabilityFailure,
   createAutoExposureInspection,
 } from './pipeline/standard-output/auto-exposure/inspection';
 import {
@@ -3067,17 +3068,32 @@ export function createRenderSystem(internals: RenderSystemInternals): RenderSyst
       const camera = latestCamera;
       const state = frameState.autoExposureState;
       if (camera?.output?.exposure.kind !== 'auto' || state === undefined) return undefined;
-      const actual = state.acceptedEv > 0 ? state.acceptedEv : null;
+      const unavailable = autoExposureCapabilityFailure(
+        internals.device.caps,
+        state.targetGeneration,
+      );
+      const actual =
+        unavailable !== undefined ? state.fallback : state.acceptedEv > 0 ? state.acceptedEv : null;
       return createAutoExposureInspection({
         requested: camera.output.exposure,
         actual,
         actualState:
-          actual === null ? (state.receipt.committed ? 'gpu-resident' : 'fallback') : 'accepted',
+          unavailable !== undefined
+            ? 'fallback'
+            : actual === null
+              ? state.receipt.committed
+                ? 'gpu-resident'
+                : 'fallback'
+              : 'accepted',
         fallback: state.fallback,
         lastKnownGood: state.lastKnownGood,
         targetGeneration: state.targetGeneration,
         reset: state.reset,
-        cost: { histogramBytes: AUTO_EXPOSURE_HISTOGRAM_BYTES, passCount: 3, physicalPassCount: 1 },
+        ...(unavailable === undefined ? {} : { recentFailure: unavailable }),
+        cost:
+          unavailable === undefined
+            ? { histogramBytes: AUTO_EXPOSURE_HISTOGRAM_BYTES, passCount: 3, physicalPassCount: 1 }
+            : { histogramBytes: 0, passCount: 0, physicalPassCount: 0 },
         receipt: state.receipt,
       });
     },

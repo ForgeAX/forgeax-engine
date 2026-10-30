@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-cli
 description: >-
-  ForgeaX project CLI, authoring-operation, preview, and live-inspection entrypoint. Use when
+  ForgeAX project CLI, authoring-operation, preview, and live-inspection entrypoint. Use when
   creating or validating games, running tools, managing plugins, capturing evidence, or inspecting a live engine.
 ---
 

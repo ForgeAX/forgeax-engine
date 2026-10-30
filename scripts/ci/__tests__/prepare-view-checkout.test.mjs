@@ -39,12 +39,12 @@ function missingViewSources(workflow) {
       if (uses?.startsWith('actions/checkout@')) {
         const repository = scalar(step, 'repository');
         if (
-          (repository === undefined || repository === 'ForgeaX-Games/forgeax-engine') &&
+          (repository === undefined || repository === 'ForgeAX/forgeax-engine') &&
           rootDirectory(scalar(step, 'path'))
         ) {
           ready = unconditional && ['true', 'recursive'].includes(scalar(step, 'submodules'));
           pins.clear();
-        } else if (repository === 'ForgeaX-Games/forgeax-view' && unconditional) {
+        } else if (repository === 'ForgeAX/forgeax-view' && unconditional) {
           const pin = scalar(step, 'ref')?.match(
             /^\$\{\{ steps\.([\w-]+)\.outputs\.sha \}\}$/,
           )?.[1];
@@ -103,7 +103,7 @@ const prepare =
   '      - uses: ./.github/actions/prepare-view-checkout\n        with:\n          token: ${{ secrets.GHA }}\n';
 const install = '      - run: pnpm install --frozen-lockfile\n';
 const literal =
-  '      - name: Resolve View\n        id: view-pin\n        run: echo "sha=$(git rev-parse HEAD:tools/view)" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v5\n        with:\n          repository: ForgeaX-Games/forgeax-view\n          ref: ${{ steps.view-pin.outputs.sha }}\n          path: tools/view\n          token: ${{ secrets.GHA }}\n          persist-credentials: false\n';
+  '      - name: Resolve View\n        id: view-pin\n        run: echo "sha=$(git rev-parse HEAD:tools/view)" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v5\n        with:\n          repository: ForgeAX/forgeax-view\n          ref: ${{ steps.view-pin.outputs.sha }}\n          path: tools/view\n          token: ${{ secrets.GHA }}\n          persist-credentials: false\n';
 
 test('source admission rejects missing, late, conditional, unauthenticated and stale View preparation', () => {
   for (const steps of [
@@ -191,7 +191,7 @@ test('the shared action resolves the parent gitlink, authenticates the exact chi
   const [resolveStep, child, verification] = action.split('    - name: ').slice(1);
   assert.match(resolveStep, /id: view-pin[\s\S]*?shell: bash/);
   assert.match(child, /uses: actions\/checkout@v5/);
-  assert.equal(scalar(child, 'repository'), 'ForgeaX-Games/forgeax-view');
+  assert.equal(scalar(child, 'repository'), 'ForgeAX/forgeax-view');
   assert.equal(scalar(child, 'ref'), '${{ steps.view-pin.outputs.sha }}');
   assert.equal(scalar(child, 'path'), 'tools/view');
   assert.equal(scalar(child, 'token'), '${{ inputs.token }}');

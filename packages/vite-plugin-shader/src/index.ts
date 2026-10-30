@@ -108,7 +108,7 @@ import {
 import { toRollupLog } from './wrap.js';
 
 export { MaterialHmrGraph } from './material/hmr.js';
-export type { ForgeaXShaderRollupLog } from './wrap.js';
+export type { ForgeAXShaderRollupLog } from './wrap.js';
 export { toRollupLog } from './wrap.js';
 
 function engineMaterialArtifactReceipt(
@@ -582,7 +582,7 @@ async function buildEngineShaderManifestUncached(
  * Options for the `forgeaxShader` plugin factory (no configurable items in M2;
  * the future signature is reserved).
  */
-export interface ForgeaXShaderOptions {
+export interface ForgeAXShaderOptions {
   /**
    * Reserved: in the future this will hold compileShader-forwarded options such as dynamic offset annotations.
    * @internal
@@ -1591,7 +1591,7 @@ interface ViteDevServerLike {
 }
 
 /** The shape of the plugin return value (6 hooks + name; 5th = configureServer; 6th = buildStart). */
-export interface ForgeaXShaderPlugin {
+export interface ForgeAXShaderPlugin {
   readonly name: string;
   readonly enforce: 'pre';
   config(
@@ -2040,7 +2040,7 @@ async function compileEngineEntry(
  * | `handleHotUpdate(ctx)` | `.wgsl` -> return ctx.modules (default propagation; the client-side accept literal was already injected by transform) |
  * | `configureServer(server)` | dev-only: middleware serves the shader manifest from the same `state.entries` Map (II-A from plan-strategy §2 D-P2) |
  */
-export function forgeaxShader(options: ForgeaXShaderOptions = {}): ForgeaXShaderPlugin {
+export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShaderPlugin {
   let compileAuthoredMaterial = createShaderProgramCompiler();
   const state: ManifestEntries = {
     entries: new Map(),

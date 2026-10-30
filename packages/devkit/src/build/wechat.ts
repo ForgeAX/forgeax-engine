@@ -77,7 +77,7 @@ import('@forgeax/engine/platform-wechat/standards').then(({ installWechatStandar
   console.info('[forgeax.wechat.startup]', 'host-module');
   return import('./wechat-main.ts');
 }).then(module => module.start(launch)).catch(error => {
-  console.error('ForgeaX graphics host failed', error);
+  console.error('ForgeAX graphics host failed', error);
   const seen = new Set();
   const encoded = JSON.stringify(error, (key, value) => {
     if (value !== null && typeof value === 'object') {
@@ -268,7 +268,7 @@ const task = wx.loadSubpackage({ name: 'payload', success() { if (inspection.pha
   const message = typeof nativeMessage === 'string' ? nativeMessage : String(error);
   inspection.phase = 'failed';
   inspection.error = { operation: 'wx.loadSubpackage', name: 'payload', message, cause: error };
-  console.error('ForgeaX package failed', error);
+  console.error('ForgeAX package failed', error);
   wx.showModal({ title: 'Unable to load', content: message, showCancel: false });
 } });
 try {
@@ -572,7 +572,7 @@ async function boot(identity, reload) {
     reducedMotion: false, reload };
   startup = ${hostStartupScript(true, 'host', loadingLabels)};
   const input = createWechatInputBackend(wx, platform, { ui: ui.input, keyboard: wx,
-    onError: error => console.warn('ForgeaX native input failed', error) }).unwrap();
+    onError: error => console.warn('ForgeAX native input failed', error) }).unwrap();
   releases.push(() => input.detach());
   const audio = createWechatAudioBackend(wx, platform, { onError: fail });
   releases.push(() => audio.destroy());
@@ -665,7 +665,7 @@ async function boot(identity, reload) {
     if (appStartupErrors.length > 0) throw appStartupErrors[0];
     startup.prepare();
     advance('ready');
-  } catch (error) { if (!closed && generation === identity) { console.error('ForgeaX game activation failed', error); fail(error); } } })();
+  } catch (error) { if (!closed && generation === identity) { console.error('ForgeAX game activation failed', error); fail(error); } } })();
   } catch (error) {
     if (closed) return;
     fail(error);

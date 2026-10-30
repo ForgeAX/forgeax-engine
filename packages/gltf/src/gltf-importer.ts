@@ -113,7 +113,7 @@ function applyImportSettingsBounds(
   const skeletons = doc.skeletons.map((record, sourceIndex) => {
     // Source extras are the primary producer path. The sidecar row is an
     // explicit external-producer override for sources whose authoring tool
-    // cannot carry ForgeaX extras; neither path derives a bind-pose AABB.
+    // cannot carry ForgeAX extras; neither path derives a bind-pose AABB.
     const bounds = readConservativeAnimatedBounds(importSettings, sourceIndex);
     if (bounds === undefined || record.bounds !== undefined) return record;
     changed = true;

@@ -403,7 +403,7 @@ const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap(
   // Three's native IES/SpotLight.map references in this app contain no
   // environment light. Suppress the authored direct Skylight only for the
   // explicit A/B scene so the diff measures the spot implementation rather
-  // than an extra product-only ambient contribution. Standalone ForgeaX
+  // than an extra product-only ambient contribution. Standalone ForgeAX
   // demos retain the authored direct Skylight.
   if (mode !== 'recovery' && !comparisonMode) {
     world.spawn({ component: Skylight, data: { color: manifest.lighting.skylight.direct.color, intensity: manifest.lighting.skylight.direct.intensity } }).unwrap();

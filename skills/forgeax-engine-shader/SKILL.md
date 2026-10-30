@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-shader
-description: ForgeaX WGSL composition, reflection, and cooked shader contracts. Use when authoring or debugging custom shaders, parameter schemas, bindings, or shader readiness.
+description: ForgeAX WGSL composition, reflection, and cooked shader contracts. Use when authoring or debugging custom shaders, parameter schemas, bindings, or shader readiness.
 ---
 
 # forgeax-engine-shader
@@ -89,7 +89,7 @@ MaterialAsset shader. Its public mode IDs are exported as
 `@forgeax/engine-render` consume that typed binding contract.
 
 The named curves are `linear`, `reinhard`, `cineon`, `aces-filmic`, `agx`, and
-`neutral`, matching Three r184. `reinhard-extended` is the separate ForgeaX
+`neutral`, matching Three r184. `reinhard-extended` is the separate ForgeAX
 luminance-domain curve. Every active mode receives linear HDR color and
 exposure, writes linear LDR color, and relies on the display attachment for the
 final encoded output. The WGSL formulas live in

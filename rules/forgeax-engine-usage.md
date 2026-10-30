@@ -61,4 +61,4 @@ API 签名 / error 码 / capability 全表 SSOT 在 `packages/<pkg>/src/` 与 `p
 
 任何对 AI 用户面的影响（公共 API 重命名、入口参数变化、`*ErrorCode` 增删、pack schema 变化、内置组件/系统默认行为变化、新增 `@forgeax/engine-*` 包、反复踩中的坑）必须在 finalize 前同步对应 skill。plan 阶段加 milestone `M-N: 同步 forgeax-engine-<cluster> skill`,与代码同 PR。direct-edit 也算。
 
-基线：commit [`5c8c90f1`](https://github.com/ForgeaX-Games/forgeax-engine/commit/5c8c90f1) (2026-06-03, #297) 一次性产出 11 skill;累积偏离显著时再统一 bump。
+基线：commit [`5c8c90f1`](https://github.com/ForgeAX/forgeax-engine/commit/5c8c90f1) (2026-06-03, #297) 一次性产出 11 skill;累积偏离显著时再统一 bump。

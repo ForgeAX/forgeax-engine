@@ -3,6 +3,7 @@ import { availableParallelism, freemem } from 'node:os';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { ShaderError } from '../errors.js';
+import type { MaterialPackCookProfile } from './pack-cooker.js';
 
 const GiB = 1024 ** 3;
 
@@ -24,7 +25,7 @@ function workerCount(): number {
 interface Job {
   readonly affinity: string;
   readonly roots: readonly string[];
-  readonly profile: 'webgpu-storage' | undefined;
+  readonly profile: MaterialPackCookProfile | undefined;
   readonly input: unknown;
   readonly resolve: (draft: NativeCookDraft) => void;
   readonly reject: (error: unknown) => void;
@@ -164,7 +165,7 @@ let pool: MaterialCookPool | undefined;
 export function withNodeMaterialWorkers(
   cooker: NativeCooker,
   roots: readonly string[],
-  profile?: 'webgpu-storage',
+  profile?: MaterialPackCookProfile,
 ): NativeCooker {
   const count = workerCount();
   if (count === 1) return cooker;

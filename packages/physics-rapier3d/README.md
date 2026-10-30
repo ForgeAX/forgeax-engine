@@ -404,3 +404,9 @@ between groups does not create a logical stop/start pair. A started observation 
 a real contact from the lowest active group ordinal. That representative point can
 differ from the ordinary single collider and can affect a consumer's impact location.
 No default gameplay policy or universal speedup is implied by this opt-in layout.
+
+`getCurrentContactNeighborsBatch(requests)` reads at most 4096 completed-step
+neighbor requests atomically. Each keeps its own groups, strict normal filter
+and 4096-visit limit; owner liveness checks are shared only within that synchronous
+read. Results are detached; a missing body or invalid request refuses the whole
+batch. No contact evidence is retained across mutation or physics steps.

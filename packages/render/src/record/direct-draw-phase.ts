@@ -707,6 +707,9 @@ export class DirectDrawPhase {
   }
 
   private retire(member: Member): void {
+    // Rows without a matching Pass still belong to the emitted roster.
+    // Dequeueing their empty bin cannot invalidate that retained output.
+    this.emittedRevision = -1;
     this.leaveSort(member);
     this.bins.dequeue(member.key);
     this.unread(member);

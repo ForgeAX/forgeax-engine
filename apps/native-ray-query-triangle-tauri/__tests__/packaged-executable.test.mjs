@@ -10,7 +10,7 @@ test('resolves a macOS bundle from CARGO_TARGET_DIR', () => {
   const target = resolve(appRoot, '.cargo-target/native-ray-query');
   const executable = resolve(
     target,
-    'release/bundle/macos/ForgeaX Native Ray Query Triangle.app/Contents/MacOS/forgeax-native-ray-query-triangle',
+    'release/bundle/macos/ForgeAX Native Ray Query Triangle.app/Contents/MacOS/forgeax-native-ray-query-triangle',
   );
   mkdirSync(resolve(executable, '..'), { recursive: true });
   writeFileSync(executable, '');

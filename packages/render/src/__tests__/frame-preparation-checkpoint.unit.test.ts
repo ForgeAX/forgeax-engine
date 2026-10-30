@@ -7,6 +7,7 @@ import {
   prepareFrameSubmission,
   submitFrameRecordings,
 } from '../assembly/frame-recording';
+import type { CubeCaptureWork } from '../capture/scheduler';
 import { createRenderFeatureHost, type RenderFeatureFrameResult } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
@@ -85,7 +86,7 @@ async function fixture(abortThrows = false) {
   const sceneComplete = vi.fn((submitted: boolean) => {
     events.push(`scene-complete:${submitted}`);
   });
-  const capturePrepare = vi.fn(() => {
+  const capturePrepare = vi.fn((): readonly CubeCaptureWork[] => {
     events.push('capture-prepare');
     return [];
   });
@@ -122,6 +123,7 @@ async function fixture(abortThrows = false) {
     identity: string,
     frameNumber = 1,
     frameEncoder: RhiCommandEncoder = encoder,
+    pending = false,
   ): FrameRecording {
     let prepared: RenderFeatureFrameResult | undefined;
     try {
@@ -147,7 +149,12 @@ async function fixture(abortThrows = false) {
         },
       };
       events.push(`record:${identity}`);
-      const result = yield { device, encoder: frameEncoder, reportError() {} };
+      const result = yield {
+        device,
+        encoder: frameEncoder,
+        presentation: pending ? 'pending' : 'ready',
+        reportError() {},
+      };
       if (result.ok) prepared?.onSubmitted();
       else prepared?.onAborted();
       return result.ok;
@@ -177,6 +184,21 @@ async function fixture(abortThrows = false) {
     },
   };
 }
+
+it.each([
+  false,
+  true,
+])('commits cube capture only for a rendered picture, pending=%s', async (pending) => {
+  const f = await fixture();
+  f.capturePrepare.mockReturnValue([{} as CubeCaptureWork]);
+  try {
+    expect(submitFrameRecordings([f.view('capture', 1, undefined, pending)])).toBe(true);
+    expect(f.submit).toHaveBeenCalledOnce();
+    expect(f.captureComplete).toHaveBeenCalledExactlyOnceWith(!pending, expect.any(Promise));
+  } finally {
+    f.dispose();
+  }
+});
 
 it('prepares all views once and pauses before capture, shared compute and view encoding', async () => {
   const f = await fixture();

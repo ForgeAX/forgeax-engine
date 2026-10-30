@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-material
-description: ForgeaX MaterialAsset authoring and visibility route. Use when creating, loading, or debugging materials, textures, lighting response, or material readiness.
+description: ForgeAX MaterialAsset authoring and visibility route. Use when creating, loading, or debugging materials, textures, lighting response, or material readiness.
 ---
 
 # forgeax-engine-material

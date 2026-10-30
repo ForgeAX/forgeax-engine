@@ -17,7 +17,7 @@ export async function createBridgeClient(rootArg) {
     } catch {
       return failure(
         'backend-not-ready',
-        'a running ForgeaX MCP Host Pack',
+        'a running ForgeAX MCP Host Pack',
         'Start this project backend with tools/forgeax-mcp/host.pack.json.',
       );
     }

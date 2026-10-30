@@ -172,10 +172,10 @@ export async function verifyGpuUiParity(options: {
             expect(raster.texture).toBe(retained);
 
             const replacement = await options.createReplacementDevice();
-            expect(replacement).not.toBe(device);
+            expect(Object.is(replacement, device)).toBe(false);
             await raster.recover(replacement);
             device = replacement;
-            expect(raster.texture).not.toBe(retained);
+            expect(Object.is(raster.texture, retained)).toBe(false);
             expect(gpu.paintGpu(state.time), 'recovery must use the retained scene').toBeNull();
             await readback(`${name}-recovered`, scene.width, expected, frame.passes.length);
 
@@ -185,7 +185,7 @@ export async function verifyGpuUiParity(options: {
             const shrunk = required(gpu.paintGpu(state.time + 1));
             expect([shrunk.width, shrunk.height]).toEqual([96, 64]);
             raster.prepare(shrunk);
-            expect(raster.texture).not.toBe(beforeResize);
+            expect(Object.is(raster.texture, beforeResize)).toBe(false);
             await readback(`${name}-shrunk`, 96, shrunkExpected, shrunk.passes.length);
 
             // Grow after retiring the image, gradient and mask layers. Every

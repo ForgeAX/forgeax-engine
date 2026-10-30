@@ -24,7 +24,7 @@ test('Bevy fleet prepares Chrome Beta before the Skybox WebGL2 smoke', () => {
   assert.ok(!step.includes('continue-on-error'), 'browser preparation must fail visibly');
 });
 
-test('Bevy smoke scripts declare every direct ForgeaX package import', () => {
+test('Bevy smoke scripts declare every direct ForgeAX package import', () => {
   const missing = [];
   for (const app of readdirSync(bevyRoot, { withFileTypes: true })) {
     if (!app.isDirectory()) continue;

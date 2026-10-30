@@ -11,6 +11,11 @@ export function createViewService(
 ) {
   let active;
   let opening;
+  const retire = state => {
+    state.lifetime.abort(new Error('MCP presentation retired'));
+    state.documents.clear();
+    state.broker.close();
+  };
   const open = () => {
     if (opening) return opening;
     opening = (async () => {
@@ -23,11 +28,12 @@ export function createViewService(
       if (typeof presentationId !== 'string')
         throw new Error('Public view.start did not return a presentation identity');
       if (!active || active.config.viewUrl !== viewUrl || active.config.presentationId !== presentationId) {
-        active?.broker.close();
+        if (active) retire(active);
         const config = { viewUrl, presentationId };
+        const lifetime = new AbortController();
         const broker = createNetworkBroker(config, { bundle: (...args) => bundle(...args) });
-        const bundle = createRemoteBundler(broker.allow);
-        active = { config, broker, bundle };
+        const bundle = createRemoteBundler(broker.allow, { signal: lifetime.signal });
+        active = { config, broker, bundle, lifetime, documents: new Map() };
       }
       return { root: client.root, url: viewUrl, presentationId };
     })().finally(() => {
@@ -38,7 +44,7 @@ export function createViewService(
   const escape = (source) => source.replaceAll('</script', '<\\/script');
   async function invoke(input, options = {}) {
     if (!active) await open();
-    const { config, broker, bundle } = active;
+    const { config, broker } = active;
     if (input.action === 'view-document') {
       const html = (await readFile(new URL(viewDocument, artifactRoot), 'utf8')).replace(
         '__FX_VIEW_CONFIG__',
@@ -46,8 +52,39 @@ export function createViewService(
       );
       return broker.store(html, 'text/html', config.viewUrl);
     }
-    if (input.action !== 'document') return broker.invoke(input, options);
-    const ref = await broker.invoke({ action: 'http', url: input.url }, options);
+    if (input.action !== 'document' && input.action !== 'document-cancel') return broker.invoke(input, options);
+    // An old presentation already retired its jobs and may no longer admit
+    // this origin. Cancellation only touches an existing job; it fetches nothing.
+    const url = input.action === 'document-cancel' ? new URL(input.url).href : broker.allow(input.url).href;
+    const documents = active.documents;
+    const existing = documents.get(url);
+    if (input.action === 'document-cancel') {
+      documents.delete(url);
+      existing?.controller.abort(new Error('MCP document retired'));
+      return { cancelled: existing !== undefined };
+    }
+    if (existing) {
+      if (existing.phase === 'pending') return { phase: 'pending' };
+      documents.delete(url);
+      if (existing.phase === 'failed') throw existing.error;
+      return { phase: 'ready', reference: existing.reference };
+    }
+    if (documents.size >= 32) throw new Error('MCP document task bound exceeded');
+    const task = { phase: 'pending', controller: new AbortController() };
+    documents.set(url, task);
+    // Compilation belongs to the presentation, not a short-lived RPC signal.
+    // Every query remains bounded while the existing Scene deadline qualifies it.
+    void compileDocument(url, active, task.controller.signal).then(
+      reference => Object.assign(task, { phase: 'ready', reference }),
+      error => Object.assign(task, { phase: 'failed', error }),
+    );
+    return { phase: 'pending' };
+  }
+  async function compileDocument(url, { broker, bundle, lifetime }, signal) {
+    const options = { signal: AbortSignal.any([lifetime.signal, signal]) };
+    const ref = await broker.invoke({ action: 'http', url }, options);
+    if (ref.status < 200 || ref.status >= 300)
+      throw new Error(`Engine document HTTP ${ref.status}: ${new URL(url).pathname}`);
     let html = new TextDecoder().decode(await readResourceBytes(ref, args => broker.invoke(args, options)));
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].filter((match) =>
       /type\s*=\s*["']module/.test(match[1]),
@@ -63,10 +100,11 @@ export function createViewService(
     if (!entry && !inline) throw new Error('Engine document has no module entry');
     const compiled = await bundle(
       entry
-        ? new URL(entry, input.url).href
-        : new URL('./__mcp_document_entry.mjs', input.url).href,
+        ? new URL(entry, url).href
+        : new URL('./__mcp_document_entry.mjs', url).href,
       'document',
       entry ? undefined : inline,
+      options.signal,
     );
     html = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (text, attrs) =>
       /type\s*=\s*["']module/.test(attrs) ? '' : text,
@@ -76,21 +114,21 @@ export function createViewService(
       '<head>',
       () =>
         '<head><script>globalThis.__fxMcpLocation=new URL(' +
-        JSON.stringify(input.url).replaceAll('<', '\\u003c') +
+        JSON.stringify(url).replaceAll('<', '\\u003c') +
         ');' + MCP_NATIVE_IMPORT_SOURCE + '</script>',
     );
-    const payload = `<script id="fx-config" type="application/json">${JSON.stringify({ documentUrl: input.url }).replaceAll('<', '\\u003c')}</script><script type="module">${escape(compiled.source)}</script>`;
+    const payload = `<script id="fx-config" type="application/json">${JSON.stringify({ documentUrl: url }).replaceAll('<', '\\u003c')}</script><script type="module">${escape(compiled.source)}</script>`;
     return broker.store(
       html.replace('</body>', () => payload + '</body>'),
       'text/html',
-      input.url,
+      url,
     );
   }
   return {
     invoke,
     open,
     close() {
-      active?.broker.close();
+      if (active) retire(active);
       active = undefined;
     },
   };

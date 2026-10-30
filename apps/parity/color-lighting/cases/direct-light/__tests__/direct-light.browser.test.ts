@@ -163,7 +163,7 @@ describe('direct-light URP browser producer evidence', () => {
       const maxDelta = Math.max(
         ...forgeaxRgb.map((value, index) => Math.abs(value - (threeRgb[index] ?? 0)) / 255),
       );
-      expect(maxDelta, `${input.caseId}: ForgeaX=${forgeaxRgb.join(',')} Three=${threeRgb.join(',')}`).toBeLessThanOrEqual(
+      expect(maxDelta, `${input.caseId}: ForgeAX=${forgeaxRgb.join(',')} Three=${threeRgb.join(',')}`).toBeLessThanOrEqual(
         input.budget.roiMax,
       );
     }

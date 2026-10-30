@@ -275,7 +275,7 @@ it('retains native Frame Mesh dependencies and advances unrelated-change cursors
       .shadowRaster.views.filter((view) => view.identity.kind === 'directional');
     expect(replaced.every((view) => view.cache === 'miss' && view.drawCount > 0)).toBe(true);
     await draw();
-    expect(retain.mock.contexts.at(-1)).not.toBe(root);
+    expect(Object.is(retain.mock.contexts.at(-1), root)).toBe(false);
     const validation = await device.popErrorScope();
     validationScope = false;
     expect(validation).toBeNull();

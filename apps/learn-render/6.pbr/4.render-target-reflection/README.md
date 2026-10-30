@@ -146,7 +146,7 @@ machine-facing index for evidence level, locator, and recovery semantics.
 
 ## 与 LO 原版的差异
 
-| Dimension | LearnOpenGL-style approach | ForgeaX approach |
+| Dimension | LearnOpenGL-style approach | ForgeAX approach |
 |:--|:--|:--|
 | Render destination | A framebuffer and texture are managed through global OpenGL state | `Renderer` owns opaque target and source handles |
 | Camera role | A capture camera writes to a manually managed framebuffer | `CubeCamera` is an explicit bounded capture intent; the display camera consumes the resulting source |
@@ -165,6 +165,6 @@ pnpm --filter @forgeax/app-learn-render-6-pbr-4-render-target-reflection smoke:b
 <details>
 <summary>LearnOpenGL framebuffer vocabulary</summary>
 
-The original OpenGL route uses identifiers such as `glBindTexture`, `glClear`, and `glFramebufferTexture2D` around a framebuffer object. ForgeaX keeps those concepts behind the typed renderer owner and exposes only the public target/source contract to a consumer.
+The original OpenGL route uses identifiers such as `glBindTexture`, `glClear`, and `glFramebufferTexture2D` around a framebuffer object. ForgeAX keeps those concepts behind the typed renderer owner and exposes only the public target/source contract to a consumer.
 
 </details>

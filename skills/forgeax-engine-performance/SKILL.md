@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-performance
 description: >-
-  Evidence-driven ForgeaX CPU and GPU optimization. Use when diagnosing slow
+  Evidence-driven ForgeAX CPU and GPU optimization. Use when diagnosing slow
   frames, destruction backlogs, Worker GC or physics costs, reducing submission
   or shader work, comparing benchmarks, or adding reusable performance techniques.
 ---
@@ -123,6 +123,10 @@ material/mesh/texture closure through replacement, abort, ACK and retirement.
 | Repeated GPU test startup | Reuse initialized renderer/device preparation across fresh World and asset owners | Actual native request budgets, lease/target cleanup, separate constrained/publication/cold-temporal hosts, fresh replay falsifiers and unchanged frames/pixels; see [CI workload budgets](../../scripts/ci/README.md#native-fixture-workload-budgets) |
 | Repeated test readback allocation and per-texel assertion calls | Reuse unmapped staging storage at the harness lifetime; aggregate exact predicate failures | Preserve every readback, frame and pixel predicate, copy owned bytes before unmapping, replace storage on extent/device changes, and reject restored allocations or corrupted finite/coverage samples |
 | GPU test replay prefixes | Project existing FrameModel metadata and batch actual selected-work reads | Exact pixel/parameter/depth bytes and provenance, original frame windows, independent falsifier devices and actual native submission budgets |
+| GPU snapshot and reference assertions | Compare complete payloads through the shared byte helper; use explicit identity oracles for references | Preserve all bytes, metadata, provenance and negative controls; qualify the real matcher work guard and full native gate through [CI payload work](../../scripts/ci/README.md#native-payload-and-startup-work) |
+| Material program wire keys | Encode the complete canonical artifact byte view alongside unchanged JSON metadata | Real enumeration and serializer work gates, differing bytes under identical claims, subviews, metadata collisions and real source/decode/adoption; see [Pack transport](../../packages/pack/README.md#shared-material-program-transport) |
+| Material fixture cooking | Declare storage WebGPU or storage WebGPU with rays only for fixtures with that actual backend contract | Full selected-program byte/selection parity, both eligible ray/Card contexts, distinct producer identities, actual output-context guards and unchanged portable/constrained/fallback owners; normalize numeric views once after publication digests and wire encoding |
+| Gzip capture transport | Use the package-owned native codec in Node and portable codec in browsers/Workers | Preserve complete payload bytes, stored-payload digests, corruption failures and real replay; qualify conditional packaging and the actual Node codec-call budget before complete timing |
 
 Fewer shader operations or taps are hypotheses until the actual backend shows
 both acceptable pixels and lower GPU cost. Resolution, cascade count, distance,
@@ -209,3 +213,8 @@ counterexample evidence to the existing topic, and dated results to one scoped
 case using Contributing. Remove superseded guidance. Preserve raw failures privately and retain useful
 counterexamples; do not promote one run's numbers, host paths, quality settings
 or an unimplemented prototype into a universal rule.
+
+When animation times are externally sampled, zero playback speed does not permit
+skipping pose evaluation. Retain events, normalization and target updates while
+avoiding unchanged clock writes; verify paused, wrapping and externally edited
+targets through the same animation owner.

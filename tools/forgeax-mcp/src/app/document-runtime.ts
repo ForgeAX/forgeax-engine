@@ -3,6 +3,7 @@ import { App, type McpUiHostContext } from '@modelcontextprotocol/ext-apps';
 import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
 import { APP_VERSION, TRANSPORT_TOOL } from '../contract';
 import { retireViewResources } from './retire-view';
+import { loadDocumentReference } from './document-reference';
 
 /** URL identity owns one isolated document, its bridge, and its cancellation. */
 export function createMcpDocumentRuntime(
@@ -22,7 +23,7 @@ export function createMcpDocumentRuntime(
     Object.assign(element.style, { width: '1280px', height: '720px', border: '0',
       display: 'block', position: 'fixed', left: '0', top: '0', visibility: 'hidden' });
     document.body.append(element);
-    const bridge = new AppBridge(null, { name: 'ForgeaX document bridge', version: APP_VERSION },
+    const bridge = new AppBridge(null, { name: 'ForgeAX document bridge', version: APP_VERSION },
       { serverTools: {} }, { hostContext: hostContext() });
     bridge.oncalltool = (params, extra) => {
       if (params.name !== TRANSPORT_TOOL) throw new Error('Tool outside document transport');
@@ -33,7 +34,7 @@ export function createMcpDocumentRuntime(
     const ready = (async () => {
       await bridge.connect(new PostMessageTransport(element.contentWindow!, element.contentWindow!));
       const options = { signal: controller.signal };
-      const ref = await invoke({ action: 'document', url }, options);
+      const ref = await loadDocumentReference(invoke, url, options);
       const data = await bytes(ref, options);
       controller.signal.throwIfAborted();
       element.srcdoc = new TextDecoder().decode(data);
@@ -49,8 +50,11 @@ export function createMcpDocumentRuntime(
         return retiring ??= (async () => {
           controller.abort();
           await ready;
-          try { await retireViewResources([{ bridge, frame: element }], [], () => {}); }
-          finally { if (documents.get(url)?.handle === handle) documents.delete(url); }
+          try { await invoke({ action: 'document-cancel', url }); }
+          finally {
+            try { await retireViewResources([{ bridge, frame: element }], [], () => {}); }
+            finally { if (documents.get(url)?.handle === handle) documents.delete(url); }
+          }
         })();
       },
     };

@@ -61,7 +61,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await mkdir(fullTemplate, { recursive: true });
   if (withStore) await mkdir(resolve(root, 'store', 'pnpm'), { recursive: true });
   await mkdir(bin, { recursive: true });
-  const skillText = '# Test skill\n\nUse the ForgeaX test skill.\n';
+  const skillText = '# Test skill\n\nUse the ForgeAX test skill.\n';
   await mkdir(resolve(root, 'skills', 'forgeax-engine-test'), { recursive: true });
   await writeFile(resolve(root, 'skills', 'forgeax-engine-test', 'SKILL.md'), skillText);
   await writeFile(
@@ -656,7 +656,7 @@ describe('newCommand', () => {
       'public-hoist-pattern[]=@forgeax/engine-*\n',
     );
     expect(await readFile(resolve(targetRoot, 'skills/forgeax-engine-test/SKILL.md'), 'utf8')).toBe(
-      '# Test skill\n\nUse the ForgeaX test skill.\n',
+      '# Test skill\n\nUse the ForgeAX test skill.\n',
     );
     const mounted = resolve(targetRoot, '.agents/skills/forgeax-engine-test');
     expect((await lstat(mounted)).isSymbolicLink()).toBe(true);

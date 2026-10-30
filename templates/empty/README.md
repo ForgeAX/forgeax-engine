@@ -1,4 +1,4 @@
-# ForgeaX Empty Game
+# ForgeAX Empty Game
 
 这是 SDK 的最小 author 起点：一个资产目录、一份零实体的原生场景包，以及一个可按需扩展的插件组合入口。
 它面向 2D 或其他类型游戏，提供中性的内容起点。

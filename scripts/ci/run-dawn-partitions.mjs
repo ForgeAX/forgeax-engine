@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DAWN_ISOLATED_GROUPS } from './dawn-gate-roster.mjs';
+import { DAWN_ISOLATED_GROUPS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -153,6 +153,8 @@ export async function runDawnPartitions(kind, { env = process.env, smokeOwner } 
           process.execPath,
           VITEST,
           'run',
+          '--config',
+          DAWN_VITEST_CONFIG,
           '--project=dawn',
           '--passWithNoTests=false',
           '--maxWorkers=1',

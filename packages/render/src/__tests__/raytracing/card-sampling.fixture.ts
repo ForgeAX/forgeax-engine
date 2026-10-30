@@ -2,6 +2,7 @@ import { buildMeshCardLayout, buildVisibilityDistanceField } from '@forgeax/engi
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   CARD_LOOKUP_STRIDE,
   CardLookupStatus,
@@ -184,9 +185,12 @@ export async function verifyCardSampling(fixture: SdfCardsFixture) {
     ).unwrap();
     try {
       expect((await replay.readResource(id)).unwrap().bytes.every((b) => b === 0)).toBe(true);
-      expect((await replay.readResourceAtWork(id, work.workIndex)).unwrap().bytes).toEqual(
-        capture.lookup,
-      );
+      expect(
+        equalBytes(
+          (await replay.readResourceAtWork(id, work.workIndex)).unwrap().bytes,
+          capture.lookup,
+        ),
+      ).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       native.destroy();

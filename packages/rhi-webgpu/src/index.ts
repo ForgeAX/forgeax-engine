@@ -46,7 +46,7 @@ import {
 /// <reference types="@webgpu/types" />
 
 import type {
-  RequestDeviceOptions as ForgeaXRequestDeviceOptions,
+  RequestDeviceOptions as ForgeAXRequestDeviceOptions,
   RequestAdapterOptions,
   Result,
   RhiAdapter,
@@ -363,7 +363,7 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike): RhiAdapter {
       rawAdapter.limits as unknown as Record<string, unknown> | undefined,
     ),
     async requestDevice(
-      opts?: ForgeaXRequestDeviceOptions | undefined,
+      opts?: ForgeAXRequestDeviceOptions | undefined,
     ): Promise<Result<RhiDevice, RhiError>> {
       let rawDevice: GpuDeviceLike;
       try {

@@ -295,7 +295,7 @@ describe('GPU-driven native first-instance addressing', () => {
         const inspection = view.inspect();
         const mirrorBase = inspection.visibleBufferCapacity;
         if (frame === 2 || frame === 3) {
-          expect(visible).not.toBe(previousVisible);
+          expect(Object.is(visible, previousVisible)).toBe(false);
           expect(mirrorBase).toBeGreaterThanOrEqual(previousMirrorBase);
         }
         if (frame === 3) expect(mirrorBase).toBeGreaterThan(previousMirrorBase);
@@ -458,7 +458,7 @@ describe('GPU-driven native first-instance addressing', () => {
           enabled ? 1 : plan.batches.length,
         );
         if (frame === 4) expect(groups[0]).toBe(previousGroup);
-        if (frame === 2 || frame === 3) expect(groups[0]).not.toBe(previousGroup);
+        if (frame === 2 || frame === 3) expect(Object.is(groups[0], previousGroup)).toBe(false);
         const pixelResource = graph
           .importBuffer(
             'first-instance-readback',

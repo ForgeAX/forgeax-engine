@@ -55,7 +55,7 @@ it('executes retained-shadow replacement compute with a fresh arena after old re
     const replacement = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     expect(f.pool.project(replacement, source.identity, true).unwrap().passNames).toHaveLength(3);
     expect(demands).toHaveBeenCalled();
-    expect(next.buffer().unwrap().buffer).not.toBe(oldBuffer);
+    expect(Object.is(next.buffer().unwrap().buffer, oldBuffer)).toBe(false);
     next.seal().unwrap();
     f.pool._closeInputReads();
     await execute(replacement);

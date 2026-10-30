@@ -483,7 +483,10 @@ The browser publishes `globalThis.__forgeax.captureFrame` only after App
 assembly has bound that same capture to its frame driver. Initialization never
 exposes a bare recorder; failed assembly leaves no public capture entry.
 
-Recorder assembly consumes its backend-selection adapter only for startup.
+Local browser and Worker recorder assembly probe a usable native adapter before
+selecting WebGPU. API presence alone does not establish availability; a failed
+probe retains the normal wgpu/WebGL2 fallback. Explicit RHI selection remains
+authoritative. Recorder assembly consumes its backend-selection adapter only for startup.
 Renderer recovery requests a fresh adapter from the same backend; the capture
 wrapper never retains a lost generation's adapter for later device acquisition.
 

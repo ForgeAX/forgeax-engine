@@ -21,6 +21,7 @@ import { type AssetHandle, createStandaloneRuntimeAssetBinding } from '@forgeax/
 import { createServer, loadConfigFromFile } from 'vite';
 import { expect, it } from 'vitest';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -375,11 +376,11 @@ it('captures offscreen geometry, clips the opposite half space and records the w
       const pixels = inspected?.attachment;
       if (pixels === undefined) throw new Error('Replay attachment pixels unavailable');
       expect(countColors(pixels.bytes)).toEqual(baselineColors);
-      expect(pixels.bytes).toEqual(baseline.bytes);
+      expect(equalBytes(pixels.bytes, baseline.bytes)).toBe(true);
       writeFileSync(resolve(artifactDir, 'replay.rgba'), pixels.bytes);
       const waterPixels = waterInspection?.attachment;
       if (waterPixels === undefined) throw new Error('Replayed water pixels missing');
-      expect(waterPixels.bytes).toEqual(reflectedDisplay.bytes);
+      expect(equalBytes(waterPixels.bytes, reflectedDisplay.bytes)).toBe(true);
       writeFileSync(resolve(artifactDir, 'water-replay.rgba16f'), waterPixels.bytes);
     } finally {
       (await replay.dispose()).unwrap();

@@ -12,6 +12,7 @@ import {
 import { buildFrameModel, decodeTape, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -137,7 +138,7 @@ export async function verifyPlanarMultiCamera(input: {
   renderValue(renderer.resizeRenderTarget(secondTarget, { ...descriptor, width: 64, height: 32 }));
   world.set(marker, Transform, { pos: [12, -4, -2] }).unwrap();
   const resizedWhileHeld = await read();
-  expect(resizedWhileHeld.right.bytes).toEqual(held.right.bytes);
+  expect(equalBytes(resizedWhileHeld.right.bytes, held.right.bytes)).toBe(true);
   save('multi-held.rgba', resizedWhileHeld.right.bytes);
   world.set(second, CameraView, { updateInterval: 1 }).unwrap();
   await draw();

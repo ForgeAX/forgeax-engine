@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-debug-draw
 description: >-
-  ForgeaX immediate-mode debug geometry. Use when visualizing positions, colliders,
+  ForgeAX immediate-mode debug geometry. Use when visualizing positions, colliders,
   frustums, axes, or radii without creating ECS entities.
 ---
 
@@ -24,7 +24,7 @@ Runtime users use automatic `app.debugDraw.*`; low-level RHI scripts use `create
 
 | Package | Dependencies | Purpose |
 |:--|:--|:--|
-| `engine-math` | No ForgeaX dependencies | Vec / Mat / Quat / Color / frustum reconstruction. |
+| `engine-math` | No ForgeAX dependencies | Vec / Mat / Quat / Color / frustum reconstruction. |
 | `engine-debug-draw` | rhi + math + types | Wire overlay collection and GPU flush. |
 | `engine-runtime` | debug-draw (thin glue) | Attach `app.debugDraw` during createApp. |
 

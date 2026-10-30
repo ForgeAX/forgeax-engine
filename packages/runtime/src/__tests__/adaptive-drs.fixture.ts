@@ -23,6 +23,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { compactTape } from './compact-tape.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -229,7 +230,7 @@ export async function verifyAdaptiveDrs(
     );
     try {
       const inspected = value(await falsifier.inspectWork(output.workIndex, ['pixels']));
-      expect(inspected.attachment?.bytes).not.toEqual(live);
+      expect(equalBytes(inspected.attachment?.bytes, live)).toBe(false);
     } finally {
       value(await falsifier.dispose());
       webgpu._internal_getRawDevice(device)?.destroy();

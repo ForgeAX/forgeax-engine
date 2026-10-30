@@ -5,7 +5,7 @@ import { runVertexColorProducerEntry, vertexColorProducerIsScheduled } from '../
 
 const VERTEX_COLOR_BATCH_TIMEOUT_MS = 120_000;
 
-it.skipIf(!vertexColorProducerIsScheduled())('runs the ForgeaX Dawn vertex-color producer', async () => {
+it.skipIf(!vertexColorProducerIsScheduled())('runs the ForgeAX Dawn vertex-color producer', async () => {
   globalThis.__forgeaxVertexColorPublish = (path, output) => {
     writeFileSync(path, `${JSON.stringify(output, null, 2)}\n`);
   };

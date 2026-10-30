@@ -59,5 +59,5 @@ for(const steps of [64,256]) {
     threePrepared:measure(()=>prepared(new ExtrudeGeometry(shape,{extrudePath:curve,steps,bevelEnabled:false})))});
 }
 const report={node:process.version,platform:platform(),arch:arch(),cpu:cpus()[0]?.model,warmup:10,samples:100,
-  comparison:'Both produce canonical MeshAsset including tangent and bounds; Three curve sampling/frame construction included; ForgeaX receives the same pre-sampled points. Strict domain validation is included. Not GPU/UE performance.',cases};
+  comparison:'Both produce canonical MeshAsset including tangent and bounds; Three curve sampling/frame construction included; ForgeAX receives the same pre-sampled points. Strict domain validation is included. Not GPU/UE performance.',cases};
 const output=process.argv[3] ?? 'artifacts/advanced-modeling/cpu-benchmark.json';mkdirSync(resolve(output,'..'),{recursive:true});writeFileSync(output,JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));

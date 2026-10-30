@@ -187,7 +187,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('framedetached', frame => records.push({ frameDetached: frame.url().split('?')[0], at: Date.now() }));
   page.on('console', (message) => {
-    if (message.type() === 'error' && !(replacingBackend && message.text().startsWith('ForgeaX Host connection failed:')))
+    if (message.type() === 'error' && !(replacingBackend && message.text().includes('Host connection failed:')))
       consoleErrors.push(message.text());
     if (message.type() === 'error' || message.text().includes('stage:') || message.text().includes('[forgeax.play]'))
       records.push({ console: message.text().slice(0, 16000) });
@@ -223,7 +223,8 @@ try {
   console.error('MCP App stage: View connected');
   // Project restoration replaces the header's connected label. It belongs to
   // the Preview's existing readiness budget, not the native Host connection gate.
-  await view.getByRole('status', { name: /ForgeaX Host (\u5df2\u8fde\u63a5|connected)/ })
+  // View owns its display name, so assert the host state independently of branding.
+  await view.getByRole('status', { name: /Host (\u5df2\u8fde\u63a5|connected)/ })
     .waitFor({ timeout: Math.max(1, initialPreviewDeadline - performance.now()) });
   const playCycle = async (cycle) => {
     const playStarted = performance.now();
@@ -396,7 +397,7 @@ try {
   assert.equal((await restartResponse).status(), 200, 'Backend restart request must succeed; inspect failed CLI records');
   await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
   await view.locator(`iframe[data-forgeax-mcp-preview]:not([data-forgeax-mcp-preview="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
-  await view.getByRole('status', { name: /ForgeaX Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });
+  await view.getByRole('status', { name: /Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });
   targetId = await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview');
   assert.notEqual(targetId, previousTargetId, 'a backend replacement must admit a fresh Engine target');
   replacingBackend = false;
@@ -417,6 +418,8 @@ try {
   await page.getByText('closed', { exact: true }).waitFor();
   assert.equal(await page.locator('#app').count(), 0);
   assert.deepEqual(errors, []);
+  assert.deepEqual(records.filter(record => record.action === 'document-cancel' && record.resultError), [],
+    'Document retirement must acknowledge its remote task cleanup');
   console.log(
     JSON.stringify({
       targetId,

@@ -10,6 +10,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { CLOUD_RESOLVE_FULLSCREEN_WGSL } from '@forgeax/engine-shader';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 
 // Exact binary16 values keep the independent transport oracle free of
 // encoder rounding: cloud positions are kilometres, View positions metres.
@@ -181,7 +182,7 @@ export async function verifyCloudWindHistory(
           await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
         ).unwrap();
         expect(inspected.attachment?.format).toBe('rgba16float');
-        expect(inspected.attachment?.bytes).toEqual(bytes);
+        expect(equalBytes(inspected.attachment?.bytes, bytes)).toBe(true);
         await save(`${entry.name}-replay.rgba16`, inspected.attachment?.bytes ?? new Uint8Array());
       } finally {
         (await replay.dispose()).unwrap();

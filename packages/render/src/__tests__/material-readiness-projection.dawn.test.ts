@@ -136,7 +136,7 @@ it('keeps actual native texture/sampler residency and mip output through validat
     store.destroyAll();
     configure();
     expect(compare().readiness).toBe('ready');
-    expect(await read()).not.toBe(originalView);
+    expect(Object.is(await read(), originalView)).toBe(false);
     expect(originalPublication).toEqual(originalSnapshot);
     expect(await native.popErrorScope()).toBeNull();
   } finally {

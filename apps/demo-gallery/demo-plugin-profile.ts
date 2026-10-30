@@ -1,7 +1,7 @@
 import type { ProducerReadiness } from '@forgeax/engine-import';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { Importer, RuntimeAssetBinding } from '@forgeax/engine-types';
-import type { ForgeaXShaderOptions } from '@forgeax/engine-vite-plugin-shader';
+import type { ForgeAXShaderOptions } from '@forgeax/engine-vite-plugin-shader';
 import type { Plugin } from 'vite';
 
 export interface DemoPackProfile {
@@ -17,7 +17,7 @@ export interface DemoPluginProfile {
   route: string;
   consumerRoot: string;
   pack?: DemoPackProfile;
-  shader?: ForgeaXShaderOptions;
+  shader?: ForgeAXShaderOptions;
   extraPlugins: readonly Plugin[];
 }
 

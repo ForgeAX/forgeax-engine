@@ -8,7 +8,7 @@ const headless = !['0', 'false'].includes(
   (process.env.FORGEAX_BROWSER_HEADLESS ?? '1').toLowerCase(),
 );
 const launchArgs = [
-  '--disable-features=WebGPU',
+  '--disable-features=WebGPU,WebGPUService',
   '--disable-gpu',
   '--enable-unsafe-swiftshader',
   '--disable-gpu-driver-bug-workarounds',

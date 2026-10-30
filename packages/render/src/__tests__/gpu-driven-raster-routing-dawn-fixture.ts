@@ -217,7 +217,7 @@ export async function verifyRetainedRasterRouting(input: {
         pipelineCount = pipelines.mock.calls.length;
       } else if (frame === 30) {
         secondGraph = graph;
-        expect(secondGraph).not.toBe(firstGraph);
+        expect(Object.is(secondGraph, firstGraph)).toBe(false);
         const changed = pipelines.mock.calls.slice(pipelineCount);
         expect(changed).toHaveLength(1);
         expect(changed[0]?.[0].vertex.buffers?.[0]?.arrayStride).toBe(48);

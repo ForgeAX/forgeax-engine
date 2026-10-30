@@ -23,6 +23,7 @@
 import {
   type Buffer,
   type CommandBuffer,
+  createQueueCompletionHold,
   type ExternalImageTextureDestination,
   err,
   ok,
@@ -135,6 +136,7 @@ export interface RawQueueLike {
 
 class RhiWgpuQueueImpl implements RhiQueue {
   private readonly raw: RawQueueLike;
+  private readonly completions = createQueueCompletionHold();
   constructor(raw: RawQueueLike) {
     this.raw = raw;
   }
@@ -285,6 +287,19 @@ class RhiWgpuQueueImpl implements RhiQueue {
 
   // forgeax-async-whitelist: wasm-bindgen — wgpu-wasm `Queue.onSubmittedWorkDone()` Promise passthrough
   onSubmittedWorkDone(): Promise<undefined> {
+    return this.completions.deliver(this.nativeCompletion());
+  }
+
+  holdCompletions(): () => void {
+    return this.completions.hold();
+  }
+
+  onSubmittedWorkDoneUnheld(): Promise<undefined> {
+    return this.nativeCompletion();
+  }
+
+  // forgeax-async-whitelist: wasm-bindgen — actual native completion registration
+  private nativeCompletion(): Promise<undefined> {
     if (this.raw.onSubmittedWorkDone === undefined) {
       return Promise.resolve().then(() =>
         webgpuRuntimeError(new Error('queue has no native GPU completion primitive')).unwrap(),

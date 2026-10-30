@@ -1,6 +1,7 @@
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import { createRayPathTracer, type RayPathInitialRay } from '../../raytracing/path-tracer';
 import type { RayPathFixture } from './path-tracer.commands';
@@ -105,8 +106,11 @@ export async function verifyInitialPathRays(fixture: RayPathFixture) {
       const output = w.bindings.find((b) => b.binding === 6);
       assert(output?.resourceId);
       expect(
-        (await replay.readResourceAtWork(output.resourceId, w.workIndex)).unwrap().bytes,
-      ).toEqual(i === 0 ? live : reset);
+        equalBytes(
+          (await replay.readResourceAtWork(output.resourceId, w.workIndex)).unwrap().bytes,
+          i === 0 ? live : reset,
+        ),
+      ).toBe(true);
     }
   } finally {
     (await replay.dispose()).unwrap();

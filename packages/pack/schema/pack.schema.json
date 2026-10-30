@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/pack/schema/pack.schema.json",
+  "$id": "https://github.com/ForgeAX/forgeax-engine/packages/pack/schema/pack.schema.json",
   "title": "InternalTextPackage",
   "description": "Schema for authored and cooked internal text packages.",
   "$comment": "The ordinary durable consumer matrix is SCRIPTABLE_PACK_ASSET_KINDS in @forgeax/engine-pack/source. Pack kind fields remain open for registered producer extensions.",

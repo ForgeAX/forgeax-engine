@@ -1,23 +1,10 @@
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { defineConfig } from 'vitest/config';
 import { createBrowserProject } from './config/vitest-browser-project';
 import { playwrightWithBackgroundPages } from './config/vitest-browser-provider';
-import { DawnSequencer } from './config/vitest-dawn-sequencer';
-import { DAWN_COMPACT_TEST_FILES } from './scripts/ci/dawn-compact-roster.mjs';
-import {
-  DAWN_ISOLATED_TEST_FILES,
-  DIRECT_LIGHT_DAWN_TEST_FILE,
-} from './scripts/ci/dawn-gate-roster.mjs';
-
-// Every exclusion is derived from the same roster used by local, PR and nightly.
-const R32FLOAT_CAPABILITY_GENERATION_TEST =
-  'packages/rhi-webgpu/src/__tests__/r32float-capability-generation.integration.test.ts';
-const RUNNING_DIRECT_LIGHT_PARTITION = process.env.FORGEAX_DAWN_PARTITION !== undefined;
-const RUNNING_DAWN_COMPACT = process.env.FORGEAX_DAWN_COMPACT === '1';
-const RUNNING_DAWN_ISOLATED = process.env.FORGEAX_DAWN_ISOLATED === '1';
-const REPOSITORY_ROOT = fileURLToPath(new URL('.', import.meta.url));
+import { dawnProject } from './config/vitest-dawn-project';
+import { REPOSITORY_ROOT, sharedVitestConfig } from './config/vitest-shared';
 
 // Root vitest config - declares projects per K-3 split policy:
 //
@@ -26,7 +13,7 @@ const REPOSITORY_ROOT = fileURLToPath(new URL('.', import.meta.url));
 //     `apps/*` / `scripts`; project names like `@forgeax/engine-math` /
 //     `@forgeax/engine-runtime`. The inline `name: 'unit'` marker project below is
 //     the K-3 three-command SSOT naming anchor (grep gate: vitest.config.ts
-//     must contain 'unit' / 'browser' / 'dawn' literal name fields) plus
+//     discovers the named projects through their canonical config modules) plus
 //     the explicit `--project unit` filter entry; the marker itself runs
 //     passWithNoTests, producing no new test work.
 //   - browser layer (AC-05): vitest browser mode + playwright provider;
@@ -66,12 +53,9 @@ const REPOSITORY_ROOT = fileURLToPath(new URL('.', import.meta.url));
 // 387965810 (globalThis.navigator.gpu global pollution preventing node
 // process exit).
 export default defineConfig({
-  root: REPOSITORY_ROOT,
+  ...sharedVitestConfig,
   test: {
-    globals: false,
-    sequence: { sequencer: DawnSequencer },
-    passWithNoTests: true,
-    teardownTimeout: 500,
+    ...sharedVitestConfig.test,
     projects: [
       // -- unit layer: existing per-package + apps + scripts --
       'packages/*',
@@ -196,8 +180,11 @@ export default defineConfig({
                 channel: 'chrome-beta',
                 chromiumSandbox: true,
                 args: [
-                  '--disable-features=WebGPU,MacAppCodeSignClone',
+                  '--disable-features=WebGPU,WebGPUService,MacAppCodeSignClone',
                   '--disable-gpu-driver-bug-workarounds',
+                  // Match the explicit software WebGL2 carrier probed by CI.
+                  // Local runs keep their physical GPU route.
+                  ...(process.env.CI ? ['--disable-gpu', '--enable-unsafe-swiftshader'] : []),
                 ],
               },
             }),
@@ -206,104 +193,7 @@ export default defineConfig({
           },
         },
       },
-      // -- dawn layer: dawn.node native binding (AC-06) --
-      //
-      // The `**/*.dawn.test.ts` glob picks every dawn test under the repo,
-      // but feat-20260511-rhi-wgpu-impl M4 (w24) also explicitly lists the
-      // rhi-wgpu integration test path in the include array so the package
-      // surface is grep-discoverable from this config file alone (charter
-      // proposition 1 progressive disclosure: single-import / single-config
-      // anchor lets AI users locate the dawn project participants without
-      // walking the filesystem). feat-20260531-render-consume-global-transform-
-      // hierarchy M3 (w13) likewise lists the transform-hierarchy AC-08
-      // parent-moves-child-follows pixel-diff so `pnpm test:dawn` visibly
-      // includes the visual-evidence path (the CI smoke step runs the
-      // apps/hello/transform-hierarchy/scripts/smoke-dawn.mjs counterpart).
-      {
-        test: {
-          name: 'dawn',
-          environment: 'node',
-          // Keep cold native startup within the existing allowance. A failing
-          // renderer journey reports once instead of replaying its full setup
-          // and teardown twice before the owning error becomes visible.
-          testTimeout: 30000,
-          retry: 0,
-          // Native Dawn queue/device teardown can take longer than the root
-          // 500 ms budget on the heavy runner after a dense carrier finishes.
-          // Keep the bound tight but allow the worker to close cleanly instead
-          // of turning completed assertions into a Vitest worker-exit error.
-          teardownTimeout: 5000,
-          // Dawn tests use a shared software Vulkan backend. Keep this project
-          // to one worker: the 96-vCPU heavy runners can otherwise launch
-          // multiple GPU processes and lose workers under lavapipe contention.
-          maxWorkers: 1,
-          include: [
-            '**/*.dawn.test.ts',
-            'packages/rhi-wgpu/src/__tests__/**/*.dawn.test.ts',
-            'packages/runtime/src/__tests__/transform-hierarchy-pixel-diff.dawn.test.ts',
-            // feat-20260707 M5 / w32: the equirect BC6H HDR-chain integration
-            // test needs the dawn-node GPU env to read texture-compression-bc
-            // and upload a BC6H texture; it is `.integration.test.ts`-named
-            // (plan-tasks w32), so list it explicitly here and let it skipIf
-            // navigator.gpu is absent under the per-package unit project.
-            'packages/runtime/src/__tests__/equirect-bc6h.integration.test.ts',
-            R32FLOAT_CAPABILITY_GENERATION_TEST,
-          ],
-          exclude: [
-            '**/node_modules/**',
-            '**/dist/**',
-            '**/artifacts/**',
-            '**/docs/reports/**',
-            '**/.forgeax-harness*/**',
-            '**/.worktrees/**',
-            '**/.claude/worktrees/**',
-            ...(RUNNING_DIRECT_LIGHT_PARTITION ? [] : [DIRECT_LIGHT_DAWN_TEST_FILE]),
-            ...(RUNNING_DAWN_ISOLATED ? [] : DAWN_ISOLATED_TEST_FILES),
-            ...(RUNNING_DAWN_COMPACT ? [] : DAWN_COMPACT_TEST_FILES),
-          ],
-          setupFiles: ['./config/vitest.setup-webgpu.ts'],
-        },
-      },
+      dawnProject,
     ],
-    typecheck: {
-      enabled: true,
-      tsconfig: './tsconfig.json',
-    },
-    coverage: {
-      provider: 'v8',
-      // Package projects exercise one another through workspace imports. Keep
-      // those first-party sources in the aggregate instead of dropping them
-      // merely because they sit outside the importing project's root.
-      allowExternal: true,
-      reporter: ['text', 'json-summary', 'html'],
-      // Exclude test fixtures, mocks, and generated build artifacts so the
-      // global threshold reflects production source coverage. `__tests__/`
-      // hosts vitest test files plus shared fixtures (`_arbs.ts` /
-      // `_fixtures.ts` / `__mocks__/gpu-device.ts`); `wgpu-wasm/pkg/` is the
-      // merged wasm-pack output (generated JS bindings, not hand-authored
-      // source — feat-20260511-naga-rhi-wgpu-merge M1 productionised the
-      // archived @forgeax/engine-naga-wasm-shim into this single bundle). Keeping
-      // these inside the threshold pool penalised production-source
-      // contributions disproportionately (charter proposition 4 explicit
-      // failure: thresholds must measure the SUT, not its scaffolding).
-      exclude: [
-        '**/node_modules/**',
-        '**/dist/**',
-        '**/__tests__/**',
-        '**/*.test.ts',
-        '**/*.test.mjs',
-        '**/*.test-d.ts',
-        '**/coverage/**',
-        '**/wgpu-wasm/pkg/**',
-        '**/scripts/**',
-        '**/build.mjs',
-        '**/vitest.config.ts',
-        '**/tsup.config.ts',
-      ],
-      thresholds: {
-        lines: 70,
-        functions: 70,
-      },
-    },
   },
 });

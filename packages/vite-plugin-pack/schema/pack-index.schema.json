@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/packages/vite-plugin-pack/schema/pack-index.schema.json",
+  "$id": "https://github.com/ForgeAX/forgeax-engine/packages/vite-plugin-pack/schema/pack-index.schema.json",
   "title": "PackIndex",
   "description": "Schema for pack-index.json — the producer-owned Catalog projection mapping GUIDs to Pack v2 package locators and recovery evidence.",
   "$comment": "The 16 ordinary durable kinds and host capability boundary are published by SCRIPTABLE_PACK_CAPABILITY_MANIFEST from @forgeax/engine-vite-plugin-pack; catalog kind remains open for producer extensions. sourceKey is semantic identity, sourceIndex is positional evidence, and publication.generation fences one complete output set.",

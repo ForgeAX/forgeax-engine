@@ -118,6 +118,20 @@ The host supplies the real RHI backend and owns the file write. The package
 owns recording, encoding, decoding, replay, and readback contracts. Expected
 failures are `Result` values, not message-parsed exceptions.
 
+### Gzip transport work
+
+The internal `#tape-gzip` package condition selects Node's native zlib for Node
+hosts and the bundled portable codec for browsers and Workers. Both retain the
+v7 gzip representation, complete decompressed bytes and stored-byte SHA-256
+validation. No frame, seed, event or replay work is removed. Compressed parts
+retain ordinary owned `Uint8Array` storage and copying `slice` semantics across
+hosts. Keep both internal codec artifacts when packaging the library; browser
+bundles must not include Node builtins. The native work regression requires
+actual native codec calls and rejects JavaScript codec calls in the
+real container path, checks portable/native interoperability and retains corrupt
+digest and invalid gzip failures. The browser regression exercises its real
+conditional path independently.
+
 Recorder attachment preserves both the asynchronous shader factory and an
 optional `createShaderModuleImmediate` factory on the explicit RHI backend.
 Pipeline handles retain native identity. Calls to `getBindGroupLayout(index)`

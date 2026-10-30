@@ -818,11 +818,22 @@ export async function buildScriptablePack(
   const ownedOutputs = clone(built.value);
   const localGuids = new Set<string>();
   const nativeFingerprints = new Map<string, string>();
-  for (const sourceKey of Object.keys(built.value).sort()) {
+  const sourceKeys = Object.keys(built.value).sort();
+  const parallel = (index: number): boolean => {
+    const asset = ownedOutputs[sourceKeys[index] ?? ''];
+    return (
+      asset !== undefined &&
+      (declaresCookedExecution(asset) ||
+        (isAsset(asset) && asset.kind === 'material' && Array.isArray(asset.passes))) &&
+      options.cookers?.get(asset.kind)?.concurrency === 'parallel'
+    );
+  };
+  const produce = async (sourceKey: string) => {
     const asset = ownedOutputs[sourceKey];
     const raw: unknown = asset;
     // Without the plugin capability, keep ordinary outputs and omit plugin siblings.
-    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true) continue;
+    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true)
+      return ok(undefined);
     if (!isValidPackSourceKey(sourceKey))
       return err(sourceKeyFailure(options.sourcePath, sourceKey));
     if (asset === undefined)
@@ -851,15 +862,37 @@ export async function buildScriptablePack(
       ? await cookCustomOutput(options, sourceKey, guid, asset)
       : await produceOrdinaryOutput(options, sourceKey, guid, asset);
     if (!produced.ok) return produced;
-    imported.push(produced.value.imported);
-    if (produced.value.nativeFingerprint !== undefined)
-      nativeFingerprints.set(sourceKey, produced.value.nativeFingerprint);
-    stagedOutputs.push({
-      guid: AssetGuid.derive(subjectPackageId, sourceKey),
+    return ok({
       sourceKey,
-      asset,
-      digest: await digest(asset),
+      produced: produced.value,
+      staged: {
+        guid: AssetGuid.derive(subjectPackageId, sourceKey),
+        sourceKey,
+        asset,
+        digest: await digest(asset),
+      },
     });
+  };
+  // Only reentrant cooker outputs share admission. Drain each bounded batch
+  // before reporting its first authored error or starting any later outputs.
+  for (let index = 0; index < sourceKeys.length; ) {
+    let end = index + 1;
+    if (parallel(index)) {
+      while (end < Math.min(index + 4, sourceKeys.length) && parallel(end)) end++;
+    }
+    const results = await Promise.allSettled(sourceKeys.slice(index, end).map(produce));
+    for (const settled of results) {
+      if (settled.status === 'rejected') throw settled.reason;
+      const result = settled.value;
+      if (!result.ok) return result;
+      if (result.value === undefined) continue;
+      const { sourceKey, produced, staged } = result.value;
+      imported.push(produced.imported);
+      if (produced.nativeFingerprint !== undefined)
+        nativeFingerprints.set(sourceKey, produced.nativeFingerprint);
+      stagedOutputs.push(staged);
+    }
+    index = end;
   }
 
   const referenced = externalReferences(imported, localGuids);

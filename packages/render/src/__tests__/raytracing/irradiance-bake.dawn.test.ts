@@ -1,6 +1,7 @@
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect, it, vi } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import {
   bakeIrradianceVolume,
@@ -67,7 +68,7 @@ it('bakes the reference integrator into deterministic, cooked irradiance probes'
   expect(submissions.mock.calls.length).toBeGreaterThanOrEqual(input.settings.samples);
   submissions.mockRestore();
   const second = (await bakeIrradianceVolume(device, gpu.createShaderModule, input)).unwrap();
-  expect(second.bytes).toEqual(first.bytes);
+  expect(equalBytes(second.bytes, first.bytes)).toBe(true);
   expect(second.digest).toBe(first.digest);
   expect(first.fingerprint).toBe(irradianceBakeFingerprint(input));
   expect(first.rays).toBe(512);

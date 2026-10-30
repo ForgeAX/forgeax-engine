@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 
 /** Inspect the actual biased mesh draw, replay its lighting target, then remove it. */
 export async function verifyMeshDecalReplay(
@@ -74,7 +75,7 @@ export async function verifyMeshDecalReplay(
     ).unwrap();
     try {
       const without = (await falsifier.inspectWork(mesh.workIndex, ['pixels'])).unwrap();
-      expect(without.attachment?.bytes).not.toEqual(attachment.bytes);
+      expect(equalBytes(without.attachment?.bytes, attachment.bytes)).toBe(false);
     } finally {
       (await falsifier.dispose()).unwrap();
     }

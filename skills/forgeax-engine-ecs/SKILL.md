@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-ecs
 description: >-
-  ForgeaX archetype ECS, schedules, resources, and shared numeric kernels. Use when
+  ForgeAX archetype ECS, schedules, resources, and shared numeric kernels. Use when
   defining components, queries, systems, relationships, fixed-step simulation, or World recovery.
 ---
 

@@ -145,6 +145,22 @@ to uniform bindings. A device or backend recovery selects these published
 artifacts without runtime compilation; the two backends retain distinct
 context and vertex-color selections. Uniform contexts have no scene-index
 program or storage-only View extension.
+
+`createMaterialPackCooker(roots, { profile })` can declare a build-only target:
+
+| Profile | Published programs |
+|:--|:--|
+| Omitted | Complete portable raster, uniform fallback and eligible ray/Card contexts |
+| `webgpu-storage` | The original storage WebGPU raster, visible-surface and vertex-color contexts |
+| `webgpu-storage-ray` | The same storage raster contexts plus every eligible `ray-hit` and `card-capture` derivative |
+
+Each explicit target owns distinct cache, producer and receipt identities. The
+real compiler parity gate compares every selected program byte and selection
+against the complete producer. Native fixtures declare a target only when their
+actual backend requires storage WebGPU; their output-context work gates reject
+unused uniform/backend variants. Portable Player packaging, constrained-device,
+WebGL2 and compiler conformance owners retain the complete producer.
+
 Single-layer medium publications retain their storage-backed dynamic-input
 contract and do not publish a WebGL2 uniform program through this route. GPU
 particle mesh roots also retain their compute/indirect path instead of adding

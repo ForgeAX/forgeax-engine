@@ -82,6 +82,15 @@ export interface PhysicsWorld {
     filterMask?: number,
     normalFilter?: PhysicsContactNormalFilter,
   ) => Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure>;
+  /** Atomic completed-step reads sharing native-owner validation within this
+   * synchronous call. Each request retains its own mask, normal and visit limit. */
+  getCurrentContactNeighborsBatch?: (
+    requests: readonly {
+      readonly entity: number;
+      readonly filterMask?: number;
+      readonly normalFilter?: PhysicsContactNormalFilter;
+    }[],
+  ) => Result<readonly PhysicsContactNeighborsSnapshot[], ManagedPhysicsFailure>;
   /** Read current Native impulse and multibody joints attached to this live entity.
    * No handles escape; unavailable during execution/admission or after retirement. */
   getBodyConstraintCount?: (entity: number) => Result<number, ManagedPhysicsFailure>;

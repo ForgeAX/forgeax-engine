@@ -4,6 +4,41 @@ import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { createRemoteBundler } from '../../src/app/bundler.mjs';
 
+test('retiring a document cancels its source read without evicting its replacement', { timeout: 5000 }, async (t) => {
+  let reads = 0;
+  let started;
+  let closed;
+  const reading = new Promise(resolve => { started = resolve; });
+  const retired = new Promise(resolve => { closed = resolve; });
+  const server = createServer((_request, response) => {
+    reads++;
+    if (reads === 1) {
+      response.once('close', closed);
+      started();
+    } else response.end('export const value = 42;');
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  const url = `http://127.0.0.1:${server.address().port}/entry.mjs`;
+  const bundle = createRemoteBundler(input => new URL(input));
+  const controller = new AbortController();
+  const first = assert.rejects(bundle(url, 'module', undefined, controller.signal), /source fetch failed|document retired/);
+  await reading;
+  controller.abort(new Error('document retired'));
+  const replacement = bundle(url);
+  await first;
+  await retired;
+  const result = await replacement;
+  const module = await import(`data:text/javascript,${encodeURIComponent(result.source)}`);
+  assert.equal(module.value, 42);
+  assert.equal(await bundle(url), result, 'late retirement must retain the replacement cache entry');
+  assert.equal(reads, 2);
+});
+
 for (const scenario of ['reset before headers', 'reset during body', 'persistent reset', 'HTTP error']) {
   test(`remote source reads handle ${scenario} without replaying HTTP failures`, async () => {
     let reads = 0;

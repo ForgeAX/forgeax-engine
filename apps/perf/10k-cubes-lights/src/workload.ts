@@ -5,7 +5,7 @@ export const CUBE_COUNT_MAX = 100_000 as const;
 export const LIGHT_COUNT_MAX = 256 as const;
 export const POINT_LIGHT_COUNT_DEFAULT = 16 as const;
 export const SPOT_LIGHT_COUNT_DEFAULT = 16 as const;
-/** Three r184 and ForgeaX both use inverse-square punctual attenuation. */
+/** Three r184 and ForgeAX both use inverse-square punctual attenuation. */
 export const PUNCTUAL_DECAY_EXPONENT = 2 as const;
 /** Fixed sun shared by the Engine and Three.js pressure consumers. */
 export const DIRECTIONAL_LIGHT_DIRECTION = [0.4, -0.8, -0.4] as const;

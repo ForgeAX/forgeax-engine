@@ -79,6 +79,7 @@ export {
   collectMaterialSources,
   createMaterialPackCooker,
   listMaterialSourcePaths,
+  type MaterialPackCookProfile,
   materialShaderSourceRoots,
 } from './material/pack-cooker.js';
 export {

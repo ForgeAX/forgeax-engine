@@ -3,6 +3,7 @@ import type { Texture, TextureView } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createRayDiffuseComposite } from '../../raytracing/diffuse-composite';
 import { createRayPathTracer, type RayPathTracer } from '../../raytracing/path-tracer';
 import { createRasterRayGenerator } from '../../raytracing/raster-source';
@@ -360,8 +361,12 @@ export async function verifyRasterRaySource(
         const output = accumulate.bindings.find((b) => b.binding === 6);
         assert(output?.resourceId);
         expect(
-          (await replay.readResourceAtWork(output.resourceId, accumulate.workIndex)).unwrap().bytes,
-        ).toEqual(transport);
+          equalBytes(
+            (await replay.readResourceAtWork(output.resourceId, accumulate.workIndex)).unwrap()
+              .bytes,
+            transport,
+          ),
+        ).toBe(true);
         const composites = model.works.filter((work) =>
           work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_ray_diffuse'),
         );
@@ -369,9 +374,12 @@ export async function verifyRasterRaySource(
         for (const [i, work] of composites.entries()) {
           const target = work.attachments?.colorViewHandleIds[0];
           assert(target);
-          expect((await replay.readResourceAtWork(target, work.workIndex)).unwrap().bytes).toEqual(
-            composited[i],
-          );
+          expect(
+            equalBytes(
+              (await replay.readResourceAtWork(target, work.workIndex)).unwrap().bytes,
+              composited[i],
+            ),
+          ).toBe(true);
           expect(work.bindings.find((b) => b.binding === 0)?.resourceId).toBe(output.resourceId);
           expect(work.bindings.find((b) => b.binding === 3)?.resourceId).toBe(
             draw.attachments.colorViewHandleIds[1],
@@ -381,8 +389,11 @@ export async function verifyRasterRaySource(
           const output = work.bindings.find((b) => b.binding === 6);
           assert(output?.resourceId);
           expect(
-            (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
-          ).toEqual(index === 0 ? live : invalid);
+            equalBytes(
+              (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
+              index === 0 ? live : invalid,
+            ),
+          ).toBe(true);
         }
       } finally {
         (await replay.dispose()).unwrap();

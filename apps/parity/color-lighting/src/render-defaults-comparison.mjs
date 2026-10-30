@@ -136,7 +136,7 @@ async function run() {
   for (const effect of ['fxaa', 'bloom']) {
     const data = effect === 'bloom' ? Uint16Array.from(pixels(effect), (value, i) => halfFloat.f32ToF16(i % 4 === 3 ? 1 : value * 8 / 255)) : pixels(effect), reference = await threeCapture(data, effect), actual = await forgeCapture(manifest, data, effect);
     if (![...actual, ...reference].every(Number.isFinite)) throw new Error(`${effect}: non-finite pixels`);
-    present(effect, 'ForgeaX', actual, effect === 'bloom' ? 0.75 : 1);
+    present(effect, 'ForgeAX', actual, effect === 'bloom' ? 0.75 : 1);
     present(effect, 'Three r184 WebGPU', reference, effect === 'bloom' ? 0.75 : 1);
     report[effect] = difference(actual, reference);
     if (effect === 'bloom') {

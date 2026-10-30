@@ -21,7 +21,7 @@ page.on('pageerror', (error) => pageErrors.push(error.message));
 await page.addInitScript(() => {
   let current = { south: false, y: false, trigger: 0 };
   const button = (value) => ({ pressed: value > 0.5, touched: value > 0, value });
-  const pad = () => ({ id: 'ForgeaX game-default mock', index: 0, connected: true, mapping: 'standard', buttons: [button(current.south ? 1 : 0), button(0), button(0), button(current.y ? 1 : 0), button(0), button(0), button(0), button(current.trigger)], axes: [0, 0, 0, 0], timestamp: performance.now() });
+  const pad = () => ({ id: 'ForgeAX game-default mock', index: 0, connected: true, mapping: 'standard', buttons: [button(current.south ? 1 : 0), button(0), button(0), button(current.y ? 1 : 0), button(0), button(0), button(0), button(current.trigger)], axes: [0, 0, 0, 0], timestamp: performance.now() });
   Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => [pad()] });
   globalThis.__setGameDefaultGamepad = (next) => { current = { ...current, ...next }; };
 });

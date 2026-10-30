@@ -3,6 +3,7 @@ import { World } from '@forgeax/engine-ecs';
 import { propagateTransforms } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { required } from '../../../ui-blitz/src/__tests__/fixture.js';
 import { createBlitzUi, gpuShaders, type UiWasmHost } from '../../../ui-blitz/src/index.js';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -110,14 +111,14 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
     expect(pixelAt(loading.rgba, [16, 16])).toEqual([128, 0, 0]);
     expect(pixelAt(loading.rgba, [48, 16])).toEqual([255, 255, 255]);
     const cached = await draw(boot);
-    expect(cached.rgba).toEqual(loading.rgba);
+    expect(equalBytes(cached.rgba, loading.rgba)).toBe(true);
     expect(transferred).toBe(1);
 
     releaseManifest();
     value(await host.initialization);
     const activating = await draw(null);
     expect(activating.receipt.presentation).toBe('pending');
-    expect(activating.rgba).toEqual(loading.rgba);
+    expect(equalBytes(activating.rgba, loading.rgba)).toBe(true);
     ui.document.body.style.display = 'none';
     scene = createDisplayP3Scene(renderer, []);
     const lease = value(renderer.attach(scene.world));
@@ -156,7 +157,7 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
     expect(pixelAt(composed.rgba, [48, 16])).toEqual([255, 255, 255]);
     expect(pixelAt(composed.rgba, [48, 48])).toEqual(pixelAt(background.rgba, [48, 48]));
     const transfersBeforeCache = transferred;
-    expect((await draw(scene.world)).rgba).toEqual(composed.rgba);
+    expect(equalBytes((await draw(scene.world)).rgba, composed.rgba)).toBe(true);
     expect(transferred).toBe(transfersBeforeCache);
     expect(errors).toEqual([]);
 
@@ -164,7 +165,7 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
     // uses this Renderer and its existing surface.
     const cameraFree = await draw(boot);
     expect(cameraFree.receipt.presentation).toBe('ready');
-    expect(cameraFree.rgba).toEqual(loading.rgba);
+    expect(equalBytes(cameraFree.rgba, loading.rgba)).toBe(true);
     expect(errors).toEqual([]);
     required(ui.document.querySelector<HTMLElement>('#color')).style.background = 'yellow';
     const fatal = await draw(null);

@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-app
 description: >-
-  ForgeaX App assembly, worker policies, and browser frame ownership. Use when
+  ForgeAX App assembly, worker policies, and browser frame ownership. Use when
   bootstrapping a game, selecting time or worker policy, wiring plugins/input/profiling,
   or diagnosing execution and rebuild reports.
 ---

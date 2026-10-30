@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-wechat
 description: >-
-  ForgeaX WeChat Mini Game development and diagnosis. Use when building or running
+  ForgeAX WeChat Mini Game development and diagnosis. Use when building or running
   an ordinary game with official AI DevTools, validating simulator/phone behavior,
   or investigating native UI, rendering, performance and memory.
 ---

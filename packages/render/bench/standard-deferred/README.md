@@ -117,7 +117,7 @@ G-buffer packing or RHI-debug replay defect responsible for the observed pixels.
 The layout follows UE's separation of normalized material facts from HDR
 SceneColor, including geometry-owned emissive and additive lighting.
 [UE 5.3 GBufferInfo.cpp](https://github.com/chenyong2github/UnrealEngine/blob/5.3/Engine/Source/Runtime/RenderCore/Private/GBufferInfo.cpp)
-is the format reference. This is not a byte-identical UE layout: ForgeaX retains
+is the format reference. This is not a byte-identical UE layout: ForgeAX retains
 colored F0/IOR and its full reflection/SH context, using Oct12 normals and
 square-root encoded reflectance instead of UE's RGB10A2 normal and sRGB base color.
 The current format and ownership SSOT is the

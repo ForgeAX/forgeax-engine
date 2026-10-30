@@ -1,6 +1,7 @@
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   createGlobalSdfComposition,
   type GlobalSdfComposition,
@@ -195,7 +196,9 @@ export async function verifyGlobalSdf(fixture: SdfCardsFixture) {
   // State, coverage and identity must remain exact. Live/replay stays byte-exact.
   for (let i = 0; i < positive.length; i += 16) {
     expect(Math.abs(pv.getFloat32(i, true) - nv.getFloat32(i, true))).toBeLessThan(1e-6);
-    expect(positive.subarray(i + 4, i + 16)).toEqual(negative.subarray(i + 4, i + 16));
+    expect(equalBytes(positive.subarray(i + 4, i + 16), negative.subarray(i + 4, i + 16))).toBe(
+      true,
+    );
   }
   const tape = decodeTape(tapeBytes).unwrap(),
     model = buildFrameModel(tape);
@@ -217,7 +220,9 @@ export async function verifyGlobalSdf(fixture: SdfCardsFixture) {
     for (const id of resources)
       expect((await replay.readResource(id)).unwrap().bytes.every((v) => v === 0)).toBe(true);
     for (const [i, id] of resources.entries())
-      expect((await replay.readResourceAtWork(id, i)).unwrap().bytes).toEqual(live[i]);
+      expect(equalBytes((await replay.readResourceAtWork(id, i)).unwrap().bytes, live[i])).toBe(
+        true,
+      );
   } finally {
     (await replay.dispose()).unwrap();
     freshRaw.destroy();

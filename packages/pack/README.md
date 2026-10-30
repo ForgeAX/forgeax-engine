@@ -29,6 +29,12 @@ Plain packages without repeated programs keep their existing envelope.
 Malformed references, non-object table records, unknown envelope fields and
 unused table entries fail closed. There is no process-wide intern pool.
 
+Program interning compares complete artifact byte views through a private byte
+snapshot and preserves ordinary JSON metadata. It never substitutes claimed
+program/artifact identities for actual bytes or creates one JSON object property
+per artifact byte. JSON-only inputs and custom serializers keep their existing
+JSON route. These internal keys do not change the wire records or identities.
+
 `encodeMaterialProgramWire` and `decodeMaterialProgramWire` are available through
 `@forgeax/engine-pack/runtime`. Source authoring remains ordinary Pack; the table
 is a delivery representation. Browser/native resource reads, current publication
@@ -390,7 +396,7 @@ sampler、强度或非默认坐标等附加元数据才使用结构化纹理对�
 > package moves and DDC relocation. Paths and array positions are locators,
 > not identities.
 
-Disk schema, GUID tools (`AssetGuid` brand + UUIDv7/v5), mesh-binary wire facts, and scanner fail-fast chain (13-member `PackErrorCode`) for the ForgeaX asset package system. The unified `asset list`, `asset inspect`, and `asset verify` commands call this owner in filesystem mode; they are offline and require no WS connection.
+Disk schema, GUID tools (`AssetGuid` brand + UUIDv7/v5), mesh-binary wire facts, and scanner fail-fast chain (13-member `PackErrorCode`) for the ForgeAX asset package system. The unified `asset list`, `asset inspect`, and `asset verify` commands call this owner in filesystem mode; they are offline and require no WS connection.
 
 > Package name vs directory: this package is published as `@forgeax/engine-pack` but lives at `packages/pack` on disk. The `@forgeax/engine-` prefix is the IDE-autocomplete entrypoint AI users discover the package family by; the directory drops the prefix to keep tree depth flat (mirrors the `packages/runtime` / `@forgeax/engine-runtime` pair). All other packages in the engine family follow the same convention.
 

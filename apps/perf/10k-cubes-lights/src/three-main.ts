@@ -88,7 +88,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const renderer = new WebGPURenderer({ canvas: target, antialias: false, forceWebGL: false });
   await renderer.init();
   renderer.setPixelRatio(1);
-  // The drawing buffer follows CSS size × devicePixelRatio, as the ForgeaX
+  // The drawing buffer follows CSS size × devicePixelRatio, as the ForgeAX
   // page does, so both implementations shade the same pixel count.
   const fitDrawingBuffer = (): void => {
     const ratio = window.devicePixelRatio || 1;
@@ -108,7 +108,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
 
   const geometry = new BoxGeometry(1, 1, 1);
   const material = new MeshStandardMaterial({
-    // ForgeaX's built-in `color` material parameters are authored in sRGB and
+    // ForgeAX's built-in `color` material parameters are authored in sRGB and
     // extracted to linear RGB. Three's numeric Color constructor is already
     // linear, so name the authored color space here to compare the same
     // material instead of giving Three a substantially brighter albedo.

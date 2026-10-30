@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "ForgeaX external game project CLI and build orchestration.",
+  "description": "ForgeAX external game project CLI and build orchestration.",
   "bin": {
     "forgeax": "./dist/cli.mjs"
   },

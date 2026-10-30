@@ -106,7 +106,7 @@ function installBackgroundPageCreation(provider: PlaywrightBrowserProvider): voi
   };
 }
 
-function installFailedModuleDiagnostics(provider: PlaywrightBrowserProvider): void {
+function installFailedSourceDiagnostics(provider: PlaywrightBrowserProvider): void {
   const internals = provider as unknown as ProviderInternals;
   const originalCreateContext = internals.createContext;
   if (typeof originalCreateContext !== 'function') return;
@@ -127,9 +127,10 @@ function installFailedModuleDiagnostics(provider: PlaywrightBrowserProvider): vo
       Request,
       { response: Response; detail: ReturnType<typeof requestDetail>; status: number }
     >();
-    const isModule = (request: Request) =>
+    const isObserved = (request: Request) =>
       request.resourceType() === 'script' ||
-      /\.browser\.test\.[cm]?[jt]sx?(?:$|[?#])/.test(request.url());
+      /\.browser\.test\.[cm]?[jt]sx?(?:$|[?#])/.test(request.url()) ||
+      /\/__pack\/scopes\/[^/]+\/\d+\/catalog\.json(?:$|[?#])/.test(request.url());
     const emit = (detail: Record<string, unknown>) => {
       try {
         process.stderr.write(
@@ -145,7 +146,7 @@ function installFailedModuleDiagnostics(provider: PlaywrightBrowserProvider): vo
     };
     context.on('requestfailed', (request) => {
       try {
-        if (!isModule(request) || failures >= 32) return;
+        if (!isObserved(request) || failures >= 32) return;
         failures++;
         emit({
           kind: 'requestfailed',
@@ -161,7 +162,7 @@ function installFailedModuleDiagnostics(provider: PlaywrightBrowserProvider): vo
     context.on('response', (response) => {
       try {
         const request = response.request();
-        if (response.status() < 400 || !isModule(request) || failures >= 32) return;
+        if (response.status() < 400 || !isObserved(request) || failures >= 32) return;
         failures++;
         const detail = requestDetail(request);
         const status = response.status();
@@ -241,7 +242,7 @@ export function playwrightWithBackgroundPages(
         project.config.browser.headless === false &&
         !isFalse(process.env.FORGEAX_BROWSER_BACKGROUND);
       if (backgroundPages) installBackgroundPageCreation(provider);
-      installFailedModuleDiagnostics(provider);
+      installFailedSourceDiagnostics(provider);
       return provider;
     },
   };

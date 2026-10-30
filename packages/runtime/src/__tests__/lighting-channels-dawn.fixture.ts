@@ -56,13 +56,22 @@ export async function runChannelDawnCase(
       receiver,
       paths,
       async preparePhysicalMaterial(source) {
-        const cooked = await createMaterialPackCooker().cook({
+        const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
           guid: CHANNEL_PHYSICAL_GUID,
           source,
         });
         const record = validateCookedMaterialRecord(
           (cooked.payload as { cooked: unknown }).cooked,
         ).unwrap();
+        if (
+          record.programs.some(({ selections }) =>
+            selections.some(
+              ({ context }) =>
+                context.backend !== 'webgpu' || context.capability === 'uniform-fallback',
+            ),
+          )
+        )
+          throw new Error('lighting channel Dawn fixture requires a storage WebGPU producer');
         return await prepareChannelPhysicalMaterial(
           host.assets,
           serializeCookedMaterialRecord(record),

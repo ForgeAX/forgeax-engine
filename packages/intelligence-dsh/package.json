@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Host-side DeepSeek Harness provider for ForgeaX intelligence Activities.",
+  "description": "Host-side DeepSeek Harness provider for ForgeAX intelligence Activities.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

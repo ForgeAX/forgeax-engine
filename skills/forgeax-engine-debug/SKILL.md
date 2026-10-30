@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-debug
 description: >-
-  ForgeaX troubleshooting router with RHI Debug first for difficult rendering failures.
+  ForgeAX troubleshooting router with RHI Debug first for difficult rendering failures.
   Use when rendering is wrong, CI is slow or flaky, tests fail, asset hot reload fails,
   or a clean worktree behaves differently.
 ---
@@ -11,6 +11,12 @@ description: >-
 Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
+
+For production CSP fixture timeouts, distinguish Worker initialization from
+Preview teardown. Close the Vite Preview owner so unfinished HTTP connections
+cannot retain the fixture. Keep both real inline/external WASM cases and their
+deadlines; qualify the actual unfinished-request cleanup budget in the existing
+CI contract job before rerunning the complete Browser gate.
 
 For Browser/Dawn fixture overhead, audit both reachable source graphs, including
 conditional shadow flags. Inspect actual shadow resources and replay queue work
@@ -37,10 +43,31 @@ An interrupted later owner does not invalidate an earlier successful ordinary
 child. Refresh its measured file costs in `scripts/ci/dawn-file-seconds.json`
 while retaining larger inherited forecasts and the complete native roster.
 
+For large GPU snapshot or reference-oracle costs, inspect actual matcher traversal
+before changing native work. Follow [native payload and startup work](../../scripts/ci/README.md#native-payload-and-startup-work);
+keep full payload equality, provenance and independent negative controls. A byte
+work-budget failure requires fixing the oracle, not exempting the test.
+
+For tape transport costs, separate lossless gzip work from GPU execution.
+RHI Debug selects native zlib only in Node and keeps its portable browser/Worker
+codec through a package condition. Qualify real codec-call budgets, complete
+cross-codec bytes, corrupt-input failures and browser packaging before full
+Dawn timing; retain every capture, replay and digest check.
+
+For wire interning costs, inspect the actual artifact byte path in Pack's codec.
+Preserve complete bytes, ordinary metadata and publication identities through
+[the shared program contract](../../packages/pack/README.md#shared-material-program-transport).
+
 For slow material-publication fixtures, retain validated artifact byte views until
-the publication owner performs JSON encoding. A preliminary JSON roundtrip makes
-the publication digest traverse every byte as an ordinary numeric array. Preserve
-the real source/decode/adopt path and its artifact-integrity checks.
+the real publication digest and wire encoding; apply the existing Pack numeric
+projection once before native JSON encoding. Storage WebGPU-only fixtures can
+declare the qualified cooker target; GI/ray requires `webgpu-storage-ray` to
+retain both ray-hit and Card programs. Keep actual output-context work guards,
+full compiler byte parity and portable/constrained/fallback coverage; see
+[material fixture production](../../scripts/ci/README.md#native-payload-and-startup-work).
+A preliminary JSON roundtrip makes the publication digest traverse every byte
+as an ordinary numeric array. Preserve the real source/decode/adopt path and its
+artifact-integrity checks.
 
 For material-parity timeouts, inspect binary comparison overhead before changing
 compiler concurrency or deadlines. Keep exact byte and metadata equality,
@@ -184,6 +211,10 @@ while preserving the full roster, native process isolation and existing deadline
 Compare complete child costs with their placement forecasts before changing lane
 membership; refresh stale file and owner costs first, then replay ordinary
 backfill. Keep an interrupted owner at its inherited forecast.
+The job result and native child result are separate: a child that passed with
+its complete emitted roster can supply costs even when the overall job later
+times out during cleanup. Include that cleanup headroom when qualifying all four
+lanes; do not treat passing groups as a successful job or raise the job deadline.
 Check serial Dawn's Mesa worker count against the admitted heavy CPU budget;
 CI and Dawn Focus use eight workers, while concurrent Browser processes retain
 four each. Preserve capacity admission and the single native Vitest worker.
@@ -251,6 +282,11 @@ build graph owns ordering and cache invalidation for these build-only tools
 ([CI guide](../../scripts/ci/README.md)). Do not add the compiler to a player import.
 For workflow ShellCheck failures, follow the [CI shell transport contract](../../scripts/ci/README.md#ci-code-ownership)
 and retain the original file roster and preparation failure exits.
+For a missing descendant PID in `gate-process-lifecycle.test.mjs`, inspect fixture
+startup and parallel Node admission before assigning a cleanup failure. The
+complete owner runs serially after the bulk regression batch; keep its original
+1.5/2-second command deadlines and every readiness, escalation and exit assertion.
+See the [owned process route](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
 For a leaked Vite port or a completed browser smoke that never exits, follow
 the [owned server lifetime route](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
 Inspect descendants that retain inherited output, use the shared owned
@@ -776,6 +812,9 @@ SDK package verification owns the default production build; the custom-base
 empty-project build retains direct CLI coverage. Do not rebuild the same unchanged
 project immediately before packaging it.
 For SDK subprocess failures, run `pnpm test:sdk:contracts` before the installed consumers.
+For public-source View device loss, keep its Playwright browser-process output,
+original tape and selected work index. Verify fresh-device disposal and real
+captured-frame pixels; a local pass does not qualify the failed SDK consumer.
 For npm-consumer `ERR_HTTP_HEADERS_SENT`, inspect the upstream body read before
 response headers are committed. The SDK registry regression in `sdk-lib.test.mjs`
 executes the build, preflight and publication listeners against an interrupted
@@ -871,6 +910,18 @@ device does nothing. Follow the CI guide's native cleanup ordering, including
 replacement timestamp devices, before treating the process as a pass.
 The textures bootstrap retains its existing exclusive short-renderer owner and
 original deadlines; an isolated passing run cannot replace complete CI.
+
+For Browser Catalog HTTP failures, inspect the bounded failed-source response
+observation before investigating rendering. The observer retains the original
+scoped Catalog response without another request; unobserved bodies remain
+unverified. Preserve the original failed check and its producer error.
+
+For a Preview Catalog startup timeout, distinguish a listening Vite server from
+accepted Pack production. Inspect the existing startup stage timings and native
+cooker admission; dev wrappers must retain explicit concurrency declarations.
+ScriptablePack only batches opted-in reentrant outputs, at most four, preserving
+authored result order and failure draining. Keep the Catalog deadline and full
+source closure; an isolated startup pass does not qualify the browser gate.
 
 For native startup overhead or Preview first-frame timeouts, use the
 [CI guide](../../scripts/ci/README.md#failure-recovery). Inspect real frame
@@ -997,3 +1048,9 @@ For a first Host timeout with a restoring-project header, inspect the recorded
 `nativeViewConnected` value. Test native transport connection within 60 seconds;
 project restoration shares the first Editor's 180-second frame deadline. Do not
 measure the two owners through one temporarily overridden header label.
+For `MCP document failed` with a transport request timeout after native View
+connection, inspect document compilation separately from project restoration.
+The presentation owns pending compilation; short document queries poll its
+completed resource reference. Preserve RPC/source-read deadlines, bounded tasks,
+replacement cancellation, terminal source failures and the complete native Scene,
+Play/Stop and Backend recovery journey. See the [MCP consumer gate](../../scripts/ci/README.md#optional-mcp-app-consumer).

@@ -1,5 +1,6 @@
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '../index';
 import { readbackTexturePixels } from '../readback';
 
@@ -87,7 +88,7 @@ export async function verifyRasterPassLabels() {
   try {
     const replayed = (await replay.readResourceAtWork(target, 3)).unwrap().bytes;
     expect(observed).toEqual(labels);
-    expect(replayed).toEqual(live);
+    expect(equalBytes(replayed, live)).toBe(true);
     return { bytes, live, replayed, labels: labels.map((label) => label ?? null) };
   } finally {
     (await replay.dispose()).unwrap();

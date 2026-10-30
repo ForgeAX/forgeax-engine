@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/ForgeaX-Games/forgeax-engine/forgeax-metrics.schema.json",
+  "$id": "https://github.com/ForgeAX/forgeax-engine/forgeax-metrics.schema.json",
   "title": "forgeax.metrics",
   "description": "Schema for package.json#forgeax.metrics declarations. Closed MetricKind union (5 members, declaration order locked): bundle-size / fps / bench / gate / spike-report. Each member must declare enabled (boolean). When enabled=false, reason (non-empty string) is required. Members may declare an optional baseline { source, threshold }. See AGENTS.md ## Metric registry for evolution contract (minor: add member only; major: rename / delete / reorder).",
   "type": "object",

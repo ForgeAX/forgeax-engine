@@ -80,19 +80,19 @@ import type { RhiCaps } from '../src/index';
       });
 
       it('label field type aligns with spec (string | undefined)', () => {
-        type LabelForgeaX = NonNullable<BindGroupDescriptor['label']>;
+        type LabelForgeAX = NonNullable<BindGroupDescriptor['label']>;
         type LabelSpec = NonNullable<GPUBindGroupDescriptor['label']>;
-        expectTypeOf<LabelForgeaX>().toEqualTypeOf<LabelSpec>();
+        expectTypeOf<LabelForgeAX>().toEqualTypeOf<LabelSpec>();
       });
 
       it('layout field type aligns with forgeax BindGroupLayout opaque handle', () => {
-        type LayoutForgeaX = NonNullable<BindGroupDescriptor['layout']>;
-        expectTypeOf<LayoutForgeaX>().toEqualTypeOf<BindGroupLayout>();
+        type LayoutForgeAX = NonNullable<BindGroupDescriptor['layout']>;
+        expectTypeOf<LayoutForgeAX>().toEqualTypeOf<BindGroupLayout>();
       });
 
       it('entries field is iterable per forgeax BindGroupEntry (D-P2 #5 tagged union)', () => {
-        type EntriesForgeaX = NonNullable<BindGroupDescriptor['entries']>;
-        type EntriesElem = EntriesForgeaX extends Iterable<infer T> ? T : never;
+        type EntriesForgeAX = NonNullable<BindGroupDescriptor['entries']>;
+        type EntriesElem = EntriesForgeAX extends Iterable<infer T> ? T : never;
         expectTypeOf<EntriesElem>().toMatchTypeOf<{ binding: number; resource: { kind: string } }>();
       });
 
@@ -197,9 +197,9 @@ import type { RhiCaps } from '../src/index';
       });
 
       it('label field type aligns with spec (string | undefined)', () => {
-        type LabelForgeaX = NonNullable<PipelineLayoutDescriptor['label']>;
+        type LabelForgeAX = NonNullable<PipelineLayoutDescriptor['label']>;
         type LabelSpec = NonNullable<GPUPipelineLayoutDescriptor['label']>;
-        expectTypeOf<LabelForgeaX>().toEqualTypeOf<LabelSpec>();
+        expectTypeOf<LabelForgeAX>().toEqualTypeOf<LabelSpec>();
       });
 
       it('bindGroupLayouts is an iterable of forgeax BindGroupLayout opaque handles', () => {

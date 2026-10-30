@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Build-time MSDF font atlas baking and runtime font asset loading for the ForgeaX engine. The unified ForgeaX asset command owns the public producer entry.",
+  "description": "Build-time MSDF font atlas baking and runtime font asset loading for the ForgeAX engine. The unified ForgeAX asset command owns the public producer entry.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

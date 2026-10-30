@@ -146,7 +146,7 @@ struct SurfaceFrameFacts {
   backgroundAvailable: u32,
 };
 
-// World coordinates in ForgeaX are metres. A sky miss still needs a finite
+// World coordinates in ForgeAX are metres. A sky miss still needs a finite
 // endpoint so Beer-Lambert and refraction remain continuous when the opaque
 // depth producer has no geometry at a pixel. The value is supplied by the
 // authored Surface ABI; this constant is only an invalid-authoring fallback.

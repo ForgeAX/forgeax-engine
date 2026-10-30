@@ -161,7 +161,7 @@ function gateSession(context: TransportRouteContext, res: DispatcherResponse): b
       res,
       {
         error: 'pack-session-starting',
-        expected: 'an accepted ForgeaX pack snapshot',
+        expected: 'an accepted ForgeAX pack snapshot',
         hint: 'wait for startup, then enumerate and retry',
       },
       503,
@@ -173,7 +173,7 @@ function gateSession(context: TransportRouteContext, res: DispatcherResponse): b
       res,
       {
         error: 'pack-session-closed',
-        expected: 'an open ForgeaX pack session',
+        expected: 'an open ForgeAX pack session',
         hint: 'create a new Vite server session before retrying',
       },
       410,
@@ -186,7 +186,7 @@ function gateSession(context: TransportRouteContext, res: DispatcherResponse): b
       res,
       {
         error: sessionFailure?.code ?? 'scan-failed',
-        expected: sessionFailure?.expected ?? 'an accepted ForgeaX pack snapshot',
+        expected: sessionFailure?.expected ?? 'an accepted ForgeAX pack snapshot',
         hint: sessionFailure?.hint ?? 'repair the producer, rebuild, verify, and retry',
         ...(sessionFailure === undefined
           ? {}

@@ -22,7 +22,7 @@ const output = resolve(process.env.NATIVE_WINDOW_EVIDENCE ?? 'artifacts/native-w
 await mkdir(output, { recursive: true });
 const manifestPath = resolve(root, 'apps/hello/triangle/dist/shaders/manifest.json');
 const shaderManifestUrl = `data:application/json,${encodeURIComponent(await readFile(manifestPath, 'utf8'))}`;
-const { host, window } = createWindow({ title: 'ForgeaX native TypeScript World', width: 640, height: 360 });
+const { host, window } = createWindow({ title: 'ForgeAX native TypeScript World', width: 640, height: 360 });
 assert.throws(() => host.takeNativeWindow(), /already borrowed/);
 installNavigatorGpu(window.gpu).unwrap();
 const { createRenderer } = await import('@forgeax/engine-runtime');
@@ -169,7 +169,7 @@ try {
   assert.equal(window.pollEvents().ok, false);
   assert.throws(() => context.getCurrentTexture(), /unconfigured/);
   report.checks.push('close is idempotent and rejects late window and surface use');
-  const { window: replacement, host: replacementHost } = createWindow({ width: 320, height: 180, title: 'ForgeaX replacement' });
+  const { window: replacement, host: replacementHost } = createWindow({ width: 320, height: 180, title: 'ForgeAX replacement' });
   replacement.pollEvents().unwrap();
   replacementHost.mountWebview('<html><body>Replacement WebView</body></html>');
   replacement.pollEvents().unwrap();

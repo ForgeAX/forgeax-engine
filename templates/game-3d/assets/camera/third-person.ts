@@ -16,7 +16,7 @@ export interface HorizontalMove {
 }
 
 /**
- * ForgeaX uses a right-handed world: +Y is up. This template defines yaw=0
+ * ForgeAX uses a right-handed world: +Y is up. This template defines yaw=0
  * as looking toward world -Z, so camera-right is +X. Mouse X changes yaw;
  * WASD is projected onto these horizontal camera axes; character facing then
  * follows the resolved move vector. Pitch only changes the camera orbit.

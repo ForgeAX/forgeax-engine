@@ -8,6 +8,10 @@ import type { RenderFeature, RenderFeatureDiagnostics } from '../features/types'
 import type { GpuDrivenProductionInspection, LodOcclusionInspection } from '../inspection-types';
 import type { MeshMaterialBindingObservation } from '../mesh-material-bindings';
 import type { PublishedRenderFrameInput } from '../publication/contract';
+import type {
+  ClusterWorkFrameTrace,
+  ClusterWorkObservation,
+} from '../record/cluster-work-conformance';
 import type { FrameObservation, FrameObservationOptions } from '../record/frame';
 import type { CurrentGraphTarget, GraphTargetCaptureRequest } from '../record/frame-snapshot';
 import type {
@@ -131,6 +135,8 @@ export interface RendererLegacyHostAdapter {
   /** @internal Test-only current compiled graph target diagnostic. */
   getCurrentGraphTarget(name: string): CurrentGraphTarget | undefined;
   requestGraphTargetCapture(request: GraphTargetCaptureRequest): void;
+  /** @internal Cancel this exact one-shot graph capture if its draw did not consume it. */
+  cancelGraphTargetCapture(request: GraphTargetCaptureRequest): void;
   onLost(listener: RendererLostListener): () => void;
   onError(listener: RendererErrorListener): () => void;
   health(): HealthSnapshot;
@@ -142,6 +148,22 @@ export interface RendererLegacyHostAdapter {
   renderFeatureDiagnostics(): readonly RenderFeatureDiagnostics[];
   /** @internal Install Standard pipeline-asset config for producer fixtures. */
   configureStandard(config: RenderPipelineAsset['config']): void;
+  /** @internal Select a prepared GTAO entry for backend conformance. */
+  setGtaoExecutionOverrideForConformance(override: 'fragment' | 'compute' | undefined): void;
+  /** @internal Arm one post-allocation AO candidate rejection on the active view. */
+  armGtaoCandidatePreparationFailureForConformance(): void;
+  /** @internal Opt into detached Cluster table write counters for conformance tests. */
+  setClusterWorkObservationForConformance(enabled: boolean): void;
+  /** @internal Read the current view's last captured Cluster owner counters. */
+  clusterWorkObservationForConformance(): ClusterWorkObservation | undefined;
+  /** @internal Read the current one-attempt local-frame/copy/public-receipt trace. */
+  clusterWorkFrameTraceForConformance(): ClusterWorkFrameTrace | undefined;
+  /** @internal Enable one bounded feature-plan/graph conformance trace. */
+  setFeatureGraphTraceForConformance(featureIdentity: string | undefined): void;
+  /** @internal Read the active display view's feature-plan/graph conformance trace. */
+  featureGraphTraceForConformance(): ReturnType<
+    typeof import('../features/feature-graph-conformance-trace').readFeatureGraphConformanceTrace
+  >;
   installRenderFeature(feature: RenderFeature<unknown>): Promise<RenderResult<void, RenderError>>;
   uninstallRenderFeature(feature: RenderFeature<unknown>): Promise<RenderResult<void, RenderError>>;
   readonly bindGroupCounts: { readonly createBindGroup: number; readonly keys: readonly string[] };

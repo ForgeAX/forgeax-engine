@@ -172,6 +172,53 @@ test('dynamic direct uploads require the real preceding checker with matching in
   );
 });
 
+test('render failure selection retains native tapes and screenshots without following installed dependencies', async () => {
+  const { parse } = await import('yaml');
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const step = workflow.jobs['vitest-browser-shard'].steps.find(
+    (step) => step.name === 'Preserve render browser failure evidence',
+  );
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-render-upload-'));
+  try {
+    const files = [
+      'artifacts/three-compat/material-readiness-failure.rhitape',
+      'artifacts/ies-point-area/browser/deferred-point-combined-upper.rhitape',
+      'packages/runtime/src/__tests__/__screenshots__/failure.png',
+      'apps/hello/triangle/src/__tests__/__screenshots__/failure.png',
+      'packages/runtime/node_modules/dependency/reports/__screenshots__/excluded.png',
+    ];
+    const tracked = spawnSync('git', ['ls-files', '--', 'packages', 'apps'], { encoding: 'utf8' });
+    assert.equal(tracked.status, 0, tracked.stderr);
+    const screenshots = [
+      ...new Set(
+        tracked.stdout
+          .split('\n')
+          .filter((file) => /\.browser(?:-no-webgpu)?\.test\.ts$/.test(file))
+          .map((file) => `${file.slice(0, file.lastIndexOf('/'))}/__screenshots__/selector.png`),
+      ),
+    ];
+    assert.ok(screenshots.length > 0, 'the real Browser source roster is required');
+    for (const file of [...files, ...screenshots]) {
+      mkdirSync(join(root, file, '..'), { recursive: true });
+      writeFileSync(join(root, file), 'evidence');
+    }
+    const { create } = await import('@actions/glob');
+    const patterns = step.with.path
+      .trim()
+      .split('\n')
+      .map((pattern) =>
+        pattern.startsWith('!') ? `!${join(root, pattern.slice(1))}` : join(root, pattern),
+      );
+    const selected = await (await create(patterns.join('\n'))).glob();
+    for (const file of [...files.slice(0, 4), ...screenshots])
+      assert.ok(selected.includes(join(root, file)), file);
+    assert.ok(!selected.includes(join(root, files[4])));
+    assert.deepEqual(await resolvedUploadViolations(step.with, root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('official upload selection preserves include-hidden-files rather than silently filtering it', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-report-hidden-'));
   try {

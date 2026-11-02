@@ -105,7 +105,12 @@ export function testMaterialOutputPartition(partition: 0 | 1): void {
     const renderer = rendererFor({ antialias: name === 'coverage' });
     try {
       await renderer.init();
-      await readyFrames(renderer, scene, camera, 60);
+      await readyFrames(renderer, scene, camera, 60, async () => {
+        if (renderer.inspect().receipt?.presentation === 'ready') {
+          const failed = await renderer.captureFrame(scene, camera);
+          await saveBrowserEvidence(`material-output-${caseName}-readiness-failure`, failed);
+        }
+      });
       const capture = await renderer.captureFrame(scene, camera);
       const reference = await renderReference(scene, camera, { antialias: name === 'coverage' });
       await saveBrowserEvidence(`material-output-${caseName}`, capture, reference);
@@ -126,6 +131,7 @@ export function testMaterialOutputPartition(partition: 0 | 1): void {
         await verifyReplay(single);
       }
     } finally {
+      mesh.geometry.dispose();
       material.dispose();
       texture.dispose();
     }

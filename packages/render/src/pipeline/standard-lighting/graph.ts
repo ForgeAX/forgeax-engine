@@ -5,16 +5,19 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import { ok, type Result } from '@forgeax/engine-types';
+import { RenderGraphError as RenderGraphFailure } from '@forgeax/engine-render-graph';
+import { err, ok, type Result } from '@forgeax/engine-types';
+import { GPU_TEXTURE_USAGE_COPY_SRC } from '../../gpu-texture-usage';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../../gpu-usage';
 import { getOrCreateHdrpBuffers, type HdrpBuffers } from '../../hdrp-buffers';
-import { BYTES_PER_DIRECT_LIGHT_SLOT } from '../../light-buffer-layout';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
-import type { RenderPipelineFrame } from '../../render-pipeline';
+import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
+import { addTypedSsaoClusterPackPass } from '../../typed-render-graph-primitives';
+import type { StandardClusterAoExtent } from './texture';
 import { standardClusterTextureLayout } from './texture';
 import type { StandardTopologyInputValue } from './topology';
 
@@ -34,16 +37,21 @@ export type StandardClusterGraphBuffers =
       readonly kind: 'texture';
       readonly texture: GraphTextureView;
       readonly clusterUniform: GraphBuffer;
+      readonly textureLayout: ReturnType<typeof standardClusterTextureLayout>;
     };
 
 /** Stable graph-time projection; never retain a frame's typed-array payload. */
 interface StandardClusterGraphDescriptor {
   readonly grid: { readonly x: number; readonly y: number; readonly z: number };
+  readonly aoExtent?: StandardClusterAoExtent | undefined;
 }
 
-function projectDescriptor(input: StandardTopologyInputValue): StandardClusterGraphDescriptor {
+function projectDescriptor(
+  input: StandardTopologyInputValue,
+  aoExtent?: StandardClusterAoExtent,
+): StandardClusterGraphDescriptor {
   const { x, y, z } = input.prepared.layout.grid;
-  return { grid: { x, y, z } };
+  return { grid: { x, y, z }, ...(aoExtent === undefined ? {} : { aoExtent }) };
 }
 
 function resolveBuffers(
@@ -51,7 +59,7 @@ function resolveBuffers(
   descriptor: StandardClusterGraphDescriptor,
 ): HdrpBuffers {
   const internal = frame as _InternalRenderPipelineContext;
-  const buffers = getOrCreateHdrpBuffers(internal.runtime, descriptor.grid);
+  const buffers = getOrCreateHdrpBuffers(internal.runtime, descriptor.grid, descriptor.aoExtent);
   if (buffers === null) throw new Error('Standard persistent buffer allocation failed');
   return buffers;
 }
@@ -70,18 +78,27 @@ export function shouldExecuteStandardClusterMembershipPass(frame: RenderPipeline
 export function importStandardClusterBuffers(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardTopologyInputValue,
+  aoExtent?: StandardClusterAoExtent,
 ): Result<StandardClusterGraphBuffers | null, RenderGraphError> {
   if (input.kind !== 'clustered') return ok(null);
   const layout = input.prepared.layout;
-  const descriptor = projectDescriptor(input);
+  const descriptor = projectDescriptor(input, aoExtent);
   if (input.transport.kind === 'cpu-texture') {
-    const extent = standardClusterTextureLayout(layout);
+    const textureLayout = standardClusterTextureLayout(
+      layout,
+      input.transport.lightDataSlotBytes,
+      aoExtent,
+    );
     const texture = graph.importTexture(
       'standard-cluster-tables',
       {
-        size: { width: extent.width, height: extent.height, depthOrArrayLayers: 1 },
+        size: {
+          width: textureLayout.width,
+          height: textureLayout.height,
+          depthOrArrayLayers: 1,
+        },
         format: 'rgba32uint',
-        usage: 0x02 | 0x04,
+        usage: 0x02 | 0x04 | (aoExtent === undefined ? 0 : 0x10 | GPU_TEXTURE_USAGE_COPY_SRC),
       },
       (frame) => {
         const buffers = resolveBuffers(frame, descriptor);
@@ -99,13 +116,18 @@ export function importStandardClusterBuffers(
     const uniform = graph.importBuffer(
       'hdrp-cluster-uniform',
       {
-        size: 32,
+        size: input.transport.clusterUniformBytes,
         usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
       },
       (frame) => resolveBuffers(frame, descriptor).clusterUniformBuffer,
     );
     if (!uniform.ok) return uniform;
-    return ok({ kind: 'texture', texture: view.value, clusterUniform: uniform.value });
+    return ok({
+      kind: 'texture',
+      texture: view.value,
+      clusterUniform: uniform.value,
+      textureLayout,
+    });
   }
   const storage = (frame: RenderPipelineFrame) => {
     const buffers = resolveBuffers(frame, descriptor);
@@ -115,7 +137,7 @@ export function importStandardClusterBuffers(
   const usage = GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST;
   const lightData = graph.importBuffer(
     'hdrp-light-data',
-    { size: layout.lightDataSlotCount * BYTES_PER_DIRECT_LIGHT_SLOT, usage },
+    { size: layout.lightDataSlotCount * input.transport.lightDataSlotBytes, usage },
     (frame) => storage(frame).lightDataBuffer,
   );
   if (!lightData.ok) return lightData;
@@ -133,7 +155,10 @@ export function importStandardClusterBuffers(
   if (!lightIndexList.ok) return lightIndexList;
   const clusterUniform = graph.importBuffer(
     'hdrp-cluster-uniform',
-    { size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST },
+    {
+      size: input.transport.clusterUniformBytes,
+      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    },
     (frame) => resolveBuffers(frame, descriptor).clusterUniformBuffer,
   );
   if (!clusterUniform.ok) return clusterUniform;
@@ -168,6 +193,32 @@ export function standardClusterReadAccesses(
     { resource: buffers.lightIndexList, usage: 'storage-read' },
     { resource: buffers.clusterUniform, usage: 'uniform-read' },
   ];
+}
+
+/** Add the AO producer to the spare region of the no-storage Cluster texture. */
+export function addStandardClusterAoPackPass(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  buffers: StandardClusterGraphBuffers,
+  source: RenderPipelineTarget,
+): Result<void, RenderGraphError> {
+  if (buffers.kind !== 'texture') return ok(undefined);
+  const region = buffers.textureLayout.ao;
+  if (region === undefined) {
+    return err(
+      new RenderGraphFailure({
+        code: 'resource-descriptor-invalid',
+        expected: 'the no-storage Cluster texture reserves an initialized AO region',
+        hint: 'rebuild the Cluster texture generation with the current AO extent',
+        detail: {
+          resourceLabel: 'standard-cluster-tables',
+          field: 'ao-region',
+          expected: 'disjoint initialized AO region',
+          actual: 'missing',
+        },
+      }),
+    );
+  }
+  return addTypedSsaoClusterPackPass(graph, { source, output: buffers.texture, region });
 }
 
 /**

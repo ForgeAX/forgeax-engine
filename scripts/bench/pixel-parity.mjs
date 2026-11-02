@@ -498,6 +498,7 @@ async function captureBothFromSinglePage(targetConfig) {
       '--enable-features=Vulkan',
       '--use-vulkan=swiftshader',
       '--use-angle=swiftshader',
+      ...(process.env.CI ? ['--disable-gpu-watchdog'] : []),
       '--ignore-gpu-blocklist',
       '--disable-gpu-driver-bug-workarounds',
     ],

@@ -232,7 +232,6 @@ try {
     }
     await contentBrowser.waitFor({ state: 'visible' });
   };
-  await revealContentBrowser();
   let state = await client.getState();
   const readyDeadline = Date.now() + 90000;
   while (!state.projectTarget?.worldId || state.projectTarget.worldId.startsWith('pending:')) {
@@ -241,6 +240,8 @@ try {
     await new Promise(resolve => setTimeout(resolve, 250));
     state = await client.getState();
   }
+  // Presentation requests are admitted only after workspace restoration.
+  await revealContentBrowser();
   assert.equal(state.project.id, 'runtime-content');
   assert.equal(await realpath(state.project.root), await realpath(projectRoot));
   assert.equal(new URL(page.url()).searchParams.get('forgeaxWorkspaceTarget'), state.projectTarget.targetId);

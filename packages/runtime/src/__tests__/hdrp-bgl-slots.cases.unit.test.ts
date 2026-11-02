@@ -55,13 +55,17 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
    *   [20..23] far             f32  (4 bytes)
    *   [24..27] logFarOverNear  f32  (4 bytes)
    *   [28..31] pad2            u32  (4 bytes, std140 vec4 alignment)
-   *   Total: 32 bytes (2 x vec4<u32> in std140)
+   *   [32..47] ao                  u32[4] AO transport addressing
+   *   [48..63] direct_ao           f32[4] independently controlled direct AO
+   *   [64..79] texture              u32[4] Cluster texture address metadata
+   *   [80..95] cluster_layout      u32[4] reflected producer addressing
+   *   Total: 96 bytes (6 x vec4 in std140)
    */
   const CLUSTER_UNIFORM_LAYOUT = {
-    /** Byte size of ClusterUniform in std140 (2 x vec4). */
-    byteSize: 32,
-    /** Number of f32 slots (8). */
-    floatCount: 8,
+    /** Byte size of ClusterUniform in std140 (6 x vec4). */
+    byteSize: 96,
+    /** Number of f32 slots (24). */
+    floatCount: 24,
     /** Byte offset of gridX (first field). */
     gridXOffset: 0,
     /** Byte offset of gridY. */
@@ -74,6 +78,10 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
     farOffset: 20,
     /** Byte offset of logFarOverNear. */
     logFarOverNearOffset: 24,
+    aoOffset: 32,
+    directAoOffset: 48,
+    textureOffset: 64,
+    clusterLayoutOffset: 80,
   } as const;
 
   // ── BGL slot tests ────────────────────────────────────────────────────────────
@@ -117,12 +125,12 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
   // ── cluster_uniform field tests ───────────────────────────────────────────────
 
   describe('ClusterUniform layout', () => {
-    it('byteSize is 32 (2 x vec4 in std140)', () => {
-      expect(CLUSTER_UNIFORM_LAYOUT.byteSize).toBe(32);
+    it('byteSize is 96 (6 x vec4 in std140)', () => {
+      expect(CLUSTER_UNIFORM_LAYOUT.byteSize).toBe(96);
     });
 
-    it('floatCount is 8', () => {
-      expect(CLUSTER_UNIFORM_LAYOUT.floatCount).toBe(8);
+    it('floatCount is 24', () => {
+      expect(CLUSTER_UNIFORM_LAYOUT.floatCount).toBe(24);
     });
 
     it('gridX at byte offset 0', () => {
@@ -148,14 +156,26 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
     it('logFarOverNear at byte offset 24', () => {
       expect(CLUSTER_UNIFORM_LAYOUT.logFarOverNearOffset).toBe(24);
     });
+    it('AO transport addressing at byte offset 32', () => {
+      expect(CLUSTER_UNIFORM_LAYOUT.aoOffset).toBe(32);
+    });
+    it('direct AO strength at byte offset 48', () => {
+      expect(CLUSTER_UNIFORM_LAYOUT.directAoOffset).toBe(48);
+    });
+    it('Cluster texture addressing metadata at byte offset 64', () => {
+      expect(CLUSTER_UNIFORM_LAYOUT.textureOffset).toBe(64);
+    });
+    it('reflected Cluster grid addressing metadata at byte offset 80', () => {
+      expect(CLUSTER_UNIFORM_LAYOUT.clusterLayoutOffset).toBe(80);
+    });
   });
 
   // ── Float32Array representation ───────────────────────────────────────────────
 
   describe('ClusterUniform Float32Array representation', () => {
-    it('Float32Array(8) holds one ClusterUniform (32 bytes)', () => {
-      const buf = new Float32Array(8);
-      expect(buf.byteLength).toBe(32);
+    it('Float32Array(24) holds one ClusterUniform (96 bytes)', () => {
+      const buf = new Float32Array(24);
+      expect(buf.byteLength).toBe(96);
     });
   });
 }

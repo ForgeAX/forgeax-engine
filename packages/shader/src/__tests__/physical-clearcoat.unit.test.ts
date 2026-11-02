@@ -50,11 +50,15 @@ describe('clearcoat physical shader layer', () => {
 
     for (const root of [standard, skin]) {
       expect(root).toContain(
-        'color += evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in),',
+        'var directRadiance = evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,',
       );
       expect(root).toContain(
         'physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow',
       );
+      expect(root).toContain(
+        'directRadiance *= mix(1.0, screenAo, get_ssao_direct_lighting_strength());',
+      );
+      expect(root).toContain('color += directRadiance;');
       expect(root).toContain('let safeIor = max(finiteScalar(material.ior, 1.5), 1.0);');
       expect(root).toContain('transmissionBackdropTexture');
       expect(root).toContain('let transmittedEnergy = select(');

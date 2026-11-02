@@ -2,6 +2,14 @@
 
 ## Public shader input boundary
 
+Directional PCSS uses one bounded loop with ordered blocker and comparison
+phases, sharing disk addressing instead of duplicating it in native pipeline
+compilation. The comparison phase starts only after blocker accumulation and
+preserves the disk order, receiver-plane correction and cascade blend.
+
+Medium retains 8 raw plus 16 comparison taps; high retains 16 plus 32. Read-only
+disk points live in one invocation-owned private array for addressable indexing.
+
 Direct text admission compacts fragments and computes its complete source identity
 once. Equal content reuses the Registry's canonical source; device forks borrow
 that admitted source without rehashing it. No expanded body is memoized.
@@ -387,11 +395,22 @@ implementation to maintain.
 
 When storage buffers are unavailable, the same 96-byte light records, grid
 offset/count pairs and complete membership list use one `rgba32uint` texture at
-View binding 3. Its width is 1024 texels; four consecutive words form each texel,
-with the 256 light records preceding the grid and index list. Binding 6 retains
-the cluster uniforms. The shader decodes float rows with `bitcast` and preserves
-integer metadata and lighting channels; the lighting and membership semantics
-are identical to the storage-buffer transport.
+`@group(2) @binding(3)`. Its width is 1024 texels; four consecutive words form
+each texel, with the 256 light records preceding the grid and index list.
+`@group(2) @binding(6)` holds six `vec4` rows in the 96-byte Cluster uniform.
+When AO is active, a row-aligned visibility region
+is appended after the complete Cluster payload, with its base word, logical
+extent and packed row stride in that uniform. Packing recovers the filtered
+UNORM8 byte before integer expansion, keeping identical Cluster words across
+normalized texture decoders with different f32 rounding. The eight visibility
+bits and neutral-white padding are unchanged. Forward PBR samples that region
+through the same integer texture binding, so authored material maps keep their
+full binding budget. The uniform's direct-light strength lane applies
+`mix(1, visibility, directLightingStrength)` to Forward direct illumination;
+zero preserves direct light, while the environment visibility path and material
+occlusion remain independent. The shader decodes light floats with `bitcast`
+and preserves integer metadata and lighting channels; membership and BRDF
+semantics match storage-buffer transport.
 
 `src/standard-surface.wgsl` owns the Standard material/fragment evaluation shared
 by ordinary Mesh and the VFX Mesh vertex adapter. Geometry adapters supply world
@@ -955,9 +974,16 @@ units scaled by local luminance, so mathematically equal endpoints terminate
 consistently across axes and backends. Output encoding belongs to the graph.
 
 `hdrp-ssao.wgsl` defaults to GTAO through the Render parameter owner: three slices,
-six steps per side, radius 0.25, thickness 1 and linear radial sampling. It applies
-visibility intensity before the existing depth/normal bilateral filter. The
-verified cosine integral, projected-normal correction, orthographic rays and
+six steps per side, radius 0.25, thickness 1 and linear radial sampling. A shared
+raw visibility kernel serves the fragment and compute entries; the prepared
+Renderer graph selects an eligible entry, then uses the same spatial filter and
+lighting consumer. Forward input preserves the selected material's evaluated
+normal and coverage. Visibility intensity is applied before the existing
+depth/normal bilateral filter. Its cosine-weighted slice integral covers the full
+`cos(theta - normal) * abs(sin(theta))` interval, splitting the analytic primitive
+at `-pi`, `0` and `pi` so tilted normals remain correct when horizons stay on
+one side of zero or cross either pi boundary. Fragment and compute use this same
+function. The verified projected-normal correction, orthographic rays and
 background/normal-plane rejection remain intentional differences from Three.
 
 Vogel PCF samples the original UV footprint with sampler edge clamping; receiver
@@ -995,3 +1021,9 @@ both RG16F passes and comparison; perspective spots and constant-bias cameras re
 The existing raw-depth capability selects point loads for per-texel comparisons;
 other profiles use the comparison-sampler fallback with the same references.
 See the Render README for units and acceptance.
+
+Surface cascade blending uses one filter call site in a uniform loop bounded
+to two layers. This preserves the current/next samples and blend weight while
+avoiding duplicated native filter code that crashes Metal compilation in
+composed single-layer medium shaders. The Surface Browser and isolated Dawn
+runtime tests retain their original pixel oracles for this path.

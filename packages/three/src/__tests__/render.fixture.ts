@@ -57,20 +57,31 @@ export async function readyFrames(
   scene: THREE.Object3D,
   camera: THREE.Camera,
   frames = 1,
+  onTimeout?: () => Promise<void>,
 ) {
-  const deadline = Date.now() + 20000;
+  const started = Date.now();
+  const deadline = started + 20000;
   let completed = 0;
+  let longestRenderMs = 0,
+    longestCompletionMs = 0;
   while (completed < frames) {
+    const frameStarted = Date.now();
     renderer.render(scene, camera);
+    const submitted = Date.now();
+    longestRenderMs = Math.max(longestRenderMs, submitted - frameStarted);
     const receipt = renderer.inspect().receipt;
     if (receipt === undefined) throw new Error('render did not submit');
     const result = await receipt.completed;
+    longestCompletionMs = Math.max(longestCompletionMs, Date.now() - submitted);
     if (!result.ok) throw result.error;
     if (receipt.presentation === 'ready') completed++;
-    if (Date.now() > deadline)
-      throw new Error(
-        `scene readiness timed out: ${JSON.stringify(receipt.presentationPendingReason)}`,
+    if (Date.now() > deadline) {
+      const error = new Error(
+        `scene readiness timed out: ${JSON.stringify({ completed, required: frames, elapsedMs: Date.now() - started, longestRenderMs, longestCompletionMs, presentation: receipt.presentation, pending: receipt.presentationPendingReason, frame: renderer.inspect().renderer.frame })}`,
       );
+      await onTimeout?.();
+      throw error;
+    }
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }

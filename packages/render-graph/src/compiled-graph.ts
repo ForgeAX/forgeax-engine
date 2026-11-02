@@ -30,6 +30,7 @@ import type {
   GraphBuffer,
   GraphResourceResolver,
   GraphTexture,
+  GraphTextureDescriptor,
   GraphTextureView,
   RasterColorAttachment,
   RasterDepthStencilAttachment,
@@ -448,20 +449,40 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   getColorTargetView(name: string): TextureView | undefined {
     for (const view of this.views.values()) {
       const resource = this.resources.get(view.record.textureId);
-      if (resource?.record.label === name) return view.view;
+      if (resource?.record.label === name) {
+        return view.view ?? this.frameResources.views.get(view.record.id);
+      }
     }
     return undefined;
   }
 
   getColorTargetTexture(name: string): Texture | undefined {
     for (const resource of this.resources.values()) {
-      if (resource.record.label === name) return resource.texture;
+      if (resource.record.label === name) {
+        return resource.texture ?? this.frameResources.textures.get(resource.record.id);
+      }
     }
     return undefined;
   }
 
   getColorTargetDescriptor(name: string): ResolvedColorTargetDescriptor | undefined {
-    return this.colorTargetDescriptors.get(name);
+    const known = this.colorTargetDescriptors.get(name);
+    if (known !== undefined) return known;
+    for (const resource of this.resources.values()) {
+      if (resource.record.label !== name || resource.record.kind !== 'texture') continue;
+      const texture = resource.texture ?? this.frameResources.textures.get(resource.record.id);
+      const descriptor = resource.textureDescriptor;
+      if (texture === undefined || descriptor === undefined) return undefined;
+      const declared = resource.record.descriptor as GraphTextureDescriptor;
+      return {
+        texture,
+        format: declared.format,
+        size: { width: descriptor.size.width, height: descriptor.size.height },
+        usage: descriptor.usage ?? resource.usage,
+        sample: descriptor.sampleCount ?? 1,
+      };
+    }
+    return undefined;
   }
 
   execute(

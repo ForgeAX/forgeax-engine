@@ -7,10 +7,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { DeviceScope, LifecycleTransaction } from '../device/device-scope';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 
 let device: RhiDevice;
 

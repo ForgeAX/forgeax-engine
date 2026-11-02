@@ -33,7 +33,12 @@ import type {
   RenderFeatureStage,
 } from '../features/vocabulary';
 import type { AutoExposureError } from '../pipeline/standard-output/auto-exposure/inspection';
-import type { SceneDataLane, SceneDataSchemaId } from '../temporal/scene-data';
+import type {
+  SceneDataLane,
+  SceneDataSchemaId,
+  StandardSceneDataContributorProgramFact,
+  StandardSceneDataMissingContributor,
+} from '../temporal/scene-data';
 import type { TransmissionCapabilityFact } from '../transmission/backdrop';
 import type { CloudLayerError } from './cloud';
 import type { RecoveryOutcome, RecoveryPhase } from './recover';
@@ -380,11 +385,8 @@ export class StandardLightBudgetExceededError extends Error {
   constructor(actual: number, budget: number) {
     const expected = `light count <= ${budget}`;
     const hint =
-      budget < 256
-        ? `${actual} finite local lights exceed Standard budget ${budget}; raise it with ` +
-          'renderer.setProfile({ ...renderer.inspect().profile, lightCount: 256 }) or reduce the local-light set'
-        : `${actual} finite local lights exceed the Standard maximum of 256; merge distant ` +
-          'lamps into emissive meshes with bloom or reduce the local-light set';
+      `${actual} finite local lights exceed the admitted Standard budget ${budget}; raise the ` +
+      'configured light budget to a supported value or reduce the local-light set';
     super(`Standard light budget exceeded: ${actual} > ${budget}`);
     this.name = 'StandardLightBudgetExceededError';
     this.expected = expected;
@@ -906,6 +908,17 @@ export type RenderFeaturePreparedStateMismatchDetail =
       readonly stage: 'contribute';
       readonly operation: string;
       readonly resourceKind: PreparedKind;
+      readonly reason: 'foreign-view';
+      readonly expectedViewIdentity: string;
+      readonly actualViewIdentity: string;
+      readonly recovery: RenderFeatureRecovery;
+    }
+  | {
+      readonly featureIdentity: string;
+      readonly order: number;
+      readonly stage: 'contribute';
+      readonly operation: string;
+      readonly resourceKind: PreparedKind;
       readonly reason: 'foreign-kind';
       readonly expectedKind: PreparedKind;
       readonly actualKind: PreparedKind;
@@ -918,6 +931,17 @@ export type RenderFeaturePreparedStateMismatchDetail =
       readonly operation: string;
       readonly resourceKind: PreparedKind;
       readonly reason: 'generation-mismatch';
+      readonly expectedGeneration: number;
+      readonly actualGeneration: number;
+      readonly recovery: RenderFeatureRecovery;
+    }
+  | {
+      readonly featureIdentity: string;
+      readonly order: number;
+      readonly stage: 'contribute';
+      readonly operation: string;
+      readonly resourceKind: PreparedKind;
+      readonly reason: 'device-generation-mismatch';
       readonly expectedGeneration: number;
       readonly actualGeneration: number;
       readonly recovery: RenderFeatureRecovery;
@@ -1273,9 +1297,33 @@ export interface SceneDataUnavailableDetail {
   readonly lane: SceneDataLane;
   readonly reason: SceneDataUnavailableReason;
   readonly missingContributorIds: readonly string[];
+  readonly missingContributors?: readonly StandardSceneDataMissingContributor[];
   readonly omittedMissingContributorCount: number;
   readonly recovery: 'enable-capability' | 'next-frame' | 'renderer-recover';
 }
+
+function freezeSceneDataProgram(
+  program: StandardSceneDataContributorProgramFact['program'],
+): StandardSceneDataContributorProgramFact['program'] {
+  return program === undefined
+    ? undefined
+    : Object.freeze({ ...program, context: Object.freeze({ ...program.context }) });
+}
+
+function freezeSceneDataProgramFact(
+  fact: StandardSceneDataContributorProgramFact,
+): StandardSceneDataContributorProgramFact {
+  return Object.freeze({
+    ...fact,
+    fragmentEntryPoints: Object.freeze([...fact.fragmentEntryPoints]),
+    publicationIdentity:
+      fact.publicationIdentity === undefined
+        ? undefined
+        : Object.freeze({ ...fact.publicationIdentity }),
+    program: freezeSceneDataProgram(fact.program),
+  });
+}
+
 export class SceneDataUnavailableError extends Error {
   readonly code = 'scene-data-unavailable' as const;
   readonly expected = 'the requested semantic scene data is available for the active plan';
@@ -1294,6 +1342,31 @@ export class SceneDataUnavailableError extends Error {
     this.detail = Object.freeze({
       ...detail,
       missingContributorIds: Object.freeze([...detail.missingContributorIds].slice(0, 32)),
+      ...(detail.missingContributors === undefined
+        ? {}
+        : {
+            missingContributors: Object.freeze(
+              [...detail.missingContributors].slice(0, 32).map((contributor) =>
+                Object.freeze({
+                  ...contributor,
+                  ...(contributor.sourceTuple === undefined
+                    ? {}
+                    : { sourceTuple: Object.freeze([...contributor.sourceTuple] as const) }),
+                  publishedFragmentEntries: Object.freeze([
+                    ...contributor.publishedFragmentEntries,
+                  ]),
+                  publicationIdentity:
+                    contributor.publicationIdentity === undefined
+                      ? undefined
+                      : Object.freeze({ ...contributor.publicationIdentity }),
+                  selectedProgram: freezeSceneDataProgram(contributor.selectedProgram),
+                  programCandidates: Object.freeze(
+                    contributor.programCandidates.map(freezeSceneDataProgramFact),
+                  ),
+                }),
+              ),
+            ),
+          }),
       omittedMissingContributorCount: Math.max(
         detail.omittedMissingContributorCount,
         Math.max(0, detail.missingContributorIds.length - 32),

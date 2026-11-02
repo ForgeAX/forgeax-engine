@@ -83,12 +83,13 @@ const COMMON_BROWSER_WEBGPU_ARGS = Object.freeze([
  * Metal on a non-macOS host receives a setup error instead of an unrelated
  * backend being substituted.
  *
- * @param {{ platform?: string, backend?: string }} [options]
+ * @param {{ platform?: string, backend?: string, ci?: boolean }} [options]
  * @returns {{ requestedBackend: string, selectedBackend: 'metal'|'swiftshader-vulkan', comparisonMode: string, args: string[] }}
  */
 export function resolveBrowserWebGpuLaunch({
   platform = process.platform,
   backend = process.env.FORGEAX_BROWSER_BACKEND ?? 'auto',
+  ci = Boolean(process.env.CI),
 } = {}) {
   const requestedBackend = String(backend).trim().toLowerCase() || 'auto';
   if (!['auto', 'metal', 'swiftshader-vulkan'].includes(requestedBackend)) {
@@ -127,6 +128,9 @@ export function resolveBrowserWebGpuLaunch({
     comparisonMode,
     args: [
       ...COMMON_BROWSER_WEBGPU_ARGS,
+      // Match the software Vitest carrier: cold CI compilation is bounded by
+      // the original gate deadline, not Chromium's shorter native watchdog.
+      ...(ci ? ['--disable-gpu-watchdog'] : []),
       ...(platform === 'win32' ? ['--use-webgpu-adapter=swiftshader'] : [
         '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
         '--use-vulkan=swiftshader',

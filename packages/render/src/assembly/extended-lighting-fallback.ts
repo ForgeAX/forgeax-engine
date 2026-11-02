@@ -50,6 +50,7 @@ function createModifierTexture(
   height: number,
   format: 'r16float' | 'rgba8unorm',
   mipLevelCount = 1,
+  additionalUsage = 0,
 ): Texture {
   return requireResult(
     () =>
@@ -60,7 +61,7 @@ function createModifierTexture(
         sampleCount: 1,
         dimension: '2d',
         format,
-        usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_DST,
+        usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_DST | additionalUsage,
         viewFormats: [],
         textureBindingViewDimension: undefined,
       }),

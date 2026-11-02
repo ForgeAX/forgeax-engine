@@ -10,9 +10,9 @@ import type { AssetHandle, IesProfileAsset, SceneAsset } from '@forgeax/engine-t
 import { describe, expect, it } from 'vitest';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { PointLight, RectAreaLight, SpotLight } from '../components';
-import { packDirectLightSlot } from '../light-buffer-layout';
 import { publicationFrameDependencies } from '../publication/dependencies';
 import { extractFrames } from '../render-system-extract-tail';
+import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 import { testAssets } from './helpers/runtime-assets';
 
 function profile(): IesProfileAsset {

@@ -44,12 +44,12 @@
 <table>
   <tr>
     <td width="50%" align="center">
-      <a href="https://forgeax.github.io/games/hellforge/"><img src="https://forgeax.github.io/assets/readme/games/hellforge.jpg" alt="地狱熔炉" width="100%" /></a><br/>
-      <strong>地狱熔炉</strong> · ARPG / 3D
+      <a href="https://forgeax.github.io/games/tiangong-warframe/"><img src="https://forgeax.github.io/assets/games/covers/tiangong-warframe.jpg" alt="天工战甲" width="100%" /></a><br/>
+      <strong>天工战甲</strong> · 机甲动作 / 3D
     </td>
     <td width="50%" align="center">
-      <a href="https://forgeax.github.io/games/planet-snake/"><img src="https://forgeax.github.io/assets/readme/games/planet-snake.jpg" alt="Planet Snake" width="100%" /></a><br/>
-      <strong>Planet Snake</strong> · 3D 生存
+      <a href="https://forgeax.github.io/games/ai-weapon-spirit/"><img src="https://forgeax.github.io/assets/readme/games/ai-weapon-spirit.jpg" alt="我的 AI 队友不可能是上古器灵！" width="100%" /></a><br/>
+      <strong>我的 AI 队友不可能是上古器灵！</strong> · ARPG / 3D
     </td>
   </tr>
   <tr>
@@ -58,8 +58,8 @@
       <strong>萌宠卡丁车</strong> · 竞速 / 3D
     </td>
     <td width="50%" align="center">
-      <a href="https://forgeax.github.io/showcase/"><img src="https://forgeax.github.io/assets/readme/games/ai-weapon-spirit.jpg" alt="我的 AI 队友不可能是上古器灵！" width="100%" /></a><br/>
-      <strong>我的 AI 队友不可能是上古器灵！</strong> · ARPG / 3D
+      <a href="https://forgeax.github.io/games/brotato-v2/"><img src="https://forgeax.github.io/assets/readme/games/brotato-v2.jpg" alt="腐坏农场" width="100%" /></a><br/>
+      <strong>腐坏农场</strong>
     </td>
   </tr>
 </table>

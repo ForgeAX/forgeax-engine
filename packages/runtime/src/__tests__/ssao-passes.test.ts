@@ -417,7 +417,7 @@ describe('recordSsaoCalcPass GPU dispatch (M8 / w35 — RED)', () => {
     expect(spy.beginRenderPassCalls[0]?.view).toBe(ssaoRawView);
   });
 
-  it('refuses SSAO on the GLES depth-sampling path with an actionable capability error', () => {
+  it('requires the SSAO producer on the GLES depth-sampling path', () => {
     const { ctx, spy } = makeDispatchSpyCtx({ ssaoCalcPipeline: null, ssaoBgl: null });
     Object.assign(ctx.runtime.device.caps, { backendKind: 'wgpu-webgl2' });
     const graph = new RenderGraph<RenderPipelineContext>();
@@ -427,8 +427,8 @@ describe('recordSsaoCalcPass GPU dispatch (M8 / w35 — RED)', () => {
     if (!execute) throw new Error('SSAO calc pass missing');
     expect(() => execute(ctx, { resolve: () => undefined })).toThrow(
       expect.objectContaining({
-        code: 'feature-not-enabled',
-        hint: expect.stringContaining('WebGPU'),
+        code: 'post-process-not-found',
+        detail: { id: 'forgeax::post::ssao-calc' },
       }),
     );
     expect(spy.drawCalls).toHaveLength(0);

@@ -3,9 +3,9 @@ import { World } from '@forgeax/engine-ecs';
 import { expect, it } from 'vitest';
 import { PointLight, SpotLight } from '../components';
 import { validatePointLightDecay } from '../components/point-light';
-import { packDirectLightSlot } from '../light-buffer-layout';
 import { packLights } from '../raytracing/path-input';
 import { extractFrames } from '../render-system-extract-tail';
+import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('missing point-decay fixture value');

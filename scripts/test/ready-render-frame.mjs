@@ -35,7 +35,10 @@ export async function completeReadyFrame(submit) {
     pendingReason = receipt.presentationPendingReason;
     // GPU completion of a preparation barrier does not qualify a scene frame.
     // Let native compilation progress, then retry this exact input snapshot.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A pending attempt traverses the real renderer and submits a GPU barrier.
+    // Poll at frame cadence so cold compilation does not compete with hundreds
+    // of empty submissions. The deadline and required ready pictures stay fixed.
+    await new Promise((resolve) => setTimeout(resolve, 16));
   } while (Date.now() < deadline);
   throw new Error(
     `Renderer scene presentation did not become ready: ${JSON.stringify(pendingReason)}`,

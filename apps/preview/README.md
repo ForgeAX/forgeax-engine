@@ -182,6 +182,13 @@ The runner allocates a strict port, waits for HTTP readiness, and terminates its
 process group. It uses a whitespace-tolerant numeric marker so formatting changes in the authored
 pack do not turn into a false fixture-drift failure.
 
+Preview selects declaration roots and external binary dependencies through the same
+canonical template groups. Capability Lab owns the shared image, audio, font,
+GLTF and FBX fixtures; Brotato retains its authored sky dependency alongside its
+own Pack closure.
+The complete Preview retains every group. Single-template startup does not cook
+another template's fixtures before Catalog readiness.
+
 The template browser smoke bounds renderer startup and its first GPU completion to 30 seconds
 each. A healthy renderer must still complete its submitted frame; cold software GPU startup
 does not consume that completion budget.

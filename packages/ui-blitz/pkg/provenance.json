@@ -2016,8 +2016,8 @@
   ],
   "outputs": {
     "ui_blitz_bg.wasm": {
-      "bytes": 15695399,
-      "sha256": "856b65ec4d79270c4518d37ac80be60e9897aeb08edd34e4e6b888dbbccd8434"
+      "bytes": 15696216,
+      "sha256": "a880032a6fe683062fb0bbce7492f1b34d29e61a96f7db04b88c1f2bc8ac921d"
     },
     "ui_blitz_bg.wasm.d.ts": {
       "bytes": 8798,
@@ -2033,7 +2033,7 @@
     },
     "ui-native.mjs": {
       "bytes": 44084,
-      "sha256": "614028c6993894ea86374e5553469a2c58a4ddaf605ca3744b6c09d2630d72b1"
+      "sha256": "488baa119038a901399c76d631686c256415245effbafbb159ad47930ba090b4"
     },
     "ui-native.d.mts": {
       "bytes": 5281,

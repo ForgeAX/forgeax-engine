@@ -229,9 +229,10 @@ describe('default Standard PBR transmission manifest contract', () => {
     expect(standard).toBeDefined();
     if (standard === undefined) return;
 
+    const { publishShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
     const registry = new ShaderRegistry({
       device: device(),
-      manifestUrl: dataUrl({ entries: [], materialShaders: [standard] }),
+      manifestUrl: dataUrl(publishShaderManifest([], [standard])),
     });
     const loaded = await registry.loadManifest();
     expect(loaded.ok).toBe(true);

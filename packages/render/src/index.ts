@@ -187,6 +187,9 @@ export {
   AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITIES,
+  AMBIENT_OCCLUSION_QUALITY_HIGH,
+  AMBIENT_OCCLUSION_QUALITY_LOW,
+  AMBIENT_OCCLUSION_QUALITY_MEDIUM,
   AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
@@ -674,6 +677,7 @@ export {
 export type { DynamicResolutionInspection } from './pipeline/dynamic-resolution';
 export type { RenderExtent } from './pipeline/render-extent.js';
 export type {
+  StandardAmbientOcclusionInspection,
   StandardClusterTransportInspection,
   StandardLightingInspection,
   StandardNoLocalLightingInspection,
@@ -995,10 +999,16 @@ export type {
 export { renderTargetLayerCount } from './targets/contracts.js';
 export type { TemporalInspection, TemporalResourceInspection } from './temporal/inspection.js';
 export {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_DESCRIPTOR,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataLane,
   type SceneDataSchemaId,
+  type SceneDataStandardSurfaceDepthV1Descriptor,
+  type SceneDataStandardSurfaceNormalV1Descriptor,
   type SceneDataTarget,
   type SceneDataTemporalV1Descriptor,
 } from './temporal/scene-data.js';

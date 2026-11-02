@@ -45,6 +45,8 @@ export function standardLightingTopologySignature(
     clusterGridU32Length: input.prepared.layout.clusterGridU32Length,
     lightIndexListCapacity: input.prepared.layout.lightIndexListCapacity,
     lightDataSlotCount: input.prepared.layout.lightDataSlotCount,
+    lightDataSlotBytes: input.transport.lightDataSlotBytes,
+    clusterUniformBytes: input.transport.clusterUniformBytes,
     lightBoundsInt32Length: input.prepared.layout.lightBoundsInt32Length,
   });
 }

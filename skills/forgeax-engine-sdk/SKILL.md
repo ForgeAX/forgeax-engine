@@ -131,6 +131,11 @@ rebuild the changed owner and bind through `project engine use-local`; unchanged
 owners reuse their delivered builds. Follow the local-Engine guide
 for binding and the SDK README for the partial rebuild commands.
 
+Archive and post-consumer integrity stages reread byte counts and SHA-256 through
+the existing bounded file-I/O owner. A canceled integrity tail is unverified;
+retain every artifact and the SQLite-only mutable-store exclusion. See
+[SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
+
 If a source consumer with precompiled Rapier unexpectedly requests Rust, compare
 its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the
 3D SIMD glue and declarations. Follow [native artifact admission](../../scripts/ci/README.md#native-rapier-artifact-admission);

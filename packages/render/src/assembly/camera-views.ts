@@ -7,12 +7,21 @@ import { Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { StereoCamera } from '../components/stereo-camera';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
+import {
+  createFeatureGraphConformanceTrace,
+  readFeatureGraphConformanceTrace,
+} from '../features/feature-graph-conformance-trace';
 import type { CameraViewInspection } from '../inspection-types';
 import type { RenderPublicationIdentity } from '../publication/contract';
 import type { PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { DiffuseGiBudget } from '../raytracing/diffuse-gi-budget';
 import type { CandidatePipelineInput } from '../record/candidate-pipeline-preparation';
+import {
+  readClusterWorkFrameTrace,
+  readClusterWorkObservation,
+  recordClusterWorkFrameReceiptForConformance,
+} from '../record/cluster-work-conformance';
 import type { GpuTimingCapture } from '../record/gpu-timing';
 import type { RenderSystemInternals } from '../record/render-context';
 import type {
@@ -64,6 +73,7 @@ import {
   type ViewRecorderState,
   viewComposition,
 } from '../world/view-output-systems';
+import { recordContext } from '../world/view-record-context';
 import { createViewRecorder } from '../world/view-recorder';
 import { type ViewSettlementOwner, viewOwnerOf } from '../world/view-settlement';
 import { drainFramePreparation, type FramePreparation } from './frame-recording';
@@ -352,6 +362,69 @@ export function createCameraViews(internals: RenderSystemInternals, maxRenderSho
     configureStandard(config: RenderPipelineAsset['config']) {
       for (const owner of [primaryOwner, ...recorders().map((view) => view.owner)])
         configureViewStandard(owner, config);
+    },
+    setGtaoExecutionOverride(override: 'fragment' | 'compute' | undefined) {
+      for (const owner of [primaryOwner, ...recorders().map((view) => view.owner)])
+        owner.frameState.gtaoExecutionOverride = override;
+    },
+    armGtaoCandidatePreparationFailureForConformance() {
+      const owner = active() ? (findDisplayRecorder()?.owner ?? primaryOwner) : primaryOwner;
+      owner.frameState.gtaoCandidatePreparationFailureGeneration = recordContext(
+        owner.internals,
+      ).deviceScope.generation;
+    },
+    setClusterWorkObservationForConformance(enabled: boolean) {
+      for (const owner of [primaryOwner, ...recorders().map((view) => view.owner)])
+        owner.frameState.standardClusterWorkConformance = enabled ? { enabled: true } : undefined;
+    },
+    clusterWorkObservationForConformance() {
+      const owner = active() ? (findDisplayRecorder()?.owner ?? primaryOwner) : primaryOwner;
+      const state = owner.frameState.standardClusterWorkConformance;
+      return state === undefined
+        ? undefined
+        : readClusterWorkObservation(state, recordContext(owner.internals).deviceScope.generation);
+    },
+    clusterWorkFrameTraceForConformance() {
+      const owner = active() ? (findDisplayRecorder()?.owner ?? primaryOwner) : primaryOwner;
+      return readClusterWorkFrameTrace(owner.frameState.standardClusterWorkConformance);
+    },
+    recordClusterWorkReceiptForConformance(
+      input: Parameters<typeof recordClusterWorkFrameReceiptForConformance>[1],
+    ) {
+      let recorded = false;
+      for (const owner of [primaryOwner, ...recorders().map((view) => view.owner)]) {
+        if (
+          readClusterWorkFrameTrace(owner.frameState.standardClusterWorkConformance)
+            ?.observationFrameId !== input.observationFrameId
+        )
+          continue;
+        recorded =
+          recordClusterWorkFrameReceiptForConformance(
+            owner.frameState.standardClusterWorkConformance,
+            input,
+          ) || recorded;
+      }
+      return recorded;
+    },
+    setFeatureGraphTraceForConformance(identity: string | undefined) {
+      for (const owner of [primaryOwner, ...recorders().map((view) => view.owner)]) {
+        const context = recordContext(owner.internals);
+        if (identity === undefined) delete context.featureGraphConformanceTrace;
+        else context.featureGraphConformanceTrace = createFeatureGraphConformanceTrace(identity);
+      }
+    },
+    featureGraphTraceForConformance() {
+      const owner = active() ? (findDisplayRecorder()?.owner ?? primaryOwner) : primaryOwner;
+      return readFeatureGraphConformanceTrace(
+        recordContext(owner.internals).featureGraphConformanceTrace,
+      );
+    },
+    cancelGraphTargetCapture(
+      request: import('../record/frame-snapshot').GraphTargetCaptureRequest,
+    ) {
+      for (const owner of [primaryOwner, ...recorders().map((view) => view.owner)])
+        if (owner.frameState.graphTargetCapture === request)
+          owner.frameState.graphTargetCapture = undefined;
     },
     isDynamicGeometryConsumed(
       world: RenderResourceScope,

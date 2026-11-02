@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AMBIENT_OCCLUSION_GTAO, AmbientOcclusion } from '../components/ambient-occlusion';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
+import { resolveStandardGtaoExecution } from '../pipeline/standard-build-context';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 
 const lane = { storageBuffer: true, maxColorAttachments: 8 };
@@ -38,7 +39,7 @@ describe('selected-view Standard projection', () => {
   });
   it('projects camera AO over install-time AO without changing other configuration', () => {
     expect(derive({ ambientOcclusion: ao })).toMatchObject({
-      profile: { renderPath: 'deferred' },
+      profile: { renderPath: 'forward' },
       config: {
         outputDither: false,
         ssao: {
@@ -69,10 +70,16 @@ describe('selected-view Standard projection', () => {
   it.each([
     { storageBuffer: false, maxColorAttachments: 8 },
     { storageBuffer: true, maxColorAttachments: 1 },
-  ])('keeps incapable lanes on the original configuration', (unsupported) => {
+  ])('keeps camera AO on Forward without Deferred capabilities', (unsupported) => {
     expect(
       deriveCameraStandardConfiguration(base, config, { ambientOcclusion: ao }, unsupported),
-    ).toMatchObject({ ok: true, value: { profile: base, config } });
+    ).toMatchObject({
+      ok: true,
+      value: {
+        profile: { renderPath: 'forward', ssao: { algorithm: 'gtao' } },
+        config: { ssao: { enabled: true, algorithm: 'gtao' } },
+      },
+    });
   });
   it('reports invalid camera AO rather than admitting a NaN payload', () => {
     expect(
@@ -85,6 +92,29 @@ describe('selected-view Standard projection', () => {
     ).toMatchObject({
       ok: false,
       error: { code: 'ssao-parameter-invalid', detail: { paramName: 'directLightingStrength' } },
+    });
+  });
+});
+
+describe('internal GTAO stage selection', () => {
+  it('selects compute only for GTAO when the lane admits compute', () => {
+    expect(resolveStandardGtaoExecution('gtao', true, 'compute')).toEqual({
+      ok: true,
+      value: 'compute',
+    });
+  });
+
+  it('rejects an internal compute override on WebGL2 without enabling unsupported work', () => {
+    expect(resolveStandardGtaoExecution('gtao', false, 'compute')).toMatchObject({
+      ok: false,
+      error: { code: 'capability-missing', detail: { capability: 'compute' } },
+    });
+  });
+
+  it('does not select the GTAO compute adapter for the hemisphere SSAO algorithm', () => {
+    expect(resolveStandardGtaoExecution('ssao', true, 'compute')).toMatchObject({
+      ok: false,
+      error: { code: 'resource-descriptor-invalid', detail: { field: 'algorithm' } },
     });
   });
 });

@@ -1,4 +1,13 @@
-import { isShaderEntryPointReads, type ShaderEntryPointReads } from '@forgeax/engine-types';
+import {
+  isShaderEntryPointReads,
+  isShaderReflection,
+  type ShaderReflection as ReflectionContract,
+  type ShaderReflectionMember as ReflectionMember,
+  type ShaderEntryPointReads,
+  type ShaderReflectionArraySize,
+  type ShaderReflectionBoundGlobal,
+  type ShaderReflectionTypeDescriptor,
+} from '@forgeax/engine-types';
 // @forgeax/engine-naga — TS-only thin shell over @forgeax/engine-wgpu-wasm raw naga bindings.
 //
 // Form invariants (locked by plan-strategy D-P3 / D-P4 + research F-4):
@@ -106,39 +115,19 @@ export async function specializeComputeEntries(
  */
 export type ValidatedModule = ModuleHandle;
 
-export interface ShaderReflectionMember {
-  readonly name: string;
-  readonly type: string;
-  readonly offset: number;
-  readonly size: number;
-  readonly alignment: number;
-}
-
-export interface ShaderReflectionBoundGlobal {
-  readonly group: number;
-  readonly binding: number;
-  readonly addressSpace: string;
-  readonly resourceKind: string;
-  readonly visibility: number;
-  readonly name?: string;
-  readonly members?: readonly ShaderReflectionMember[];
-  readonly span?: number;
-  /** Naga byte stride of a uniform/storage array element or storage record. */
-  readonly elementStride?: number;
-}
-
-export interface ShaderReflection {
-  readonly entryPoints?: readonly ShaderEntryPointReads[];
-  readonly schemaVersion: 'shader-reflection/2';
-  readonly boundGlobals: readonly ShaderReflectionBoundGlobal[];
-  readonly uvSetCount: number;
-}
+export type ShaderReflectionMember = ReflectionMember;
+export type {
+  ShaderReflectionArraySize,
+  ShaderReflectionBoundGlobal,
+  ShaderReflectionTypeDescriptor,
+};
+export type ShaderReflection = ReflectionContract;
 
 type ReflectionRecord = Record<string, unknown>;
 
 function reflectionMalformed(reason: string): ShaderError {
   return manifestMalformed({
-    message: `shader-reflection/2 is malformed: ${reason}`,
+    message: `shader-reflection/3 is malformed: ${reason}`,
     hint: 'rebuild the shader with the current Naga/WASM producer and preserve every bound-global fact',
     reason,
   });
@@ -174,76 +163,245 @@ function readMember(value: unknown, index: number): ShaderReflectionMember {
     offset: requiredNonNegativeInteger(value, 'offset'),
     size: requiredNonNegativeInteger(value, 'size'),
     alignment: requiredNonNegativeInteger(value, 'alignment'),
+    typeDescriptor: value.typeDescriptor as ShaderReflectionTypeDescriptor,
+  };
+}
+
+const REFLECTION_RESOURCE_ACCESS = ['read-only', 'write-only', 'read-write'] as const;
+const REFLECTION_TEXTURE_CLASS = ['sampled', 'storage', 'external'] as const;
+const REFLECTION_SAMPLE_TYPE = ['float', 'unfilterable-float', 'depth', 'sint', 'uint'] as const;
+const REFLECTION_VIEW_DIMENSION = ['1d', '2d', '2d-array', '3d', 'cube', 'cube-array'] as const;
+const REFLECTION_SAMPLER_TYPE = ['filtering', 'non-filtering', 'comparison'] as const;
+
+type BoundGlobalResourceFacts = Pick<
+  ShaderReflectionBoundGlobal,
+  | 'resourceAccess'
+  | 'textureClass'
+  | 'sampleType'
+  | 'viewDimension'
+  | 'multisampled'
+  | 'storageFormat'
+  | 'samplerType'
+>;
+
+function requiredNonEmptyString(record: ReflectionRecord, key: string, message: string): string {
+  const value = record[key];
+  if (typeof value !== 'string' || value.length === 0) throw reflectionMalformed(message);
+  return value;
+}
+
+function readOptionalReflectionEnum<T extends string>(
+  value: ReflectionRecord,
+  index: number,
+  key: string,
+  values: readonly T[],
+): T | undefined {
+  const candidate = value[key];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== 'string' || !values.includes(candidate as T)) {
+    throw reflectionMalformed(`boundGlobals entry ${index} ${key} is invalid`);
+  }
+  return candidate as T;
+}
+
+function readBoundGlobalResourceFacts(
+  value: ReflectionRecord,
+  index: number,
+): BoundGlobalResourceFacts {
+  const resourceAccess = readOptionalReflectionEnum(
+    value,
+    index,
+    'resourceAccess',
+    REFLECTION_RESOURCE_ACCESS,
+  );
+  const textureClass = readOptionalReflectionEnum(
+    value,
+    index,
+    'textureClass',
+    REFLECTION_TEXTURE_CLASS,
+  );
+  const sampleType = readOptionalReflectionEnum(value, index, 'sampleType', REFLECTION_SAMPLE_TYPE);
+  const viewDimension = readOptionalReflectionEnum(
+    value,
+    index,
+    'viewDimension',
+    REFLECTION_VIEW_DIMENSION,
+  );
+  const samplerType = readOptionalReflectionEnum(
+    value,
+    index,
+    'samplerType',
+    REFLECTION_SAMPLER_TYPE,
+  );
+  if (value.multisampled !== undefined && typeof value.multisampled !== 'boolean') {
+    throw reflectionMalformed(`boundGlobals entry ${index} multisampled must be boolean`);
+  }
+  if (
+    value.storageFormat !== undefined &&
+    (typeof value.storageFormat !== 'string' || value.storageFormat.length === 0)
+  ) {
+    throw reflectionMalformed(
+      `boundGlobals entry ${index} storageFormat must be a non-empty string`,
+    );
+  }
+  return {
+    ...(resourceAccess !== undefined ? { resourceAccess } : {}),
+    ...(textureClass !== undefined ? { textureClass } : {}),
+    ...(sampleType !== undefined ? { sampleType } : {}),
+    ...(viewDimension !== undefined ? { viewDimension } : {}),
+    ...(value.multisampled !== undefined ? { multisampled: value.multisampled } : {}),
+    ...(value.storageFormat !== undefined ? { storageFormat: value.storageFormat } : {}),
+    ...(samplerType !== undefined ? { samplerType } : {}),
+  };
+}
+
+function validateBoundGlobalLayoutShape(
+  value: ReflectionRecord,
+  resourceKind: string,
+  index: number,
+): void {
+  const hasMembers = value.members !== undefined;
+  const hasSpan = value.span !== undefined;
+  const hasTypeDescriptor = value.typeDescriptor !== undefined;
+  if (hasMembers && !Array.isArray(value.members)) {
+    throw reflectionMalformed(`boundGlobals entry ${index} members must be an array`);
+  }
+  if (resourceKind === 'buffer' || resourceKind === 'storage-buffer') {
+    if (!hasMembers || !hasSpan || !hasTypeDescriptor) {
+      throw reflectionMalformed(
+        `buffer boundGlobals entry ${index} requires members, span, and typeDescriptor`,
+      );
+    }
+  } else if (hasMembers !== hasSpan || hasTypeDescriptor) {
+    throw reflectionMalformed(
+      `non-buffer boundGlobals entry ${index} cannot declare buffer layout metadata`,
+    );
+  }
+}
+
+function validateBoundGlobalElementStride(
+  value: ReflectionRecord,
+  resourceKind: string,
+  index: number,
+): void {
+  if (value.elementStride === undefined) return;
+  if (resourceKind !== 'storage-buffer' && resourceKind !== 'buffer') {
+    throw reflectionMalformed(
+      `boundGlobals entry ${index} elementStride is only valid for buffer resources`,
+    );
+  }
+  const elementStride = value.elementStride;
+  if (
+    typeof elementStride !== 'number' ||
+    !Number.isSafeInteger(elementStride) ||
+    elementStride <= 0
+  ) {
+    throw reflectionMalformed(
+      `boundGlobals entry ${index} elementStride must be a positive integer`,
+    );
+  }
+}
+
+function validateBoundGlobalArrayLength(
+  value: ReflectionRecord,
+  resourceKind: string,
+  index: number,
+): void {
+  if (value.arrayLength === undefined) return;
+  if (resourceKind !== 'storage-buffer' && resourceKind !== 'buffer') {
+    throw reflectionMalformed(
+      `boundGlobals entry ${index} arrayLength is only valid for buffer resources`,
+    );
+  }
+  const arrayLength = value.arrayLength;
+  if (typeof arrayLength !== 'number' || !Number.isSafeInteger(arrayLength) || arrayLength <= 0) {
+    throw reflectionMalformed(`boundGlobals entry ${index} arrayLength must be a positive integer`);
+  }
+  if (value.elementStride === undefined) {
+    throw reflectionMalformed(`boundGlobals entry ${index} arrayLength requires an elementStride`);
+  }
+}
+
+function validateBoundGlobalElementType(
+  value: ReflectionRecord,
+  resourceKind: string,
+  index: number,
+): void {
+  if (value.elementType === undefined) return;
+  if (resourceKind !== 'storage-buffer' && resourceKind !== 'buffer') {
+    throw reflectionMalformed(
+      `boundGlobals entry ${index} elementType is only valid for buffer resources`,
+    );
+  }
+  if (typeof value.elementType !== 'string' || value.elementType.length === 0) {
+    throw reflectionMalformed(`boundGlobals entry ${index} elementType must be a non-empty string`);
+  }
+}
+
+function readBoundGlobalLayoutFacts(
+  value: ReflectionRecord,
+  resourceKind: string,
+  index: number,
+): Pick<
+  ShaderReflectionBoundGlobal,
+  'name' | 'members' | 'span' | 'elementStride' | 'elementType' | 'arrayLength' | 'typeDescriptor'
+> {
+  validateBoundGlobalLayoutShape(value, resourceKind, index);
+  validateBoundGlobalElementStride(value, resourceKind, index);
+  validateBoundGlobalArrayLength(value, resourceKind, index);
+  validateBoundGlobalElementType(value, resourceKind, index);
+  if (value.name !== undefined && typeof value.name !== 'string') {
+    throw reflectionMalformed(`boundGlobals entry ${index} diagnostic name must be a string`);
+  }
+  const memberRows = Array.isArray(value.members) ? value.members : undefined;
+  return {
+    ...(value.name !== undefined ? { name: value.name } : {}),
+    ...(memberRows !== undefined
+      ? {
+          members: memberRows.map((member, memberIndex) => readMember(member, memberIndex)),
+          span: requiredNonNegativeInteger(value, 'span'),
+        }
+      : {}),
+    ...(value.elementStride !== undefined
+      ? { elementStride: requiredNonNegativeInteger(value, 'elementStride') }
+      : {}),
+    ...(value.elementType !== undefined ? { elementType: value.elementType as string } : {}),
+    ...(value.arrayLength !== undefined
+      ? { arrayLength: requiredNonNegativeInteger(value, 'arrayLength') }
+      : {}),
+    ...(value.typeDescriptor !== undefined
+      ? { typeDescriptor: value.typeDescriptor as ShaderReflectionTypeDescriptor }
+      : {}),
   };
 }
 
 function readBoundGlobal(value: unknown, index: number): ShaderReflectionBoundGlobal {
   if (!isRecord(value)) throw reflectionMalformed(`boundGlobals entry ${index} is not an object`);
-  const addressSpace = value.addressSpace;
-  const resourceKind = value.resourceKind;
-  if (typeof addressSpace !== 'string' || addressSpace.length === 0) {
-    throw reflectionMalformed(`boundGlobals entry ${index} requires addressSpace`);
-  }
-  if (typeof resourceKind !== 'string' || resourceKind.length === 0) {
-    throw reflectionMalformed(`boundGlobals entry ${index} requires resourceKind`);
-  }
+  const addressSpace = requiredNonEmptyString(
+    value,
+    'addressSpace',
+    `boundGlobals entry ${index} requires addressSpace`,
+  );
+  const resourceKind = requiredNonEmptyString(
+    value,
+    'resourceKind',
+    `boundGlobals entry ${index} requires resourceKind`,
+  );
   const visibility = requiredNonNegativeInteger(value, 'visibility');
-  const membersValue = value.members;
-  const hasMembers = membersValue !== undefined;
-  if (hasMembers && !Array.isArray(membersValue)) {
-    throw reflectionMalformed(`boundGlobals entry ${index} members must be an array`);
-  }
-  const hasSpan = value.span !== undefined;
-  const hasElementStride = value.elementStride !== undefined;
-  if (resourceKind === 'buffer' || resourceKind === 'storage-buffer') {
-    if (!hasMembers || !hasSpan) {
-      throw reflectionMalformed(`buffer boundGlobals entry ${index} requires members and span`);
-    }
-  } else if (hasMembers !== hasSpan) {
-    throw reflectionMalformed(`boundGlobals entry ${index} members and span must be paired`);
-  }
-  if (hasElementStride) {
-    if (resourceKind !== 'storage-buffer' && resourceKind !== 'buffer') {
-      throw reflectionMalformed(
-        `boundGlobals entry ${index} elementStride is only valid for buffer resources`,
-      );
-    }
-    const elementStride = value.elementStride;
-    if (
-      typeof elementStride !== 'number' ||
-      !Number.isSafeInteger(elementStride) ||
-      elementStride <= 0
-    ) {
-      throw reflectionMalformed(
-        `boundGlobals entry ${index} elementStride must be a positive integer`,
-      );
-    }
-  }
-  if (value.name !== undefined && typeof value.name !== 'string') {
-    throw reflectionMalformed(`boundGlobals entry ${index} diagnostic name must be a string`);
-  }
+  const resourceFacts = readBoundGlobalResourceFacts(value, index);
+  const layoutFacts = readBoundGlobalLayoutFacts(value, resourceKind, index);
   return {
     group: requiredNonNegativeInteger(value, 'group'),
     binding: requiredNonNegativeInteger(value, 'binding'),
     addressSpace,
     resourceKind,
+    ...resourceFacts,
     visibility,
-    ...(value.name !== undefined ? { name: value.name as string } : {}),
-    ...(hasMembers
-      ? {
-          members: (membersValue as unknown[]).map((member, memberIndex) =>
-            readMember(member, memberIndex),
-          ),
-          span: requiredNonNegativeInteger(value, 'span'),
-        }
-      : {}),
-    ...(hasElementStride
-      ? { elementStride: requiredNonNegativeInteger(value, 'elementStride') }
-      : {}),
+    ...layoutFacts,
   };
 }
 
-/** Parse and validate the business-neutral shader-reflection/2 wire. */
+/** Parse and validate the business-neutral shader-reflection/3 wire. */
 export function parseReflectionWire(json: string): ShaderReflection {
   let parsed: unknown;
   try {
@@ -251,8 +409,8 @@ export function parseReflectionWire(json: string): ShaderReflection {
   } catch (cause) {
     throw reflectionMalformed(cause instanceof Error ? cause.message : 'JSON.parse failed');
   }
-  if (!isRecord(parsed) || parsed.schemaVersion !== 'shader-reflection/2') {
-    throw reflectionMalformed("schemaVersion must equal 'shader-reflection/2'");
+  if (!isRecord(parsed) || parsed.schemaVersion !== 'shader-reflection/3') {
+    throw reflectionMalformed("schemaVersion must equal 'shader-reflection/3'");
   }
   if ('material' in parsed) throw reflectionMalformed('legacy material projection is not accepted');
   if (!Array.isArray(parsed.boundGlobals)) {
@@ -276,14 +434,18 @@ export function parseReflectionWire(json: string): ShaderReflection {
   const entryPoints = parsed.entryPoints;
   if (entryPoints !== undefined && !isShaderEntryPointReads(entryPoints))
     throw reflectionMalformed('entryPoints must contain reflected stage and binding reads');
-  return {
-    schemaVersion: 'shader-reflection/2',
+  const reflection: ReflectionContract = {
+    schemaVersion: 'shader-reflection/3',
     boundGlobals,
     uvSetCount: parsed.uvSetCount,
     ...(entryPoints === undefined
       ? {}
       : { entryPoints: entryPoints as unknown as readonly ShaderEntryPointReads[] }),
   };
+  if (!isShaderReflection(reflection)) {
+    throw reflectionMalformed('boundGlobals resource facts are inconsistent');
+  }
+  return reflection;
 }
 
 // === Phase 1: parse =================================================================

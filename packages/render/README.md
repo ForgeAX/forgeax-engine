@@ -932,6 +932,11 @@ keep their own values. Stable frames reuse the admitted interface without repeat
 shape checks or layout derivation. Unregistered programs and uncompiled custom Surfaces
 retain their authored schema projection. Empty shader-manifest layouts retain
 the authored or built-in Sprite fallback; the built-in Standard ABI remains canonical.
+For local Worlds with a separate AssetRegistry, source assets still own material
+values and cooked program selection. Snapshot entry reads and position-bound
+receipts come from the receiving Renderer's ShaderRegistry, matching the artifact
+used for recording. An empty source shader registry cannot erase an admitted
+Deferred `fs_gbuffer` entry, and a missing receiving artifact remains unavailable.
 CPU uniform packing also selects the built-in shader's own parameter schema when
 an authored material omits it. Unlit, Sprite and MSDF parameters must never inherit
 Standard PBR byte offsets or defaults; numeric packing and texture-coordinate
@@ -2198,10 +2203,10 @@ import {
   MeshRenderer,
   ReadonlyDynamicInputPage,
   type Renderer,
-} from '@forgeax/engine-render';
-import { Transform } from '@forgeax/engine-scene';
-import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { AssetGuid, MaterialAsset } from '@forgeax/engine-types';
+} from '@forgeax/engine/render';
+import { Transform } from '@forgeax/engine/scene';
+import { type AssetRegistry } from '@forgeax/engine/assets-runtime';
+import type { AssetGuid, MaterialAsset } from '@forgeax/engine/types';
 
 export async function drawProbeLitWater(
   renderer: Renderer,
@@ -3818,6 +3823,10 @@ A later draw never reuses an earlier failure. The host calls `createRenderer`, `
 submit completed. A failed `Result` carries `code`, `hint`, and `detail`; repair the named owner,
 rebuild or cold-cook its source, then retry the same request.
 
+Standard captures its linear HDR observation from the original scene target after
+generic feature writers, including indirect particles, and before HDR lens and
+output processing. Reflection fallback observations retain their own target.
+
 ```ts
 const created = await createRenderer(canvas);
 if (!created.ok) throw created.error;
@@ -4134,38 +4143,61 @@ only consumer.
 ## Screen-space ambient occlusion
 
 Enable AO through the same public Standard profile used at creation or by
-`renderer.setProfile()`. `renderPath: 'deferred'` reads the current-frame
-G-buffer normals and applies AO to ambient light inside the lighting pass.
+`renderer.setProfile()`. AO can run through Forward or Deferred on an eligible
+device. Forward input uses the selected Standard material's evaluated normal,
+coverage and supported geometry route; AO demand alone does not switch the
+profile to Deferred. An incompatible material input, format, or complete
+resource budget returns a structured error.
 
-`renderPath: 'forward'` follows Three r184 `GTAOPass` composition instead. After
-the opaque forward pass (and any CloudLayer composite) it reconstructs octahedral
-world normals from scene depth (`forward-ao-normal`, Three `getNormalFromDepth`:
-each axis differentiates toward the neighbor with the smaller depth step), runs the
-same `ssao-calc` / `ssao-blur` passes and parameters, then multiplies the opaque
-scene color by the filtered visibility (`forward-ao-composite`) before opaque fog
-and every translucent writer. Forward AO therefore darkens direct light as well;
-`directLightingStrength` has no Forward meaning. It requires a single-sample
-scene: under MSAA the build returns `resource-resolution-failed` with a hint to
-select FXAA, TAA, no AA, or the Deferred path. The camera companion below still
-derives the Deferred lane where the device can run it.
+For a camera-specific request, add the public component to that camera. The
+algorithm and quality fields use the exported closed numeric tables:
 
-The GLES fallback does not support the required raw-depth shader reads. It boots normally with AO disabled; requesting AO reports `feature-not-enabled` and requires WebGPU.
+```ts
+import {
+  AmbientOcclusion,
+  AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_QUALITY_HIGH,
+} from '@forgeax/engine/render';
+
+world.addComponent(camera, {
+  component: AmbientOcclusion,
+  data: {
+    algorithm: AMBIENT_OCCLUSION_GTAO,
+    quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
+    directLightingStrength: 0.25,
+  },
+}).unwrap();
+// Remove the camera request and its dedicated AO graph work:
+world.removeComponent(camera, AmbientOcclusion).unwrap();
+```
+
+The `wgpu-WebGL2` route executes SSAO and GTAO with fragment passes. It places
+visibility in a disjoint `rgba32uint` region of the existing Cluster texture,
+so AO does not take another material sampled-texture slot. Admission checks the
+complete selected program, texture extent, and render/sample usages; unsupported
+formats or capacity fail explicitly rather than changing the requested AO
+algorithm. WebGPU retains its production raster path, with an internal
+acceptance override exercising the same prepared graph through compute.
 
 `AmbientOcclusion` is an opt-in camera companion. On a device with storage
-buffers and enough deferred color attachments, its presence (or a
-`ScreenSpaceReflection` request) derives the deferred Standard lane for that
-selected view. The renderer's author profile remains unchanged. Each view owns
-its effective configuration; removing the companion restores the installed
-configuration, and display-only companions are omitted from capture-only views.
-Invalid AO returns a structured `ssao-*` error without blocking an independently
-authored SSR request. Incapable devices keep the base lane.
+buffers and enough deferred color attachments, an already selected Deferred
+view can reuse its compatible depth/normal input. Otherwise a compatible
+Forward input pass runs before AO. The renderer's author profile remains
+unchanged. Each view owns its effective configuration; removing the companion
+restores the installed configuration, and display-only companions are omitted
+from capture-only views. Invalid AO returns a structured `ssao-*` error without
+blocking an independently authored SSR request. SSR retains its independent
+Deferred admission policy.
 
 AO uses numeric closed tables: `algorithm` indexes `['ssao', 'gtao']` and
 `quality` indexes `['low', 'medium', 'high']`. Radius, bias and intensity share
 the existing SSAO validator. `directLightingStrength` is a finite value in
-`[0, 1]`, defaulting to zero; it applies `mix(1, screenAo, strength)` to deferred
-direct light, independently of material and environment occlusion. This camera
-fact travels in the ordinary extracted POD across Worker boundaries.
+`[0, 1]`, defaulting to zero; it applies `mix(1, screenAo, strength)` to direct
+light in both Forward and Deferred, independently of material and environment
+occlusion. Environment visibility is applied once to the indirect/reflection
+fallback contribution. Emissive, exposure, and output transforms are not
+globally darkened. This camera fact travels in the ordinary extracted POD
+across Worker boundaries.
 
 The early SSAO upload and graph pass pack the same sampled camera projection,
 its inverse and AO parameters. Camera jitter uses the same clip-space transform
@@ -4199,6 +4231,13 @@ if (!disabled.ok) throw disabled.error;
 | `resolutionScale` | AO dimensions relative to internal scene size, `[0.25,1]`, default `1`; `0.5` opts into half resolution |
 | `ssao: true` | Enables the same default parameter set |
 
+The camera component and profile use the same validation owner. Invalid enum or
+numeric values return the structured `ssao-parameter-invalid`,
+`ssao-radius-non-positive`, or `ssao-bias-negative` errors. Their hints identify
+the offending field and show both recovery routes: correct
+`AmbientOcclusion.<field>` or `config.ssao.<field>`, remove the camera component,
+or set the Standard profile's `ssao` field to `false`.
+
 AO runs at full resolution by default with a symmetric depth/normal-aware blur.
 Compared with `resolutionScale: 0.5`, this allocates four times as many AO texels
 and runs four times as many raw/filter pixels. The nominal sample setting is
@@ -4209,9 +4248,30 @@ texel instead of the full-resolution G-buffer; the blurred output stays
 single-channel. Sampling
 uses the raster projection, including camera jitter. Static, skinned, and
 custom Standard surfaces multiply ambient illumination and the corresponding
-SSR fallback by the same AO factor; direct lights remain unchanged. Material
-occlusion is applied once. AO is reconstructed every frame and owns no temporal
-history, so moved geometry cannot leave a retained AO image.
+SSR fallback by the same environment-visibility factor. Direct-light AO is an
+independent mix controlled by `directLightingStrength` in both Forward and
+Deferred. Material occlusion is applied once. AO is reconstructed every frame
+and owns no temporal history, so moved geometry cannot leave a retained AO image.
+
+`renderer.inspect().standardLighting.ambientOcclusion` reports the accepted
+view's requested state, algorithm, selected fragment/compute execution, input
+producer and SceneData schemas, numerical settings, known input/output bytes,
+raw/filter work budgets, actual AO graph passes, and graph/device generations.
+When a request is missing its calculation or filter pass, `status` is
+`requested-unavailable`; `failure` identifies the active-graph stage and gives
+the retry/rebuild recovery. The byte fields are omitted when the compiled graph
+cannot determine them. A disabled request reports no AO passes, work, Cluster AO
+region, history, or per-frame AO upload.
+
+The current-view input contract extends SceneData without changing
+`forgeax::scene-data::temporal-v1`: `standard-surface-normal-v1` is the packed
+world-space material normal (`r32uint`, octahedral X/Y plus roughness), and
+`standard-surface-depth-v1` is camera device depth (`depth32float-stencil8`,
+RHI zero-to-one, reconstructed with the current inverse projection). Both
+describe opaque and Alpha Mask coverage at render resolution. The Standard
+surface producer is admitted only for material routes that publish these same
+normal and coverage semantics; an unsupported route is a named input failure,
+not a depth-reconstructed-normal substitution.
 
 > [!NOTE]
 > AO is a local screen-space approximation. Offscreen occluders are absent,
@@ -5810,12 +5870,15 @@ and debug overlay.
 Without storage buffers, one baseline `rgba32uint` texture retains the complete
 96-byte light slots, cluster grid, and membership indices. It supports the same
 256-light and index budgets; unsigned channel masks retain their original bits.
-The renderer uploads only the rows occupied by this frame's corpus and retires
-the texture with the device queue. This Forward capability lane has no SSAO
-producer or unused SSAO texture binding, keeping the complete Standard material
-and lighting layout within WebGL2's 16 sampled textures. Missing both usable
-storage and integer-texture extent returns `standard-cluster-transport-unavailable`
-with `requested` and `admitted` counts.
+When AO is enabled, a row-aligned, disjoint visibility region follows the full
+Cluster payload in the same texture. The 64-byte group-2 Cluster uniform carries
+its base word, logical extent, packed row stride, and selected direct AO strength.
+Texture extent admission covers both regions; writes preserve the other owner's
+data, and queue-fenced retirement replaces the complete generation. Sharing
+this sampled binding keeps every authored Standard map within WebGL2's 16
+sampled-texture budget. Missing a usable transport or complete integer-texture
+extent returns `standard-cluster-transport-unavailable` with `requested` and
+`admitted` counts.
 
 All transports consume the same complete CPU canonical corpus; the compute
 lane materializes the GPU index list, while CPU lanes upload that list unchanged.
@@ -6691,10 +6754,11 @@ owner publishes the missing binding and recovery contract. The legacy
 [`custom-shader` demo](../../apps/hello/custom-shader) is direct-only by design;
 it does not publish `vs_scene_index`, so it is not evidence for the indirect lane.
 
-Clustered local lights and SSAO use the same group-2 lighting bindings in direct
+Clustered local lights and AO use the same group-2 lighting bindings in direct
 and scene-index programs, including custom Surface programs. These switches do
-not disable GPU-driven admission. Deferred SSAO reads G-buffer normals; Forward
-SSAO reconstructs them from depth and multiplies the opaque scene. SSR's fallback MRT selects the corresponding
+not disable GPU-driven admission. AO input can use a compatible Deferred
+producer or the selected Forward material-input pass; AO alone does not require
+`renderPath: 'deferred'`. SSR's fallback MRT selects the corresponding
 scene-index fragment variant; background probe capture preserves the display
 view's GPU submission. Each pass selects its own material slots and color
 attachments. Shared materials at different local probes retain separate binding
@@ -7740,6 +7804,136 @@ const temporal = catalog.require('forgeax::scene-data::temporal-v1');
 available, `SceneDataUnavailableError` exposes the closed `reason`, missing
 producer IDs (at most 32 plus an omission count), and explicit `recovery`.
 Repair capability or producer coverage at its owner, then retry the next frame.
+
+Standard camera views can also publish two renderer-owned surface schemas:
+`forgeax::scene-data::standard-surface-normal-v1` and
+`forgeax::scene-data::standard-surface-depth-v1`. A RenderFeature requests the
+opaque tokens from the exact rendered view and binds those tokens through its
+normal prepared graph resources:
+
+```ts
+import {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  type RenderFeaturePlanContext,
+} from '@forgeax/engine/render';
+
+function standardSurfaceInputs(view: RenderFeaturePlanContext['views'][number]) {
+  return {
+    normal: view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA),
+    depth: view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA),
+  };
+}
+```
+
+The normal token resolves the packed world-space material normal and roughness;
+the depth token resolves camera device depth for the same view, frame plan, and
+generation. Standard Forward/Deferred admission derives availability from the
+selected camera/profile and the visible material, geometry, and deformation
+contributors. Do not seed producer flags in a manually created catalog or
+replace a missing material normal with a depth-reconstructed normal. A consumer
+that needs both tokens should request both and let the graph bind their exact
+schema owners.
+
+Plans with SceneData reads retain surface admission and exact bound owners as
+graph dependencies. Other plans reuse their graph across contributor membership
+changes; resource replacement still invalidates its own dependencies.
+
+Surface requests fail closed through `scene-data-unavailable`. For this
+surface-input route, the current supported material paths are rigid Standard
+and qualified Skin. Morph is unsupported for these surface inputs; that
+restriction applies to SceneData admission, while other Engine Morph rendering
+routes remain available. A Deferred GBuffer does not cover visible Forward-only
+opaque work, so that work remains required scene coverage and is rejected when
+the selected Deferred producer cannot supply it.
+
+| `detail.missingContributors[].reason` | `rejectedField` | Meaning |
+|:--|:--|:--|
+| `material-snapshot-missing` | `material-snapshot` | The material snapshot needed for admission is unavailable. |
+| `selected-pass-missing` | `selected-pass` | The selected Forward or Deferred material pass is absent. |
+| `authored-program-not-standard-pbr` | `authored-shader-id` | The authored material does not use the Standard PBR route. |
+| `unsupported-geometry` | `geometry` | The material program geometry context is outside this surface route. |
+| `unsupported-deformation` | `deformation` | The contribution uses Morph or an unqualified deformation route. |
+| `missing-fragment-entry` | `fragment-entry-point` | The selected published pass does not expose the expected surface entry point. |
+
+`producer-missing` means the selected view has no eligible Standard surface
+producer. `coverage-incomplete` means a required visible contributor cannot
+provide the selected producer's declared normal and coverage semantics.
+`detail.missingContributorIds` and the optional `detail.missingContributors`
+contain at most 32 entries; `omittedMissingContributorCount` reports rejected
+contributors beyond that bound. Each detailed record includes its closed
+rejection reason, rejected field, and the bounded facts used by the same
+admission decision; `sourceTuple` is present when the source row is available.
+Use those facts to repair or remove the visible input; a retry alone cannot
+make an unsupported contribution eligible.
+
+### Look up one rejected contributor
+
+`sourceTuple` is JSON `[renderSourceIndex, entityKey, materialHandle, passIndex]`.
+`renderSourceIndex` is the slot in the `World[]` passed to the draw that planned
+the surface input, usually `0`; it is not `World.id`. `entityKey` is the full
+packed ECS handle. `materialHandle` resolves in that source World's asset
+domain, and `passIndex` selects the authored material pass. For diagnosis, use
+the same source-world array as the rejected frame:
+
+> [!IMPORTANT]
+> Resolve `materialHandle` through the selected source World's asset domain.
+> Do not use `renderSourceIndex` as a `World.id` or query another World's asset
+> registry.
+
+```ts
+import type { EntityHandle } from '@forgeax/engine/ecs';
+import { MeshRenderer } from '@forgeax/engine/render';
+import type { MaterialAsset } from '@forgeax/engine/assets-runtime';
+import type { AssetHandle } from '@forgeax/engine/types';
+
+const contributor = sceneDataError.detail.missingContributors?.[0];
+const tuple = contributor?.sourceTuple;
+if (tuple !== undefined) {
+  const [renderSourceIndex, entityKey, materialHandle, passIndex] = tuple;
+  const sourceWorld = renderWorlds[renderSourceIndex]; // the World[] passed to this draw
+  if (sourceWorld !== undefined && sourceWorld.assets !== undefined) {
+    const entity = sourceWorld.get(entityKey as EntityHandle, MeshRenderer);
+    const material = sourceWorld.assets.read<'material', MaterialAsset>(
+      materialHandle as AssetHandle<'material'>,
+    );
+    if (entity.ok && material.ok) {
+      const selectedPass = material.value.passes?.[passIndex];
+      // Inspect entity.value, selectedPass, and contributor's rejectedField/reason.
+    }
+  }
+}
+```
+
+If the entity or pass no longer exists, the scene changed after the rejected
+frame; diagnose the current contributor and request new inputs instead of
+editing from stale identifiers.
+
+```mermaid
+flowchart TD
+  A["scene-data-unavailable"] --> B{"detail.reason"}
+  B -->|"producer-missing"| C["Choose a supported Standard view and producer"]
+  B -->|"coverage-incomplete"| D["Locate the rejected visible contributor"]
+  D --> E["Repair or remove unsupported input"]
+  C --> F["Plan the next frame"]
+  E --> F
+  F --> G["Request fresh normal and depth tokens"]
+  B -->|"renderer-recovering"| H["Wait for renderer recovery"]
+  H --> F
+```
+
+Surface tokens are bound to their feature, view, plan, admission identity and
+revision, frame generation, and device generation. Request tokens from the
+active view's `sceneData` for each new plan; do not retain them across a replan,
+producer change, or device recovery. Existing
+`render-feature-prepared-state-mismatch` details classify plan/admission
+ownership as `foreign-feature`, a different view as `foreign-view`, a replaced
+frame as `generation-mismatch`, and device replacement as
+`device-generation-mismatch`; follow that error's existing recovery field.
+`coverage-incomplete` and `producer-missing` use next-frame recovery and do not
+call for device recovery. For other SceneData reasons such as
+`capability-missing`, follow that error's own `hint` and `recovery`.
+Temporal-only consumers remain independent of these surface inputs.
 
 ## AI-readable SSR fallback route
 

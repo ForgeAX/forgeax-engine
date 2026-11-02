@@ -2535,4 +2535,8 @@ export {
 export { ownPipelineLibrary } from './pipeline-library-source';
 export { PipelineRecipeState, pipelineDescriptorState } from './pipeline-recipe-state';
 export { createQueueCompletionHold, type QueueCompletionHold } from './queue-completion-hold';
-export { textureCopyOrigin, textureReadbackLayout } from './texture-copy-layout';
+export {
+  TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT,
+  textureCopyOrigin,
+  textureReadbackLayout,
+} from './texture-copy-layout';

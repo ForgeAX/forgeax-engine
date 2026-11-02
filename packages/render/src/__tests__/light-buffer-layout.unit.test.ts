@@ -2,15 +2,17 @@ import type { Vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
 import {
   DIRECT_LIGHT_SLOT_KIND_MASK,
-  DIRECT_LIGHT_SLOT_LAYOUT,
   DIRECT_LIGHT_SLOT_METADATA_SENTINEL,
   DIRECT_LIGHT_SLOT_PCF_SHIFT,
   DIRECT_LIGHT_SLOT_PROJECTOR_FLAG,
   DIRECT_LIGHT_SLOT_TILE_MASK,
   DirectLightSlotKind,
-  packDirectLightSlot,
 } from '../light-buffer-layout';
 import type { SpotLightSnapshot } from '../render-system-extract';
+import {
+  packTestDirectLightSlot as packDirectLightSlot,
+  STANDARD_CLUSTER_TEST_ABI,
+} from './cluster-test-abi';
 
 const snapshot: SpotLightSnapshot = {
   kind: 'spot',
@@ -89,14 +91,16 @@ describe('direct light snapshot buffer layout', () => {
 
 describe('DirectLightSlot ABI', () => {
   it('locks the six-row 96-byte host contract and closed kind values', () => {
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.byteSize).toBe(96);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.rowByteOffsets).toEqual([0, 16, 32, 48, 64, 80]);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.metadataByteOffset).toBe(64);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.kindByteOffset).toBe(64);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.shadowByteOffset).toBe(68);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.iesProfileByteOffset).toBe(72);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.cookieByteOffset).toBe(76);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.rollDegByteOffset).toBe(60);
+    const layout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;
+    expect(layout.capacity).toBe(256);
+    expect(layout.byteSize).toBe(96);
+    expect(layout.rowByteOffsets).toEqual([0, 16, 32, 48, 64, 80]);
+    expect(layout.metadataByteOffset).toBe(64);
+    expect(layout.kindByteOffset).toBe(64);
+    expect(layout.shadowByteOffset).toBe(68);
+    expect(layout.iesProfileByteOffset).toBe(72);
+    expect(layout.cookieByteOffset).toBe(76);
+    expect(layout.rollDegByteOffset).toBe(60);
     expect(DIRECT_LIGHT_SLOT_METADATA_SENTINEL).toBe(0xffffffff);
     expect(DirectLightSlotKind).toEqual({ POINT: 0, SPOT: 1, RECT_AREA: 2, DIRECTIONAL: 3 });
   });

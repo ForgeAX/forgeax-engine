@@ -64,7 +64,7 @@ const isolatedChildProjects = new Set([
 // DevKit and Render reservations divide complete successful project receipts;
 // these new half-project owners remain estimates until complete CI qualifies them.
 const projectPartitions = new Map([
-  ['@forgeax/engine-modeling', { count: 16, weight: 675 }],
+  ['@forgeax/engine-modeling', { count: 16, weight: 810 }],
   ['@forgeax/engine-devkit', { count: 2, weight: 590, coverageOnly: true }],
   ['@forgeax/engine-render', { count: 2, weight: 550, coverageOnly: true }],
 ]);
@@ -93,6 +93,20 @@ const devkitNativeUnitFiles = devkitNativeUnitFileSets.flatMap(({ files }) => fi
 // from CI runs 38313136540 and 38316658619, rounded to five seconds, except
 // the explicitly estimated cold-scene additions documented below.
 const isolatedCoverageFileSets = [
+  {
+    // Run 41345505497 crossed the unchanged 60 s mip/gutter oracle beside
+    // another coverage child. Preserve all three 1024-square bakes exclusively.
+    project: '@forgeax/engine-modeling',
+    files: ['packages/modeling/src/__tests__/bake-cage.unit.test.ts'],
+    weight: 115,
+  },
+  {
+    // The same run's three-build bootstrap cases reached 15.094/15.061 s.
+    // Drain instrumented neighbors without changing the four bases or budgets.
+    project: '@forgeax/engine-devkit',
+    files: ['packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts'],
+    weight: 75,
+  },
   {
     // Run 41208138238 crossed the unchanged cockpit budget beside another
     // instrumented child. The full 21-case file passes alone with V8 coverage.
@@ -246,10 +260,15 @@ const isolatedCoverageFileSets = [
     files: [
       'packages/vite-plugin-shader/src/__tests__/vite-plugin-shader.unit.test.ts',
       'packages/vite-plugin-shader/src/__tests__/public-surface.unit.test.ts',
+      'packages/vite-plugin-shader/src/__tests__/production-resampling-vite.integration.test.ts',
+      'packages/vite-plugin-shader/src/__tests__/surface-manifest.integration.test.ts',
+      'packages/vite-plugin-shader/src/__tests__/direct-dfg-manifest.integration.test.ts',
     ],
-    // Admitted profiles replace the repeated fleet compilation. Keep cold
-    // fallback isolated; CI run 38313136540 measured 14.24 seconds for this child.
-    weight: 20,
+    // Run 41379898912 stranded this source-production owner in a late shared
+    // child until the 45-minute job bound. Drain neighboring coverage work and
+    // retain all three full source builds with the runner's compiler budget.
+    // The added 900 seconds are a placement estimate, not a completed receipt.
+    weight: 920,
   },
   {
     project: '@forgeax/engine-pack',
@@ -308,7 +327,10 @@ const coverageProjectWeights = new Map([
   ['@forgeax/engine-vfx-compiler', 20],
   ['@forgeax/engine-vfx-render', 35],
   ['@forgeax/engine-vite-plugin-pack', 200],
-  ['@forgeax/engine-vite-plugin-shader', 220],
+  // The full-project 1120 s forecast included the now-isolated source builds.
+  // Their separate 920 s reservation stays intact. Run 41442400305 completes
+  // the remaining mixed child in 111.11 s; reserve 120 s for this project alone.
+  ['@forgeax/engine-vite-plugin-shader', 120],
 ]);
 // The all-project preflight runs before any coverage child on shard 0.
 const typecheckSeconds = 185;

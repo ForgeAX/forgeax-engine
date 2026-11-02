@@ -18,11 +18,11 @@ export default defineFeature<FeatureDefinition>({
   catalog: 'Screen-space ambient occlusion',
   kind: 'visual',
   summary:
-    'StandardProfile.ssao on the deferred render path defaults to full-resolution GTAO from depth and normals; resolutionScale reduces cost and algorithm selects explicit SSAO. AO darkens ambient light by default.',
+    'StandardProfile.ssao defaults to full-resolution GTAO on eligible Forward and Deferred paths; resolutionScale reduces cost and algorithm selects explicit SSAO. AO darkens indirect light by default, with direct-light attenuation controlled separately.',
   expect:
     'ON: dark contact shadows pool where the cubes meet the floor and in the inner corner of the stacked blocks. OFF: the same scene is flatly lit by the skylight with no contact darkening.',
   appOptions: {
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: AO },
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: AO },
   },
   setup({ app, world, frames }) {
     const primitiveAssets = world.assets;
@@ -66,7 +66,7 @@ export default defineFeature<FeatureDefinition>({
         await frames(3);
         const inspection = app.renderer.inspect();
         return new CheckList()
-          .equal('profile render path', inspection.profile.renderPath, 'deferred')
+          .equal('profile render path', inspection.profile.renderPath, 'forward')
           .ok(
             'profile carries SSAO parameters',
             typeof inspection.profile.ssao === 'object',

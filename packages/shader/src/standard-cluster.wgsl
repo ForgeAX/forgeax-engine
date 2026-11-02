@@ -7,13 +7,12 @@
 // members and this cluster owner never performs an all-probe loop.
 
 #define_import_path forgeax_standard::cluster
-#import forgeax_view::common::{lightingChannelsMatch}
+#import forgeax_view::common::{DirectLightSlot, lightingChannelsMatch, view}
 
 #import forgeax_pbr::lighting_punctual::{evalDirectionalSlot, evalPoint, evalPointFlat, evalSpot, evalSpotFlat, evalSpotShadowed}
 #import forgeax_pbr::lighting_spot_modifiers::{spotModifierFactors}
 #import forgeax_pbr::lighting_ies_profile::{iesProfileFactor}
 #import forgeax_pbr::lighting_rect_area::{evalRectAreaLtcGgx}
-#import forgeax_view::common::{view}
 #ifdef PROJECTOR_AVAILABLE
 #import forgeax_pbr::lighting_spot_projector::{sampleStandardSpotProjector}
 #endif
@@ -33,22 +32,18 @@ const PCF_SHIFT: u32 = 8u;
 const PROJECTOR_FLAG: i32 = 0x40000000;
 const TILE_MASK: i32 = 0x3fffffff;
 
-// DirectLightSlot is the byte-frozen 96B std430/std140 transport contract.
-// The named rows match the host packer; metadata carries kind and identities.
-struct DirectLightSlot {
-  position            : vec4<f32>,
-  colorTimesIntensity : vec4<f32>,
-  direction           : vec4<f32>,
-  auxiliary           : vec4<f32>,
-  metadata            : vec4<u32>,
-  channels            : vec4<u32>,
-};
-
-const DIRECT_LIGHT_SLOT_BYTE_SIZE: u32 = 96u;
-
 struct ClusterUniform {
   grid         : vec4<u32>,
   near_far_log : vec4<f32>,
+  // Optional no-storage AO region: base word, logical width/height, row stride.
+  ao           : vec4<u32>,
+  // Independently controlled AO attenuation for direct Forward lighting.
+  direct_ao    : vec4<f32>,
+  // No-storage Cluster texture addressing: slot texels, grid word offset,
+  // index-list word offset, and physical texture width.
+  texture      : vec4<u32>,
+  // Producer-owned Cluster grid offset/count pair stride in u32 words.
+  cluster_layout : vec4<u32>,
 };
 
 #ifdef STORAGE_BUFFER_AVAILABLE
@@ -60,12 +55,9 @@ struct ClusterUniform {
 // 256 light records, then grid offset/count pairs, then the complete index list.
 @group(2) @binding(3) var cluster_data_texture : texture_2d<u32>;
 
-const CLUSTER_TEXTURE_WIDTH: u32 = 1024u;
-const CLUSTER_TEXTURE_GRID_WORD_OFFSET: u32 = 256u * (DIRECT_LIGHT_SLOT_BYTE_SIZE / 4u);
-
 fn load_cluster_texel(texel: u32) -> vec4<u32> {
   return textureLoad(cluster_data_texture, vec2<i32>(
-    i32(texel % CLUSTER_TEXTURE_WIDTH), i32(texel / CLUSTER_TEXTURE_WIDTH),
+    i32(texel % cluster_uniform.texture.w), i32(texel / cluster_uniform.texture.w),
   ), 0);
 }
 
@@ -74,7 +66,7 @@ fn load_cluster_word(word: u32) -> u32 {
 }
 
 fn load_cluster_light(index: u32) -> DirectLightSlot {
-  let first = index * (DIRECT_LIGHT_SLOT_BYTE_SIZE / 16u);
+  let first = index * cluster_uniform.texture.x;
   return DirectLightSlot(
     bitcast<vec4<f32>>(load_cluster_texel(first)),
     bitcast<vec4<f32>>(load_cluster_texel(first + 1u)),
@@ -91,9 +83,14 @@ fn get_ssao_intensity() -> f32 {
   return cluster_uniform.near_far_log.w;
 }
 
+fn get_ssao_direct_lighting_strength() -> f32 {
+  return cluster_uniform.direct_ao.x;
+}
+
 // Shared by static, skinned, and custom Standard surface programs.
 // The AO producer already applied the intensity exponent before filtering;
 // a non-zero intensity here only marks the texture as live.
+#ifdef STORAGE_BUFFER_AVAILABLE
 fn sampleStandardAmbientOcclusion(
   worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>,
   aoTexture: texture_2d<f32>, aoSampler: sampler,
@@ -103,6 +100,32 @@ fn sampleStandardAmbientOcclusion(
   let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
   return clamp(textureSampleLevel(aoTexture, aoSampler, uv, 0.0).r, 0.0, 1.0);
 }
+#else
+fn sampleStandardAmbientOcclusion(
+  worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>,
+) -> f32 {
+  let width = cluster_uniform.ao.y;
+  let height = cluster_uniform.ao.z;
+  if (get_ssao_intensity() <= 0.0 || width == 0u || height == 0u) { return 1.0; }
+  let clip = worldViewProjection * vec4<f32>(worldPosition, 1.0);
+  let uv = clip.xy / max(abs(clip.w), 1e-6) * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  let coordinate = clamp(
+    uv * vec2<f32>(f32(width), f32(height)) - vec2<f32>(0.5),
+    vec2<f32>(0.0),
+    vec2<f32>(f32(width - 1u), f32(height - 1u)),
+  );
+  let low = vec2<u32>(floor(coordinate));
+  let high = min(low + vec2<u32>(1u), vec2<u32>(width - 1u, height - 1u));
+  let weight = fract(coordinate);
+  let rowWords = cluster_uniform.ao.w;
+  let base = cluster_uniform.ao.x;
+  let a = f32(load_cluster_word(base + low.y * rowWords + low.x)) / 4294967295.0;
+  let b = f32(load_cluster_word(base + low.y * rowWords + high.x)) / 4294967295.0;
+  let c = f32(load_cluster_word(base + high.y * rowWords + low.x)) / 4294967295.0;
+  let d = f32(load_cluster_word(base + high.y * rowWords + high.x)) / 4294967295.0;
+  return mix(mix(a, b, weight.x), mix(c, d, weight.x), weight.y);
+}
+#endif
 
 fn view_z_to_z_slice(
   view_z : f32,
@@ -343,14 +366,16 @@ fn evaluateStandardClusterLights(
 
   let cluster_idx = ndc_position_to_cluster(ndc, view_z, gx, gy, gz, near, far, log_far);
   let cluster_linear = cluster_idx.z * gy * gx + cluster_idx.y * gx + cluster_idx.x;
-  let grid_offset = cluster_linear * 2u;
+  let grid_offset = cluster_linear * cluster_uniform.cluster_layout.x;
 #ifdef STORAGE_BUFFER_AVAILABLE
   let list_offset = cluster_grid[grid_offset];
-  let list_count = cluster_grid[grid_offset + 1u];
+  let list_count = cluster_grid[grid_offset + cluster_uniform.cluster_layout.y];
 #else
-  let list_offset = load_cluster_word(CLUSTER_TEXTURE_GRID_WORD_OFFSET + grid_offset);
-  let list_count = load_cluster_word(CLUSTER_TEXTURE_GRID_WORD_OFFSET + grid_offset + 1u);
-  let list_word_offset = CLUSTER_TEXTURE_GRID_WORD_OFFSET + gx * gy * gz * 2u;
+  let list_offset = load_cluster_word(cluster_uniform.texture.y + grid_offset);
+  let list_count = load_cluster_word(
+    cluster_uniform.texture.y + grid_offset + cluster_uniform.cluster_layout.y,
+  );
+  let list_word_offset = cluster_uniform.texture.z;
 #endif
   for (var i = 0u; i < list_count; i = i + 1u) {
 #ifdef STORAGE_BUFFER_AVAILABLE

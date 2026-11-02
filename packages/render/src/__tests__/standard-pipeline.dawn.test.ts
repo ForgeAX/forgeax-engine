@@ -15,16 +15,25 @@ import {
 } from '../gpu-usage';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { STANDARD_CLUSTER_MEMBERSHIP_WGSL, standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
+import { pipelineBuildOf } from '../record/typed-frame-graph';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import {
+  packTestClusterUniform,
+  selectTestStandardClusterTransport as selectStandardClusterTransport,
+} from './cluster-test-abi';
 
 function topology(device: RhiDevice): RenderPipelineTopology {
   return {
     pipelineId: STANDARD_PIPELINE_ID,
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', lightCount: 256 },
-    config: { ssao: { enabled: true } },
+    standardProfile: {
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath: 'deferred',
+      lightCount: 256,
+      ssao: { algorithm: 'gtao' },
+    },
+    config: { ssao: { enabled: true, algorithm: 'gtao' } },
     surface: {
       width: 1,
       height: 1,
@@ -103,7 +112,12 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       })
     ).unwrap();
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    const built = standardPipeline.build(
+    const build = pipelineBuildOf(
+      { build: standardPipeline.build } as Parameters<typeof pipelineBuildOf>[0],
+      true,
+      'compute',
+    );
+    const built = build(
       {
         graph,
         standardLighting: clusteredStandardLighting(),
@@ -117,7 +131,10 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
     expect(compiled.ok).toBe(true);
     if (compiled.ok) {
-      expect(compiled.value.inspect().passes.map((pass) => pass.kind)).toContain('compute');
+      const passes = compiled.value.inspect().passes;
+      expect(passes.map((pass) => pass.kind)).toContain('compute');
+      expect(passes.map((pass) => pass.name)).toContain('gtao-calc-compute');
+      expect(passes.map((pass) => pass.name)).not.toContain('ssao-calc');
     }
   });
 
@@ -190,9 +207,18 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       size: lightBounds.byteLength,
       usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     });
+    const uniformData = new Uint8Array(
+      packTestClusterUniform({
+        grid: layout.grid,
+        near: frame.near,
+        far: frame.far,
+        ssaoIntensity: 0,
+        lightCount: frame.local.length,
+      }),
+    );
     const uniformBuffer = device.createBuffer({
       label: 'standard-cluster-readback-uniform',
-      size: 32,
+      size: uniformData.byteLength,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     });
     const readbackSize = Math.max(4, membershipEntryCount * 4);
@@ -217,19 +243,6 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     )
       return;
 
-    const uniformData = new ArrayBuffer(32);
-    new Uint32Array(uniformData, 0, 4).set([
-      layout.grid.x,
-      layout.grid.y,
-      layout.grid.z,
-      frame.local.length,
-    ]);
-    new Float32Array(uniformData, 16, 4).set([
-      frame.near,
-      frame.far,
-      Math.log(frame.far / frame.near),
-      0,
-    ]);
     expect(device.queue.writeBuffer(clusterGridBuffer.value, 0, clusterGrid)).toMatchObject({
       ok: true,
     });

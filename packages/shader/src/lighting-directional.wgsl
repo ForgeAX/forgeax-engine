@@ -29,7 +29,9 @@ const PCSS_HIGH_COMPARE_TAPS : u32 = 32u;
 // Cascade-local disk points are fixed, bounded, and shared by raw and compare
 // phases. A rotation derived from the integer receiver texel and cascade keeps
 // the pattern stable without a temporal input.
-const PCSS_DISK_OFFSETS : array<vec2<f32>, 32> = array<vec2<f32>, 32>(
+// One invocation-owned table keeps tap indexing addressable across native calls.
+// The shader only reads these fixed disk points.
+var<private> PCSS_DISK_OFFSETS : array<vec2<f32>, 32> = array<vec2<f32>, 32>(
   vec2<f32>(-0.326, -0.945), vec2<f32>(0.236, -0.873), vec2<f32>(0.891, -0.404), vec2<f32>(-0.761, -0.581),
   vec2<f32>(0.612, 0.146), vec2<f32>(-0.148, 0.514), vec2<f32>(-0.527, -0.109), vec2<f32>(0.074, 0.911),
   vec2<f32>(-0.944, 0.238), vec2<f32>(0.444, -0.736), vec2<f32>(0.707, 0.641), vec2<f32>(-0.184, -0.342),
@@ -175,62 +177,42 @@ fn _samplePcssForCascade(
   let biasedDepth = projCoords.z + _directionalReceiverDepthBias(layer, normal, l);
   var blockerDepth = 0.0;
   var blockerCount = 0u;
-  if (profile == 4u) {
-    for (var i = 0u; i < PCSS_MEDIUM_RAW_TAPS; i = i + 1u) {
-      let rawUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, rawRadius));
-      let rawTexel = vec2<i32>(rawUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
-      let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
-      let correctedDepth = rawDepth - max(0.0, dot(planeGradient, (rawUv - tileUv) * vec2<f32>(shadowMapSize)));
-      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
-        blockerDepth = blockerDepth + correctedDepth;
-        blockerCount = blockerCount + 1u;
-      }
-    }
-  } else {
-    for (var i = 0u; i < PCSS_HIGH_RAW_TAPS; i = i + 1u) {
-      let rawUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, rawRadius));
-      let rawTexel = vec2<i32>(rawUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
-      let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
-      let correctedDepth = rawDepth - max(0.0, dot(planeGradient, (rawUv - tileUv) * vec2<f32>(shadowMapSize)));
-      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
-        blockerDepth = blockerDepth + correctedDepth;
-        blockerCount = blockerCount + 1u;
-      }
-    }
-  }
-  if (blockerCount == 0u) {
-    return 1.0;
-  }
-
-  let averageBlockerDepth = blockerDepth / f32(blockerCount);
-  let lightDepthWorldSpan = max(view.splitPlanes[layer].z, 0.0);
-  let worldUnitsPerTexel = max(view.splitPlanes[layer].y, 0.0);
-  if (!(lightDepthWorldSpan > 0.0 && worldUnitsPerTexel > 0.0 && view.directionalShadowFilter.y >= 0.0 && view.directionalShadowFilter.z >= 0.0)) {
-    return 1.0;
-  }
-  let worldDistance = max(0.0, averageBlockerDepth - biasedDepth) * lightDepthWorldSpan;
-  let penumbraTexels = clamp(
-    worldDistance * tan(view.directionalShadowFilter.y) / worldUnitsPerTexel,
-    0.0,
-    view.directionalShadowFilter.z,
-  );
-  let compareRadius = max(0.5, penumbraTexels);
+  // Each phase shares the disk addressing call site. The second phase starts
+  // only after all blockers have been accumulated, preserving tap order.
+  let rawTaps = select(PCSS_MEDIUM_RAW_TAPS, PCSS_HIGH_RAW_TAPS, profile == 5u);
+  let compareTaps = select(PCSS_MEDIUM_COMPARE_TAPS, PCSS_HIGH_COMPARE_TAPS, profile == 5u);
+  var compareRadius = 0.5;
   let compareDepth = projCoords.z + _directionalReceiverDepthBias(layer, normal, l);
   var litSum = 0.0;
-  if (profile == 4u) {
-    for (var i = 0u; i < PCSS_MEDIUM_COMPARE_TAPS; i = i + 1u) {
-      let compareUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, compareRadius));
-      let tapDepth = max(0.0, compareDepth + max(0.0, dot(planeGradient, (compareUv - tileUv) * vec2<f32>(shadowMapSize))));
-      litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), tapDepth);
+  for (var sample = 0u; sample < rawTaps + compareTaps; sample++) {
+    if (sample == rawTaps) {
+      if (blockerCount == 0u) { return 1.0; }
+      let averageBlockerDepth = blockerDepth / f32(blockerCount);
+      let lightDepthWorldSpan = max(view.splitPlanes[layer].z, 0.0);
+      let worldUnitsPerTexel = max(view.splitPlanes[layer].y, 0.0);
+      if (!(lightDepthWorldSpan > 0.0 && worldUnitsPerTexel > 0.0 && view.directionalShadowFilter.y >= 0.0 && view.directionalShadowFilter.z >= 0.0)) { return 1.0; }
+      let worldDistance = max(0.0, averageBlockerDepth - biasedDepth) * lightDepthWorldSpan;
+      let penumbraTexels = clamp(worldDistance * tan(view.directionalShadowFilter.y) / worldUnitsPerTexel, 0.0, view.directionalShadowFilter.z);
+      compareRadius = max(0.5, penumbraTexels);
     }
-    return litSum / f32(PCSS_MEDIUM_COMPARE_TAPS);
+    let raw = sample < rawTaps;
+    let index = select(sample - rawTaps, sample, raw);
+    let radius = select(compareRadius, rawRadius, raw);
+    let sampleUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(index, angle, radius));
+    if (raw) {
+      let rawTexel = vec2<i32>(sampleUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
+      let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
+      let correctedDepth = rawDepth - max(0.0, dot(planeGradient, (sampleUv - tileUv) * vec2<f32>(shadowMapSize)));
+      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
+        blockerDepth = blockerDepth + correctedDepth;
+        blockerCount = blockerCount + 1u;
+      }
+    } else {
+      let tapDepth = max(0.0, compareDepth + max(0.0, dot(planeGradient, (sampleUv - tileUv) * vec2<f32>(shadowMapSize))));
+      litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, sampleUv, i32(layer), tapDepth);
+    }
   }
-  for (var i = 0u; i < PCSS_HIGH_COMPARE_TAPS; i = i + 1u) {
-    let compareUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, compareRadius));
-    let tapDepth = max(0.0, compareDepth + max(0.0, dot(planeGradient, (compareUv - tileUv) * vec2<f32>(shadowMapSize))));
-    litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), tapDepth);
-  }
-  return litSum / f32(PCSS_HIGH_COMPARE_TAPS);
+  return litSum / f32(compareTaps);
 }
 #endif
 
@@ -487,19 +469,26 @@ fn evalDirectionalShadowFactorAtPixel(
   let layer = _pickCascadeLayer(viewDepth, count);
   // normalBias is a world-space distance, independent of cascade depth span.
   let receiverPosition = worldPos + normal * view.normalBias;
-  let shadowCurr = _sampleShadowForCascade(receiverPosition, layer, normal, l, layerBase, pixel);
-
-  var shadow = shadowCurr;
+  var blend = 0.0;
   if (view.cascadeBlend > 0.0 && layer + 1u < count) {
     let spCurr = view.splitPlanes[layer].x;
     let blendWidth = spCurr * view.cascadeBlend;
     if (blendWidth > 0.0) {
       let dist = spCurr - viewDepth;
-      let t = clamp(1.0 - dist / blendWidth, 0.0, 1.0);
-      if (t > 0.0) {
-        let shadowNext = _sampleShadowForCascade(receiverPosition, layer + 1u, normal, l, layerBase, pixel);
-        shadow = mix(shadowCurr, shadowNext, t);
-      }
+      blend = clamp(1.0 - dist / blendWidth, 0.0, 1.0);
+    }
+  }
+  // Keep one native filter call site. Duplicating the complete receiver for
+  // cascade blending can crash Metal code generation in composed medium shaders.
+  // The uniform bound still samples only the current and, when needed, next layer.
+  let sampleCount = select(1u, 2u, blend > 0.0);
+  var shadow = 1.0;
+  for (var sample = 0u; sample < sampleCount; sample++) {
+    let value = _sampleShadowForCascade(receiverPosition, layer + sample, normal, l, layerBase, pixel);
+    if (sample == 0u) {
+      shadow = value;
+    } else {
+      shadow = mix(shadow, value, blend);
     }
   }
   return mix(1.0, shadow, 1.0 - view.splitPlanes[1].w);

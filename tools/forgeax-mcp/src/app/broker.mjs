@@ -44,7 +44,14 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
     const started = performance.now();
     // Pack artifacts may carry binary MIME even when their bytes are WGSL.
     // Choose wire compression by its measured size, independently of domain metadata.
-    const compressed = raw.length > 32768 ? gzipSync(raw, { level: 1 }) : raw;
+    let compressed = raw.length > 32768 ? gzipSync(raw, { level: 1 }) : raw;
+    // Repeated inline base64 must fit gzip's 32 KiB history window inside a
+    // batch, including the resource envelope. Leave headroom for metadata and
+    // codec differences; retain the cheap level-1 path for large payloads.
+    if (compressed.length > 16384 && compressed.length <= 49152) {
+      const compact = gzipSync(raw, { level: 6 });
+      if (compact.length < compressed.length) compressed = compact;
+    }
     const encoding = compressed.length < raw.length ? 'gzip' : undefined;
     const data = encoding ? compressed : raw;
     const id = createHash('sha256').update(data).digest('hex');

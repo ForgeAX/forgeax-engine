@@ -706,6 +706,7 @@ function createRenderOwner(
     recorded,
 
     disposeFrameState(): void {
+      frameState.gtaoCandidatePreparationFailureGeneration = undefined;
       let failure: unknown;
       try {
         frameState.standardClusterMembership.clear();
@@ -847,6 +848,7 @@ function createRenderOwner(
     },
     registerBuiltinPostProcess: postProcessOwner.registerBuiltinPostProcess,
     resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {
+      frameState.gtaoCandidatePreparationFailureGeneration = undefined;
       frameState.shadowDepthLayers?.dispose();
       frameState.shadowDepthLayers = undefined;
       disposeTargetCaptures(cubeCaptureState);

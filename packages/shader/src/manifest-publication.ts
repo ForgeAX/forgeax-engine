@@ -1,4 +1,4 @@
-import { isShaderEntryPointReads, ShaderSource } from '@forgeax/engine-types';
+import { isShaderEntryPointReads, isShaderReflection, ShaderSource } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -75,6 +75,224 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function freezeTree(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const child of Object.values(value)) freezeTree(child);
+}
+
+type PublicationReferences = {
+  readonly sources: Set<string>;
+  readonly receipts: Set<number>;
+  readonly entryPoints: Set<number>;
+  readonly reflections: Set<number>;
+};
+
+type PublicationRows = {
+  readonly entries: Record<string, unknown>[];
+  readonly materials: Array<{
+    readonly row: Record<string, unknown>;
+    readonly variants: Record<string, unknown>[];
+  }>;
+};
+
+type PublicationSources = {
+  readonly fragments: Map<string, readonly string[]>;
+  readonly indices: Map<string, readonly number[]>;
+};
+
+function checkReferenceIndex(
+  row: Record<string, unknown>,
+  field: string,
+  length: number,
+  referenced: Set<number>,
+  message: string,
+): void {
+  if (!Object.hasOwn(row, field)) return;
+  const index = row[field];
+  if (!Number.isSafeInteger(index) || (index as number) < 0 || (index as number) >= length) {
+    throw new Error(message);
+  }
+  referenced.add(index as number);
+}
+
+function checkPublicationRow(
+  candidate: unknown,
+  tables: {
+    readonly receipts: readonly unknown[];
+    readonly entryPoints: readonly unknown[];
+    readonly reflections: readonly unknown[];
+  },
+  referenced: PublicationReferences,
+): Record<string, unknown> {
+  if (
+    !isRecord(candidate) ||
+    typeof candidate.sourceDigest !== 'string' ||
+    !digestPattern.test(candidate.sourceDigest) ||
+    [
+      'wgsl',
+      'composedWgsl',
+      'composedWgslUrl',
+      'composedWgslSha256',
+      'receipt',
+      'entryPoints',
+      'reflection',
+    ].some((key) => Object.hasOwn(candidate, key))
+  ) {
+    throw new Error('Shader row requires one source digest');
+  }
+  referenced.sources.add(candidate.sourceDigest);
+  checkReferenceIndex(
+    candidate,
+    'receiptIndex',
+    tables.receipts.length,
+    referenced.receipts,
+    'Invalid shader receipt reference',
+  );
+  checkReferenceIndex(
+    candidate,
+    'entryPointsIndex',
+    tables.entryPoints.length,
+    referenced.entryPoints,
+    'Invalid shader entry points reference',
+  );
+  checkReferenceIndex(
+    candidate,
+    'reflectionIndex',
+    tables.reflections.length,
+    referenced.reflections,
+    'Invalid shader reflection reference',
+  );
+  return candidate;
+}
+
+function collectPublicationRows(
+  entries: readonly unknown[],
+  materialShaders: readonly unknown[],
+  tables: {
+    readonly receipts: readonly unknown[];
+    readonly entryPoints: readonly unknown[];
+    readonly reflections: readonly unknown[];
+  },
+  referenced: PublicationReferences,
+): PublicationRows {
+  const check = (candidate: unknown) => checkPublicationRow(candidate, tables, referenced);
+  return {
+    entries: entries.map(check),
+    materials: materialShaders.map((candidate) => {
+      const row = check(candidate);
+      if (!Array.isArray(row.variants)) throw new Error('Material variants must be an array');
+      return { row, variants: row.variants.map(check) as Record<string, unknown>[] };
+    }),
+  };
+}
+
+function assertPublicationReferences(
+  referenced: PublicationReferences,
+  sources: Record<string, unknown>,
+  receipts: readonly unknown[],
+  entryPoints: readonly unknown[],
+  reflections: readonly unknown[],
+): void {
+  if (Object.keys(sources).length !== referenced.sources.size) {
+    throw new Error('Shader source table has missing or unused entries');
+  }
+  if (referenced.receipts.size !== receipts.length) {
+    throw new Error('Shader receipt table has unused entries');
+  }
+  if (referenced.entryPoints.size !== entryPoints.length) {
+    throw new Error('Shader entry points table has unused entries');
+  }
+  if (referenced.reflections.size !== reflections.length) {
+    throw new Error('Shader reflection table has unused entries');
+  }
+}
+
+function resolvePublicationSources(
+  referenced: Set<string>,
+  sources: Record<string, unknown>,
+  fragments: readonly string[],
+): PublicationSources {
+  const sourceFragments = new Map<string, readonly string[]>();
+  const sourceIndices = new Map<string, readonly number[]>();
+  const usedFragments = new Set<number>();
+  for (const digest of referenced) {
+    const indices = Object.hasOwn(sources, digest) ? sources[digest] : undefined;
+    if (
+      !Array.isArray(indices) ||
+      indices.length === 0 ||
+      !indices.every(
+        (index) => Number.isSafeInteger(index) && index >= 0 && index < fragments.length,
+      )
+    ) {
+      throw new Error(`Invalid shader source fragments: ${digest}`);
+    }
+    const ownedIndices = [...indices] as number[];
+    for (const index of ownedIndices) usedFragments.add(index);
+    const blocks = ownedIndices.map((index) => fragments[index] as string);
+    if (!blocks.some((fragment) => fragment.length > 0)) {
+      throw new Error(`Shader source is empty: ${digest}`);
+    }
+    sourceFragments.set(digest, blocks);
+    sourceIndices.set(digest, ownedIndices);
+  }
+  if (usedFragments.size !== fragments.length) {
+    throw new Error('Shader fragment table has unused entries');
+  }
+  return { fragments: sourceFragments, indices: sourceIndices };
+}
+
+function expandPublicationRows(
+  rows: PublicationRows,
+  sources: PublicationSources,
+  receipts: readonly unknown[],
+  entryPoints: readonly unknown[],
+  reflections: readonly unknown[],
+): Record<string, unknown> {
+  const selected = new Map<string, ShaderSource>();
+  const expand = (row: Record<string, unknown>, field: string) => {
+    const { sourceDigest, receiptIndex, entryPointsIndex, reflectionIndex, ...metadata } = row;
+    const digest = sourceDigest as string;
+    const result = {
+      ...metadata,
+      sourceDigest: digest,
+      ...(receiptIndex === undefined ? {} : { receipt: receipts[receiptIndex as number] }),
+      ...(entryPointsIndex === undefined
+        ? {}
+        : { entryPoints: entryPoints[entryPointsIndex as number] }),
+      ...(reflectionIndex === undefined
+        ? {}
+        : { reflection: reflections[reflectionIndex as number] }),
+    };
+    const fragments = sources.fragments.get(digest) as readonly string[];
+    fragmentsByRow.set(result, fragments);
+    const select = (): ShaderSource => {
+      let source = selected.get(digest);
+      if (source === undefined) {
+        source = new ShaderSource(fragments);
+        selected.set(digest, source);
+      }
+      return source;
+    };
+    selectedSourcesByRow.set(result, select);
+    Object.defineProperty(result, field, {
+      enumerable: true,
+      get() {
+        return select().read();
+      },
+    });
+    return result;
+  };
+  return {
+    entries: rows.entries.map((row) => expand(row, 'wgsl')),
+    materialShaders: rows.materials.map(({ row, variants }) =>
+      Object.assign(expand(row, 'composedWgsl'), {
+        variants: variants.map((variant) => expand(variant, 'composedWgsl')),
+      }),
+    ),
+  };
+}
+
 /** Pure expansion shared by browser admission and synchronous packaged-input loading. */
 export function expandShaderManifestPublication(value: unknown): {
   readonly manifest: unknown;
@@ -103,7 +321,9 @@ export function expandShaderManifestPublication(value: unknown): {
     !Array.isArray(value.receipts) ||
     !value.receipts.every(isRecord) ||
     !Array.isArray(value.entryPoints) ||
-    !value.entryPoints.every(isShaderEntryPointReads)
+    !value.entryPoints.every(isShaderEntryPointReads) ||
+    (value.reflections !== undefined &&
+      (!Array.isArray(value.reflections) || !value.reflections.every(isShaderReflection)))
   ) {
     throw new Error('Invalid shader manifest publication');
   }
@@ -113,144 +333,26 @@ export function expandShaderManifestPublication(value: unknown): {
   // Snapshot each shared compiler fact once before the first digest await.
   // No row owns a writable copy of this publication-local table.
   const entryPoints = structuredClone(value.entryPoints);
-  const freeze = (value: unknown): void => {
-    if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
-    Object.freeze(value);
-    for (const child of Object.values(value)) freeze(child);
+  freezeTree(entryPoints);
+  const reflections = structuredClone(value.reflections ?? []) as unknown[];
+  freezeTree(reflections);
+  const referenced: PublicationReferences = {
+    sources: new Set(),
+    receipts: new Set(),
+    entryPoints: new Set(),
+    reflections: new Set(),
   };
-  freeze(entryPoints);
-  const referenced = new Set<string>();
-  const referencedReceipts = new Set<number>();
-  const referencedEntryPoints = new Set<number>();
-  const check = (candidate: unknown): Record<string, unknown> => {
-    if (
-      !isRecord(candidate) ||
-      typeof candidate.sourceDigest !== 'string' ||
-      !digestPattern.test(candidate.sourceDigest) ||
-      [
-        'wgsl',
-        'composedWgsl',
-        'composedWgslUrl',
-        'composedWgslSha256',
-        'receipt',
-        'entryPoints',
-      ].some((key) => Object.hasOwn(candidate, key))
-    ) {
-      throw new Error('Shader row requires one source digest');
-    }
-    referenced.add(candidate.sourceDigest);
-    if (Object.hasOwn(candidate, 'receiptIndex')) {
-      const index = candidate.receiptIndex;
-      if (
-        !Number.isSafeInteger(index) ||
-        (index as number) < 0 ||
-        (index as number) >= receipts.length
-      ) {
-        throw new Error('Invalid shader receipt reference');
-      }
-      referencedReceipts.add(index as number);
-    }
-    if (Object.hasOwn(candidate, 'entryPointsIndex')) {
-      const index = candidate.entryPointsIndex;
-      if (
-        !Number.isSafeInteger(index) ||
-        (index as number) < 0 ||
-        (index as number) >= entryPoints.length
-      ) {
-        throw new Error('Invalid shader entry points reference');
-      }
-      referencedEntryPoints.add(index as number);
-    }
-    return candidate;
-  };
-  const entries = value.entries.map(check);
-  const materials = value.materialShaders.map((candidate) => {
-    const row = check(candidate);
-    if (!Array.isArray(row.variants)) throw new Error('Material variants must be an array');
-    return { row, variants: row.variants.map(check) as Record<string, unknown>[] };
-  });
-  if (Object.keys(sources).length !== referenced.size) {
-    throw new Error('Shader source table has missing or unused entries');
-  }
-  if (referencedReceipts.size !== receipts.length) {
-    throw new Error('Shader receipt table has unused entries');
-  }
-  if (referencedEntryPoints.size !== entryPoints.length) {
-    throw new Error('Shader entry points table has unused entries');
-  }
-  const sourceFragments = new Map<string, readonly string[]>();
-  const sourceIndices = new Map<string, readonly number[]>();
-  const usedFragments = new Set<number>();
-  for (const digest of referenced) {
-    const indices = Object.hasOwn(sources, digest) ? sources[digest] : undefined;
-    if (
-      !Array.isArray(indices) ||
-      indices.length === 0 ||
-      !indices.every(
-        (index) => Number.isSafeInteger(index) && index >= 0 && index < fragments.length,
-      )
-    ) {
-      throw new Error(`Invalid shader source fragments: ${digest}`);
-    }
-    const ownedIndices = [...indices] as number[];
-    ownedIndices.forEach((index) => {
-      usedFragments.add(index);
-    });
-    const blocks = ownedIndices.map((index: number) => fragments[index] as string);
-    if (!blocks.some((fragment) => fragment.length > 0)) {
-      throw new Error(`Shader source is empty: ${digest}`);
-    }
-    sourceFragments.set(digest, blocks);
-    sourceIndices.set(digest, ownedIndices);
-  }
-  if (usedFragments.size !== fragments.length) {
-    throw new Error('Shader fragment table has unused entries');
-  }
-  // Keep only sources actually requested by a renderer, instead of every
-  // capability permutation. Verification below never populates this cache.
-  const selected = new Map<string, ShaderSource>();
-  const manifest: Record<string, unknown> = {};
-  const expand = (row: Record<string, unknown>, field: string) => {
-    const { sourceDigest, receiptIndex, entryPointsIndex, ...metadata } = row;
-    const digest = sourceDigest as string;
-    const result = {
-      ...metadata,
-      ...(receiptIndex === undefined ? {} : { receipt: receipts[receiptIndex as number] }),
-      ...(entryPointsIndex === undefined
-        ? {}
-        : { entryPoints: entryPoints[entryPointsIndex as number] }),
-    };
-    fragmentsByRow.set(result, sourceFragments.get(digest) as readonly string[]);
-    const select = (): ShaderSource => {
-      let source = selected.get(digest);
-      if (source === undefined) {
-        source = new ShaderSource(sourceFragments.get(digest) as readonly string[]);
-        selected.set(digest, source);
-      }
-      return source;
-    };
-    selectedSourcesByRow.set(result, select);
-    Object.defineProperty(result, field, {
-      enumerable: true,
-      get() {
-        return select().read();
-      },
-    });
-    return result;
-  };
-  Object.assign(manifest, {
-    entries: entries.map((row) => expand(row, 'wgsl')),
-    materialShaders: materials.map(({ row, variants }) =>
-      Object.assign(expand(row, 'composedWgsl'), {
-        variants: variants.map((variant) => expand(variant, 'composedWgsl')),
-      }),
-    ),
-  });
+  const tables = { receipts, entryPoints, reflections };
+  const rows = collectPublicationRows(value.entries, value.materialShaders, tables, referenced);
+  assertPublicationReferences(referenced, sources, receipts, entryPoints, reflections);
+  const resolved = resolvePublicationSources(referenced.sources, sources, fragments);
+  // Keep only sources requested by a renderer; verification never populates this cache.
+  const manifest = expandPublicationRows(rows, resolved, receipts, entryPoints, reflections);
   return {
     manifest,
-    sourceFragments,
+    sourceFragments: resolved.fragments,
     fragmentTable: fragments,
-    sourceIndices,
+    sourceIndices: resolved.indices,
   };
 }
 

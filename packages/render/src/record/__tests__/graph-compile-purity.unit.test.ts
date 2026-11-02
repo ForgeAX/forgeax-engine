@@ -1,6 +1,7 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { compileAndAdoptViewGraph } from '../../__tests__/graph-compile.fixture';
+import { DeviceScope } from '../../device/device-scope';
 import { RhiErrorListenerRegistry } from '../../lifecycle';
 import type { RenderPipeline } from '../../render-pipeline';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
@@ -48,6 +49,7 @@ async function harness() {
   errorRegistry.add((error) => errors.push(error));
   const internals = {
     device,
+    deviceScope: DeviceScope.create(0, 'graph-purity-test'),
     errorRegistry,
     lookupPostProcess: () => undefined,
     getPostProcessPipeline: () => null,

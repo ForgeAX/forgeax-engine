@@ -11,6 +11,10 @@ import { addProjectedDecalPasses } from '../decals/graph';
 import { addDepthPyramidPasses, type DepthPyramidProjection } from '../depth-pyramid/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import type { GraphEnvironment } from '../environment/ibl';
+import {
+  GPU_TEXTURE_USAGE_COPY_SRC,
+  GPU_TEXTURE_USAGE_STORAGE_BINDING,
+} from '../gpu-texture-usage';
 import type {
   RenderPipeline,
   RenderPipelineBuildError,
@@ -42,8 +46,13 @@ import {
   TRANSMISSION_BACK_PASS_SELECTOR,
 } from '../systems/pass-selector';
 import {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+} from '../temporal/scene-data';
+import {
   addStandardSceneDataPass,
   aggregateTemporalDemand,
+  bindStandardSceneDataTarget,
   createStandardSceneDataTarget,
   requireStandardTemporalLane,
   type StandardSceneDataTargets,
@@ -58,7 +67,6 @@ import type { TransmissionDemand } from '../transmission/projection';
 import {
   addObservationCapturePass,
   addReflectionFallbackObservationPass,
-  addTypedFrameObservationPass,
   addTypedScenePass,
   addTypedSkyboxPass,
   addTypedSsaoPasses,
@@ -74,7 +82,10 @@ import {
   requireSingleLayerMediumInputs,
   type SingleLayerMediumNearestTargets,
 } from './single-layer-medium-passes';
-import type { StandardPipelineBuildContext } from './standard-build-context';
+import {
+  resolveStandardGtaoExecution,
+  type StandardPipelineBuildContext,
+} from './standard-build-context';
 import {
   contributeStandardCloudComposite,
   contributeStandardCloudPreOpaque,
@@ -551,22 +562,40 @@ function addDeferredSsao(
   copySize: CopySize,
   normal: RenderPipelineTarget,
   depth: RenderPipelineTarget,
+  executionOverride: StandardPipelineBuildContext['gtaoExecutionOverride'],
 ): Result<RenderPipelineTarget | undefined, RenderGraphError> {
   if (topology.config?.ssao?.enabled !== true) return ok(undefined);
-  const { resolutionScale } = getSsaoParameters(topology.config.ssao);
+  const parameters = getSsaoParameters(topology.config.ssao);
+  const execution = resolveStandardGtaoExecution(
+    parameters.algorithm,
+    topology.lane.compute,
+    executionOverride,
+  );
+  if (!execution.ok) return execution;
   const size = {
-    width: Math.max(1, Math.round(copySize.width * resolutionScale)),
-    height: Math.max(1, Math.round(copySize.height * resolutionScale)),
+    width: Math.max(1, Math.round(copySize.width * parameters.resolutionScale)),
+    height: Math.max(1, Math.round(copySize.height * parameters.resolutionScale)),
   };
-  const raw = target(graph, 'ssao-raw', { format: 'rgba8unorm', size });
+  const raw = target(graph, 'ssao-raw', {
+    format: 'rgba8unorm',
+    size,
+    usage:
+      GPU_TEXTURE_USAGE_COPY_SRC |
+      (execution.value === 'compute' ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0),
+  });
   if (!raw.ok) return raw;
-  const blurred = target(graph, 'ssao-blurred', { format: 'r8unorm', size });
+  const blurred = target(graph, 'ssao-blurred', {
+    format: 'r8unorm',
+    size,
+    usage: GPU_TEXTURE_USAGE_COPY_SRC,
+  });
   if (!blurred.ok) return blurred;
   const passes = addTypedSsaoPasses(graph, {
     normal,
     depth,
     raw: raw.value,
     blurred: blurred.value,
+    execution: execution.value,
   });
   if (!passes.ok) return passes;
   return ok(blurred.value);
@@ -781,6 +810,7 @@ interface DeferredForwardScene {
   readonly environment: GraphEnvironment | undefined;
   readonly receiver: StandardForwardReceiverInputs;
   readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined;
+  readonly sceneDataTargets: readonly RenderPipelineTarget[];
 }
 
 /**
@@ -1054,10 +1084,9 @@ function addDeferredSceneObservations(
     { color, colorResolve: undefined, depth },
     standardForwardReceiverFeatureAccesses(receiver),
     environment?.atmosphere,
+    forward.sceneDataTargets,
   );
   if (!features.ok) return features;
-  const observation = addTypedFrameObservationPass(graph, color);
-  if (!observation.ok) return observation;
   if (reflectionFallback?.sampleCount !== 1) return ok(undefined);
   return addReflectionFallbackObservationPass(graph, reflectionFallback);
 }
@@ -1205,6 +1234,18 @@ function addDeferredForwardStages(
       clusterReads: clusters === null ? [] : standardClusterReadAccesses(clusters),
     }),
     gpuDriven,
+    sceneDataTargets: [
+      bindStandardSceneDataTarget(
+        targets.normalRoughness,
+        topology,
+        SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+      ),
+      bindStandardSceneDataTarget(
+        targets.depth,
+        topology,
+        SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+      ),
+    ],
   };
   const sceneOutput = addDeferredOpaqueForward(context, topology, opaque, clouds);
   if (!sceneOutput.ok) return sceneOutput;
@@ -1284,7 +1325,14 @@ export function buildStandardDeferredLane(
   if (!shadows.ok) return shadows;
   const surfaces = addSurfaceStage(context, topology, targets.value, internalSize);
   if (!surfaces.ok) return surfaces;
-  const ssao = addDeferredSsao(graph, topology, internalCopySize, surfaces.value.normal, depth);
+  const ssao = addDeferredSsao(
+    graph,
+    topology,
+    internalCopySize,
+    surfaces.value.normal,
+    depth,
+    context.gtaoExecutionOverride,
+  );
   if (!ssao.ok) return ssao;
   const targetCaptures = contributeDeferredCubeCaptures(context, environment.value);
   if (!targetCaptures.ok) return targetCaptures;

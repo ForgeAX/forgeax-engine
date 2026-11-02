@@ -463,7 +463,7 @@ export function viewGraphTarget(
     texture,
     textureIdentity: getTextureIdentity(texture),
     descriptor,
-    frameId: frameState.frameNumber - 1,
+    recordFrameNumber: frameState.frameNumber - 1,
     graphGeneration: graph.graphGeneration,
   };
 }

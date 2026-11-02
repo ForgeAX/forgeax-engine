@@ -31,15 +31,17 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  packTestClusterUniform as packClusterUniform,
+  STANDARD_CLUSTER_TEST_ABI,
+} from '../../../render/src/__tests__/cluster-test-abi';
 import type { HdrpBuffers } from '../../../render/src/hdrp-buffers';
 import {
   createHdrpClusterMembershipBindGroup,
   createHdrpClusterMembershipBindGroupLayoutDescriptor,
   createHdrpUnifiedBindGroup,
   getOrCreateSsaoFallbackTexture,
-  packClusterUniform,
 } from '../../../render/src/hdrp-buffers';
-import { BYTES_PER_DIRECT_LIGHT_SLOT } from '../../../render/src/light-buffer-layout';
 import { createHdrpBindGroupLayoutDescriptor } from '../../../render/src/pipeline-spec';
 import type { RenderSystemRuntime } from '../../../render/src/render-system';
 
@@ -137,13 +139,13 @@ function fakeHdrpBuffers(): HdrpBuffers {
     kind: 'storage',
     device: {} as HdrpBuffers['device'],
     lightDataBuffer: mockBuffer('hdrp-light-data'),
-    lightDataBytes: 256 * BYTES_PER_DIRECT_LIGHT_SLOT,
+    lightDataBytes: 256 * STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize,
     clusterGridBuffer: mockBuffer('hdrp-cluster-grid'),
     clusterGridBytes: 1024,
     lightIndexListBuffer: mockBuffer('hdrp-light-index-list'),
     lightIndexListBytes: 4096,
     clusterUniformBuffer: mockBuffer('hdrp-cluster-uniform'),
-    clusterUniformBytes: 32,
+    clusterUniformBytes: 96,
     lightBoundsBuffer: mockBuffer('hdrp-light-bounds'),
     lightBoundsBytes: 6144,
     grid: { x: 16, y: 9, z: 24 },
@@ -155,12 +157,28 @@ function fakeHdrpBuffers(): HdrpBuffers {
 
 describe('HDRP GPU membership producer bind-group contract', () => {
   it('preserves the full 256-light Standard count in the cluster UBO', () => {
-    const payload = new Uint32Array(packClusterUniform({ x: 16, y: 9, z: 24 }, 0.1, 50, 0, 256));
+    const payload = new Uint32Array(
+      packClusterUniform({
+        grid: { x: 16, y: 9, z: 24 },
+        near: 0.1,
+        far: 50,
+        ssaoIntensity: 0,
+        lightCount: 256,
+      }),
+    );
     expect(payload[3]).toBe(256);
   });
 
   it('keeps enabled SSAO intensity in the zero-punctual-light uniform path', () => {
-    const payload = new Float32Array(packClusterUniform({ x: 16, y: 9, z: 24 }, 0.1, 50, 1, 0));
+    const payload = new Float32Array(
+      packClusterUniform({
+        grid: { x: 16, y: 9, z: 24 },
+        near: 0.1,
+        far: 50,
+        ssaoIntensity: 1,
+        lightCount: 0,
+      }),
+    );
     expect(payload[3]).toBe(0);
     expect(payload[7]).toBe(1);
   });

@@ -1,6 +1,7 @@
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
+import { DeviceScope } from '../device/device-scope';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { directionalShadowPreparationLimit } from '../record/frame';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -77,6 +78,7 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
   const internals =
     sharedInternals ??
     ({
+      deviceScope: DeviceScope.create(0, 'recovery-graph-test'),
       get device() {
         return device as RhiDevice;
       },

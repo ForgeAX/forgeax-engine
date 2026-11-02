@@ -4,6 +4,7 @@
 
 import type {
   BindGroupLayout,
+  ComputePipeline,
   PipelineLayout,
   RenderPipeline,
   RhiDevice,
@@ -14,7 +15,7 @@ import {
   type PipelineGroup2Contract,
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
-import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
+import { GPU_SHADER_STAGE_COMPUTE, GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import {
   cacheKeyOf,
@@ -263,7 +264,12 @@ export type FullscreenPassResources = Pick<
   | 'ssaoCalcPipeline'
   | 'ssaoBlurPipeline'
   | 'ssaoBgl'
->;
+  | 'ssaoClusterPackPipeline'
+  | 'ssaoClusterPackBgl'
+> & {
+  readonly gtaoComputePipeline: ComputePipeline | null;
+  readonly gtaoComputeBgl: BindGroupLayout | null;
+};
 
 export function emptyFullscreenPassResources(): FullscreenPassResources {
   return {
@@ -278,6 +284,10 @@ export function emptyFullscreenPassResources(): FullscreenPassResources {
     ssaoCalcPipeline: null,
     ssaoBlurPipeline: null,
     ssaoBgl: null,
+    ssaoClusterPackPipeline: null,
+    ssaoClusterPackBgl: null,
+    gtaoComputePipeline: null,
+    gtaoComputeBgl: null,
   };
 }
 
@@ -501,7 +511,14 @@ function createSsaoPassResources(
   provider: PipelineDeviceProvider,
   cache: PipelineCache,
   ssaoModule: NonNullable<EngineShaderModules['ssao']>,
-): Pick<FullscreenPassResources, 'ssaoCalcPipeline' | 'ssaoBlurPipeline' | 'ssaoBgl'> {
+): Pick<
+  FullscreenPassResources,
+  | 'ssaoCalcPipeline'
+  | 'ssaoBlurPipeline'
+  | 'ssaoBgl'
+  | 'ssaoClusterPackPipeline'
+  | 'ssaoClusterPackBgl'
+> {
   const bindGroupLayout = runShimSyncStep(
     () =>
       device.createBindGroupLayout({
@@ -579,7 +596,80 @@ function createSsaoPassResources(
     { ...baseModules, fragmentEntryPoint: 'fs_ssao_blur' },
     'createRenderPipeline (ssao-blur fullscreen) failed; inspect gpuMessage',
   );
-  return { ssaoCalcPipeline: calc, ssaoBlurPipeline: blur, ssaoBgl: bindGroupLayout.value };
+  const packBglResult = device.createBindGroupLayout({
+    label: 'ssao-cluster-pack-bgl',
+    entries: [
+      { binding: 0, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
+      {
+        binding: 7,
+        visibility: GPU_SHADER_STAGE_FRAGMENT,
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+      },
+    ],
+  });
+  if (!packBglResult.ok) throw packBglResult.error;
+  const packBgl = packBglResult.value;
+  const packLayout = createSinglePipelineLayout(
+    device,
+    'ssao-cluster-pack-pl',
+    packBgl,
+    'createPipelineLayout(ssao-cluster-pack) succeeded',
+    'verify AO pack uniform/texture bindings match fs_ssao_cluster_pack',
+  );
+  const packPipeline = buildPipelineOrThrow(
+    fullscreenPipelineSpec('forgeax::post::ssao-cluster-pack', 'post-process', 'rgba32uint', 1),
+    provider,
+    cache,
+    { ...baseModules, layout: packLayout, fragmentEntryPoint: 'fs_ssao_cluster_pack' },
+    'createRenderPipeline (ssao-cluster-pack fullscreen) failed; inspect gpuMessage',
+  );
+  return {
+    ssaoCalcPipeline: calc,
+    ssaoBlurPipeline: blur,
+    ssaoBgl: bindGroupLayout.value,
+    ssaoClusterPackPipeline: packPipeline,
+    ssaoClusterPackBgl: packBgl,
+  };
+}
+
+function createGtaoComputeResources(
+  device: RhiDevice,
+  module: NonNullable<EngineShaderModules['gtaoCompute']>,
+): Pick<FullscreenPassResources, 'gtaoComputePipeline' | 'gtaoComputeBgl'> {
+  const layout = device.createBindGroupLayout({
+    label: 'gtao-compute-bgl',
+    entries: [
+      { binding: 0, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
+      {
+        binding: 4,
+        visibility: GPU_SHADER_STAGE_COMPUTE,
+        texture: { sampleType: 'uint', viewDimension: '2d' },
+      },
+      {
+        binding: 5,
+        visibility: GPU_SHADER_STAGE_COMPUTE,
+        texture: { sampleType: 'depth', viewDimension: '2d' },
+      },
+      {
+        binding: 9,
+        visibility: GPU_SHADER_STAGE_COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba8unorm', viewDimension: '2d' },
+      },
+    ],
+  });
+  if (!layout.ok) throw layout.error;
+  const pipelineLayout = device.createPipelineLayout({
+    label: 'gtao-compute-pipeline-layout',
+    bindGroupLayouts: [layout.value],
+  });
+  if (!pipelineLayout.ok) throw pipelineLayout.error;
+  const pipeline = device.createComputePipeline({
+    label: 'gtao-raw-compute',
+    layout: pipelineLayout.value,
+    compute: { module, entryPoint: 'cs_gtao_calc' },
+  });
+  if (!pipeline.ok) throw pipeline.error;
+  return { gtaoComputePipeline: pipeline.value, gtaoComputeBgl: layout.value };
 }
 
 /** FXAA, skybox and SSAO pipelines for each compiled module, in that order. */
@@ -602,6 +692,8 @@ export function createFullscreenPassResources(
       : createSkyboxPassResources(device, provider, cache, modules.skybox, createPersistentBuffer);
   const ssao =
     modules.ssao === null ? empty : createSsaoPassResources(device, provider, cache, modules.ssao);
+  const gtaoCompute =
+    modules.gtaoCompute === null ? empty : createGtaoComputeResources(device, modules.gtaoCompute);
   return {
     fxaaPipeline: fxaa.fxaaPipeline,
     fxaaBindGroupLayout: fxaa.fxaaBindGroupLayout,
@@ -614,5 +706,9 @@ export function createFullscreenPassResources(
     ssaoCalcPipeline: ssao.ssaoCalcPipeline,
     ssaoBlurPipeline: ssao.ssaoBlurPipeline,
     ssaoBgl: ssao.ssaoBgl,
+    ssaoClusterPackPipeline: ssao.ssaoClusterPackPipeline,
+    ssaoClusterPackBgl: ssao.ssaoClusterPackBgl,
+    gtaoComputePipeline: gtaoCompute.gtaoComputePipeline,
+    gtaoComputeBgl: gtaoCompute.gtaoComputeBgl,
   };
 }

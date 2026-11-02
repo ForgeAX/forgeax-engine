@@ -222,6 +222,9 @@ export interface RenderPipelineTopology {
   readonly subsurface?: { readonly quality: 'low' | 'high' };
   readonly projectedDecals?: import('./decals/graph').ProjectedDecalTopology;
   readonly pipelineId: string;
+  /** Same per-view admission catalog authorization and stock Standard graph production. */
+  readonly sceneDataAdmission?: import('./temporal/scene-data').StandardSceneSurfaceAdmission;
+  readonly sceneDataBindings?: readonly import('./temporal/scene-data').SceneDataSurfaceBinding[];
   readonly standardProfile?: StandardProfile | undefined;
   readonly config: import('@forgeax/engine-types').RenderPipelineAsset['config'];
   /**
@@ -395,6 +398,8 @@ export interface RenderPipelineTarget {
   readonly sampleCount: 1 | 4;
   readonly domain?: ColorValueDomain | undefined;
   readonly resolveTarget?: GraphTextureView | undefined;
+  /** Exact semantic owner tokens authorized for this physical target. */
+  readonly sceneDataBindings?: readonly import('./temporal/scene-data').SceneDataSurfaceBinding[];
 }
 
 export function createRenderPipelineTarget(

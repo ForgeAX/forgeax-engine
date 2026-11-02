@@ -18,9 +18,25 @@ import type { ShaderEntryPointReads } from '@forgeax/engine-types';
  * no longer carry a bindingLayout sidecar (§Change stance: no v1/v2
  * dual-path, no incremental drop window).
  */
-import type { MaterialProgramAbi } from '@forgeax/engine-types';
+import type {
+  ManifestEntry,
+  MaterialProgramAbi,
+  ShaderCompilerProfile,
+  ShaderReflection,
+} from '@forgeax/engine-types';
+
+/** Runtime rows materialized from the compact shader publication tables. */
+export interface ExpandedShaderManifest {
+  readonly entries: readonly ManifestEntry[];
+  readonly materialShaders: readonly MaterialShaderManifestEntry[];
+}
+
 export interface MaterialShaderManifestVariant {
   readonly entryPoints?: readonly ShaderEntryPointReads[];
+  readonly hash?: string;
+  readonly sourceDigest?: string;
+  readonly compilerProfile?: ShaderCompilerProfile;
+  readonly reflection?: ShaderReflection;
   readonly definesKey: string;
   readonly defines: Record<string, boolean>;
   readonly composedWgsl: string;
@@ -38,7 +54,12 @@ export interface MaterialShaderManifestVariant {
  *
  * For Engine.create() internal use only; AI users never see this type.
  */
-export interface MaterialShaderManifestEntry extends Partial<MaterialProgramAbi> {
+export interface MaterialShaderManifestEntry
+  extends Omit<Partial<MaterialProgramAbi>, 'reflection'> {
+  readonly hash?: string;
+  readonly sourceDigest?: string;
+  readonly compilerProfile?: ShaderCompilerProfile;
+  readonly reflection?: ShaderReflection;
   readonly identifier: string;
   readonly sourcePath: string;
   readonly composedWgsl: string;

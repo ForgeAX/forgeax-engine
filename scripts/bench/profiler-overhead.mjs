@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { createSmokePlatform } from '../smoke-platform.mjs';
 
 const GROUP_COUNT = 15;
@@ -181,16 +183,20 @@ function makeCanvas() {
   };
 }
 
-function makeShaderManifest() {
-  return `data:application/json,${encodeURIComponent(
-    JSON.stringify({
-      entries: [
-        { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
-        { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
-        { hash: 'tonemap0', wgsl: '/* tonemap stub */', glsl: '', bindings: '' },
-      ],
-    }),
-  )}`;
+async function makeShaderManifest() {
+  execFileSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL('../forgeax/prepare-shader-release-inputs.mjs', import.meta.url)),
+      '--build',
+      '--profile',
+      'base-ssao',
+    ],
+    { stdio: 'inherit' },
+  );
+  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const manifest = await buildEngineShaderManifest();
+  return URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
 }
 
 function makeScheduler() {
@@ -240,11 +246,14 @@ async function createWorkload() {
     allocationReport,
     clock: { nowMicros: () => performance.now() * 1000 },
   });
+  // Shader admission is initialization, outside every measured frame window.
+  // Null RHI skips GPU compilation but still consumes the reflected Cluster ABI.
+  const shaderManifestUrl = await makeShaderManifest();
   const rendererResult = await createRenderer(
     makeCanvas(),
     { rhi, profiler },
-    { shaderManifestUrl: makeShaderManifest() },
-  );
+    { shaderManifestUrl },
+  ).finally(() => URL.revokeObjectURL(shaderManifestUrl));
   if (!rendererResult.ok)
     throw new Error(`Renderer workload failed to assemble: ${rendererResult.error.code}`);
   const renderer = rendererResult.value;

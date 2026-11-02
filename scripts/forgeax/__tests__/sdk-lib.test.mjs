@@ -100,6 +100,79 @@ it('mapConcurrent stops scheduling after a failure and settles in-flight work', 
   expect(settled).toEqual([1, 2]);
 });
 
+describe('SDK verifier artifact integrity admission', () => {
+  const source = readFile(new URL('../verify-sdk.mjs', import.meta.url), 'utf8');
+  async function verifier(code, manifest, readArtifact) {
+    const text = await source;
+    const parsed = ts.createSourceFile(
+      'verify-sdk.mjs',
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const statement = parsed.statements.find((node) => node.getText(parsed).includes(code));
+    if (statement === undefined) throw new Error('missing verifier integrity owner');
+    const run = new Function(
+      'context',
+      `const {manifest,sdkRoot,artifact,resolve,sdkStage,mapConcurrent,isPnpmSqliteStoreArtifact}=context;return (async()=>{${statement.getText(parsed)}})();`,
+    );
+    return run({
+      manifest,
+      sdkRoot: '/fixture',
+      artifact: readArtifact,
+      resolve,
+      sdkStage: (_label, work) => work(),
+      mapConcurrent,
+      isPnpmSqliteStoreArtifact,
+    });
+  }
+  it('rehashes every archive artifact with bounded overlapping I/O', async () => {
+    const entries = Array.from({ length: 65 }, (_, index) => ({
+      path: `store/file-${index}`,
+      bytes: index,
+      sha256: `hash-${index}`,
+    }));
+    const byPath = new Map(entries.map((entry) => [resolve('/fixture', entry.path), entry]));
+    let active = 0,
+      peak = 0;
+    const visited = [];
+    await verifier('sdk-artifact-mismatch:', { artifacts: entries }, async (_root, path) => {
+      active++;
+      peak = Math.max(peak, active);
+      visited.push(path);
+      await new Promise(setImmediate);
+      active--;
+      return byPath.get(path);
+    });
+    expect(visited.sort()).toEqual([...byPath.keys()].sort());
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(32);
+    expect(active).toBe(0);
+  });
+  it.each([
+    'bytes',
+    'sha256',
+  ])('rejects changed %s after the consumer and excludes only mutable SQLite sidecars', async (field) => {
+    const checked = { path: 'store/files/a', bytes: 3, sha256: 'expected' };
+    const entries = [
+      { path: 'store/pnpm/v12/index.db-wal', bytes: 0, sha256: 'journal' },
+      { path: 'assets/unrelated', bytes: 0, sha256: 'unrelated' },
+      checked,
+    ];
+    const visited = [];
+    await expect(
+      verifier('sdk-consumer-mutated-store:', { artifacts: entries }, async (_root, path) => {
+        visited.push(path);
+        if (path !== resolve('/fixture', checked.path))
+          throw new Error('unexpected integrity exclusion');
+        return { ...checked, [field]: field === 'bytes' ? 4 : 'changed' };
+      }),
+    ).rejects.toThrow('sdk-consumer-mutated-store: store/files/a');
+    expect(visited).toEqual([resolve('/fixture', checked.path)]);
+  });
+});
+
 it('normalizes workspace-specific license report paths', () => {
   const root = '/runner/work/forgeax-engine/forgeax-engine';
   expect(

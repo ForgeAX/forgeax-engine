@@ -34,6 +34,7 @@ import { derive } from '../../../types/src/index';
 import { createRenderer as constructRenderer } from '../assembly/factory';
 import { resolveMaterialPipelineVertexEntry } from '../assembly/material/pipeline-helpers';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight } from '../components';
+import { DeviceScope } from '../device/device-scope';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
@@ -227,6 +228,15 @@ function manifestDataUrl(
     composedWgsl: pbrWgsl,
     ...(withReceipt ? { receipt: STANDARD_PBR_RECEIPT } : {}),
   });
+  const clusterVariants = standardPbrFixtureVariants(pbrWgsl)
+    .filter(
+      (variant) =>
+        variant.defines.CLUSTER_FORWARD_AVAILABLE && variant.defines.STORAGE_BUFFER_AVAILABLE,
+    )
+    .map(({ receipt: _receipt, ...variant }) => ({
+      ...variant,
+      ...(withReceipt ? { receipt: STANDARD_PBR_RECEIPT } : {}),
+    }));
   const materialShader = (
     identifier: string,
     paramSchema: readonly unknown[],
@@ -257,6 +267,7 @@ function manifestDataUrl(
           [
             standardPbrVariant(false, STANDARD_PBR_URP_VARIANT_KEY),
             standardPbrVariant(true, STANDARD_PBR_TRANSMISSION_VARIANT_KEY),
+            ...clusterVariants,
           ],
         ),
         materialShader('forgeax::default-unlit', DEFAULT_UNLIT_PARAM_SCHEMA, unlitWgsl),
@@ -1400,7 +1411,11 @@ describe('GPU-driven production projection', () => {
     const errors: unknown[] = [];
     const errorRegistry = new RhiErrorListenerRegistry();
     errorRegistry.add((error) => errors.push(error));
-    const dependencies = { device, errorRegistry };
+    const dependencies = {
+      device,
+      deviceScope: DeviceScope.create(0, 'gpu-driven-production-test'),
+      errorRegistry,
+    };
     const internals = dependencies as unknown as RenderSystemInternals;
     const pipelineState = {
       format: 'rgba8unorm',

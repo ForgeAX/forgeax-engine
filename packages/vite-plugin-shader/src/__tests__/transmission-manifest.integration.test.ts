@@ -62,6 +62,11 @@ describe('Standard transmission manifest producer', () => {
         entry.defines.VERTEX_COLOR_AVAILABLE === true,
     );
     expect(ordinary).toBeDefined();
-    expect(standard.composedWgsl).toBe(ordinary?.composedWgsl);
+    const direct = manifest.entries.find(
+      (entry) => entry.identifier === 'forgeax::default-standard-pbr',
+    );
+    expect(direct).toBeDefined();
+    expect(direct?.hash).toBe(ordinary?.hash);
+    expect(direct?.wgsl).toBe(ordinary?.composedWgsl);
   }, 180_000);
 });

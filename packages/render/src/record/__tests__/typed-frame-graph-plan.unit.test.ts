@@ -5,10 +5,12 @@ import type { RenderFeaturePlannedFrame } from '../../features/plan';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../../gpu-texture-usage';
 import { createAutoExposureGraphPlan } from '../../pipeline/standard-output/auto-exposure/graph';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
+import type { RenderFrameState } from '../frame-snapshot';
 import { getTextureIdentity, validateGraphTargetCaptureReadback } from '../frame-snapshot';
 import {
   type RenderFeatureGraphCandidate,
   renderFeatureGraphPlanSignature,
+  rollbackGraphCandidate,
   updateRenderFeaturePlanRevision,
 } from '../typed-frame-graph';
 
@@ -30,7 +32,11 @@ type CaptureOverrides = {
     readonly size?: { readonly width: number; readonly height: number };
     readonly usage?: number;
   };
-  readonly identity?: { graphGeneration: number; frameId: number; textureIdentity: number };
+  readonly identity?: {
+    graphGeneration: number;
+    recordFrameNumber: number;
+    textureIdentity: number;
+  };
 };
 
 function executeCapture(overrides: CaptureOverrides = {}) {
@@ -68,7 +74,7 @@ function executeCapture(overrides: CaptureOverrides = {}) {
         usage: GPU_TEXTURE_USAGE_COPY_SRC,
         identity: overrides.identity ?? {
           graphGeneration: 7,
-          frameId: 13,
+          recordFrameNumber: 13,
           textureIdentity: getTextureIdentity(texture),
         },
       },
@@ -117,6 +123,44 @@ function planned(generation: number, signature: string): RenderFeaturePlannedFra
 }
 
 describe('typed frame graph feature plan authority', () => {
+  it('stashes a barrier-prepared candidate without promoting it as a submitted scene graph', () => {
+    const previousGraph = {} as never;
+    const candidateGraph = {} as never;
+    const previousInstalled = { graph: previousGraph } as never;
+    const candidateInstalled = { graph: candidateGraph } as never;
+    const frameState = {
+      compiledFrameGraphCandidate: {
+        graph: candidateGraph,
+        previous: {
+          installed: previousInstalled,
+          graphGeneration: 7,
+          compiledGeneration: 3,
+          lightingSignature: 'accepted-before-pending',
+        },
+      },
+      compiledFrameGraph: candidateInstalled,
+      graphGeneration: 8,
+      compiledFrameGraphGeneration: 4,
+      standardLightingGraphSignature: 'candidate-only',
+      unsubmittedCompiledFrameGraph: undefined,
+      retiredCompiledFrameGraphs: new Set(),
+      barrelDistortionGraphResolution: 'accepted',
+    } as unknown as RenderFrameState;
+
+    rollbackGraphCandidate(frameState, true);
+
+    expect(frameState).toMatchObject({
+      compiledFrameGraph: previousInstalled,
+      graphGeneration: 7,
+      compiledFrameGraphGeneration: 3,
+      standardLightingGraphSignature: 'accepted-before-pending',
+      unsubmittedCompiledFrameGraph: {
+        installed: candidateInstalled,
+      },
+    });
+    expect(frameState.compiledFrameGraphCandidate).toBeUndefined();
+  });
+
   it('carries auto exposure as one frame-local candidate plan', () => {
     const plan = createAutoExposureGraphPlan({ width: 17, height: 9 });
     expect(plan.candidateAvailableSameFrame).toBe(true);
@@ -191,7 +235,7 @@ describe('typed frame graph feature plan authority', () => {
     ['COPY_SRC missing', { descriptor: { usage: 0 } }, 'copy-src-usage-missing'],
     [
       'identity mismatch',
-      { identity: { graphGeneration: 8, frameId: 12, textureIdentity: 999 } },
+      { identity: { graphGeneration: 8, recordFrameNumber: 12, textureIdentity: 999 } },
       'identity-mismatch',
     ],
   ])('fails closed for capture %s', (_name, overrides, expectedReason) => {

@@ -10,6 +10,7 @@ import { publishShaderManifest } from '../manifest-publication.js';
 it('serves admitted blocks through real Vite HTTP without splitting them again', async () => {
   const root = await mkdtemp(join(tmpdir(), 'prepared-manifest-http-'));
   const source = 'fn shared() {}\n\nfn retained() {}\n';
+  const sourceDigest = 'f2be32b04b5d7b8209224020f19bce8d359dd1ceaad83bbe38c07cb039462f2e';
   const publication = publishShaderManifest(
     [
       { hash: 'retained', wgsl: source, bindings: '[]', uvSetCount: 8 },
@@ -62,8 +63,15 @@ it('serves admitted blocks through real Vite HTTP without splitting them again',
     const expanded = await readShaderManifestPublication(JSON.parse(body));
     expect(expanded).toEqual({
       entries: [
-        { hash: 'retained', wgsl: source, bindings: '[]', uvSetCount: 8, glsl: '' },
-        { hash: 'unspecified', wgsl: source, bindings: '[]', uvSetCount: 0, glsl: '' },
+        { hash: 'retained', wgsl: source, sourceDigest, bindings: '[]', uvSetCount: 8, glsl: '' },
+        {
+          hash: 'unspecified',
+          wgsl: source,
+          sourceDigest,
+          bindings: '[]',
+          uvSetCount: 0,
+          glsl: '',
+        },
       ],
       materialShaders: [],
     });

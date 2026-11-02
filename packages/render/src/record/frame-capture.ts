@@ -234,6 +234,7 @@ function executeCaptureFrame(
   elapsedSeconds: number | undefined,
   hasValidated: boolean,
   bindGroupCounts: BindGroupCounts,
+  lightTextureResamples: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[],
 ): void {
   const timing = internals.gpuPassTimingCapture;
   writeViewUbo(
@@ -279,6 +280,22 @@ function executeCaptureFrame(
   delete context.shadowDirectRequired;
   delete context.directionalShadowCascadeMiss;
   delete context.gpuDrivenShadowBatchProjections;
+  const pendingResamples = capture.frameState.pendingLightTextureResamples;
+  if (pendingResamples !== undefined) {
+    for (const pending of pendingResamples) {
+      const encoded = pending.work.execute(passCtx.encoder);
+      if (!encoded.ok) {
+        pending.work.discard((error) => capture.runtime.errorRegistry.fire(error));
+        for (const remaining of pendingResamples) {
+          if (remaining !== pending) remaining.work.discard();
+        }
+        delete capture.frameState.pendingLightTextureResamples;
+        throw encoded.error;
+      }
+    }
+    lightTextureResamples.push(...pendingResamples);
+    delete capture.frameState.pendingLightTextureResamples;
+  }
   const executed = capture.graph.execute(
     context,
     undefined,
@@ -303,6 +320,7 @@ export function executeCaptureFrames(
   elapsedSeconds: number | undefined,
   hasValidated: boolean,
   bindGroupCounts: BindGroupCounts,
+  lightTextureResamples: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[],
 ): void {
   for (const capture of captures)
     executeCaptureFrame(
@@ -316,5 +334,6 @@ export function executeCaptureFrames(
       elapsedSeconds,
       hasValidated,
       bindGroupCounts,
+      lightTextureResamples,
     );
 }

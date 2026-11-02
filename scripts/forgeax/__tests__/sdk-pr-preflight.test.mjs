@@ -342,7 +342,7 @@ test('archive project owns independent runs and installed View while source keep
         "if (selected('project'))",
         source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
       ),
-      source.indexOf('\nfor (const expected of manifest.artifacts.filter'),
+      source.indexOf("\nawait sdkStage('verifyImmutableSdkStore'"),
     )
     .replaceAll('import.meta.dirname', JSON.stringify(resolve(import.meta.dirname, '..')));
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(

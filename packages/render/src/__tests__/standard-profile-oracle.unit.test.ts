@@ -157,8 +157,7 @@ describe('SSAO public profile', () => {
     });
     expect(Object.isFrozen(frozen.ssao)).toBe(true);
   });
-  it('admits Forward AO and rejects malformed parameter objects', () => {
-    // Forward reconstructs normals from depth (Three r184 GTAOPass composition).
+  it('admits material-normal Forward AO and rejects malformed parameter objects', () => {
     expect(
       validateRenderProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true }),
     ).toBeUndefined();

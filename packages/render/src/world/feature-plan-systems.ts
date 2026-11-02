@@ -8,6 +8,7 @@ import {
   recordRenderFeatureCandidate,
 } from '../record/typed-frame-graph';
 import { releasePreparedResourceBatches } from '../render-system-record-attempt';
+import { sceneDataSurfaceBindings } from '../temporal/standard-scene-data-admission';
 import {
   featureFrameOutcome,
   ViewFeatureInput,
@@ -157,8 +158,15 @@ function createViewFeaturePlan(
   params: PostProcessParamsCandidate,
 ): ViewFeaturePlan {
   const { internals, frameState, postProcess } = owner;
+  const sceneDataBindings = sceneDataSurfaceBindings(
+    featureFrame.plans,
+    frameState.standardSceneSurfaceAdmission,
+  );
   const candidate: RenderFeatureGraphCandidate = {
     plans: featureFrame.plans,
+    ...(sceneDataBindings.length === 0 || frameState.standardSceneSurfaceAdmission === undefined
+      ? {}
+      : { sceneDataAdmission: frameState.standardSceneSurfaceAdmission, sceneDataBindings }),
     fullscreenEffects: featureFrame.fullscreenEffects,
     postProcessIdentities: featureFrame.postProcessIdentities,
     ...(featureFrame.requiresPreparedResourceKey

@@ -4,10 +4,10 @@ import type { SsaoParameterConfig } from '../ssao-config';
 export const STANDARD_PIPELINE_ID = 'forgeax::standard' as const;
 export const STANDARD_LIGHT_COUNTS = [1, 32, 256] as const;
 export {
+  CLUSTER_GRID_COUNT_WORD_OFFSET_U32,
   CLUSTER_GRID_STRIDE_U32,
   DEFAULT_CLUSTER_GRID,
   LIGHT_INDEX_LIST_CAPACITY,
-  MAX_LIGHTS,
 } from './standard-lighting/layout';
 
 export type StandardLightCount = (typeof STANDARD_LIGHT_COUNTS)[number];
@@ -221,8 +221,8 @@ export interface StandardProfile {
 export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   featureReadOnlyDepthBatching: true,
   pipelineId: STANDARD_PIPELINE_ID,
-  // Cluster light data, bounds and index buffers are sized for MAX_LIGHTS
-  // whatever this budget is, so admitting all 256 slots costs no memory.
+  // Runtime light admission follows the selected profile; physical Cluster
+  // capacity comes from the published DirectLightSlot reflection.
   lightCount: 256,
   renderPath: 'forward',
   pbr: true,

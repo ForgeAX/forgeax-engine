@@ -65,7 +65,6 @@ export function resolveRunnerCpuAffinity({
   platform = process.platform,
   resources = runnerResources(),
   allowedCpus = readAllowedCpuList(),
-  runnerName = process.env.RUNNER_NAME ?? '',
   read = (path) => readFileSync(path, 'utf8'),
 } = {}) {
   const common = {
@@ -91,17 +90,13 @@ export function resolveRunnerCpuAffinity({
       ...common,
     };
   }
-  // Shared containers can expose the entire host mask with a smaller quota.
-  // Always taking its first CPUs crowds unrelated runners onto one window.
-  // Existing runner identity spreads stable, quota-sized windows; it is not
-  // an exclusive CPU lease, and never changes the allowed set or CPU budget.
   // Containers can see every logical CPU on a host while cgroups cap the
   // process to a much smaller CPU budget. A logical window of eight adjacent
   // IDs can be only four physical cores when SMT siblings are adjacent. Dawn
   // and SwiftShader are CPU-heavy, so prefer one allowed thread per physical
   // core when topology is available and enough distinct cores fit the quota.
   // If topology is missing or the cpuset exposes fewer physical cores than
-  // the cgroup budget, retain the bounded logical-CPU selection below.
+  // the cgroup budget, assess the allowed logical CPU pool instead.
   const topology = runnerCpuSiblings({
     platform,
     selectedCpuList: formatCpuList(allowedCpus),
@@ -116,14 +111,14 @@ export function resolveRunnerCpuAffinity({
   }
   const usePhysicalCores = physicalCoreCpus.length >= resources.cpus;
   const cpuPool = usePhysicalCores ? physicalCoreCpus : allowedCpus;
-  const windows = Math.floor(cpuPool.length / resources.cpus);
-  const identity = typeof runnerName === 'string' ? runnerName.trim() : '';
-  const window =
-    identity !== '' && windows > 1
-      ? createHash('sha256').update(identity).digest().readUInt32BE(0) % windows
-      : 0;
-  const offset = window * resources.cpus;
-  const selectedCpus = cpuPool.slice(offset, offset + resources.cpus);
+  // A quota is a time budget, not a reservation of particular host cores.
+  // Hash-selected windows can collide across concurrent containers on the
+  // same kernel. Leave placement to the scheduler when the available pool
+  // exceeds our budget; worker admission still uses the cgroup quota.
+  if (cpuPool.length > resources.cpus) {
+    return { ok: true, mode: 'none', reason: 'shared-cpu-set-with-quota', ...common };
+  }
+  const selectedCpus = cpuPool.slice(0, resources.cpus);
   return {
     ok: true,
     mode: 'taskset',

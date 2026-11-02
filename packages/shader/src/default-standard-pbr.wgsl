@@ -64,7 +64,7 @@ enable primitive_index;
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactorAtPixel}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #ifdef CLUSTER_FORWARD_AVAILABLE
-#import forgeax_standard::cluster::{evaluateStandardClusterLights, sampleStandardAmbientOcclusion}
+#import forgeax_standard::cluster::{evaluateStandardClusterLights, get_ssao_direct_lighting_strength, sampleStandardAmbientOcclusion}
 #endif
 
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
@@ -1375,12 +1375,15 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
   var ambient = (environment.diffuse + environment.specular) * (vec3<f32>(1.0) - coatF) * ao;
   var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * ao;
 #ifdef CLUSTER_FORWARD_AVAILABLE
+  var screenAo = 1.0;
 #if STORAGE_BUFFER_AVAILABLE == true
-  let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
+  screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
     ssaoBlurredTexture, ssaoBlurredSampler);
+#else
+  screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
+#endif
   ambient *= screenAo;
   reflectionFallback *= screenAo;
-#endif
 #endif
   var color = ambient;
 #ifdef TRANSMISSION_AVAILABLE
@@ -1517,7 +1520,7 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
       in.clip.xy,
     );
   }
-  color += evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,
+  var directRadiance = evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,
     physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow,
     receiveShadows, in.surfaceData.z, false,
     useDirectDfgLut,
@@ -1525,6 +1528,10 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
     directDfgLut, irradianceSampler,
 #endif
   ).radiance;
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  directRadiance *= mix(1.0, screenAo, get_ssao_direct_lighting_strength());
+#endif
+  color += directRadiance;
 // CLUSTER_FORWARD_AVAILABLE
   // Emissive is part of the lower-energy stack and is attenuated by the
   // topcoat just like diffuse/specular radiance.
@@ -1674,11 +1681,19 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
   );
   let directionalClearcoat = select(vec3<f32>(0.0), view_apply_direct_solar(view, clearcoatDirect, in.worldPos),
     lightingChannelsMatch(view.lightingChannels, in.surfaceData.z));
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  let directionalClearcoatAo = directionalClearcoat *
+    mix(1.0, screenAo, get_ssao_direct_lighting_strength());
+#else
+  let directionalClearcoatAo = directionalClearcoat;
+#endif
   var clearcoatEnvironment = clearcoatIbl * specularEnvironmentScale * ao;
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #if STORAGE_BUFFER_AVAILABLE == true
   clearcoatEnvironment *= sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
     ssaoBlurredTexture, ssaoBlurredSampler);
+#else
+  clearcoatEnvironment *= sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
 #endif
 #endif
   let baseAttenuation=1.0-evaluateClearcoatFresnel(dot(clearcoatNormalValue,v),clearcoatFactor);
@@ -1688,7 +1703,7 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
 #endif
   color = evaluateClearcoatLayer(
     color,
-    clearcoatEnvironment + directionalClearcoat,
+    clearcoatEnvironment + directionalClearcoatAo,
     dot(clearcoatNormalValue, v),
     clearcoatFactor,
   );
@@ -1834,6 +1849,24 @@ fn standardGBuffer(in : VsOut, frontFacing : bool
     encodeStandardNormalRoughness(geometricNormal, 0.0), select(0u, select(1u, 3u, frontFacing), valid));
 #endif
   return output;
+}
+
+// Forward AO input uses the same evaluated Surface normal and alpha gate as
+// the G-buffer path, without requiring its MRT attachments or storage layout.
+@fragment
+fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
+  let rawGeometry = surfaceGeometryNormal(dpdx(in.worldPos), dpdy(in.worldPos), vec3<f32>(0.0));
+#if TERRAIN_GEOMETRY_AVAILABLE == true
+  let terrainNormal = terrainGeometryNormal(rawGeometry, frontFacing);
+#else
+  let terrainNormal = rawGeometry;
+#endif
+  let receiverNormal = select(in.worldNormal * select(-1.0, 1.0, frontFacing), terrainNormal,
+    dot(terrainNormal, terrainNormal) > 0.0);
+  let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
+  let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+  alphaTestSurface(surface);
+  return encodeStandardNormalRoughness(surface.normalWS, 1.0);
 }
 
 struct TemporalVsOut {

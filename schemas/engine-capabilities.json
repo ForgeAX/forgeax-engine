@@ -326,7 +326,7 @@
       "form": "opt-in"
     },
     {
-      "name": "HDRP SSAO",
+      "name": "AO forward/deferred path probe",
       "form": "test-experimental"
     },
     {

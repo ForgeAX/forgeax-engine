@@ -86,20 +86,25 @@ bootstrapReady.catch((err: unknown) => {
 });
 
 async function bootstrap() {
-  const directRendererResult = await constructRuntimeRendererHost(
-    directCanvas,
-    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' } },
-    forgeaxBundlerAdapter(),
-  );
+  const started = performance.now();
+  console.info('[parity-standard-lanes:startup]', 'hosts-start', 0);
+  const [directRendererResult, clusteredRendererResult] = await Promise.all([
+    constructRuntimeRendererHost(
+      directCanvas,
+      { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' } },
+      forgeaxBundlerAdapter(),
+    ),
+    constructRuntimeRendererHost(
+      clusteredCanvas,
+      { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' } },
+      forgeaxBundlerAdapter(),
+    ),
+  ]);
   if (!directRendererResult.ok) throw directRendererResult.error;
   const directRenderer = directRendererResult.value.renderer;
-  const clusteredRendererResult = await constructRuntimeRendererHost(
-    clusteredCanvas,
-    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' } },
-    forgeaxBundlerAdapter(),
-  );
   if (!clusteredRendererResult.ok) throw clusteredRendererResult.error;
   const clusteredRenderer = clusteredRendererResult.value.renderer;
+  console.info('[parity-standard-lanes:startup]', 'hosts-ready', performance.now() - started);
 
   const directWorld = new World({ assets: directRendererResult.value.assets });
   const worldAttachment1 = directRenderer.attach(directWorld);
@@ -110,19 +115,24 @@ async function bootstrap() {
   const directLights = populateScene(directRenderer, directWorld);
   const clusteredLights = populateScene(clusteredRenderer, clusteredWorld);
 
-  // Initial draw so canvases have content before the first capture call.
+  // Independent initial submissions share the startup window. Publish capture
+  // hooks only after both real scene pictures have ready completion receipts.
   directWorld.update().unwrap();
-  await drawReadyFrame(directRenderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
   clusteredWorld.update().unwrap();
-  await drawReadyFrame(clusteredRenderer, {
-    leases: [worldAttachment2.value],
-    camera: { lease: worldAttachment2.value },
-    environment: { lease: worldAttachment2.value },
-  });
+  console.info('[parity-standard-lanes:startup]', 'worlds-ready', performance.now() - started);
+  await Promise.all([
+    drawReadyFrame(directRenderer, {
+      leases: [worldAttachment1.value],
+      camera: { lease: worldAttachment1.value },
+      environment: { lease: worldAttachment1.value },
+    }),
+    drawReadyFrame(clusteredRenderer, {
+      leases: [worldAttachment2.value],
+      camera: { lease: worldAttachment2.value },
+      environment: { lease: worldAttachment2.value },
+    }),
+  ]);
+  console.info('[parity-standard-lanes:startup]', 'frames-ready', performance.now() - started);
 
   declareCaptureHooks(
     directRenderer,

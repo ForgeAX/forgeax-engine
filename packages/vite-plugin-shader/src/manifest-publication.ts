@@ -4,11 +4,16 @@ import {
   shaderSourceDigestInput,
 } from '@forgeax/engine-shader';
 
-type ShaderEntry = { readonly wgsl: string; readonly entryPoints?: unknown };
+type ShaderEntry = {
+  readonly wgsl: string;
+  readonly entryPoints?: unknown;
+  readonly reflection?: unknown;
+};
 type MaterialVariant = {
   readonly composedWgsl: string;
   readonly receipt?: unknown;
   readonly entryPoints?: unknown;
+  readonly reflection?: unknown;
 };
 type MaterialEntry = MaterialVariant & { readonly variants: readonly MaterialVariant[] };
 
@@ -44,6 +49,7 @@ export function publishShaderManifest<E extends ShaderEntry, M extends MaterialE
   const sources: Record<string, number[]> = {};
   const receipts = createFactTable();
   const entryPoints = createFactTable();
+  const reflections = createFactTable();
   const sourceDigest = (source: string, owner: string): string => {
     if (!source || /^\.?\/[^\n]+\.composed\.wgsl$/i.test(source)) {
       throw new Error(`Shader manifest requires composed WGSL bytes: ${owner}=${source}`);
@@ -77,21 +83,23 @@ export function publishShaderManifest<E extends ShaderEntry, M extends MaterialE
     sources[digest] = indices;
     return digest;
   };
-  const programs = entries.map(({ wgsl, entryPoints: reads, ...entry }, index) => ({
+  const programs = entries.map(({ wgsl, entryPoints: reads, reflection, ...entry }, index) => ({
     ...entry,
     ...(reads === undefined ? {} : { entryPointsIndex: entryPoints.index(reads) }),
+    ...(reflection === undefined ? {} : { reflectionIndex: reflections.index(reflection) }),
     sourceDigest: sourceDigest(
       wgsl,
       `entry ${index} ${String('hash' in entry ? entry.hash : '')} keys ${Object.keys(entry).join(',')}`,
     ),
   }));
   const variant = (
-    { composedWgsl, receipt, entryPoints: reads, ...entry }: MaterialVariant,
+    { composedWgsl, receipt, entryPoints: reads, reflection, ...entry }: MaterialVariant,
     owner: string,
   ) => ({
     ...entry,
     ...(receipt === undefined ? {} : { receiptIndex: receipts.index(receipt) }),
     ...(reads === undefined ? {} : { entryPointsIndex: entryPoints.index(reads) }),
+    ...(reflection === undefined ? {} : { reflectionIndex: reflections.index(reflection) }),
     sourceDigest: sourceDigest(composedWgsl, owner),
   });
   const materials = materialShaders.map(({ variants, ...entry }, index) => ({
@@ -104,6 +112,7 @@ export function publishShaderManifest<E extends ShaderEntry, M extends MaterialE
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
     receipts: receipts.values,
     entryPoints: entryPoints.values,
+    reflections: reflections.values,
     fragments,
     sources,
     entries: programs,
@@ -131,6 +140,7 @@ export function mergeShaderManifestPublications(
   const sources: Record<string, number[]> = {};
   const receipts = createFactTable();
   const entryPoints = createFactTable();
+  const reflections = createFactTable();
   const project = <T extends Record<string, unknown>>(row: T, owner: Published): T => {
     const digest = row.sourceDigest;
     if (typeof digest !== 'string') throw new Error('Shader row has no source digest');
@@ -150,7 +160,7 @@ export function mergeShaderManifestPublications(
       });
     }
     const remap = (
-      key: 'receiptIndex' | 'entryPointsIndex',
+      key: 'receiptIndex' | 'entryPointsIndex' | 'reflectionIndex',
       table: unknown[],
       output: ReturnType<typeof createFactTable>,
     ) => {
@@ -164,6 +174,7 @@ export function mergeShaderManifestPublications(
       ...row,
       ...remap('receiptIndex', owner.receipts, receipts),
       ...remap('entryPointsIndex', owner.entryPoints, entryPoints),
+      ...remap('reflectionIndex', owner.reflections, reflections),
     };
   };
   const material = (row: Published['materialShaders'][number], owner: Published) => ({
@@ -199,6 +210,7 @@ export function mergeShaderManifestPublications(
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
     receipts: receipts.values,
     entryPoints: entryPoints.values,
+    reflections: reflections.values,
     fragments,
     sources,
     entries,

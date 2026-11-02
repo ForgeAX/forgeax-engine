@@ -5,6 +5,11 @@ import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
+import {
+  GPU_TEXTURE_USAGE_COPY_SRC,
+  GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
+  GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+} from '../gpu-texture-usage';
 import { shouldExecuteStandardClusterMembershipPass } from '../pipeline/standard-lighting/graph';
 import {
   prepareStandardLighting,
@@ -14,7 +19,6 @@ import {
   deriveStandardTopologyInput,
   standardLightingTopologySignature,
 } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import {
@@ -31,6 +35,7 @@ import { resolveOutputDither } from '../render-pipeline';
 import { admitSsrSpatial } from '../ssr/admission';
 import { standardTemporalPostOrder } from '../temporal/standard-scene-data';
 import { type OpaquePassPlan, planOpaque } from '../world/pass-plan-systems';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 
 let device: RhiDevice;
 
@@ -117,7 +122,7 @@ function zeroStandardLighting(caps: { compute: boolean; storageBuffer: boolean }
   });
   if (!prepared.ok) throw prepared.error;
   const transport = selectStandardClusterTransport(
-    { ...caps, membershipPipelineReady: caps.compute },
+    { ...caps, maxTextureDimension2D: 8192, membershipPipelineReady: caps.compute },
     prepared.value,
   );
   if (!transport.ok) return transport;
@@ -669,44 +674,60 @@ describe('typed built-in pipeline topology', () => {
     );
   });
 
-  it('runs depth-normal AO ahead of opaque fog and translucency on the forward lane', () => {
+  it('produces Forward AO from shared material surface data on the no-storage lane', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
         standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        lane: {
+          compute: false,
+          storageBuffer: false,
+          multisample: false,
+          maxColorAttachments: 1,
+        },
       }),
     );
     expect(compiled.ok).toBe(true);
     if (!compiled.ok) return;
     const info = compiled.value.inspect();
     const names = info.passes.map((pass) => pass.name);
-    const ordered = [
-      'forward',
-      'forward-ao-normal',
-      'ssao-calc',
-      'ssao-blur',
-      'forward-ao-composite',
-      'output-transform',
-    ];
-    for (let index = 1; index < ordered.length; index += 1) {
-      expect(names.indexOf(ordered[index] ?? '')).toBeGreaterThan(
-        names.indexOf(ordered[index - 1] ?? ''),
-      );
-    }
-    expect(names).not.toContain('g-buffer');
-    expect(names).not.toContain('lighting');
-    const calc = info.passes.find((pass) => pass.name === 'ssao-calc');
-    expect(calc?.accesses).toContainEqual({ resource: 'forward-ao-normal', usage: 'sampled-read' });
-    const composite = info.passes.find((pass) => pass.name === 'forward-ao-composite');
-    expect(composite?.accesses).toContainEqual({ resource: 'ssao-blurred', usage: 'sampled-read' });
+    expect(names.indexOf('standard-scene-surface-data')).toBeLessThan(names.indexOf('ssao-calc'));
+    expect(names.indexOf('ssao-calc')).toBeLessThan(names.indexOf('ssao-blur'));
+    expect(names.indexOf('ssao-blur')).toBeLessThan(names.indexOf('ssao-cluster-pack'));
+    expect(names.indexOf('ssao-cluster-pack')).toBeLessThan(names.indexOf('main'));
+    expect(info.passes.find((pass) => pass.name === 'ssao-calc')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'standard-scene-surface-normal', usage: 'sampled-read' },
+        { resource: 'standard-scene-surface-depth', usage: 'sampled-read' },
+      ]),
+    );
+    expect(info.passes.find((pass) => pass.name === 'ssao-cluster-pack')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'ssao-blurred', usage: 'sampled-read' },
+        { resource: 'standard-cluster-tables', usage: 'color-attachment' },
+      ]),
+    );
+    const normalResource = info.resources.find(
+      (resource) => resource.label === 'standard-scene-surface-normal',
+    );
+    expect(normalResource?.derivedUsage).toBe(
+      GPU_TEXTURE_USAGE_COPY_SRC |
+        GPU_TEXTURE_USAGE_TEXTURE_BINDING |
+        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
+    );
+    const depthResource = info.resources.find(
+      (resource) => resource.label === 'standard-scene-surface-depth',
+    );
+    expect(depthResource?.derivedUsage).toBeDefined();
+    expect((depthResource?.derivedUsage ?? 0) & GPU_TEXTURE_USAGE_COPY_SRC).toBe(0);
   });
 
-  it('keeps the forward lane AO-free without SSAO and rejects multisampled forward AO', () => {
+  it('omits disabled Forward AO and keeps material-normal inputs independent of MSAA', () => {
     const plain = compile(standardPipeline, topology('forgeax::standard'));
     expect(plain.ok).toBe(true);
     if (!plain.ok) return;
     const names = plain.value.inspect().passes.map((pass) => pass.name);
-    for (const name of ['forward-ao-normal', 'ssao-calc', 'ssao-blur', 'forward-ao-composite'])
+    for (const name of ['standard-scene-surface-data', 'ssao-calc', 'ssao-blur'])
       expect(names).not.toContain(name);
 
     const msaa = compile(
@@ -716,12 +737,13 @@ describe('typed built-in pipeline topology', () => {
         camera: { antialias: 'msaa' },
       }),
     );
-    expect(msaa.ok).toBe(false);
-    if (msaa.ok) return;
-    expect(msaa.error).toMatchObject({
-      code: 'resource-resolution-failed',
-      expected: 'Forward ambient occlusion receives single-sample scene depth',
-    });
+    expect(msaa.ok).toBe(true);
+    if (!msaa.ok) return;
+    const passes = msaa.value.inspect().passes.map((pass) => pass.name);
+    expect(passes.filter((name) => name === 'ssao-calc')).toHaveLength(1);
+    expect(passes.indexOf('standard-scene-surface-data')).toBeLessThan(passes.indexOf('main'));
+    expect(passes).not.toContain('g-buffer');
+    expect(passes).not.toContain('forward-ao-composite');
   });
 
   it('omits SSAO and compute membership on the bounded fallback lane', () => {

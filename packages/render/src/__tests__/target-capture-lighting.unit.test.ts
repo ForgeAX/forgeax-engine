@@ -21,6 +21,7 @@ import type { RenderTarget } from '../targets/contracts';
 import { createRenderTargetPhysical, destroyRenderTargetPhysical } from '../targets/physical';
 import type { ViewLights } from '../world/render-lights';
 import { earthAtmosphere } from './atmosphere-fixture';
+import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
 const lights = {
   directionalCount: 0,
@@ -43,6 +44,7 @@ async function device() {
 
 function pipeline(device: RhiDevice): PipelineState {
   return {
+    pbrPipelineLayout: null,
     hdrpClusterMembershipPipeline: null,
     hdrpClusterMembershipBindGroupLayout: null,
     pointsLinesViewBuffer: device
@@ -55,6 +57,7 @@ async function fixture() {
   const gpu = await device();
   const runtime = {
     device: gpu,
+    standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     errorRegistry: {
       fire: (error: unknown) => {
         throw error;

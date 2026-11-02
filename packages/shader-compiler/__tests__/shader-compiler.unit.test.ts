@@ -1390,7 +1390,52 @@ describe('standard clustered projector composition', () => {
           result.ok,
           result.ok ? '' : `${extendedLighting}/${projector}: ${result.error.message}`,
         ).toBe(true);
+        if (result.ok) {
+          const clusterUniform = result.value.manifestEntry.reflection?.boundGlobals.find(
+            (global) => global.name === 'cluster_uniform',
+          );
+          expect(clusterUniform?.span).toBe(96);
+          expect(clusterUniform?.members?.map(({ name, offset }) => [name, offset])).toEqual([
+            ['grid', 0],
+            ['near_far_log', 16],
+            ['ao', 32],
+            ['direct_ao', 48],
+            ['texture', 64],
+            ['cluster_layout', 80],
+          ]);
+        }
       }
+    }
+
+    const textureVariant = await compileShader(cluster, {
+      id: 'forgeax_standard::cluster#texture-transport',
+      imports: PBR_ENTRY_IMPORTS,
+      defines: {
+        CLUSTER_FORWARD_AVAILABLE: true,
+        EXTENDED_LIGHTING_AVAILABLE: false,
+        PROJECTOR_AVAILABLE: false,
+        STORAGE_BUFFER_AVAILABLE: false,
+      },
+    });
+    expect(
+      textureVariant.ok,
+      textureVariant.ok ? '' : textureVariant.error.message,
+    ).toBe(true);
+    if (textureVariant.ok) {
+      const clusterUniform = textureVariant.value.manifestEntry.reflection?.boundGlobals.find(
+        (global) => global.name === 'cluster_uniform',
+      );
+      expect(clusterUniform?.span).toBe(96);
+      expect(clusterUniform?.members?.find(({ name }) => name === 'texture')).toMatchObject({
+        name: 'texture',
+        offset: 64,
+        type: 'vec4<u32>',
+      });
+      expect(clusterUniform?.members?.at(-1)).toMatchObject({
+        name: 'cluster_layout',
+        offset: 80,
+        type: 'vec4<u32>',
+      });
     }
   });
 });

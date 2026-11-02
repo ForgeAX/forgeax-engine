@@ -21,7 +21,7 @@ import {
   type PipelineGroup2Contract,
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
-import type { ManifestEntry } from '@forgeax/engine-types';
+import { isShaderCompilerProfile, type ManifestEntry } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
 import type { RhiBackendPack } from './backend-contract';
 import {
@@ -35,6 +35,7 @@ export type { MaterialShaderManifestEntry } from '@forgeax/engine-shader';
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import type { DeviceScope, RhiErrorListenerRegistry } from '../lifecycle';
+import { deriveStandardClusterReflectedAbi } from '../light-buffer-layout';
 import { type PbrPipelineLayoutBundle, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
 import {
   buildLinearLdrMaterialSpecTable,
@@ -473,6 +474,38 @@ export async function buildReadyWebGPU(
   // so the record stage fails explicitly instead of mis-shading.
   const registry = getShader();
   const manifestEntries: ManifestEntry[] = [...registry.entries()];
+  const materialEntries = [...registry.materialShaderManifestEntries()];
+  const clusterVariants = materialEntries.flatMap((entry) =>
+    entry.variants.filter(
+      (variant) =>
+        variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
+        variant.defines.STORAGE_BUFFER_AVAILABLE === true,
+    ),
+  );
+  const clusterVariantsPublished = clusterVariants.every(
+    (variant) =>
+      typeof variant.hash === 'string' &&
+      /^[a-f0-9]{8}$/.test(variant.hash) &&
+      typeof variant.sourceDigest === 'string' &&
+      /^[a-f0-9]{64}$/.test(variant.sourceDigest) &&
+      isShaderCompilerProfile(variant.compilerProfile) &&
+      variant.reflection !== undefined,
+  );
+  const standardClusterAbi = clusterVariantsPublished
+    ? deriveStandardClusterReflectedAbi(clusterVariants.map((variant) => variant.reflection))
+    : undefined;
+  if (
+    manifestEntries.length > 0 &&
+    rhiDevice.caps.backendKind !== 'null' &&
+    standardClusterAbi === undefined
+  ) {
+    throw new RhiError({
+      code: 'shader-compile-failed',
+      expected:
+        'a storage-backed Standard PBR variant publishes source identity, compiler profile, DirectLightSlot, and ClusterUniform reflection',
+      hint: 'rebuild the engine shader publication with per-variant Naga shader-reflection/3 metadata; runtime Cluster packing will not guess shader offsets',
+    });
+  }
   if (rhiDevice.caps.backendKind === 'null' && manifestEntries.length === 0) {
     // Decide after shader preparation: an unloaded registry is not an empty
     // manifest. Structural frames share the same single registration owner.
@@ -772,9 +805,10 @@ export async function buildReadyWebGPU(
       entries.bloomComposite,
       'bloom-composite',
     );
-    const ssao = caps.webgl2Downlevel
-      ? null
-      : await compileManifestModule(compileModule, entries.ssao, 'hdrp-ssao');
+    const ssao = await compileManifestModule(compileModule, entries.ssao, 'hdrp-ssao');
+    const gtaoCompute = rhiDevice.caps.compute
+      ? await compileManifestModule(compileModule, entries.gtaoCompute, 'hdrp-gtao-compute')
+      : null;
     return {
       pbr: standard.pbr,
       unlit,
@@ -786,6 +820,7 @@ export async function buildReadyWebGPU(
       bloomVertical,
       bloomComposite,
       ssao,
+      gtaoCompute,
       gpuDrivenPbrPrograms: standard.gpuDrivenPbrPrograms,
     };
   };
@@ -955,6 +990,7 @@ export async function buildReadyWebGPU(
     );
   const pipelineState: PipelineState = {
     device: rhiDevice,
+    ...(standardClusterAbi === undefined ? {} : { standardClusterAbi }),
     // Standard material variants resolve through the material-shader cache;
     // these unlit PSOs are the prewarmed SPEC_CONST built-ins (null for an
     // empty manifest).

@@ -105,7 +105,11 @@ test('Three authored-light shadow journeys retain three complete independent pro
 });
 
 test('complete shadow quality matrices own exclusive browser processes', () => {
-  for (const name of ['cube-plane-shadow-contact', 'curved-shadow-receiver']) {
+  for (const name of [
+    'cube-plane-shadow-contact',
+    'cube-plane-shadow-contact-deferred',
+    'curved-shadow-receiver',
+  ]) {
     const file = `packages/runtime/src/__tests__/${name}.browser.test.ts`;
     assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
     for (const size of [1, 8, 24]) {
@@ -445,6 +449,8 @@ test('the complete nine-light owner drains competing browser groups', () => {
 test('dense Renderer owners retain singleton groups with exclusive runner admission', () => {
   const groups = dryRunGroups();
   for (const file of [
+    'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
+    'packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts',
     'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
     'packages/app/__tests__/engine-worker-asset-loss.browser.test.ts',
     'packages/app/__tests__/render-worker-environment.browser.test.ts',
@@ -1096,10 +1102,7 @@ test('CI tail reservations match the shards that run the serial tails', () => {
   assert.match(job, /--shard-count=4\n/);
   assert.match(job, /shard: \[0, 1, 2, 3\]/);
   assert.match(job, /- name: Verify actual browser test discovery\n\s+if: matrix\.shard == 0\n/);
-  assert.match(
-    job,
-    /- name: Preserve render browser failure evidence\n\s+if: failure\(\) && hashFiles\(/,
-  );
+  assert.match(job, /- name: Preserve render browser failure evidence\n\s+if: failure\(\)\n/);
   assert.match(
     job,
     /- name: Runtime Pack Worker dev\/build JS\/TS browser gate\n\s+if: matrix\.shard == 1\n/,

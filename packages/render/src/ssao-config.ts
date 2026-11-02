@@ -12,6 +12,18 @@ export type SsaoParameterConfig = Omit<
   'enabled'
 >;
 
+/** Stock Standard graphs upload direct AO strength as a frame value. */
+export function ssaoStructuralIdentity<
+  T extends { readonly directLightingStrength?: number | undefined },
+>(
+  config: T | undefined,
+  stockStandard: boolean,
+): T | Omit<T, 'directLightingStrength'> | undefined {
+  if (!stockStandard || config === undefined) return config;
+  const { directLightingStrength: _directLightingStrength, ...structure } = config;
+  return structure;
+}
+
 export const GTAO_SAMPLE_COUNTS = { low: 4, medium: 10, high: 16 } as const;
 export const SSAO_DEFAULT_THICKNESS = 1;
 export const SSAO_DEFAULT_DISTANCE_EXPONENT = 1;

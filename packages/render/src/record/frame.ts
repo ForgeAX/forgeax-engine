@@ -27,6 +27,7 @@ import {
 import type { ViewLights } from '../world/render-lights';
 import { viewTemporalStageOf } from '../world/temporal-systems';
 import { recordContext } from '../world/view-record-context';
+import { beginClusterWorkConformanceFrame } from './cluster-work-conformance';
 import { cpuLaneLodRows } from './cpu-lod';
 import { ViewDrawPhases } from './direct-draw-phase';
 import {
@@ -109,7 +110,6 @@ import {
   prepareFrameLighting,
   resolveSkyboxActive,
   writeHdrpClusterAndSsaoBuffers,
-  writeLightModifierTextures,
 } from './frame-lighting';
 import {
   type BindGroupCounts,
@@ -666,6 +666,7 @@ export interface GpuDrivenRecordInput {
 export interface FrameRecordingAttempt {
   /** Whether the shared frame encoder reached queue submission. */
   submitted: boolean;
+  readonly lightTextureResamples: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[];
   captureSettled: boolean;
   ownsCaptureGraphs: boolean;
   preparedGpuDriven: PreparedGpuDrivenFrame | undefined;
@@ -695,6 +696,7 @@ export function createFrameRecordingAttempt(
 ): FrameRecordingAttempt {
   return {
     submitted: false,
+    lightTextureResamples: [],
     captureSettled: false,
     ownsCaptureGraphs: false,
     preparedGpuDriven: undefined,
@@ -815,6 +817,13 @@ export function releaseFrameRecordingAttempt(
   cubeCapture: CubeCaptureFrameInput | undefined,
 ): void {
   const submitted = attempt.submitted;
+  for (const pending of attempt.lightTextureResamples) pending.work.discard();
+  attempt.lightTextureResamples.length = 0;
+  for (const capture of [...attempt.captureFrames, ...attempt.probeCaptureFrames]) {
+    for (const pending of capture.frameState.pendingLightTextureResamples ?? [])
+      pending.work.discard();
+    delete capture.frameState.pendingLightTextureResamples;
+  }
   if (!attempt.captureSettled) {
     attempt.captureSettled = true;
     completeReflectionProbeSubmission(internals, frameState, attempt, cubeCapture, {
@@ -1032,11 +1041,11 @@ function uploadAcceptedStandardLighting(
   frameState: RenderFrameState,
   pipelineState: PipelineState,
   camera: CameraSnapshot,
-  lights: ViewLights,
   standard: StandardTopologyInputValue,
   profilePhase: RecordProfileRunner | undefined,
   projectorLightSlot: number | undefined,
   captureOnly: boolean,
+  attempt: FrameRecordingAttempt,
 ): boolean {
   if (captureOnly) return true;
   if (frameState.standardLightingGraphSignature !== standardLightingTopologySignature(standard)) {
@@ -1062,7 +1071,6 @@ function uploadAcceptedStandardLighting(
   // authoritative extracted-light corpus. The prepared local carrier can omit
   // the source payload on this path, leaving the shader bound to its white
   // Cookie fallback even though the authored handle is valid.
-  writeLightModifierTextures(internals, pipelineState, lights);
   const clusterWrite = runRecordProfilePhase(profilePhase, 'record/scene-state/hdrp-cluster', () =>
     writeHdrpClusterAndSsaoBuffers(
       internals,
@@ -1077,6 +1085,11 @@ function uploadAcceptedStandardLighting(
       pipelineState,
     ),
   );
+  const pendingResamples = frameState.pendingLightTextureResamples;
+  if (pendingResamples !== undefined) {
+    attempt.lightTextureResamples.push(...pendingResamples);
+    delete frameState.pendingLightTextureResamples;
+  }
   if (!clusterWrite.ok) {
     internals.errorRegistry.fire(clusterWrite.error);
     return false;
@@ -1381,7 +1394,13 @@ function submittedFrameInspection(
   capsuleShadowDirectional: boolean,
 ): NonNullable<RenderFrameState['submittedInspection']> {
   return {
-    standardLighting: inspectStandardLighting(standard),
+    standardLighting: inspectStandardLighting(standard, {
+      config: frameState.installedPipelineConfig?.ssao,
+      graph: frameState.compiledFrameGraph?.graph.inspect(),
+      installedGraphGeneration: frameState.compiledFrameGraph?.targets.graphGeneration,
+      deviceGeneration: recordContext(internals).deviceScope.generation,
+      clusterAoExtent: frameState.standardClusterAoExtent,
+    }),
     pointShadow: inspectPointShadow(lights.pointShadow, SHADOW_ATLAS_DEFAULT_LAYERS),
     transparency,
     capsuleShadow: inspectCapsuleShadow(
@@ -1551,6 +1570,11 @@ export function prepareFrameGraphInputs(
   input: FrameRecordingInput,
   attempt: FrameRecordingAttempt,
 ) {
+  beginClusterWorkConformanceFrame(
+    input.frameState.standardClusterWorkConformance,
+    input.frameState.frameNumber,
+    input.internals.observationFrameId,
+  );
   let {
     internals,
     world,
@@ -1635,7 +1659,7 @@ export function prepareFrameGraphInputs(
 
     // `render-standard-lighting` prepared the view's lighting in RenderPrepare.
     const lighting = consumeViewStandardLighting(internals, frameState, pipelineState, () =>
-      prepareFrameLighting(internals, frameState, lights, camera, pipelineState),
+      prepareFrameLighting(internals, frameState, lights, cameras[0], pipelineState),
     );
     if (!lighting.ok) return lighting;
     const { light, standard } = lighting.value;
@@ -2117,6 +2141,25 @@ function sealFrameHistory(
 }
 
 /** Seal selected graph resources, upload its view, resolve bindings and prepare native pipelines. */
+function standardClusterAoExtentForGraph(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  preflightGraph: CompiledFrameGraph,
+  captureOnly: boolean,
+): RenderFrameState['standardClusterAoExtent'] {
+  const installedGraph = frameState.compiledFrameGraph;
+  const installedSsaoRaw = installedGraph?.targets.getColorTargetDescriptor('ssao-raw');
+  if (
+    captureOnly ||
+    internals.device.caps.storageBuffer ||
+    installedGraph?.graph !== preflightGraph ||
+    frameState.installedPipelineConfig?.ssao?.enabled !== true ||
+    installedSsaoRaw === undefined
+  )
+    return undefined;
+  return { width: installedSsaoRaw.size.width, height: installedSsaoRaw.size.height };
+}
+
 export function sealFrameGraph(
   prepared: PreparedFrameGraph,
   preflightGraph: CompiledFrameGraph,
@@ -2184,17 +2227,23 @@ export function sealFrameGraph(
     hasShadowViews,
     acceptedMaterialArtifacts,
   } = prepared;
+  frameState.standardClusterAoExtent = standardClusterAoExtentForGraph(
+    internals,
+    frameState,
+    preflightGraph,
+    captureOnly,
+  );
   if (
     !uploadAcceptedStandardLighting(
       internals,
       frameState,
       pipelineState,
       camera,
-      lights,
       standard,
       profilePhase,
       volume.spotLightProjector?.lightSlotIndex,
       captureOnly,
+      attempt,
     )
   ) {
     return { kind: 'rejected' as const };
@@ -2750,6 +2799,7 @@ export function encodePreparedFrameCaptures(
     clock.elapsedSeconds,
     meshRows,
     bindGroupCounts,
+    attempt.lightTextureResamples,
   );
 
   return { kind: 'ready' };
@@ -2825,6 +2875,16 @@ export function encodePreparedViewGraph(
     attempt,
     submittedShadowGraphGenerationFor(rendererRecording, frameState, preflightGraph),
   );
+  for (const pending of attempt.lightTextureResamples) {
+    const encoded = pending.work.execute(encoder);
+    if (!encoded.ok) {
+      internals.errorRegistry.fire(encoded.error);
+      return { kind: 'rejected' };
+    }
+    recordContext(internals).framePassNames?.push(
+      ...pending.work.graph.inspect().passes.map((pass) => pass.name),
+    );
+  }
   const frameHooks = frameSubmissionHooks(
     internals,
     frameState,

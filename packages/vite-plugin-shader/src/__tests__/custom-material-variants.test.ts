@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
+import {
+  type MaterialShaderManifestEntry,
+  readShaderManifestPublication,
+} from '@forgeax/engine-shader';
+import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { describe, expect, it } from 'vitest';
 import { forgeaxShader } from '../index.js';
 
@@ -265,17 +269,21 @@ describe('user material shader variant manifest', () => {
     const manifestAsset = ctx.emitted.find((asset) => asset.fileName === 'shaders/manifest.json');
     expect(manifestAsset).toBeDefined();
     if (manifestAsset === undefined) return;
+    const raw = JSON.parse(manifestAsset.source) as {
+      readonly reflections: readonly unknown[];
+      readonly entryPoints: readonly unknown[];
+      readonly materialShaders: readonly {
+        readonly identifier: string;
+        readonly reflectionIndex?: number;
+        readonly entryPointsIndex?: number;
+        readonly variants: readonly {
+          readonly reflectionIndex?: number;
+          readonly entryPointsIndex?: number;
+        }[];
+      }[];
+    };
     const manifest = (await readShaderManifestPublication(JSON.parse(manifestAsset.source))) as {
-      materialShaders: Array<{
-        identifier: string;
-        sourcePath: string;
-        composedWgsl: string;
-        variants: Array<{
-          definesKey: string;
-          defines: Record<string, boolean>;
-          composedWgsl: string;
-        }>;
-      }>;
+      materialShaders: MaterialShaderManifestEntry[];
     };
     const entry = manifest.materialShaders.find(
       (item) => item.identifier === 'learn_render::alpha_test',
@@ -284,7 +292,32 @@ describe('user material shader variant manifest', () => {
     if (entry === undefined) return;
     expect(entry.sourcePath).toContain('alpha-test.wgsl');
     expect(entry.composedWgsl).toContain('discard');
+    expect(entry.hash).toMatch(/^[a-f0-9]{8}$/);
+    expect(entry.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(entry.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
+    expect(entry.reflection?.schemaVersion).toBe('shader-reflection/3');
     expect(entry.variants).toHaveLength(4);
+    const rawEntry = raw.materialShaders.find(
+      (candidate) => candidate.identifier === entry.identifier,
+    );
+    expect(rawEntry?.reflectionIndex).toEqual(expect.any(Number));
+    expect(raw.reflections[rawEntry?.reflectionIndex ?? -1]).toEqual(entry.reflection);
+    expect(rawEntry?.entryPointsIndex).toEqual(expect.any(Number));
+    expect(raw.entryPoints[rawEntry?.entryPointsIndex ?? -1]).toEqual(entry.entryPoints);
+    for (const [index, variant] of entry.variants.entries()) {
+      expect(variant.hash).toMatch(/^[a-f0-9]{8}$/);
+      expect(variant.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(variant.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
+      expect(variant.reflection?.schemaVersion).toBe('shader-reflection/3');
+      expect(rawEntry?.variants[index]?.reflectionIndex).toEqual(expect.any(Number));
+      expect(raw.reflections[rawEntry?.variants[index]?.reflectionIndex ?? -1]).toEqual(
+        variant.reflection,
+      );
+      expect(rawEntry?.variants[index]?.entryPointsIndex).toEqual(expect.any(Number));
+      expect(raw.entryPoints[rawEntry?.variants[index]?.entryPointsIndex ?? -1]).toEqual(
+        variant.entryPoints,
+      );
+    }
     const webgl = entry.variants.find(
       (variant) =>
         variant.defines.WEBGL2_COMPAT === true &&

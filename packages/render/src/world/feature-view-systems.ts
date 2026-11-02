@@ -22,6 +22,10 @@ import {
   unimplementedPublishedFeature,
 } from '../render-system-record-attempt';
 import {
+  createStandardSceneSurfaceAdmission,
+  standardSceneDataContributorForDispatch,
+} from '../temporal/standard-scene-data-admission';
+import {
   RENDER_FEATURE_VIEWS_SYSTEM,
   RENDER_MOTION_BLUR_PLAN_SYSTEM,
   type ViewFeatureFrameInput,
@@ -137,6 +141,49 @@ function prepareFeatureFrameInput(
   const pipelineState = recordContext(internals).getPipelineState();
   const { frame } = view;
   const camera = view.cameras[0];
+  const projection = owner.scene.projectVisibility(
+    view.scopes,
+    frame.renderables,
+    frame.dispatch,
+    frame.gpuOwned?.slots,
+  );
+  const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  frameState.standardSceneSurfaceAdmission = createStandardSceneSurfaceAdmission({
+    viewIdentity: featureViewIdentity(view.mode, camera),
+    generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
+    deviceGeneration: recordContext(internals).deviceScope.generation,
+    standardPipeline: frameState.activePipeline === recordContext(internals).standardPipeline,
+    cameraAvailable: camera !== undefined,
+    lane:
+      internals.device.caps.backendKind === 'wgpu-webgl2'
+        ? 'cpu-webgl2'
+        : internals.device.caps.storageBuffer
+          ? 'clustered'
+          : 'direct',
+    renderPath:
+      frameState.activePipeline === recordContext(internals).standardPipeline
+        ? profile?.renderPath
+        : undefined,
+    contributors: projection.dispatch.flatMap((dispatch) => {
+      const row = projection.renderables.at(dispatch.renderableIndex);
+      const sourceTuple = Object.freeze([
+        row?.worldId ?? -1,
+        row?.entityKey ?? -1,
+        dispatch.materialHandle,
+        dispatch.passIndex,
+      ] as const);
+      const contributor = standardSceneDataContributorForDispatch({
+        row,
+        sourceTuple,
+        materialHandle: dispatch.materialHandle,
+        materialShaderId: dispatch.materialShaderId,
+        tags: dispatch.tags,
+        lane: profile?.renderPath === 'deferred' ? 'deferred' : 'forward',
+        id: JSON.stringify(sourceTuple),
+      });
+      return contributor === undefined ? [] : [contributor];
+    }),
+  });
   const skylight = resolveFeatureSkylight(owner, pipelineState, frame, view.resourceWorld);
   if (recordContext(internals).featureHost === undefined) return { input: undefined, skylight };
   const generation = recordContext(internals).deviceScope.generation;
@@ -226,6 +273,7 @@ function featureFrameInput(
 ): RenderFeatureFrameInput {
   const { publication, scopes, frame } = view;
   const sceneInputs = recordContext(internals).featureSceneInputs;
+  const featureGraphConformanceTrace = recordContext(internals).featureGraphConformanceTrace;
   return {
     identity,
     render: view.mode === true,
@@ -255,6 +303,12 @@ function featureFrameInput(
     hiddenEntityReports: frame.hiddenEntityReports,
     targets,
     generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
+    deviceGeneration: recordContext(internals).deviceScope.generation,
+    ...(frameState.standardSceneSurfaceAdmission === undefined
+      ? {}
+      : { surfaceAdmission: frameState.standardSceneSurfaceAdmission }),
+    recordFrameNumber: frameState.frameNumber,
+    ...(featureGraphConformanceTrace === undefined ? {} : { featureGraphConformanceTrace }),
     getFeatureShaderSource: internals.getFeatureShaderSource,
     caps: internals.device.caps,
     featureReadOnlyDepthBatchDiagnostic:

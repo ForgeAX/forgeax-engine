@@ -821,9 +821,26 @@ check actual light/receiver carriers and matching shader work.
 radius is 0.25, thickness 1, distanceExponent 1, distanceFallOff 1 and
 resolutionScale 1. High quality searches 36 depth candidates. Use
 `resolutionScale: 0.5` for less pixel work; select `algorithm: 'ssao'` explicitly
-for hemisphere sampling. Raw intensity is applied before the existing bilateral
-filter. See the [AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
-for retained mathematical differences and direct-light composition.
+for hemisphere sampling. Eligible WebGPU and `wgpu-WebGL2` devices support AO
+through Forward input as well as the existing Deferred route; AO alone does not
+force a Deferred profile. WebGPU uses the production raster route and exercises
+compute through the internal Renderer acceptance override. WebGL2 uses fragment
+passes and co-locates visibility with Cluster data in one integer texture to
+preserve the full material texture budget. Raw intensity is applied before the
+existing bilateral filter. `directLightingStrength` defaults to zero and
+independently controls AO attenuation of direct lighting in both render paths.
+See the [AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
+for input eligibility, budgets and retained mathematical differences.
+
+For runtime diagnosis, read `renderer.inspect().standardLighting.ambientOcclusion`
+after a submitted frame. Its passes and graph generation describe the accepted
+graph; requested-but-unavailable state includes the missing active-graph stage
+and retry/rebuild recovery. It also reports the material-normal/depth SceneData
+schema, numerical settings, known allocation bytes and raw/filter work budgets.
+Treat omitted byte sizes as unknown and the work counts as declared workload
+budgets, not measured GPU time. A disabled request owns no AO passes, Cluster
+region, history or per-frame upload. Public camera setup and `ssao-*` recovery
+examples live in the [render README](../../packages/render/README.md#screen-space-ambient-occlusion).
 
 Binding `Camera.colorLut` applies it with default strength 1; explicit strength 0
 disables it. No LUT creates no LUT work. FXAA follows Three GPU r184's six-step

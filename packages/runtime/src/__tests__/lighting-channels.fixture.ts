@@ -1,6 +1,6 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
   createRenderPublisher,
@@ -17,14 +17,18 @@ import {
 } from '@forgeax/engine-render';
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { Skin } from '@forgeax/engine-skinning';
-import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import {
+  attachStandardPbrSkin,
+  standardPbrSkinMaterial,
+  standardPbrSkinMesh,
+} from './helpers/standard-pbr-skin-subject';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 function required<T>(value: T | undefined): T {
@@ -85,16 +89,7 @@ export async function verifyLightingChannels(
     };
   }
   if (receiverKind === 'skin') {
-    const count = required(meshValue.submeshes?.[0]).vertexCount;
-    const weights = new Float32Array(count * 4);
-    for (let i = 0; i < count; i++) weights[i * 4] = 1;
-    const attributes = {
-      ...meshValue.attributes,
-      skinIndex: new Uint16Array(count * 4),
-      skinWeight: weights,
-    };
-    const packed = packInterleavedVertexAttributes(attributes, count).unwrap();
-    meshValue = { ...meshValue, attributes, vertices: packed.vertices } as MeshAsset;
+    meshValue = standardPbrSkinMesh(meshValue);
   }
   const mesh = testAssets(world).create(meshValue).unwrap();
   const authoredMaterial = Materials.standard({
@@ -128,22 +123,7 @@ export async function verifyLightingChannels(
     emissiveIntensity: 1,
   });
   const materialValue =
-    receiverKind === 'skin'
-      ? {
-          ...authoredMaterial,
-          passes: required(authoredMaterial.passes).map((pass) =>
-            pass.program.module === 'forgeax_material::standard'
-              ? {
-                  ...pass,
-                  program: {
-                    module: 'forgeax::pbr-skin',
-                    fragmentEntry: pass.program.fragmentEntry,
-                  },
-                }
-              : pass,
-          ),
-        }
-      : authoredMaterial;
+    receiverKind === 'skin' ? standardPbrSkinMaterial(authoredMaterial) : authoredMaterial;
   const material =
     receiverKind === 'physical'
       ? await required(options.preparePhysicalMaterial)(authoredMaterial)
@@ -159,23 +139,7 @@ export async function verifyLightingChannels(
     )
     .unwrap();
   if (receiverKind === 'skin') {
-    const joint = world.spawn({ component: Transform, data: { pos: [0, 0, -4] } }).unwrap();
-    const inverse = new Float32Array(16);
-    inverse[0] = inverse[5] = inverse[10] = inverse[15] = 1;
-    const skeleton = testAssets(world)
-      .create({
-        kind: 'skeleton' as const,
-        jointCount: 1,
-        inverseBindMatrices: inverse,
-        bounds: new Float32Array([-1, -1, -0.1, 1, 1, 0.1]),
-      })
-      .unwrap();
-    world
-      .addComponent(receiver, {
-        component: Skin,
-        data: { skeleton, joints: new Uint32Array([joint as unknown as number]) },
-      })
-      .unwrap();
+    attachStandardPbrSkin(world, testAssets(world), receiver, [0, 0, -4]);
   }
   if (receiverKind === 'instances') {
     const transforms = new Float32Array(32);

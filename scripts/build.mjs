@@ -192,7 +192,12 @@ const engineTypes = mode === 'engine' ? buildTypes() : null;
 
 let sharedManifest = null;
 if (mode !== 'packages-only') {
-  await runStage('producer', process.execPath, ['scripts/build-shared-inputs.mjs', '--root', root]);
+  await runStage('producer', process.execPath, [
+    '--max-old-space-size=4096',
+    'scripts/build-shared-inputs.mjs',
+    '--root',
+    root,
+  ]);
 
   sharedManifest = resolve(root, 'shared-build-inputs/manifest.json');
   const producerFactsPath = resolve(root, 'shared-build-inputs/production-facts.json');

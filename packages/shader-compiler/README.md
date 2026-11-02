@@ -94,6 +94,55 @@ locations, types, and interpolation. Material cooking supplies its selected
 entries; an absent or wrong-stage entry fails before publication. Pack cooking
 propagates the structured compiler error without serializing it into a string.
 
+### Reflection v3 and checked WGSL writeback
+
+`compileShader()` publishes Naga `shader-reflection/3`, including a recursive
+buffer `typeDescriptor` for matrices, arrays and nested structs. Flat
+`elementType`, `elementStride` and `arrayLength` are validated projections of
+that descriptor; they are not independent layout inputs. The runtime rejects
+stale `/2` or contradictory `/3` metadata, so regenerate a source manifest or
+re-cook its material publication after updating the WASM Naga producer.
+
+Composition and compute-entry specialization check Naga's WGSL writer round-trip
+for every bound buffer. The compiler compares recursive ABI facts at each
+group/binding before and after writer parse/validation. If the writer drops
+`@align` or `@size` padding, compilation returns the structured
+`shader-compile-failed` code with the binding and before/after layout facts.
+For imported WGSL, Naga Oil 0.23 currently drops active `@align` and `@size`
+tokens while building its imported header. The compiler therefore rejects
+those imports at `naga-oil-import-layout-admission`, naming the module and
+attribute before an artifact can be published. Conditional imports are
+specialized with the entry's option and source defines; inactive branches and
+commented directives do not enter the composed module closure. `CompileResult.deps`
+still reports every caller-supplied import key for HMR tracking. Naga Oil also
+rejects `#define` directives in composable modules; boolean source defines
+belong to the entry shader.
+
+Keep the authored source and host ABI intact. Use a naturally laid-out WGSL
+buffer only when its reflected layout matches the host ABI; otherwise use a
+composition writer that preserves the reflected padding. Do not delete an
+ABI-required attribute or weaken the compiler admission check to make a
+publication pass.
+
+The material compiler profile records the maintained Naga and Naga Oil
+versions from `packages/wgpu-wasm/pkg/provenance.json`; `compilerVersion` names
+Naga Oil and `nagaVersion` names Naga. The owner test compares these fields to
+that provenance file so profile identities cannot silently drift from the
+verified WASM producer.
+
+After a producer change, rebuild and verify the Naga/WASM payload before
+rebuilding the Engine publication:
+
+```sh
+pnpm --filter @forgeax/engine-wgpu-wasm build:wasm
+node packages/wgpu-wasm/scripts/verify-current.mjs
+pnpm build:engine
+```
+
+Re-cook authored material artifacts from their owning source when their
+published reflection is stale. Never reuse a previous manifest or weaken
+runtime reflection admission to hide a producer mismatch.
+
 The closed material context retains local-light membership for both Forward and
 Deferred: storage-buffer contexts use buffers and uniform fallback uses the
 same records through an integer texture. ProbeBlend requires storage. Custom Standard
@@ -274,9 +323,9 @@ The plugin builds a `reverseDeps: Map<moduleId, Set<rootEntryId>>` during `trans
 
 **Upstream references:**
 
-- naga_oil 0.23 — <https://github.com/bevyengine/naga_oil> / <https://docs.rs/naga_oil/0.22.0>
+- naga_oil 0.23 — <https://github.com/bevyengine/naga_oil> / <https://docs.rs/naga_oil/0.23.0>
 - Bevy `pbr.wgsl` exemplar — <https://github.com/bevyengine/bevy/blob/main/crates/bevy_pbr/src/render/pbr.wgsl>
-- naga upstream (v29) — <https://github.com/gfx-rs/wgpu/tree/trunk/naga>
+- naga upstream (v30) — <https://github.com/gfx-rs/wgpu/tree/trunk/naga>
 
 **Closed-loop decisions:**
 
@@ -334,14 +383,14 @@ project source snapshot is retained between jobs. Shader plugins and VFX keep
 their existing lifecycle-owned compiler instances.
 
 `createShaderProgramCompiler()` shares pending composition and validation and retains successful
-compilation stages with independent retained-payload budgets: 16 MiB for composition
-and 32 MiB for validation. A single input/result larger than 16 MiB is not retained.
+compilation stages with independent retained-payload budgets: 32 MiB for composition
+and 64 MiB for validation. A single input/result larger than 16 MiB is not retained.
 Selections of the same WGSL count the source body once per stage,
 regardless of how many materials or entry selections reuse it. The two public
 WGSL fields share one immutable string;
 caller copies retain independent mutable metadata without copying that source
 twice. New source-and-options identities run source admission before reuse. An
-exact successful invocation can reuse its admission facts within the same 32 MiB
+exact successful invocation can reuse its admission facts within the same 64 MiB
 result budget. Keys include raw source, imported bytes and all options, preserving
 explicit undefined/scalar values. Selector containers are captured per invocation;
 immutable WGSL strings are shared. Accessor-backed/non-data inputs and failures
@@ -390,7 +439,11 @@ selection facts together. Before WGSL-body byte sharing, the 29-material Lab run
 with 256 cache entries performed 110 validations, down from 162 with the smaller
 entry cap, with identical publication digests. This records validation work; it
 does not qualify first-frame speedup. The current cache retains bodies once and
-the byte budget evicts larger working sets.
+the byte budget evicts larger working sets. The complete Standard, clearcoat and skinned
+publication regression exceeds the former 16/32 MiB stage budgets and evicts the
+first material before its next cook, adding 54 compositions. The 32/64 MiB bounds
+retain this measured working set; the 16 MiB single-input limit stays fixed.
+The eviction regression still exceeds the aggregate budget with distinct bodies.
 
 Vite authored-material preparation uses the compiler factory for the complete
 material and its variants, so entries sharing source do not repeat composition.
@@ -513,6 +566,8 @@ Boolean shader conditionals share `projectShaderConditionals` across compile
 entries, imported modules, Vite variants, and import-closure discovery. Partial
 projection preserves active backend directives; explicit author axes or `all`
 flatten active boolean branches too. Opaque expressions retain their nesting.
+Directive scanning uses Types' `stripWgslComments`, sharing nested-comment,
+quoted-path and source-offset handling with material schema readers.
 
 Surface dynamic-input field types and byte footprints have one Types authority.
 The derived layout supplies CPU write widths and generated WGSL word loads;

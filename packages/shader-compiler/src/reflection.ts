@@ -1,4 +1,4 @@
-// reflection.ts — strict shader-reflection/2 reader and derived-interface check.
+// reflection.ts — strict shader-reflection/3 reader and derived-interface check.
 
 import {
   parseReflectionWire,
